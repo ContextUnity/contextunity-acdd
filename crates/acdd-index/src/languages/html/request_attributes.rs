@@ -33,22 +33,18 @@ pub(super) fn extract_request_attributes(
         rule: rule.id.clone(),
     };
     let mut values = std::collections::BTreeMap::new();
-    let mut cursor = tag.walk();
-    for attribute in tag
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() == "attribute")
-    {
+    let _ = super::for_each_tag_attribute(tag, |attribute| {
         let Some(name) = attribute.named_child(0).map(|node| text(node, source)) else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let Some((priority, prefix)) = prefixes.iter().enumerate().find(|(_, prefix)| {
             name.get(..prefix.len())
                 .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
         }) else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let Some(attribute_key) = name.get(prefix.len()..) else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let key = methods
             .keys()
@@ -66,7 +62,7 @@ pub(super) fn extract_request_attributes(
                     .filter(|key| attribute_key.eq_ignore_ascii_case(key))
             });
         let Some(key) = key else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let primary = priority == 0;
         let value = attribute
@@ -83,7 +79,8 @@ pub(super) fn extract_request_attributes(
                 },
             );
         }
-    }
+        Ok(std::ops::ControlFlow::Continue(()))
+    });
     if values.is_empty() {
         return;
     }

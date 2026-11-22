@@ -717,6 +717,14 @@ pub(super) fn returned_object(object: Syntax<'_>) -> Option<Syntax<'_>> {
     }
     let expression = unparenthesized_object(object);
     let enclosing = expression.parent()?;
+    if enclosing.kind() == "expression_statement"
+        && object.parent().is_some_and(|parent| parent.kind() == "parenthesized_expression")
+        && enclosing
+            .parent()
+            .is_some_and(|program| program.kind() == "program" && program.named_child_count() == 1)
+    {
+        return supported_object(object);
+    }
     let function = if enclosing.kind() == "return_statement" {
         let body = enclosing.parent()?;
         if body.kind() != "statement_block" {

@@ -7,8 +7,14 @@ operation = { kind = "component_environment", package = "nuxt", config_file = "n
 [[syntax_rules]]
 id = "configured-setup-store"
 language = "typescript"
-activation = [{ kind = "package", name = "pinia" }]
+activation = [{ kind = "package", name = "pinia" }, { kind = "package", name = "@pinia/nuxt" }]
 operation = { kind = "factory_members", callee = { kind = "global", name = "defineStore" }, argument = 1, shape = "setup_return", configured_module = "@pinia/nuxt" }
+
+[[syntax_rules]]
+id = "configured-options-store"
+language = "typescript"
+activation = [{ kind = "package", name = "pinia" }, { kind = "package", name = "@pinia/nuxt" }]
+operation = { kind = "factory_members", callee = { kind = "global", name = "defineStore" }, argument = 1, state_member = "state", actions_member = "actions", configured_module = "@pinia/nuxt" }
 
 [[syntax_rules]]
 id = "fetch-autoimport"
@@ -28,7 +34,14 @@ id = "pinia-autoimport-typescript"
 language = "typescript"
 activation = [{ kind = "package", name = "@pinia/nuxt" }]
 display = { builtin = "framework builtin: configured Nuxt module" }
-operation = { kind = "implicit_builtins", names = ["defineStore"] }
+operation = { kind = "implicit_builtins", names = ["defineStore", "storeToRefs", "acceptHMRUpdate"] }
+
+[[syntax_rules]]
+id = "pinia-autoimport-javascript"
+language = "javascript"
+activation = [{ kind = "package", name = "@pinia/nuxt" }]
+display = { builtin = "framework builtin: configured Nuxt module" }
+operation = { kind = "implicit_builtins", names = ["defineStore", "storeToRefs", "acceptHMRUpdate"] }
 
 [[syntax_rules]]
 id = "i18n-autoimport-typescript"
@@ -42,7 +55,7 @@ id = "pinia-autoimport-vue"
 language = "vue"
 activation = [{ kind = "package", name = "@pinia/nuxt" }]
 display = { builtin = "framework builtin: configured Nuxt module" }
-operation = { kind = "implicit_builtins", names = ["defineStore"] }
+operation = { kind = "implicit_builtins", names = ["defineStore", "storeToRefs", "acceptHMRUpdate"] }
 
 [[syntax_rules]]
 id = "i18n-autoimport-vue"

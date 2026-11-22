@@ -542,6 +542,8 @@ fn resolve_early_language_specials<'a>(
         ctx.aliases,
         |node| ctx.object_ownership(node),
         &ctx.lexical_this_calls,
+        ctx.language_context,
+        &ctx.facts.activation_signals,
         graph,
     ) {
         return true;

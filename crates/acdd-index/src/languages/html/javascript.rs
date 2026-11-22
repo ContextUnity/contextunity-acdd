@@ -19,6 +19,45 @@ pub(super) struct Island<'a> {
     pub(super) end: usize,
     pub(super) position: tree_sitter::Point,
     pub(super) kind: &'a str,
+    pub(super) object_literal: bool,
+}
+
+fn parse_object_literal_island(
+    parser: &mut tree_sitter::Parser,
+    input: &str,
+    offset: usize,
+    position: tree_sitter::Point,
+) -> Option<tree_sitter::Tree> {
+    let mut padded = String::with_capacity(input.len() + 4);
+    padded.push_str("(\n");
+    padded.push_str(input);
+    padded.push_str("\n)");
+    let mut tree = parser.parse(&padded, None)?;
+    tree.edit(&tree_sitter::InputEdit {
+        start_byte: 0,
+        old_end_byte: 2,
+        new_end_byte: offset,
+        start_position: tree_sitter::Point::new(0, 0),
+        old_end_position: tree_sitter::Point::new(1, 0),
+        new_end_position: position,
+    });
+    let lines = input.as_bytes().iter().filter(|&&b| b == b'\n').count();
+    let end_position = if lines == 0 {
+        tree_sitter::Point::new(position.row, position.column + input.len())
+    } else {
+        let last_line = input.rsplit_once('\n').map_or(input.len(), |(_, tail)| tail.len());
+        tree_sitter::Point::new(position.row + lines, last_line)
+    };
+    let tail_start = offset + input.len();
+    tree.edit(&tree_sitter::InputEdit {
+        start_byte: tail_start,
+        old_end_byte: tail_start + 2,
+        new_end_byte: tail_start,
+        start_position: end_position,
+        old_end_position: tree_sitter::Point::new(end_position.row + 1, 1),
+        new_end_position: end_position,
+    });
+    Some(tree)
 }
 
 pub(super) fn extract_island(
@@ -30,14 +69,20 @@ pub(super) fn extract_island(
         end,
         position,
         kind,
+        object_literal,
     } = island;
     let original = &context.source[start..end];
     let script = TemplateMasker::mask(original, |_| {}, None);
-    if script.trim().is_empty() {
+    let trimmed = script.trim();
+    if trimmed.is_empty() {
         return Ok(None);
     }
-    let tree = ast::parse_island(context.parser, script.as_ref(), start, position)
-        .context("embedded JavaScript parse cancelled")?;
+    let tree = if object_literal && trimmed.starts_with('{') && trimmed.ends_with('}') {
+        parse_object_literal_island(context.parser, script.as_ref(), start, position)
+    } else {
+        ast::parse_island(context.parser, script.as_ref(), start, position)
+    }
+    .context("embedded JavaScript parse cancelled")?;
     let row = position.row;
     let column = position.column;
     let root = tree.root_node();
@@ -307,16 +352,12 @@ fn named_attribute_bindings<'a>(
 }
 
 pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'_>) -> Result<()> {
-    let mut cursor = tag.walk();
-    for attribute in tag
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() == "attribute")
-    {
+    super::for_each_tag_attribute(tag, |attribute| {
         let Some(name) = attribute
             .named_child(0)
             .map(|node| text(node, context.source))
         else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let named_rule_index = named_attribute_bindings(context.rules, name)
             .next()
@@ -327,8 +368,8 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 || name.starts_with("On")
                 || name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on")))
         {
-            Some(("handler".to_owned(), None))
-        } else if let Some((kind, origin)) = context.rules.syntax_rules.iter().find_map(|rule| {
+            Some(("handler".to_owned(), false, None))
+        } else if let Some((kind, is_object_scope, origin)) = context.rules.syntax_rules.iter().find_map(|rule| {
             let manifests::syntax::SyntaxOperation::HtmlScriptAttributes {
                 event_prefixes,
                 object_attribute,
@@ -342,7 +383,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 name.get(..prefix.len())
                     .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
             }) {
-                Some(event_scope.as_str())
+                Some((event_scope.as_str(), false))
             } else if name.eq_ignore_ascii_case(object_attribute) {
                 let val = attribute
                     .named_child(1)
@@ -352,13 +393,14 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                     || val.contains("()")
                     || val.contains("=>")
                     || val.contains("function"))
-                .then_some(object_scope.as_str())
+                .then_some((object_scope.as_str(), true))
             } else {
                 None
             }
-            .map(|kind| {
+            .map(|(kind, is_object_scope)| {
                 (
                     kind,
+                    is_object_scope,
                     crate::semantic::ExtractionRuleOrigin {
                         pack: rule.pack.clone(),
                         rule: rule.id.clone(),
@@ -366,7 +408,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 )
             })
         }) {
-            Some((kind.to_owned(), Some(origin)))
+            Some((kind.to_owned(), is_object_scope, Some(origin)))
         } else if let Some(index) = named_rule_index {
             context.rules.syntax_rules.get(index).and_then(|rule| {
                 let manifests::syntax::SyntaxOperation::NamedBinding {
@@ -377,23 +419,23 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 else {
                     return None;
                 };
-                Some((scope.clone(), None))
+                Some((scope.clone(), false, None))
             })
         } else {
             None
         };
-        let Some((kind, origin)) = handler else {
-            continue;
+        let Some((kind, object_literal, origin)) = handler else {
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let Some(value) = attribute.named_child(1) else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let raw = text(value, context.source);
         let quoted = raw.starts_with(['\'', '"']);
         let start = value.start_byte() + usize::from(quoted);
         let end = value.end_byte().saturating_sub(usize::from(quoted));
         if end < start {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         }
         if context.source[start..end]
             .match_indices('&')
@@ -404,7 +446,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 line: value.start_position().row + 1,
                 message: "HTML-encoded JavaScript handler requires decoding".into(),
             });
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         }
         let mut position = value.start_position();
         position.column += usize::from(quoted);
@@ -416,10 +458,11 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 end,
                 position,
                 kind: &kind,
+                object_literal,
             },
         )?
         else {
-            continue;
+            return Ok(std::ops::ControlFlow::Continue(()));
         };
         let named_static = context.facts.errors.len() == errors_before
             && !context.source[start..end].trim().is_empty()
@@ -496,8 +539,8 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                 }
             }
         }
-    }
-    Ok(())
+        Ok(std::ops::ControlFlow::Continue(()))
+    })
 }
 
 fn ensure_global_scope(

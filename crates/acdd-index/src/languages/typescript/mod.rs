@@ -34,6 +34,31 @@ pub(super) fn has_static_child(node: Syntax<'_>) -> bool {
     })
 }
 
+fn is_iife_callee(mut node: Syntax<'_>) -> bool {
+    loop {
+        match node.kind() {
+            "function_expression"
+            | "arrow_function"
+            | "generator_function"
+            | "generator_function_expression" => return true,
+            "parenthesized_expression"
+            | "as_expression"
+            | "type_assertion"
+            | "non_null_expression"
+            | "satisfies_expression" => {
+                let Some(inner) = node
+                    .child_by_field_name("expression")
+                    .or_else(|| node.named_child(0))
+                else {
+                    return false;
+                };
+                node = inner;
+            }
+            _ => return false,
+        }
+    }
+}
+
 fn simple_reference(
     source: impl Into<String>,
     expression: impl Into<String>,
@@ -82,6 +107,8 @@ pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration"
         | "generator_function_declaration"
+        | "generator_function"
+        | "generator_function_expression"
         | "arrow_function"
         | "function_expression" => Some("function"),
         "method_definition" | "method_signature" => Some("method"),
@@ -473,13 +500,12 @@ impl TypeScript {
                     else {
                         continue;
                     };
-                    if let Some(event) =
-                        configured_callback_parameter(node, source, &receiver.callback_callees)
-                    {
-                        param_types
-                            .entry(event.to_owned())
-                            .or_insert_with(|| receiver.name.clone());
-                    }
+                    collect_configured_callback_parameters(
+                        node,
+                        source,
+                        receiver,
+                        &mut param_types,
+                    );
                 }
             }
         }
@@ -1048,6 +1074,13 @@ impl LanguageProfile for TypeScript {
             }
         }
         if matches!(ctx.node.kind(), "call_expression") {
+            if ctx
+                .node
+                .child_by_field_name("function")
+                .is_some_and(is_iife_callee)
+            {
+                return;
+            }
             if required_module(ctx.node, ctx.source).is_some() {
                 if require_is_shadowed(ctx) {
                     call(ctx, facts, false);
@@ -1417,6 +1450,51 @@ impl LanguageProfile for TypeScript {
                     | "toString"
                     | "toJSON"
             ),
+            "Location" | "location" => {
+                matches!(member, "assign" | "replace" | "reload" | "toString")
+            }
+            "History" | "history" => {
+                matches!(member, "back" | "forward" | "go" | "pushState" | "replaceState")
+            }
+            "Navigator" | "navigator" => matches!(member, "sendBeacon" | "vibrate"),
+            "Clipboard" => matches!(member, "read" | "readText" | "write" | "writeText"),
+            "AbortController" => matches!(member, "abort"),
+            "AbortSignal" => matches!(
+                member,
+                "addEventListener" | "removeEventListener" | "dispatchEvent" | "throwIfAborted"
+            ),
+            "Performance" | "performance" => matches!(
+                member,
+                "now"
+                    | "mark"
+                    | "measure"
+                    | "clearMarks"
+                    | "clearMeasures"
+                    | "getEntries"
+                    | "getEntriesByName"
+                    | "getEntriesByType"
+                    | "toJSON"
+            ),
+            "Crypto" | "crypto" => matches!(member, "getRandomValues" | "randomUUID"),
+            "SubtleCrypto" => matches!(
+                member,
+                "digest"
+                    | "encrypt"
+                    | "decrypt"
+                    | "sign"
+                    | "verify"
+                    | "generateKey"
+                    | "importKey"
+                    | "exportKey"
+                    | "deriveKey"
+                    | "deriveBits"
+            ),
+            "CSSStyleDeclaration" => {
+                matches!(member, "setProperty" | "getPropertyValue" | "removeProperty" | "item")
+            }
+            "DOMRect" => matches!(member, "toJSON"),
+            "TextEncoder" => matches!(member, "encode" | "encodeInto"),
+            "TextDecoder" => matches!(member, "decode"),
             "string" | "String" => matches!(
                 member,
                 "charAt"
@@ -2063,6 +2141,10 @@ impl LanguageProfile for TypeScript {
                     if enums.contains(receiver)
                         || imports.contains(receiver)
                         || local_names.contains(receiver)
+                        || matches!(
+                            receiver,
+                            "navigator" | "location" | "history" | "performance" | "crypto"
+                        )
                     {
                         let hint = type_imports
                             .contains(receiver)

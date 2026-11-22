@@ -232,7 +232,7 @@ fn extractors_collect_activation_signals_and_deterministic_facts_table() {
         #[cfg(feature = "lang-go")]
         ("go", "pkg/util.go", "package pkg\nfunc Alpha() int { return 1 }\n", None),
     ] {
-        let mut first = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
+        let first = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
         let second = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
         let first_keys: Vec<_> = first
             .nodes
@@ -245,9 +245,14 @@ fn extractors_collect_activation_signals_and_deterministic_facts_table() {
             .map(|n| (&n.id, &n.kind, &n.qualname, n.line))
             .collect();
         assert_eq!(first_keys, second_keys, "{path}");
-        assert!(first.activation_signals.is_empty(), "{path}");
         if let Some(attr) = injected_signal {
-            first.activation_signals.syntax_attributes.insert(attr.into());
+            assert!(
+                first.activation_signals.syntax_attributes.contains(attr),
+                "{path} expected collected activation signal `{attr}` in {:?}",
+                first.activation_signals.syntax_attributes
+            );
+        } else {
+            assert!(first.activation_signals.is_empty(), "{path}");
         }
         let expected_signals = first.activation_signals.clone();
         let mut encoded = Vec::new();

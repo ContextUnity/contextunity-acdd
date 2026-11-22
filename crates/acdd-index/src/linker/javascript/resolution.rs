@@ -104,6 +104,7 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
 }
 
 #[cfg(feature = "lang-typescript")]
+#[allow(clippy::too_many_arguments)]
 pub(in crate::linker) fn object_factory_this_member<'a>(
     input: &ResolutionInput<'a>,
     path: &str,
@@ -111,6 +112,8 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
     aliases: &HashMap<&str, HashMap<&str, Vec<&'a Node>>>,
     object_ownership: impl Fn(&Node) -> Option<&'a ObjectOwnershipFact>,
     lexical_this_calls: &HashSet<(&str, usize, usize, &str)>,
+    language_context: &crate::languages::LanguageContext,
+    activation_signals: &crate::languages::manifests::semantic::FileActivationSignals,
     graph: &mut Graph,
 ) -> bool {
     if !matches!(reference.kind.as_str(), "calls" | "references" | "mutates") {
@@ -241,6 +244,17 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
             }
         }
     }
+    if language_context.syntax_rules.iter().any(|rule| {
+        let crate::languages::manifests::syntax::SyntaxOperation::ImplicitReceivers { names } =
+            &rule.operation
+        else {
+            return false;
+        };
+        language_context.is_syntax_rule_active(rule, path, activation_signals)
+            && names.iter().any(|name| name == tail)
+    }) {
+        return false;
+    }
     graph.reference_coverage(
         path,
         reference,
@@ -261,9 +275,15 @@ pub(in crate::linker) fn builtin_origin<'a>(
         "Buffer" | "process" => "builtin:node",
         "document" | "window" | "localStorage" | "sessionStorage" | "fetch" | "Headers"
         | "Request" | "Response" | "FormData" | "HTMLElement" | "HTMLTableElement" | "Element"
-        | "URL" | "URLSearchParams" | "Blob" | "File" | "DragEvent" | "ClipboardEvent"
-        | "FocusEvent" | "MouseEvent" | "KeyboardEvent" | "Event" | "ParentNode" | "ChildNode"
-        | "DocumentFragment" | "Storage" => "builtin:web_api",
+        | "URL" | "URLSearchParams" | "Blob" | "File" | "FileReader" | "DragEvent"
+        | "ClipboardEvent" | "FocusEvent" | "MouseEvent" | "KeyboardEvent" | "Event"
+        | "ParentNode" | "ChildNode" | "DocumentFragment" | "Storage" | "navigator"
+        | "location" | "history" | "performance" | "crypto" | "Location" | "History"
+        | "Navigator" | "Clipboard" | "DOMRect" | "CSSStyleDeclaration" | "AbortController"
+        | "AbortSignal" | "WebSocket" | "EventSource" | "XMLHttpRequest"
+        | "IntersectionObserver" | "MutationObserver" | "ResizeObserver" | "Performance"
+        | "Crypto" | "SubtleCrypto" | "TextEncoder" | "TextDecoder" | "NodeList"
+        | "HTMLCollection" | "ReadableStream" | "ReadableStreamDefaultReader" => "builtin:web_api",
         "console" | "CSS" if profile.id() == "javascript" => "builtin:web_api",
         "Object" | "Array" | "Math" | "JSON" | "Promise" | "Date"
             if profile.id() == "javascript" =>

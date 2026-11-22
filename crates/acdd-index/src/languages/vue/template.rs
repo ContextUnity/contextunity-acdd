@@ -262,10 +262,7 @@ impl Document<'_, '_> {
             let name = text(*name, source);
             let expression = text(*value, source);
             if name == "v-for" {
-                if let Some((left, right)) = expression
-                    .split_once(" in ")
-                    .or_else(|| expression.split_once(" of "))
-                {
+                if let Some((left, right)) = split_v_for(expression) {
                     let (loop_bindings, first_binding) = loop_bindings(left, self.parser);
                     let right_trimmed = right.trim();
                     if let Some(element) = self
@@ -527,41 +524,137 @@ impl Document<'_, '_> {
     }
 }
 
+fn split_v_for(expression: &str) -> Option<(&str, &str)> {
+    let bytes = expression.as_bytes();
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if let Some(active) = quote {
+            if byte == b'\\' {
+                idx += 2;
+                continue;
+            }
+            if byte == active {
+                quote = None;
+            }
+            idx += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            _ if paren == 0 && brace == 0 && bracket == 0 && byte.is_ascii_whitespace() => {
+                let mut kw_start = idx;
+                while kw_start < bytes.len() && bytes[kw_start].is_ascii_whitespace() {
+                    kw_start += 1;
+                }
+                for kw in [b"in", b"of"] {
+                    let kw_end = kw_start + kw.len();
+                    if bytes.get(kw_start..kw_end) == Some(kw)
+                        && bytes.get(kw_end).is_some_and(u8::is_ascii_whitespace)
+                    {
+                        let left = &expression[..idx];
+                        let right = &expression[kw_end..];
+                        return Some((left, right));
+                    }
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn strip_balanced_outer_parens(input: &str) -> &str {
+    let trimmed = input.trim();
+    if !(trimmed.starts_with('(') && trimmed.ends_with(')')) {
+        return trimmed;
+    }
+    let mut depth = 0usize;
+    for (idx, ch) in trimmed.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return if idx == trimmed.len() - 1 {
+                        &trimmed[1..trimmed.len() - 1]
+                    } else {
+                        trimmed
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    trimmed
+}
+
 fn binding_names(pattern: &str, parser: &mut Parser) -> Vec<String> {
     loop_bindings(pattern, parser).0
 }
 
 fn loop_bindings(pattern: &str, parser: &mut Parser) -> (Vec<String>, Option<String>) {
-    let pattern = pattern.trim().trim_start_matches('(').trim_end_matches(')');
-    let input = format!("let {pattern};");
+    let pattern = strip_balanced_outer_parens(pattern).trim();
+    if pattern.is_empty() {
+        return (Vec::new(), None);
+    }
+    let input = format!("function _({pattern}) {{}}");
     let Some(tree) = parser.parse(&input, None) else {
         return (Vec::new(), None);
     };
     if tree.root_node().has_error() {
         return (Vec::new(), None);
     }
-    let Some(declaration) = tree.root_node().named_child(0) else {
+    let Some(params) = tree
+        .root_node()
+        .named_child(0)
+        .filter(|node| node.kind() == "function_declaration")
+        .and_then(|func| func.child_by_field_name("parameters"))
+    else {
         return (Vec::new(), None);
     };
-    let first = declaration
-        .named_children(&mut declaration.walk())
-        .find(|node| node.kind() == "variable_declarator")
-        .and_then(|first| first.child_by_field_name("name"))
-        .filter(|node| node.kind() == "identifier")
+    let first = params
+        .named_child(0)
+        .and_then(|param| match param.kind() {
+            "identifier" => Some(param),
+            "assignment_pattern" => param
+                .child_by_field_name("left")
+                .filter(|left| left.kind() == "identifier"),
+            _ => None,
+        })
         .map(|name| text(name, &input).to_owned());
-    let mut stack: Vec<_> = declaration
-        .named_children(&mut declaration.walk())
-        .filter_map(|node| node.child_by_field_name("name"))
-        .collect();
+    let mut stack: Vec<_> = params.named_children(&mut params.walk()).collect();
     let mut names = Vec::new();
     while let Some(node) = stack.pop() {
-        if matches!(
-            node.kind(),
-            "identifier" | "shorthand_property_identifier_pattern"
-        ) {
-            names.push(text(node, &input).into());
-        } else {
-            stack.extend(node.named_children(&mut node.walk()));
+        match node.kind() {
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                names.push(text(node, &input).into());
+            }
+            "pair_pattern" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    stack.push(value);
+                }
+            }
+            "assignment_pattern" | "object_assignment_pattern" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    stack.push(left);
+                }
+            }
+            "array_pattern" | "object_pattern" | "rest_pattern" => {
+                stack.extend(node.named_children(&mut node.walk()));
+            }
+            _ => {}
         }
     }
     names.sort();

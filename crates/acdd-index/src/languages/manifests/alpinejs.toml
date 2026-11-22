@@ -22,7 +22,14 @@ operation = { kind = "named_binding", domain = "event", binding = { kind = "call
 id = "implicit-receivers"
 display = { builtin = "framework builtin: Alpine magic" }
 language = "javascript"
-activation = [{ kind = "package", name = "alpinejs" }]
+activation = [
+  { kind = "any", conditions = [
+    { kind = "package", name = "alpinejs" },
+    { kind = "syntax_attribute", name = "x-data" },
+    { kind = "syntax_attribute_prefix", prefix = "x-on:" },
+    { kind = "syntax_attribute_prefix", prefix = "x-bind:" },
+  ] },
+]
 operation = { kind = "implicit_receivers", names = ["$el", "$refs", "$event", "$dispatch", "$nextTick", "$watch", "$store", "$data", "$id", "$root", "$parent", "$root.querySelector", "$root.querySelectorAll", "$root.closest", "$root.contains", "$root.getAttribute", "$root.addEventListener", "$el.addEventListener"] }
 
 [[syntax_rules]]

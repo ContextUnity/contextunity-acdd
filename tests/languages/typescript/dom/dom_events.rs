@@ -338,3 +338,101 @@ function use(target: ParentNode, child: ChildNode, fragment: DocumentFragment) {
         assert_eq!(coverage("fetch_local.js", "response.json").0, "resolved");
     }
 }
+
+#[test]
+fn playwright_fixtures_and_webidl_interfaces_contract_matrix() {
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    w.write(
+        "e2e/package.json",
+        r#"{"devDependencies":{"@playwright/test":"^1.49.0"}}"#,
+    );
+    w.write(
+        "e2e/checkout.spec.ts",
+        r#"
+import { test, expect } from '@playwright/test';
+
+test.beforeEach(async ({ page: currentPage }) => {
+  await currentPage.goto('/checkout');
+});
+
+test('completes order', async ({ page, request, context, browser }) => {
+  await page.locator('button');
+  await page.keyboard.press('Enter');
+  await page.mouse.click(10, 20);
+  await request.get('/api/orders');
+  await context.newPage();
+  await browser.close();
+  await expect(page.locator('h1')).toBeVisible();
+});
+"#,
+    );
+    w.write(
+        "plain/checkout.spec.ts",
+        r#"
+function test(_name: string, _fn: (args: { page: any }) => void) {}
+test('plain', ({ page }) => {
+  page.locator('button');
+});
+"#,
+    );
+    w.write(
+        "webidl/dom_extended.ts",
+        r#"
+async function probe(el: Element, resp: Response) {
+  const rect = el.getBoundingClientRect();
+  rect.top;
+  await navigator.clipboard.writeText('ok');
+  navigator.onLine;
+  location.hash;
+  location.reload();
+  performance.getEntries();
+  await crypto.subtle.generateKey('AES-GCM', true, ['encrypt']);
+  const ws = new WebSocket('wss://example.com');
+  ws.send('hi');
+  const form = new FormData();
+  form.append('k', 'v');
+  const controller = new AbortController();
+  controller.abort();
+  const cloned = resp.clone();
+  await cloned.text();
+}
+"#,
+    );
+    w.build();
+    let conn = w.open();
+    let coverage = |path: &str, expression: &str| -> String {
+        conn.query_row(
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
+            rusqlite::params![path, expression],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
+    };
+
+    for (path, expression, expected) in [
+        ("e2e/checkout.spec.ts", "currentPage.goto", "external"),
+        ("e2e/checkout.spec.ts", "page.locator", "external"),
+        ("e2e/checkout.spec.ts", "page.keyboard.press", "external"),
+        ("e2e/checkout.spec.ts", "page.mouse.click", "external"),
+        ("e2e/checkout.spec.ts", "request.get", "external"),
+        ("e2e/checkout.spec.ts", "context.newPage", "external"),
+        ("e2e/checkout.spec.ts", "browser.close", "external"),
+        ("plain/checkout.spec.ts", "page.locator", "unresolved"),
+        ("webidl/dom_extended.ts", "el.getBoundingClientRect", "external"),
+        ("webidl/dom_extended.ts", "rect.top", "resolved"),
+        ("webidl/dom_extended.ts", "navigator.clipboard.writeText", "external"),
+        ("webidl/dom_extended.ts", "navigator.onLine", "external"),
+        ("webidl/dom_extended.ts", "location.hash", "external"),
+        ("webidl/dom_extended.ts", "location.reload", "external"),
+        ("webidl/dom_extended.ts", "performance.getEntries", "external"),
+        ("webidl/dom_extended.ts", "crypto.subtle.generateKey", "external"),
+        ("webidl/dom_extended.ts", "ws.send", "external"),
+        ("webidl/dom_extended.ts", "form.append", "external"),
+        ("webidl/dom_extended.ts", "controller.abort", "external"),
+        ("webidl/dom_extended.ts", "resp.clone", "external"),
+        ("webidl/dom_extended.ts", "cloned.text", "external"),
+    ] {
+        assert_eq!(coverage(path, expression), expected, "{path}:{expression}");
+    }
+    acdd_index::db::commitments::verify(&conn).unwrap();
+}

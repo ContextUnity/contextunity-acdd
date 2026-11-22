@@ -1,7 +1,7 @@
 use super::*;
+use crate::languages::support::value_flow_core::{ScopeFrameFlags, ValueFlowCollectorCore};
 use crate::semantic::{
-    BindingFact, ExportBinding, FieldFact, ObjectMember, SourcePosition, TypeExpr, ValueExpr,
-    ValueFlowFacts,
+    ExportBinding, ObjectMember, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
 };
 
 /// Builds the same bounded call-result receiver identity for calls and property reads.
@@ -588,8 +588,7 @@ fn is_simple_assignment(node: Syntax<'_>, source: &str) -> bool {
 pub(crate) struct Collector<'source, 'tree> {
     root: Syntax<'tree>,
     source: &'source str,
-    result: ValueFlowFacts,
-    states: Vec<(bool, bool, bool, bool)>,
+    core: ValueFlowCollectorCore,
     object_aliases: std::collections::BTreeSet<&'source str>,
     returned: ReturnSummary<'tree>,
     asynchronous: bool,
@@ -603,11 +602,12 @@ pub(crate) struct Collector<'source, 'tree> {
 
 impl<'source, 'tree> Collector<'source, 'tree> {
     fn empty(root: Syntax<'tree>, source: &'source str, result: ValueFlowFacts) -> Self {
+        let mut core = ValueFlowCollectorCore::default();
+        *core.facts_mut() = result;
         Self {
             root,
             source,
-            result,
-            states: Vec::new(),
+            core,
             object_aliases: Default::default(),
             returned: ReturnSummary::new(root),
             asynchronous: false,
@@ -768,12 +768,11 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             }
         }
         self.record_write(node);
-        let (parent_active, branch, trying, parent_annotation_owner) =
-            self.states.last().copied().unwrap_or_default();
-        let active = node == self.root || (parent_active && !nested_scope(node));
-        let annotation_owner =
-            node == self.root || (parent_annotation_owner && super::kind(node.kind()).is_none());
-        let branch_conditional = branch
+        let current = self.core.scope_state().current_or_default();
+        let active = node == self.root || (current.is_active() && !nested_scope(node));
+        let annotation_owner = node == self.root
+            || (current.is_annotation_owner() && super::kind(node.kind()).is_none());
+        let branch_conditional = current.is_branch_conditional()
             || matches!(
                 node.kind(),
                 "if_statement"
@@ -784,13 +783,14 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                     | "do_statement"
                     | "ternary_expression"
             );
-        let try_conditional = trying || node.kind() == "try_statement";
-        self.states.push((
-            active,
-            branch_conditional,
-            try_conditional,
-            annotation_owner,
-        ));
+        let try_conditional = current.is_try_conditional() || node.kind() == "try_statement";
+        self.core.scope_state_mut().push(
+            ScopeFrameFlags::new()
+                .with_active(active)
+                .with_branch_conditional(branch_conditional)
+                .with_try_conditional(try_conditional)
+                .with_annotation_owner(annotation_owner),
+        );
         self.returned.enter(node, active);
         if !active {
             return;
@@ -801,7 +801,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             && node.named_child_count() == 1
         {
             if let Some(identifier) = node.named_child(0).filter(|n| n.kind() == "identifier") {
-                self.result.push_annotation_reference(
+                self.core.facts_mut().push_annotation_reference(
                     crate::semantic::AnnotationReferenceFact {
                         expression: text(identifier, source).to_owned(),
                         position: position(identifier),
@@ -819,12 +819,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             ) {
                 let type_expr = named_type(annotation, source);
                 if matches!(&type_expr, TypeExpr::Applied { base, .. } if base == "Promise") {
-                    self.result.bindings.push(BindingFact {
-                        name: text(name, source).to_owned(),
-                        position: position(node),
-                        value: ValueExpr::Annotated { type_expr },
-                        conditional: false,
-                    });
+                    self.core.push_binding(
+                        text(name, source).to_owned(),
+                        position(node),
+                        ValueExpr::Annotated { type_expr },
+                        false,
+                    );
                 }
             }
         }
@@ -880,22 +880,22 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 ) {
                     self.object_aliases.insert(local);
                 }
-                self.result.bindings.push(BindingFact {
-                    name: local.to_owned(),
-                    position: position(node),
-                    value: scoped(ValueExpr::Unknown),
-                    conditional: binding_conditional,
-                });
+                self.core.push_binding(
+                    local.to_owned(),
+                    position(node),
+                    scoped(ValueExpr::Unknown),
+                    binding_conditional,
+                );
                 if !matches!(&expression, ValueExpr::Unknown) {
                     if immutable && !binding_conditional {
-                        self.result.immutable_initializers.push(completed(node));
+                        self.core.facts_mut().immutable_initializers.push(completed(node));
                     }
-                    self.result.bindings.push(BindingFact {
-                        name: local.to_owned(),
-                        position: completed(node),
-                        value: scoped(expression),
-                        conditional: binding_conditional,
-                    });
+                    self.core.push_binding(
+                        local.to_owned(),
+                        completed(node),
+                        scoped(expression),
+                        binding_conditional,
+                    );
                 }
             } else if let (Some(pattern), Some(initializer)) = (
                 node.child_by_field_name("name"),
@@ -926,28 +926,28 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                             }
                         };
                         if let Some((member, local)) = pair {
-                            self.result.bindings.push(BindingFact {
-                                name: local.to_owned(),
-                                position: position(node),
-                                value: scoped(ValueExpr::Unknown),
-                                conditional: binding_conditional,
-                            });
+                            self.core.push_binding(
+                                local.to_owned(),
+                                position(node),
+                                scoped(ValueExpr::Unknown),
+                                binding_conditional,
+                            );
                             if !matches!(source_value, ValueExpr::Unknown) {
                                 projected = true;
-                                self.result.bindings.push(BindingFact {
-                                    name: local.to_owned(),
-                                    position: completed(node),
-                                    value: scoped(ValueExpr::Project {
+                                self.core.push_binding(
+                                    local.to_owned(),
+                                    completed(node),
+                                    scoped(ValueExpr::Project {
                                         value: Box::new(source_value.clone()),
                                         member: member.to_owned(),
                                     }),
-                                    conditional: binding_conditional,
-                                });
+                                    binding_conditional,
+                                );
                             }
                         }
                     }
                     if immutable && !binding_conditional && projected {
-                        self.result.immutable_initializers.push(completed(node));
+                        self.core.facts_mut().immutable_initializers.push(completed(node));
                     }
                 }
             }
@@ -967,12 +967,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                             .map(|initializer| value(initializer, source))
                     })
                     .unwrap_or(ValueExpr::Unknown);
-                self.result.fields.push(FieldFact {
-                    name: text(name, source).to_owned(),
+                self.core.push_field(
+                    text(name, source).to_owned(),
+                    position(node),
                     value,
-                    position: position(node),
                     conditional,
-                });
+                );
             }
         }
         if matches!(
@@ -990,12 +990,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 } else {
                     ValueExpr::Unknown
                 };
-                self.result.bindings.push(BindingFact {
-                    name: text(name, source).to_owned(),
-                    position: completed(node),
-                    value: assigned,
+                self.core.push_binding(
+                    text(name, source).to_owned(),
+                    completed(node),
+                    assigned,
                     conditional,
-                });
+                );
             }
             if let Some(receiver) = left
                 .filter(|left| left.kind() == "member_expression")
@@ -1005,12 +1005,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 let name = text(receiver, source);
                 if self.object_aliases.contains(name) {
                     for name in std::mem::take(&mut self.object_aliases) {
-                        self.result.bindings.push(BindingFact {
-                            name: name.to_owned(),
-                            position: completed(node),
-                            value: ValueExpr::Unknown,
+                        self.core.push_binding(
+                            name.to_owned(),
+                            completed(node),
+                            ValueExpr::Unknown,
                             conditional,
-                        });
+                        );
                     }
                 }
             }
@@ -1029,12 +1029,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                 .child_by_field_name("right")
                                 .map(|right| value(right, source))
                                 .unwrap_or(ValueExpr::Unknown);
-                            self.result.fields.push(FieldFact {
+                            self.core.push_field(
                                 name,
-                                value: assigned,
-                                position: position(node),
+                                position(node),
+                                assigned,
                                 conditional,
-                            });
+                            );
                         }
                     }
                 }
@@ -1042,12 +1042,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         }
     }
     pub(crate) fn exit(&mut self, _node: Syntax<'tree>) {
-        self.states.pop();
+        self.core.scope_state_mut().pop();
     }
 
     pub(crate) fn finish(mut self) -> ValueFlowFacts {
         if self.terminal {
-            return self.result;
+            return self.core.finish();
         }
         let (source, asynchronous, generator) = (self.source, self.asynchronous, self.generator);
         let definitions = (!self.duplicate_definition
@@ -1063,14 +1063,14 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 super::projections::complete_setup(self.root, expression, source, definitions);
             }
         }
-        if asynchronous && !generator && self.result.async_return_type.is_none() {
+        if asynchronous && !generator && self.core.facts().async_return_type.is_none() {
             if let Some(expression) = self.returned.expression(false) {
                 if let ValueExpr::Construct { callee } = value(expression, source) {
-                    self.result.async_return_type = Some(TypeExpr::Named { name: callee });
+                    self.core.facts_mut().async_return_type = Some(TypeExpr::Named { name: callee });
                 }
             }
         }
-        if self.result.return_type.is_none() {
+        if self.core.facts().return_type.is_none() {
             if let Some(expression) = self.returned.expression(false) {
                 let returned = if expression.kind() == "object" {
                     object_value(expression, source, definitions)
@@ -1078,13 +1078,13 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                     value(expression, source)
                 };
                 if !matches!(returned, ValueExpr::Unknown) {
-                    self.result.return_value = Some(returned);
-                    self.result.return_position = Some(position(expression));
+                    self.core.facts_mut().return_value = Some(returned);
+                    self.core.set_return_position(position(expression));
                 }
             }
         }
-        self.result.immutable_initializers.sort_unstable();
-        self.result
+        self.core.facts_mut().immutable_initializers.sort_unstable();
+        self.core.finish()
     }
 }
 

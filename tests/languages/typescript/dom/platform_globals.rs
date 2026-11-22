@@ -580,3 +580,32 @@ fn typed_array_callback_inherits_unique_element_provider() {
         "spaced member access with a local Array binding: {graph:#?}"
     );
 }
+
+#[test]
+fn javascript_iife_scopes_avoid_truncated_calls() {
+    for (path, source) in [
+        (
+            "fn_iife.js",
+            "function helper() {} (function () { helper(); })();",
+        ),
+        (
+            "arrow_iife.js",
+            "function helper() {} (() => { helper(); })();",
+        ),
+        (
+            "bang_iife.js",
+            "function helper() {} !function () { helper(); }();",
+        ),
+    ] {
+        let graph = linked(path, "javascript", source);
+        assert!(
+            graph.coverage.iter().any(|row| row.expression == "helper" && row.status == "resolved"),
+            "{path}: helper() inside IIFE must resolve: {graph:#?}"
+        );
+        assert!(
+            !graph.coverage.iter().any(|row| row.expression.starts_with('(') || row.expression.starts_with('!')),
+            "{path}: IIFE callee must not emit truncated call coverage: {:#?}",
+            graph.coverage
+        );
+    }
+}

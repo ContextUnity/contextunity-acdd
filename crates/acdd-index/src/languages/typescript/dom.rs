@@ -17,6 +17,36 @@ pub fn typed_dom_receiver(name: &str) -> Option<&'static str> {
         "ParentNode" => Some("ParentNode"),
         "ChildNode" => Some("ChildNode"),
         "DocumentFragment" => Some("DocumentFragment"),
+        "Location" | "location" => Some("Location"),
+        "History" | "history" => Some("History"),
+        "Navigator" | "navigator" => Some("Navigator"),
+        "Clipboard" => Some("Clipboard"),
+        "DOMRect" => Some("DOMRect"),
+        "CSSStyleDeclaration" => Some("CSSStyleDeclaration"),
+        "DOMStringMap" => Some("DOMStringMap"),
+        "FormData" => Some("FormData"),
+        "Request" => Some("Request"),
+        "Response" => Some("Response"),
+        "AbortController" => Some("AbortController"),
+        "AbortSignal" => Some("AbortSignal"),
+        "WebSocket" => Some("WebSocket"),
+        "EventSource" => Some("EventSource"),
+        "XMLHttpRequest" => Some("XMLHttpRequest"),
+        "IntersectionObserver" => Some("IntersectionObserver"),
+        "MutationObserver" => Some("MutationObserver"),
+        "ResizeObserver" => Some("ResizeObserver"),
+        "Performance" | "performance" => Some("Performance"),
+        "Crypto" | "crypto" => Some("Crypto"),
+        "SubtleCrypto" => Some("SubtleCrypto"),
+        "TextEncoder" => Some("TextEncoder"),
+        "TextDecoder" => Some("TextDecoder"),
+        "Blob" => Some("Blob"),
+        "File" => Some("File"),
+        "FileReader" => Some("FileReader"),
+        "NodeList" | "NodeListOf" => Some("NodeList"),
+        "HTMLCollection" | "HTMLCollectionOf" => Some("HTMLCollection"),
+        "ReadableStream" => Some("ReadableStream"),
+        "ReadableStreamDefaultReader" => Some("ReadableStreamDefaultReader"),
         _ if (name.starts_with("HTML") || name.starts_with("SVG")) && name.ends_with("Element") => {
             Some("Element")
         }
@@ -39,7 +69,16 @@ pub fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str
         ("Element", "classList") => Some("DOMTokenList"),
         ("Document", "documentElement" | "body" | "head" | "activeElement") => Some("Element"),
         ("Document", "defaultView") => Some("Window"),
+        ("Document", "location") => Some("Location"),
         ("Window", "document") => Some("Document"),
+        ("Window", "location") => Some("Location"),
+        ("Window", "history") => Some("History"),
+        ("Window", "navigator") => Some("Navigator"),
+        ("Window", "performance") => Some("Performance"),
+        ("Window", "crypto") => Some("Crypto"),
+        ("Navigator", "clipboard") => Some("Clipboard"),
+        ("Crypto", "subtle") => Some("SubtleCrypto"),
+        ("Element", "style") => Some("CSSStyleDeclaration"),
         ("Event", "target" | "currentTarget") => Some("Element"),
         ("URL", "searchParams") => Some("URLSearchParams"),
         _ => None,
@@ -1093,27 +1132,161 @@ pub(super) fn dom_event_callback_parameter<'a>(
     first_callback_parameter(callback).map(|parameter| text(parameter, source))
 }
 
-pub(super) fn configured_callback_parameter<'a>(
+fn matches_callback_callee(
+    mut callee: Syntax<'_>,
+    source: &str,
+    configured: &[String],
+) -> bool {
+    if configured.is_empty() {
+        return false;
+    }
+    if callee.kind() == "identifier" {
+        let name = text(callee, source).trim();
+        return configured.iter().any(|candidate| candidate == name);
+    }
+    let mut segments = [""; 8];
+    let mut count = 0usize;
+    while callee.kind() == "member_expression" {
+        if count == segments.len() {
+            return false;
+        }
+        let Some(property) = callee
+            .child_by_field_name("property")
+            .filter(|node| node.kind() == "property_identifier")
+        else {
+            return false;
+        };
+        segments[count] = text(property, source).trim();
+        count += 1;
+        let Some(object) = callee.child_by_field_name("object") else {
+            return false;
+        };
+        callee = object;
+    }
+    if callee.kind() != "identifier" || count == 0 || count == segments.len() {
+        return false;
+    }
+    segments[count] = text(callee, source).trim();
+    count += 1;
+    configured.iter().any(|candidate| {
+        let mut parts = candidate.split('.');
+        for segment in segments[..count].iter().rev() {
+            if parts.next() != Some(*segment) {
+                return false;
+            }
+        }
+        parts.next().is_none()
+    })
+}
+
+fn unwrap_parameter_pattern<'tree>(mut parameter: Syntax<'tree>) -> Syntax<'tree> {
+    for _ in 0..4 {
+        if matches!(
+            parameter.kind(),
+            "required_parameter" | "optional_parameter" | "formal_parameter"
+        ) {
+            if let Some(inner) = parameter
+                .child_by_field_name("pattern")
+                .or_else(|| parameter.child_by_field_name("name"))
+            {
+                parameter = inner;
+                continue;
+            }
+        } else if parameter.kind() == "assignment_pattern" {
+            if let Some(left) = parameter.child_by_field_name("left") {
+                parameter = left;
+                continue;
+            }
+        }
+        break;
+    }
+    parameter
+}
+
+pub(super) fn collect_configured_callback_parameters(
     callback: Syntax<'_>,
-    source: &'a str,
-    callees: &[String],
-) -> Option<&'a str> {
-    let call = callback
+    source: &str,
+    receiver: &manifests::syntax::ReceiverTypeRule,
+    param_types: &mut BTreeMap<String, String>,
+) {
+    let Some(call) = callback
         .parent()
-        .filter(|p| p.kind() == "arguments")?
-        .parent()?;
-    if call.kind() != "call_expression" {
-        return None;
+        .filter(|p| p.kind() == "arguments")
+        .and_then(|arguments| arguments.parent())
+        .filter(|call| call.kind() == "call_expression")
+    else {
+        return;
+    };
+    let Some(callee) = call.child_by_field_name("function") else {
+        return;
+    };
+    if !matches_callback_callee(callee, source, &receiver.callback_callees) {
+        return;
     }
-    let callee = call.child_by_field_name("function")?;
-    if callee.kind() != "identifier"
-        || !callees
-            .iter()
-            .any(|configured| text(callee, source) == configured)
+    let Some(raw_parameter) = callback
+        .child_by_field_name("parameter")
+        .or_else(|| callback.child_by_field_name("parameters")?.named_child(0))
+    else {
+        return;
+    };
+    let parameter = unwrap_parameter_pattern(raw_parameter);
+    if parameter.kind() == "identifier" {
+        let local = text(parameter, source).trim();
+        if !local.is_empty() {
+            param_types
+                .entry(local.to_owned())
+                .or_insert_with(|| receiver.name.clone());
+        }
+        return;
+    }
+    if parameter.kind() != "object_pattern"
+        || receiver.properties.is_empty()
+        || parameter.named_child_count() > 32
     {
-        return None;
+        return;
     }
-    first_callback_parameter(callback).map(|parameter| text(parameter, source))
+    let mut cursor = parameter.walk();
+    for item in parameter.named_children(&mut cursor) {
+        let pair = match item.kind() {
+            "shorthand_property_identifier_pattern" => {
+                let key = text(item, source).trim();
+                Some((key, key))
+            }
+            "object_assignment_pattern" => item
+                .child_by_field_name("left")
+                .filter(|left| {
+                    matches!(
+                        left.kind(),
+                        "shorthand_property_identifier_pattern" | "identifier"
+                    )
+                })
+                .map(|left| {
+                    let key = text(left, source).trim();
+                    (key, key)
+                }),
+            "pair_pattern" => {
+                let key = item
+                    .child_by_field_name("key")
+                    .filter(|key| matches!(key.kind(), "property_identifier" | "identifier"));
+                let value = item
+                    .child_by_field_name("value")
+                    .map(unwrap_parameter_pattern)
+                    .filter(|value| value.kind() == "identifier");
+                key.zip(value)
+                    .map(|(k, v)| (text(k, source).trim(), text(v, source).trim()))
+            }
+            _ => None,
+        };
+        if let Some((key, local)) = pair {
+            if !local.is_empty() {
+                if let Some(ty) = receiver.properties.get(key) {
+                    param_types
+                        .entry(local.to_owned())
+                        .or_insert_with(|| ty.clone());
+                }
+            }
+        }
+    }
 }
 
 pub(in crate::languages) fn first_callback_parameter<'tree>(

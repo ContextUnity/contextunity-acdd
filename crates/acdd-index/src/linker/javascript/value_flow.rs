@@ -103,8 +103,27 @@ pub(in crate::linker) fn platform_member_return<'a>(
         {
             "Element"
         }
+        (
+            name,
+            "getBoundingClientRect",
+        ) if matches!(name, "Element" | "HTMLElement")
+            || super::super::typescript::semantic_context::typed_dom_receiver(name)
+                == Some("Element") =>
+        {
+            "DOMRect"
+        }
         ("ParentNode" | "DocumentFragment", "querySelector") => "Element",
+        ("ParentNode" | "DocumentFragment", "querySelectorAll") => "NodeList",
         ("Document", "createElement" | "getElementById" | "querySelector") => "Element",
+        ("Document", "querySelectorAll") => "NodeList",
+        ("Document", "getElementsByClassName" | "getElementsByTagName") => "HTMLCollection",
+        ("Request", "clone") => "Request",
+        ("Response", "clone") => "Response",
+        ("Request" | "Response", "blob") => "Blob",
+        ("Request" | "Response", "formData") => "FormData",
+        ("ReadableStream", "getReader") => "ReadableStreamDefaultReader",
+        ("Blob" | "File", "slice") => "Blob",
+        ("Blob" | "File", "stream") => "ReadableStream",
         _ => return None,
     };
     Some(TypeTarget::Builtin(returned.to_owned()))

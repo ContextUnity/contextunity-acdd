@@ -41,7 +41,7 @@ impl LanguageProfile for Html {
         by_id("javascript").is_some_and(|profile| profile.is_stdlib(module))
     }
     fn extensions(&self) -> &'static [&'static str] {
-        &["html", "htm"]
+        &["html", "htm", "j2"]
     }
     fn module_name(&self, path: &str) -> String {
         path.replace('/', ".")
@@ -791,34 +791,85 @@ fn emit_template_reference(path: &str, target: &str, kind: &str, line: usize, fa
     });
 }
 
-fn attribute_value<'a>(tag: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
+pub(super) fn for_each_tag_attribute<'tree>(
+    tag: Syntax<'tree>,
+    mut visit: impl FnMut(Syntax<'tree>) -> Result<std::ops::ControlFlow<()>>,
+) -> Result<()> {
     let mut cursor = tag.walk();
     for attribute in tag
         .named_children(&mut cursor)
         .filter(|node| node.kind() == "attribute")
     {
+        if visit(attribute)?.is_break() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn attribute_value<'a>(tag: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
+    let mut found = None;
+    let _ = for_each_tag_attribute(tag, |attribute| {
         if attribute
             .named_child(0)
             .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name))
         {
-            return attribute
+            found = attribute
                 .named_child(1)
                 .map(|node| text(node, source).trim_matches(['\'', '"']).trim());
+            return Ok(std::ops::ControlFlow::Break(()));
         }
+        Ok(std::ops::ControlFlow::Continue(()))
+    });
+    found
+}
+
+fn record_tag_activation_signals(
+    tag: Syntax<'_>,
+    source: &str,
+    keys: &manifests::semantic::SyntaxActivationKeys,
+    facts: &mut Facts,
+) {
+    if keys.is_empty() {
+        return;
     }
-    None
+    let _ = for_each_tag_attribute(tag, |attribute| {
+        let Some(name_node) = attribute.named_child(0) else {
+            return Ok(std::ops::ControlFlow::Continue(()));
+        };
+        let raw = text(name_node, source);
+        let matched = keys
+            .exact_attributes
+            .iter()
+            .find(|exact| raw.eq_ignore_ascii_case(exact.as_str()))
+            .or_else(|| {
+                keys.attribute_prefixes.iter().find(|prefix| {
+                    raw.get(..prefix.len())
+                        .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_str()))
+                })
+            });
+        if let Some(key) = matched {
+            facts
+                .activation_signals
+                .syntax_attributes
+                .insert(key.clone());
+        }
+        Ok(std::ops::ControlFlow::Continue(()))
+    });
 }
 
 fn has_attribute(tag: Syntax<'_>, source: &str, name: &str) -> bool {
-    let mut cursor = tag.walk();
-    let present = tag
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() == "attribute")
-        .any(|attribute| {
-            attribute
-                .named_child(0)
-                .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name))
-        });
+    let mut present = false;
+    let _ = for_each_tag_attribute(tag, |attribute| {
+        if attribute
+            .named_child(0)
+            .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name))
+        {
+            present = true;
+            return Ok(std::ops::ControlFlow::Break(()));
+        }
+        Ok(std::ops::ControlFlow::Continue(()))
+    });
     present
 }
 
@@ -955,6 +1006,7 @@ fn extract_file_impl(
             )
         })
         .collect();
+    let activation_keys = rules.syntax_activation_keys();
     let javascript_profile = by_id("javascript");
     let mut global_scope = None;
     if let Some(profile) = javascript_profile {
@@ -973,6 +1025,7 @@ fn extract_file_impl(
             let mut pending = vec![tree.root_node()];
             while let Some(node) = pending.pop() {
                 if matches!(node.kind(), "start_tag" | "self_closing_tag") {
+                    record_tag_activation_signals(node, source, activation_keys, context.facts);
                     for rule in &html_request_rules {
                         extract_request_attributes(
                             node,
@@ -987,6 +1040,18 @@ fn extract_file_impl(
                 }
                 if node.kind() == "script_element" && executable_script(node, source) {
                     let mut cursor = node.walk();
+                    if let Some(start_tag) = node
+                        .named_children(&mut cursor)
+                        .find(|n| n.kind() == "start_tag")
+                    {
+                        record_tag_activation_signals(
+                            start_tag,
+                            source,
+                            activation_keys,
+                            context.facts,
+                        );
+                    }
+                    let mut cursor = node.walk();
                     for body in node
                         .named_children(&mut cursor)
                         .filter(|n| n.kind() == "raw_text")
@@ -998,6 +1063,7 @@ fn extract_file_impl(
                                 end: body.end_byte(),
                                 position: body.start_position(),
                                 kind: javascript::script_kind(node, source),
+                                object_literal: false,
                             },
                         )?;
                         let first_full_line = body.start_position().row
@@ -1055,6 +1121,7 @@ fn extract_file_impl(
         let mut pending = vec![tree.root_node()];
         while let Some(node) = pending.pop() {
             if matches!(node.kind(), "start_tag" | "self_closing_tag") {
+                record_tag_activation_signals(node, source, activation_keys, facts);
                 for rule in &html_request_rules {
                     extract_request_attributes(node, source, path, module, facts, rule);
                 }

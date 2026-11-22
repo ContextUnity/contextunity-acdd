@@ -1,0 +1,65 @@
+[[syntax_rules]]
+id = "test-runner"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "test_runner", modules = ["@playwright/test", "playwright", "playwright-core"], members = ["test", "it"] }
+
+[[syntax_rules]]
+id = "playwright-fixtures"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.TestFixtures", members = [], properties = { page = "Playwright.Page", request = "Playwright.APIRequestContext", context = "Playwright.BrowserContext", browser = "Playwright.Browser" }, callback_callees = ["test", "test.beforeEach", "test.afterEach", "test.beforeAll", "test.afterAll", "test.only", "test.skip", "test.fixme"], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-page"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Page", members = ["goto", "reload", "goBack", "goForward", "close", "locator", "getByRole", "getByText", "getByLabel", "getByPlaceholder", "getByAltText", "getByTitle", "getByTestId", "frame", "frameLocator", "mainFrame", "frames", "waitForURL", "waitForSelector", "waitForLoadState", "waitForResponse", "waitForRequest", "waitForEvent", "waitForFunction", "waitForTimeout", "click", "dblclick", "fill", "type", "press", "check", "uncheck", "selectOption", "hover", "focus", "setInputFiles", "evaluate", "evaluateHandle", "exposeFunction", "exposeBinding", "addInitScript", "route", "unroute", "screenshot", "pdf", "setViewportSize", "viewportSize", "setContent", "content", "title", "url", "context", "on", "once", "off", "removeListener", "pause", "bringToFront", "emulateMedia", "setExtraHTTPHeaders", "isClosed"], properties = { keyboard = "Playwright.Keyboard", mouse = "Playwright.Mouse", request = "Playwright.APIRequestContext" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-locator"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Locator", members = ["click", "dblclick", "fill", "type", "press", "pressSequentially", "check", "uncheck", "setChecked", "selectOption", "selectText", "hover", "focus", "blur", "clear", "dragTo", "dispatchEvent", "evaluate", "evaluateAll", "evaluateHandle", "waitFor", "isVisible", "isHidden", "isEnabled", "isDisabled", "isEditable", "isChecked", "count", "first", "last", "nth", "locator", "getByRole", "getByText", "getByLabel", "getByPlaceholder", "getByAltText", "getByTitle", "getByTestId", "frameLocator", "filter", "and", "or", "textContent", "innerText", "innerHTML", "inputValue", "getAttribute", "all", "allTextContents", "allInnerTexts", "boundingBox", "scrollIntoViewIfNeeded", "setInputFiles", "screenshot", "highlight", "page"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-request"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.APIRequestContext", members = ["get", "post", "put", "patch", "delete", "head", "fetch", "dispose", "storageState"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-response"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.APIResponse", members = ["ok", "status", "statusText", "headers", "headersArray", "json", "text", "body", "url", "dispose"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-context"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.BrowserContext", members = ["newPage", "pages", "cookies", "addCookies", "clearCookies", "storageState", "route", "unroute", "close", "setExtraHTTPHeaders", "setDefaultTimeout", "setDefaultNavigationTimeout", "grantPermissions", "clearPermissions", "waitForEvent", "exposeFunction", "exposeBinding", "addInitScript", "browser", "on", "once", "off"], properties = { request = "Playwright.APIRequestContext" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-browser"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Browser", members = ["newContext", "newPage", "contexts", "close", "version", "browserType", "isConnected", "on", "once", "off"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-keyboard"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Keyboard", members = ["down", "up", "press", "insertText", "type"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-mouse"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Mouse", members = ["click", "dblclick", "down", "up", "move", "wheel"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "playwright-assertions"
+language = "typescript"
+activation = [{ kind = "package", name = "@playwright/test" }, { kind = "package", name = "playwright" }, { kind = "package", name = "playwright-core" }]
+operation = { kind = "receiver_type", receiver = { name = "Playwright.Assertions", members = ["toBeVisible", "toBeHidden", "toBeEnabled", "toBeDisabled", "toBeChecked", "toBeEditable", "toBeEmpty", "toBeFocused", "toHaveText", "toContainText", "toHaveValue", "toHaveValues", "toHaveAttribute", "toHaveClass", "toHaveCount", "toHaveURL", "toHaveTitle", "toHaveScreenshot", "toBeOK", "toHaveCSS", "toHaveId", "toHaveJSProperty", "toPass"], properties = { not = "Playwright.Assertions", resolves = "Playwright.Assertions", rejects = "Playwright.Assertions" }, callback_callees = [], generic = false } }

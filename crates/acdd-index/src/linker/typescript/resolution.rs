@@ -28,7 +28,8 @@ pub(in crate::linker) fn builtin_property_chain(
     let mut valid = false;
     let mut parts = tail.split('.').peekable();
     while let Some(part) = parts.next() {
-        if let Some(next_type) = semantic_context.property_type_for_path(path, &current, part) {
+        let normalized = super::semantic_context::typed_dom_receiver(&current).unwrap_or(&current);
+        if let Some(next_type) = semantic_context.property_type_for_path(path, normalized, part) {
             current = std::borrow::Cow::Owned(next_type);
             if parts.peek().is_none() {
                 valid = true;

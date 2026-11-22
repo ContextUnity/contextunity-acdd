@@ -360,3 +360,54 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
     );
     drop(conn);
 }
+
+#[test]
+fn nuxt_pinia_options_store_and_store_to_refs_resolve() {
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.write(
+        "package.json",
+        r#"{"dependencies":{"nuxt":"^3.13.0","@pinia/nuxt":"^0.5.0","pinia":"^2.2.0"}}"#,
+    );
+    workspace.write(
+        "nuxt.config.ts",
+        "export default defineNuxtConfig({ modules: ['@pinia/nuxt'] });\n",
+    );
+    workspace.write(
+        "stores/cart.ts",
+        r#"
+export const useCartStore = defineStore('cart', {
+  state: () => ({ count: 0 }),
+  actions: {
+    increment() {
+      this.count += 1;
+    },
+  },
+});
+"#,
+    );
+    workspace.write(
+        "composables/useCheckout.ts",
+        r#"
+export function useCheckout() {
+  const cart = useCartStore();
+  const { count } = storeToRefs(cart);
+  cart.increment();
+  return count;
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+    let status = |path: &str, expression: &str| -> String {
+        conn.query_row(
+            "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression=?2",
+            rusqlite::params![path, expression],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|e| panic!("missing {path}:{expression}: {e}"))
+    };
+    assert_eq!(status("stores/cart.ts", "defineStore"), "external");
+    assert_eq!(status("composables/useCheckout.ts", "storeToRefs"), "external");
+    assert_eq!(status("composables/useCheckout.ts", "cart.increment"), "resolved");
+    acdd_index::db::commitments::verify(&conn).unwrap();
+}

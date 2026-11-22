@@ -477,7 +477,7 @@ operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], 
         );
         assert_eq!(
             ctx.syntax_activation_keys().attribute_prefixes,
-            BTreeSet::from(["x-on:".to_owned()])
+            BTreeSet::from(["x-bind:".to_owned(), "x-on:".to_owned()])
         );
         assert!(ctx.syntax_activation_keys().matches_attribute("x-data"));
         assert!(ctx.syntax_activation_keys().matches_attribute("x-on:click"));

@@ -205,3 +205,71 @@ fn typed_iteration_and_slot_members() {
         );
     }
 }
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_v_for_destructured_aliases_scope_cleanly() {
+    for (expr, expected_bindings, probes) in [
+        (
+            "{ a, b } in items",
+            &["a", "b"][..],
+            &["a", "b"][..],
+        ),
+        (
+            "({ a: aliasA, b }, idx) in items",
+            &["aliasA", "b", "idx"][..],
+            &["aliasA", "b", "idx"][..],
+        ),
+        (
+            "[k, v] in pairs",
+            &["k", "v"][..],
+            &["k", "v"][..],
+        ),
+    ] {
+        let interp: Vec<String> = probes.iter().map(|p| format!("{{{{ {p} }}}}")).collect();
+        let source = format!(
+            "<template><div v-for=\"{expr}\">{}</div></template>\n<script setup>const items = []; const pairs = [];</script>",
+            interp.join(" ")
+        );
+        let facts = ExtractorHarness::for_lang("vue")
+            .at_path("Destructured.vue")
+            .extract(&source);
+        assert!(facts.errors.is_empty(), "{expr}: {:?}", facts.errors);
+        let scope = facts
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == "template_scope"
+                    && crate::common::assertions::projected_node_details(&facts, node)["bindings"]
+                        .as_array()
+                        .is_some_and(|names| {
+                            names.iter().any(|name| name == expected_bindings[0])
+                        })
+            })
+            .unwrap_or_else(|| panic!("missing template_scope for {expr}"));
+        let details = crate::common::assertions::projected_node_details(&facts, scope);
+        let bindings = details["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>();
+        for expected in expected_bindings {
+            assert!(
+                bindings.contains(expected),
+                "{expr}: missing binding `{expected}` in {bindings:?}"
+            );
+        }
+        for probe in probes {
+            let reference = facts
+                .references
+                .iter()
+                .find(|r| r.expression == *probe)
+                .unwrap_or_else(|| panic!("{expr}: missing reference for `{probe}`"));
+            assert_eq!(
+                reference.source, scope.id,
+                "{expr}: `{probe}` must bind to template_scope"
+            );
+        }
+    }
+}
