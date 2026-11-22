@@ -85,13 +85,25 @@ pub(super) fn resolve_computed_call(
                         .linker()
                         .builtin_member_origin(resolved_receiver, builtin_origin, true)
                 });
-                emit_inferred(graph, path, reference, result, origin);
+                super::inferred::emit_resolved_with_polymorphism(
+                    graph,
+                    path,
+                    reference,
+                    (resolved_receiver, final_member),
+                    result,
+                    origin,
+                    input.semantic_context,
+                );
                 return true;
             }
         }
     }
     if let Some(ReceiverHint::StringLiteral { member }) = &reference.receiver_hint {
-        if active_profile.is_some_and(|profile| profile.builtin_member("string", member)) {
+        if active_profile.is_some_and(|profile| {
+            input
+                .semantic_context
+                .lookup_builtin_member(path, profile.id(), "string", member)
+        }) {
             emit_inferred(
                 graph,
                 path,

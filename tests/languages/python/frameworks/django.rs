@@ -403,3 +403,39 @@ fn django_commands_models_auth_and_unittest_framework_members() {
         );
     }
 }
+
+#[test]
+fn django_queryset_compound_return_and_item_projection() {
+    let workspace = fixture_workspace(&[]);
+    workspace.write(
+        "pyproject.toml",
+        "[project]\nname='django-compound'\ndependencies=['django']\n",
+    );
+    workspace.write(
+        "app/posts.py",
+        concat!(
+            "from django.db.models import Model\n",
+            "class Post(Model):\n",
+            "    pass\n",
+            "def publish_latest():\n",
+            "    latest = Post.objects.filter(published=True).order_by('title').first()\n",
+            "    latest.save()\n",
+            "    latest.invented()\n",
+        ),
+    );
+    workspace.build();
+    let conn = workspace.open();
+    for (expression, expected) in [
+        ("Post.objects.filter", "external"),
+        ("Post.objects.filter(published=True).order_by", "external"),
+        ("Post.objects.filter(published=True).order_by('title').first", "external"),
+        ("latest.save", "external"),
+        ("latest.invented", "unresolved"),
+    ] {
+        let actual = statuses_in(&conn, "app/posts.py", expression);
+        assert!(
+            !actual.is_empty() && actual.iter().all(|row| row.0 == expected),
+            "{expression}: expected {expected}, observed {actual:?}"
+        );
+    }
+}

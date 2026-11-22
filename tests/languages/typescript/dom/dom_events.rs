@@ -436,3 +436,53 @@ async function probe(el: Element, resp: Response) {
     }
     acdd_index::db::commitments::verify(&conn).unwrap();
 }
+
+#[test]
+fn playwright_and_webidl_compound_return_chains() {
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    w.write(
+        "e2e/package.json",
+        r#"{"devDependencies":{"@playwright/test":"^1.49.0"}}"#,
+    );
+    w.write(
+        "e2e/chain.spec.ts",
+        r#"
+import { test, expect } from '@playwright/test';
+
+test('compound playwright and webidl chains', async ({ page, request }) => {
+  await page.locator('button').filter({ hasText: 'Go' }).first().click();
+  const resp = await request.get('/api/users');
+  await resp.json();
+  await expect(page.locator('h1')).not.toBeVisible();
+  const fetched = await fetch('/api/blob');
+  const data = await fetched.blob();
+  data.slice(0, 4).stream().getReader();
+  const box = document.querySelector('.box');
+  box.getBoundingClientRect().top;
+});
+"#,
+    );
+    w.build();
+    let conn = w.open();
+    for (expression, expected) in [
+        ("page.locator('button').filter", "external"),
+        ("page.locator('button').filter({ hasText: 'Go' }).first", "external"),
+        ("page.locator('button').filter({ hasText: 'Go' }).first().click", "external"),
+        ("resp.json", "external"),
+        ("expect(page.locator('h1')).not.toBeVisible", "external"),
+        ("fetched.blob", "external"),
+        ("data.slice(0, 4).stream", "external"),
+        ("data.slice(0, 4).stream().getReader", "external"),
+        ("box.getBoundingClientRect", "external"),
+        ("box.getBoundingClientRect().top", "external"),
+    ] {
+        let (status, evidence): (String, String) = conn
+            .query_row(
+                "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='e2e/chain.spec.ts' AND x.expression=?1",
+                [expression],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("missing {expression}: {e}"));
+        assert_eq!(status, expected, "chain.spec.ts: {expression} ({evidence})");
+    }
+}

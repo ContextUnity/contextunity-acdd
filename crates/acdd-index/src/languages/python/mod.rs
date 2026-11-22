@@ -587,7 +587,30 @@ impl MainGuardTracker {
         }
     }
 }
+static PYTHON_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declarations: &[
+        ("function_definition", "function"),
+        ("lambda", "function"),
+        ("class_definition", "class"),
+        ("type_alias_statement", "type"),
+        ("assignment", "variable"),
+    ],
+    references: &["call", "string"],
+    scopes: &[
+        "module",
+        "function_definition",
+        "lambda",
+        "class_definition",
+    ],
+    imports: &["import_from_statement", "import_statement"],
+    comments: &["comment"],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Python {
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&PYTHON_SPEC)
+    }
     fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
         &linker::PYTHON_LINKER
     }
@@ -638,13 +661,18 @@ impl LanguageProfile for Python {
         LanguageFamily("python")
     }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
-        kind(k)
+        match k {
+            "assignment" => Some("variable"),
+            _ => kind(k),
+        }
     }
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
-        if node.kind() == "function_definition" && class_method_owner(node).is_some() {
+        if node.kind() == "assignment" {
+            None
+        } else if node.kind() == "function_definition" && class_method_owner(node).is_some() {
             Some("method")
         } else {
-            self.symbol_kind(node.kind())
+            kind(node.kind())
         }
     }
     fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {

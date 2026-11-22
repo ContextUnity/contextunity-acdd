@@ -35,7 +35,6 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         _at: SourcePosition,
     ) -> Option<TypeTarget<'a>> {
         use super::super::value_flow::ConfiguredReceiverAuthority as Authority;
-        use languages::manifests::ReturnPolicy;
         #[cfg(feature = "lang-rust")]
         let extension = (owner.language == "rust")
             .then(|| self.rayon_extension_base(receiver, member, owner))
@@ -62,94 +61,142 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 if !rule.members.iter().any(|allowed| allowed == member) {
                     return None;
                 }
-                return match rule.returns.get(member)? {
-                    ReturnPolicy::SelfReceiver => Some(receiver.clone()),
-                    ReturnPolicy::Receiver { base } => {
-                        if !base.contains([':', '.'])
-                            && languages::by_id("rust")
-                                .is_some_and(|profile| profile.builtin_type(base))
-                        {
-                            return Some(TypeTarget::Builtin(base.clone()));
-                        }
-                        if !matches!(base.split("::").next(), Some("std" | "core" | "alloc"))
-                            && !base.starts_with("serde::ser::")
-                        {
-                            self.hierarchy_results
-                                .get(&self.path_id(&owner.path)?)?
-                                .get(&(self.symbol_id(pack)?, self.symbol_id(base)?))?;
-                        }
-                        Some(TypeTarget::External {
-                            module: base.clone(),
-                            import_line: *import_line,
-                        })
-                    }
-                };
+                return self.project_hierarchy_policy(
+                    owner,
+                    receiver,
+                    pack,
+                    rule.returns.get(member)?,
+                    *import_line,
+                );
             }
         }
-        enum Origin<'origin, 'tree> {
-            External(&'origin str, usize),
-            Borrowed(&'origin TypeTarget<'tree>),
+        if let TypeTarget::Builtin(name) = receiver {
+            let lookup_name = if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
+            {
+                let unprefixed = name.strip_prefix("Web.").unwrap_or(name);
+                super::super::typescript::semantic_context::typed_dom_receiver(unprefixed)
+                    .unwrap_or(unprefixed)
+            } else {
+                name.as_str()
+            };
+            if let Some((pack, _rule_id, rule)) = self.receiver_rule_with_meta(&owner.path, lookup_name) {
+                if rule.members.iter().any(|allowed| allowed == member) {
+                    if let Some(spec) = rule.member_returns.get(member) {
+                        return Some(self.project_return_node(
+                            spec.compiled(),
+                            &ReturnProjection {
+                                owner,
+                                pack: None,
+                                receiver: Some(receiver),
+                                origin: receiver,
+                                import_line: 0,
+                                is_dom_pack: pack == "web",
+                            },
+                            0,
+                        ));
+                    }
+                }
+            }
+            return None;
         }
-        let (pack, policy, origin) = match receiver {
-            TypeTarget::Local(class) if class.language == "python" => {
+        if let TypeTarget::Collection { base, .. } = receiver {
+            if let Some((pack, authority)) = self.hierarchy_authority_for_base(&owner.path, base) {
+                if let Authority::Hierarchy { rule, .. } = authority.as_ref() {
+                    if rule.members.iter().any(|allowed| allowed == member) {
+                        if let Some(policy) = rule.returns.get(member) {
+                            return self.project_hierarchy_policy(owner, receiver, &pack, policy, 0);
+                        }
+                    }
+                }
+            }
+            if let Some((pack, _rule_id, rule)) = self.receiver_rule_with_meta(&owner.path, base) {
+                if rule.members.iter().any(|allowed| allowed == member) {
+                    if let Some(spec) = rule.member_returns.get(member) {
+                        return Some(self.project_return_node(
+                            spec.compiled(),
+                            &ReturnProjection {
+                                owner,
+                                pack: None,
+                                receiver: Some(receiver),
+                                origin: receiver,
+                                import_line: 0,
+                                is_dom_pack: pack == "web",
+                            },
+                            0,
+                        ));
+                    }
+                }
+            }
+            return None;
+        }
+        if let TypeTarget::ConfiguredReceiver {
+            authority, origin, ..
+        } = receiver
+        {
+            match authority.as_ref() {
+                Authority::Nominal {
+                    pack,
+                    receiver: nominal,
+                    ..
+                } => {
+                    if !nominal.rule.members.iter().any(|allowed| allowed == member) {
+                        return None;
+                    }
+                    let spec = nominal.rule.member_returns.get(member)?;
+                    return Some(self.project_return_node(
+                        spec.compiled(),
+                        &ReturnProjection {
+                            owner,
+                            pack: None,
+                            receiver: Some(receiver),
+                            origin: origin.as_ref(),
+                            import_line: 0,
+                            is_dom_pack: pack == "web",
+                        },
+                        0,
+                    ));
+                }
+                Authority::Hierarchy { pack, rule } => {
+                    if !rule.members.iter().any(|allowed| allowed == member) {
+                        return None;
+                    }
+                    let policy = rule.returns.get(member)?;
+                    return self.project_hierarchy_policy(
+                        owner,
+                        receiver,
+                        pack,
+                        policy,
+                        match origin.as_ref() {
+                            TypeTarget::External { import_line, .. } => *import_line,
+                            _ => 0,
+                        },
+                    );
+                }
+            }
+        }
+        if let TypeTarget::Local(class) = receiver {
+            if class.language == "python" {
                 let (pack, _row, policy) = self.python?.return_policy(class, member)?;
                 let super::super::receivers::Member::External(module, line, _, _) =
                     self.python?.lookup(class, member, false)
                 else {
                     return None;
                 };
-                (pack, policy, Origin::External(module, line))
-            }
-            TypeTarget::ConfiguredReceiver {
-                authority, origin, ..
-            } => {
-                let Authority::Hierarchy { pack, rule } = authority.as_ref() else {
-                    return None;
+                let origin = TypeTarget::External {
+                    module: module.to_owned(),
+                    import_line: line,
                 };
-                if !rule.members.iter().any(|allowed| allowed == member) {
-                    return None;
-                }
-                (
-                    pack.as_str(),
-                    rule.returns.get(member)?,
-                    Origin::Borrowed(origin.as_ref()),
-                )
-            }
-            _ => return None,
-        };
-        match policy {
-            ReturnPolicy::SelfReceiver => Some(receiver.clone()),
-            ReturnPolicy::Receiver { base } => {
-                let authority = self
-                    .hierarchy_results
-                    .get(&self.path_id(&owner.path)?)?
-                    .get(&(self.symbol_id(pack)?, self.symbol_id(base)?))?
-                    .clone();
-                let origin = match origin {
-                    Origin::External(module, import_line) => TypeTarget::External {
-                        module: module.to_owned(),
-                        import_line,
-                    },
-                    Origin::Borrowed(origin) => origin.clone(),
-                };
-                Some(TypeTarget::ConfiguredReceiver {
-                    authority,
-                    origin: Box::new(origin),
-                    fallback: None,
-                    evidence: format!(
-                        "{}:{}:{}:{}",
-                        self.dependencies.digest(),
-                        owner.path,
-                        pack,
-                        match receiver {
-                            TypeTarget::Local(class) => class.id.as_str(),
-                            TypeTarget::ConfiguredReceiver { evidence, .. } => evidence.as_str(),
-                            _ => "",
-                        }
-                    ),
-                })
+                return self.project_hierarchy_policy_with_origin(
+                    owner,
+                    receiver,
+                    pack,
+                    policy,
+                    line,
+                    &origin,
+                );
             }
         }
+        None
     }
 
     fn resolve_call_result(
@@ -168,67 +215,123 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 TypeTarget::Unknown
             });
         }
-        if !matches!(owner.language.as_str(), "javascript" | "typescript") {
+        if !matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
             return None;
         }
-        let site = site?;
-        let (global, _member) = callee.split_once('.')?;
-        let mappings = self
-            .interner
-            .lookup_path(&owner.path)
-            .and_then(|path| self.argument_factories.get(&path))?;
-        let callee_id = self.symbol_id(callee)?;
-        let mut selected: Option<
-            std::sync::Arc<super::super::value_flow::ConfiguredReceiverAuthority>,
-        > = None;
-        for (argument, literal) in site.arguments.iter().enumerate() {
-            let StaticArgument::String { value } = literal else {
-                continue;
-            };
-            let Some(value_id) = self.symbol_id(value) else {
-                continue;
-            };
-            for candidate in mappings
-                .get(&(callee_id, argument, value_id))
-                .into_iter()
-                .flatten()
-            {
-                if let Some(previous) = &selected {
-                    let same = match (previous.as_ref(), candidate.as_ref()) {
-                        (
-                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                                pack: a,
-                                rule_id: x,
-                                ..
-                            },
-                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                                pack: b,
-                                rule_id: y,
-                                ..
-                            },
-                        ) => a == b && x == y,
-                        _ => false,
-                    };
-                    if !same {
-                        return fallback;
+        if let Some(site) = site {
+            if let Some((global, _member)) = callee.split_once('.') {
+                if let Some(mappings) = self
+                    .interner
+                    .lookup_path(&owner.path)
+                    .and_then(|path| self.argument_factories.get(&path))
+                {
+                    if let Some(callee_id) = self.symbol_id(callee) {
+                        let mut selected: Option<
+                            std::sync::Arc<super::super::value_flow::ConfiguredReceiverAuthority>,
+                        > = None;
+                        let mut ambiguous = false;
+                        for (argument, literal) in site.arguments.iter().enumerate() {
+                            let StaticArgument::String { value } = literal else {
+                                continue;
+                            };
+                            let Some(value_id) = self.symbol_id(value) else {
+                                continue;
+                            };
+                            for candidate in mappings
+                                .get(&(callee_id, argument, value_id))
+                                .into_iter()
+                                .flatten()
+                            {
+                                if let Some(previous) = &selected {
+                                    let same = match (previous.as_ref(), candidate.as_ref()) {
+                                        (
+                                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                                                pack: a,
+                                                rule_id: x,
+                                                ..
+                                            },
+                                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                                                pack: b,
+                                                rule_id: y,
+                                                ..
+                                            },
+                                        ) => a == b && x == y,
+                                        _ => false,
+                                    };
+                                    if !same {
+                                        ambiguous = true;
+                                        break;
+                                    }
+                                } else {
+                                    if !self.unshadowed_global(owner, global, at) {
+                                        return None;
+                                    }
+                                    selected = Some(candidate.clone());
+                                }
+                            }
+                            if ambiguous {
+                                return fallback;
+                            }
+                        }
+                        if let Some(authority) = selected {
+                            return Some(TypeTarget::ConfiguredReceiver {
+                                authority,
+                                origin: Box::new(TypeTarget::External {
+                                    module: callee.to_owned(),
+                                    import_line: site.position.line,
+                                }),
+                                fallback: fallback.map(Box::new),
+                                evidence: format!("{}:{}", self.dependencies.digest(), owner.path),
+                            });
+                        }
                     }
-                } else {
-                    if !self.unshadowed_global(owner, global, at) {
-                        return None;
-                    }
-                    selected = Some(candidate.clone());
                 }
             }
         }
-        Some(TypeTarget::ConfiguredReceiver {
-            authority: selected?,
-            origin: Box::new(TypeTarget::External {
-                module: callee.to_owned(),
-                import_line: site.position.line,
-            }),
-            fallback: fallback.map(Box::new),
-            evidence: format!("{}:{}", self.dependencies.digest(), owner.path),
-        })
+        let head = callee.split('.').next().unwrap_or(callee);
+        let has_imported_alias = |head: &str| {
+            let mut scope = owner.qualname.as_str();
+            loop {
+                if self
+                    .nodes_in_path(scope, &owner.path)
+                    .any(|node| self.imported_alias(node, head).is_some())
+                {
+                    return true;
+                }
+                let Some((parent, _)) = scope.rsplit_once('.') else {
+                    return false;
+                };
+                scope = parent;
+            }
+        };
+        let unshadowed = !matches!(
+            self.resolve_symbol(owner, head, at, SymbolRole::Callable),
+            Symbol::Callable(_)
+        ) && (self.unshadowed_global(owner, head, at) || has_imported_alias(head));
+        if !unshadowed {
+            return fallback;
+        }
+        let origin = TypeTarget::External {
+            module: callee.to_owned(),
+            import_line: site.map_or(at.line, |site| site.position.line),
+        };
+        for (pack, _rule_id, rule) in self.receiver_types_with_meta_for_path(&owner.path)? {
+            if let Some(spec) = rule.call_returns.get(callee) {
+                return Some(self.project_return_node(
+                    spec.compiled(),
+                    &ReturnProjection {
+                        owner,
+                        pack: None,
+                        receiver: None,
+                        origin: &origin,
+                        import_line: 0,
+                        is_dom_pack: pack == "web",
+                    },
+                    0,
+                ));
+            }
+        }
+        fallback
     }
     fn property_type(&self, scope: &'a Node, receiver: &str, member: &str) -> Option<String> {
         self.property_type_for_path(&scope.path, receiver, member)
@@ -391,6 +494,27 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         at: SourcePosition,
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
+        if owner.language == "python"
+            && matches!(clean_base, "tuple" | "Tuple")
+            && !args.is_empty()
+            && !args.iter().any(
+                |arg| matches!(arg, crate::semantic::TypeExpr::Named { name } if name == "..."),
+            )
+        {
+            return TypeTarget::Tuple(
+                args.iter()
+                    .map(|arg| {
+                        super::super::value_flow::resolve_type(
+                            owner,
+                            arg,
+                            at,
+                            self,
+                            super::super::value_flow::SemanticLimits::default(),
+                        )
+                    })
+                    .collect(),
+            );
+        }
         let nominal = self.resolve_symbol(owner, base, at, SymbolRole::Type);
         if let Some(target) = super::super::python::semantic_context::resolve_applied(
             self, owner, base, args, &nominal, at,
@@ -491,12 +615,17 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 ..
             } => {
                 if let super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                    receiver,
+                    receiver: nominal,
                     ..
                 } = authority.as_ref()
                 {
-                    if let Some(name) = receiver.rule.properties.get(member) {
-                        return Symbol::Type(TypeTarget::Builtin(name.clone()));
+                    if let Some(name) = nominal.rule.properties.get(member) {
+                        return Symbol::Type(self.resolve_nominal_target(
+                            owner,
+                            name,
+                            receiver,
+                            false,
+                        ));
                     }
                 }
                 if let Some(target) =
@@ -541,6 +670,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     }
     fn resolve_python_super_member(&self, owner: &'a Node, member: &str) -> Symbol<'a> {
         self.python_super_member(owner, member)
+    }
+    fn callable_signature(&self, node: &'a Node) -> Option<&'a crate::semantic::CallableSignature> {
+        self.value_flow(node)?.callable_signature.as_ref()
     }
     fn resolve_symbol(
         &self,
@@ -608,7 +740,376 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     }
 }
 
+struct ReturnProjection<'p, 'a> {
+    owner: &'a Node,
+    pack: Option<&'p str>,
+    receiver: Option<&'p TypeTarget<'a>>,
+    origin: &'p TypeTarget<'a>,
+    import_line: usize,
+    is_dom_pack: bool,
+}
+
 impl<'a> Context<'a> {
+    fn resolve_nominal_target(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        origin: &TypeTarget<'a>,
+        is_dom_pack: bool,
+    ) -> TypeTarget<'a> {
+        if !is_dom_pack {
+            if let Some((pack, rule_id, nominal)) = self.receiver_rule_with_meta(&owner.path, name) {
+                if pack != "web" {
+                    return TypeTarget::ConfiguredReceiver {
+                        authority: std::sync::Arc::new(
+                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                                pack: pack.to_owned(),
+                                rule_id: rule_id.to_owned(),
+                                receiver: std::sync::Arc::new(
+                                    super::super::value_flow::ConfiguredNominalReceiver {
+                                        rule: nominal.clone(),
+                                    },
+                                ),
+                            },
+                        ),
+                        origin: Box::new(origin.clone()),
+                        fallback: None,
+                        evidence: format!("{}:{}", self.dependencies.digest(), owner.path),
+                    };
+                }
+            }
+        }
+        TypeTarget::Builtin(name.to_owned())
+    }
+
+    fn project_hierarchy_policy(
+        &self,
+        owner: &'a Node,
+        receiver: &TypeTarget<'a>,
+        pack: &str,
+        policy: &languages::manifests::ReturnPolicy,
+        import_line: usize,
+    ) -> Option<TypeTarget<'a>> {
+        self.project_hierarchy_policy_with_origin(
+            owner,
+            receiver,
+            pack,
+            policy,
+            import_line,
+            receiver,
+        )
+    }
+
+    fn project_hierarchy_policy_with_origin(
+        &self,
+        owner: &'a Node,
+        receiver: &TypeTarget<'a>,
+        pack: &str,
+        policy: &languages::manifests::ReturnPolicy,
+        import_line: usize,
+        origin: &TypeTarget<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        use languages::manifests::{syntax::ReturnTypeSpec, ReturnPolicy};
+        match policy {
+            ReturnPolicy::SelfReceiver => Some(receiver.clone()),
+            ReturnPolicy::Receiver { base } => {
+                let compiled = self
+                    .path_id(&owner.path)
+                    .and_then(|path_id| self.hierarchy_return_specs.get(&path_id))
+                    .and_then(|specs| specs.get(base));
+                let parsed;
+                let spec = match compiled {
+                    Some(spec) => spec,
+                    None => {
+                        parsed = ReturnTypeSpec::parse(base).ok()?;
+                        &parsed
+                    }
+                };
+                let ctx = ReturnProjection {
+                    owner,
+                    pack: Some(pack),
+                    receiver: Some(receiver),
+                    origin,
+                    import_line,
+                    is_dom_pack: false,
+                };
+                let target = self.project_return_node(spec.compiled(), &ctx, 0);
+                (!matches!(target, TypeTarget::Unknown)).then_some(target)
+            }
+        }
+    }
+
+    fn project_return_node(
+        &self,
+        node: &languages::manifests::syntax::ReturnTypeNode,
+        ctx: &ReturnProjection<'_, 'a>,
+        depth: usize,
+    ) -> TypeTarget<'a> {
+        use languages::manifests::syntax::ReturnTypeNode;
+        if depth >= 8 {
+            return TypeTarget::Unknown;
+        }
+        match node {
+            ReturnTypeNode::SelfReceiver => ctx.receiver.cloned().unwrap_or(TypeTarget::Unknown),
+            ReturnTypeNode::Unknown => TypeTarget::Unknown,
+            ReturnTypeNode::Reference { mutable, inner } => {
+                let projected = self.project_return_node(inner, ctx, depth + 1);
+                if ctx.owner.language == "rust" {
+                    TypeTarget::RustReference {
+                        mutable: *mutable,
+                        target: Box::new(projected),
+                    }
+                } else {
+                    projected
+                }
+            }
+            ReturnTypeNode::Tuple(items) => {
+                let projected: Vec<_> = items
+                    .iter()
+                    .map(|item| self.project_return_node(item, ctx, depth + 1))
+                    .collect();
+                if ctx.owner.language == "rust" {
+                    TypeTarget::RustTuple(projected)
+                } else {
+                    TypeTarget::Tuple(projected)
+                }
+            }
+            ReturnTypeNode::Applied { base, args } => {
+                self.project_applied_return(base, args, ctx, depth)
+            }
+            ReturnTypeNode::Named(name) => {
+                if name == "Item" {
+                    return match ctx.receiver {
+                        Some(
+                            TypeTarget::Collection { item, .. }
+                            | TypeTarget::RustIterator { item }
+                            | TypeTarget::RustCollection { item }
+                            | TypeTarget::RustSlice { item }
+                            | TypeTarget::RustTypedContainer { item, .. },
+                        ) => (**item).clone(),
+                        Some(TypeTarget::ConfiguredReceiver {
+                            fallback: Some(fallback),
+                            ..
+                        }) => match fallback.as_ref() {
+                            TypeTarget::Collection { item, .. } => (**item).clone(),
+                            _ => TypeTarget::Unknown,
+                        },
+                        _ => TypeTarget::Unknown,
+                    };
+                }
+                self.project_named_return(name, ctx).unwrap_or(TypeTarget::Unknown)
+            }
+        }
+    }
+
+    fn project_applied_return(
+        &self,
+        constructor: &str,
+        args: &[languages::manifests::syntax::ReturnTypeNode],
+        ctx: &ReturnProjection<'_, 'a>,
+        depth: usize,
+    ) -> TypeTarget<'a> {
+        let short = constructor
+            .rsplit_once("::")
+            .or_else(|| constructor.rsplit_once('.'))
+            .map_or(constructor, |(_, tail)| tail);
+        let first = args
+            .first()
+            .map(|arg| self.project_return_node(arg, ctx, depth + 1))
+            .unwrap_or(TypeTarget::Unknown);
+        match short {
+            "Promise" => TypeTarget::Promise(Box::new(first)),
+            "Option" => {
+                if ctx.owner.language == "rust" {
+                    TypeTarget::RustWrapper {
+                        wrapper: super::super::value_flow::RustWrapperKind::Option,
+                        ok: Box::new(first),
+                        err: None,
+                    }
+                } else {
+                    first
+                }
+            }
+            "Result" => {
+                if ctx.owner.language == "rust" {
+                    let err = args
+                        .get(1)
+                        .map(|arg| Box::new(self.project_return_node(arg, ctx, depth + 1)));
+                    TypeTarget::RustWrapper {
+                        wrapper: super::super::value_flow::RustWrapperKind::Result,
+                        ok: Box::new(first),
+                        err,
+                    }
+                } else {
+                    first
+                }
+            }
+            "Iterator" => {
+                if ctx.owner.language == "rust" {
+                    TypeTarget::RustIterator {
+                        item: Box::new(first),
+                    }
+                } else {
+                    TypeTarget::Collection {
+                        base: constructor.to_owned(),
+                        item: Box::new(first),
+                    }
+                }
+            }
+            "Vec" if ctx.owner.language == "rust" => TypeTarget::RustCollection {
+                item: Box::new(first),
+            },
+            "QuerySet" => {
+                if let Some(TypeTarget::ConfiguredReceiver {
+                    authority,
+                    origin,
+                    evidence,
+                    ..
+                }) = self.project_named_return(constructor, ctx)
+                {
+                    let fallback = (!matches!(first, TypeTarget::Unknown)).then(|| {
+                        Box::new(TypeTarget::Collection {
+                            base: constructor.to_owned(),
+                            item: Box::new(first),
+                        })
+                    });
+                    TypeTarget::ConfiguredReceiver {
+                        authority,
+                        origin,
+                        fallback,
+                        evidence,
+                    }
+                } else {
+                    TypeTarget::Collection {
+                        base: constructor.to_owned(),
+                        item: Box::new(first),
+                    }
+                }
+            }
+            "NodeList" | "HTMLCollection" | "Array" | "List" | "list" => {
+                TypeTarget::Collection {
+                    base: constructor.to_owned(),
+                    item: Box::new(first),
+                }
+            }
+            _ => self
+                .project_named_return(constructor, ctx)
+                .unwrap_or(TypeTarget::Unknown),
+        }
+    }
+
+    fn project_named_return(
+        &self,
+        name: &str,
+        ctx: &ReturnProjection<'_, 'a>,
+    ) -> Option<TypeTarget<'a>> {
+        if ctx.is_dom_pack {
+            return Some(TypeTarget::Builtin(name.to_owned()));
+        }
+        if let Some((pack, rule_id, nominal)) =
+            self.receiver_rule_with_meta(&ctx.owner.path, name)
+        {
+            if pack == "web" {
+                return Some(TypeTarget::Builtin(name.to_owned()));
+            }
+            return Some(TypeTarget::ConfiguredReceiver {
+                authority: std::sync::Arc::new(
+                    super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                        pack: pack.to_owned(),
+                        rule_id: rule_id.to_owned(),
+                        receiver: std::sync::Arc::new(
+                            super::super::value_flow::ConfiguredNominalReceiver {
+                                rule: nominal.clone(),
+                            },
+                        ),
+                    },
+                ),
+                origin: Box::new(ctx.origin.clone()),
+                fallback: None,
+                evidence: format!("{}:{}", self.dependencies.digest(), ctx.owner.path),
+            });
+        }
+        if ctx.owner.language == "rust" {
+            if !name.contains([':', '.'])
+                && languages::by_id("rust").is_some_and(|profile| profile.builtin_type(name))
+            {
+                return Some(TypeTarget::Builtin(name.to_owned()));
+            }
+            if !matches!(name.split("::").next(), Some("std" | "core" | "alloc"))
+                && !name.starts_with("serde::ser::")
+            {
+                let pack = ctx.pack?;
+                let in_hierarchy = self
+                    .path_id(&ctx.owner.path)
+                    .zip(self.symbol_id(pack))
+                    .zip(self.symbol_id(name))
+                    .and_then(|((path_id, pack_id), base_id)| {
+                        self.hierarchy_results
+                            .get(&path_id)?
+                            .get(&(pack_id, base_id))
+                    })
+                    .is_some()
+                    || self
+                        .dependencies
+                        .class_hierarchy_authority_for_path(&ctx.owner.path, name, Some(pack))
+                        .is_some();
+                if !in_hierarchy {
+                    return None;
+                }
+            }
+            return Some(TypeTarget::External {
+                module: name.to_owned(),
+                import_line: ctx.import_line,
+            });
+        }
+        if let Some(pack) = ctx.pack {
+            let authority = self
+                .path_id(&ctx.owner.path)
+                .zip(self.symbol_id(pack))
+                .zip(self.symbol_id(name))
+                .and_then(|((path_id, pack_id), base_id)| {
+                    self.hierarchy_results
+                        .get(&path_id)?
+                        .get(&(pack_id, base_id))
+                        .cloned()
+                })
+                .or_else(|| {
+                    self.dependencies
+                        .class_hierarchy_authority_for_path(&ctx.owner.path, name, Some(pack))
+                        .map(|(resolved_pack, rule)| {
+                            std::sync::Arc::new(
+                                super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                                    pack: resolved_pack.to_owned(),
+                                    rule: std::sync::Arc::new(rule.clone()),
+                                },
+                            )
+                        })
+                })?;
+            return Some(TypeTarget::ConfiguredReceiver {
+                authority,
+                origin: Box::new(ctx.origin.clone()),
+                fallback: None,
+                evidence: format!(
+                    "{}:{}:{}:{}",
+                    self.dependencies.digest(),
+                    ctx.owner.path,
+                    pack,
+                    match ctx.receiver {
+                        Some(TypeTarget::Local(class)) => class.id.as_str(),
+                        Some(TypeTarget::ConfiguredReceiver { evidence, .. }) => evidence.as_str(),
+                        _ => "",
+                    }
+                ),
+            });
+        }
+        if languages::by_id(&ctx.owner.language)
+            .is_some_and(|profile| profile.builtin_type(name))
+        {
+            return Some(TypeTarget::Builtin(name.to_owned()));
+        }
+        None
+    }
+
     fn rust_alias_target(
         &self,
         owner: &'a Node,

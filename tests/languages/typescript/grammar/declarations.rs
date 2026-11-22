@@ -404,3 +404,70 @@ class LaterTableView {
     drop(stmt);
     drop(conn);
 }
+
+#[test]
+fn typescript_destructuring_callback_and_interface_polymorphism_matrix() {
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    let mut overflow_ts = String::from("interface ManyRenderer { render(): void; }\n");
+    for idx in 0..9 {
+        overflow_ts.push_str(&format!(
+            "class Impl{idx} implements ManyRenderer {{ render() {{}} }}\n"
+        ));
+    }
+    overflow_ts.push_str("function drawMany(m: ManyRenderer) { m.render(); }\n");
+    w.write("overflow.ts", &overflow_ts);
+    w.write(
+        "app.ts",
+        r#"
+class User { save() {} }
+class Ctx { user: User; constructor() { this.user = new User(); } }
+function withUser(cb: (u: User) => void) {}
+function run() {
+  const { user } = new Ctx();
+  user.save();
+  withUser((cbUser) => cbUser.save());
+}
+interface Renderer { render(): void; }
+class HtmlRenderer implements Renderer { render() {} }
+class JsonRenderer implements Renderer { render() {} }
+function draw(r: Renderer) { r.render(); }
+"#,
+    );
+    w.build();
+    let conn = w.open();
+    for expr in ["user.save", "cbUser.save"] {
+        let (status, evidence): (String, String) = conn
+            .query_row(
+                "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='app.ts' AND x.expression=?1",
+                [expr],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("missing {expr}: {e}"));
+        assert_eq!(status, "resolved", "app.ts: {expr} ({evidence})");
+    }
+    let bounded_possible: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence c ON c.evidence_id=e.confidence_id WHERE p.path='app.ts' AND e.kind='possible_calls' AND c.evidence='possible'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bounded_possible, 2, "Renderer has 2 concrete implementors");
+    let overflow_possible: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='overflow.ts' AND e.kind='possible_calls'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(overflow_possible, 0, ">8 implementors must widen cleanly");
+    let (overflow_status, overflow_ev): (String, String) = conn
+        .query_row(
+            "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='overflow.ts' AND x.expression='m.render'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(overflow_status, "unresolved", "{overflow_ev}");
+    assert!(overflow_ev.contains("Unknown/Incomplete"), "{overflow_ev}");
+}

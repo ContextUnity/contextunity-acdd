@@ -38,7 +38,7 @@ impl LanguageProfile for Vue {
         typescript::TYPESCRIPT.grammar(path)
     }
     fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
-        typescript::TYPESCRIPT.symbol_kind(kind)
+        typescript::kind(kind)
     }
     fn node_prefix(&self, kind: &str) -> &'static str {
         typescript::TYPESCRIPT.node_prefix(kind)

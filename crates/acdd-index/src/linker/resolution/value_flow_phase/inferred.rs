@@ -29,6 +29,66 @@ pub(super) struct ReferenceState<'res> {
     pub(super) scope: &'res str,
 }
 
+pub(super) fn emit_resolved_with_polymorphism(
+    graph: &mut Graph,
+    path: &str,
+    reference: &Reference,
+    receiver: (&value_flow::TypeTarget<'_>, &str),
+    result: semantic_context::Member<'_>,
+    origin: Option<&str>,
+    semantic_context: &semantic_context::Context<'_>,
+) {
+    let (resolved_receiver, member) = receiver;
+    if matches!(reference.kind.as_str(), "calls" | "references") {
+        if let (
+            value_flow::TypeTarget::Local(abstract_type),
+            semantic_context::Member::Local(contract_decl),
+        ) = (resolved_receiver, &result)
+        {
+            if let Some(implementors) = semantic_context.polymorphic_implementors(
+                abstract_type,
+                member,
+                contract_decl,
+            ) {
+                if implementors.len() > value_flow::MAX_CANDIDATE_BRANCH_JOINS {
+                    graph.reference_coverage(
+                        path,
+                        reference,
+                        "unresolved",
+                        format!(
+                            "polymorphic dispatch exceeded bound (K={}): {} has {} concrete implementors; Unknown/Incomplete; no truncated possible_calls emitted",
+                            value_flow::MAX_CANDIDATE_BRANCH_JOINS,
+                            contract_decl.qualname,
+                            implementors.len()
+                        )
+                        .into(),
+                    );
+                    graph.reference_edge(
+                        path,
+                        reference,
+                        contract_decl.id.clone(),
+                        reference.kind.as_str(),
+                        "inferred",
+                    );
+                    return;
+                }
+                emit_inferred(graph, path, reference, result, origin);
+                for target in implementors {
+                    graph.reference_edge(
+                        path,
+                        reference,
+                        target.id.clone(),
+                        "possible_calls",
+                        "possible",
+                    );
+                }
+                return;
+            }
+        }
+    }
+    emit_inferred(graph, path, reference, result, origin);
+}
+
 fn emit_resolved_member<'a, 'file, 'res>(
     graph: &mut Graph,
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -308,7 +368,15 @@ where
     let origin = ctx
         .language_linker
         .builtin_member_origin(resolved_receiver, q.builtin_origin, false);
-    emit_inferred(graph, ctx.path, q.r, result, origin);
+    emit_resolved_with_polymorphism(
+        graph,
+        ctx.path,
+        q.r,
+        (resolved_receiver, member),
+        result,
+        origin,
+        ctx.input.semantic_context,
+    );
     true
 }
 

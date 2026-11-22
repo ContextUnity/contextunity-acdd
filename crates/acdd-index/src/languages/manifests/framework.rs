@@ -299,7 +299,7 @@ impl ClassHierarchyReceiverRule {
             );
             if let ReturnPolicy::Receiver { base } = policy {
                 anyhow::ensure!(
-                    valid(base),
+                    valid(base) && super::syntax::ReturnTypeSpec::parse(base).is_ok(),
                     "hierarchy return base exceeds name_bytes or is malformed"
                 );
             }

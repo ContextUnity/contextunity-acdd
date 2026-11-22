@@ -17,6 +17,7 @@ type MemberMap<'a> = HashMap<(&'a str, bool), Vec<&'a Node>>;
 pub(crate) struct TypeScriptMembers<'a> {
     members: HashMap<&'a str, MemberMap<'a>>,
     fields: HashMap<&'a str, MemberMap<'a>>,
+    implementors: HashMap<&'a str, Vec<&'a Node>>,
 }
 
 impl<'a> TypeScriptMembers<'a> {
@@ -38,6 +39,7 @@ impl<'a> TypeScriptMembers<'a> {
         let mut own = HashMap::<&str, MemberMap<'a>>::new();
         let mut own_fields = HashMap::<&str, MemberMap<'a>>::new();
         let mut parents = HashMap::<&str, Option<Vec<&Node>>>::new();
+        let mut implements_targets = HashMap::<&str, Vec<&Node>>::new();
         for class in &classes {
             let Some(facts) = all.get_facts(&class.path) else {
                 continue;
@@ -121,11 +123,10 @@ impl<'a> TypeScriptMembers<'a> {
             }
             let mut bases = Vec::new();
             let mut invalid = false;
-            for reference in facts
-                .references
-                .iter()
-                .filter(|reference| reference.source == class.id && reference.kind == "inherits")
-            {
+            for reference in facts.references.iter().filter(|reference| {
+                reference.source == class.id
+                    && matches!(reference.kind.as_str(), "inherits" | "implements")
+            }) {
                 match resolver.resolve_symbol(
                     class,
                     &reference.expression,
@@ -135,11 +136,22 @@ impl<'a> TypeScriptMembers<'a> {
                     Symbol::Type(TypeTarget::Local(base))
                         if matches!(base.kind.as_str(), "class" | "interface") =>
                     {
-                        if !bases.iter().any(|node: &&Node| node.id == base.id) {
-                            bases.push(base);
+                        if reference.kind == "inherits" {
+                            if !bases.iter().any(|node: &&Node| node.id == base.id) {
+                                bases.push(base);
+                            }
+                        } else if !implements_targets
+                            .get(class.id.as_str())
+                            .is_some_and(|list| list.iter().any(|node| node.id == base.id))
+                        {
+                            implements_targets
+                                .entry(class.id.as_str())
+                                .or_default()
+                                .push(base);
                         }
                     }
-                    _ => invalid = true,
+                    _ if reference.kind == "inherits" => invalid = true,
+                    _ => {}
                 }
             }
             if class.kind == "class" && bases.len() > 1 {
@@ -157,7 +169,8 @@ impl<'a> TypeScriptMembers<'a> {
         for class in &invalid {
             parents.insert(class, None);
         }
-        for class in classes {
+        let mut implementors = HashMap::<&'a str, Vec<&'a Node>>::new();
+        for class in &classes {
             inherited(class, &own, &parents, &mut members, &mut HashSet::new(), 0);
             if !own_fields.is_empty() {
                 inherited(
@@ -169,8 +182,31 @@ impl<'a> TypeScriptMembers<'a> {
                     0,
                 );
             }
+            if class.kind == "class" && class.details["is_abstract"] != true {
+                for base in implements_targets
+                    .get(class.id.as_str())
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .chain(parents.get(class.id.as_str()).and_then(|o| o.as_ref()).into_iter().flatten().copied())
+                {
+                    implementors.entry(base.id.as_str()).or_default().push(*class);
+                }
+            }
         }
-        Self { members, fields }
+        for list in implementors.values_mut() {
+            list.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            list.dedup_by(|a, b| a.id == b.id);
+        }
+        Self {
+            members,
+            fields,
+            implementors,
+        }
+    }
+
+    pub(crate) fn implementors(&self, base_id: &str) -> &[&'a Node] {
+        self.implementors.get(base_id).map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn lookup(&self, receiver: &Node, member: &str, associated: bool) -> &[&'a Node] {

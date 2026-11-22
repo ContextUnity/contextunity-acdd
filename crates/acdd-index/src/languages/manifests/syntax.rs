@@ -422,6 +422,234 @@ pub enum FactoryShape {
     SetupReturn,
 }
 
+/// Parsed return-type AST compiled once at manifest load time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReturnTypeNode {
+    /// Preserves the proven receiver type (`Self`).
+    SelfReceiver,
+    /// Explicit unknown/opaque payload (`_`).
+    Unknown,
+    /// Named nominal or primitive type (`Playwright.Locator`, `rusqlite::Rows`, `str`).
+    Named(String),
+    /// Fixed-arity tuple (`(&str, &str)`).
+    Tuple(Vec<ReturnTypeNode>),
+    /// Rust reference (`&T` or `&mut T`).
+    Reference {
+        mutable: bool,
+        inner: Box<ReturnTypeNode>,
+    },
+    /// Generic wrapper or applied type (`Option<T>`, `Result<T, E>`, `Promise<T>`, `Iterator<T>`, `QuerySet<T>`).
+    Applied {
+        base: String,
+        args: Vec<ReturnTypeNode>,
+    },
+}
+
+impl ReturnTypeNode {
+    /// Visits every concrete nominal/applied type name inside this compiled return type.
+    pub fn visit_named(&self, visitor: &mut impl FnMut(&str)) {
+        match self {
+            Self::Named(name) => visitor(name),
+            Self::Reference { inner, .. } => inner.visit_named(visitor),
+            Self::Tuple(items) => {
+                for item in items {
+                    item.visit_named(visitor);
+                }
+            }
+            Self::Applied { base, args } => {
+                visitor(base);
+                for arg in args {
+                    arg.visit_named(visitor);
+                }
+            }
+            Self::SelfReceiver | Self::Unknown => {}
+        }
+    }
+}
+
+/// Validated, pre-parsed compound return specification serialized as a string in `.toml` manifests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReturnTypeSpec {
+    raw: String,
+    compiled: ReturnTypeNode,
+}
+
+impl ReturnTypeSpec {
+    /// Parses and validates a return specification once at manifest compile/load time.
+    pub fn parse(raw: impl Into<String>) -> Result<Self> {
+        let raw = raw.into();
+        let trimmed = raw.trim();
+        ensure!(
+            !trimmed.is_empty()
+                && trimmed.len() <= 4096
+                && !trimmed.chars().any(char::is_control),
+            "invalid return type specification"
+        );
+        let compiled = parse_return_type_node(trimmed, 0)?;
+        Ok(Self {
+            raw: trimmed.to_owned(),
+            compiled,
+        })
+    }
+
+    /// Returns the raw specification string.
+    pub fn as_str(&self) -> &str {
+        &self.raw
+    }
+
+    /// Returns the pre-parsed return-type AST.
+    pub fn compiled(&self) -> &ReturnTypeNode {
+        &self.compiled
+    }
+}
+
+impl Serialize for ReturnTypeSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReturnTypeSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+fn split_top_level_args(input: &str) -> Result<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => angle += 1,
+            '>' => {
+                ensure!(angle > 0, "unbalanced '>' in return type");
+                angle -= 1;
+            }
+            '(' => paren += 1,
+            ')' => {
+                ensure!(paren > 0, "unbalanced ')' in return type");
+                paren -= 1;
+            }
+            '[' => bracket += 1,
+            ']' => {
+                ensure!(bracket > 0, "unbalanced ']' in return type");
+                bracket -= 1;
+            }
+            ',' if angle == 0 && paren == 0 && bracket == 0 => {
+                let piece = input[start..idx].trim();
+                ensure!(!piece.is_empty(), "empty type argument in return type");
+                parts.push(piece);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        angle == 0 && paren == 0 && bracket == 0,
+        "unbalanced delimiters in return type"
+    );
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    } else if !parts.is_empty() {
+        anyhow::bail!("trailing comma in return type");
+    }
+    ensure!(parts.len() <= 16, "return type arity exceeds bound");
+    Ok(parts)
+}
+
+fn find_matching_close(input: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (idx, ch) in input.char_indices() {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(idx);
+            }
+        }
+    }
+    None
+}
+
+fn parse_return_type_node(raw: &str, depth: usize) -> Result<ReturnTypeNode> {
+    ensure!(
+        depth <= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH,
+        "return type nesting exceeds MAX_VALUE_FLOW_TYPE_DEPTH"
+    );
+    let trimmed = raw.trim();
+    ensure!(!trimmed.is_empty(), "empty return type");
+    if trimmed == "Self" {
+        return Ok(ReturnTypeNode::SelfReceiver);
+    }
+    if trimmed == "_" {
+        return Ok(ReturnTypeNode::Unknown);
+    }
+    if let Some(rest) = trimmed.strip_prefix('&') {
+        let rest = rest.trim_start();
+        let (mutable, inner) = if let Some(after) = rest.strip_prefix("mut ") {
+            (true, after.trim_start())
+        } else {
+            (false, rest)
+        };
+        return Ok(ReturnTypeNode::Reference {
+            mutable,
+            inner: Box::new(parse_return_type_node(inner, depth + 1)?),
+        });
+    }
+    if trimmed.starts_with('(') {
+        let close = find_matching_close(trimmed, '(', ')')
+            .filter(|idx| *idx + 1 == trimmed.len())
+            .ok_or_else(|| anyhow::anyhow!("malformed tuple return type '{trimmed}'"))?;
+        let inner = trimmed[1..close].trim();
+        let items = split_top_level_args(inner)?;
+        ensure!(!items.is_empty(), "empty tuple return type");
+        if items.len() == 1 && !inner.contains(',') {
+            return parse_return_type_node(items[0], depth + 1);
+        }
+        let parsed = items
+            .into_iter()
+            .map(|item| parse_return_type_node(item, depth + 1))
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(ReturnTypeNode::Tuple(parsed));
+    }
+    if let Some((open_idx, open_ch, close_ch)) = trimmed.char_indices().find_map(|(i, c)| match c {
+        '<' => Some((i, '<', '>')),
+        '[' => Some((i, '[', ']')),
+        _ => None,
+    }) {
+        let rest = &trimmed[open_idx..];
+        let close_rel = find_matching_close(rest, open_ch, close_ch)
+            .filter(|idx| *idx + 1 == rest.len())
+            .ok_or_else(|| anyhow::anyhow!("malformed generic return type '{trimmed}'"))?;
+        let base = trimmed[..open_idx].trim();
+        ensure!(
+            !base.is_empty() && !base.chars().any(char::is_whitespace),
+            "invalid generic base '{base}'"
+        );
+        let args = split_top_level_args(&rest[1..close_rel])?
+            .into_iter()
+            .map(|arg| parse_return_type_node(arg, depth + 1))
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(!args.is_empty(), "generic return type requires arguments");
+        return Ok(ReturnTypeNode::Applied {
+            base: base.to_owned(),
+            args,
+        });
+    }
+    ensure!(
+        !trimmed.chars().any(char::is_whitespace)
+            && !trimmed.contains(['<', '>', '(', ')', '[', ']', ',']),
+        "invalid return type name '{trimmed}'"
+    );
+    Ok(ReturnTypeNode::Named(trimmed.to_owned()))
+}
+
 /// Receiver type rule configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -443,6 +671,12 @@ pub struct ReceiverTypeRule {
     /// Argument factories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub argument_factories: Vec<ReceiverArgumentFactory>,
+    /// Declarative member return types (supporting compound generic wrappers).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub member_returns: std::collections::BTreeMap<String, ReturnTypeSpec>,
+    /// Declarative call return types (supporting compound generic wrappers).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub call_returns: std::collections::BTreeMap<String, ReturnTypeSpec>,
 }
 
 /// Receiver argument factory configuration.
@@ -533,6 +767,34 @@ impl SyntaxRule {
         }
     }
     pub(super) fn validate(&self) -> Result<()> {
+        self.validate_display()?;
+        ensure!(
+            self.package_family.as_deref().is_none_or(|family| {
+                crate::languages::dependency_registry::Ecosystem::from_family(family).is_some()
+            }),
+            "invalid syntax package family"
+        );
+        ensure!(
+            !self.id.trim().is_empty(),
+            "syntax rule id must be nonempty"
+        );
+        let lang = parse_language(&self.language)?;
+        ensure!(
+            crate::languages::profile_available(lang.as_str()),
+            "unsupported syntax language"
+        );
+        ActivationCondition::validate_slice(&self.activation)?;
+        let strings = self.validate_operation(lang)?;
+        ensure!(
+            strings
+                .into_iter()
+                .all(|value| !value.is_empty() && !value.chars().any(char::is_whitespace)),
+            "syntax identities must be nonempty identifier paths"
+        );
+        Ok(())
+    }
+
+    fn validate_display(&self) -> Result<()> {
         for label in [
             &self.display.builtin,
             &self.display.autoimport,
@@ -568,29 +830,33 @@ impl SyntaxRule {
                 || matches!(self.operation, SyntaxOperation::TemplateSymbols { .. }),
             "library display requires template symbols"
         );
-        ensure!(
-            self.package_family.as_deref().is_none_or(|family| {
-                crate::languages::dependency_registry::Ecosystem::from_family(family).is_some()
-            }),
-            "invalid syntax package family"
-        );
-        ensure!(
-            !self.id.trim().is_empty(),
-            "syntax rule id must be nonempty"
-        );
-        let lang = parse_language(&self.language)?;
-        ensure!(
-            crate::languages::profile_available(lang.as_str()),
-            "unsupported syntax language"
-        );
-        ActivationCondition::validate_slice(&self.activation)?;
-        let strings: Vec<&str> = match &self.operation {
+        Ok(())
+    }
+
+    fn validate_operation(&self, lang: LanguageId) -> Result<Vec<&str>> {
+        if let Some(res) = self.validate_route_and_component(lang) {
+            return res;
+        }
+        if let Some(res) = self.validate_python_and_rust(lang) {
+            return res;
+        }
+        if let Some(res) = self.validate_receiver_and_implicit(lang) {
+            return res;
+        }
+        if let Some(res) = self.validate_template_and_html(lang) {
+            return res;
+        }
+        unreachable!("all SyntaxOperation variants handled")
+    }
+
+    fn validate_route_and_component(&self, lang: LanguageId) -> Option<Result<Vec<&str>>> {
+        let res: Result<Vec<&str>> = match &self.operation {
             SyntaxOperation::FileRoute {
                 directory,
                 extension,
                 index,
                 method,
-            } => {
+            } => (|| {
                 ensure!(
                     lang == LanguageId::Vue
                         && directory
@@ -603,8 +869,8 @@ impl SyntaxRule {
                         && method == "GET",
                     "invalid file route projection"
                 );
-                vec![]
-            }
+                Ok(vec![])
+            })(),
             SyntaxOperation::FactoryMembers {
                 callee,
                 argument,
@@ -612,7 +878,7 @@ impl SyntaxRule {
                 configured_module,
                 state_member,
                 actions_member,
-            } => {
+            } => (|| {
                 ensure!(
                     matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
                         && (matches!(callee, Api::Imported { .. })
@@ -620,262 +886,30 @@ impl SyntaxRule {
                                 && configured_module.is_some()))
                         && *argument < 32
                         && match shape {
-                            FactoryShape::Options =>
+                            FactoryShape::Options => {
                                 state_member != actions_member
                                     && super::projections::identifier(state_member, true)
-                                    && super::projections::identifier(actions_member, true),
-                            FactoryShape::SetupReturn =>
-                                state_member.is_empty() && actions_member.is_empty(),
+                                    && super::projections::identifier(actions_member, true)
+                            }
+                            FactoryShape::SetupReturn => {
+                                state_member.is_empty() && actions_member.is_empty()
+                            }
                         }
-                        && configured_module
-                            .as_ref()
-                            .is_none_or(|name| !name.is_empty()
+                        && configured_module.as_ref().is_none_or(|name| {
+                            !name.is_empty()
                                 && name.len() <= 256
-                                && !name.chars().any(char::is_whitespace)),
+                                && !name.chars().any(char::is_whitespace)
+                        }),
                     "invalid factory members projection"
                 );
                 callee.validate(lang)?;
-                vec![]
-            }
-            SyntaxOperation::NamedBinding { domain, binding } => {
+                Ok(vec![])
+            })(),
+            SyntaxOperation::NamedBinding { domain, binding } => (|| {
                 ensure!(key_identifier(domain), "invalid named binding domain");
                 binding.validate(lang)?;
-                vec![]
-            }
-            SyntaxOperation::RenderContext {
-                package,
-                module,
-                export,
-                target_argument,
-                context_argument,
-                argument_count,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python
-                        && *argument_count <= 32
-                        && target_argument < argument_count
-                        && context_argument < argument_count
-                        && target_argument != context_argument,
-                    "invalid render context operation"
-                );
-                vec![package, module, export]
-            }
-            SyntaxOperation::NamedRouteCall {
-                module,
-                export,
-                argument,
-                expression_prefix,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python && *argument < 32,
-                    "invalid named route operation"
-                );
-                vec![module, export, expression_prefix]
-            }
-            SyntaxOperation::ReceiverRegistration {
-                module,
-                constructors,
-                member,
-                path_argument,
-                handler_argument,
-                name_keyword,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python
-                        && !constructors.is_empty()
-                        && *path_argument < 32
-                        && *handler_argument < 32
-                        && path_argument != handler_argument,
-                    "invalid receiver registration operation"
-                );
-                std::iter::once(module.as_str())
-                    .chain(constructors.iter().map(String::as_str))
-                    .chain([member.as_str(), name_keyword.as_str()])
-                    .collect()
-            }
-            SyntaxOperation::DecoratedRegistration {
-                modules,
-                constructor,
-                member,
-                name_keyword,
-                provider,
-                ..
-            } => {
-                ensure!(
-                    lang == LanguageId::Python && !modules.is_empty(),
-                    "invalid decorated registration operation"
-                );
-                modules
-                    .iter()
-                    .map(String::as_str)
-                    .chain([
-                        constructor.as_str(),
-                        member.as_str(),
-                        name_keyword.as_str(),
-                        provider.as_str(),
-                    ])
-                    .collect()
-            }
-            SyntaxOperation::ClassMethodRegistration {
-                module,
-                base,
-                member,
-                provider,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python && key_identifier(base) && key_identifier(member),
-                    "invalid class method registration"
-                );
-                vec![module, base, member, provider]
-            }
-            SyntaxOperation::TestRunner { modules, members } => {
-                ensure!(
-                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
-                        && !modules.is_empty()
-                        && modules.len() <= 128
-                        && !members.is_empty()
-                        && members.len() <= 128
-                        && members.iter().all(|member| key_identifier(member)),
-                    "invalid test runner operation"
-                );
-                modules.iter().chain(members).map(String::as_str).collect()
-            }
-            SyntaxOperation::CommandDispatch {
-                module,
-                field_attribute,
-                field_marker,
-                parser_derive,
-                subcommand_derive,
-                parse_method,
-            } => {
-                ensure!(
-                    lang == LanguageId::Rust
-                        && [
-                            module,
-                            field_attribute,
-                            field_marker,
-                            parser_derive,
-                            subcommand_derive,
-                            parse_method
-                        ]
-                        .iter()
-                        .all(|value| key_identifier(value)),
-                    "invalid command dispatch operation"
-                );
-                vec![
-                    module,
-                    field_attribute,
-                    field_marker,
-                    parser_derive,
-                    subcommand_derive,
-                    parse_method,
-                ]
-            }
-            SyntaxOperation::TemplateLoader {
-                package,
-                module,
-                environment,
-                loader,
-                loader_keyword,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python,
-                    "invalid template loader language"
-                );
-                vec![package, module, environment, loader, loader_keyword]
-            }
-            SyntaxOperation::TemplateLibrary {
-                directory,
-                module,
-                constructor,
-                members,
-                name_keyword,
-            } => {
-                ensure!(
-                    lang == LanguageId::Python
-                        && !members.is_empty()
-                        && members
-                            .values()
-                            .all(|kind| matches!(kind.as_str(), "tag" | "filter")),
-                    "invalid template library operation"
-                );
-                ensure!(
-                    normal_relative_dir(directory),
-                    "invalid template library directory"
-                );
-                std::iter::once(directory.as_str())
-                    .chain([module.as_str(), constructor.as_str(), name_keyword.as_str()])
-                    .chain(members.keys().map(String::as_str))
-                    .collect()
-            }
-            SyntaxOperation::ReceiverType { receiver } => {
-                ensure!(
-                    receiver.argument_factories.len() <= 1,
-                    "receiver permits one argument factory"
-                );
-                for factory in &receiver.argument_factories {
-                    factory.validate(lang)?;
-                }
-                ensure!(
-                    matches!(
-                        lang,
-                        LanguageId::Python
-                            | LanguageId::Typescript
-                            | LanguageId::Javascript
-                            | LanguageId::Vue
-                    ) && receiver.module.is_some() == receiver.export.is_some(),
-                    "invalid receiver type operation"
-                );
-                std::iter::once(receiver.name.as_str())
-                    .chain(
-                        receiver
-                            .module
-                            .iter()
-                            .chain(receiver.export.iter())
-                            .chain(receiver.members.iter())
-                            .chain(receiver.properties.keys())
-                            .chain(receiver.properties.values())
-                            .chain(receiver.callback_callees.iter())
-                            .map(String::as_str),
-                    )
-                    .collect()
-            }
-            SyntaxOperation::ImplicitBuiltins { names } => {
-                ensure!(!names.is_empty(), "implicit builtin names must be nonempty");
-                names.iter().map(String::as_str).collect()
-            }
-            SyntaxOperation::ImplicitReceivers { names } => {
-                ensure!(
-                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
-                        && !names.is_empty()
-                        && names.iter().all(|name| {
-                            !name.is_empty()
-                                && name.len() <= 256
-                                && !name.chars().any(|ch| ch.is_whitespace() || ch.is_control())
-                        })
-                        && names
-                            .iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len()
-                            == names.len(),
-                    "invalid implicit receivers language"
-                );
-                names.iter().map(String::as_str).collect()
-            }
-            SyntaxOperation::ObjectFactory {
-                callees,
-                unshadowed_globals,
-            } => {
-                ensure!(
-                    lang == LanguageId::Javascript && !callees.is_empty(),
-                    "invalid object factory operation"
-                );
-                callees
-                    .iter()
-                    .chain(unshadowed_globals)
-                    .map(String::as_str)
-                    .collect()
-            }
+                Ok(vec![])
+            })(),
             SyntaxOperation::ComponentEnvironment {
                 package,
                 config_file,
@@ -889,7 +923,7 @@ impl SyntaxRule {
                 builtins,
                 modules,
                 callable_imports,
-            } => {
+            } => (|| {
                 ensure!(
                     matches!(lang, LanguageId::Typescript | LanguageId::Javascript),
                     "invalid component environment language"
@@ -907,7 +941,7 @@ impl SyntaxRule {
                 if let Some(imports) = callable_imports {
                     imports.validate()?;
                 }
-                [
+                Ok([
                     package,
                     config_file,
                     config_callee,
@@ -926,20 +960,20 @@ impl SyntaxRule {
                         .chain(modules.keys())
                         .map(String::as_str),
                 )
-                .collect()
-            }
+                .collect())
+            })(),
             SyntaxOperation::RouteObject {
                 collection,
                 path_key,
                 handler_key,
                 method,
-            } => {
+            } => (|| {
                 ensure!(
                     matches!(lang, LanguageId::Javascript | LanguageId::Typescript),
                     "invalid route object language"
                 );
-                vec![collection, path_key, handler_key, method]
-            }
+                Ok(vec![collection.as_str(), path_key, handler_key, method])
+            })(),
             SyntaxOperation::HttpClientCall {
                 callee,
                 receivers,
@@ -949,7 +983,7 @@ impl SyntaxRule {
                 method_key,
                 relative_prefixes,
                 target_context,
-            } => {
+            } => (|| {
                 if let Some(context) = target_context {
                     context.validate()?;
                 }
@@ -973,59 +1007,321 @@ impl SyntaxRule {
                     ) && !relative_prefixes.is_empty(),
                     "invalid HTTP client language or URL prefixes"
                 );
-                receivers
+                Ok(receivers
                     .iter()
                     .chain(methods.keys())
                     .chain([url_key, method_key])
                     .chain(relative_prefixes.iter())
                     .chain((!callee.is_empty()).then_some(callee))
                     .map(String::as_str)
-                    .collect()
-            }
+                    .collect())
+            })(),
             SyntaxOperation::ComponentMacros {
                 props,
                 emits,
                 slots,
                 markers,
-            } => {
+            } => (|| {
                 ensure!(lang == LanguageId::Vue, "invalid component macros language");
                 let names: Vec<_> = [props, emits, slots].into_iter().chain(markers).collect();
                 ensure!(
-                    names.iter().all(|name| !name.is_empty()
-                        && name
-                            .chars()
-                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')))
+                    names.iter().all(|name| {
+                        !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$'))
+                    }) && names
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == names.len(),
+                    "invalid or ambiguous macro identities"
+                );
+                Ok(names.into_iter().map(String::as_str).collect())
+            })(),
+            SyntaxOperation::ComponentOptions {
+                module,
+                export,
+                components_key,
+            } => (|| {
+                ensure!(lang == LanguageId::Vue, "invalid component options language");
+                Ok(vec![module.as_str(), export, components_key])
+            })(),
+            _ => return None,
+        };
+        Some(res)
+    }
+
+    fn validate_python_and_rust(&self, lang: LanguageId) -> Option<Result<Vec<&str>>> {
+        let res: Result<Vec<&str>> = match &self.operation {
+            SyntaxOperation::RenderContext {
+                package,
+                module,
+                export,
+                target_argument,
+                context_argument,
+                argument_count,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python
+                        && *argument_count <= 32
+                        && target_argument < argument_count
+                        && context_argument < argument_count
+                        && target_argument != context_argument,
+                    "invalid render context operation"
+                );
+                Ok(vec![package.as_str(), module, export])
+            })(),
+            SyntaxOperation::NamedRouteCall {
+                module,
+                export,
+                argument,
+                expression_prefix,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python && *argument < 32,
+                    "invalid named route operation"
+                );
+                Ok(vec![module.as_str(), export, expression_prefix])
+            })(),
+            SyntaxOperation::ReceiverRegistration {
+                module,
+                constructors,
+                member,
+                path_argument,
+                handler_argument,
+                name_keyword,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python
+                        && !constructors.is_empty()
+                        && *path_argument < 32
+                        && *handler_argument < 32
+                        && path_argument != handler_argument,
+                    "invalid receiver registration operation"
+                );
+                Ok(std::iter::once(module.as_str())
+                    .chain(constructors.iter().map(String::as_str))
+                    .chain([member.as_str(), name_keyword.as_str()])
+                    .collect())
+            })(),
+            SyntaxOperation::DecoratedRegistration {
+                modules,
+                constructor,
+                member,
+                name_keyword,
+                provider,
+                ..
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python && !modules.is_empty(),
+                    "invalid decorated registration operation"
+                );
+                Ok(modules
+                    .iter()
+                    .map(String::as_str)
+                    .chain([
+                        constructor.as_str(),
+                        member.as_str(),
+                        name_keyword.as_str(),
+                        provider.as_str(),
+                    ])
+                    .collect())
+            })(),
+            SyntaxOperation::ClassMethodRegistration {
+                module,
+                base,
+                member,
+                provider,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python && key_identifier(base) && key_identifier(member),
+                    "invalid class method registration"
+                );
+                Ok(vec![module.as_str(), base, member, provider])
+            })(),
+            SyntaxOperation::TestRunner { modules, members } => (|| {
+                ensure!(
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
+                        && !modules.is_empty()
+                        && modules.len() <= 128
+                        && !members.is_empty()
+                        && members.len() <= 128
+                        && members.iter().all(|member| key_identifier(member)),
+                    "invalid test runner operation"
+                );
+                Ok(modules.iter().chain(members).map(String::as_str).collect())
+            })(),
+            SyntaxOperation::CommandDispatch {
+                module,
+                field_attribute,
+                field_marker,
+                parser_derive,
+                subcommand_derive,
+                parse_method,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Rust
+                        && [
+                            module,
+                            field_attribute,
+                            field_marker,
+                            parser_derive,
+                            subcommand_derive,
+                            parse_method
+                        ]
+                        .iter()
+                        .all(|value| key_identifier(value)),
+                    "invalid command dispatch operation"
+                );
+                Ok(vec![
+                    module.as_str(),
+                    field_attribute,
+                    field_marker,
+                    parser_derive,
+                    subcommand_derive,
+                    parse_method,
+                ])
+            })(),
+            SyntaxOperation::TemplateLoader {
+                package,
+                module,
+                environment,
+                loader,
+                loader_keyword,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python,
+                    "invalid template loader language"
+                );
+                Ok(vec![package.as_str(), module, environment, loader, loader_keyword])
+            })(),
+            SyntaxOperation::TemplateLibrary {
+                directory,
+                module,
+                constructor,
+                members,
+                name_keyword,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Python
+                        && !members.is_empty()
+                        && members
+                            .values()
+                            .all(|kind| matches!(kind.as_str(), "tag" | "filter")),
+                    "invalid template library operation"
+                );
+                ensure!(
+                    normal_relative_dir(directory),
+                    "invalid template library directory"
+                );
+                Ok(std::iter::once(directory.as_str())
+                    .chain([module.as_str(), constructor.as_str(), name_keyword.as_str()])
+                    .chain(members.keys().map(String::as_str))
+                    .collect())
+            })(),
+            _ => return None,
+        };
+        Some(res)
+    }
+
+    fn validate_receiver_and_implicit(&self, lang: LanguageId) -> Option<Result<Vec<&str>>> {
+        let res: Result<Vec<&str>> = match &self.operation {
+            SyntaxOperation::ReceiverType { receiver } => (|| {
+                ensure!(
+                    receiver.argument_factories.len() <= 1,
+                    "receiver permits one argument factory"
+                );
+                ensure!(
+                    receiver.member_returns.len() <= 256 && receiver.call_returns.len() <= 256,
+                    "receiver type permits at most 256 member_returns and 256 call_returns"
+                );
+                for factory in &receiver.argument_factories {
+                    factory.validate(lang)?;
+                }
+                ensure!(
+                    matches!(
+                        lang,
+                        LanguageId::Python
+                            | LanguageId::Typescript
+                            | LanguageId::Javascript
+                            | LanguageId::Vue
+                    ) && receiver.module.is_some() == receiver.export.is_some(),
+                    "invalid receiver type operation"
+                );
+                Ok(std::iter::once(receiver.name.as_str())
+                    .chain(
+                        receiver
+                            .module
+                            .iter()
+                            .chain(receiver.export.iter())
+                            .chain(receiver.members.iter())
+                            .chain(receiver.properties.keys())
+                            .chain(receiver.properties.values())
+                            .chain(receiver.member_returns.keys())
+                            .chain(receiver.call_returns.keys())
+                            .chain(receiver.callback_callees.iter())
+                            .map(String::as_str),
+                    )
+                    .collect())
+            })(),
+            SyntaxOperation::ImplicitBuiltins { names } => (|| {
+                ensure!(!names.is_empty(), "implicit builtin names must be nonempty");
+                Ok(names.iter().map(String::as_str).collect())
+            })(),
+            SyntaxOperation::ImplicitReceivers { names } => (|| {
+                ensure!(
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
+                        && !names.is_empty()
+                        && names.iter().all(|name| {
+                            !name.is_empty()
+                                && name.len() <= 256
+                                && !name.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+                        })
                         && names
                             .iter()
                             .collect::<std::collections::BTreeSet<_>>()
                             .len()
                             == names.len(),
-                    "invalid or ambiguous macro identities"
+                    "invalid implicit receivers language"
                 );
-                names.into_iter().map(String::as_str).collect()
-            }
-            SyntaxOperation::ComponentOptions {
-                module,
-                export,
-                components_key,
-            } => {
-                ensure!(lang == LanguageId::Vue, "invalid component options language");
-                vec![module, export, components_key]
-            }
+                Ok(names.iter().map(String::as_str).collect())
+            })(),
+            SyntaxOperation::ObjectFactory {
+                callees,
+                unshadowed_globals,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Javascript && !callees.is_empty(),
+                    "invalid object factory operation"
+                );
+                Ok(callees
+                    .iter()
+                    .chain(unshadowed_globals)
+                    .map(String::as_str)
+                    .collect())
+            })(),
+            _ => return None,
+        };
+        Some(res)
+    }
+
+    fn validate_template_and_html(&self, lang: LanguageId) -> Option<Result<Vec<&str>>> {
+        let res: Result<Vec<&str>> = match &self.operation {
             SyntaxOperation::TemplateNamedRoute {
                 tag,
                 expression_prefix,
-            } => {
+            } => (|| {
                 ensure!(lang == LanguageId::Html, "invalid template tag language");
-                vec![tag, expression_prefix]
-            }
-            SyntaxOperation::TemplateDialect { dialect } => {
+                Ok(vec![tag.as_str(), expression_prefix])
+            })(),
+            SyntaxOperation::TemplateDialect { dialect } => (|| {
                 ensure!(lang == LanguageId::Html, "invalid template dialect language");
                 ensure!(
                     normal_relative_dir(&dialect.directory),
                     "invalid template root directory"
                 );
-                [
+                Ok([
                     &dialect.directory,
                     &dialect.assignment,
                     &dialect.function,
@@ -1040,15 +1336,15 @@ impl SyntaxRule {
                 .chain(dialect.scope_open.iter())
                 .chain(dialect.scope_close.iter())
                 .map(String::as_str)
-                .collect()
-            }
+                .collect())
+            })(),
             SyntaxOperation::TemplateSymbols {
                 tags,
                 filters,
                 libraries,
                 library_routes,
                 ..
-            } => {
+            } => (|| {
                 ensure!(lang == LanguageId::Html, "invalid template symbols language");
                 let valid_names = tags
                     .iter()
@@ -1079,25 +1375,26 @@ impl SyntaxRule {
                         }),
                     "invalid template symbol declarations"
                 );
-                tags.iter()
+                Ok(tags
+                    .iter()
                     .chain(filters)
                     .chain(libraries)
                     .chain(library_routes.keys())
                     .chain(library_routes.values())
                     .map(String::as_str)
-                    .collect()
-            }
+                    .collect())
+            })(),
             SyntaxOperation::HtmlScriptAttributes {
                 event_prefixes,
                 object_attribute,
                 event_scope,
                 object_scope,
-            } => {
+            } => (|| {
                 ensure!(
                     lang == LanguageId::Html && !event_prefixes.is_empty(),
                     "invalid HTML script attributes"
                 );
-                event_prefixes
+                Ok(event_prefixes
                     .iter()
                     .map(String::as_str)
                     .chain([
@@ -1105,8 +1402,8 @@ impl SyntaxRule {
                         event_scope.as_str(),
                         object_scope.as_str(),
                     ])
-                    .collect()
-            }
+                    .collect())
+            })(),
             SyntaxOperation::HtmlRequestAttributes {
                 request_node,
                 context_node,
@@ -1117,7 +1414,7 @@ impl SyntaxRule {
                 contexts,
                 values,
                 value_dynamic_prefixes,
-            } => {
+            } => (|| {
                 ensure!(
                     lang == LanguageId::Html && !prefixes.is_empty() && !methods.is_empty(),
                     "invalid HTML request operation"
@@ -1143,22 +1440,17 @@ impl SyntaxRule {
                     uppercase_methods(methods.values().map(String::as_str)),
                     "invalid request method"
                 );
-                prefixes
+                Ok(prefixes
                     .iter()
                     .chain(methods.keys())
                     .chain(contexts)
                     .chain(values.iter())
                     .chain(value_dynamic_prefixes)
                     .map(String::as_str)
-                    .collect()
-            }
+                    .collect())
+            })(),
+            _ => return None,
         };
-        ensure!(
-            strings
-                .into_iter()
-                .all(|value| !value.is_empty() && !value.chars().any(char::is_whitespace)),
-            "syntax identities must be nonempty identifier paths"
-        );
-        Ok(())
+        Some(res)
     }
 }

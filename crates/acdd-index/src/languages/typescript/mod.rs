@@ -666,7 +666,99 @@ impl TypeScript {
     }
 }
 
+static TS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declarations: &[
+        ("function_declaration", "function"),
+        ("generator_function_declaration", "function"),
+        ("arrow_function", "function"),
+        ("function_expression", "function"),
+        ("method_definition", "method"),
+        ("method_signature", "method"),
+        ("class_declaration", "class"),
+        ("class", "class"),
+        ("enum_declaration", "enum"),
+        ("enum_assignment", "field"),
+        ("interface_declaration", "interface"),
+        ("type_alias_declaration", "type"),
+        ("property_identifier", "field"),
+        ("object", "object"),
+        ("array", "object"),
+        ("pair", "field"),
+        ("assignment_expression", "method"),
+    ],
+    references: &[
+        "call_expression",
+        "new_expression",
+        "member_expression",
+        "string",
+        "template_string",
+    ],
+    scopes: &[
+        "program",
+        "function_declaration",
+        "generator_function_declaration",
+        "arrow_function",
+        "function_expression",
+        "method_definition",
+        "class_declaration",
+        "class",
+    ],
+    imports: &[
+        "import_statement",
+        "export_statement",
+        "assignment_expression",
+        "variable_declarator",
+    ],
+    comments: &["comment"],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
+static JS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declarations: &[
+        ("function_declaration", "function"),
+        ("generator_function_declaration", "function"),
+        ("arrow_function", "function"),
+        ("function_expression", "function"),
+        ("method_definition", "method"),
+        ("class_declaration", "class"),
+        ("class", "class"),
+        ("field_definition", "field"),
+        ("object", "object"),
+        ("array", "object"),
+        ("pair", "field"),
+        ("assignment_expression", "method"),
+    ],
+    references: &[
+        "call_expression",
+        "new_expression",
+        "member_expression",
+        "string",
+        "template_string",
+    ],
+    scopes: &[
+        "program",
+        "function_declaration",
+        "generator_function_declaration",
+        "arrow_function",
+        "function_expression",
+        "method_definition",
+        "class_declaration",
+        "class",
+    ],
+    imports: &[
+        "import_statement",
+        "export_statement",
+        "assignment_expression",
+        "variable_declarator",
+    ],
+    comments: &["comment"],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for TypeScript {
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(if self.javascript { &JS_SPEC } else { &TS_SPEC })
+    }
     fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
         &linker::TYPESCRIPT_LINKER
     }
@@ -807,7 +899,15 @@ impl LanguageProfile for TypeScript {
         LanguageFamily("javascript")
     }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
-        kind(k)
+        match k {
+            "object" | "array" => Some("object"),
+            "pair" | "property_identifier" => Some("field"),
+            "assignment_expression" => Some("method"),
+            _ => kind(k),
+        }
+    }
+    fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
+        kind(node.kind())
     }
     fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {
         if self.javascript && prototype_assignment(node, source).is_some() {
@@ -1450,51 +1550,6 @@ impl LanguageProfile for TypeScript {
                     | "toString"
                     | "toJSON"
             ),
-            "Location" | "location" => {
-                matches!(member, "assign" | "replace" | "reload" | "toString")
-            }
-            "History" | "history" => {
-                matches!(member, "back" | "forward" | "go" | "pushState" | "replaceState")
-            }
-            "Navigator" | "navigator" => matches!(member, "sendBeacon" | "vibrate"),
-            "Clipboard" => matches!(member, "read" | "readText" | "write" | "writeText"),
-            "AbortController" => matches!(member, "abort"),
-            "AbortSignal" => matches!(
-                member,
-                "addEventListener" | "removeEventListener" | "dispatchEvent" | "throwIfAborted"
-            ),
-            "Performance" | "performance" => matches!(
-                member,
-                "now"
-                    | "mark"
-                    | "measure"
-                    | "clearMarks"
-                    | "clearMeasures"
-                    | "getEntries"
-                    | "getEntriesByName"
-                    | "getEntriesByType"
-                    | "toJSON"
-            ),
-            "Crypto" | "crypto" => matches!(member, "getRandomValues" | "randomUUID"),
-            "SubtleCrypto" => matches!(
-                member,
-                "digest"
-                    | "encrypt"
-                    | "decrypt"
-                    | "sign"
-                    | "verify"
-                    | "generateKey"
-                    | "importKey"
-                    | "exportKey"
-                    | "deriveKey"
-                    | "deriveBits"
-            ),
-            "CSSStyleDeclaration" => {
-                matches!(member, "setProperty" | "getPropertyValue" | "removeProperty" | "item")
-            }
-            "DOMRect" => matches!(member, "toJSON"),
-            "TextEncoder" => matches!(member, "encode" | "encodeInto"),
-            "TextDecoder" => matches!(member, "decode"),
             "string" | "String" => matches!(
                 member,
                 "charAt"

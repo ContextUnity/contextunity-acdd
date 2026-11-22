@@ -843,6 +843,37 @@ pub(crate) struct Collector<'a, 'tree> {
 }
 
 impl<'a, 'tree> Collector<'a, 'tree> {
+    fn is_known_local(&mut self, name: &str) -> bool {
+        if self
+            .core
+            .facts_mut()
+            .bindings
+            .iter()
+            .any(|binding| binding.name == name)
+        {
+            return true;
+        }
+        self.root
+            .child_by_field_name("parameters")
+            .is_some_and(|params| {
+                let mut cursor = params.walk();
+                let found = params.named_children(&mut cursor).any(|param| {
+                    let pname = if param.kind() == "identifier" {
+                        Some(text(param, self.source))
+                    } else {
+                        field(param, self.source, "name").or_else(|| {
+                            param
+                                .named_child(0)
+                                .filter(|n| n.kind() == "identifier")
+                                .map(|n| text(n, self.source))
+                        })
+                    };
+                    pname == Some(name)
+                });
+                found
+            })
+    }
+
     fn bind(&mut self, target: Node<'_>, value: ValueExpr, at: SourcePosition, conditional: bool) {
         if target.kind() == "identifier" {
             let name = text(target, self.source).to_owned();
@@ -877,9 +908,25 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 | "list_splat_pattern"
                 | "dictionary_splat_pattern"
         ) {
-            let mut cursor = target.walk();
-            for child in target.named_children(&mut cursor) {
-                self.bind(child, ValueExpr::Unknown, at, conditional);
+            let source_value = match &value {
+                ValueExpr::Alias { name } if !self.is_known_local(name) => ValueExpr::Unknown,
+                _ => value,
+            };
+            let mut bindings = Vec::new();
+            ValueFlowCollectorCore::collect_destructuring_bindings(
+                target,
+                source_value,
+                self.source,
+                &mut bindings,
+            );
+            if self.class_scope {
+                for binding in bindings {
+                    self.core
+                        .push_field(binding.name, at, binding.value, conditional);
+                }
+            } else {
+                self.core
+                    .push_destructured_bindings(bindings, at, None, conditional, |expr| expr);
             }
         }
     }
@@ -1358,10 +1405,11 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         }
         if !matches!(
             node.kind(),
-            "module" | "class_definition" | "function_definition"
+            "module" | "class_definition" | "function_definition" | "lambda"
         ) {
             return Self::empty(node, source, collect_aliases, ValueFlowFacts::default());
         }
+        let is_lambda = node.kind() == "lambda";
         let callable = node.kind() == "function_definition";
         let body = if node.kind() == "module" {
             Some(node)
@@ -1405,7 +1453,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             aliases: collect_aliases.then(AliasWrites::new),
             source,
             class_scope: node.kind() == "class_definition",
-            local_scope: callable,
+            local_scope: callable || is_lambda,
             receiver,
             init: field(node, source, "name") == Some("__init__"),
             uncertain_callable: initially_uncertain,
@@ -1413,24 +1461,35 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             collect_return_summary,
             summary: BodySummary::default(),
         };
+        if is_lambda {
+            record_python_lambda_callback_params(node, source, &mut collector.core);
+            return collector;
+        }
         if callable {
+            let mut sig_params = Vec::new();
             if let Some(parameters) = node.child_by_field_name("parameters") {
                 let mut cursor = parameters.walk();
-                for parameter in parameters.named_children(&mut cursor) {
+                for (idx, parameter) in parameters.named_children(&mut cursor).enumerate() {
+                    if idx == 0 && receiver.is_some() {
+                        continue;
+                    }
+                    let param_name = if parameter.kind() == "identifier" {
+                        Some(text(parameter, source))
+                    } else {
+                        field(parameter, source, "name").or_else(|| {
+                            parameter
+                                .named_child(0)
+                                .filter(|name| name.kind() == "identifier")
+                                .map(|name| text(name, source))
+                        })
+                    };
+                    let mut param_ty = TypeExpr::Unknown;
+                    let mut callback_params = Vec::new();
                     if let Some(ty) = parameter.child_by_field_name("type") {
                         annotation_reference_positions(ty, source, collector.core.facts_mut());
-                        let param_name = if parameter.kind() == "identifier" {
-                            Some(text(parameter, source))
-                        } else {
-                            field(parameter, source, "name").or_else(|| {
-                                parameter
-                                    .named_child(0)
-                                    .filter(|name| name.kind() == "identifier")
-                                    .map(|name| text(name, source))
-                            })
-                        };
+                        let parsed = annotation(ty, source);
+                        callback_params = extract_python_callback_params(ty, source);
                         if let Some(name) = param_name {
-                            let parsed = annotation(ty, source);
                             if let TypeExpr::Applied { base, args } = &parsed {
                                 if matches!(
                                     base.as_str(),
@@ -1447,11 +1506,32 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                 }
                             }
                         }
+                        param_ty = parsed;
+                    }
+                    if sig_params.len() < 128 {
+                        sig_params.push(crate::semantic::CallableParameter {
+                            name: param_name.map(str::to_owned),
+                            type_expr: param_ty,
+                            callback_params,
+                        });
                     }
                 }
             }
             if let Some(ret) = node.child_by_field_name("return_type") {
                 annotation_reference_positions(ret, source, collector.core.facts_mut());
+            }
+            if !sig_params.iter().any(|p| !p.callback_params.is_empty()) {
+                return collector;
+            }
+            let sig = crate::semantic::CallableSignature {
+                has_receiver: receiver.is_some(),
+                params: sig_params,
+                return_type: node
+                    .child_by_field_name("return_type")
+                    .map(|ret| annotation(ret, source)),
+            };
+            if sig.valid() {
+                collector.core.facts_mut().callable_signature = Some(sig);
             }
         }
         collector
@@ -1569,6 +1649,103 @@ impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for Collector<'_, 'tree>
 
 pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
     crate::ast::visitor::collect(node, Collector::new(node, source, false))
+}
+
+fn extract_python_callback_params(ty: Node<'_>, source: &str) -> Vec<TypeExpr> {
+    let mut target = ty;
+    if target.kind() == "type" {
+        let Some(inner) = target.named_child(0) else {
+            return Vec::new();
+        };
+        target = inner;
+    }
+    if target.kind() != "generic_type" && target.kind() != "subscript" {
+        return Vec::new();
+    }
+    let Some(base_node) = target
+        .named_child(0)
+        .filter(|n| matches!(n.kind(), "identifier" | "attribute"))
+    else {
+        return Vec::new();
+    };
+    let base_name = text(base_node, source).trim();
+    if base_name.rsplit('.').next() != Some("Callable") {
+        return Vec::new();
+    }
+    let args_list = target
+        .child_by_field_name("type_parameter")
+        .or_else(|| target.named_child(1));
+    let Some(args_list) = args_list else {
+        return Vec::new();
+    };
+    fn unwrap_type(n: Node<'_>) -> Node<'_> {
+        if n.kind() == "type" {
+            n.named_child(0).unwrap_or(n)
+        } else {
+            n
+        }
+    }
+    let mut cursor = args_list.walk();
+    let Some(params_list) = args_list
+        .named_children(&mut cursor)
+        .map(unwrap_type)
+        .find(|n| n.kind() == "list")
+        .or_else(|| (args_list.kind() == "list").then_some(args_list))
+    else {
+        return Vec::new();
+    };
+    let mut p_cursor = params_list.walk();
+    params_list
+        .named_children(&mut p_cursor)
+        .take(32)
+        .map(|arg| annotation(arg, source))
+        .collect()
+}
+
+fn record_python_lambda_callback_params(
+    node: Node<'_>,
+    source: &str,
+    core: &mut ValueFlowCollectorCore,
+) {
+    let Some(arguments) = node.parent().filter(|p| p.kind() == "argument_list") else {
+        return;
+    };
+    let Some(call) = arguments.parent().filter(|p| p.kind() == "call") else {
+        return;
+    };
+    let mut cursor = arguments.walk();
+    let Some(arg_index) = arguments
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() != "comment")
+        .position(|n| n.id() == node.id())
+    else {
+        return;
+    };
+    let callee_expr = call_value(call, source);
+    if matches!(callee_expr, ValueExpr::Unknown) {
+        return;
+    }
+    let Some(parameters) = node.child_by_field_name("parameters") else {
+        return;
+    };
+    let at = crate::languages::source_start(node);
+    let mut p_cursor = parameters.walk();
+    for (param_index, param) in parameters.named_children(&mut p_cursor).enumerate() {
+        let Some(ident) = (param.kind() == "identifier")
+            .then_some(param)
+            .or_else(|| param.child_by_field_name("name"))
+            .filter(|n| n.kind() == "identifier")
+        else {
+            continue;
+        };
+        core.push_callback_param(
+            text(ident, source),
+            at,
+            callee_expr.clone(),
+            arg_index,
+            param_index,
+        );
+    }
 }
 
 #[cfg(test)]

@@ -672,6 +672,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             _ => None,
         };
         let wrapped_return = generator || asynchronous || promise_payload.is_some();
+        let sig = extract_ts_callable_signature(root, source, annotation.clone());
         let mut result = ValueFlowFacts {
             return_type: if wrapped_return {
                 Some(TypeExpr::Unknown)
@@ -680,6 +681,9 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             },
             ..Default::default()
         };
+        if let Some(sig) = sig {
+            result.callable_signature = Some(sig);
+        }
         let async_return_type = if generator {
             None
         } else if asynchronous {
@@ -690,11 +694,13 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         if let Some(async_return_type) = async_return_type {
             result.async_return_type = Some(async_return_type);
         }
-        Self {
+        let mut collector = Self {
             asynchronous,
             generator,
             ..Self::empty(root, source, result)
-        }
+        };
+        record_ts_callback_params(root, source, &mut collector.core);
+        collector
     }
 
     fn record_write(&mut self, node: Syntax<'tree>) {
@@ -901,51 +907,24 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 node.child_by_field_name("name"),
                 node.child_by_field_name("value"),
             ) {
-                if pattern.kind() == "object_pattern" && pattern.named_child_count() <= 32 {
+                if matches!(pattern.kind(), "object_pattern" | "array_pattern")
+                    && pattern.named_child_count() <= 32
+                {
                     let source_value = value(initializer, source);
-                    let mut projected = false;
-                    let mut cursor = pattern.walk();
-                    for item in pattern.named_children(&mut cursor) {
-                        let pair = if item.kind() == "shorthand_property_identifier_pattern" {
-                            Some((text(item, source), text(item, source)))
-                        } else {
-                            match (
-                                item.child_by_field_name("key"),
-                                item.child_by_field_name("value"),
-                            ) {
-                                (Some(key), Some(local))
-                                    if local.kind() == "identifier"
-                                        && matches!(
-                                            key.kind(),
-                                            "property_identifier" | "identifier"
-                                        ) =>
-                                {
-                                    Some((text(key, source), text(local, source)))
-                                }
-                                _ => None,
-                            }
-                        };
-                        if let Some((member, local)) = pair {
-                            self.core.push_binding(
-                                local.to_owned(),
-                                position(node),
-                                scoped(ValueExpr::Unknown),
-                                binding_conditional,
-                            );
-                            if !matches!(source_value, ValueExpr::Unknown) {
-                                projected = true;
-                                self.core.push_binding(
-                                    local.to_owned(),
-                                    completed(node),
-                                    scoped(ValueExpr::Project {
-                                        value: Box::new(source_value.clone()),
-                                        member: member.to_owned(),
-                                    }),
-                                    binding_conditional,
-                                );
-                            }
-                        }
-                    }
+                    let mut bindings = Vec::new();
+                    ValueFlowCollectorCore::collect_destructuring_bindings(
+                        pattern,
+                        source_value,
+                        source,
+                        &mut bindings,
+                    );
+                    let projected = self.core.push_destructured_bindings(
+                        bindings,
+                        completed(node),
+                        Some(position(node)),
+                        binding_conditional,
+                        scoped,
+                    );
                     if immutable && !binding_conditional && projected {
                         self.core.facts_mut().immutable_initializers.push(completed(node));
                     }
@@ -1204,6 +1183,180 @@ pub(super) fn extract_with_return(
     _documented_return: impl FnOnce() -> Option<TypeExpr>,
 ) -> ValueFlowFacts {
     crate::ast::visitor::collect(root, Collector::new(root, source))
+}
+
+fn extract_ts_callable_signature(
+    root: Syntax<'_>,
+    source: &str,
+    return_type: Option<TypeExpr>,
+) -> Option<crate::semantic::CallableSignature> {
+    if !matches!(
+        root.kind(),
+        "function_declaration"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "method_signature"
+            | "generator_function_declaration"
+    ) {
+        return None;
+    }
+    let has_receiver = matches!(root.kind(), "method_definition" | "method_signature");
+    let mut params = Vec::new();
+    let mut has_callback_param = false;
+    if let Some(parameters) = root.child_by_field_name("parameters") {
+        let mut cursor = parameters.walk();
+        for parameter in parameters.named_children(&mut cursor) {
+            if params.len() >= 128 {
+                break;
+            }
+            let name = parameter
+                .child_by_field_name("pattern")
+                .or_else(|| parameter.child_by_field_name("name"))
+                .or_else(|| (parameter.kind() == "identifier").then_some(parameter))
+                .filter(|node| node.kind() == "identifier")
+                .map(|node| text(node, source).trim().to_owned());
+            let mut callback_params = Vec::new();
+            let param_ty = parameter
+                .child_by_field_name("type")
+                .map(|annotation| {
+                    callback_params = extract_ts_function_type_params(annotation, source);
+                    if !callback_params.is_empty() {
+                        has_callback_param = true;
+                    }
+                    named_type(annotation, source)
+                })
+                .unwrap_or(TypeExpr::Unknown);
+            params.push(crate::semantic::CallableParameter {
+                name,
+                type_expr: param_ty,
+                callback_params,
+            });
+        }
+    }
+    if !has_callback_param {
+        return None;
+    }
+    let sig = crate::semantic::CallableSignature {
+        has_receiver,
+        params,
+        return_type,
+    };
+    sig.valid().then_some(sig)
+}
+
+fn extract_ts_function_type_params(annotation: Syntax<'_>, source: &str) -> Vec<TypeExpr> {
+    let mut target = annotation;
+    if target.kind() == "type_annotation" {
+        let mut cursor = target.walk();
+        let Some(inner) = target.named_children(&mut cursor).next() else {
+            return Vec::new();
+        };
+        target = inner;
+    }
+    if target.kind() != "function_type" {
+        return Vec::new();
+    }
+    let Some(parameters) = target.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut cursor = parameters.walk();
+    let mut out = Vec::new();
+    for parameter in parameters.named_children(&mut cursor) {
+        if out.len() >= 32 {
+            break;
+        }
+        let ty = parameter
+            .child_by_field_name("type")
+            .map_or(TypeExpr::Unknown, |node| named_type(node, source));
+        out.push(ty);
+    }
+    out
+}
+
+fn record_ts_callback_params(
+    root: Syntax<'_>,
+    source: &str,
+    core: &mut ValueFlowCollectorCore,
+) {
+    if !matches!(root.kind(), "arrow_function" | "function_expression") {
+        return;
+    }
+    let Some(arguments) = root.parent().filter(|parent| parent.kind() == "arguments") else {
+        return;
+    };
+    let Some(call) = arguments
+        .parent()
+        .filter(|parent| parent.kind() == "call_expression")
+    else {
+        return;
+    };
+    let mut cursor = arguments.walk();
+    let Some(arg_index) = arguments
+        .named_children(&mut cursor)
+        .filter(|node| node.kind() != "comment")
+        .position(|node| node.id() == root.id())
+    else {
+        return;
+    };
+    let Some(callee_expr) = callback_call_expr(call, source) else {
+        return;
+    };
+    let at = position(root);
+    if let Some(parameter) = root
+        .child_by_field_name("parameter")
+        .filter(|node| node.kind() == "identifier")
+    {
+        core.push_callback_param(text(parameter, source), at, callee_expr, arg_index, 0);
+        return;
+    }
+    let Some(parameters) = root.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut p_cursor = parameters.walk();
+    for (param_index, parameter) in parameters.named_children(&mut p_cursor).enumerate() {
+        if parameter.child_by_field_name("type").is_some() {
+            continue;
+        }
+        let Some(ident) = parameter
+            .child_by_field_name("pattern")
+            .or_else(|| parameter.child_by_field_name("name"))
+            .or_else(|| (parameter.kind() == "identifier").then_some(parameter))
+            .filter(|node| node.kind() == "identifier")
+        else {
+            continue;
+        };
+        core.push_callback_param(
+            text(ident, source),
+            at,
+            callee_expr.clone(),
+            arg_index,
+            param_index,
+        );
+    }
+}
+
+fn callback_call_expr(call: Syntax<'_>, source: &str) -> Option<ValueExpr> {
+    let function = call.child_by_field_name("function")?;
+    if function.kind() == "member_expression" {
+        let object = function.child_by_field_name("object")?;
+        let member = function
+            .child_by_field_name("property")
+            .filter(|node| node.kind() == "property_identifier")?;
+        let receiver = value(object, source);
+        if !matches!(receiver, ValueExpr::Unknown) {
+            return Some(ValueExpr::Call {
+                callee: text(member, source).to_owned(),
+                site: Some(crate::semantic::CallSiteEvidence {
+                    position: position(call),
+                    receiver: Some(Box::new(receiver)),
+                    arguments: Vec::new(),
+                }),
+            });
+        }
+    }
+    let expr = call_value(call, source, 0);
+    (!matches!(expr, ValueExpr::Unknown)).then_some(expr)
 }
 
 // Occurrence-local lexical proof used by framework handlers, never a scope-exit collector.

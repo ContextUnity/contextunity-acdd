@@ -48,7 +48,8 @@ fn chained_member_receiver<'a, 'idx>(
                         }
                     })
             }
-            value_flow::TypeTarget::ConfiguredReceiver { .. } => {
+            value_flow::TypeTarget::ConfiguredReceiver { .. }
+            | value_flow::TypeTarget::Collection { .. } => {
                 match value_flow::SemanticResolver::resolve_member(
                     semantic_context,
                     receiver.as_ref(),

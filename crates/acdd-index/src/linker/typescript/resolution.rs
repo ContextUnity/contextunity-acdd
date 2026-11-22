@@ -34,7 +34,9 @@ pub(in crate::linker) fn builtin_property_chain(
             if parts.peek().is_none() {
                 valid = true;
             }
-        } else if parts.peek().is_none() && profile.builtin_member(&current, part) {
+        } else if parts.peek().is_none()
+            && semantic_context.lookup_builtin_member(path, profile.id(), &current, part)
+        {
             valid = true;
             break;
         } else {

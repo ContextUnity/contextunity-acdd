@@ -103,6 +103,7 @@ impl<'a> Context<'a> {
             receiver_types: HashMap::new(),
             argument_factories: HashMap::new(),
             hierarchy_results: HashMap::new(),
+            hierarchy_return_specs: HashMap::new(),
             component_builtins: HashMap::new(),
             component_candidate_ids: HashMap::new(),
             component_candidates: Vec::new(),
@@ -123,6 +124,10 @@ impl<'a> Context<'a> {
         };
         let mut hierarchy_cache: HashMap<usize, Option<std::sync::Arc<HierarchyAuthorities>>> =
             HashMap::new();
+        let mut hierarchy_specs_cache: HashMap<
+            usize,
+            Option<std::sync::Arc<HashMap<String, languages::manifests::syntax::ReturnTypeSpec>>>,
+        > = HashMap::new();
         let mut receiver_types_cache: HashMap<
             (usize, &'static str),
             Option<std::sync::Arc<ReceiverTypes>>,
@@ -142,36 +147,55 @@ impl<'a> Context<'a> {
                 let cached = hierarchy_cache.entry(rules_ptr).or_insert_with(|| {
                     pinned_rules.push(std::sync::Arc::clone(&rules));
                     let mut map = HashMap::new();
-                    for (origin_pack, base) in dependencies.hierarchy_return_targets_for_path(path)
+                    let mut specs = HashMap::new();
+                    for (origin_pack, raw_base) in
+                        dependencies.hierarchy_return_targets_for_path(path)
                     {
-                        if let Some((pack, rule)) = dependencies.class_hierarchy_authority_for_path(
-                            path,
-                            base,
-                            Some(origin_pack),
-                        ) {
-                            map.insert(
-                                (
-                                    interner
-                                        .lookup_symbol(pack)
-                                        .expect("hierarchy pack is interned"),
-                                    interner
-                                        .lookup_symbol(base)
-                                        .expect("hierarchy base is interned"),
-                                ),
-                                std::sync::Arc::new(
-                                    super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
-                                        pack: pack.to_owned(),
-                                        rule: std::sync::Arc::new(rule.clone()),
-                                    },
-                                ),
+                        if let Ok(spec) =
+                            languages::manifests::syntax::ReturnTypeSpec::parse(raw_base)
+                        {
+                            let mut targets: Vec<String> = Vec::new();
+                            spec.compiled().visit_named(&mut |name: &str| {
+                                if name != "Item" && !targets.iter().any(|existing| existing == name)
+                                {
+                                    targets.push(name.to_owned());
+                                }
+                            });
+                            specs.insert(raw_base.to_owned(), spec);
+                            for target in targets {
+                                insert_hierarchy_authority(
+                                    dependencies,
+                                    interner,
+                                    path,
+                                    origin_pack,
+                                    &target,
+                                    &mut map,
+                                );
+                            }
+                        } else {
+                            insert_hierarchy_authority(
+                                dependencies,
+                                interner,
+                                path,
+                                origin_pack,
+                                raw_base,
+                                &mut map,
                             );
                         }
                     }
+                    hierarchy_specs_cache.insert(
+                        rules_ptr,
+                        (!specs.is_empty()).then(|| std::sync::Arc::new(specs)),
+                    );
                     (!map.is_empty()).then(|| std::sync::Arc::new(map))
                 });
                 if let Some(hierarchy) = cached {
                     let path_id = context.interner.lookup_path(path).expect("catalog path");
                     context.hierarchy_results.insert(path_id, hierarchy.clone());
+                }
+                if let Some(Some(specs)) = hierarchy_specs_cache.get(&rules_ptr) {
+                    let path_id = context.interner.lookup_path(path).expect("catalog path");
+                    context.hierarchy_return_specs.insert(path_id, specs.clone());
                 }
             }
             let language = languages::by_id(&module.language)
@@ -432,4 +456,30 @@ impl<'a> Context<'a> {
         }
         context
     }
+}
+
+fn insert_hierarchy_authority(
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+    interner: &crate::interner::LinkerInterner<'_>,
+    path: &str,
+    origin_pack: &str,
+    base: &str,
+    map: &mut HierarchyAuthorities,
+) {
+    let Some((pack, rule)) =
+        dependencies.class_hierarchy_authority_for_path(path, base, Some(origin_pack))
+    else {
+        return;
+    };
+    let (Some(pack_id), Some(base_id)) = (interner.lookup_symbol(pack), interner.lookup_symbol(base))
+    else {
+        return;
+    };
+    map.insert(
+        (pack_id, base_id),
+        std::sync::Arc::new(super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+            pack: pack.to_owned(),
+            rule: std::sync::Arc::new(rule.clone()),
+        }),
+    );
 }

@@ -44,13 +44,28 @@ struct ReceiverTypes {
 
 impl ReceiverTypes {
     fn iter(&self) -> impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule> {
+        self.iter_with_meta().map(|(_, _, receiver)| receiver)
+    }
+
+    fn iter_with_meta(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &str,
+            &str,
+            &languages::manifests::syntax::ReceiverTypeRule,
+        ),
+    > {
         self.indices
             .iter()
-            .filter_map(|&index| match &self.rules.syntax_rules[index].operation {
-                languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } => {
-                    Some(receiver)
+            .filter_map(|&index| {
+                let rule = &self.rules.syntax_rules[index];
+                match &rule.operation {
+                    languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } => {
+                        Some((rule.pack.as_str(), rule.id.as_str(), receiver))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
     }
 }
@@ -139,6 +154,10 @@ pub(crate) struct Context<'a> {
     receiver_types: HashMap<PathId, std::sync::Arc<ReceiverTypes>>,
     argument_factories: HashMap<PathId, std::sync::Arc<ArgumentFactories>>,
     hierarchy_results: HashMap<PathId, std::sync::Arc<HierarchyAuthorities>>,
+    hierarchy_return_specs: HashMap<
+        PathId,
+        std::sync::Arc<HashMap<String, languages::manifests::syntax::ReturnTypeSpec>>,
+    >,
     component_builtins: HashMap<PathId, HashMap<SymbolId, String>>,
     component_candidate_ids: HashMap<ComponentScope, usize>,
     component_candidates: Vec<HashMap<SymbolId, Vec<&'a Node>>>,
@@ -434,7 +453,9 @@ impl<'a> Context<'a> {
         receiver: &str,
         member: &str,
     ) -> Option<String> {
-        if let Some(receiver) = self.receiver_type(path, receiver) {
+        let lookup_name = super::typescript::semantic_context::typed_dom_receiver(receiver)
+            .unwrap_or(receiver);
+        if let Some(receiver) = self.receiver_type(path, lookup_name) {
             return receiver.properties.get(member).cloned();
         }
         super::typescript::semantic_context::typed_dom_property(receiver, member).map(str::to_owned)
@@ -445,6 +466,111 @@ impl<'a> Context<'a> {
     ) -> Option<impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule>> {
         let path = self.path_id(path)?;
         self.receiver_types.get(&path).map(|rules| rules.iter())
+    }
+
+    pub(super) fn receiver_types_with_meta_for_path(
+        &self,
+        path: &str,
+    ) -> Option<
+        impl Iterator<
+            Item = (
+                &str,
+                &str,
+                &languages::manifests::syntax::ReceiverTypeRule,
+            ),
+        >,
+    > {
+        let path = self.path_id(path)?;
+        self.receiver_types
+            .get(&path)
+            .map(|rules| rules.iter_with_meta())
+    }
+
+    pub(super) fn receiver_rule_with_meta(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Option<(&str, &str, &languages::manifests::syntax::ReceiverTypeRule)> {
+        let mut candidates = self
+            .receiver_types_with_meta_for_path(path)?
+            .filter(|(_, _, receiver)| receiver.name == name);
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    }
+
+    pub(in crate::linker) fn lookup_builtin_member(
+        &self,
+        path: &str,
+        language: &str,
+        receiver: &str,
+        member: &str,
+    ) -> bool {
+        let normalized = if matches!(language, "typescript" | "javascript" | "vue") {
+            let unprefixed = receiver.strip_prefix("Web.").unwrap_or(receiver);
+            super::typescript::semantic_context::typed_dom_receiver(unprefixed).unwrap_or(unprefixed)
+        } else {
+            receiver
+        };
+        if self
+            .receiver_type(path, normalized)
+            .is_some_and(|rule| rule.members.iter().any(|allowed| allowed == member))
+        {
+            return true;
+        }
+        languages::by_id(language).is_some_and(|profile| {
+            profile.builtin_member(receiver, member) || profile.builtin_member(normalized, member)
+        })
+    }
+
+    pub(in crate::linker) fn polymorphic_implementors(
+        &self,
+        abstract_type: &'a Node,
+        member: &str,
+        contract_decl: &'a Node,
+    ) -> Option<Vec<&'a Node>> {
+        #[cfg(feature = "lang-typescript")]
+        if matches!(
+            abstract_type.language.as_str(),
+            "typescript" | "javascript" | "vue"
+        ) && (abstract_type.kind == "interface"
+            || abstract_type.details["is_abstract"] == true)
+        {
+            let index = self.typescript?;
+            let impls = index.implementors(abstract_type.id.as_str());
+            if impls.is_empty() {
+                return None;
+            }
+            let methods: Vec<_> = impls
+                .iter()
+                .filter_map(|impl_class| {
+                    match index.lookup(impl_class, member, false) {
+                        [node] if node.id != contract_decl.id => Some(*node),
+                        _ => None,
+                    }
+                })
+                .collect();
+            return (!methods.is_empty()).then_some(methods);
+        }
+        if abstract_type.language == "python"
+            && super::python::resolution::has_protocol_or_abc_base(abstract_type)
+        {
+            let index = self.python?;
+            let impls = index.implementors(abstract_type.id.as_str());
+            if impls.is_empty() {
+                return None;
+            }
+            let methods: Vec<_> = impls
+                .iter()
+                .filter_map(|impl_class| match index.lookup(impl_class, member, false) {
+                    super::receivers::Member::Local(node) if node.id != contract_decl.id => {
+                        Some(node)
+                    }
+                    _ => None,
+                })
+                .collect();
+            return (!methods.is_empty()).then_some(methods);
+        }
+        None
     }
     pub(super) fn hierarchy_authority_for_base(
         &self,
@@ -1744,6 +1870,31 @@ impl<'a> Context<'a> {
                     Member::External(module, *import_line, None)
                 }
             }
+            TypeTarget::Promise(_) => {
+                if self.lookup_builtin_member(&caller.path, &caller.language, "Promise", member) {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
+            TypeTarget::Collection { base, .. } => {
+                if let Some((_, authority)) = self.hierarchy_authority_for_base(&caller.path, base)
+                {
+                    if let super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                        rule, ..
+                    } = authority.as_ref()
+                    {
+                        if rule.members.iter().any(|allowed| allowed == member) {
+                            return Member::Builtin;
+                        }
+                    }
+                }
+                if self.lookup_builtin_member(&caller.path, &caller.language, base, member) {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
             TypeTarget::Builtin(name) => {
                 #[cfg(feature = "lang-rust")]
                 if caller.language == "rust"
@@ -1754,13 +1905,7 @@ impl<'a> Context<'a> {
                 {
                     return Member::External("rayon", 0, None);
                 }
-                let standard = self
-                    .receiver_type(&caller.path, name)
-                    .is_some_and(|receiver| {
-                        receiver.members.iter().any(|allowed| allowed == member)
-                    })
-                    || languages::by_id(&caller.language)
-                        .is_some_and(|profile| profile.builtin_member(name, member));
+                let standard = self.lookup_builtin_member(&caller.path, &caller.language, name, member);
                 #[cfg(feature = "lang-rust")]
                 if caller.language == "rust" {
                     return self.lookup_rust_builtin_member(

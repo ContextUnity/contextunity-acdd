@@ -144,6 +144,14 @@ new = { kind = "self" }
 from = { kind = "self" }
 from_utf8 = { kind = "receiver", base = "std::result::Result" }
 from_utf8_lossy = { kind = "receiver", base = "std::string::String" }
+as_str = { kind = "receiver", base = "str" }
+trim = { kind = "receiver", base = "str" }
+trim_start = { kind = "receiver", base = "str" }
+trim_end = { kind = "receiver", base = "str" }
+split_once = { kind = "receiver", base = "std::option::Option<(&str, &str)>" }
+rsplit_once = { kind = "receiver", base = "std::option::Option<(&str, &str)>" }
+strip_prefix = { kind = "receiver", base = "std::option::Option<&str>" }
+strip_suffix = { kind = "receiver", base = "std::option::Option<&str>" }
 cmp = { kind = "receiver", base = "std::cmp::Ordering" }
 
 [[class_hierarchy_receivers]]
@@ -269,14 +277,25 @@ members = ["to_owned", "into", "as_bytes", "as_ptr", "as_mut_ptr", "len", "is_em
 to_owned = { kind = "receiver", base = "std::string::String" }
 into = { kind = "receiver", base = "std::string::String" }
 as_bytes = { kind = "receiver", base = "Slice" }
-lines = { kind = "receiver", base = "Iterator" }
-split = { kind = "receiver", base = "Iterator" }
-split_inclusive = { kind = "receiver", base = "Iterator" }
-split_terminator = { kind = "receiver", base = "Iterator" }
-rsplit_terminator = { kind = "receiver", base = "Iterator" }
-split_whitespace = { kind = "receiver", base = "Iterator" }
-chars = { kind = "receiver", base = "Iterator" }
-bytes = { kind = "receiver", base = "Iterator" }
+trim = { kind = "receiver", base = "str" }
+trim_start = { kind = "receiver", base = "str" }
+trim_end = { kind = "receiver", base = "str" }
+split_once = { kind = "receiver", base = "std::option::Option<(&str, &str)>" }
+rsplit_once = { kind = "receiver", base = "std::option::Option<(&str, &str)>" }
+strip_prefix = { kind = "receiver", base = "std::option::Option<&str>" }
+strip_suffix = { kind = "receiver", base = "std::option::Option<&str>" }
+find = { kind = "receiver", base = "std::option::Option<usize>" }
+rfind = { kind = "receiver", base = "std::option::Option<usize>" }
+lines = { kind = "receiver", base = "Iterator<&str>" }
+split = { kind = "receiver", base = "Iterator<&str>" }
+rsplit = { kind = "receiver", base = "Iterator<&str>" }
+split_inclusive = { kind = "receiver", base = "Iterator<&str>" }
+split_terminator = { kind = "receiver", base = "Iterator<&str>" }
+rsplit_terminator = { kind = "receiver", base = "Iterator<&str>" }
+split_whitespace = { kind = "receiver", base = "Iterator<&str>" }
+chars = { kind = "receiver", base = "Iterator<char>" }
+char_indices = { kind = "receiver", base = "Iterator<(usize, char)>" }
+bytes = { kind = "receiver", base = "Iterator<u8>" }
 cmp = { kind = "receiver", base = "std::cmp::Ordering" }
 
 [[class_hierarchy_receivers]]

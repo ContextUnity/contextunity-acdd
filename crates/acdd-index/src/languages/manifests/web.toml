@@ -57,22 +57,22 @@ operation = { kind = "receiver_type", receiver = { name = "HTMLScriptElement", m
 [[syntax_rules]]
 id = "webidl-document"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Document", members = ["querySelector", "querySelectorAll", "getElementById", "getElementsByClassName", "getElementsByTagName", "createElement", "createElementNS", "createTextNode", "createDocumentFragment", "createEvent", "addEventListener", "removeEventListener", "dispatchEvent", "hasFocus", "execCommand"], properties = { body = "HTMLElement", head = "HTMLElement", documentElement = "HTMLElement", defaultView = "Window", activeElement = "Element", cookie = "string", location = "Location", readyState = "string", title = "string", hidden = "boolean", visibilityState = "string", forms = "HTMLCollection", images = "HTMLCollection", links = "HTMLCollection", scripts = "HTMLCollection", scrollingElement = "Element", currentScript = "HTMLScriptElement" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Document", members = ["querySelector", "querySelectorAll", "getElementById", "getElementsByClassName", "getElementsByTagName", "createElement", "createElementNS", "createTextNode", "createDocumentFragment", "createEvent", "addEventListener", "removeEventListener", "dispatchEvent", "hasFocus", "execCommand"], properties = { body = "HTMLElement", head = "HTMLElement", documentElement = "HTMLElement", defaultView = "Window", activeElement = "Element", cookie = "string", location = "Location", readyState = "string", title = "string", hidden = "boolean", visibilityState = "string", forms = "HTMLCollection", images = "HTMLCollection", links = "HTMLCollection", scripts = "HTMLCollection", scrollingElement = "Element", currentScript = "HTMLScriptElement" }, member_returns = { querySelector = "Option<Element>", querySelectorAll = "NodeList<Element>", getElementById = "Option<Element>", getElementsByClassName = "HTMLCollection", getElementsByTagName = "HTMLCollection", createElement = "HTMLElement", createElementNS = "Element", createDocumentFragment = "DocumentFragment" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-window"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Window", members = ["addEventListener", "removeEventListener", "dispatchEvent", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame", "fetch", "open", "close", "focus", "blur", "scroll", "scrollTo", "scrollBy", "matchMedia", "getComputedStyle", "getSelection", "atob", "btoa", "postMessage", "alert", "confirm", "prompt"], properties = { document = "Document", location = "Location", history = "History", navigator = "Navigator", localStorage = "Storage", sessionStorage = "Storage", performance = "Performance", crypto = "Crypto", innerWidth = "number", innerHeight = "number", scrollX = "number", scrollY = "number", devicePixelRatio = "number" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Window", members = ["addEventListener", "removeEventListener", "dispatchEvent", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame", "fetch", "open", "close", "focus", "blur", "scroll", "scrollTo", "scrollBy", "matchMedia", "getComputedStyle", "getSelection", "atob", "btoa", "postMessage", "alert", "confirm", "prompt"], properties = { document = "Document", location = "Location", history = "History", navigator = "Navigator", localStorage = "Storage", sessionStorage = "Storage", performance = "Performance", crypto = "Crypto", innerWidth = "number", innerHeight = "number", scrollX = "number", scrollY = "number", devicePixelRatio = "number" }, member_returns = { fetch = "Promise<Response>", getComputedStyle = "CSSStyleDeclaration" }, call_returns = { fetch = "Promise<Response>" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-element"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Element", members = ["querySelector", "querySelectorAll", "getAttribute", "setAttribute", "removeAttribute", "hasAttribute", "toggleAttribute", "closest", "matches", "addEventListener", "removeEventListener", "dispatchEvent", "appendChild", "removeChild", "replaceChild", "insertBefore", "insertAdjacentHTML", "insertAdjacentElement", "insertAdjacentText", "append", "prepend", "after", "before", "remove", "replaceWith", "cloneNode", "contains", "focus", "blur", "click", "scrollIntoView", "getBoundingClientRect", "getClientRects", "setPointerCapture", "releasePointerCapture", "requestFullscreen"], properties = { classList = "DOMTokenList", style = "CSSStyleDeclaration", dataset = "DOMStringMap", children = "HTMLCollection", parentElement = "Element", firstElementChild = "Element", lastElementChild = "Element", nextElementSibling = "Element", previousElementSibling = "Element", ownerDocument = "Document", id = "string", className = "string", tagName = "string", innerHTML = "string", outerHTML = "string", textContent = "string", innerText = "string", clientWidth = "number", clientHeight = "number", scrollTop = "number", scrollLeft = "number", scrollWidth = "number", scrollHeight = "number", offsetWidth = "number", offsetHeight = "number" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Element", members = ["querySelector", "querySelectorAll", "getAttribute", "setAttribute", "removeAttribute", "hasAttribute", "toggleAttribute", "closest", "matches", "addEventListener", "removeEventListener", "dispatchEvent", "appendChild", "removeChild", "replaceChild", "insertBefore", "insertAdjacentHTML", "insertAdjacentElement", "insertAdjacentText", "append", "prepend", "after", "before", "remove", "replaceWith", "cloneNode", "contains", "focus", "blur", "click", "scrollIntoView", "getBoundingClientRect", "getClientRects", "setPointerCapture", "releasePointerCapture", "requestFullscreen"], properties = { classList = "DOMTokenList", style = "CSSStyleDeclaration", dataset = "DOMStringMap", children = "HTMLCollection", parentElement = "Element", firstElementChild = "Element", lastElementChild = "Element", nextElementSibling = "Element", previousElementSibling = "Element", ownerDocument = "Document", id = "string", className = "string", tagName = "string", innerHTML = "string", outerHTML = "string", textContent = "string", innerText = "string", clientWidth = "number", clientHeight = "number", scrollTop = "number", scrollLeft = "number", scrollWidth = "number", scrollHeight = "number", offsetWidth = "number", offsetHeight = "number" }, member_returns = { querySelector = "Option<Element>", querySelectorAll = "NodeList<Element>", closest = "Option<Element>", appendChild = "Element", removeChild = "Element", replaceChild = "Element", insertBefore = "Element", cloneNode = "Element", getBoundingClientRect = "DOMRect" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-html-element"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "HTMLElement", members = ["querySelector", "querySelectorAll", "getAttribute", "setAttribute", "removeAttribute", "hasAttribute", "toggleAttribute", "closest", "matches", "addEventListener", "removeEventListener", "dispatchEvent", "appendChild", "removeChild", "replaceChild", "insertBefore", "insertAdjacentHTML", "insertAdjacentElement", "insertAdjacentText", "append", "prepend", "after", "before", "remove", "replaceWith", "cloneNode", "contains", "focus", "blur", "click", "scrollIntoView", "getBoundingClientRect", "getClientRects"], properties = { classList = "DOMTokenList", style = "CSSStyleDeclaration", dataset = "DOMStringMap", children = "HTMLCollection", parentElement = "Element", firstElementChild = "Element", lastElementChild = "Element", nextElementSibling = "Element", previousElementSibling = "Element", ownerDocument = "Document", id = "string", className = "string", tagName = "string", innerHTML = "string", outerHTML = "string", textContent = "string", innerText = "string", hidden = "boolean", tabIndex = "number" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "HTMLElement", members = ["querySelector", "querySelectorAll", "getAttribute", "setAttribute", "removeAttribute", "hasAttribute", "toggleAttribute", "closest", "matches", "addEventListener", "removeEventListener", "dispatchEvent", "appendChild", "removeChild", "replaceChild", "insertBefore", "insertAdjacentHTML", "insertAdjacentElement", "insertAdjacentText", "append", "prepend", "after", "before", "remove", "replaceWith", "cloneNode", "contains", "focus", "blur", "click", "scrollIntoView", "getBoundingClientRect", "getClientRects"], properties = { classList = "DOMTokenList", style = "CSSStyleDeclaration", dataset = "DOMStringMap", children = "HTMLCollection", parentElement = "Element", firstElementChild = "Element", lastElementChild = "Element", nextElementSibling = "Element", previousElementSibling = "Element", ownerDocument = "Document", id = "string", className = "string", tagName = "string", innerHTML = "string", outerHTML = "string", textContent = "string", innerText = "string", hidden = "boolean", tabIndex = "number" }, member_returns = { querySelector = "Option<Element>", querySelectorAll = "NodeList<Element>", closest = "Option<Element>", appendChild = "Element", removeChild = "Element", replaceChild = "Element", insertBefore = "Element", cloneNode = "Element", getBoundingClientRect = "DOMRect" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-event"
@@ -127,12 +127,12 @@ operation = { kind = "receiver_type", receiver = { name = "Headers", members = [
 [[syntax_rules]]
 id = "webidl-request"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Request", members = ["clone", "json", "text", "arrayBuffer", "blob", "formData"], properties = { url = "string", method = "string", headers = "Headers", body = "ReadableStream", signal = "AbortSignal" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Request", members = ["clone", "json", "text", "arrayBuffer", "blob", "formData"], properties = { url = "string", method = "string", headers = "Headers", body = "ReadableStream", signal = "AbortSignal" }, member_returns = { clone = "Request", blob = "Promise<Blob>", formData = "Promise<FormData>" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-response"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Response", members = ["clone", "json", "text", "arrayBuffer", "blob", "formData"], properties = { url = "string", headers = "Headers", body = "ReadableStream", ok = "boolean", status = "number", statusText = "string", redirected = "boolean", type = "string" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Response", members = ["clone", "json", "text", "arrayBuffer", "blob", "formData"], properties = { url = "string", headers = "Headers", body = "ReadableStream", ok = "boolean", status = "number", statusText = "string", redirected = "boolean", type = "string" }, member_returns = { clone = "Response", blob = "Promise<Blob>", formData = "Promise<FormData>" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-abort-controller"
@@ -202,12 +202,12 @@ operation = { kind = "receiver_type", receiver = { name = "TextDecoder", members
 [[syntax_rules]]
 id = "webidl-blob"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "Blob", members = ["text", "arrayBuffer", "slice", "stream", "bytes"], properties = { size = "number", type = "string" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "Blob", members = ["text", "arrayBuffer", "slice", "stream", "bytes"], properties = { size = "number", type = "string" }, member_returns = { slice = "Blob", stream = "ReadableStream" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-file"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "File", members = ["text", "arrayBuffer", "slice", "stream", "bytes"], properties = { name = "string", lastModified = "number", size = "number", type = "string" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "File", members = ["text", "arrayBuffer", "slice", "stream", "bytes"], properties = { name = "string", lastModified = "number", size = "number", type = "string" }, member_returns = { slice = "Blob", stream = "ReadableStream" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-file-reader"
@@ -217,19 +217,54 @@ operation = { kind = "receiver_type", receiver = { name = "FileReader", members 
 [[syntax_rules]]
 id = "webidl-node-list"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "NodeList", members = ["item", "forEach", "entries", "keys", "values"], properties = { length = "number" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "NodeList", members = ["item", "forEach", "entries", "keys", "values"], properties = { length = "number" }, member_returns = { item = "Option<Element>" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-html-collection"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "HTMLCollection", members = ["item", "namedItem"], properties = { length = "number" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "HTMLCollection", members = ["item", "namedItem"], properties = { length = "number" }, member_returns = { item = "Option<Element>", namedItem = "Option<Element>" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-readable-stream"
 language = "typescript"
-operation = { kind = "receiver_type", receiver = { name = "ReadableStream", members = ["getReader", "cancel", "pipeTo", "pipeThrough", "tee"], properties = { locked = "boolean" }, callback_callees = [], generic = false } }
+operation = { kind = "receiver_type", receiver = { name = "ReadableStream", members = ["getReader", "cancel", "pipeTo", "pipeThrough", "tee"], properties = { locked = "boolean" }, member_returns = { getReader = "ReadableStreamDefaultReader" }, callback_callees = [], generic = false } }
 
 [[syntax_rules]]
 id = "webidl-readable-stream-default-reader"
 language = "typescript"
 operation = { kind = "receiver_type", receiver = { name = "ReadableStreamDefaultReader", members = ["read", "cancel", "releaseLock"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-parent-node"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "ParentNode", members = ["querySelector", "querySelectorAll", "appendChild", "removeChild"], properties = { children = "HTMLCollection", firstElementChild = "Element", lastElementChild = "Element" }, member_returns = { querySelector = "Option<Element>", querySelectorAll = "NodeList<Element>" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-document-fragment"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "DocumentFragment", members = ["querySelector", "querySelectorAll", "appendChild", "removeChild"], properties = { children = "HTMLCollection", firstElementChild = "Element", lastElementChild = "Element" }, member_returns = { querySelector = "Option<Element>", querySelectorAll = "NodeList<Element>" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-child-node"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "ChildNode", members = ["appendChild", "removeChild"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-event-target"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "EventTarget", members = ["addEventListener", "removeEventListener", "dispatchEvent"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-storage"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "Storage", members = ["getItem", "setItem", "removeItem", "clear", "key", "length"], properties = { length = "number" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-url-search-params"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "URLSearchParams", members = ["append", "delete", "get", "getAll", "has", "set", "sort", "forEach", "entries", "keys", "values"], properties = {}, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "webidl-url"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "URL", members = ["hash", "host", "hostname", "href", "origin", "password", "pathname", "port", "protocol", "search", "searchParams", "username", "toString", "toJSON"], properties = { hash = "string", host = "string", hostname = "string", href = "string", origin = "string", password = "string", pathname = "string", port = "string", protocol = "string", search = "string", searchParams = "URLSearchParams", username = "string" }, callback_callees = [], generic = false } }

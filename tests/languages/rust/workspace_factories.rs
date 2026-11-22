@@ -664,3 +664,53 @@ fn module_imports_preserve_visibility_and_receiver_boundaries() {
         "type-changing and_then must not resolve to input type method: {and_then_finish:#?}"
     );
 }
+
+#[test]
+fn rust_compound_manifest_returns_tuple_option_result_and_sha2() {
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname='compound-rust'\nversion='0.1.0'\nedition='2021'\n[dependencies]\nrusqlite='0.31'\nsha2='0.10'\n",
+        ),
+        (
+            "src/lib.rs",
+            concat!(
+                "use sha2::{Digest, Sha256};\n",
+                "pub fn split_and_hash(s: &str, conn: &rusqlite::Connection) {\n",
+                "    let (left, right) = s.rsplit_once(\"::\").unwrap();\n",
+                "    left.trim();\n",
+                "    right.len();\n",
+                "    let mut stmt = conn.prepare(\"SELECT 1\").unwrap();\n",
+                "    let mut rows = stmt.query([]).unwrap();\n",
+                "    let row = rows.next().unwrap().unwrap();\n",
+                "    row.get(0).unwrap();\n",
+                "    let mut h = Sha256::new();\n",
+                "    h.update(b\"abc\");\n",
+                "    Sha256::new().chain_update(b\"def\").finalize();\n",
+                "}\n",
+            ),
+        ),
+    ];
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    for (path, source) in &files {
+        workspace.write(path, source);
+    }
+    let graph = ExtractorHarness::linked_with_root("rust", &files, Some(workspace.root())).graph;
+    for expression in [
+        "s.rsplit_once",
+        "left.trim",
+        "right.len",
+        "stmt.query",
+        "rows.next",
+        "row.get",
+        "h.update",
+        "Sha256::new().chain_update",
+    ] {
+        let entry = graph
+            .coverage
+            .iter()
+            .find(|c| c.path == "src/lib.rs" && c.expression == expression)
+            .unwrap_or_else(|| panic!("missing coverage for {expression}: {:#?}", graph.coverage));
+        assert_eq!(entry.status, "external", "{entry:#?}");
+    }
+}

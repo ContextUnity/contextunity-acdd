@@ -318,7 +318,12 @@ where
                         .split_once('.')
                         .is_some_and(|(receiver, member)| {
                             profile.builtin_type(receiver)
-                                && profile.builtin_member(receiver, member)
+                                && self.input.semantic_context.lookup_builtin_member(
+                                    self.path,
+                                    profile.id(),
+                                    receiver,
+                                    member,
+                                )
                         }))
                 || super::super::typescript::resolution::builtin_property_chain(
                     expression,

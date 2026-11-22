@@ -36,22 +36,22 @@ members = [
     "raw_bind_parameter", "parameter_count", "column_count", "column_names"
 ]
 [class_hierarchy_receivers.returns]
-query = { kind = "receiver", base = "rusqlite::Rows" }
+query = { kind = "receiver", base = "std::result::Result<rusqlite::Rows, rusqlite::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Rows", "Rows"]
 provider = "rusqlite"
 members = ["next"]
 [class_hierarchy_receivers.returns]
-next = { kind = "receiver", base = "rusqlite::Row" }
+next = { kind = "receiver", base = "std::result::Result<std::option::Option<rusqlite::Row>, rusqlite::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Row", "Row"]
 provider = "rusqlite"
 members = ["get", "get_ref", "get_unwrap"]
 [class_hierarchy_receivers.returns]
-get = { kind = "receiver", base = "Result" }
-get_ref = { kind = "receiver", base = "Result" }
+get = { kind = "receiver", base = "std::result::Result<_, rusqlite::Error>" }
+get_ref = { kind = "receiver", base = "std::result::Result<_, rusqlite::Error>" }
 
 # tree-sitter
 [[class_hierarchy_receivers]]
@@ -175,8 +175,8 @@ node = { kind = "receiver", base = "tree_sitter::Node" }
 [[class_hierarchy_receivers]]
 bases = ["sha2::Sha256", "Sha256", "sha2::Digest", "sha2::digest::Update", "Digest", "Update"]
 provider = "sha2"
-members = ["new", "update", "finalize", "finalize_reset", "reset"]
-returns = { "new" = { kind = "self" } }
+members = ["new", "update", "chain_update", "finalize", "finalize_reset", "reset"]
+returns = { "new" = { kind = "self" }, "chain_update" = { kind = "self" } }
 
 # tokio
 [[class_hierarchy_receivers]]
@@ -559,14 +559,6 @@ members = ["name", "shorthand", "target", "symbolic_target", "resolve", "peel_to
 resolve = { kind = "self" }
 peel_to_commit = { kind = "receiver", base = "git2::Commit" }
 peel_to_tree = { kind = "receiver", base = "git2::Tree" }
-
-# sha2
-[[class_hierarchy_receivers]]
-bases = ["sha2::Sha256", "Sha256"]
-provider = "sha2"
-members = ["new", "update", "chain_update", "finalize", "finalize_reset"]
-[class_hierarchy_receivers.returns]
-new = { kind = "self" }
 
 # uuid
 [[class_hierarchy_receivers]]

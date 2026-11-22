@@ -987,3 +987,85 @@ fn python_typing_chains_context_and_super_matrix() {
     ];
     assert_link_cases(cases);
 }
+
+#[test]
+fn agnostic_destructuring_callback_and_polymorphic_protocol_dispatch() {
+    use acdd_index::languages::manifests::syntax::ReturnTypeSpec;
+    assert!(ReturnTypeSpec::parse("django.db.models.QuerySet<Self>").is_ok());
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    let mut overflow_impls = String::from(
+        "from typing import Protocol\nclass ManyHandler(Protocol):\n    def handle(self): pass\n",
+    );
+    for idx in 0..9 {
+        overflow_impls.push_str(&format!(
+            "class Impl{idx}(ManyHandler):\n    def handle(self): pass\n"
+        ));
+    }
+    overflow_impls.push_str("def run_many(m: ManyHandler):\n    m.handle()\n");
+    w.write("overflow.py", &overflow_impls);
+    w.write(
+        "app.py",
+        concat!(
+            "from typing import Callable, Protocol\n",
+            "class User:\n    def save(self): pass\n",
+            "class Repo:\n    def close(self): pass\n",
+            "def make_pair() -> tuple[User, Repo]:\n    return (User(), Repo())\n",
+            "def run_callback(fn: Callable[[User], None]):\n    fn(User())\n",
+            "def destructure_and_callback():\n",
+            "    u, r = make_pair()\n",
+            "    u.save()\n",
+            "    r.close()\n",
+            "    run_callback(lambda cb_u: cb_u.save())\n",
+            "class Handler(Protocol):\n    def handle(self): pass\n",
+            "class EmailHandler(Handler):\n    def handle(self): pass\n",
+            "class SmsHandler(Handler):\n    def handle(self): pass\n",
+            "def dispatch(h: Handler):\n    h.handle()\n",
+        ),
+    );
+    w.build();
+    let conn = w.open();
+    for expr in ["u.save", "r.close", "cb_u.save"] {
+        let (status, evidence): (String, String) = conn
+            .query_row(
+                "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='app.py' AND x.expression=?1",
+                [expr],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("missing {expr}: {e}"));
+        assert_eq!(status, "resolved", "app.py: {expr} ({evidence})");
+    }
+    let bounded_possible: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence c ON c.evidence_id=e.confidence_id WHERE p.path='app.py' AND e.kind='possible_calls' AND c.evidence='possible'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bounded_possible, 2, "Handler has 2 concrete implementors");
+    let bounded_inferred: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes src ON src.node_hash=e.src_hash JOIN coverage_evidence c ON c.evidence_id=e.confidence_id WHERE p.path='app.py' AND src.name='dispatch' AND e.kind='calls' AND c.evidence='inferred'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bounded_inferred, 1, "dispatch retains abstract contract call");
+
+    let overflow_possible: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='overflow.py' AND e.kind='possible_calls'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(overflow_possible, 0, ">8 implementors must not emit truncated possible_calls");
+    let (overflow_status, overflow_ev): (String, String) = conn
+        .query_row(
+            "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='overflow.py' AND x.expression='m.handle'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(overflow_status, "unresolved", "{overflow_ev}");
+    assert!(overflow_ev.contains("Unknown/Incomplete"), "{overflow_ev}");
+}

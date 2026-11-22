@@ -46,6 +46,7 @@ fn is_stub_or_overload(node: &Node) -> bool {
 pub(crate) struct PythonReceivers<'a> {
     members: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
     supers: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
+    implementors: HashMap<&'a str, Vec<&'a Node>>,
 }
 
 impl<'a> PythonReceivers<'a> {
@@ -71,6 +72,7 @@ impl<'a> PythonReceivers<'a> {
             return Self {
                 members: HashMap::new(),
                 supers: HashMap::new(),
+                implementors: HashMap::new(),
             };
         }
         let mut bases: HashMap<&str, Vec<Base<'a>>> = HashMap::new();
@@ -255,6 +257,7 @@ impl<'a> PythonReceivers<'a> {
         Self {
             members: own,
             supers: HashMap::new(),
+            implementors: HashMap::new(),
         }
         .finish(&classes, &class_ids, &orders, &mut framework_receiver)
     }
@@ -281,6 +284,16 @@ impl<'a> PythonReceivers<'a> {
                 }
                 continue;
             };
+            let class_node = classes[id];
+            if !is_stub_or_overload(class_node)
+                && !super::resolution::has_protocol_or_abc_base(class_node)
+            {
+                for base in order.iter().skip(1) {
+                    if let Base::Local(base_id) = base {
+                        self.implementors.entry(base_id).or_default().push(class_node);
+                    }
+                }
+            }
             for super_call in [false, true] {
                 let mut inherited = HashMap::new();
                 for base in order.iter().skip(usize::from(super_call)) {
@@ -322,7 +335,15 @@ impl<'a> PythonReceivers<'a> {
                 }
             }
         }
+        for list in self.implementors.values_mut() {
+            list.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            list.dedup_by(|a, b| a.id == b.id);
+        }
         self
+    }
+
+    pub(crate) fn implementors(&self, base_id: &str) -> &[&'a Node] {
+        self.implementors.get(base_id).map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> Member<'a> {

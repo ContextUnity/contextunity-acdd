@@ -146,6 +146,15 @@ impl ScopeState {
     }
 }
 
+/// Extracted binding target produced by [`ValueFlowCollectorCore::collect_destructuring_bindings`].
+#[derive(Clone, Debug)]
+pub struct PatternBinding {
+    /// Bound local identifier name.
+    pub name: String,
+    /// Projected value expression for this binding slot.
+    pub value: ValueExpr,
+}
+
 /// Shared value-flow collector accumulator and scope stack.
 #[derive(Debug, Default)]
 pub struct ValueFlowCollectorCore {
@@ -187,9 +196,72 @@ impl ValueFlowCollectorCore {
         self.facts.bindings.push(BindingFact { name, position, value, conditional });
     }
 
+    /// Appends an inferred callback-parameter binding when `name` is non-empty.
+    pub fn push_callback_param(
+        &mut self,
+        name: &str,
+        position: SourcePosition,
+        callee: ValueExpr,
+        arg_index: usize,
+        param_index: usize,
+    ) {
+        let name = name.trim();
+        if !name.is_empty() {
+            self.push_binding(
+                name.to_owned(),
+                position,
+                ValueExpr::CallbackParam {
+                    callee: Box::new(callee),
+                    arg_index,
+                    param_index,
+                },
+                false,
+            );
+        }
+    }
+
     /// Appends a field assignment fact.
     pub fn push_field(&mut self, name: String, position: SourcePosition, value: ValueExpr, conditional: bool) {
         self.facts.fields.push(FieldFact { name, position, value, conditional });
+    }
+
+    /// Collects identifier, tuple/array index, and object/struct field bindings from a destructuring pattern.
+    pub fn collect_destructuring_bindings(
+        pattern: Syntax<'_>,
+        source_value: ValueExpr,
+        source: &str,
+        out: &mut Vec<PatternBinding>,
+    ) {
+        collect_pattern_bindings(pattern, source_value, source, 0, out);
+    }
+
+    /// Emits destructured bindings (and optional pre-declarations) into the active scope.
+    pub fn push_destructured_bindings(
+        &mut self,
+        bindings: Vec<PatternBinding>,
+        at: SourcePosition,
+        pre_declare_at: Option<SourcePosition>,
+        conditional: bool,
+        mut wrap: impl FnMut(ValueExpr) -> ValueExpr,
+    ) -> bool {
+        let mut projected = false;
+        for binding in bindings {
+            if let Some(pre_at) = pre_declare_at {
+                self.push_binding(
+                    binding.name.clone(),
+                    pre_at,
+                    wrap(ValueExpr::Unknown),
+                    conditional,
+                );
+            }
+            if !matches!(binding.value, ValueExpr::Unknown) {
+                projected = true;
+                self.push_binding(binding.name, at, wrap(binding.value), conditional);
+            } else if pre_declare_at.is_none() {
+                self.push_binding(binding.name, at, wrap(ValueExpr::Unknown), conditional);
+            }
+        }
+        projected
     }
 
     /// Sets the declared return type if not already recorded.
@@ -285,6 +357,23 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
                             value,
                             conditional,
                         );
+                    } else {
+                        let mut bindings = Vec::new();
+                        ValueFlowCollectorCore::collect_destructuring_bindings(
+                            name_node,
+                            value,
+                            self.source,
+                            &mut bindings,
+                        );
+                        if !bindings.is_empty() {
+                            self.core.push_destructured_bindings(
+                                bindings,
+                                position(name_node),
+                                None,
+                                conditional,
+                                |expr| expr,
+                            );
+                        }
                     }
                 }
             }
@@ -686,6 +775,137 @@ fn parse_type_expr(node: Syntax<'_>, source: &str, depth: usize) -> Option<TypeE
         return Some(TypeExpr::Named { name: base });
     }
     clean_type_name(text(node, source)).map(|name| TypeExpr::Named { name })
+}
+
+fn collect_pattern_bindings(
+    pattern: Syntax<'_>,
+    source_value: ValueExpr,
+    source: &str,
+    depth: usize,
+    out: &mut Vec<PatternBinding>,
+) {
+    if depth >= 4 || pattern.named_child_count() > 32 {
+        return;
+    }
+    if let Some(name) = identifier_name(pattern, source).or_else(|| {
+        (pattern.kind() == "shorthand_property_identifier_pattern")
+            .then(|| text(pattern, source).trim())
+            .filter(|name| !name.is_empty())
+    }) {
+        if name != "_" {
+            out.push(PatternBinding {
+                name: name.to_owned(),
+                value: source_value,
+            });
+        }
+        return;
+    }
+    match pattern.kind() {
+        "object_pattern" | "struct_pattern" | "record_pattern" => {
+            let mut cursor = pattern.walk();
+            for item in pattern.named_children(&mut cursor) {
+                if item.kind() == "shorthand_property_identifier_pattern" {
+                    let key = text(item, source).trim();
+                    if !key.is_empty() {
+                        out.push(PatternBinding {
+                            name: key.to_owned(),
+                            value: project_pattern_value(&source_value, "__field:", key),
+                        });
+                    }
+                    continue;
+                }
+                if item.kind() == "object_assignment_pattern" {
+                    if let Some(left) = item
+                        .child_by_field_name("left")
+                        .filter(|left| {
+                            matches!(
+                                left.kind(),
+                                "shorthand_property_identifier_pattern" | "identifier"
+                            )
+                        })
+                    {
+                        let key = text(left, source).trim();
+                        if !key.is_empty() {
+                            out.push(PatternBinding {
+                                name: key.to_owned(),
+                                value: project_pattern_value(&source_value, "__field:", key),
+                            });
+                        }
+                    }
+                    continue;
+                }
+                if let (Some(key), Some(target)) = (
+                    item.child_by_field_name("key")
+                        .or_else(|| item.child_by_field_name("name")),
+                    item.child_by_field_name("value")
+                        .or_else(|| item.child_by_field_name("pattern")),
+                ) {
+                    let key_name = text(key, source).trim();
+                    if !key_name.is_empty() {
+                        collect_pattern_bindings(
+                            target,
+                            project_pattern_value(&source_value, "__field:", key_name),
+                            source,
+                            depth + 1,
+                            out,
+                        );
+                    }
+                } else if item.kind() == "field_pattern" {
+                    if let Some(name) = item.child_by_field_name("name") {
+                        let key_name = text(name, source).trim();
+                        if !key_name.is_empty() {
+                            let val = project_pattern_value(&source_value, "__field:", key_name);
+                            if let Some(sub) = item.child_by_field_name("pattern") {
+                                collect_pattern_bindings(sub, val, source, depth + 1, out);
+                            } else {
+                                out.push(PatternBinding {
+                                    name: key_name.to_owned(),
+                                    value: val,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "tuple_pattern"
+        | "list_pattern"
+        | "pattern_list"
+        | "array_pattern"
+        | "tuple_struct_pattern" => {
+            let mut cursor = pattern.walk();
+            let mut index = 0usize;
+            for item in pattern.named_children(&mut cursor) {
+                if matches!(
+                    item.kind(),
+                    "rest_pattern" | "list_splat_pattern" | "dictionary_splat_pattern" | "comment"
+                ) {
+                    index += 1;
+                    continue;
+                }
+                let slot = index.to_string();
+                collect_pattern_bindings(
+                    item,
+                    project_pattern_value(&source_value, "__index:", &slot),
+                    source,
+                    depth + 1,
+                    out,
+                );
+                index += 1;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn project_pattern_value(source_value: &ValueExpr, prefix: &str, key: &str) -> ValueExpr {
+    if matches!(source_value, ValueExpr::Unknown) {
+        return ValueExpr::Unknown;
+    }
+    ValueExpr::Project {
+        value: Box::new(source_value.clone()),
+        member: format!("{prefix}{key}"),
+    }
 }
 
 #[cfg(test)]
