@@ -28,6 +28,9 @@ impl LanguageProfile for Vue {
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")
     }
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        typescript::TYPESCRIPT.linker()
+    }
     fn extensions(&self) -> &'static [&'static str] {
         &["vue"]
     }

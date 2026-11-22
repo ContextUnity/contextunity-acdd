@@ -101,7 +101,7 @@ fn cold_and_delta_match_commitments_after_spool_and_parallel_delta() {
     assert_eq!(cold_first["nodes"], cold_warm_cache["nodes"]);
     assert_eq!(cold_first["edges"], cold_warm_cache["edges"]);
 
-    // Verify local_facts uses ACDD-LOCAL-FACTS\0\x03 with Zstd framing.
+    // Verify local_facts uses ACDD-LOCAL-FACTS\0\x04 with Zstd framing.
     {
         let conn = workspace.open();
         let blob: Vec<u8> = conn
@@ -111,8 +111,8 @@ fn cold_and_delta_match_commitments_after_spool_and_parallel_delta() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"));
-        assert!(blob["ACDD-LOCAL-FACTS\0\x03".len()..].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
+        assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
+        assert!(blob["ACDD-LOCAL-FACTS\0\x04".len()..].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
     }
 
     // Mutate multiple files across Python and Rust and run parallel delta + TEMP TABLE frontier.

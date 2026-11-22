@@ -1,5 +1,7 @@
 use super::*;
 
+pub mod value_flow_core;
+
 macro_rules! delegate_extract_file {
     () => {
         fn extract_file(

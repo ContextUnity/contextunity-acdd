@@ -211,8 +211,8 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         );
         assert!(!stored.4);
         assert_eq!(stored.6, "blob");
-        assert!(stored.5.starts_with(b"ACDD-LOCAL-FACTS\0\x03"));
-        assert!(stored.5["ACDD-LOCAL-FACTS\0\x03".len()..].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
+        assert!(stored.5.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
+        assert!(stored.5["ACDD-LOCAL-FACTS\0\x04".len()..].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
     }
 
     let expected_nodes: Vec<_> = decoded_local_facts

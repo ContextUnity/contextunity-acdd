@@ -500,55 +500,32 @@ static SYNTAX: SyntaxGrammarSpec = SyntaxGrammarSpec {
     imports: &["import_statement"],
     member_access: &["attribute"],
     comments: &["comment"],
+    ..SyntaxGrammarSpec::DEFAULT
 };
 static INVALID: [SyntaxGrammarSpec; 6] = [
     SyntaxGrammarSpec {
         declarations: &[("unknown_decl", "function")],
-        references: &[],
-        scopes: &[],
-        imports: &[],
-        member_access: &[],
-        comments: &[],
+        ..SyntaxGrammarSpec::DEFAULT
     },
     SyntaxGrammarSpec {
-        declarations: &[],
         references: &["unknown_ref"],
-        scopes: &[],
-        imports: &[],
-        member_access: &[],
-        comments: &[],
+        ..SyntaxGrammarSpec::DEFAULT
     },
     SyntaxGrammarSpec {
-        declarations: &[],
-        references: &[],
         scopes: &["unknown_scope"],
-        imports: &[],
-        member_access: &[],
-        comments: &[],
+        ..SyntaxGrammarSpec::DEFAULT
     },
     SyntaxGrammarSpec {
-        declarations: &[],
-        references: &[],
-        scopes: &[],
         imports: &["unknown_import"],
-        member_access: &[],
-        comments: &[],
+        ..SyntaxGrammarSpec::DEFAULT
     },
     SyntaxGrammarSpec {
-        declarations: &[],
-        references: &[],
-        scopes: &[],
-        imports: &[],
         member_access: &["unknown_member"],
-        comments: &[],
+        ..SyntaxGrammarSpec::DEFAULT
     },
     SyntaxGrammarSpec {
-        declarations: &[],
-        references: &[],
-        scopes: &[],
-        imports: &[],
-        member_access: &[],
         comments: &["unknown_comment"],
+        ..SyntaxGrammarSpec::DEFAULT
     },
 ];
 

@@ -216,3 +216,46 @@ class ServiceClient:
         "assertion failed: package-scope preparation must be per file, not per member reference: {scope_copies:?}",
     );
 }
+
+#[test]
+fn extractors_collect_activation_signals_and_deterministic_facts_table() {
+    use crate::languages::harness::ExtractorHarness;
+    use acdd_index::typed_facts::TypedFacts;
+
+    for (lang, path, source, injected_signal) in [
+        #[cfg(feature = "lang-html")]
+        ("html", "active.html", "<div x-data=\"{}\"></div>", Some("x-data")),
+        #[cfg(feature = "lang-html")]
+        ("html", "plain.html", "<div>plain</div>", None),
+        #[cfg(feature = "lang-python")]
+        ("python", "app.py", "def build(x: int) -> int:\n    return x\n", None),
+        #[cfg(feature = "lang-go")]
+        ("go", "pkg/util.go", "package pkg\nfunc Alpha() int { return 1 }\n", None),
+    ] {
+        let mut first = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
+        let second = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
+        let first_keys: Vec<_> = first
+            .nodes
+            .iter()
+            .map(|n| (&n.id, &n.kind, &n.qualname, n.line))
+            .collect();
+        let second_keys: Vec<_> = second
+            .nodes
+            .iter()
+            .map(|n| (&n.id, &n.kind, &n.qualname, n.line))
+            .collect();
+        assert_eq!(first_keys, second_keys, "{path}");
+        assert!(first.activation_signals.is_empty(), "{path}");
+        if let Some(attr) = injected_signal {
+            first.activation_signals.syntax_attributes.insert(attr.into());
+        }
+        let expected_signals = first.activation_signals.clone();
+        let mut encoded = Vec::new();
+        TypedFacts::from_public(first).encode_with_string_table(&mut encoded);
+        let mut cursor = 0;
+        let decoded = TypedFacts::decode_with_string_table(&encoded, &mut cursor)
+            .expect("decode typed facts")
+            .into_public();
+        assert_eq!(decoded.activation_signals, expected_signals, "{path}");
+    }
+}

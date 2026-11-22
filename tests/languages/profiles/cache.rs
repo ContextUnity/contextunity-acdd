@@ -3,25 +3,11 @@ use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
 
 static FUNCTION_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[("function_definition", "function")],
-    ..SyntaxGrammarSpec {
-        references: &[],
-        scopes: &[],
-        imports: &[],
-        member_access: &[],
-        comments: &[],
-        declarations: &[],
-    }
+    ..SyntaxGrammarSpec::DEFAULT
 };
 static CLASS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[("class_definition", "class")],
-    ..SyntaxGrammarSpec {
-        references: &[],
-        scopes: &[],
-        imports: &[],
-        member_access: &[],
-        comments: &[],
-        declarations: &[],
-    }
+    ..SyntaxGrammarSpec::DEFAULT
 };
 
 struct Probe(&'static SyntaxGrammarSpec, &'static str);

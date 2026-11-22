@@ -12,6 +12,7 @@ enum LanguageAnalysis<'source, 'tree> {
     Rust(Box<languages::rust::value_flow::Collector<'source, 'tree>>),
     #[cfg(feature = "lang-typescript")]
     TypeScript(Box<languages::typescript::value_flow::Collector<'source, 'tree>>),
+    Generic(Box<languages::support::value_flow_core::GenericScopeAnalysis<'source, 'tree>>),
     #[cfg(all(test, feature = "lang-python"))]
     Traced(Box<TracedAnalysis<'source, 'tree>>),
     // Lifetime ownership remains explicit in document-only feature builds.
@@ -63,6 +64,20 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
             marker: std::marker::PhantomData,
         }
     }
+    pub(crate) fn generic(
+        root: Syntax<'tree>,
+        source: &'source str,
+        compiled: std::sync::Arc<languages::CompiledSyntaxGrammar>,
+    ) -> Self {
+        Self {
+            state: Some(LanguageAnalysis::Generic(Box::new(
+                languages::support::value_flow_core::GenericScopeAnalysis::new(
+                    root, source, compiled,
+                ),
+            ))),
+            marker: std::marker::PhantomData,
+        }
+    }
     fn enter(&mut self, node: Syntax<'tree>) {
         match self.state.as_mut() {
             #[cfg(feature = "lang-python")]
@@ -71,6 +86,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
             Some(LanguageAnalysis::Rust(state)) => state.enter(node),
             #[cfg(feature = "lang-typescript")]
             Some(LanguageAnalysis::TypeScript(state)) => state.enter(node),
+            Some(LanguageAnalysis::Generic(state)) => state.enter(node),
             #[cfg(all(test, feature = "lang-python"))]
             Some(LanguageAnalysis::Traced(state)) => state.inner.enter(node),
             _ => {}
@@ -109,6 +125,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
             Some(LanguageAnalysis::Rust(state)) => state.exit(node),
             #[cfg(feature = "lang-typescript")]
             Some(LanguageAnalysis::TypeScript(state)) => state.exit(node),
+            Some(LanguageAnalysis::Generic(state)) => state.exit(node),
             #[cfg(all(test, feature = "lang-python"))]
             Some(LanguageAnalysis::Traced(state)) => state.inner.exit(node),
             _ => {
@@ -139,6 +156,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
             Some(LanguageAnalysis::Rust(state)) => ((*state).finish(), None),
             #[cfg(feature = "lang-typescript")]
             Some(LanguageAnalysis::TypeScript(state)) => ((*state).finish(), None),
+            Some(LanguageAnalysis::Generic(state)) => ((*state).finish(), None),
             #[cfg(all(test, feature = "lang-python"))]
             Some(LanguageAnalysis::Traced(state)) => {
                 let result = state.inner.finish(collect_module_aliases);
@@ -793,8 +811,7 @@ impl SinglePassExtractor<'_> {
                     source: context.source,
                     owner: node_owner,
                     offset: context.offset,
-                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
-                    type_checking_aliases: Some(&context.file.type_checking_aliases),
+                    file_state: &context.file.state,
                 };
                 #[cfg(feature = "lang-python")]
                 if context.deferred_python {
@@ -954,28 +971,28 @@ impl SinglePassExtractor<'_> {
                 }
                 #[cfg(feature = "lang-typescript")]
                 if matches!(language, "javascript" | "typescript" | "vue") {
+                    let empty_shadows = HashSet::new();
+                    let shadowed = context
+                        .file
+                        .state
+                        .typescript()
+                        .map_or(&empty_shadows, |state| &*state.shadowed_require_scopes);
                     module.details["commonjs_bindings"] =
                         json!(crate::languages::typescript::commonjs_bindings(
                             node,
                             source,
                             offset,
-                            &context.file.shadowed_require_scopes,
+                            shadowed,
                         ));
                 }
-                if !context.file.lazy_exports.is_empty() {
-                    module.details["lazy_exports"] = json!(context.file.lazy_exports);
-                } else if language == "python" {
+                if language == "python" {
                     // The Python module collector finalizes this slot after the
                     // shared traversal, in the same position used by prepared data.
                     module.details["lazy_exports"] = serde_json::Value::Null;
                 }
-                if !context.file.exports.is_empty() {
-                    module.details["exports"] = json!(context.file.exports);
-                } else {
-                    // Preserve the original root-detail slot order when a profile
-                    // finalizes exports from bindings collected by this traversal.
-                    module.details["exports"] = serde_json::Value::Null;
-                }
+                // Preserve the original root-detail slot order when a profile
+                // finalizes exports from bindings collected by this traversal.
+                module.details["exports"] = serde_json::Value::Null;
                 let details = module
                     .details
                     .as_object_mut()
@@ -1203,8 +1220,7 @@ impl SinglePassExtractor<'_> {
                     source,
                     owner: &id,
                     offset,
-                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
-                    type_checking_aliases: Some(&context.file.type_checking_aliases),
+                    file_state: &context.file.state,
                 },
                 facts,
             );
@@ -1224,8 +1240,7 @@ impl SinglePassExtractor<'_> {
             source,
             owner: node_owner,
             offset,
-            shadowed_require_scopes: &context.file.shadowed_require_scopes,
-            type_checking_aliases: Some(&context.file.type_checking_aliases),
+            file_state: &context.file.state,
         };
         if context
             .syntax
@@ -1328,8 +1343,7 @@ fn finish_python_actions(
                     source: context.source,
                     owner: &owner,
                     offset: context.offset,
-                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
-                    type_checking_aliases: Some(&context.file.type_checking_aliases),
+                    file_state: &context.file.state,
                 };
                 languages::python::finish_default_table(
                     &ctx,
@@ -1348,8 +1362,7 @@ fn finish_python_actions(
                     source: context.source,
                     owner: &event.owner,
                     offset: context.offset,
-                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
-                    type_checking_aliases: Some(&context.file.type_checking_aliases),
+                    file_state: &context.file.state,
                 };
                 languages::python::finish_deferred_event(
                     &event,
@@ -1445,7 +1458,20 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
             prepared_bindings,
             analysis: context
                 .profile
-                .scope_analysis(root, context.source, context.file),
+                .scope_analysis(root, context.source, context.file)
+                .or_else(|| {
+                    context
+                        .syntax
+                        .as_ref()
+                        .filter(|compiled| compiled.has_value_flow_selectors())
+                        .map(|compiled| {
+                            ScopeAnalysis::generic(
+                                root,
+                                context.source,
+                                std::sync::Arc::clone(compiled),
+                            )
+                        })
+                }),
             legacy_flow: None,
             reserved_flow_slot: false,
             suspended_at: None,
@@ -1736,7 +1762,7 @@ impl ScopePublication<'_> {
                     } else {
                         node.details["exports"] = json!(exports);
                     }
-                } else if context.file.exports.is_empty() {
+                } else {
                     node.details
                         .as_object_mut()
                         .expect("module details object")

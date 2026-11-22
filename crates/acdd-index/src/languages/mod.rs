@@ -1,4 +1,5 @@
-pub(crate) mod support;
+#[doc(hidden)]
+pub mod support;
 /// Supported language profile registry for multi-language extraction.
 #[derive(Debug, Clone, Default)]
 pub struct LanguageRegistry {
@@ -201,25 +202,22 @@ impl ImportPath {
     }
 }
 
+/// Typed per-file extraction state for Python profiles.
 #[derive(Default)]
-/// Per-file extraction state shared by hooks of one language profile.
-pub struct FileContext {
-    /// Effective validated extraction context for this file.
-    pub rules: Arc<LanguageContext>,
-    /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
-    pub root_bindings: Option<(usize, ast::ScopeBindings)>,
-    /// Export bindings discovered during extraction.
-    pub exports: Vec<crate::semantic::ExportBinding>,
-    /// Deferred export bindings resolved during linking.
-    pub lazy_exports: Vec<LazyExport>,
+pub struct PythonFileState {
+    /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
+    pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
+}
+
+/// Typed per-file extraction state for TypeScript and JavaScript profiles.
+#[derive(Default)]
+pub struct TypeScriptFileState {
     /// Names exported as defaults.
     pub default_exports: HashSet<String>,
-    /// Local bindings imported from `node:test` as executable test cases.
+    /// Local bindings imported from `node:test` or configured test runners as executable test cases.
     pub test_case_imports: HashSet<String>,
     /// Local bindings imported from `node:test` as test fixtures.
     pub test_fixture_imports: HashSet<String>,
-    /// Package namespace when the source belongs to a package.
-    pub package: Option<String>,
     /// Scope identifiers where a local binding shadows CommonJS `require`.
     pub shadowed_require_scopes: Arc<HashSet<usize>>,
     /// Scope identifiers where a source binding shadows the standard Array type.
@@ -239,8 +237,58 @@ pub struct FileContext {
     pub dom_listener_parameter_bindings: Arc<HashMap<usize, HashSet<String>>>,
     /// Function scopes and names whose parameters are reassigned or rebound.
     pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
-    /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
-    pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
+}
+
+/// Typed language-owned extraction state stored on [`FileContext`].
+#[derive(Default)]
+pub enum LanguageFileState {
+    /// Profile requires no language-specific per-file state.
+    #[default]
+    None,
+    /// Python-specific per-file extraction state.
+    Python(PythonFileState),
+    /// TypeScript/JavaScript-specific per-file extraction state.
+    TypeScript(TypeScriptFileState),
+}
+
+impl LanguageFileState {
+    /// Borrows Python state when active.
+    pub fn python(&self) -> Option<&PythonFileState> {
+        match self {
+            Self::Python(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Borrows TypeScript/JavaScript state when active.
+    pub fn typescript(&self) -> Option<&TypeScriptFileState> {
+        match self {
+            Self::TypeScript(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Ensures and mutably borrows TypeScript/JavaScript state.
+    pub fn typescript_mut(&mut self) -> &mut TypeScriptFileState {
+        if !matches!(self, Self::TypeScript(_)) {
+            *self = Self::TypeScript(TypeScriptFileState::default());
+        }
+        match self {
+            Self::TypeScript(state) => state,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Default)]
+/// Per-file extraction state shared by hooks of one language profile.
+pub struct FileContext {
+    /// Effective validated extraction context for this file.
+    pub rules: Arc<LanguageContext>,
+    /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
+    pub root_bindings: Option<(usize, ast::ScopeBindings)>,
+    /// Typed per-language state owned by the active profile.
+    pub state: LanguageFileState,
 }
 
 /// Manifest-backed extraction rules prepared once for one source file.
@@ -551,6 +599,147 @@ impl LanguageContext {
     }
 }
 
+/// Typed declaration role mapped onto [`crate::models::tags::NodeKind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeclarationRole {
+    /// Top-level or nested function declaration.
+    Function,
+    /// Method declaration owned by a type.
+    Method,
+    /// Constructor declaration.
+    Constructor,
+    /// Class declaration.
+    Class,
+    /// Struct or record declaration.
+    Struct,
+    /// Enum declaration.
+    Enum,
+    /// Interface or protocol declaration.
+    Interface,
+    /// Trait or typeclass declaration.
+    Trait,
+    /// Implementation block.
+    Impl,
+    /// Module or file-level container.
+    Module,
+    /// Field or member variable declaration.
+    Field,
+    /// Property declaration.
+    Property,
+    /// Constant declaration.
+    Constant,
+    /// Variable declaration.
+    Variable,
+    /// Type alias or typedef declaration.
+    Type,
+    /// Namespace or package declaration.
+    Namespace,
+    /// Macro definition.
+    Macro,
+}
+
+impl DeclarationRole {
+    /// Returns the canonical [`crate::models::tags::NodeKind`] for this declaration role.
+    pub const fn node_kind(self) -> crate::models::tags::NodeKind {
+        use crate::models::tags::NodeKind;
+        match self {
+            Self::Function => NodeKind::Function,
+            Self::Method => NodeKind::Method,
+            Self::Constructor => NodeKind::Constructor,
+            Self::Class => NodeKind::Class,
+            Self::Struct => NodeKind::Struct,
+            Self::Enum => NodeKind::Enum,
+            Self::Interface => NodeKind::Interface,
+            Self::Trait => NodeKind::Trait,
+            Self::Impl => NodeKind::Impl,
+            Self::Module => NodeKind::Module,
+            Self::Field => NodeKind::Field,
+            Self::Property => NodeKind::Property,
+            Self::Constant => NodeKind::Constant,
+            Self::Variable => NodeKind::Variable,
+            Self::Type => NodeKind::Type,
+            Self::Namespace => NodeKind::Namespace,
+            Self::Macro => NodeKind::Macro,
+        }
+    }
+
+    /// Returns the wire node-kind string for this declaration role.
+    pub const fn as_str(self) -> &'static str {
+        self.node_kind().as_str()
+    }
+
+    /// Parses a wire node-kind string into a typed [`DeclarationRole`], when mapped.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "function" => Some(Self::Function),
+            "method" => Some(Self::Method),
+            "constructor" => Some(Self::Constructor),
+            "class" => Some(Self::Class),
+            "struct" => Some(Self::Struct),
+            "enum" => Some(Self::Enum),
+            "interface" => Some(Self::Interface),
+            "trait" => Some(Self::Trait),
+            "impl" => Some(Self::Impl),
+            "module" => Some(Self::Module),
+            "field" => Some(Self::Field),
+            "property" => Some(Self::Property),
+            "constant" => Some(Self::Constant),
+            "variable" => Some(Self::Variable),
+            "type" => Some(Self::Type),
+            "namespace" => Some(Self::Namespace),
+            "macro" => Some(Self::Macro),
+            _ => None,
+        }
+    }
+}
+
+/// Typed import form for declarative grammar classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImportKind {
+    /// Imports a module or namespace.
+    Module,
+    /// Imports a named member from a module/type.
+    Member,
+    /// Wildcard/glob import.
+    Wildcard,
+    /// Static member or type import.
+    Static,
+    /// Preprocessor or textual include.
+    Include,
+    /// Relative path import.
+    Relative,
+}
+
+/// Typed call form for declarative grammar classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CallForm {
+    /// Direct function/procedure call.
+    Direct,
+    /// Receiver-qualified method/member call.
+    Member,
+    /// Object/type construction expression.
+    Constructor,
+    /// Namespace/associated-path call.
+    Scoped,
+    /// Macro invocation.
+    Macro,
+}
+
+/// Typed declaration visibility classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    /// Exported / publicly visible.
+    Public,
+    /// Private to module or enclosing type.
+    Private,
+    /// Protected to subclasses/derived types.
+    Protected,
+    /// Internal to assembly/package/crate.
+    Internal,
+    /// Package-private visibility.
+    Package,
+}
+
 /// Declarative syntax categories for profiles using the shared extractor.
 /// Every selector is a named kind in the actual source grammar; absent selectors
 /// are errors rather than the grammar's zero/error kind.
@@ -558,40 +747,113 @@ impl LanguageContext {
 pub struct SyntaxGrammarSpec {
     /// Grammar declaration kinds paired with indexed symbol categories.
     pub declarations: &'static [(&'static str, &'static str)],
+    /// Typed declaration kinds paired with [`DeclarationRole`].
+    pub declaration_roles: &'static [(&'static str, DeclarationRole)],
     /// Kinds whose expressions produce references through the call hook.
     pub references: &'static [&'static str],
+    /// Typed call syntax kinds paired with [`CallForm`].
+    pub call_forms: &'static [(&'static str, CallForm)],
     /// Kinds that own lexical binding summaries.
     pub scopes: &'static [&'static str],
     /// Kinds passed to the import hook.
     pub imports: &'static [&'static str],
+    /// Typed import syntax kinds paired with [`ImportKind`].
+    pub import_forms: &'static [(&'static str, ImportKind)],
     /// Kinds whose member expressions produce read references.
     pub member_access: &'static [&'static str],
     /// Kinds accepted as attached documentation comments.
     pub comments: &'static [&'static str],
+    /// Kinds representing typed parameter/variable bindings for [`GenericScopeAnalysis`](support::value_flow_core::GenericScopeAnalysis).
+    pub typed_bindings: &'static [&'static str],
+    /// Kinds representing assignment statements/expressions for [`GenericScopeAnalysis`](support::value_flow_core::GenericScopeAnalysis).
+    pub assignments: &'static [&'static str],
+    /// Kinds representing constructor expressions.
+    pub constructors: &'static [&'static str],
+    /// Kinds representing member-call expressions.
+    pub member_calls: &'static [&'static str],
+    /// Kinds representing inheritance/heritage clauses.
+    pub heritage: &'static [&'static str],
+    /// Kinds introducing conditional control-flow frames.
+    pub conditionals: &'static [&'static str],
+    /// Visibility modifier syntax kinds paired with [`Visibility`].
+    pub visibility_modifiers: &'static [(&'static str, Visibility)],
 }
+
+impl SyntaxGrammarSpec {
+    /// Empty declarative grammar spec suitable for struct update syntax in `static` items.
+    pub const DEFAULT: Self = Self {
+        declarations: &[],
+        declaration_roles: &[],
+        references: &[],
+        call_forms: &[],
+        scopes: &[],
+        imports: &[],
+        import_forms: &[],
+        member_access: &[],
+        comments: &[],
+        typed_bindings: &[],
+        assignments: &[],
+        constructors: &[],
+        member_calls: &[],
+        heritage: &[],
+        conditionals: &[],
+        visibility_modifiers: &[],
+    };
+}
+
 pub(crate) struct CompiledSyntaxGrammar {
     kinds: Vec<Option<CompiledSyntaxKind>>,
+    has_value_flow_selectors: bool,
 }
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CompiledSyntaxKind {
     declaration: Option<&'static str>,
-    flags: u8,
+    declaration_role: Option<DeclarationRole>,
+    import_kind: Option<ImportKind>,
+    call_form: Option<CallForm>,
+    visibility: Option<Visibility>,
+    flags: u16,
 }
 
 impl CompiledSyntaxKind {
-    const REFERENCE: u8 = 1 << 0;
-    const SCOPE: u8 = 1 << 1;
-    const IMPORT: u8 = 1 << 2;
-    const MEMBER_ACCESS: u8 = 1 << 3;
-    const COMMENT: u8 = 1 << 4;
+    const REFERENCE: u16 = 1 << 0;
+    const SCOPE: u16 = 1 << 1;
+    const IMPORT: u16 = 1 << 2;
+    const MEMBER_ACCESS: u16 = 1 << 3;
+    const COMMENT: u16 = 1 << 4;
+    const TYPED_BINDING: u16 = 1 << 5;
+    const CONSTRUCTOR: u16 = 1 << 6;
+    const MEMBER_CALL: u16 = 1 << 7;
+    const HERITAGE: u16 = 1 << 8;
+    const CONDITIONAL: u16 = 1 << 9;
+    const ASSIGNMENT: u16 = 1 << 10;
 
-    fn has(self, flag: u8) -> bool {
+    fn has(self, flag: u16) -> bool {
         self.flags & flag != 0
     }
 
     pub(crate) fn declaration(self) -> Option<&'static str> {
         self.declaration
+    }
+
+    pub(crate) fn declaration_role(self) -> Option<DeclarationRole> {
+        self.declaration_role
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn import_kind(self) -> Option<ImportKind> {
+        self.import_kind
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn call_form(self) -> Option<CallForm> {
+        self.call_form
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn visibility(self) -> Option<Visibility> {
+        self.visibility
     }
 
     pub(crate) fn is_reference(self) -> bool {
@@ -613,11 +875,40 @@ impl CompiledSyntaxKind {
     pub(crate) fn is_comment(self) -> bool {
         self.has(Self::COMMENT)
     }
+
+    pub(crate) fn is_typed_binding(self) -> bool {
+        self.has(Self::TYPED_BINDING)
+    }
+
+    pub(crate) fn is_assignment(self) -> bool {
+        self.has(Self::ASSIGNMENT)
+    }
+
+    pub(crate) fn is_constructor(self) -> bool {
+        self.has(Self::CONSTRUCTOR)
+    }
+
+    pub(crate) fn is_member_call(self) -> bool {
+        self.has(Self::MEMBER_CALL)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_heritage(self) -> bool {
+        self.has(Self::HERITAGE)
+    }
+
+    pub(crate) fn is_conditional(self) -> bool {
+        self.has(Self::CONDITIONAL)
+    }
 }
 
 impl CompiledSyntaxGrammar {
     pub(crate) fn classify(&self, kind_id: u16) -> Option<CompiledSyntaxKind> {
         self.kinds.get(usize::from(kind_id)).copied().flatten()
+    }
+
+    pub(crate) fn has_value_flow_selectors(&self) -> bool {
+        self.has_value_flow_selectors
     }
 }
 
@@ -642,17 +933,26 @@ impl SyntaxGrammarSpec {
             Ok(id)
         };
         let mut compiled_kinds = vec![None::<CompiledSyntaxKind>; grammar.node_kind_count()];
+        let mut register_decl =
+            |name: &str, category: &'static str, role: Option<DeclarationRole>| -> Result<()> {
+                anyhow::ensure!(
+                    !category.is_empty(),
+                    "SyntaxGrammarSpec declaration category is empty"
+                );
+                let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
+                anyhow::ensure!(
+                    compiled.declaration.is_none(),
+                    "SyntaxGrammarSpec repeats declaration kind '{name}'"
+                );
+                compiled.declaration = Some(category);
+                compiled.declaration_role = role;
+                Ok(())
+            };
         for (name, category) in self.declarations {
-            anyhow::ensure!(
-                !category.is_empty(),
-                "SyntaxGrammarSpec declaration category is empty"
-            );
-            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-            anyhow::ensure!(
-                compiled.declaration.is_none(),
-                "SyntaxGrammarSpec repeats declaration kind '{name}'"
-            );
-            compiled.declaration = Some(category);
+            register_decl(name, category, DeclarationRole::parse(category))?;
+        }
+        for (name, role) in self.declaration_roles {
+            register_decl(name, role.as_str(), Some(*role))?;
         }
         for (names, flag) in [
             (self.references, CompiledSyntaxKind::REFERENCE),
@@ -660,6 +960,12 @@ impl SyntaxGrammarSpec {
             (self.imports, CompiledSyntaxKind::IMPORT),
             (self.member_access, CompiledSyntaxKind::MEMBER_ACCESS),
             (self.comments, CompiledSyntaxKind::COMMENT),
+            (self.typed_bindings, CompiledSyntaxKind::TYPED_BINDING),
+            (self.assignments, CompiledSyntaxKind::ASSIGNMENT),
+            (self.constructors, CompiledSyntaxKind::CONSTRUCTOR),
+            (self.member_calls, CompiledSyntaxKind::MEMBER_CALL),
+            (self.heritage, CompiledSyntaxKind::HERITAGE),
+            (self.conditionals, CompiledSyntaxKind::CONDITIONAL),
         ] {
             for name in names {
                 compiled_kinds[usize::from(kind(name)?)]
@@ -667,8 +973,37 @@ impl SyntaxGrammarSpec {
                     .flags |= flag;
             }
         }
+        for (name, form) in self.import_forms {
+            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
+            compiled.flags |= CompiledSyntaxKind::IMPORT;
+            compiled.import_kind = Some(*form);
+        }
+        for (name, form) in self.call_forms {
+            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
+            compiled.flags |= CompiledSyntaxKind::REFERENCE;
+            compiled.call_form = Some(*form);
+            if *form == CallForm::Constructor {
+                compiled.flags |= CompiledSyntaxKind::CONSTRUCTOR;
+            } else if *form == CallForm::Member {
+                compiled.flags |= CompiledSyntaxKind::MEMBER_CALL;
+            }
+        }
+        for (name, visibility) in self.visibility_modifiers {
+            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
+            compiled.visibility = Some(*visibility);
+        }
+        let has_value_flow_selectors = !self.typed_bindings.is_empty()
+            || !self.assignments.is_empty()
+            || !self.constructors.is_empty()
+            || !self.member_calls.is_empty()
+            || !self.conditionals.is_empty()
+            || self
+                .call_forms
+                .iter()
+                .any(|(_, form)| matches!(form, CallForm::Constructor | CallForm::Member));
         Ok(CompiledSyntaxGrammar {
             kinds: compiled_kinds,
+            has_value_flow_selectors,
         })
     }
 
@@ -808,10 +1143,8 @@ pub struct SyntaxContext<'a, 'tree> {
     pub owner: &'a str,
     /// The offset value.
     pub offset: usize,
-    /// The shadowed require scopes value.
-    pub shadowed_require_scopes: &'a HashSet<usize>,
-    /// Module-level `TYPE_CHECKING` alias events for Python syntax hooks.
-    pub type_checking_aliases: Option<&'a HashMap<String, Vec<(usize, bool)>>>,
+    /// Borrowed typed per-language file state.
+    pub file_state: &'a LanguageFileState,
 }
 impl SyntaxContext<'_, '_> {
     /// Returns the one-based source line after applying the file offset.
@@ -904,6 +1237,10 @@ pub trait LanguageProfile: Send + Sync {
     /// Returns the namespace family used for cross-profile import matching.
     fn family(&self) -> LanguageFamily {
         LanguageFamily(self.id())
+    }
+    /// Returns the cross-file linker owning import and receiver resolution for this profile.
+    fn linker(&self) -> &'static dyn LanguageLinker {
+        &GENERIC_LINKER
     }
     /// Returns source file extensions accepted by this profile.
     fn extensions(&self) -> &'static [&'static str];
@@ -1380,22 +1717,9 @@ pub(crate) fn profile_available(id: &str) -> bool {
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
 }
-/// Performs linker for.
+/// Returns the [`LanguageLinker`] registered for `id`, or [`GENERIC_LINKER`].
 pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
-    #[cfg(feature = "lang-rust")]
-    if id == "rust" {
-        return &rust::linker::RUST_LINKER;
-    }
-    #[cfg(feature = "lang-typescript")]
-    if matches!(id, "typescript" | "javascript" | "vue") {
-        return &typescript::linker::TYPESCRIPT_LINKER;
-    }
-    #[cfg(feature = "lang-python")]
-    if id == "python" {
-        return &python::linker::PYTHON_LINKER;
-    }
-    let _ = id;
-    &GENERIC_LINKER
+    by_id(id).map_or(&GENERIC_LINKER, LanguageProfile::linker)
 }
 /// Performs require.
 pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
@@ -1565,4 +1889,116 @@ pub fn module_name(path: &str) -> String {
         || module_stem(path).replace('/', "."),
         |p| p.module_name(path),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifests::semantic::{ActivationCondition, FileActivationSignals};
+    use super::manifests::syntax::{SyntaxOperation, SyntaxRule};
+    use super::LanguageContext;
+
+    #[test]
+    fn language_context_gates_syntax_rules_by_persisted_activation_signals() {
+        let rule = SyntaxRule {
+            pack: "alpinejs".into(),
+            id: "implicit-receivers".into(),
+            language: "javascript".into(),
+            package_family: None,
+            activation: vec![ActivationCondition::SyntaxAttribute {
+                name: "x-data".into(),
+            }],
+            display: Default::default(),
+            operation: SyntaxOperation::ImplicitReceivers {
+                names: vec!["$el".into()],
+            },
+        };
+        let mut ctx = LanguageContext {
+            syntax_rules: vec![rule.clone()],
+            ..Default::default()
+        };
+        ctx.prepare_named_member_rules();
+
+        let mut active_signals = FileActivationSignals::default();
+        active_signals.syntax_attributes.insert("x-data".into());
+
+        assert!(ctx.is_syntax_rule_active(&rule, "app.js", &active_signals));
+        assert!(!ctx.is_syntax_rule_active(&rule, "app.js", &FileActivationSignals::default()));
+    }
+
+    #[cfg(feature = "lang-typescript")]
+    #[test]
+    fn syntax_grammar_spec_compiles_valid_and_rejects_unknown_selectors() {
+        use super::{CallForm, DeclarationRole, ImportKind, SyntaxGrammarSpec, Visibility};
+
+        let grammar = tree_sitter_typescript::language_typescript();
+        let valid = SyntaxGrammarSpec {
+            declaration_roles: &[("function_declaration", DeclarationRole::Function)],
+            call_forms: &[
+                ("call_expression", CallForm::Member),
+                ("new_expression", CallForm::Constructor),
+            ],
+            import_forms: &[("import_statement", ImportKind::Module)],
+            visibility_modifiers: &[("accessibility_modifier", Visibility::Public)],
+            typed_bindings: &["variable_declarator"],
+            assignments: &["assignment_expression"],
+            constructors: &["new_expression"],
+            member_calls: &["call_expression"],
+            heritage: &["extends_clause"],
+            conditionals: &["if_statement"],
+            ..SyntaxGrammarSpec::DEFAULT
+        };
+        let compiled = valid.compile(&grammar).expect("valid spec compiles");
+        assert!(compiled.has_value_flow_selectors());
+        assert_eq!(
+            compiled
+                .classify(grammar.id_for_node_kind("function_declaration", true))
+                .and_then(|k| k.declaration_role()),
+            Some(DeclarationRole::Function)
+        );
+        assert_eq!(
+            compiled
+                .classify(grammar.id_for_node_kind("call_expression", true))
+                .and_then(|k| k.call_form()),
+            Some(CallForm::Member)
+        );
+        assert_eq!(
+            compiled
+                .classify(grammar.id_for_node_kind("import_statement", true))
+                .and_then(|k| k.import_kind()),
+            Some(ImportKind::Module)
+        );
+        assert_eq!(
+            compiled
+                .classify(grammar.id_for_node_kind("accessibility_modifier", true))
+                .and_then(|k| k.visibility()),
+            Some(Visibility::Public)
+        );
+        let assign = compiled
+            .classify(grammar.id_for_node_kind("assignment_expression", true))
+            .unwrap();
+        assert!(assign.is_assignment());
+        let extends = compiled
+            .classify(grammar.id_for_node_kind("extends_clause", true))
+            .unwrap();
+        assert!(extends.is_heritage());
+
+        let invalid_cases = [
+            SyntaxGrammarSpec { declaration_roles: &[("bogus_kind", DeclarationRole::Function)], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { call_forms: &[("bogus_kind", CallForm::Direct)], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { import_forms: &[("bogus_kind", ImportKind::Static)], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { visibility_modifiers: &[("bogus_kind", Visibility::Private)], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { typed_bindings: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { assignments: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { constructors: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { member_calls: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { heritage: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec { conditionals: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+        ];
+        for (idx, invalid) in invalid_cases.iter().enumerate() {
+            assert!(
+                invalid.compile(&grammar).is_err(),
+                "invalid spec case {idx} must fail closed"
+            );
+        }
+    }
 }

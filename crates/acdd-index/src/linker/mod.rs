@@ -31,16 +31,17 @@ mod indexing;
 mod javascript;
 mod named_bindings;
 mod projections;
-mod python;
+pub(crate) mod python;
 mod resolution;
 pub mod routes;
 mod rust;
-mod semantic_context;
+pub(crate) mod semantic_context;
 pub mod traits;
 mod typescript;
 /// Implements value flow support.
 pub mod value_flow;
 mod vue;
+use crate::models::tags::NodeKind;
 use javascript::commonjs_bindings as commonjs;
 use python::receivers;
 /// Performs needs reference identity.
@@ -48,7 +49,7 @@ pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
     let language = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == NodeKind::Module.as_str())
         .map_or("", |node| node.language.as_str());
     languages::linker_for(language).needs_reference_identity(path, facts)
 }
@@ -57,7 +58,7 @@ pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool 
     let language = new
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == NodeKind::Module.as_str())
         .map_or("", |node| node.language.as_str());
     languages::linker_for(language).reference_identity_changed(path, old, new)
 }
@@ -71,9 +72,7 @@ pub fn required_full_facts(
     let mut seen = std::collections::BTreeSet::new();
     for profile in languages::profiles() {
         if seen.insert(profile.id()) {
-            required.extend(
-                languages::linker_for(profile.id()).required_full_facts(facts, affected, catalog),
-            );
+            required.extend(profile.linker().required_full_facts(facts, affected, catalog));
         }
     }
     required
@@ -1266,7 +1265,7 @@ fn sort_graph(graph: &mut Graph) {
     graph.coverage.sort_by(compare_coverage);
 }
 
-fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str {
+pub(crate) fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str {
     buffer.clear();
     buffer.push_str(namespace);
     buffer.push('.');

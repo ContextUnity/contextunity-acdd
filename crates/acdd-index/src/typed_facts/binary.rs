@@ -89,10 +89,7 @@ impl<T: BinaryDecode> BinaryDecode for Option<T> {
 }
 impl<T: BinaryEncode> BinaryEncode for [T] {
     fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf);
-        for value in self {
-            value.encode(buf);
-        }
+        encode_items(self.iter(), buf);
     }
 }
 impl<T: BinaryEncode> BinaryEncode for Vec<T> {
@@ -104,14 +101,37 @@ fn collection_count(bytes: &[u8], cursor: &mut usize) -> Option<usize> {
     let count = usize::try_from(u32::decode(bytes, cursor)?).ok()?;
     (count <= bytes.len().saturating_sub(*cursor)).then_some(count)
 }
+fn decode_items<C, T>(
+    bytes: &[u8],
+    cursor: &mut usize,
+    init: impl FnOnce(usize) -> C,
+    mut insert: impl FnMut(&mut C, T),
+) -> Option<C>
+where
+    T: BinaryDecode,
+{
+    let count = collection_count(bytes, cursor)?;
+    let mut values = init(count);
+    for _ in 0..count {
+        insert(&mut values, T::decode(bytes, cursor)?);
+    }
+    Some(values)
+}
 impl<T: BinaryDecode> BinaryDecode for Vec<T> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        let count = collection_count(bytes, cursor)?;
-        let mut values = Vec::with_capacity(count);
-        for _ in 0..count {
-            values.push(T::decode(bytes, cursor)?);
-        }
-        Some(values)
+        decode_items(bytes, cursor, Vec::with_capacity, Vec::push)
+    }
+}
+impl<T: BinaryEncode> BinaryEncode for std::collections::BTreeSet<T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        encode_items(self.iter(), buf);
+    }
+}
+impl<T: BinaryDecode + Ord> BinaryDecode for std::collections::BTreeSet<T> {
+    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
+        decode_items(bytes, cursor, |_| Self::new(), |set, value| {
+            set.insert(value);
+        })
     }
 }
 
@@ -154,21 +174,14 @@ impl<A: BinaryDecode, B: BinaryDecode> BinaryDecode for (A, B) {
 }
 impl<K: BinaryEncode, V: BinaryEncode> BinaryEncode for std::collections::BTreeMap<K, V> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf);
-        for (key, value) in self {
-            key.encode(buf);
-            value.encode(buf);
-        }
+        encode_items(self.iter(), buf);
     }
 }
 impl<K: BinaryDecode + Ord, V: BinaryDecode> BinaryDecode for std::collections::BTreeMap<K, V> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        let count = collection_count(bytes, cursor)?;
-        let mut values = Self::new();
-        for _ in 0..count {
-            values.insert(K::decode(bytes, cursor)?, V::decode(bytes, cursor)?);
-        }
-        Some(values)
+        decode_items(bytes, cursor, |_| Self::new(), |map, (k, v)| {
+            map.insert(k, v);
+        })
     }
 }
 impl BinaryEncode for serde_json::Value {
@@ -276,6 +289,7 @@ macro_rules! validated_struct_codec {
 
 struct_codecs! {
     crate::typed_facts::NodeSemanticEntry { bindings, rebindings, param_types, admitted };
+    crate::languages::manifests::semantic::FileActivationSignals { syntax_attributes };
     Node { id, kind, name, qualname, path, line, end_line, is_test, language, generated, details, native_semantic };
     Edge { src, dst, kind, path, line, evidence, confidence };
     Reference { source, expression, kind, line, column, alias, module, dynamic, receiver_hint };
@@ -524,6 +538,7 @@ impl BinaryEncode for TypedFacts {
         encode_items(self.facts.docs.iter(), buf);
         encode_items(self.facts.errors.iter(), buf);
         encode_items(self.facts.pending_flow_nodes.iter(), buf);
+        self.facts.activation_signals.encode(buf);
         encode_items(self.flows.cache_entries(), buf);
         encode_items(self.flows.named_uncertainty_entries(), buf);
         encode_items(self.flows.named_uncertainty_faults(), buf);
@@ -539,6 +554,9 @@ impl BinaryDecode for TypedFacts {
             docs: Vec::decode(bytes, cursor)?,
             errors: Vec::decode(bytes, cursor)?,
             pending_flow_nodes: Vec::decode(bytes, cursor)?,
+            activation_signals: crate::languages::manifests::semantic::FileActivationSignals::decode(
+                bytes, cursor,
+            )?,
             ..Default::default()
         };
         let mut flows = crate::typed_facts::FlowStore::default();
@@ -712,6 +730,10 @@ impl TypedFacts {
         }
 
         encode_items(self.facts.pending_flow_nodes.iter(), &mut body);
+        (self.facts.activation_signals.syntax_attributes.len() as u32).encode(&mut body);
+        for attribute in &self.facts.activation_signals.syntax_attributes {
+            table.intern(attribute, &mut body);
+        }
 
         let flow_entries = self.flows.cache_entries();
         (flow_entries.len() as u32).encode(&mut body);
@@ -845,6 +867,11 @@ impl TypedFacts {
         }
 
         let pending_flow_nodes = Vec::decode(bytes, cursor)?;
+        let signal_count = collection_count(bytes, cursor)?;
+        let mut syntax_attributes = std::collections::BTreeSet::new();
+        for _ in 0..signal_count {
+            syntax_attributes.insert(decode_string_from_table(&table, bytes, cursor)?);
+        }
         let mut facts = crate::models::Facts {
             nodes,
             edges,
@@ -852,6 +879,9 @@ impl TypedFacts {
             docs,
             errors,
             pending_flow_nodes,
+            activation_signals: crate::languages::manifests::semantic::FileActivationSignals {
+                syntax_attributes,
+            },
             ..Default::default()
         };
 
@@ -890,5 +920,39 @@ impl TypedFacts {
         }
         facts.semantic.mark_complete();
         Some(Self { facts, flows })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BinaryDecode, BinaryEncode};
+    use crate::models::Facts;
+    use crate::typed_facts::{decode_facts, encode_facts, TypedFacts};
+
+    #[test]
+    fn activation_signals_roundtrip_both_tabled_and_untabled_binary_codecs() {
+        let mut facts = Facts::default();
+        facts
+            .activation_signals
+            .syntax_attributes
+            .insert("x-data".into());
+        facts
+            .activation_signals
+            .syntax_attributes
+            .insert("x-on:click".into());
+        let expected = facts.activation_signals.clone();
+        let typed = TypedFacts::from_public(facts);
+
+        // Untabled BinaryEncode / BinaryDecode fallback codec.
+        let mut raw = Vec::new();
+        typed.encode(&mut raw);
+        let mut raw_cursor = 0;
+        let decoded_raw = TypedFacts::decode(&raw, &mut raw_cursor).expect("decode untabled");
+        assert_eq!(decoded_raw.facts.activation_signals, expected);
+
+        // String-tabled encode_facts / decode_facts codec (ACDD-LOCAL-FACTS\0\x04).
+        let encoded = encode_facts(&typed).expect("encode_facts");
+        let decoded_tabled = decode_facts(&encoded).expect("decode_facts");
+        assert_eq!(decoded_tabled.facts.activation_signals, expected);
     }
 }

@@ -383,7 +383,7 @@ fn imported_type_targets<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::linker) fn compose_symbol_relations<'a>(
+pub(crate) fn compose_symbol_relations<'a>(
     path: &str,
     facts: &Facts,
     references: &[Reference],

@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind};
 
 pub(super) fn phase_imports<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
@@ -9,9 +10,7 @@ where
     let facts = resolver.facts;
     let references = resolver.references;
     let profile = input.profiles.get(path).copied();
-    let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| {
-        languages::linker_for(profile.id())
-    });
+    let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, LanguageProfile::linker);
     let language_package_exports = input
         .package_exports
         .get(profile.map_or("", |profile| profile.id()))
@@ -32,7 +31,11 @@ where
     let semantic_context = input.semantic_context;
     #[cfg(feature = "lang-rust")]
     let rust_forwarding = input.rust_forwarding;
-    for r in facts.references.iter().filter(|r| r.kind == "imports") {
+    for r in facts
+        .references
+        .iter()
+        .filter(|r| r.kind == EdgeKind::Imports.as_str())
+    {
         let callable_path = semantic_context.callable_import_path(path, r);
         let normalized = callable_path.as_ref().or_else(|| {
             normalized_imports
@@ -76,7 +79,7 @@ where
         } = resolution;
         candidates.sort_by(|a, b| a.id.cmp(&b.id));
         candidates.dedup_by_key(|n| &n.id);
-        candidates.retain(|n| n.kind != "impl");
+        candidates.retain(|n| n.kind != NodeKind::Impl.as_str());
         crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
         let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
             profile.and_then(|p| {
@@ -94,8 +97,11 @@ where
             .lookup_node(by_id, r.source.as_str())
             .map_or(file_module, |n| n.qualname.as_str());
         let mut imported_targets = Vec::new();
-        let is_wildcard =
-            r.alias.as_deref() == Some("*") || (r.expression == "*" && r.alias.is_none());
+        let is_wildcard = r.alias.as_deref() == Some("*")
+            || (r.expression == "*" && r.alias.is_none())
+            || r.module
+                .as_deref()
+                .is_some_and(|m| m.ends_with(".*") || m.ends_with("::*"));
         let export_type_only = modules.first().is_some_and(|m| {
             m.details["exports"].as_array().is_some_and(|bindings| {
                 bindings.iter().any(|b| {
@@ -377,12 +383,21 @@ where
                 imported_targets = targets;
             }
         }
+        let multi_file_allowed = language_linker.allows_multi_file_modules();
         let resolved = !unproven_guard
-            && modules.len() == 1
-            && (r.alias.is_none()
-                || is_wildcard
-                || candidates.len() == 1
-                || imported_targets.len() == 1);
+            && !modules.is_empty()
+            && ((modules.len() == 1
+                && (r.alias.is_none()
+                    || is_wildcard
+                    || candidates.len() == 1
+                    || imported_targets.len() == 1))
+                || (multi_file_allowed
+                    && (candidates.len() == 1
+                        || imported_targets.len() == 1
+                        || is_wildcard
+                        || r.alias.is_none()
+                        || (normalized.is_some_and(|n| !n.symbol_path)
+                            && candidates.len() == modules.len()))));
         let is_external_alias = r.alias.as_deref().is_some_and(|a| {
             external_aliases
                 .get(scope)
@@ -390,15 +405,18 @@ where
                 .is_some_and(Option::is_some)
         });
         let status = if unproven_guard {
-            "unresolved"
+            CoverageStatus::Unresolved.as_str()
         } else if resolved {
-            "resolved"
-        } else if modules.len() > 1 || candidates.len() > 1 || imported_targets.len() > 1 {
-            "ambiguous"
+            CoverageStatus::Resolved.as_str()
+        } else if (!multi_file_allowed && modules.len() > 1)
+            || candidates.len() > 1
+            || imported_targets.len() > 1
+        {
+            CoverageStatus::Ambiguous.as_str()
         } else if external.is_some() || is_external_alias {
-            "external"
+            CoverageStatus::External.as_str()
         } else {
-            "unresolved"
+            CoverageStatus::Unresolved.as_str()
         };
         let evidence: Cow<'static, str> = if unproven_guard {
             "type guard condition is unproven or shadowed".into()
@@ -429,14 +447,16 @@ where
             .interner
             .lookup_node(by_id, r.source.as_str())
             .filter(|owner| {
-                owner.language == "html"
-                    || (owner.kind == "template_scope"
-                        && owner.details["embedded_language"] == "javascript")
+                owner.language == LanguageId::Html.as_str()
+                    || (owner.kind == NodeKind::TemplateScope.as_str()
+                        && owner.details["embedded_language"] == LanguageId::Javascript.as_str())
             })
             .and_then(|owner| owner.details["html_import_owner"].as_str())
             .filter(|id| {
                 input.interner.lookup_node(by_id, id).is_some_and(|node| {
-                    node.kind == "module" && node.language == "html" && node.path == *path
+                    node.kind == NodeKind::Module.as_str()
+                        && node.language == LanguageId::Html.as_str()
+                        && node.path == *path
                 })
             })
             .unwrap_or(r.source.as_str());
@@ -445,28 +465,52 @@ where
                 path,
                 import_owner,
                 &modules[0].id,
-                "imports",
+                EdgeKind::Imports.as_str(),
                 r.line,
                 r.expression.as_str(),
-                "exact",
+                EdgeConfidence::Exact.as_str(),
             );
-            if profile.is_some_and(|profile| profile.id() == "typescript") {
+            if profile.is_some_and(|profile| profile.id() == LanguageId::Typescript.as_str()) {
                 if let [declaration] = candidates.as_slice() {
-                    if matches!(declaration.kind.as_str(), "type" | "interface")
-                        && declaration.path == modules[0].path
+                    if matches!(
+                        declaration.kind.as_str(),
+                        k if k == NodeKind::Type.as_str() || k == NodeKind::Interface.as_str()
+                    ) && declaration.path == modules[0].path
                     {
                         graph.push_edge(
                             path,
                             import_owner,
                             &declaration.id,
-                            "imports",
+                            EdgeKind::Imports.as_str(),
                             r.line,
                             r.expression.as_str(),
-                            "exact",
+                            EdgeConfidence::Exact.as_str(),
                         );
                     }
                 }
             }
+        } else if multi_file_allowed && resolved {
+            let single_path = match candidates.as_slice() {
+                [declaration] => Some(declaration.path.as_str()),
+                _ => None,
+            };
+            for target_module in modules
+                .iter()
+                .copied()
+                .filter(|m| single_path.is_none_or(|p| m.path == p))
+            {
+                graph.push_edge(
+                    path,
+                    import_owner,
+                    &target_module.id,
+                    EdgeKind::Imports.as_str(),
+                    r.line,
+                    r.expression.as_str(),
+                    EdgeConfidence::Exact.as_str(),
+                );
+            }
+        }
+        if modules.len() == 1 || (multi_file_allowed && resolved) {
             if child_module {
                 graph.push_edge(
                     path,

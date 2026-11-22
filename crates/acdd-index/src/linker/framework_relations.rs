@@ -5,7 +5,7 @@ use crate::languages::{self, LanguageProfile};
 use crate::linker::semantic_context;
 use std::collections::BTreeSet;
 
-pub(super) struct PreparedSemanticFacts<'a> {
+pub(crate) struct PreparedSemanticFacts<'a> {
     pub(super) interner: &'a LinkerInterner<'a>,
     pub(super) facts:
         BTreeMap<PathId, Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>>,

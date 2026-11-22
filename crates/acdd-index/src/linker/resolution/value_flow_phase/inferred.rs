@@ -211,7 +211,9 @@ where
         }
         _ => result,
     };
-    let origin = builtin_member_origin(resolved_receiver, q.active_profile, q.builtin_origin);
+    let origin = ctx
+        .language_linker
+        .builtin_member_origin(resolved_receiver, q.builtin_origin, false);
     emit_inferred(graph, ctx.path, q.r, result, origin);
     true
 }

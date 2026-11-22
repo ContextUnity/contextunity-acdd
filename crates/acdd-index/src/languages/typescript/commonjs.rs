@@ -142,9 +142,16 @@ pub(super) fn collect_require_bindings(
 }
 
 pub(super) fn require_is_shadowed(ctx: &SyntaxContext<'_, '_>) -> bool {
+    let Some(shadowed_require_scopes) = ctx
+        .file_state
+        .typescript()
+        .map(|state| &state.shadowed_require_scopes)
+    else {
+        return false;
+    };
     let mut current = Some(ctx.node);
     while let Some(scope) = current {
-        if ctx.shadowed_require_scopes.contains(&scope.id()) {
+        if shadowed_require_scopes.contains(&scope.id()) {
             return true;
         }
         current = scope.parent();

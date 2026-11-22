@@ -588,6 +588,9 @@ impl MainGuardTracker {
     }
 }
 impl LanguageProfile for Python {
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        &linker::PYTHON_LINKER
+    }
     fn scope_analysis<'source, 'tree>(
         &self,
         node: Syntax<'tree>,
@@ -684,7 +687,9 @@ impl LanguageProfile for Python {
         let mut type_checking_aliases = HashMap::new();
         module_exports::prepare(root, source, &mut type_checking_aliases);
         FileContext {
-            type_checking_aliases,
+            state: LanguageFileState::Python(PythonFileState {
+                type_checking_aliases,
+            }),
             ..FileContext::default()
         }
     }
@@ -707,8 +712,9 @@ impl LanguageProfile for Python {
         projections::observe_import(ctx);
         let statement = text(node, source);
         let is_type_only = ctx
-            .type_checking_aliases
-            .is_some_and(|aliases| is_inside_type_checking(node, source, aliases));
+            .file_state
+            .python()
+            .is_some_and(|state| is_inside_type_checking(node, source, &state.type_checking_aliases));
         let mut add = |expression, alias, module| {
             ctx.import(facts, expression, alias, module);
             if is_type_only {
@@ -1089,7 +1095,9 @@ impl LanguageProfile for Python {
                 || name.ends_with(".overload")
         });
         let is_stub = is_overload
-            || is_inside_type_checking(node, source, &file.type_checking_aliases)
+            || file.state.python().is_some_and(|state| {
+                is_inside_type_checking(node, source, &state.type_checking_aliases)
+            })
             || (node.kind() == "function_definition" && is_python_stub_body(node, source));
         SymbolMetadata {
             receiver_name,
@@ -1234,8 +1242,7 @@ impl LanguageProfile for Python {
                     source: ctx.source,
                     owner: &module_id,
                     offset: ctx.offset,
-                    shadowed_require_scopes: ctx.shadowed_require_scopes,
-                    type_checking_aliases: ctx.type_checking_aliases,
+                    file_state: ctx.file_state,
                 };
                 decorated_registration::module_assignment(&module_ctx, facts);
             }

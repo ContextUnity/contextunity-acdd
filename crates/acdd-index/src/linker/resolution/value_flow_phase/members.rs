@@ -80,11 +80,11 @@ pub(super) fn resolve_computed_call(
                     }
                     other => other,
                 };
-                let origin = super::super::builtin_member_origin(
-                    resolved_receiver,
-                    active_profile.filter(|profile| profile.id() != "python"),
-                    builtin_origin,
-                );
+                let origin = active_profile.map_or(builtin_origin, |profile| {
+                    profile
+                        .linker()
+                        .builtin_member_origin(resolved_receiver, builtin_origin, true)
+                });
                 emit_inferred(graph, path, reference, result, origin);
                 return true;
             }

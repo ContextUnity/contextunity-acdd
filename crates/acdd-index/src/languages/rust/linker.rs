@@ -1,10 +1,13 @@
-use crate::languages::{self, ImportPath, LanguageFamily, LanguageProfile};
 use crate::interner::{LinkerInterner, SymbolId};
+use crate::languages::{self, dependency_registry::DependencyRegistry, ImportPath, LanguageFamily, LanguageProfile};
 use crate::linker::traits::{
-    insert_package_export, package_export, resolve_default_import, ImportContext, ImportResolution,
-    LanguageLinker, ModulesByNamespace, PackageExports,
+    insert_package_export, package_export, resolve_default_import, ImportContext,
+    ImportNormalizationContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
 };
-use crate::models::{Facts, Node};
+use crate::models::{
+    tags::{EdgeKind, LanguageId},
+    Facts, Node,
+};
 use hashbrown::{HashMap, HashSet};
 
 const RUST_ALIAS_DEPTH: usize = 64;
@@ -830,11 +833,196 @@ fn declared_exports<'a>(
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
+    fn normalize_file_imports<'a>(
+        &self,
+        profile: &dyn LanguageProfile,
+        path: &'a str,
+        facts: &'a Facts,
+        ctx: &ImportNormalizationContext<'_, 'a>,
+        out: &mut HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    ) {
+        let root_rust_crate = ctx
+            .dependencies
+            .root_rust_crate_for_path(path)
+            .filter(|_| {
+                let workspace = languages::workspace_path(path).0;
+                if workspace.is_empty() {
+                    ctx.profiles.contains_key("src/lib.rs")
+                } else {
+                    ctx.profiles
+                        .contains_key(format!("{workspace}/src/lib.rs").as_str())
+                }
+            });
+        for reference in facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == EdgeKind::Imports.as_str())
+        {
+            let module = reference.module.as_deref().unwrap_or(&reference.expression);
+            out.entry((path, module)).or_insert_with(|| {
+                let local_import = module.strip_prefix("self::").unwrap_or(module);
+                let (first, tail) = local_import.split_once("::").unwrap_or((local_import, ""));
+                let declared = facts.references.iter().any(|reference| {
+                    reference.kind == EdgeKind::Imports.as_str()
+                        && reference.alias.as_deref() == Some(first)
+                        && reference.module.as_deref() == Some(format!("self::{first}").as_str())
+                });
+                if declared {
+                    let (workspace, local) = languages::workspace_path(path);
+                    let source = std::path::Path::new(local);
+                    let parent = source.parent().unwrap_or_else(|| std::path::Path::new(""));
+                    let integration_root =
+                        parent.file_name().is_some_and(|name| name == "tests");
+                    let directory = if integration_root
+                        || matches!(
+                            source.file_name().and_then(|name| name.to_str()),
+                            Some("lib.rs" | "main.rs" | "mod.rs")
+                        ) {
+                        parent.to_path_buf()
+                    } else {
+                        source.with_extension("")
+                    };
+                    for candidate in [
+                        directory.join(format!("{first}.rs")),
+                        directory.join(first).join("mod.rs"),
+                    ] {
+                        let local = candidate.to_string_lossy().replace('\\', "/");
+                        let indexed = if workspace.is_empty() {
+                            local.clone()
+                        } else {
+                            format!("{workspace}/{local}")
+                        };
+                        if ctx
+                            .profiles
+                            .get(indexed.as_str())
+                            .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
+                        {
+                            let mut namespace = languages::rust::RUST.module_name(&local);
+                            if !tail.is_empty() && tail != "*" {
+                                namespace.push('.');
+                                namespace.push_str(&tail.replace("::", "."));
+                            }
+                            return Some(ImportPath {
+                                namespace,
+                                relative: true,
+                                symbol_path: true,
+                            });
+                        }
+                    }
+                }
+                let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+                if let Some((pkg_scope, own_lib)) = ctx
+                    .dependencies
+                    .sibling_rust_package_library_for_path(path)
+                {
+                    if own_lib == first {
+                        let lib_path = if pkg_scope.is_empty() {
+                            std::borrow::Cow::Borrowed("src/lib.rs")
+                        } else {
+                            std::borrow::Cow::Owned(format!("{pkg_scope}/src/lib.rs"))
+                        };
+                        if ctx.profiles.contains_key(lib_path.as_ref()) {
+                            let base_namespace = if pkg_scope.is_empty() {
+                                "src".to_owned()
+                            } else {
+                                format!("{}.src", pkg_scope.replace('/', "."))
+                            };
+                            let namespace = if tail.is_empty() || tail == "*" {
+                                base_namespace
+                            } else {
+                                format!("{base_namespace}.{}", tail.replace("::", "."))
+                            };
+                            return Some(ImportPath {
+                                namespace,
+                                relative: true,
+                                symbol_path: true,
+                            });
+                        }
+                    }
+                }
+                let mut targets = ctx
+                    .rust_library_modules
+                    .iter()
+                    .filter(|(_, (library, _))| *library == first);
+                if let Some((target_workspace, (library, _))) = targets.next() {
+                    if targets.next().is_some() {
+                        return None;
+                    }
+                    if ctx.dependencies.sibling_rust_library_for_path(path) != Some(*library)
+                        && !ctx.dependencies.declares_for_path(
+                            LanguageFamily(LanguageId::Rust.as_str()),
+                            path,
+                            first,
+                        )
+                    {
+                        return None;
+                    }
+                    let base_namespace = if target_workspace.is_empty() {
+                        "src".to_owned()
+                    } else {
+                        format!("{}.src", target_workspace.replace('/', "."))
+                    };
+                    let namespace = if tail.is_empty() || tail == "*" {
+                        base_namespace
+                    } else {
+                        format!("{base_namespace}.{}", tail.replace("::", "."))
+                    };
+                    return Some(ImportPath {
+                        namespace,
+                        relative: true,
+                        symbol_path: true,
+                    });
+                }
+                if ctx
+                    .dependencies
+                    .rust_package_for_path(path)
+                    .is_some_and(|(_, own_lib)| own_lib == first)
+                    && !ctx.dependencies.is_rust_sibling_target_path(path)
+                    && !ctx.dependencies.declares_for_path(
+                        LanguageFamily(LanguageId::Rust.as_str()),
+                        path,
+                        first,
+                    )
+                {
+                    return None;
+                }
+                if let Some(normalized) = root_rust_crate
+                    .and_then(|name| languages::rust::RUST.normalize_root_crate_import(name, module))
+                {
+                    return Some(normalized);
+                }
+                profile.normalize_import_with_root(ctx.root, path, module)
+            });
+        }
+    }
+
+    fn module_namespaces(
+        &self,
+        _profile: &dyn LanguageProfile,
+        node: &Node,
+        dependency_registry: &DependencyRegistry,
+        out: &mut Vec<String>,
+    ) {
+        let (workspace, local_path) = languages::workspace_path(&node.path);
+        if local_path == "src/lib.rs" {
+            let is_workspace_lib = dependency_registry
+                .rust_library_for_path(&node.path)
+                .is_some();
+            if is_workspace_lib || !out.iter().any(|existing| existing == "src") {
+                out.push("src".to_owned());
+            }
+            let _ = workspace;
+        }
+        if let Some(prefix) = node.path.strip_suffix("/src/lib.rs") {
+            out.push(format!("{}.src", prefix.replace('/', ".")));
+        }
+    }
+
     fn needs_reference_identity(&self, _path: &str, facts: &Facts) -> bool {
         facts
             .references
             .iter()
-            .any(|reference| reference.kind == "imports")
+            .any(|reference| reference.kind == EdgeKind::Imports.as_str())
     }
 
     fn reference_identity_changed(&self, _path: &str, old: &Facts, new: &Facts) -> bool {

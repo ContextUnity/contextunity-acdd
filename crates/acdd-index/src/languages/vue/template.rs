@@ -451,7 +451,6 @@ impl Document<'_, '_> {
                     && n.named_child(0)
                         .is_some_and(|n| matches!(n.kind(), "identifier" | "member_expression"))
             });
-        let shadows = std::collections::HashSet::new();
         let mut scope_owners = vec![owner.to_owned()];
         let mut owner_stack = vec![0usize];
         ast::visitor::walk_reversed(root, &mut |node, entering| {
@@ -483,8 +482,7 @@ impl Document<'_, '_> {
                 source,
                 owner: child_owner,
                 offset: 0,
-                shadowed_require_scopes: &shadows,
-                type_checking_aliases: None,
+                file_state: &LanguageFileState::None,
             };
             typescript::JAVASCRIPT.extract_calls(&ctx, self.facts);
             if node.kind() == "member_expression"

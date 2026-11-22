@@ -165,7 +165,9 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
             else {
                 return false;
             };
-            names.iter().any(|name| name == implicit_receiver)
+            ctx.language_context
+                .is_syntax_rule_active(rule, ctx.path, &ctx.facts.activation_signals)
+                && names.iter().any(|name| name == implicit_receiver)
         });
     #[cfg(not(feature = "lang-typescript"))]
     let static_implicit_reference = false;
@@ -334,10 +336,15 @@ fn configured_hint_is_effective(
             .values()
             .any(|candidate| candidate == origin)
     } else {
-        ctx.language_context
-            .syntax_rules
-            .iter()
-            .any(|rule| rule.pack == origin.pack && rule.id == origin.rule)
+        ctx.language_context.syntax_rules.iter().any(|rule| {
+            rule.pack == origin.pack
+                && rule.id == origin.rule
+                && ctx.language_context.is_syntax_rule_active(
+                    rule,
+                    ctx.path,
+                    &ctx.facts.activation_signals,
+                )
+        })
     };
     if !effective {
         graph.reference_coverage(
@@ -368,6 +375,11 @@ fn resolve_vue_template_typed_member(
         if !ctx.language_context.syntax_rules.iter().any(|rule| {
             rule.pack == origin.pack
                 && rule.id == origin.rule
+                && ctx.language_context.is_syntax_rule_active(
+                    rule,
+                    ctx.path,
+                    &ctx.facts.activation_signals,
+                )
                 && matches!(
                     rule.operation,
                     languages::manifests::syntax::SyntaxOperation::ComponentMacros { .. }
@@ -788,6 +800,13 @@ where
                 else {
                     return None;
                 };
+                if !ctx.language_context.is_syntax_rule_active(
+                    rule,
+                    ctx.path,
+                    &ctx.facts.activation_signals,
+                ) {
+                    return None;
+                }
                 names.iter().any(|name| name == implicit_receiver).then(|| {
                     format!(
                         "{}; rule:{}:{}",

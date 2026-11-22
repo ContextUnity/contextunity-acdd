@@ -536,6 +536,9 @@ impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
     }
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        &linker::RUST_LINKER
+    }
     fn route_extraction_enabled(&self) -> bool {
         false
     }

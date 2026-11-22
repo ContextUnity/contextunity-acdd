@@ -1,6 +1,9 @@
 use super::*;
 use crate::languages::{dependency_registry::DependencyRegistry, ImportPath, LanguageProfile};
-use crate::linker::traits::{import_provider_modules, ModulesByNamespace, PackageExports};
+use crate::linker::traits::{
+    import_provider_modules, FileRelationContext, ModulesByNamespace, PackageExports,
+};
+use crate::models::tags::NodeKind;
 use crate::typed_facts::FlowState;
 
 type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
@@ -57,46 +60,21 @@ fn chained_member_receiver<'a, 'idx>(
                     _ => None,
                 }
             }
-            value_flow::TypeTarget::Builtin(name)
-                if profile
-                    .is_some_and(|profile| matches!(profile.id(), "typescript" | "javascript")) =>
-            {
-                semantic_context
-                    .property_type_for_path(path, name, field)
-                    .map(|name| Cow::Owned(value_flow::TypeTarget::Builtin(name)))
+            value_flow::TypeTarget::Builtin(name) => {
+                profile.and_then(|profile| {
+                    profile.linker().resolve_builtin_property(
+                        path,
+                        name,
+                        field,
+                        semantic_context,
+                    )
+                })
+                .map(Cow::Owned)
             }
             _ => None,
         }?;
     }
     Some(receiver)
-}
-
-fn builtin_member_origin(
-    receiver: &value_flow::TypeTarget<'_>,
-    profile: Option<&dyn LanguageProfile>,
-    default_origin: Option<&'static str>,
-) -> Option<&'static str> {
-    match receiver {
-        value_flow::TypeTarget::Builtin(name)
-            if profile.is_some_and(|profile| profile.id() == "python") =>
-        {
-            match name.as_str() {
-                "logging.Logger" => Some("builtin:logging.Logger"),
-                "logging.LoggerAdapter" => Some("builtin:logging.LoggerAdapter"),
-                "sqlite3.Connection" | "sqlite3.Cursor" => Some("builtin:sqlite3"),
-                _ => default_origin,
-            }
-        }
-        value_flow::TypeTarget::Builtin(name)
-            if profile
-                .is_some_and(|profile| matches!(profile.id(), "javascript" | "typescript"))
-                && (name == "Web.Response"
-                    || super::typescript::semantic_context::typed_dom_receiver(name).is_some()) =>
-        {
-            Some("builtin:web_api")
-        }
-        _ => default_origin,
-    }
 }
 
 pub(in crate::linker) fn reference_scope<'a>(owner: &'a Node, path: &str) -> &'a str {
@@ -336,7 +314,7 @@ pub(super) fn resolve<'a>(input: ResolutionInput<'a>) -> Vec<GraphPart> {
             let file_module: Cow<'_, str> = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module")
+                .find(|node| node.kind == NodeKind::Module.as_str())
                 .map(|node| Cow::Borrowed(node.qualname.as_str()))
                 .unwrap_or_else(|| {
                     Cow::Owned(
@@ -358,18 +336,18 @@ pub(super) fn resolve<'a>(input: ResolutionInput<'a>) -> Vec<GraphPart> {
             framework_projections::phase_framework_projections(&mut file_resolver);
             value_flow_phase::phase_value_flow(&mut file_resolver);
             documentation::phase_documentation(&mut file_resolver);
-            if profile.is_some_and(|profile| profile.id() == "python") {
-                python::semantic_relations::compose_symbol_relations(
+            if let Some(profile) = profile {
+                profile.linker().compose_file_relations(&mut FileRelationContext {
                     path,
                     facts,
                     references,
-                    dependency_registry,
+                    dependencies: dependency_registry,
                     semantic_context,
                     by_module,
                     by_id,
                     prepared_semantic_facts,
-                    &mut file_resolver.graph,
-                );
+                    graph: &mut file_resolver.graph,
+                });
             }
             if sort_per_file {
                 sort_graph(&mut file_resolver.graph);

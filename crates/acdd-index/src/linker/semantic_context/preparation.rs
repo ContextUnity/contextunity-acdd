@@ -266,7 +266,7 @@ impl<'a> Context<'a> {
             let Some(profile) = languages::by_id(&module.language) else {
                 continue;
             };
-            let linker = languages::linker_for(&module.language);
+            let linker = profile.linker();
             let Some(package_exports) = exports.get(profile.id()) else {
                 continue;
             };

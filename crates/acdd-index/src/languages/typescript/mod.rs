@@ -177,10 +177,16 @@ impl TypeScript {
                     let local = field(node, source, "alias").unwrap_or(imported);
                     match imported {
                         "test" | "it" => {
-                            file.test_case_imports.insert(local.to_owned());
+                            file.state
+                                .typescript_mut()
+                                .test_case_imports
+                                .insert(local.to_owned());
                         }
                         "beforeEach" | "before" | "afterEach" | "after" => {
-                            file.test_fixture_imports.insert(local.to_owned());
+                            file.state
+                                .typescript_mut()
+                                .test_fixture_imports
+                                .insert(local.to_owned());
                         }
                         _ => {}
                     }
@@ -236,7 +242,10 @@ impl TypeScript {
                     if file.rules.syntax_rules.iter().any(|rule| matches!(&rule.operation,
                         SyntaxOperation::TestRunner { modules, members }
                             if modules.iter().any(|value| value == module) && members.iter().any(|value| value == imported))) {
-                        file.test_case_imports.insert(local.to_owned());
+                        file.state
+                            .typescript_mut()
+                            .test_case_imports
+                            .insert(local.to_owned());
                     }
                     continue;
                 }
@@ -244,7 +253,10 @@ impl TypeScript {
                 pending.extend(node.named_children(&mut cursor));
             }
         }
-        if file.test_case_imports.is_empty() && file.test_fixture_imports.is_empty() { return; }
+        let ts_state = file.state.typescript_mut();
+        if ts_state.test_case_imports.is_empty() && ts_state.test_fixture_imports.is_empty() {
+            return;
+        }
         let mut imported_names = std::collections::HashMap::<String, usize>::new();
         let mut cursor = root.walk();
         for import in root.named_children(&mut cursor).filter(|node| node.kind() == "import_statement") {
@@ -263,8 +275,12 @@ impl TypeScript {
                 pending.extend(node.named_children(&mut cursor));
             }
         }
-        file.test_case_imports.retain(|name| imported_names.get(name) == Some(&1));
-        file.test_fixture_imports.retain(|name| imported_names.get(name) == Some(&1));
+        ts_state
+            .test_case_imports
+            .retain(|name| imported_names.get(name) == Some(&1));
+        ts_state
+            .test_fixture_imports
+            .retain(|name| imported_names.get(name) == Some(&1));
         let mut pending = vec![root];
         while let Some(node) = pending.pop() {
             if matches!(node.kind(), "assignment_expression" | "augmented_assignment_expression" | "update_expression" | "for_in_statement") {
@@ -278,8 +294,8 @@ impl TypeScript {
                     let mut names = Vec::new();
                     collect_pattern_binding_names(target, source, &mut names);
                     for name in names {
-                        file.test_case_imports.remove(&name);
-                        file.test_fixture_imports.remove(&name);
+                        ts_state.test_case_imports.remove(&name);
+                        ts_state.test_fixture_imports.remove(&name);
                     }
                 }
             }
@@ -289,7 +305,8 @@ impl TypeScript {
     }
 
     fn callback_runner(node: Syntax<'_>, source: &str, file: &FileContext) -> Option<&'static str> {
-        if file.test_case_imports.is_empty() && file.test_fixture_imports.is_empty() {
+        let ts_state = file.state.typescript()?;
+        if ts_state.test_case_imports.is_empty() && ts_state.test_fixture_imports.is_empty() {
             return None;
         }
         let mut current = node;
@@ -302,7 +319,7 @@ impl TypeScript {
                     .child_by_field_name("function")
                     .filter(|candidate| candidate.kind() == "identifier")?;
                 let local = text(callee, source).trim();
-                if file.test_case_imports.contains(local) {
+                if ts_state.test_case_imports.contains(local) {
                     let mut cursor = parent.walk();
                     let arguments: Vec<_> = parent.named_children(&mut cursor).collect();
                     if arguments.len() != 2 || arguments[0].kind() != "string" || arguments[1].id() != current.id() { return None; }
@@ -338,10 +355,10 @@ impl TypeScript {
                     }
                     scope = ancestor.parent();
                 }
-                if !shadowed && file.test_case_imports.contains(local) {
+                if !shadowed && ts_state.test_case_imports.contains(local) {
                     return Some("test_case");
                 }
-                if !shadowed && file.test_fixture_imports.contains(local) {
+                if !shadowed && ts_state.test_fixture_imports.contains(local) {
                     return Some("test_fixture");
                 }
                 return None;
@@ -578,7 +595,10 @@ impl TypeScript {
                 break;
             }
             if matches!(parent.kind(), "program" | "module") {
-                default_export = file.default_exports.contains(name);
+                default_export = file
+                    .state
+                    .typescript()
+                    .is_some_and(|state| state.default_exports.contains(name));
                 break;
             }
             if !matches!(
@@ -621,6 +641,9 @@ impl TypeScript {
 }
 
 impl LanguageProfile for TypeScript {
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        &linker::TYPESCRIPT_LINKER
+    }
     fn scope_analysis<'source, 'tree>(
         &self,
         node: Syntax<'tree>,
@@ -1510,6 +1533,7 @@ impl LanguageProfile for TypeScript {
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         let mut file = FileContext {
+            state: LanguageFileState::TypeScript(TypeScriptFileState::default()),
             ..Default::default()
         };
         Self::imported_test_runners(root, source, &mut file);
@@ -1547,7 +1571,10 @@ impl LanguageProfile for TypeScript {
                     .child_by_field_name("value")
                     .filter(|n| n.kind() == "identifier")
                 {
-                    file.default_exports.insert(text(value, source).into());
+                    file.state
+                        .typescript_mut()
+                        .default_exports
+                        .insert(text(value, source).into());
                 }
             }
             let mut c = node.walk();
@@ -1559,7 +1586,10 @@ impl LanguageProfile for TypeScript {
                 for specifier in clause.named_children(&mut c) {
                     if field(specifier, source, "alias") == Some("default") {
                         if let Some(name) = field(specifier, source, "name") {
-                            file.default_exports.insert(name.into());
+                            file.state
+                                .typescript_mut()
+                                .default_exports
+                                .insert(name.into());
                         }
                     }
                 }

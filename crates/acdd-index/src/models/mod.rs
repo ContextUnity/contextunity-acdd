@@ -624,11 +624,18 @@ pub struct Facts {
     pub docs: Vec<DocSection>,
     /// Extraction diagnostics.
     pub errors: Vec<Diagnostic>,
+    /// Per-file syntax activation signals observed during extraction.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::languages::manifests::semantic::FileActivationSignals::is_empty"
+    )]
+    pub activation_signals: crate::languages::manifests::semantic::FileActivationSignals,
 }
 impl Serialize for Facts {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Facts", 5)?;
+        let field_count = 5 + usize::from(!self.activation_signals.is_empty());
+        let mut state = serializer.serialize_struct("Facts", field_count)?;
         state.serialize_field(
             "nodes",
             &super::typed_facts::PublicNodesView::new(self, &self.semantic.flows),
@@ -637,6 +644,9 @@ impl Serialize for Facts {
         state.serialize_field("references", &self.references)?;
         state.serialize_field("docs", &self.docs)?;
         state.serialize_field("errors", &self.errors)?;
+        if !self.activation_signals.is_empty() {
+            state.serialize_field("activation_signals", &self.activation_signals)?;
+        }
         state.end()
     }
 }

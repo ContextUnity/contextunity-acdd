@@ -121,7 +121,7 @@ enum FactoryDeclarations<'a> {
     Raw(&'a Node),
 }
 
-pub(super) struct Context<'a> {
+pub(crate) struct Context<'a> {
     interner: &'a crate::interner::LinkerInterner<'a>,
     dependencies: &'a languages::dependency_registry::DependencyRegistry,
     named: super::named_bindings::NamedBindings<'a>,
@@ -411,7 +411,7 @@ impl<'a> Context<'a> {
         Some(definition.value.clone())
     }
 
-    pub(super) fn property_type_for_path(
+    pub(crate) fn property_type_for_path(
         &self,
         path: &str,
         receiver: &str,

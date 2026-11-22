@@ -251,7 +251,10 @@ pub(super) fn collect_array_shadow_fact(node: Syntax<'_>, source: &str, file: &m
             nearest_binding_scope(node, array_var_scoped)
         };
         if let Some(scope) = scope {
-            std::sync::Arc::make_mut(&mut file.shadowed_array_type_scopes).insert(scope.id());
+            std::sync::Arc::make_mut(
+                &mut file.state.typescript_mut().shadowed_array_type_scopes,
+            )
+            .insert(scope.id());
         }
     }
 }
@@ -279,10 +282,12 @@ pub(super) fn collect_rebound_parameter_fact(
             scope.kind(),
             "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
         ) {
-            std::sync::Arc::make_mut(&mut file.rebound_function_parameters)
-                .entry(scope.id())
-                .or_default()
-                .insert(name.to_owned());
+            std::sync::Arc::make_mut(
+                &mut file.state.typescript_mut().rebound_function_parameters,
+            )
+            .entry(scope.id())
+            .or_default()
+            .insert(name.to_owned());
         }
         current = scope.parent();
     }
@@ -370,7 +375,9 @@ pub(super) fn collect_dom_global_shadow_fact(
     }
     if shadowed_count > 0 {
         if let Some(scope) = nearest_binding_scope(node, var_scoped) {
-            let by_scope = std::sync::Arc::make_mut(&mut file.shadowed_dom_global_scopes);
+            let by_scope = std::sync::Arc::make_mut(
+                &mut file.state.typescript_mut().shadowed_dom_global_scopes,
+            );
             let globals = by_scope.entry(scope.id()).or_default();
             for global in shadowed_globals[..shadowed_count].iter().flatten() {
                 globals.insert((*global).to_owned());
@@ -419,7 +426,10 @@ pub(super) fn collect_scope_facts(
         };
         if binding {
             if let Some(scope) = nearest_binding_scope(node, var_scoped) {
-                std::sync::Arc::make_mut(&mut file.shadowed_require_scopes).insert(scope.id());
+                std::sync::Arc::make_mut(
+                    &mut file.state.typescript_mut().shadowed_require_scopes,
+                )
+                .insert(scope.id());
             }
         }
         if !typescript {
@@ -447,10 +457,12 @@ pub(super) fn collect_scope_facts(
                 let mut names = Vec::new();
                 collect_pattern_binding_names(parameters, source, &mut names);
                 if !names.is_empty() {
-                    std::sync::Arc::make_mut(&mut file.dom_listener_parameter_bindings)
-                        .entry(node.id())
-                        .or_default()
-                        .extend(names);
+                    std::sync::Arc::make_mut(
+                        &mut file.state.typescript_mut().dom_listener_parameter_bindings,
+                    )
+                    .entry(node.id())
+                    .or_default()
+                    .extend(names);
                 }
             }
         }
@@ -459,10 +471,12 @@ pub(super) fn collect_scope_facts(
                 let mut names = Vec::new();
                 collect_pattern_binding_names(parameter, source, &mut names);
                 if !names.is_empty() {
-                    std::sync::Arc::make_mut(&mut file.dom_listener_parameter_bindings)
-                        .entry(node.id())
-                        .or_default()
-                        .extend(names);
+                    std::sync::Arc::make_mut(
+                        &mut file.state.typescript_mut().dom_listener_parameter_bindings,
+                    )
+                    .entry(node.id())
+                    .or_default()
+                    .extend(names);
                 }
             }
         }
@@ -475,7 +489,9 @@ pub(super) fn collect_scope_facts(
         };
         if let Some(name) = written.filter(|name| name.kind() == "identifier") {
             let name = text(name, source).to_owned();
-            let local_writes = std::sync::Arc::make_mut(&mut file.dom_listener_local_writes);
+            let local_writes = std::sync::Arc::make_mut(
+                &mut file.state.typescript_mut().dom_listener_local_writes,
+            );
             let mut parent = node.parent();
             while let Some(scope) = parent {
                 if matches!(scope.kind(), "statement_block" | "program" | "source_file") {
@@ -523,9 +539,11 @@ pub(super) fn collect_scope_facts(
                                 .map(|ty| text(ty, source).to_owned())
                         })
                         .flatten();
-                    let fields = std::sync::Arc::make_mut(&mut file.dom_listener_class_fields)
-                        .entry(class.id())
-                        .or_default();
+                    let fields = std::sync::Arc::make_mut(
+                        &mut file.state.typescript_mut().dom_listener_class_fields,
+                    )
+                    .entry(class.id())
+                    .or_default();
                     let name = text(name, source).to_owned();
                     match fields.entry(name) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -601,8 +619,10 @@ pub(super) fn collect_scope_facts(
                 receivers.remove(&name);
             }
             if !receivers.is_empty() {
-                std::sync::Arc::make_mut(&mut file.dom_listener_receivers)
-                    .insert(node.id(), receivers);
+                std::sync::Arc::make_mut(
+                    &mut file.state.typescript_mut().dom_listener_receivers,
+                )
+                .insert(node.id(), receivers);
             }
         }
         collect_array_shadow_fact(node, source, file);
@@ -652,9 +672,12 @@ pub(super) fn has_type_import_modifier(node: Syntax<'_>) -> bool {
 }
 
 pub(super) fn array_type_shadowed(node: Syntax<'_>, file: &FileContext) -> bool {
+    let Some(ts_state) = file.state.typescript() else {
+        return false;
+    };
     let mut current = Some(node);
     while let Some(scope) = current {
-        if file.shadowed_array_type_scopes.contains(&scope.id()) {
+        if ts_state.shadowed_array_type_scopes.contains(&scope.id()) {
             return true;
         }
         current = scope.parent();
@@ -663,9 +686,12 @@ pub(super) fn array_type_shadowed(node: Syntax<'_>, file: &FileContext) -> bool 
 }
 
 pub(super) fn dom_global_shadowed(node: Syntax<'_>, file: &FileContext, name: &str) -> bool {
+    let Some(ts_state) = file.state.typescript() else {
+        return false;
+    };
     let mut current = Some(node);
     while let Some(scope) = current {
-        if file
+        if ts_state
             .shadowed_dom_global_scopes
             .get(&scope.id())
             .is_some_and(|names| names.contains(name))
@@ -682,8 +708,12 @@ pub(super) fn dom_global_shadowed_in_scopes(
     file: &FileContext,
     name: &str,
 ) -> bool {
+    let Some(ts_state) = file.state.typescript() else {
+        return false;
+    };
     scopes.iter().any(|scope| {
-        file.shadowed_dom_global_scopes
+        ts_state
+            .shadowed_dom_global_scopes
             .get(scope)
             .is_some_and(|names| names.contains(name))
     })
@@ -695,12 +725,13 @@ pub(super) fn dom_indexed_const<'a>(
     at: usize,
     scopes: &[usize],
 ) -> Option<Result<&'a DomListenerLocalDeclaration, usize>> {
+    let ts_state = file.state.typescript()?;
     for scope in scopes {
-        let declaration = file
+        let declaration = ts_state
             .dom_listener_local_declarations
             .get(scope)
             .and_then(|bindings| bindings.get(name));
-        let rebound = file
+        let rebound = ts_state
             .dom_listener_local_writes
             .get(scope)
             .and_then(|names| names.get(name))
@@ -715,7 +746,7 @@ pub(super) fn dom_indexed_const<'a>(
             });
             return Some(valid.ok_or(*scope));
         }
-        if file
+        if ts_state
             .dom_listener_parameter_bindings
             .get(scope)
             .is_some_and(|names| names.contains(name))
@@ -735,6 +766,7 @@ pub(super) fn dom_receiver_from_indexed_expression(
     if depth > 4 {
         return None;
     }
+    let ts_state = file.state.typescript()?;
     match expression {
         DomListenerReceiverExpression::Identifier { name, position } => {
             if matches!(name.as_str(), "document" | "window")
@@ -754,14 +786,14 @@ pub(super) fn dom_receiver_from_indexed_expression(
                     depth + 1,
                 ),
                 Err(scope) => {
-                    let rebound = file
+                    let rebound = ts_state
                         .rebound_function_parameters
                         .get(&scope)
                         .is_some_and(|names| names.contains(name));
                     if rebound {
                         return None;
                     }
-                    let ty = file.dom_listener_receivers.get(&scope)?.get(name)?;
+                    let ty = ts_state.dom_listener_receivers.get(&scope)?.get(name)?;
                     typed_dom_receiver(ty)
                         .filter(|_| !dom_global_shadowed_in_scopes(scopes, file, ty))
                 }
@@ -775,7 +807,7 @@ pub(super) fn dom_receiver_from_indexed_expression(
             if *static_method {
                 return None;
             }
-            let ty = file
+            let ty = ts_state
                 .dom_listener_class_fields
                 .get(class_scope)?
                 .get(name)?
@@ -823,15 +855,16 @@ pub(super) fn dom_const_initializer<'tree>(
     file: &FileContext,
     name: &str,
 ) -> Option<Result<Syntax<'tree>, Syntax<'tree>>> {
+    let ts_state = file.state.typescript()?;
     let at = node.start_byte();
     let mut current = node.parent();
     while let Some(scope) = current {
         if matches!(scope.kind(), "statement_block" | "program" | "source_file") {
-            let declaration = file
+            let declaration = ts_state
                 .dom_listener_local_declarations
                 .get(&scope.id())
                 .and_then(|bindings| bindings.get(name));
-            let rebound = file
+            let rebound = ts_state
                 .dom_listener_local_writes
                 .get(&scope.id())
                 .and_then(|names| names.get(name))
@@ -852,7 +885,7 @@ pub(super) fn dom_const_initializer<'tree>(
                 );
             }
         }
-        if file
+        if ts_state
             .dom_listener_parameter_bindings
             .get(&scope.id())
             .is_some_and(|names| names.contains(name))
@@ -887,7 +920,8 @@ pub(super) fn dom_receiver_from_ast(
             }
             match dom_const_initializer(receiver, file, name)? {
                 Ok(scope) => {
-                    let declaration = file
+                    let ts_state = file.state.typescript()?;
+                    let declaration = ts_state
                         .dom_listener_local_declarations
                         .get(&scope.id())?
                         .get(name)?;
@@ -907,14 +941,15 @@ pub(super) fn dom_receiver_from_ast(
                             | "arrow_function"
                     ) =>
                 {
-                    if file
+                    let ts_state = file.state.typescript()?;
+                    if ts_state
                         .rebound_function_parameters
                         .get(&scope.id())
                         .is_some_and(|names| names.contains(name))
                     {
                         return None;
                     }
-                    let ty = file.dom_listener_receivers.get(&scope.id())?.get(name)?;
+                    let ty = ts_state.dom_listener_receivers.get(&scope.id())?.get(name)?;
                     typed_dom_receiver(ty).filter(|_| !dom_global_shadowed(receiver, file, ty))
                 }
                 Err(_) => None,
@@ -935,6 +970,8 @@ pub(super) fn dom_receiver_from_ast(
                     return None;
                 }
                 let ty = file
+                    .state
+                    .typescript()?
                     .dom_listener_class_fields
                     .get(&class.id())?
                     .get(text(property, source))?

@@ -81,7 +81,7 @@ where
         let by_id = input.by_id;
         let profile = input.profiles.get(path).copied();
         let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| {
-            languages::linker_for(profile.id())
+            profile.linker()
         });
         let value_queries = collect_value_queries(facts, flows, interner);
         #[cfg(feature = "lang-typescript")]

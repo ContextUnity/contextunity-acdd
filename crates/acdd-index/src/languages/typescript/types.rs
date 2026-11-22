@@ -83,9 +83,14 @@ pub(super) fn array_callback_element<'a>(
                 if matches.next().is_none() {
                     let annotation = parameter.child_by_field_name("type")?.named_child(0)?;
                     if !file
-                        .rebound_function_parameters
-                        .get(&enclosing.id())
-                        .is_some_and(|names| names.contains(receiver_name))
+                        .state
+                        .typescript()
+                        .is_some_and(|state| {
+                            state
+                                .rebound_function_parameters
+                                .get(&enclosing.id())
+                                .is_some_and(|names| names.contains(receiver_name))
+                        })
                     {
                         return element_type_from_annotation(annotation, arrow, file, source);
                     }

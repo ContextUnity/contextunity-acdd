@@ -388,7 +388,8 @@ pub(super) fn index_dom_listener_declarator(
         None
     };
     let scope_chain = std::sync::Arc::new(dom_scope_chain(scope));
-    let declarations = std::sync::Arc::make_mut(&mut file.dom_listener_local_declarations);
+    let declarations =
+        std::sync::Arc::make_mut(&mut file.state.typescript_mut().dom_listener_local_declarations);
     let block = declarations.entry(scope.id()).or_default();
     for name in names {
         let declaration = block.entry(name).or_default();

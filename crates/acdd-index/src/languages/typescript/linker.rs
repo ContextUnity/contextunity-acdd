@@ -3,10 +3,11 @@ use crate::semantic::SourcePosition;
 use crate::languages;
 use crate::interner::LinkerInterner;
 use crate::linker::traits::{
-    ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
-    insert_package_export, package_export, resolve_default_import,
+    insert_package_export, package_export, resolve_default_import, ImportContext,
+    ImportNormalizationContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
 };
 use crate::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
+use crate::models::tags::EdgeKind;
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
@@ -396,6 +397,66 @@ fn configured_component_modules<'a>(
 }
 
 impl LanguageLinker for TypeScriptLinker {
+    fn needs_family_module_stems(&self) -> bool {
+        true
+    }
+
+    fn normalize_file_imports<'a>(
+        &self,
+        profile: &dyn LanguageProfile,
+        path: &'a str,
+        facts: &'a Facts,
+        ctx: &ImportNormalizationContext<'_, 'a>,
+        out: &mut HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    ) {
+        let empty = std::collections::HashSet::new();
+        let indexed_modules = ctx
+            .family_module_stems
+            .get(&profile.family())
+            .unwrap_or(&empty);
+        for reference in facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == EdgeKind::Imports.as_str())
+        {
+            let module = reference.module.as_deref().unwrap_or(&reference.expression);
+            out.entry((path, module)).or_insert_with(|| {
+                ctx.dependencies
+                    .normalize_javascript_import(profile.id(), path, module, indexed_modules)
+                    .or_else(|| profile.normalize_import_with_root(ctx.root, path, module))
+            });
+        }
+    }
+
+    fn resolve_builtin_property<'a>(
+        &self,
+        path: &str,
+        receiver_name: &str,
+        field: &str,
+        semantic_context: &crate::linker::semantic_context::Context<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        semantic_context
+            .property_type_for_path(path, receiver_name, field)
+            .map(TypeTarget::Builtin)
+    }
+
+    fn builtin_member_origin(
+        &self,
+        receiver: &TypeTarget<'_>,
+        default_origin: Option<&'static str>,
+        _computed_call: bool,
+    ) -> Option<&'static str> {
+        match receiver {
+            TypeTarget::Builtin(name)
+                if name == "Web.Response"
+                    || super::typed_dom_receiver(name).is_some() =>
+            {
+                Some("builtin:web_api")
+            }
+            _ => default_origin,
+        }
+    }
+
     fn tracks_external_aliases(&self) -> bool {
         true
     }
