@@ -1,0 +1,151 @@
+# Complete Profile Options & Variables (`GateProfile v2`)
+
+Every `GateProfile` YAML file uses strict `deny_unknown_fields` validation and is verified by `acdd validate`. Repository defaults live in `.acdd/profile.yaml` (falling back to embedded `code`); additional profiles live in directories listed under `profiles_dirs` in `acdd.yaml` (default `.acdd/profiles/`).
+
+---
+
+## 1. Top-level keys & inheritance
+
+| Key | Type / Values | Default / Meaning |
+| --- | --- | --- |
+| `version` | `2` (integer, required) | Schema version. Must be `2`. |
+| `inherit` | `"base" \| "code" \| "audit" \| "documentation" \| "spec_planning" \| "none" \| "<relpath>[:<sha256_prefix>]"` | Parent profile to inherit from. Optional SHA-256 content pin (`7..=64` hex chars) verifies the parent file digest before loading. `"none"` starts with zero inherited defaults. |
+| `git` | `{ isolation, worktrees }` | Git isolation policy (see below). |
+| `save` | `"none" \| "commit"` | Default save action on terminal root gates (`"commit"` in `base`). |
+| `tags` | `["default", ...]` or `null` | Allowed task tags (`"default"` is always allowed; `code` adds `"docs"`). |
+| `protected_paths` | `["glob", ...]` | Workspace-relative globs blocked from normal task writes even if matched elsewhere. |
+| `default_tools` | `["tool_name", ...]` | Default MCP tool allowlist for any gate that omits `tools:`. |
+| `modules` | `{ profile?, enabled?, disabled?, required?, domains? }` | Subsystem toggles and `DomainProvider` patches (`domains.<id>: false \| null` disables a domain). |
+| `limits` | Object of 8 numeric caps | Execution and context-assembly ceilings (see Section 2). |
+| `roles` | Map `<role_id> -> RoleDef` | Role execution mode, model hints, guidance, and headless `runner:` command. |
+| `commands` | Map `<cmd_id> -> CommandDef` | Named shell command templates (4 YAML forms; `null` removes an inherited slot). |
+| `scope_args_by_pattern` | Map `<glob> -> "<arg>"` | Maps task scope globs to `{scope_target}` command arguments. |
+| `proofs` | Map `<proof_id> -> { description?, schema }` | Reusable JSON Schema catalog referenced by `proof: <id>`. |
+| `guidance` | Map `<key> -> string \| { description, criteria }` | Reusable instruction blocks injected into `ClaimResp.guidance`. |
+| `contours` | Map `<contour_id> -> { description, criteria }` | Named audit dimensions required by `review` gates. |
+| `gate_templates` | Map `<tpl_id> -> { gates, command?, guidance?, max_attempts? }` | Reusable gate macro blocks expanded via `use: <tpl_id>`. |
+| `gates` | List of `GateDef` / `- tasks:` | Replaces the inherited gate DAG completely. Mutually exclusive with `gates_patch`. |
+| `gates_patch` | List of patch entries | Surgically edits, inserts, or deletes inherited gates (forbidden with `inherit: none`). |
+
+### `git:` policy object
+- **`git.isolation`**: `"worktree"` (isolated branch + `.worktrees/<run>` / `.worktrees/<run>-<task>`) or `"in_place"` (runs in the active directory; `--in-place` on `acdd start` overrides this and neutralizes `save.post: commit` to `none`).
+- **`git.worktrees`**: `"manual"` (user/orchestrator manages worktree creation & cleanup) or `"managed"` (engine creates/cleans task and run worktrees automatically).
+
+---
+
+## 2. `limits:` (all 8 resource ceilings)
+
+| Field | Default (`base`) | What it bounds |
+| --- | --- | --- |
+| `max_guidance_bytes` | `32768` (32 KiB) | Hard ceiling for Tier 1 mandatory `contract` + `guidance` inside `ClaimResp` (`GuidanceBudgetExceeded` on overflow). |
+| `max_log_bytes` | `1048576` (1 MiB) | Maximum persisted trace log file size per `acdd verify` run. |
+| `max_capture_bytes` | `262144` (256 KiB) | Maximum stdout/stderr bytes captured in memory from a command execution. |
+| `max_line_bytes` | `65536` (64 KiB) | Single-line byte cap for streamed runner/command output. |
+| `diagnostic_inline_bytes` | `4096` (4 KiB) | Tail length of `failed_trace_log_tail` inlined into `ClaimResp` Tier 2 on rework. |
+| `max_metadata_bytes` | `2048` (2 KiB) | Metadata payload ceiling for gate/task records. |
+| `max_trace_summary_bytes` | `2048` (2 KiB) | Stored summary size cap per verification trace. |
+| `max_command_timeout_seconds` | `1800` (30 min) | Maximum allowed `timeout_seconds` for any gate or `verify` command. |
+
+---
+
+## 3. `roles.<id>` & headless runner environment variables
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `mode` | `"subagent" \| "inline"` | `"subagent"` (default) signals coordinator/worker delegation; `"inline"` runs inside the coordinator session. |
+| `reuse_on_reject` | `bool` (default `false`) | Hints `acdd run` / orchestrators to resume the same worker session when routing back on `fail`. |
+| `models` | `["model", "model:reasoning", { model, reasoning? }]` | Advisory ordered list of preferred models and optional reasoning tiers. |
+| `guidance` | `string \| null` | Role-level coordinator/orchestrator prompt note (`null` clears inherited note). |
+| `runner` | `string \| null` | Shell command template used by `acdd run` to spawn an external agent CLI. Receives rendered `ClaimResp` Markdown on **`stdin`**. |
+| `prompt_template` | `string \| null` | Optional custom template rendered before writing to `runner`'s `stdin`. |
+
+### Environment variables injected into `roles.<id>.runner`
+
+When `acdd run` executes a `runner` process, the child receives these exact environment variables alongside rendered `ClaimResp` on `stdin`:
+
+| Variable | Value |
+| --- | --- |
+| `ACDD_RUN_ID` | Active run UUID/ID |
+| `ACDD_NODE_CURSOR` | Claimed gate cursor (e.g. `T1.build`, `blueprint_synthesis.synthesize`) |
+| `ACDD_CLAIM_REVISION` | Monotonic optimistic claim revision integer |
+| `ACDD_WORKER_ID` | Assigned worker identity for the claim |
+| `ACDD_AGENT_SESSION_ID` | Session identifier passed/assigned for reuse continuity |
+| `ACDD_WORKTREE` | Absolute path to the assigned worktree directory |
+| `ACDD_STATE_DB` | Absolute path to `.acdd/state.sqlite` |
+| `ACDD_CODE_DB` | Absolute path to `.acdd/code-map.sqlite` |
+| `TRACEPARENT` | W3C Trace Context header for distributed telemetry correlation |
+
+---
+
+## 4. `commands.<id>` forms & template variables
+
+Every entry under `commands:` uses one of four YAML shapes (or `null` to delete an inherited command):
+
+1. **Abstract slot**: `{ abstract: true, description? }` (or `{ unbound: true, description? }`) — requires a child profile override before `acdd start` / `acdd run` can bind it.
+2. **Simple string**: `"cargo test --workspace"`
+3. **Detailed object**:
+   ```yaml
+   commands:
+     build_check:
+       command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+       description: "Run strict lint and scoped task tests"
+       test_filter: "{test}"            # true | false | "-- {test}" | "{test}"
+       timeout_seconds: 900
+       scope_args_by_pattern:           # optional per-command override
+         "src/**/*.rs": "--lib"
+   ```
+4. **Pattern-dispatched (`by_pattern`)**:
+   ```yaml
+   commands:
+     build_check:
+       by_pattern:
+         "crates/**": "cargo test -p {scope_target} {test_filter}"
+         "frontend/**": "npm test -- {test_filter}"
+       description: "Dispatch verification by task scope"
+   ```
+   *(Also accepts a YAML list of `{ pattern, command, ... }` objects.)*
+
+### Command & path template variables
+
+| Variable | Where used | How it expands |
+| --- | --- | --- |
+| `{scope_target}` | `commands.<id>.command` | Resolved from `scope_args_by_pattern` matching the task's `admitted_scope` globs. |
+| `{file_stem}` | `scope_args_by_pattern` values | File stem extracted from a matched scope path (e.g. `"tests/core.rs": "--test {file_stem}"` → `--test core`). |
+| `{test_filter}` | `commands.<id>.command` | Expands `test_filter` template when `--test <filter>` is passed to `acdd verify` / `acdd_verify` (empty when omitted). |
+| `{test}` | `commands.<id>.test_filter` | Replaced by the `--test` argument string (e.g. `test_filter: "-- {test}"` → `-- my_test`). |
+| `{run_id}` | `save.report` | Active run ID. |
+| `{run_name}` | `save.report` | Human-readable run slug/name. |
+| `{gate_id}` | `save.report` | Current gate ID. |
+| `{spec_id}` | `save.report` | Spec document ID (when started from a spec). |
+
+---
+
+## 5. Gate & `- tasks:` fields
+
+A profile's `gates:` list contains root gates, nested container gates (`gates: [...]`), and `- tasks:` tracks (`tasks: { when?, gates: [...] }`).
+
+| Field | Applies to | Description |
+| --- | --- | --- |
+| `id` | Root/container/leaf gates | Unique gate name inside its parent scope (omitted on anonymous `- tasks:` blocks). |
+| `gates` | Container gate | Nested child gates executed inside this container. |
+| `tasks` | Task track | `{ when?, gates: [...] }` — instantiates child gates for each non-cancelled task matching `when`. |
+| `when` | `- tasks:` & task gates | Boolean tag expression over task tags: `tag`, `!tag`, `&` or `+` (AND), `\|` (OR), `( ... )`. Forbidden on root gates. |
+| `use` | Any gate | Expands a named entry from `gate_templates`. |
+| `role` | Role-assigned gate | Worker role ID from `roles:` (`architect`, `builder`, `independent_reviewer`, `auditor`, etc.). |
+| `command` | Automated / build gate | Key from `commands:` executed during `acdd verify` / `acdd run`. |
+| `call` / `with` | Domain action gate | Executes `<domain>.<action>` on a `DomainProvider` with JSON arguments `with: { ... }`. |
+| `checks` | Any verified gate | List of `"<domain>.<check>"` or `{ check: "<domain>.<check>", with: { ... } }` (e.g. `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`, `docs.specs`). |
+| `context` | Role-assigned gate | Ordered list of `DomainProvider` context lenses injected into `ClaimResp` Tier 6 (`docs.instructions`, `docs.adrs`, `docs.invariants`, `docs.workspace_config`, `code.symbols`, `code.tests`, `code.external_callers`). |
+| `proof` | Any gate | `"none"` (default), `"command"`, `"call"`, `"review"` (requires `role` + non-empty `contours`), `"<proof_catalog_id>"`, or inline `{ scheme: <JSON Schema> }`. |
+| `tools` / `tools_add` / `tools_remove` | Role-assigned gate | Replaces or patches `default_tools` for this gate (fail-closed against known static + plugin tools). |
+| `guidance` | Any gate | List of keys from `guidance:` or `{ inline: "..." }` entries injected into `ClaimResp.guidance`. |
+| `contours` | Review gate | List of keys from `contours:` audited by `independent_reviewer`. |
+| `scope` | Explicit-scope gate | List of workspace-relative globs (e.g. `polish` admitting `docs/**`, `README.md`). |
+| `save` | Any gate | Scalar `"none" \| "commit" \| "snapshot"` or `{ post?, immutable?, archive?, prune?, report? }`. `save.post: snapshot` is valid only on leaf task gates (`refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` without moving `HEAD`); `save.report` writes `.md`/`.json` strictly under `.acdd/reports/`. |
+| `max_attempts` | Any gate | Maximum attempts before escalation (default `3`). |
+| `receipt` | Terminal gate | `true` closes the task/run container and persists `ArtifactKind::Proof`. |
+| `independent_from` | Review/deliver gate | List of gate cursors (e.g. `[build]` or `[polish, "tasks.build"]`) whose `worker_id` must differ from the claimer. |
+| `need` | Any gate | List of sibling/predecessor cursors that must be completed (and whose `accepted_tree` must match). |
+| `pass` | Any gate | Target sibling gate ID on `pass` (defaults to the next sibling gate if omitted). |
+| `fail` | Review/command gate | Target sibling gate ID on `defect` rejection or command failure. |
+| `fail_drift` | Review gate | Target sibling gate ID (e.g. `rearchitect`) on `architectural_drift` rejection (sets `context_reset_required: true`). |

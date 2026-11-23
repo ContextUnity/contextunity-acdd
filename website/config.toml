@@ -1,0 +1,22 @@
+base_url = "https://acdd.contextunity.com"
+title = "ContextUnity ACDD"
+description = "Augmented Context & Durable Dispatch: build any verified gate sequence, wire any AI agent or CLI tool, and enforce code intelligence and architecture rules in one Rust engine."
+compile_sass = true
+minify_html = true
+build_search_index = true
+generate_feeds = false
+
+[markdown]
+external_links_target_blank = true
+external_links_no_referrer = true
+
+[markdown.highlighting]
+theme = "catppuccin-mocha"
+
+[extra]
+version = "0.7.0"
+github_url = "https://github.com/ContextUnity/contextunity-acdd"
+github_issues_url = "https://github.com/ContextUnity/contextunity-acdd/issues"
+install_cmd = "curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh"
+nightly_cmd = "curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh -s -- --nightly"
+tagline = "Augmented Context & Durable Dispatch"

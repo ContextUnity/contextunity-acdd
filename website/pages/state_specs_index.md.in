@@ -1,0 +1,31 @@
+# ACDD State
+
+**ACDD State** (`crates/acdd-state`) turns software engineering workflows — from specification drafting to multi-wave execution — into durable, resumable DAG runs stored in `.acdd/state.sqlite`.
+
+## How a workflow starts and moves through tasks
+
+1. **Create a specification (or start ad-hoc)**:
+   - Run `acdd draft <collection> <slug>` to allocate the next zero-padded spec file configured under `specs:` in `acdd.yaml` (`milestones`, `plans`), or run the `spec_planning` profile so an architect drafts `AC-*` criteria and disjoint parallel task waves.
+   - For localized fixes without a spec file, pass an ad-hoc goal: `acdd start --goal "Fix parser edge case" --profile hotfix --scope src/parser/`.
+2. **Materialize the Run & DAG**:
+   - `acdd start <spec>` resolves the active `GateProfile` (`version: 2`), computes a SHA-256 `spec_digest`, creates isolated Git worktrees (when `git.isolation: worktree`), and writes typed `GateNode` rows addressed by dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `T1.deliver`, `run_tests`, `integration_review`, `handoff`).
+3. **Schedule parallel waves**:
+   - Tasks declare `depends_on` edges. `acdd roadmap` and `acdd next` surface every ready cursor whose dependencies are completed and whose write scopes are disjoint.
+4. **Claim → Edit → Verify → Submit**:
+   - A worker (human CLI or AI agent over MCP) calls `acdd claim` / `acdd_claim` to lock the node under optimistic concurrency (`claim_revision` + `node_version`) and receives a budgeted 6-tier `ClaimResp` Markdown prompt.
+   - After editing inside its admitted scope, the worker runs `acdd verify` / `acdd_verify` (executing scoped tests + `DomainProvider` checks like `code.seam` and `code.lint`), coordinates via `acdd_blackboard`, and calls `acdd submit` / `acdd_submit`.
+   - Separate `independent_reviewer` workers audit `review` / `integration_review` before `deliver` lands an atomic `Acdd-Claim` commit.
+
+## Connecting agents & tools
+
+- **Over MCP (`acdd serve`)**: Connect Antigravity, Claude Code, Codex, or Cursor to the 20 built-in MCP tools. Coordinators spawn workers with thin prompts `(run, node_cursor, worker_id, worktree)` and each worker self-claims via `acdd_claim`.
+- **Headless CLI runners (`acdd run`)**: Configure `roles.<name>.runner` shell commands to automatically spawn any CLI agent across topological waves.
+- **Compaction recovery (`acdd context`)**: Read-only command that reloads the current `ClaimResp` contract and blackboard without mutating claim state.
+
+## Pages in this section
+
+- **[State Machine, Tasks & Receipts](/docs/state/state-machine/)** — `Run`, `GateNode`, optimistic locking, Git snapshots (`acdd snapshot`), linear `rebase-ff`, and error codes.
+- **[Installation](/docs/state/install/)** — Quick install (`install.sh`), `latest` vs `--nightly`, `cargo install`, and skills installation.
+- **[MCP & CLI Setup](/docs/state/mcp-cli-setup/)** — Connecting Antigravity, Codex, Claude, and Cursor via `.mcp.json` and multi-worktree selection.
+- **[CLI Reference](/docs/state/cli/)** — Complete flat `acdd` command reference.
+- **[MCP Tools Reference](/docs/state/mcp-tools/)** — All 20 built-in MCP tools, plugin `<domain>_<name>` tools, selectors, and pagination.

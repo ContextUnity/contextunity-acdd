@@ -1,0 +1,876 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="container">
+    <div class="hero-pill">
+      <span class="dot"></span>
+      <span>v{{ config.extra.version }} (Early Version) · Pure Rust · MCP + CLI</span>
+    </div>
+
+    <h1 class="hero-title-acdd">
+      <span class="acdd-cap">A</span>ugmented <span class="acdd-cap">C</span>ontext &amp; <span class="acdd-cap">D</span>urable <span class="acdd-cap">D</span>ispatch
+    </h1>
+
+    <p class="hero-tagline">
+      A harness-agnostic <span class="gradient-text">meta-harness</span> for AI coding agents
+    </p>
+
+    <p class="hero-sub">
+      Build any sequence of verified gates, wire any AI agents and CLI tools into each stage,
+      and keep every change grounded in a live Tree-sitter code graph, parallel worktrees, and an architectural linter.
+    </p>
+
+    <div class="hero-cta" style="margin-bottom: 0;">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/_index.md') }}">Explore Documentation</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/_index.md') }}">Profiles</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">Connect MCP</a>
+      <a class="btn btn-glass" href="{{ get_url(path='/') }}#get-started">Install</a>
+    </div>
+  </div>
+  <div class="hero-horizon" aria-hidden="true"></div>
+</section>
+
+<section class="section section-tight" id="meta-harness">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">Regular Harnesses vs. ACDD</div>
+      <p>
+        A regular <strong>agent harness</strong> (Claude Code, Codex CLI, Antigravity, Cursor) runs one LLM's prompt-and-tool loop, leaving discipline to prompt luck.
+        ACDD sits one layer higher as a <strong>meta-harness</strong> — guiding every step, supplying context on demand, and verifying proof before work lands.
+      </p>
+    </div>
+
+    <div class="contrast-grid contrast-lead">
+      <div class="contrast-card contrast-before">
+        <div class="contrast-badge">Unguided Agent Harnesses</div>
+        <h3>Where autonomous sessions break down</h3>
+        <ul>
+          <li><strong>Instructions fade mid-session</strong> — long instruction files and constraints get buried or silently ignored as context fills up.</li>
+          <li><strong>Premature "done" claims</strong> — agents stop after happy-path edits without proving callers, edge cases, or tests actually pass.</li>
+          <li><strong>Fragile, low-awareness edits</strong> — blind <code>grep</code> loops miss downstream dependencies, breaking distant modules and contracts.</li>
+          <li><strong>Silent architectural erosion</strong> — duplicated helpers, boundary violations, and stale docs accumulate unchecked.</li>
+        </ul>
+      </div>
+
+      <div class="contrast-card contrast-after">
+        <div class="contrast-badge">ACDD Meta-Harness</div>
+        <h3>Controlled, evidence-backed engineering</h3>
+        <ul>
+          <li><strong>Step-by-step gate control</strong> — every stage is an explicit node in a verified DAG; agents cannot skip ahead or self-approve.</li>
+          <li><strong>Just-in-time context &amp; rules</strong> — <code>acdd_claim</code> injects only the exact contract, guidance, and <code>INV-*</code> rules relevant to the current gate.</li>
+          <li><strong>Proof required before advancing</strong> — transitions fail closed until real CLI checks (<code>acdd_verify</code>), JSON Schema proofs, and independent reviews pass.</li>
+          <li><strong>Continuous architecture verification</strong> — <code>acdd lint</code> and the live SQLite code graph guard crate boundaries, callers, and doc links on every change.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="meta-summary">
+      <p>
+        Build any scenario you need — from focused code generation and read-only audits to complex automated workflows coordinating multi-agent swarms across isolated worktrees.
+      </p>
+      <p>
+        Built-in profiles let you start immediately, while flexible overrides and extensions let you tailor every gate, check, and agent runner to your repository.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- 1. ACDD STATE -->
+<section class="section" id="state">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">01 · ACDD State</div>
+      <h2>Deterministic state machine, specs &amp; multi-agent dispatch</h2>
+      <p>
+        Start workflows from versioned Markdown specifications or ad-hoc goals, drive stages via CLI or MCP subagents, and coordinate parallel waves inside isolated worktrees.
+      </p>
+    </div>
+
+    <div class="exec-grid" style="margin-bottom: 20px;">
+      <div class="exec-card">
+        <div class="index-kicker">Manual &amp; Headless CLI</div>
+        <h3>Step-by-step control from your terminal</h3>
+        <p>
+          Start a milestone spec or an ad-hoc fix, inspect ready cursors, claim a gate, verify tests and lint, and submit — or let <code>acdd run</code> spawn configured role runners across parallel waves.
+        </p>
+        <div class="exec-code">
+          <div class="code-chrome">
+            <span class="chrome-dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">terminal · bash</span>
+          </div>
+          <pre><code># 1. Draft or start a spec run (or ad-hoc goal) in an isolated worktree
+acdd draft milestones auth-tokens --prefix AC
+acdd start docs/milestones/AC-010-auth-tokens.md --worktree
+# acdd start --goal "Fix auth parser" --profile hotfix --scope src/auth/
+
+# 2. Check ready cursors &amp; claim a task gate
+acdd next
+acdd claim T1.build --worker dev-1
+
+# 3. Verify scoped checks &amp; submit transition
+acdd verify T1.build --test parser_tests
+acdd submit T1.build --action pass
+
+# 4. Independent review &amp; commit, or headless multi-wave runner
+acdd claim T1.review --worker rev-1
+acdd submit T1.review --action pass --evidence review.json
+# acdd run --jobs 4   # spawns configured role runners across waves</code></pre>
+        </div>
+      </div>
+
+      <div class="exec-card">
+        <div class="index-kicker">Orchestrator ↔ Agents via MCP</div>
+        <h3>Thin coordinator prompts, self-claiming workers</h3>
+        <p>
+          In subagent mode, the orchestrator never pastes giant specs or claims gates on a worker's behalf. ACDD's state machine coordinates every agent over MCP:
+        </p>
+        <ol class="mcp-flow">
+          <li>
+            <strong>Inspect ready waves (<code>acdd_state</code>)</strong>:
+            The orchestrator calls <code>acdd_state(action="start" | "next")</code> to resolve schedulable gate cursors and isolated worktree paths.
+          </li>
+          <li>
+            <strong>Spawn workers with a thin prompt</strong>:
+            It launches subagents (Claude, Codex, Antigravity, Cursor) passing only <code>(run, node_cursor, worker_id, worktree)</code>.
+          </li>
+          <li>
+            <strong>Worker self-claims context (<code>acdd_claim</code>)</strong>:
+            Each agent calls <code>acdd_claim</code> first and receives its budgeted Markdown <code>ClaimResp</code> (contract, architect slice, findings, blackboard, and graph lenses).
+          </li>
+          <li>
+            <strong>Verify, coordinate &amp; submit</strong>:
+            The worker edits inside its worktree, runs <code>acdd_verify</code>, logs decisions or rebuttals on <code>acdd_blackboard</code>, and advances via <code>acdd_submit</code> — handing off to an independent reviewer.
+          </li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="tasks-grid">
+      <div class="tasks-steps">
+        <div class="task-step">
+          <div class="step-badge">Spec Creation &amp; Collections</div>
+          <h3>Zero-collision spec drafting</h3>
+          <p>
+            Configure named specification directories (like milestones and plans) with automatic sequential IDs. Draft specs via <code>acdd draft</code> or launch the built-in <code>spec_planning</code> profile so an architect validates acceptance criteria and disjoint wave scopes.
+          </p>
+        </div>
+
+        <div class="task-step">
+          <div class="step-badge">Wave Scheduling, Snapshots &amp; Compaction</div>
+          <h3>Durable state across restarts</h3>
+          <p>
+            Inspect cross-run dependency waves with <code>acdd roadmap</code>, save Git checkpoints with <code>acdd snapshot</code>, expand write scopes via <code>acdd extend-scope</code>, and reload active contracts after context compaction with <code>acdd context</code>.
+          </p>
+        </div>
+      </div>
+
+      <div class="tasks-spec-preview">
+        <div class="code-chrome">
+          <span class="chrome-dots"><i></i><i></i><i></i></span>
+          <span class="chrome-label">AC-010-auth-tokens.md · spec + task</span>
+        </div>
+        <pre><code>---
+id: AC-010-auth-tokens
+title: Scoped Token Validation
+status: planned
+owners: [src/auth/, tests/auth.rs]
+invariants:
+  - "INV-AUTH-FAIL-CLOSED: Reject expired or malformed tokens."
+acceptance_criteria:
+  - "AC-1: Expired tokens fail with AuthError::Expired."
+---
+
+### task: token-parser
+```yaml
+task_ref: token-parser
+depends_on: []
+scope: [src/auth/parser.rs, tests/auth.rs]
+max_net_loc: 80
+verification_seam: tests/auth.rs::rejects_expired_token
+```</code></pre>
+      </div>
+    </div>
+
+    <div class="explorer-footer">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/state/_index.md') }}">Explore ACDD State →</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">MCP &amp; CLI Setup</a>
+    </div>
+  </div>
+</section>
+
+<!-- 2. ACDD INDEX -->
+<section class="section" id="code-index">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">02 · ACDD Index</div>
+      <h2>Polyglot Tree-sitter graph built for speed and freshness</h2>
+      <p>
+        Every admitted file is parsed into a single incremental SQLite graph (<code>.acdd/code-map.sqlite</code>) linking AST symbols, calls, documentation sections, and cross-repo libraries.
+      </p>
+    </div>
+
+    <div class="index-grid">
+      <article class="index-card">
+        <div class="index-kicker">01 · Extraction Pipeline</div>
+        <h3>How languages are indexed</h3>
+        <p>
+          Native Tree-sitter grammars extract declarations, imports, calls, and receiver bindings, while typed framework manifests resolve framework conventions (Django, HTMX, Alpine, Vue/Nuxt, GridViewSpec). Mixed templates (<code>{% raw %}{% ... %}{% endraw %}</code>, <code>{% raw %}{{ ... }}{% endraw %}</code>) are byte-masked by <code>TemplateMasker</code> before HTML/JS parsing so line offsets stay exact.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">02 · Benchmark Speed</div>
+        <h3>Fast cold builds &amp; 12–25ms queries</h3>
+        <p>
+          Measured on a 4,150-file polyglot corpus (<code>72,293</code> nodes, <code>221,662</code> edges, <code>2,967</code> doc sections): cold build finishes in <strong>~10.0 s</strong> median, single-file incremental <code>delta</code> in <strong>~2.8 s</strong>, and warm MCP queries (<code>code_map_search</code>, <code>inspect</code>, <code>impact</code>, <code>search_docs</code>) respond in <strong>12–25 ms</strong> p50.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">03 · Auto-Refresh &amp; Digest Safety</div>
+        <h3>Always fresh without manual rebuilds</h3>
+        <p>
+          Over MCP (<code>acdd serve</code>), each request verifies workspace identity and adapter digest, automatically running incremental <code>delta</code> or full rebuilds on edits (reusing a valid inventory check for up to 5 seconds). <code>acdd_read</code> rejects stale snippets by SHA-256 digest, and CLI commands trigger automatic rebuilds when an index is missing.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">04 · Code ↔ Docs Binding</div>
+        <h3>Verified documentation edges</h3>
+        <p>
+          Markdown files are split at headings into BM25-searchable sections. Code claims and <code>INV-*</code> invariants resolve uniquely against indexed AST symbols to create verified <code>governs</code> edges surfaced directly inside <code>code_map_inspect</code> and <code>code_map_explain</code>.
+        </p>
+      </article>
+    </div>
+
+    <div class="linked-ws-panel" style="margin-bottom: 18px;">
+      <div class="linked-ws-copy">
+        <div class="index-kicker">05 · Multi-Repo Graphs</div>
+        <h3>Linked Workspaces</h3>
+        <p style="margin-bottom: 0;">
+          Index shared libraries or companion repositories alongside your primary project via <code>acdd.yaml</code>. Each linked entry declares its own source roots, docs, and exclusions, resolving cross-repo imports and docs while tracking coverage separately per workspace.
+        </p>
+      </div>
+      <div class="linked-ws-code">
+        <div class="code-chrome">
+          <span class="chrome-dots"><i></i><i></i><i></i></span>
+          <span class="chrome-label">acdd.yaml · linked_workspaces</span>
+        </div>
+        <pre><code>linked_workspaces:
+  - name: shared-library
+    path: ../shared-library
+    enabled: true
+    roots: [src, frontend]
+    docs: [docs]
+    ignore: [vendor, dist, build]</code></pre>
+      </div>
+    </div>
+
+    <div class="lang-strip" id="languages">
+      <div class="lang-strip-head">
+        <div>
+          <div class="index-kicker">06 · Supported Languages · Early Version</div>
+          <h3>Compiled Tree-sitter language coverage</h3>
+        </div>
+        <a class="btn btn-glass btn-sm" href="{{ config.extra.github_issues_url }}" target="_blank" rel="noopener">Need another language? GitHub Issues →</a>
+      </div>
+      <div class="lang-pills">
+        <div class="lang-pill lang-default"><strong>Default (11):</strong> Rust · Python · TypeScript · Vue · Proto · HTML · YAML · TOML · Bash · CSS · JSON</div>
+        <div class="lang-pill lang-tier2"><strong>Tier-2 (8, <code>--features all-languages</code>):</strong> Go · Java · C# · Kotlin · PHP · Ruby · C · C++</div>
+      </div>
+    </div>
+
+    <div class="explorer-footer">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/index/_index.md') }}">Explore ACDD Index →</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/index/acdd-yaml.md') }}">acdd.yaml &amp; Limits</a>
+    </div>
+  </div>
+</section>
+
+<!-- 3. ACDD LINT -->
+<section class="section" id="linter">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">03 · ACDD Lint</div>
+      <h2>How <code>acdd lint</code> enforces rules across code and docs</h2>
+      <p>
+        Rules declared in <code>acdd.yaml</code> and executable <code>acdd-rule</code> blocks inside Markdown docs compile into one check pass against <code>code-map.sqlite</code> — blocking architectural drift in gates and CI.
+      </p>
+    </div>
+
+    <div class="linter-grid">
+      <div class="linter-card linter-checklist">
+        <div class="linter-panel-label">Full <code>acdd lint --categories all</code></div>
+        <h3>What gets checked</h3>
+        <ul class="check-list">
+          <li>
+            <strong><code>arch</code> — Architectural Boundaries (8 primitives)</strong>:
+            evaluates <code>forbid_dependency</code>, <code>allow_only_dependencies</code>, <code>single_owner</code>, <code>forbid_cycles</code>, <code>boundary_entry</code>, <code>must_implement</code>, <code>ast_pattern</code>, and <code>doc_integrity</code> rules from <code>acdd.yaml</code> and Markdown <code>acdd-rule</code> blocks.
+          </li>
+          <li>
+            <strong><code>docs</code> — Documentation Integrity &amp; Governance</strong>:
+            checks frontmatter, Markdown links and heading anchors, symbol claims against indexed code files, stale declaration line ranges, duplicate non-contract <code>INV-*</code> declarations, orphan invariants lacking a <code>governs</code> link or <code>acdd-rule</code>, and invalid rule YAML.
+          </li>
+          <li>
+            <strong><code>syntax</code> — Tree-sitter Parse Diagnostics</strong>:
+            surfaces syntax and grammar parse errors across all admitted source files (<code>syntax.parse</code>).
+          </li>
+          <li>
+            <strong><code>duplicates</code> — Structural Code Clones</strong>:
+            detects exact and parameterized duplicate code blocks across functions and methods.
+          </li>
+          <li>
+            <strong><code>dead_tails</code> — Call &amp; Test Graph Hygiene</strong>:
+            catches unreachable symbols (<code>dead_tails.unreachable</code>), functions covered only by orphaned tests (<code>dead_tails.phantom_tested</code>), and unresolved calls (<code>dead_tails.dangling_call</code>).
+          </li>
+          <li>
+            <strong><code>cycles</code> — Dependency Cycles</strong>:
+            identifies strongly connected call and import components across the workspace graph (<code>cycles.scc</code>).
+          </li>
+        </ul>
+        <p class="linter-hint">
+          Default gate checks run <code>arch</code>, <code>syntax</code>, and <code>docs</code>; pass <code>--categories all</code> for the full 6-category workspace sweep.
+        </p>
+      </div>
+
+      <aside class="linter-card linter-inv-card">
+        <div class="linter-panel-label">Doc INV Block</div>
+        <div class="inv-code-wrap">
+          <div class="code-chrome">
+            <span class="chrome-dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">modularity.md</span>
+          </div>
+          <pre><code>&gt; [!IMPORTANT]
+&gt; - INV-GIT-SINGLE-OWNER:
+&gt;   Only `acdd_core::git`
+&gt;   may spawn `git`.
+&gt;   [`git.rs`](crates/acdd-core/src/git.rs)
+
+```acdd-rule
+id: INV-GIT-SINGLE-OWNER
+invariant: INV-GIT-SINGLE-OWNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  exclude_paths:
+    - "crates/acdd-core/src/git.rs"
+  languages: ["rust"]
+ast_pattern: 'Command::new("git")'
+```</code></pre>
+        </div>
+      </aside>
+    </div>
+
+    <div class="explorer-footer">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/lint/writing-docs-and-rules.md') }}">Guide: Writing Docs &amp; Linter Rules →</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/lint/_index.md') }}">Lint Overview</a>
+    </div>
+  </div>
+</section>
+
+<!-- 4. ACDD PROFILES -->
+<section class="section" id="profiles">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">04 · ACDD Profiles</div>
+      <h2>Built-in profiles, gates &amp; what agents receive in context</h2>
+      <p>Five embedded profiles out of the box — plus repository overlays you can inherit, patch, or compose for any stack.</p>
+    </div>
+
+    <div class="profiles-list" style="margin-bottom: 34px;">
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">base</span>
+          <span class="profile-tag">worktree · save: commit</span>
+        </div>
+        <p>Foundation profile supplying default tool admission, protective limits, core execution/review guidance, and <code>paths</code> / <code>claims</code> / <code>administration</code> contours.</p>
+      </div>
+
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">code</span>
+          <span class="profile-tag">worktree · save: commit</span>
+        </div>
+        <p>Full engineering lifecycle: <code>blueprint_synthesis</code> → parallel <code>tasks.{build, review, deliver, rearchitect}</code> → <code>run_tests</code> / <code>polish</code> → <code>integration_review</code> → <code>handoff</code>.</p>
+      </div>
+
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">audit</span>
+          <span class="profile-tag">in_place · save: none</span>
+        </div>
+        <p>Read-only 3-phase security &amp; correctness audit (<code>recon</code> → <code>analyze</code> → <code>triage</code>) with strict JSON Schema findings and Markdown reports under <code>.acdd/reports/</code>.</p>
+      </div>
+
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">documentation</span>
+          <span class="profile-tag">worktree · save: commit</span>
+        </div>
+        <p>Living documentation &amp; invariant workflow verifying symbol links, Markdown anchors (<code>docs.links</code>), and executable <code>acdd-rule</code> blocks (<code>code.lint [arch, docs]</code>).</p>
+      </div>
+
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">spec_planning</span>
+          <span class="profile-tag">in_place · save: none</span>
+        </div>
+        <p>Architectural planning pipeline (<code>synthesize</code> → <code>review</code>) validating spec collection prefixes, acyclic waves, and disjoint parallel write scopes before coding begins.</p>
+      </div>
+
+      <div class="profile-row">
+        <div class="profile-head">
+          <span class="profile-name">hotfix (overlay)</span>
+          <span class="profile-tag">inherits .acdd/profile.yaml</span>
+        </div>
+        <p>Example custom repository overlay for localized fixes: keeps scoped checks and <code>run_tests</code> while pruning <code>blueprint_synthesis</code> and <code>integration_review</code>.</p>
+      </div>
+    </div>
+
+    <div class="gate-explorer" id="gate-context">
+      <div class="gate-tabs" role="tablist">
+        <button type="button" class="gate-tab active" data-gate-tab="synth">
+          <span class="tab-name">1. synthesize</span>
+          <span class="tab-role">role: architect</span>
+        </button>
+        <button type="button" class="gate-tab" data-gate-tab="build">
+          <span class="tab-name">2. tasks.build</span>
+          <span class="tab-role">role: builder</span>
+        </button>
+        <button type="button" class="gate-tab" data-gate-tab="review">
+          <span class="tab-name">3. tasks.review</span>
+          <span class="tab-role">role: independent_reviewer</span>
+        </button>
+        <button type="button" class="gate-tab" data-gate-tab="deliver">
+          <span class="tab-name">4. tasks.deliver</span>
+          <span class="tab-role">role: independent_reviewer</span>
+        </button>
+        <button type="button" class="gate-tab" data-gate-tab="integ">
+          <span class="tab-name">5. integration_review</span>
+          <span class="tab-role">role: independent_reviewer</span>
+        </button>
+      </div>
+
+      <div class="gate-panel active" data-gate-panel="synth">
+        <div class="gate-meta">
+          <div class="meta-badge">blueprint_synthesis.synthesize</div>
+          <h3>Architectural Blueprint Synthesis</h3>
+          <p>Runs once before tasks start. The architect maps canonical owners and decomposes tasks with explicit LOC budgets and verification seams.</p>
+          <div class="meta-kv">
+            <div><span>Role</span><strong>architect</strong></div>
+            <div><span>Proof</span><strong>blueprint (per-task slices)</strong></div>
+            <div><span>Next</span><strong>blueprint_synthesis.review</strong></div>
+          </div>
+        </div>
+        <div class="gate-payload">
+          <div class="payload-title"><span>Markdown delivered to architect by acdd_claim</span><span>scroll ↓</span></div>
+          <pre><code># Gate Claim: `blueprint_synthesis.synthesize`
+
+- Run: `PAY-014`
+- Claim Revision: `1`
+- Contract Revision: `1`
+- Worker: `architect-1`
+- Worktree: `/repo/.worktrees/PAY-014`
+- Candidate Tree: `9b41e0c8...`
+- Inspect: `acdd show blueprint_synthesis.synthesize --run PAY-014`
+
+## Contract
+
+- **Gate**: `blueprint_synthesis.synthesize`
+- **Proof**: `blueprint`
+- **Spec**: `PAY-014`
+- **Title**: Idempotent Webhook Ledger
+- **Spec Path**: `docs/milestones/PAY-014-idempotent-webhook-ledger.md`
+- **Tools**: `acdd_read`, `acdd_guide`, `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`
+- **Owners**: `src/billing/`, `src/storage/`, `tests/billing_test.rs`
+
+### Acceptance Criteria
+- AC-1: Duplicate Stripe webhook delivery IDs must return HTTP 200 without re-charging or double-posting ledger entries.
+- AC-2: Signature verification failure must reject before opening any database write transaction.
+- AC-3: Ledger commit and webhook receipt persistence must execute inside one atomic transaction.
+
+## Guidance
+
+- **ARCHITECTURAL BLUEPRINT SYNTHESIS**: Audit canonical owners, ADRs, and `INV-*` rules; assign disjoint task scopes, realistic `max_net_loc`, and production `verification_seam` targets.
+- **EXECUTION &amp; COMPLETION**: Stay inside `admitted_scope`, satisfy every declared `acceptance_criteria`, and submit once green.
+- **ENGINEERING &amp; SIMPLICITY PRINCIPLES**: Reuse existing single owners (`INV-SINGLE-OWNER`) instead of inventing parallel helpers or shims.
+- **ACDD NAVIGATION &amp; HYGIENE PROTOCOL**: Ground every cited symbol with `code_map_search` / `code_map_inspect` / `acdd_read`.
+
+## Blackboard
+
+- #104 [decisions | coordinator]: Reuse `BillingRepo::insert_tx` rather than creating a second webhook connection pool.
+
+## Repository Instructions - MANDATORY
+
+MANDATORY: read repository rules for respective scope.
+
+- `AGENTS.md` (Architecture Boundaries, Testing Policy, Git Worktrees)
+- `src/billing/AGENTS.md` (Idempotency Keys, Transaction Ownership)
+
+## Architectural Decision Records - MANDATORY
+
+- `docs/adr/0004-idempotent-ledger.md` — Ledger entries require unique `(provider, event_id)` keys inside the primary write transaction.
+- `docs/adr/0009-webhook-auth-boundary.md` — Verify HMAC signatures before JSON deserialization or DB access.
+
+## Governing Invariants
+
+- `INV-BILLING-IDEMPOTENT` (`docs/adr/0004-idempotent-ledger.md:14`) [ENFORCED]: Every external payment event deduplicates via unique `(provider, event_id)` inside the ledger transaction.
+- `INV-WEBHOOK-HMAC-FIRST` (`docs/adr/0009-webhook-auth-boundary.md:21`) [ENFORCED]: Raw request bodies must pass HMAC verification before parsing or storage access.</code></pre>
+        </div>
+      </div>
+
+      <div class="gate-panel" data-gate-panel="build">
+        <div class="gate-meta">
+          <div class="meta-badge">tasks.&lt;id&gt;.build</div>
+          <h3>Scoped Implementation &amp; Seam Proof</h3>
+          <p>The builder works inside an admitted file scope, receives the architect's slice, any prior rejection findings, and live test/caller maps.</p>
+          <div class="meta-kv">
+            <div><span>Role</span><strong>builder</strong></div>
+            <div><span>Save</span><strong>snapshot · command: build_check</strong></div>
+            <div><span>Checks</span><strong>code.seam + code.lint (arch, syntax, docs)</strong></div>
+          </div>
+        </div>
+        <div class="gate-payload">
+          <div class="payload-title"><span>Markdown delivered to builder by acdd_claim</span><span>scroll ↓</span></div>
+          <pre><code># Gate Claim: `T1.build`
+
+- Run: `PAY-014`
+- Claim Revision: `2`
+- Contract Revision: `1`
+- Worker: `builder-1`
+- Worktree: `/repo/.worktrees/PAY-014-T1`
+- Candidate Tree: `4e9a1c72...`
+- Inspect: `acdd show T1.build --run PAY-014`
+
+## Contract
+
+- **Gate**: `tasks.build`
+- **Proof**: `command`
+- **Command**: `build_check`
+- **Task**: `T1`
+- **Target**: Enforce atomic deduplication inside `WebhookProcessor::handle`
+- **Scope**: `src/billing/webhook.rs`, `src/storage/ledger.rs`, `tests/billing_test.rs`
+- **Checks**: `code.seam`, `code.lint`
+
+## Guidance
+
+- **TASK BUILD &amp; SEAM PROOF**: Author compiling, passing seam tests directly in `build` within `max_net_loc` budgets; run `code_map_query(duplicates | dead_tails)` before submit.
+- **EXECUTION &amp; COMPLETION**: Stay inside `admitted_scope` and avoid out-of-scope churn.
+
+## Unresolved Findings
+
+- **Kind**: `defect`
+- **Summary**: Rework required from `T1.review` (claim rev 1).
+- [high] `src/billing/webhook.rs`: `process_event` opens `tx` before calling `verify_hmac` | Remediation: Move `verify_hmac(&amp;raw_body, sig)` above `repo.begin_tx()`.
+
+### Failed Trace Log Tail
+
+```text
+test billing_test::rejects_invalid_hmac_without_db_write ... FAILED
+assertion `left == right` failed: expected 0 db queries on invalid signature, got 1
+```
+
+## Pre-Task Architectural Slice
+
+- **Layer**: `billing/domain`
+- **Summary**: Verify HMAC first, then record `(provider, event_id)` and ledger delta in one DB transaction.
+- **Max Net LOC**: `85`
+- **Verification Seam**: `tests/billing_test.rs::dedupes_replayed_webhook_atomically`
+- **Canonical Owners**: `src/billing/webhook.rs`, `src/storage/ledger.rs`
+- **Mechanism Rules**: Never swallow `SqlError::UniqueViolation`; map it to `WebhookOutcome::AlreadyProcessed`.
+- **Negative Boundaries**: Do not add a separate Redis cache or HTTP middleware table.
+- **Outgoing Seams**:
+  - `T2` (`seam_dependency`) `WebhookOutcome`: `T2` metrics handler matches on `AlreadyProcessed`.
+
+## Dependency Receipts
+
+- `blueprint_synthesis.review` @ `8b3f10d4...` (2026-11-22T18:10:00Z)
+
+## Blackboard
+
+- #104 [decisions | coordinator]: Reuse `BillingRepo::insert_tx` rather than creating a second pool.
+- #109 [notes | architect-1]: `T2` consumes `WebhookOutcome::AlreadyProcessed` — keep variant public.
+
+## Repository Instructions - MANDATORY
+
+- `AGENTS.md` (Architecture Boundaries, Testing Policy)
+- `src/billing/AGENTS.md` (Idempotency Keys, Transaction Ownership)
+
+## Governing Invariants
+
+- `INV-BILLING-IDEMPOTENT` (`docs/adr/0004-idempotent-ledger.md:14`) [ENFORCED]
+- `INV-WEBHOOK-HMAC-FIRST` (`docs/adr/0009-webhook-auth-boundary.md:21`) [ENFORCED]
+
+## Scoped Symbols
+
+- `WebhookProcessor::handle` : 38:104 : `pub async fn handle(&amp;self, sig: &amp;str, raw: &amp;[u8]) -&gt; Result&lt;WebhookOutcome&gt;`
+- `BillingRepo::record_event` : 72:118 : `pub async fn record_event(&amp;self, tx: &amp;mut Tx, key: &amp;EventKey) -&gt; Result&lt;bool&gt;`
+
+## Scoped Tests
+
+- `dedupes_replayed_webhook_atomically` (`tests/billing_test.rs:42`)
+- `rejects_invalid_hmac_without_db_write` (`tests/billing_test.rs:88`)
+
+## External Callers
+
+- `routes::stripe_webhook_handler` (`src/api/routes.rs`) -&gt; `WebhookProcessor::handle`</code></pre>
+        </div>
+      </div>
+
+      <div class="gate-panel" data-gate-panel="review">
+        <div class="gate-meta">
+          <div class="meta-badge">tasks.&lt;id&gt;.review</div>
+          <h3>Independent Evidence Review</h3>
+          <p>Enforces <code>independent_from: [build]</code> so a distinct reviewer audits every contour. Repeated drift routes to <code>rearchitect</code>.</p>
+          <div class="meta-kv">
+            <div><span>Role</span><strong>independent_reviewer</strong></div>
+            <div><span>Contours</span><strong>paths, claims, architecture, concurrency, isolation, admin</strong></div>
+            <div><span>Save</span><strong>immutable: true · fail_drift → rearchitect</strong></div>
+          </div>
+        </div>
+        <div class="gate-payload">
+          <div class="payload-title"><span>Markdown delivered to independent_reviewer by acdd_claim</span><span>scroll ↓</span></div>
+          <pre><code># Gate Claim: `T1.review`
+
+- Run: `PAY-014`
+- Claim Revision: `1`
+- Contract Revision: `1`
+- Worker: `reviewer-1`
+- Worktree: `/repo/.worktrees/PAY-014-T1`
+- Candidate Tree: `7c12d8aa...`
+- Inspect: `acdd show T1.review --run PAY-014`
+
+## Contract
+
+- **Gate**: `tasks.review`
+- **Proof**: `review`
+- **Task**: `T1`
+- **Scope**: `src/billing/webhook.rs`, `src/storage/ledger.rs`, `tests/billing_test.rs`
+
+### Contours
+#### `paths`
+- Verify modified, staged, and untracked files stay strictly within admitted scope.
+#### `claims`
+- Verify every `AC-*` criterion has live test evidence proportional to operational risk.
+#### `architecture`
+- Verify single-owner reuse, zero `duplicates` clones (`&gt;= 5` lines), and zero `dead_tails`.
+#### `concurrency`
+- Verify concurrent webhook replays serialize cleanly under unique constraint without races.
+#### `project_isolation`
+- Verify no hardcoded paths, temp leaks, or cross-workspace writes.
+#### `administration`
+- Verify `BUDGET_OVERRIDE` authority vs measured net LOC (`+54 / -18 = 36 &lt;= 85`).
+
+## Guidance
+
+- **INDEPENDENT TASK REVIEW**: No early-abort — audit every declared contour and changed file in one pass; search sibling call sites on any defect.
+- **INDEPENDENT EVIDENCE-BASED REVIEW**: Reject only on concrete contract or invariant violations; post optional follow-ups to `acdd_blackboard` (`topic: deferred`).
+
+## Pre-Task Architectural Slice
+
+- **Max Net LOC**: `85`
+- **Verification Seam**: `tests/billing_test.rs::dedupes_replayed_webhook_atomically`
+- **Canonical Owners**: `src/billing/webhook.rs`, `src/storage/ledger.rs`
+- **Negative Boundaries**: Do not add a separate Redis cache or middleware table.
+
+## Dependency Receipts
+
+- `T1.build` @ `7c12d8aa...` (verified `build_check`, `code.seam`, `code.lint`)
+
+## Blackboard
+
+- #112 [notes | builder-1]: Moved `verify_hmac` ahead of `begin_tx()`; verified 0 clones &amp; 0 dead tails.
+
+## Repository Instructions - MANDATORY
+
+- `AGENTS.md` (Review Authority, Verification Gates)
+- `src/billing/AGENTS.md` (Idempotency Keys, Transaction Ownership)
+
+## Governing Invariants
+
+- `INV-BILLING-IDEMPOTENT` (`docs/adr/0004-idempotent-ledger.md:14`) [ENFORCED]
+- `INV-WEBHOOK-HMAC-FIRST` (`docs/adr/0009-webhook-auth-boundary.md:21`) [ENFORCED]
+
+## Scoped Symbols &amp; Tests
+
+- `WebhookProcessor::handle` : 38:96 : `pub async fn handle(&amp;self, sig: &amp;str, raw: &amp;[u8]) -&gt; Result&lt;WebhookOutcome&gt;`
+- `dedupes_replayed_webhook_atomically` (`tests/billing_test.rs:42`)
+- `rejects_invalid_hmac_without_db_write` (`tests/billing_test.rs:88`)
+
+## External Callers
+
+- `routes::stripe_webhook_handler` (`src/api/routes.rs`) -&gt; `WebhookProcessor::handle`</code></pre>
+        </div>
+      </div>
+
+      <div class="gate-panel" data-gate-panel="deliver">
+        <div class="gate-meta">
+          <div class="meta-badge">tasks.&lt;id&gt;.deliver</div>
+          <h3>Immutable Candidate Commit</h3>
+          <p>Verifies that the working tree matches the reviewed <code>candidate_tree</code> OID, creates an atomic commit stamped with <code>Acdd-Claim</code>, and records a durable receipt.</p>
+          <div class="meta-kv">
+            <div><span>Role</span><strong>independent_reviewer</strong></div>
+            <div><span>Need</span><strong>build + review</strong></div>
+            <div><span>Save</span><strong>immutable: true · post: commit · receipt: true</strong></div>
+          </div>
+        </div>
+        <div class="gate-payload">
+          <div class="payload-title"><span>Markdown delivered at deliver by acdd_claim</span><span>scroll ↓</span></div>
+          <pre><code># Gate Claim: `T1.deliver`
+
+- Run: `PAY-014`
+- Claim Revision: `1`
+- Contract Revision: `1`
+- Worker: `reviewer-1`
+- Worktree: `/repo/.worktrees/PAY-014-T1`
+- Candidate Tree: `7c12d8aa...`
+- Inspect: `acdd show T1.deliver --run PAY-014`
+
+## Contract
+
+- **Gate**: `tasks.deliver`
+- **Task**: `T1`
+- **Target**: Enforce atomic deduplication inside `WebhookProcessor::handle`
+- **Need**: `build`, `review`
+- **Save Policy**: `immutable: true`, `post: commit`, `receipt: true`
+- **Scope**: `src/billing/webhook.rs`, `src/storage/ledger.rs`, `tests/billing_test.rs`
+
+## Guidance
+
+- **HITL PRO**: Internal changes within `admitted_scope` are autonomous; escalate public schemas or cross-run contract changes via `acdd_blackboard` (`decisions` or `blockers`).
+- Confirm working tree OID equals reviewed `candidate_tree` (`7c12d8aa...`) before landing the atomic `Acdd-Claim` commit (fail closed with `TASK_CANDIDATE_MISMATCH` on drift).
+
+## Dependency Receipts
+
+- `T1.build` @ `7c12d8aa...` (2026-11-22T19:42:10Z — passed `build_check`, `code.seam`, `code.lint`)
+- `T1.review` @ `7c12d8aa...` (2026-11-22T19:48:33Z — passed contours: `paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`)
+
+## Blackboard
+
+- #112 [notes | builder-1]: Moved `verify_hmac` ahead of `begin_tx()`; verified 0 clones &amp; 0 dead tails.
+- #113 [notes | reviewer-1]: All 6 contours passed; net LOC +36 within 85 budget.</code></pre>
+        </div>
+      </div>
+
+      <div class="gate-panel" data-gate-panel="integ">
+        <div class="gate-meta">
+          <div class="meta-badge">integration_review → handoff</div>
+          <h3>Full-Run Integration &amp; Archival</h3>
+          <p>After <code>run_tests</code> passes workspace-wide verification, an independent reviewer audits the integrated branch before <code>handoff</code> archives the spec.</p>
+          <div class="meta-kv">
+            <div><span>Role</span><strong>independent_reviewer</strong></div>
+            <div><span>Independent From</span><strong>polish, tasks.build</strong></div>
+            <div><span>Handoff</span><strong>post: commit · archive: true · prune: true</strong></div>
+          </div>
+        </div>
+        <div class="gate-payload">
+          <div class="payload-title"><span>Markdown delivered at integration_review by acdd_claim</span><span>scroll ↓</span></div>
+          <pre><code># Gate Claim: `integration_review`
+
+- Run: `PAY-014`
+- Claim Revision: `1`
+- Contract Revision: `1`
+- Worker: `reviewer-2`
+- Worktree: `/repo/.worktrees/PAY-014`
+- Candidate Tree: `a4f90b19...`
+- Inspect: `acdd show integration_review --run PAY-014`
+
+## Contract
+
+- **Gate**: `integration_review`
+- **Proof**: `review`
+- **Spec**: `PAY-014`
+- **Title**: Idempotent Webhook Ledger
+- **Need**: `run_tests`
+- **Independent From**: `polish`, `tasks.build`
+
+### Contours
+#### `paths` — Verify integrated branch touches only admitted milestone paths.
+#### `claims` — Verify AC-1, AC-2, and AC-3 end-to-end across integrated tasks (`T1`, `T2`).
+#### `architecture` — Run workspace-wide `duplicates`, `dead_tails`, and `code_map_lint`.
+#### `concurrency` — Verify webhook + metrics integration holds under parallel load tests.
+#### `project_isolation` — Verify zero temp leaks or un-confined filesystem calls.
+#### `administration` — Verify linear `rebase-ff` integration and task `TreeOid` parity.
+
+## Guidance
+
+- **INTEGRATION REVIEW**: Audit full integrated diff against `target_base`, verify workspace-wide hygiene (`duplicates`, `dead_tails`, `code_map_lint`), and confirm documentation parity before `handoff`.
+
+## Dependency Receipts
+
+- `T1.deliver` @ `7c12d8aa...` (commit `3f821c0`, 2026-11-22T19:49:02Z)
+- `T2.deliver` @ `c19e04ab...` (commit `91a04d2`, 2026-11-22T20:04:18Z)
+- `run_tests` @ `a4f90b19...` (passed `verify_all` + `code.lint [arch, syntax, docs]`)
+
+## Blackboard
+
+- #104 [decisions | coordinator]: Reuse `BillingRepo::insert_tx`.
+- #118 [deferred | reviewer-1]: Optional Grafana panel for `AlreadyProcessed` counter.
+
+## Repository Instructions - MANDATORY
+
+- `AGENTS.md`, `src/billing/AGENTS.md`, `docs/AGENTS.md`
+
+## Governing Invariants
+
+- `INV-BILLING-IDEMPOTENT` (`docs/adr/0004-idempotent-ledger.md:14`) [ENFORCED]
+- `INV-WEBHOOK-HMAC-FIRST` (`docs/adr/0009-webhook-auth-boundary.md:21`) [ENFORCED]
+- `INV-SINGLE-OWNER` (`docs/architecture/modularity.md:42`) [ENFORCED]
+
+## Scoped Symbols &amp; External Callers
+
+- `WebhookProcessor::handle`, `BillingRepo::record_event`, `MetricsSink::inc_deduped`
+- `routes::stripe_webhook_handler` (`src/api/routes.rs`) -&gt; `WebhookProcessor::handle`</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="explorer-footer">
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/profiles/profile-options.md') }}">Full Profile Options &amp; Variables →</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/overriding-profiles.md') }}">How to Override Profiles</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/builtin-code.md') }}">Full code.yaml Walkthrough</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="get-started">
+  <div class="container">
+    <div class="cta-banner">
+      <div class="hero-pill" style="margin-bottom: 14px;">
+        <span class="dot"></span>
+        <span>v{{ config.extra.version }} · Ready in 60 Seconds</span>
+      </div>
+      <h2>Start building verified workflows today</h2>
+      <p>
+        Install the single Rust binary, connect your AI agents over MCP or CLI, and run deterministic, architecture-checked pipelines across your repository.
+      </p>
+
+      <div class="install-box">
+        <div class="install-tabs">
+          <span>Linux &amp; macOS · SHA-256 verified binary + agent skills</span>
+          <div class="channel-switch">
+            <button type="button" class="active" data-channel-cmd="{{ config.extra.install_cmd }}">latest</button>
+            <button type="button" data-channel-cmd="{{ config.extra.nightly_cmd }}">nightly</button>
+          </div>
+        </div>
+        <div class="install-cmd-row">
+          <code id="installCmdText" data-raw-cmd="{{ config.extra.install_cmd }}"><span class="prompt-sign">$</span>{{ config.extra.install_cmd }}</code>
+          <button type="button" class="copy-btn" data-copy-target="installCmdText">Copy</button>
+        </div>
+      </div>
+
+      <div class="hero-cta" style="margin-bottom: 0;">
+        <a class="btn btn-primary" href="{{ get_url(path='@/docs/state/install.md') }}">Installation Guide</a>
+        <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">MCP &amp; CLI Setup</a>
+        <a class="btn btn-glass" href="{{ get_url(path='@/docs/_index.md') }}">Explore Documentation</a>
+      </div>
+
+      <p class="adoption-note">
+        Need help adopting ACDD in your team or repository? Reach out at <a href="mailto:acdd@contextunity.com">acdd@contextunity.com</a>
+      </p>
+    </div>
+  </div>
+</section>
+{% endblock content %}

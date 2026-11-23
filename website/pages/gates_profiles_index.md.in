@@ -1,0 +1,20 @@
+# ACDD Profiles
+
+**GateProfile v2** manifests govern how a run's gates execute: which stages exist, how they route on success or failure, which checks must pass before advancing, which tools and agents run each step, and what context enters the agent's window via `acdd_claim`.
+
+## How gates work
+
+1. **Profile resolution**: When `acdd start` begins a run (or `acdd validate` checks a config), ACDD resolves the profile inheritance chain (`base` → `code` / `audit` / `documentation` / `spec_planning` → `.acdd/profile.yaml` → custom `.acdd/profiles/<name>.yaml`) under strict `deny_unknown_fields` validation.
+2. **DAG instantiation**: Top-level `gates:` (and any `- tasks:` blocks) materialize as `GateNode` rows inside `.acdd/state.sqlite`, addressed by dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `run_tests`, `handoff`).
+3. **Claim & 6-tier `ClaimResp` context**: When a worker calls `acdd_claim`, ACDD locks the node and builds a budgeted Markdown prompt (default 32 KiB) in strict tier order: `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → dynamic `context_lenses` (`docs.*`, `code.*`).
+4. **Verify & submit**: `acdd_verify` executes bound shell `commands:` and `DomainProvider` `checks:` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`), recording signed traces. `acdd_submit` validates proofs/reviews, checks `independent_from` and `need` invariants, runs `save:` policies (`snapshot`, `commit`, `immutable`, `archive`, `prune`, `report`), and routes to `pass`, `fail`, or `fail_drift`.
+
+## Pages in this section
+
+- **[Complete Profile Options & Variables](/docs/profiles/profile-options/)** — Every `GateProfile v2` key, nested option, template placeholder (`{scope_target}`, `{test_filter}`, `{run_id}`...), and runner `ACDD_*` environment variable.
+- **[How to Override Every Built-in Profile](/docs/profiles/overriding-profiles/)** — Merging, `gates_patch`, `null` clearing, SHA-256 pins, and concrete override recipes for `base`, `code`, `audit`, `documentation`, `spec_planning`, and `hotfix`.
+- **[Built-in Profile: `code`](/docs/profiles/builtin-code/)** — Gate-by-gate `ClaimResp` context walkthrough, real Markdown example, and full verbatim `code.yaml`.
+- **[Built-in Profile: `base`](/docs/profiles/builtin-base/)** — Foundation defaults and full verbatim `base.yaml`.
+- **[Built-in Profile: `audit`](/docs/profiles/builtin-audit/)** — Read-only 3-phase audit workflow and full verbatim `audit.yaml`.
+- **[Built-in Profile: `documentation`](/docs/profiles/builtin-documentation/)** — Living docs & `acdd-rule` workflow and full verbatim `documentation.yaml`.
+- **[Built-in Profile: `spec_planning`](/docs/profiles/builtin-spec-planning/)** — Architectural planning & wave verification workflow and full verbatim `spec_planning.yaml`.

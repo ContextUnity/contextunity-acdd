@@ -42,6 +42,7 @@ ignore:
   - vendor
   - .git
   - .acdd
+  - website
 limits:
   max_metadata_bytes: 2048
 response:

@@ -1,0 +1,21 @@
+# ACDD Index
+
+**ACDD Index** (`crates/acdd-index`) replaces noisy text grepping with an incremental SQLite code & documentation graph stored in `.acdd/code-map.sqlite`.
+
+## How the indexer works
+
+1. **Discovery & path confinement**: Walks admitted `roots:` and `docs:` from `acdd.yaml`, skipping `ignore:` entries (`target`, `node_modules`, `.git`, `.acdd`, etc.) and enforcing symlink-safe workspace confinement.
+2. **Tree-sitter AST extraction**: Parses source files across 11 default languages (and 8 Tier-2 languages with `--features all-languages`) to extract declarations, imports, calls, inheritance, and test relationships. Mixed template languages (HTML, Vue, Jinja/Django) pass through `TemplateMasker` so directive spans (`{% ... %}`, `{{ ... }}`) are masked byte-for-byte without shifting line numbers.
+3. **Cross-file linking & framework packs**: Resolves relative imports, type-aliased Python/TS paths, and method receivers using language-specific linkers plus declarative `FrameworkManifest` packs (Django, HTMX, Alpine, Nuxt/Vue/Pinia, GridViewSpec).
+4. **Documentation BM25 & code linking**: Splits Markdown/MDX under `docs:` at `##` / `###` headings into BM25-searchable sections (`search_docs`, `get_doc`), resolving code claims and `INV-*` invariants into verified `governs` edges visible in `code_map_inspect` and `code_map_explain`.
+5. **Auto-refresh & digest verification**:
+   - Over **MCP (`acdd serve`)**, every request validates workspace identity and `adapter.digest`, automatically triggering incremental `delta` or full `build` when files or config change (reusing a valid inventory check for up to 5 seconds on warm calls).
+   - `acdd_read(selector=...)` verifies the indexed SHA-256 digest before returning symbol bodies.
+   - **CLI** commands trigger `open_or_rebuild` if the index is missing or schema-mismatched, while `acdd delta` updates only modified/deleted paths.
+6. **Linked Workspaces**: Add shared libraries under `linked_workspaces:` in `acdd.yaml` (with per-repo `roots`, `docs`, `ignore`) so cross-repository imports and docs resolve cleanly while tracking coverage separately (`coverage_by_workspace`).
+
+## Pages in this section
+
+- **[acdd.yaml Configuration & Limits](/docs/index/acdd-yaml/)** — Full schema for `roots`, `docs`, `specs`, `linked_workspaces`, `sensitive`, `modules`, `response`, plus operational limits & freshness guarantees.
+- **[Languages & Coverage](/docs/index/languages/)** — Compiled default & Tier-2 language profiles, static extraction scope, and receiver resolution.
+- **[Framework Manifests & Workspace Packs](/docs/index/framework-manifests/)** — Bundled framework packs, overriding or disabling rules in `.acdd/frameworks/`, and verifying resolved edges.

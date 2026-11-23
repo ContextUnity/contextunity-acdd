@@ -1,0 +1,14 @@
+# ACDD Lint
+
+**ACDD Lint** (`acdd lint` / `code_map_lint`) enforces architectural boundaries, documentation integrity, syntax health, and graph hygiene in one deterministic pass over `.acdd/code-map.sqlite`.
+
+| Category | What it checks | Enabled in |
+| --- | --- | --- |
+| **`arch`** | All 8 `ArchRuleKind` primitives from `acdd.yaml` (`architecture.rules`) and Markdown `acdd-rule` blocks | Default (`verify`) & Full |
+| **`docs`** | Frontmatter, broken Markdown links/anchors, unresolved symbol claims, stale symbol ranges, duplicate `INV-*`, orphan invariants, invalid `acdd-rule` YAML | Default (`verify`) & Full |
+| **`syntax`** | Tree-sitter parse diagnostics across admitted source files (`syntax.parse`) | Default (`verify`) & Full |
+| **`duplicates`** | Exact and parameterized structural code clones across functions | Full (`--categories all`) |
+| **`dead_tails`** | Unreachable symbols (`dead_tails.unreachable`), phantom-tested helpers (`dead_tails.phantom_tested`), and unresolved calls (`dead_tails.dangling_call`) | Full (`--categories all`) |
+| **`cycles`** | Strongly connected call and import cycles (`cycles.scc`) | Full (`--categories all`) |
+
+Next: read **[Writing Docs, Linter Rules & Using `acdd lint`](/docs/lint/writing-docs-and-rules/)** for step-by-step instructions and complete rule examples.

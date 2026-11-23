@@ -1,0 +1,10 @@
+# ContextUnity ACDD Documentation
+
+**Augmented Context & Durable Dispatch (ACDD)** is a harness-agnostic meta-harness for AI coding agents — combining a Tree-sitter SQLite code map, verified documentation links, a declarative gate state machine, and an architectural linter in one pure-Rust binary.
+
+The documentation is organized around ACDD's four core subsystems:
+
+1. **[ACDD State](/docs/state/)** — How workflows start from specs or ad-hoc goals, how the state machine drives tasks and parallel worktrees, installation, and MCP/CLI setup & reference.
+2. **[ACDD Index](/docs/index/)** — How the Tree-sitter indexer, documentation linking, `linked_workspaces`, and `acdd.yaml` configuration & limits work.
+3. **[ACDD Lint](/docs/lint/)** — How to write ACDD-indexed documentation, author architectural rules (`acdd.yaml` & `acdd-rule`), and run `acdd lint`.
+4. **[ACDD Profiles](/docs/profiles/)** — How profiles and gates work, the complete `GateProfile v2` option & variable reference, full built-in profiles, how to override each one, and what agents receive in context.

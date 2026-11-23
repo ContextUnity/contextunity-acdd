@@ -1,0 +1,207 @@
+# Writing Docs, Linter Rules & Using `acdd lint`
+
+ACDD treats documentation and architectural boundaries as **machine-checkable contracts**, not passive prose. This guide explains how to structure Markdown documentation, write enforceable linter rules, and run `acdd lint` in daily workflows and CI.
+
+---
+
+## 1. How to write ACDD-indexed documentation
+
+Add every documentation file or directory you want indexed under `docs:` in `acdd.yaml`.
+
+### YAML frontmatter
+Start every Markdown file at byte 0 with valid YAML frontmatter:
+
+```yaml
+---
+title: "Billing Ledger Architecture"
+doc_type: architecture
+---
+```
+
+`doc_type` powers filtered search via `search_docs(doc_type="...")`.
+
+### Heading chunking (BM25 sections)
+Use clear `##` and `###` headings. ACDD splits every document at headings into independent `DocSection` units indexed into SQLite FTS5/BM25.
+
+### Verified symbol links (code claims)
+When referencing a real code declaration, use its **exact indexed declaration name** and optionally link to its owning source file to disambiguate:
+
+```markdown
+Transactions are committed inside [`record_entry`](../src/billing/ledger.rs).
+```
+
+- ACDD resolves candidate claims against eligible declarations in `.acdd/code-map.sqlite`.
+- Only a **unique** match creates a verified documentation edge (`code_map_inspect` / `code_map_explain` surface verified sections alongside the symbol).
+- Never invent qualified paths or approximate names — broken symbol claims are flagged by `acdd lint` (`docs.broken_symbol_claim`).
+
+### Declaring architectural invariants (`INV-*`)
+To register an architectural invariant that ACDD prioritizes during `code_map_impact` and injects into `ClaimResp` (`docs.invariants`):
+
+1. Place its `INV-*` ID inside a GitHub alert callout (`[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`) or invariant list.
+2. Include an exact source symbol link (creating a `governs` edge) **or** pair it with an executable `acdd-rule` block (`invariant: INV-...`).
+3. Keep each canonical `INV-*` definition in **one** file — duplicate non-contract `INV-*` IDs fail `docs.duplicate_invariant`, and unlinked invariants fail `docs.orphan_invariant`.
+
+```markdown
+> [!IMPORTANT]
+> - INV-BILLING-TX-SINGLE-OWNER: Only `BillingRepo` may open ledger write transactions. [`BillingRepo`](../src/billing/repo.rs)
+```
+
+*(Wrap illustrative `INV-*` examples inside fenced code blocks so the scanner ignores them.)*
+
+### Relative links
+Use workspace-relative Markdown links (`../reference/cli.md#section`). Validate all links and heading anchors anytime with:
+
+```sh
+acdd docs check
+```
+
+---
+
+## 2. How to write linter rules
+
+Architectural rules can be declared in **two places**:
+1. Centrally in **`acdd.yaml`** under `architecture.zones` and `architecture.rules`.
+2. Inline inside **non-archive Markdown docs** as fenced **` ```acdd-rule `** YAML blocks — keeping the rule right next to the `INV-*` invariant it enforces.
+
+### Defining zones in `acdd.yaml`
+
+```yaml
+architecture:
+  zones:
+    domain:
+      - "src/domain/**"
+    storage:
+      - "src/storage/**"
+    api:
+      - "src/api/**"
+```
+
+### The 8 `ArchRuleKind` primitives
+
+#### 1. `allow_only_dependencies`
+Restricts outgoing dependencies from `from` strictly to `to`:
+```yaml
+- id: ARCH-DOMAIN-LEAF
+  severity: error
+  kind: allow_only_dependencies
+  from: { zones: [domain] }
+  to: { zones: [] }
+  message: "src/domain must remain a pure leaf with zero upward dependencies"
+```
+
+#### 2. `forbid_dependency`
+Bans specific internal zones or external symbols/crates:
+```yaml
+- id: ARCH-API-NO-RAW-SQL
+  severity: error
+  kind: forbid_dependency
+  from: { zones: [api] }
+  to:
+    zones: [storage]
+    external_symbols: ["sqlx", "rusqlite"]
+  message: "API handlers must call domain services instead of storage or SQL drivers directly"
+```
+
+#### 3. `single_owner`
+Confines an external dependency or capability to designated `owner_paths`:
+```yaml
+- id: ARCH-SQLITE-OWNER
+  severity: error
+  kind: single_owner
+  to:
+    external_symbols: ["rusqlite"]
+  owner_paths: ["src/storage/**"]
+  message: "rusqlite usage is confined to src/storage/**"
+```
+
+#### 4. `boundary_entry`
+Requires external callers targeting `to.paths` to enter only through explicit `entrypoints`:
+```yaml
+- id: ARCH-PIPELINE-ENTRY
+  severity: error
+  kind: boundary_entry
+  to: { paths: ["src/pipeline/**"] }
+  entrypoints: ["src/pipeline/mod.rs", "src/pipeline/runner.rs"]
+  message: "Callers must enter src/pipeline through mod.rs or runner.rs"
+```
+
+#### 5. `ast_pattern`
+Matches Tree-sitter AST patterns (supporting `$VAR` metavariables) in selected paths and languages:
+```acdd-rule
+id: INV-NO-RAW-GIT
+invariant: INV-NO-RAW-GIT
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  exclude_paths: ["crates/acdd-core/src/git.rs"]
+  languages: ["rust"]
+ast_pattern: 'Command::new("git")'
+include_tests: false
+message: "Spawn git only through acdd_core::git"
+```
+
+#### 6. `forbid_cycles`
+Rejects dependency cycles across specified zones/depths (`depth >= 1`):
+```yaml
+- id: ARCH-NO-ZONE-CYCLES
+  severity: error
+  kind: forbid_cycles
+  zones: [domain, storage, api]
+  depth: 4
+```
+
+#### 7. `must_implement`
+Requires matching types/declarations in `from` to implement or inherit `to`:
+```yaml
+- id: ARCH-PROVIDERS-IMPL-TRAIT
+  severity: error
+  kind: must_implement
+  from: { paths: ["src/providers/**"] }
+  to: { symbols: ["DomainProvider"] }
+```
+
+#### 8. `doc_integrity`
+Enforces strict documentation checks (`broken_doc_link`, `broken_symbol_claim`, `orphan_invariant`, `duplicate_invariant`) on matching doc paths:
+```yaml
+- id: ARCH-DOCS-STRICT
+  severity: error
+  kind: doc_integrity
+  from: { paths: ["docs/adr/**", "docs/architecture/**"] }
+```
+
+---
+
+## 3. How to use `acdd lint` & `code_map_lint`
+
+### CLI usage
+
+```sh
+# Default sweep (arch, syntax, docs) across the whole workspace
+acdd lint
+
+# Full hygiene sweep including clones, dead tails, and cycles
+acdd lint --categories all
+
+# Scope to one directory or file, filter by category/rule/severity
+acdd lint src/billing/ --categories arch,duplicates,dead_tails --severity error
+acdd lint --rule INV-NO-RAW-GIT
+```
+
+### MCP usage (`code_map_lint`)
+Agents invoke `code_map_lint` with optional `target`, `categories`, `rules`, `severity`, and pagination (`limit`, `offset`, `generation`).
+
+### Enforcing lint automatically in profile gates
+Attach `code.lint` to any `build` or `verify` gate inside `.acdd/profile.yaml`:
+
+```yaml
+gates_patch:
+  - id: tasks.build
+    checks:
+      - code.seam
+      - check: code.lint
+        with:
+          categories: [arch, syntax, docs]
+```
+
+And pair gate checks with `code_map_query(operation="duplicates")` / `code_map_query(operation="dead_tails")` during review to prevent clones and dead code from entering `main`.

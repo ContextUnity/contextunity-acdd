@@ -24,3 +24,5 @@ __pycache__/
 .acdd/tmp/
 .acdd/backup-0.5/
 /docs/memories/
+website/public/
+website/content/docs/
