@@ -23,6 +23,7 @@ specs:
       - AR
       - PF
       - LS
+      - UX
     digits: 3
   plans:
     path: docs/plans
