@@ -12,9 +12,27 @@
       {% set sub = get_section(path=sub_path) %}
       <div class="sidebar-group">
         <a class="sidebar-heading {% if current_path == sub.path %}active{% endif %}" href="{{ sub.permalink }}">{{ sub.title }}</a>
+        {% if current_path == sub.path and section.toc | length > 0 %}
+          <ul class="sidebar-subtoc sidebar-subtoc-section" aria-label="On this page">
+            {% for h1 in section.toc %}
+              <li>
+                <a href="{{ h1.permalink | safe }}">{{ h1.title }}</a>
+                {% if h1.children %}
+                  <ul>
+                    {% for h2 in h1.children %}
+                      <li><a href="{{ h2.permalink | safe }}">{{ h2.title }}</a></li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
         <ul class="sidebar-list">
           {% for p in sub.pages %}
-            <li><a href="{{ p.permalink }}" {% if current_path == p.path %}class="active"{% endif %}>{{ p.title }}</a></li>
+            <li class="sidebar-item">
+              <a href="{{ p.permalink }}" {% if current_path == p.path %}class="active"{% endif %}>{{ p.title }}</a>
+            </li>
           {% endfor %}
         </ul>
       </div>
@@ -36,6 +54,25 @@
       {{ section.content | safe }}
     </div>
 
+    {% if section.subsections | length > 0 %}
+      <div class="hub-grid">
+        {% for sub_path in section.subsections %}
+          {% set sub = get_section(path=sub_path) %}
+          <div class="hub-card">
+            <a class="hub-card-head" href="{{ sub.permalink }}">
+              <span>{{ sub.title }}</span>
+              <span class="hub-arrow">→</span>
+            </a>
+            <ul class="hub-card-links">
+              {% for p in sub.pages %}
+                <li><a href="{{ p.permalink }}">{{ p.title }}</a></li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
     {% if section.pages | length > 0 %}
       <div class="section-cards">
         {% for p in section.pages %}
@@ -47,25 +84,5 @@
       </div>
     {% endif %}
   </article>
-
-  <aside class="docs-toc">
-    {% if section.toc | length > 0 %}
-      <div class="toc-title">On This Page</div>
-      <ul>
-        {% for h1 in section.toc %}
-          <li>
-            <a href="{{ h1.permalink | safe }}">{{ h1.title }}</a>
-            {% if h1.children %}
-              <ul>
-                {% for h2 in h1.children %}
-                  <li><a href="{{ h2.permalink | safe }}">{{ h2.title }}</a></li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-  </aside>
 </div>
 {% endblock content %}

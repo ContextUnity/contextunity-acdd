@@ -5,10 +5,11 @@ title: Workspace configuration
 
 # Workspace configuration
 
-`acdd.yaml` is optional. Without it, ACDD scans the workspace root and excludes
-common build and cache directories. `acdd init` writes a starter repository
-configuration. Put the adapter in the workspace root; CLI flags `--config`
-(`ACDD_CONFIG`) and `--state-db` (`ACDD_STATE_DB`) override defaults cleanly.
+`acdd.yaml` is optional — without it, ACDD scans the workspace root and excludes standard build and cache directories. Run `acdd init` at the repository root to generate a starter `acdd.yaml`, `.acdd/profile.yaml`, and `.gitignore` rules.
+
+- **`--config <PATH>` (`ACDD_CONFIG`)**: overrides the path to `acdd.yaml`.
+- **`--state-db <PATH>` (`ACDD_STATE_DB`)**: overrides the path to `.acdd/state.sqlite`.
+- **Strict schema validation**: unknown YAML keys fail closed during `acdd validate` and adapter loading.
 
 ## Indexing scope
 
@@ -43,53 +44,44 @@ linked_workspaces:
       - docs
 ```
 
-`roots` and `docs` are literal, relative directories or paths inside the
-workspace. `specs:` declares named specification collections (`milestones` and
-`plans` by default), each configuring `path` or `paths` (including confined globs),
-optional explicit `profile` override, allowed `prefixes`, and numeric ID zero-padding
-`digits` (`1..=16`, default `3`). `acdd roadmap` discovers specs across every
-configured collection for cross-collection dependency waves and drill-down.
-`specs.<name>.path` entries must be normalized relative paths that do not overlap
-by path components. `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits`
-enforce `#[serde(deny_unknown_fields)]`, and `acdd_core::config::load_adapter`
-rejects legacy `0.5.x` top-level keys (`milestones`, `plans`, `tasks_db`,
-`workflows_dir`, `milestone_prefix`, `plan_prefix`, `task_repository`,
-`task_project`, `acdd_profile`) fail-closed with `CONFIG_MIGRATION_REQUIRED`
-(see [migration-0.6.md](../runbooks/migration-0.6.md)). Markdown and MDX in
-admitted documentation locations, including milestone and plan documents, remain
-searchable and available for graph navigation. Non-document files in those
-directories stay outside the source index. `ignore` matches file or directory
-basenames. The scanner admits compiled source extensions and Markdown/MDX within
-these roots; scan roots do not define import or package roots. For
-`linked_workspaces`, `load_adapter_strict` / `load_adapter_report` (used by
-`acdd validate`) fail closed on empty or duplicate `name` values and missing,
-non-directory, or symlink-escaped `path` targets; an entry with `enabled: false`
-is excluded, and omission of `enabled` means true.
+### Core scope keys
+
+- **`roots`**: relative directories or file paths scanned for compiled language symbols and Markdown/MDX docs (scan roots control indexing only, not language import roots).
+- **`docs`**: relative directories or Markdown/MDX files indexed into searchable documentation sections; non-document files inside `docs` stay out of the code index.
+- **`ignore`**: literal file or directory basenames excluded from scanning (not glob patterns).
+- **Default exclusions**: `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.gitignore` rules, and symlinks.
+- **Manifest discovery**: indexes package manifests inside admitted roots plus direct root manifests (e.g. `roots: [src]` still picks up root `Cargo.toml` or `package.json` up to `4 MiB`).
+
+### Specification collections (`specs:`)
+
+`specs:` defines named folders for Git-tracked Markdown specifications (`milestones` and `plans` by default):
+
+- **`path` / `paths`**: normalized relative directory (or confined globs) that must not overlap across collections.
+- **`prefixes`**: allowed ID prefixes for files in that collection (e.g. `[AC]`, `[PLAN]`).
+- **`digits`**: numeric ID zero-padding width (`1..=16`, default `3`, producing `AC-001-...md`).
+- **`profile`**: optional default `GateProfile` name or path applied when starting specs from this collection.
+- **Discovery**: `acdd draft <collection> <slug>` allocates the next free ID, and `acdd roadmap` scans all configured collections to compute cross-spec dependency waves.
+
+### Linked workspaces (`linked_workspaces:`)
+
+Federate sibling repositories into the same code and documentation graph:
+
+- **`name`**: unique non-empty logical workspace identifier (`acdd validate` rejects empty or duplicate names).
+- **`path`**: existing directory path (missing, non-directory, or symlink-escaped targets fail validation).
+- **`enabled`**: boolean toggle (`true` by default when omitted; `false` skips the workspace).
+- **`roots` / `docs` / `ignore`**: per-workspace scan scope; a linked entry does not inherit the target repo's own `acdd.yaml`.
+- **Refresh behavior**: MCP reads auto-refresh when linked files change; CLI queries refresh when you run `acdd build` or `acdd delta`.
 
 ### Configuration digest isolation (`adapter.digest`)
 
-Changing operational, presentation, or state settings does **not** invalidate
-the code/docs index (`code.sqlite`). When computing `adapter.digest`, ACDD
-explicitly excludes:
-- `response`
-- `DEBUG` / `debug`
-- `modules` and `profile`
-- `state_db`
-- `retain_traces`
-- `profiles_dirs`
-- `specs` (and non-path spec metadata such as `profile`, `prefixes`, `digits`)
+Changing workflow, state, or output formatting settings does **not** trigger a cold rebuild of `.acdd/code-map.sqlite`:
 
-Only source/docs indexing inputs (`roots`, `docs`, `ignore`, `sensitive`,
-`limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`,
-`adapter_version`) affect `adapter.digest`. Changing `state_db`, `retain_traces`,
-`profiles_dirs`, `modules`, `response`, or `specs` never triggers a cold
-code-map rebuild.
+- **Rebuilds the code index**: `roots`, `docs`, `ignore`, `sensitive`, `limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`, and `adapter_version`.
+- **Never rebuilds the code index**: `specs` (and its `profile`, `prefixes`, `digits`), `profiles_dirs`, `state_db`, `retain_traces`, `modules`, `profile`, `response`, and `debug`.
 
 ### Architectural zones and rules (`architecture:`)
 
-`acdd.yaml` accepts an optional `architecture:` block (`#[serde(deny_unknown_fields)]`)
-declaring named workspace-relative glob zones and static `ArchRuleSpec` rules
-evaluated by `acdd lint`, `code_map_lint`, and `code.lint`:
+Declare workspace-relative glob zones and static `ArchRuleSpec` boundary rules evaluated by `acdd lint`, `code_map_lint`, and `code.lint`:
 
 ```yaml
 architecture:
@@ -105,37 +97,25 @@ architecture:
       to: { zones: ["state"], external_symbols: ["rusqlite"] }
 ```
 
-Zone names referenced by `acdd-rule` blocks inside `docs/**` are validated against
-`architecture.zones` during indexing and lint; omitting `architecture:` preserves
-existing `adapter.digest` values.
-
-The default basename exclusions cover `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
-
-The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers automatically build a missing or schema-incompatible index, but do not refresh existing indexed files after source changes; run `build` or `delta` to update CLI results.
-
-Dependency manifest discovery combines scanner-admitted files with supported
-manifest files directly in the primary and enabled linked workspace roots.
-These direct-root files participate even when the source roots are narrower.
-Nested manifests outside admitted roots do not participate: with `roots: [src]`,
-a root `requirements.txt` is included, while `unindexed/requirements.txt` is
-excluded. Discovery preserves ignore and symlink guards and the 4 MiB manifest
-read limit. Cold build, delta, and MCP freshness use the same selected paths;
-MCP checks changes after its normal freshness TTL.
+- **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**`.
+- **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
 
 ## Cold-build memory budget
 
-Set a transient source-extraction budget in MiB under `limits`:
+Bound transient memory usage during source extraction under `limits`:
 
 ```yaml
 limits:
   memory_budget_mb: 200
 ```
 
-`memory_budget_mb` must be a positive integer whose MiB-to-byte conversion fits in `u64`. When omitted, `ACDD_MEMORY_BUDGET_MB` supplies the same setting; when both are omitted, the builder chooses an adaptive budget from available memory. The YAML value takes precedence over the environment. The budget controls extraction batch sizing and the SQLite cache. Changing the budget preserves extracted facts and per-domain commitments, but an explicit YAML value is part of the workspace configuration fingerprint and can change the overall output root. An environment-only override is transient and leaves the adapter policy fingerprint unchanged. A single admitted file can exceed the budget because the builder must hold that file while parsing it, but source memory remains bounded by the configured batch and file-size limit.
+- **`limits.memory_budget_mb`**: positive integer in MiB controlling extraction batch size and SQLite cache without changing indexed graph facts.
+- **`ACDD_MEMORY_BUDGET_MB`**: environment fallback used when YAML omits `memory_budget_mb` (does not alter `adapter.digest`).
+- **Default**: when both are omitted, the builder selects an adaptive budget from available system RAM.
 
 ## Snapshot and commit binary/size limits
 
-Both snapshot/commit candidate guards under `limits` are **disabled by default** when omitted from `acdd.yaml`:
+Optional candidate-file guards under `limits` (disabled when omitted):
 
 ```yaml
 limits:
@@ -143,21 +123,13 @@ limits:
   allowed_binary_extensions: [mo, png, jpg]
 ```
 
-- `limits.max_snapshot_file_bytes`: Optional positive integer (`>= 1`). When set, snapshot/commit candidate paths whose regular-file size exceeds this byte limit fail closed with `EXTERNAL_GIT_DRIFT`. When omitted, no snapshot blob size ceiling is enforced.
-- `limits.allowed_binary_extensions`: Optional list of extensions (normalized case-insensitively with any single leading `.` stripped; ASCII alphanumeric, `+`, `-`, or `_` only, no whitespace, `/`, `\`, `*`, or `?`). When set, regular files whose extension is not in the list are checked for NUL bytes in their leading 8 KiB and fail closed with `EXTERNAL_GIT_DRIFT` if NUL bytes are present (pass `[]` to reject all NUL-containing binaries). When omitted, NUL-byte sniffing is disabled and binary files pass without reading contents.
-- Structural safety guards (`160000` submodule gitlinks, nested `.git` directories, and symlink confinement) remain strictly enforced regardless of `limits`.
-
-## Repository documentation admission
-
-This repository lists current documentation files and directories explicitly in
-`docs`: governance, navigation, roadmap, ADRs, architecture, reference,
-runbooks, testing, and the milestone and plan trees configured separately in
-`milestones` and `plans`. Those Markdown and MDX contracts are searchable too;
-this indexing scope does not change task-discovery or authority rules.
+- **`limits.max_snapshot_file_bytes`**: positive byte ceiling (`>= 1`); snapshot or commit candidates above this size fail closed with `EXTERNAL_GIT_DRIFT`.
+- **`limits.allowed_binary_extensions`**: case-insensitive list of allowed binary extensions (pass `[]` to reject all files containing NUL bytes in their first `8 KiB`).
+- **Always-on safety guards**: Git submodule gitlinks (`160000`), nested `.git` directories, and symlinks are always rejected regardless of `limits`.
 
 ## Source-only linked libraries
 
-Set `ignore` inside each linked entry to exclude that library's vendor directories and build outputs. A linked entry does not inherit the target library's `acdd.yaml` settings. Keep the same roots and exclusions in the library's own adapter and its consumers.
+Keep generated bundles out of linked-workspace indexes by listing literal folder basenames under each entry's `ignore`:
 
 ```yaml
 linked_workspaces:
@@ -168,23 +140,16 @@ linked_workspaces:
     ignore: [vendor, vendors, dist, build]
 ```
 
-`code_map_overview` with `coverage_by_workspace` reports counts from the persisted primary and linked-workspace identities. Reopening the index retains those logical names and separates linked coverage from the primary workspace.
-
-Ignore names are literal basenames, not glob patterns. Add a directory such as `static` only when the library builds all of its contents from sources retained elsewhere. Keep authored host assets and source-level type contracts. Excluded bundles neither enter the index nor trigger source refresh when rebuilt.
+- **`coverage_by_workspace`**: `code_map_overview` reports file and symbol counts separately for the primary workspace and each linked workspace.
+- **`ignore` scope**: exclude directories like `dist` or `static` only when all of their contents are generated build artifacts rather than authored source contracts.
 
 ## State storage and module toggles
 
-State operations read `acdd.yaml`; an omitted `state_db` defaults to
-`.acdd/state.sqlite`, resolved against the **primary worktree root** (discovered
-via `git rev-parse --path-format=absolute --git-common-dir`) or the workspace
-root in non-Git workspaces. CLI `--state-db` / `ACDD_STATE_DB` overrides
-`state_db`. `retain_traces` controls how many run trace directories under
-`<primary_worktree>/.acdd/run/<run_id>/traces.jsonl` are retained across cleanup
-(default `20`, must be `>= 1`). See [state, tasks & lifecycle](tasks.md) for
-storage tables, advisory locks under `<git_common_dir>/acdd/`, candidate verification, and
-recovery. Code indexing works without state storage configuration.
+- **`state_db`**: SQLite path for runs and gates (defaults to `<primary_worktree>/.acdd/state.sqlite`; see [state, tasks & lifecycle](tasks.md)).
+- **`retain_traces`**: number of run trace folders kept under `<primary_worktree>/.acdd/run/<run_id>/` (`>= 1`, default `20`).
+- **Standalone index**: code and docs indexing work normally even if state execution is never used.
 
-`modules:` configures MCP subsystem and `DomainProvider` plugin availability:
+Toggle MCP subsystems and `DomainProvider` plugins under `modules:` (individual flags or `profile: full | navigator | orchestrator | minimal`):
 
 ```yaml
 modules:
@@ -198,25 +163,12 @@ modules:
     docs: true
 ```
 
-Or using preset form (`profile: full | navigator | orchestrator | minimal` with
-optional `enabled`, `disabled`, `required`, and `domains` maps). Module flags
-are physically enforced across indexing, CLI, MCP, and profile resolution:
-disabling `code` skips source indexing and rejects code queries/CLI commands
-with `FEATURE_DISABLED`; disabling `docs` skips documentation indexing/checks
-and strips `get_doc`, `search_docs`, and `docs.*` hooks from embedded `code`
-profiles; disabling `state` automatically disables `blackboard`. Core tools
-`acdd_read` and `acdd_guide` remain available even under `minimal`. External
-`DomainProvider` plugins are toggled via `modules.domains.<domain_id>: true | false`.
-
-Code-map output guards reject unreadable existing database targets and refuse
-to overwrite `.acdd/state.sqlite` or the configured `state_db` path. Opening the
-state store rejects code-map database filenames and schemas. Run initialization
-and state/backup locking use bounded advisory locks under `<git_common_dir>/acdd/`.
-
-Subproject identity uses spec `project` frontmatter, then the longest matching
-`owners` prefix, then path inference, then the workspace default (`aliases` maps
-legacy owner names once). Set `specs` collections above to govern discovery,
-default profile selection, and `acdd draft` ID generation.
+- **`code: false`**: disables source indexing and rejects code-graph queries with `FEATURE_DISABLED`.
+- **`docs: false`**: skips Markdown indexing and strips `get_doc`, `search_docs`, and `docs.*` hooks from built-in profiles.
+- **`state: false`**: disables run/gate commands and `blackboard`.
+- **Core tools**: `acdd_read` and `acdd_guide` remain active in every preset, including `minimal`.
+- **`domains.<id>`**: enables or disables registered `DomainProvider` plugins (`true | false`).
+- **Database collision guard**: code-map builds refuse to overwrite `state_db`, and state startup rejects code-map databases.
 
 ## MCP response policy
 
@@ -231,65 +183,46 @@ response:
     max_body_lines: 35
 ```
 
-`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–98,304 and defaults to 98,304. Smaller configured byte limits remain authoritative; this repository's `acdd.yaml` explicitly selects 65,536 bytes. The budget counts serialized UTF-8 content, response metadata, and JSON or Markdown escaping/framing. Overflowing paged collections retain whole records and update their pagination cursor to the number actually returned; a single record or required metadata that cannot fit returns an actionable bounded error. `code_map_inspect` and `code_map_explain` source previews default to 5 leading lines and 200 body lines. They accept 0–20 leading lines and 1–500 body lines; configured `source_context` values use those same bounds. This repository overrides the preview body limit to 35 in `acdd.yaml`. `acdd_read` uses the configured leading-line default but returns the complete selected symbol when its serialized response fits `max_output_bytes`; an explicit `max_body_lines` is normalized to at least one and limits the returned body. Oversized snippets page at complete-line boundaries; a single line that cannot fit returns a budget error and a local-file recovery hint. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
-
-The root `acdd.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
+- **`detail`**: `compact` (default) or `full`.
+- **`page_size`**: items per page (`1..=100`, default `30`).
+- **`max_output_bytes`**: serialized response cap (`1,024..=98,304`, default `98,304`); oversized pages trim whole tail items cleanly and advance `next_offset`.
+- **`source_context.enabled_by_default`**: includes or omits source snippets on `code_map_inspect` / `code_map_explain` (`false` by default).
+- **`source_context.leading_lines`**: context lines shown above a symbol (`0..=20`, default `5`).
+- **`source_context.max_body_lines`**: preview line limit for `inspect` / `explain` (`1..=500`, default `200`).
+- **`acdd_read` symbol bodies**: returns the full symbol when it fits `max_output_bytes`, otherwise pages cleanly on line boundaries.
 
 ## Declarative ACDD profile and role configuration
 
-The ACDD unified state engine (`crates/acdd-state`) governs runs declaratively
-using **v2 `GateProfile` YAML** files (`version: 2`).
+Workflow gates are configured via **`GateProfile` (`version: 2`)** YAML files (see [ACDD Profiles Reference](profiles.md)).
 
 ### Loading precedence
-1. Explicit CLI flag `--profile <name|path[:sha256_prefix]>` / `ACDD_PROFILE`
-   or `acdd start --profile ...`
-2. Spec frontmatter `profile: <name|path[:sha256_prefix]>` (optional `sha256` pin)
-3. Collection override `specs.<collection>.profile` in `acdd.yaml` (if set)
-4. Custom profile files searched under `profiles_dirs` (default `[".acdd/profiles"]`)
-5. Repository default `.acdd/profile.yaml` when present in the workspace root,
-   automatically falling back to embedded `"code"` when absent (domain hooks
-   unavailable under `modules.code: false` / `modules.docs: false` are stripped
-   automatically)
-6. Embedded built-in profiles (`base`, `code`, `audit`, `documentation`, `spec_planning`)
 
-Profiles in linked workspaces are strictly **ignored**; only the active
-workspace root defines the ACDD profile.
+1. **CLI / env override**: `--profile <name|path[:sha256_prefix]>` or `ACDD_PROFILE`.
+2. **Spec frontmatter**: `profile: <name|path[:sha256_prefix]>` inside the Markdown spec.
+3. **Collection default**: `specs.<collection>.profile` in `acdd.yaml`.
+4. **Custom profile folders**: named `<profile>.yaml` files under `profiles_dirs` (default `[".acdd/profiles"]`).
+5. **Workspace default**: `.acdd/profile.yaml` at the repository root (falls back to built-in `code` when absent).
+6. **Built-in profiles**: `base`, `code`, `audit`, `documentation`, and `spec_planning` (linked workspaces' profiles are ignored).
 
-Any present or referenced profile with invalid YAML syntax, legacy `0.5.x` keys,
-or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID`
-diagnostics. Existing `0.5.x` configuration and `.acdd/profile.yaml` files are
-upgraded manually per the [0.6.0 migration guide](../runbooks/migration-0.6.md).
+### Gate capabilities at a glance
 
-### Gate IDs, proofs, policies, and DomainProvider hooks
-
-Each gate declares a stable `id` (`[A-Za-z0-9_-]`), optional `role`, `command`,
-`call: <domain>.<action>` (+ `with:`), `checks: [<domain>.<check>]`,
-`context: [<domain>.<lens>]`, `tools` / `tools_add` / `tools_remove`, `proof`,
-`save`, `pass` / `fail` routing edges, `independent_from`, `need`, and optional
-`when` predicates. Built-in proof kinds are `none`, `command`, `call`, and
-`review` (requiring `role` and `contours`); named catalog schemas (`proofs:`)
-and inline `{ scheme: ... }` JSON Schemas bind typed `--evidence` payloads.
-Delivery/handoff gates use `receipt: true` with `save.post: commit` (and
-`archive: true` / `prune: true` for run finalization). Leaf task gates may declare
-`save.post: snapshot` for auto-checkpointed scoped trees (see [task snapshots](tasks.md#task-snapshots)).
-See [ACDD Profiles Reference](profiles.md) for complete schema documentation.
-
-### Profile pinning and tampering protection
-
-Custom profiles pinned at planning time use `<path>:<sha256_prefix>` (at least 7
-lowercase hex characters). During `acdd start` and `acdd sync`, ACDD records the
-normalized profile snapshot and hash in SQLite (`runs`); claims and submissions
-verify the persisted profile identity and fail closed on unauthorized tamper or
-un-migrated `0.5.x` keys.
+- **`id` & `role`**: stable gate identifier (`[A-Za-z0-9_-]`) and assigned worker role (`architect`, `builder`, `independent_reviewer`, ...).
+- **Execution & checks**: shell `command:`, plugin action `call: <domain>.<action>` (`with:`), and automated `checks: [<domain>.<check>]`.
+- **Context & tools**: dynamic `context: [<domain>.<lens>]` slices and per-gate `tools` / `tools_add` / `tools_remove` allowlists.
+- **Proofs**: built-in `none`, `command`, `call`, or `review` (`contours:`), plus custom JSON Schemas under `proofs:`.
+- **Persistence (`save:`)**: `snapshot` checkpoints on leaf task gates (see [task snapshots](tasks.md#task-snapshots)), atomic `commit` receipts on delivery, `report` Markdown outputs, and terminal `archive` / `prune`.
+- **Routing & guards**: `pass` / `fail` / `fail_drift` edges, `need` dependencies, `independent_from` worker separation, and `when` predicates.
+- **SHA-256 pinning**: `<path>:<sha256_prefix>` (`>= 7` hex chars) locks parent/custom profiles and fails closed (`ACDD_PROFILE_SCHEMA_INVALID`) on unauthorized edits.
 
 ### Role and model configuration
 
-Agent execution and model guidance are configured per **role** (`roles:`):
-- `mode`: `subagent` (default) or `inline`
-- `reuse_on_reject`: explicit boolean (`false` by default; `true` in embedded roles that retain builder sessions on reject)
-- `models`: ordered list of `'model:reasoning'`, `'model'`, or `{ model, reasoning? }`
-- `guidance`: coordinator-facing role dispatch guidance shown in `acdd next` / `acdd_state(action: "next")`
-- `runner` / `prompt_template`: optional command and prompt templates for automated `acdd run`
+Configure execution mode, model preferences, and optional CLI runners per role under `roles:`:
+
+- **`mode`**: `subagent` (default) or `inline`.
+- **`reuse_on_reject`**: boolean (`false` by default; `true` keeps the same builder session on review rework).
+- **`models`**: ordered preference list (`'model:reasoning'`, `'model'`, or `{ model, reasoning? }`).
+- **`guidance`**: coordinator dispatch note surfaced in `acdd next` / `acdd_state(action: "next")`.
+- **`runner` / `prompt_template`**: optional shell command and prompt template used by headless `acdd run` (exports `ACDD_ROLE_MODE`, `ACDD_ROLE_MODELS`, `ACDD_MODEL`, and `ACDD_REASONING`).
 
 ```yaml
 # .acdd/profile.yaml
@@ -309,21 +242,9 @@ roles:
     guidance: "Spawn an independent fresh reviewer on a high-reasoning model."
 ```
 
-During `acdd start`, ACDD projects the compact gate dispatch plan (`role`,
-`mode`, `reuse_on_reject`, recommended `models`, `command`/`call`) without
-per-gate guidance; during `acdd next` / `acdd_state(action: "next")`, it
-projects coordinator `guidance` alongside each currently ready gate right before
-dispatch. During `acdd claim` / `acdd_claim` and `acdd show` /
-`acdd_state(action: "show")`, ACDD projects bound `ClaimResp` tiers (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`) for the
-assigned executor without spending `Tier 1` worker budget on model-selection lists.
-Headless `acdd run` also exports `ACDD_ROLE_MODE`, `ACDD_ROLE_MODELS`, and primary
-`ACDD_MODEL` / `ACDD_REASONING` environment variables to configured `runner:` processes.
-
 ### Repository `.gitignore` and protected paths
 
-Because `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` are
-committed repository assets, do **not** ignore the whole `.acdd/` directory. Keep
-ACDD runtime state ignored while unignoring configuration assets:
+Keep committed assets (`.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`) tracked in Git while ignoring runtime databases and logs (`acdd init` writes this block automatically):
 
 ```gitignore
 /.worktrees/
@@ -343,13 +264,11 @@ ACDD runtime state ignored while unignoring configuration assets:
 .acdd/tmp/
 ```
 
-See [MCP tools](mcp-tools.md) for response paging and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.
+See [MCP tools](mcp-tools.md) for response paging and [limits and freshness](../runbooks/limits-and-freshness.md) for query ceilings.
+
 ## Sensitive reader paths
 
-Configure `sensitive` in `acdd.yaml` with workspace-relative gitignore-style
-patterns. The reader checks the requested path and the resolved workspace-relative
-path before reading or exporting content, including configured linked workspaces.
-Patterns apply to output destinations as well as inputs.
+Block secret files from `acdd_read` / `acdd read` (both inputs and `output_file` exports) across primary and linked workspaces using gitignore-style patterns:
 
 ```yaml
 sensitive:

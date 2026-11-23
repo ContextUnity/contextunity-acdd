@@ -1,0 +1,58 @@
+# MCP Tools vs. CLI Cheat Sheet
+
+ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linter rule, reader mode, and state-machine transition runs over the exact same Rust engine whether called by an AI agent over **MCP (`acdd serve`)** or by a developer / CI pipeline via the **CLI (`acdd ...`)**.
+
+- **Default output**: structured Markdown on both surfaces (pass `format: "json"` in MCP or `--format json` on CLI for machine-parsed JSON).
+- **Index freshness**: MCP automatically runs incremental `delta` / `build` when files change (with a 5s inventory check cache); CLI reads `.acdd/code-map.sqlite` directly (`acdd build` / `acdd delta` updates it).
+- **Worktree targeting**: MCP tools accept an optional `worktree` field on every call; CLI commands accept `--root <PATH>` or `--worktree <PATH>`.
+
+---
+
+## 1. Code Graph & AST Navigation (11 MCP tools)
+
+| Capability | MCP Tool | CLI Equivalent | Typical Input |
+| --- | --- | --- | --- |
+| **Workspace summary** | `code_map_overview` | `acdd query overview` | Optional `aspects: ["entrypoints", "topology"]` |
+| **Symbol search** | `code_map_search` | `acdd query search <pattern>` | `"parse*"`, `"takes:Config"`, `"returns:Result"` |
+| **Inspect declaration** | `code_map_inspect` | `acdd query inspect <selector>` | `"src/auth.rs:verify_token"`, `show_source: true` |
+| **Direct edges** | `code_map_explain` | `acdd query explain <selector>` | `direction: "incoming" \| "outgoing" \| "both"` |
+| **Blast radius / Git diff** | `code_map_impact` | `acdd query impact <selector>` | `selector` or `changes: "staged" \| "unstaged" \| "head"` |
+| **Covering tests** | `code_map_tests` | `acdd query tests <selector>` | `direction: "inbound"` (tests) or `"outbound"` (targets) |
+| **Safe removal check** | `code_map_prove_removal` | `acdd query remove <selector>` | Target symbol or module selector |
+| **Clones, dead code & SQL** | `code_map_query` | `acdd query run <op>` / `sql` | `operation: "duplicates" \| "dead_tails" \| "untested" \| "slice" \| "sql"` |
+| **Diagnostics & cycles** | `code_map_analyze` | `acdd query analyze [target]` | Path target, `lint: true`, `include_cycles: true`, or `SELECT ...` |
+| **Unified arch & docs lint** | `code_map_lint` | `acdd lint [target]` | `categories: ["arch", "docs", "syntax", "duplicates", "dead_tails", "cycles"]` |
+| **Structural AST match** | `ast_grep_search` | `acdd ast grep <pattern>` | `'fn $NAME($$$) -> Result<$T>'`, `--lang rust` |
+
+---
+
+## 2. File Reader, Living Docs & Built-in Guide (4 MCP tools)
+
+| Capability | MCP Tool | CLI Equivalent | Typical Input |
+| --- | --- | --- | --- |
+| **Single-shot symbol / file read** | `acdd_read` | `acdd read <path>` | `selector: "SymbolName"` or `start_line` / `end_line` / `mode: "search" \| "delta" \| "outline"` |
+| **Search Markdown sections** | `search_docs` | `acdd docs search <query>` | `doc_type: "architecture" \| "adr" \| "guide"`, `include_excerpt: true` |
+| **Read doc section & links** | `get_doc` | `acdd docs get <path>` | `section: "Heading Title"`, `detail: "compact" \| "full"` |
+| **Verify all doc links** | *(via `code_map_lint`)* | `acdd docs check` | Checks relative Markdown links and `#heading` anchors |
+| **Interactive manual** | `acdd_guide` | `acdd guide [topic]` | `query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks` |
+
+---
+
+## 3. Workflow State Machine & Coordination (5 MCP tools + CLI)
+
+| Capability | MCP Tool | CLI Equivalent | Purpose |
+| --- | --- | --- | --- |
+| **Scaffold workspace** | `acdd_guide(topic="init")` | `acdd init [--force]` | Create starter `acdd.yaml`, `.acdd/profile.yaml`, and `.gitignore` rules |
+| **Validate config & specs** | *(via `docs.specs` / CLI)* | `acdd validate [path]` | Fail-closed check of `acdd.yaml`, profiles, and spec DAGs |
+| **Draft next spec file** | `acdd_state(action="draft")` | `acdd draft <col> <slug>` | Create next numbered spec (e.g. `AC-010-feature.md`) |
+| **Start a run** | `acdd_state(action="start")` | `acdd start <spec \| --goal>` | Materialize run DAG & isolated worktrees |
+| **Inspect status & queue** | `acdd_state(action="status" \| "list" \| "show" \| "next" \| "roadmap")` | `acdd status \| list \| show \| next \| roadmap` | Read-only run progress, ready cursors, and dependency waves |
+| **Reload context (read-only)** | `acdd_state(action="context")` | `acdd context [node]` | Re-render 6-tier `ClaimResp` after compaction without mutating claims |
+| **Git checkpoints** | `acdd_state(action="snapshot")` | `acdd snapshot save\|restore\|list\|clear` | Save or restore scoped Git refs (`refs/acdd/snapshots/...`) |
+| **Scope, sync & reopen** | `acdd_state(action="extend_scope" \| "sync" \| "reopen" \| "subtask" \| "clear")` | `acdd extend-scope \| sync \| reopen \| subtask \| clear` | Expand task scope, sync spec edits, reopen gates, update subtasks, or clear run |
+| **Headless wave runner** | `acdd_state(action="run")` | `acdd run [--jobs N]` | Automatically execute command gates and `roles.<id>.runner` CLIs |
+| **Claim a gate** | `acdd_claim` | `acdd claim [node]` | Lock ready node (`claim_revision`) and receive 6-tier `ClaimResp` |
+| **Run gate checks** | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `checks:` (`code.seam`, `code.lint`), and scope guard |
+| **Pass or reject gate** | `acdd_submit` | `acdd submit <node>` | Submit `--action pass\|reject` with proofs/findings and run `save:` policy |
+| **Agent blackboard** | `acdd_blackboard` | `acdd blackboard` | Read or post `notes`, `decisions`, `blockers`, `findings`, `deferred` |
+| **Domain plugin tools** | `<domain>_<name>` | `acdd tool <domain>_<name>` | Invoke custom tools registered by active `DomainProvider` plugins |

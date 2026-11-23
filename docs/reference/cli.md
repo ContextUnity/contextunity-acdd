@@ -18,31 +18,12 @@ title: CLI reference
 | `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
-`build`, `scan`, and `delta` also accept a positional workspace path. Either form selects the workspace; when both are supplied, they must resolve to the same directory.
-
-Selections resolve once per invocation. Flags override their environment variables.
-Profile resolution checks `--profile` / `ACDD_PROFILE`, spec frontmatter `profile:`,
-`specs.<collection>.profile` in `acdd.yaml`, `profiles_dirs`, `.acdd/profile.yaml`
-(automatic workspace default when present, else embedded `code`), and embedded
-baselines (`base`, `code`, `audit`, `documentation`). Use `--in-place` (or `git.isolation: in_place` in a profile)
-for single-checkout execution; use `--profile audit` with `--goal` for read-only
-code review and security scanning, and `--profile documentation` for compiler-free
-living documentation and `acdd-rule` updates.
-State-store resolution uses `--state-db`, `state_db` in `acdd.yaml`, and
-`<primary_worktree>/.acdd/state.sqlite` discovered via `git rev-parse --path-format=absolute --git-common-dir`.
-Owned runner children (agent sessions claiming gates) receive selected paths and
-session identity (`ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, `ACDD_AGENT_SESSION_ID`)
-without mutating the parent environment. Command processes (project build, lint,
-and test commands executed by command gates) execute in a sanitized environment
-where internal ACDD orchestration variables are scrubbed, preventing cross-workspace
-configuration pollution. Concurrent in-process invocations retain separate selections.
-
-`serve` retains the selected config and profile for its lifetime, including
-module visibility, task loaders, request policy, refreshes and reloads. Selected
-worktrees rebase root-relative settings. `delta --config` validates the selected
-adapter and uses the guarded rebuild path when policy changes; without an
-explicit config, delta retains the persisted index adapter. Missing or malformed
-explicit selections fail before index publication.
+- **Positional root**: `build`, `scan`, and `delta` also accept a positional workspace path (when combined with `--root`, both must resolve to the same directory).
+- **Flag precedence**: CLI flags override matching `ACDD_*` environment variables once per invocation.
+- **Profile precedence**: `--profile` / `ACDD_PROFILE` → spec `profile:` → `specs.<collection>.profile` → `profiles_dirs` → `.acdd/profile.yaml` → built-in `code` (plus `base`, `audit`, `documentation`, `spec_planning`).
+- **State DB resolution**: `--state-db` → `state_db` in `acdd.yaml` → `<primary_worktree>/.acdd/state.sqlite` (resolved via `--git-common-dir`).
+- **Runner vs. command environments**: spawned role runners receive `ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, and `ACDD_AGENT_SESSION_ID`; project build/test commands run in a sanitized environment with internal `ACDD_*` variables scrubbed.
+- **`serve` & `delta` config retention**: `serve` keeps its resolved config/profile across reloads; `delta` reuses the persisted index adapter unless `--config` is passed explicitly.
 
 ## Inventory and indexing
 
@@ -53,9 +34,11 @@ acdd build /path/to/repository --output /path/to/index.sqlite
 acdd delta . src/module.py src/other.py
 ```
 
-`scan` reports admitted files without writing an index. `build` creates a full index. `delta` updates the listed changed or deleted paths in an existing index. `build` and `scan` accept `--adapter <PATH>` for a configuration file inside the workspace; reads use the selected configuration. Conflicting `--adapter` and `--config` paths fail.
-
-`query`, `docs`, and `ast grep` open the index through `open_or_rebuild`: a missing or schema-incompatible index is built automatically. An existing index is not refreshed just because source files changed; run `build` or `delta` to update those results.
+- **`scan`**: reports admitted files without writing an index.
+- **`build`**: creates a full SQLite code & docs index.
+- **`delta`**: updates the listed changed or deleted paths in an existing index.
+- **`--adapter <PATH>`**: selects a workspace configuration file for `scan`/`build` (fails if conflicting with `--config`).
+- **`open_or_rebuild`**: `query`, `docs`, and `ast grep` build a missing or schema-incompatible index automatically, though existing indexed files still require `build` or `delta` after source edits.
 
 ## File and symbol reads
 
@@ -69,15 +52,10 @@ acdd read notes.txt --mode delta --baseline HEAD
 acdd read notes.txt --mode raw --output-file exports/read.txt
 ```
 
-`read` uses the same layered reader as MCP `acdd_read`. The positional path is
-required; `--selector` selects a symbol within that file. Alternatively, pass a
-symbol selector as the positional value with `--mode snippet`. Auto mode selects
-snippet for `--selector`, search for `--pattern`, and lines otherwise.
-Core text modes run without an index. Markdown outline requires docs; code
-outline and snippet require codemap. Use `--max-body-lines` and `--leading-lines`
-to bound symbol output, then `--source-offset` with the previous `--generation`
-for continuation. See the [reader contract](mcp-tools.md#layered-file-reader) for
-text bounds, exports, sensitive paths, task badges, and conditional hints.
+- **`read <path>`**: shares the same layered reader and budgets as MCP `acdd_read` (see [layered file reader](mcp-tools.md#layered-file-reader)).
+- **Auto mode**: selects `snippet` when `--selector` is given, `search` when `--pattern` is given, and `lines` otherwise (or pass a symbol selector directly with `--mode snippet`).
+- **Index requirements**: `lines`, `raw`, `search`, and `delta` run without an index; Markdown `outline` requires `docs`; code `outline` and `snippet` require the code index.
+- **Symbol paging**: bound output with `--max-body-lines` and `--leading-lines`, and continue across pages using `--source-offset` + `--generation`.
 
 ## Queries
 
@@ -106,26 +84,19 @@ acdd query run dead_tails --path crates/acdd-state --limit 30
 acdd --format json query overview
 ```
 
-`query overview --aspects` accepts comma-separated aspect names. `entrypoints` excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` result. Repeat the chosen aspect and use `--limit`, `--offset`, and the previous page's `--generation` to continue a bounded aspect page.
-
-`topology` is opt-in and returns paged module statistics and dependency edges;
-see the [MCP reference](mcp-tools.md#selectors-and-graph-queries) for grouping
-and role rules. Directory slices include bounded inbound and outbound boundary
-summaries. CLI and MCP read the same index and return the same graph data.
-
-`query impact` defaults to one edge and accepts exactly one symbol selector or `--changes staged|unstaged|head`; `--path` can restrict a change view to a workspace-relative path. Use `--limit` from 1 to 100 (default 100) for page size and `--offset` to request a later page; a nonzero offset requires the preceding page's `--generation`. A change view returns changed symbols, impacted nodes and tests, plus explicit unmapped changes. It maps ranges only when the selected Git postimage matches the indexed file, and sets `complete` to false when some changes cannot be mapped. Its continuation generation binds the graph and captured Git change snapshot. Depth-one results include the selected edge on each non-seed node; full detail includes stored edge evidence. `query run impact` keeps its depth 2 default; both accept `--depth` to override it. `query tests` also accepts `--direction outbound` for dependencies of a test. `query run` accepts `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, and `dead_tails`. `query analyze` accepts an indexed path, an empty target for the workspace, or one read-only `SELECT`/`WITH` statement. Its diagnostic form computes cycles; the MCP form requires `include_cycles: true`.
-
-The CLI `query inspect --show-source` returns the indexed symbol's source range after checking the file digest. Use `--source-offset` with `--generation` from the previous source page to continue. CLI and MCP source continuations always require that explicit token; missing or stale tokens return an error and a restart hint. Source pages stop at complete-line boundaries; an individually oversized line returns a budget error rather than partial code. See [limits and freshness](../runbooks/limits-and-freshness.md).
-
-`--format` is global and can be placed before or after a subcommand. Markdown
-uses the shared operation-aware renderer and keeps traversal evidence visible:
-explain distinguishes exact calls from candidate relationships, deeper impact
-paths retain their available predecessor evidence, and graph-backed test results
-show ordered, linked test-to-target paths with only producer-supplied roles.
-Lexical test suggestions remain explicitly unverified. JSON mode preserves the
-returned semantic value for clients that parse stdout.
-
-`query inspect` and `query explain` include paged `analysis_gaps` for the selected source span. Each gap names its reason, path, line, scope symbol, and resolver evidence. Explain edge rows retain both public endpoint IDs, kind, path, line, and direction relative to the query; full detail also includes stored evidence. Rust trait-object calls report `trait_object_dispatch`; indexed macro invocations report `macro_expansion_not_analyzed` while retaining their macro-declaration navigation edge. Exact call edges use `calls`; bounded branch-join navigation uses `possible_calls` with confidence `possible`. Inbound impact follows possible calls, and removal analysis treats candidate callers as incoming dependencies.
+- **`query overview --aspects`**: accepts comma-separated aspects:
+  - `entrypoints`: production entrypoints (excludes tests).
+  - `entrypoints_with_tests`: entrypoints plus covering tests.
+  - `topology`: opt-in paged module metrics and dependency edges; directory slices include bounded boundary summaries (see [MCP reference](mcp-tools.md#selectors-and-graph-queries)).
+- **`query impact`**: defaults to depth 1 and accepts either one symbol selector or `--changes staged|unstaged|head` (plus optional `--path`, `--limit 1..100`, `--offset`, and `--generation`):
+  - Change views return `changed_symbols`, impacted `nodes` and `tests`, and explicit `unmapped_changes` (`complete: false` when Git postimages diverge from the index).
+  - `query run impact` keeps depth `2` as its default; both forms accept `--depth`.
+- **`query tests`**: supports `--direction inbound` (covering tests) and `--direction outbound` (production targets exercised by a test).
+- **`query run <op>`**: executes `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, or `dead_tails`.
+- **`query analyze`**: accepts an indexed path, empty workspace target, or one read-only `SELECT`/`WITH` statement (computes cycles in CLI diagnostic mode; MCP uses `include_cycles: true`).
+- **`query inspect --show-source`**: returns the digest-checked symbol body; continue with `--source-offset` and the previous page's `--generation`. Source pages break strictly on line boundaries (see [limits and freshness](../runbooks/limits-and-freshness.md)).
+- **`--format markdown|json`**: global output flag valid before or after any subcommand; Markdown renders verified vs. candidate edge evidence, while JSON preserves exact structured payloads.
+- **`analysis_gaps` & explain edges**: `inspect` and `explain` include paged `analysis_gaps` (reason, path, line, scope, evidence) plus `calls` (exact) and `possible_calls` (`possible`, bounded branch joins), including `trait_object_dispatch` and `macro_expansion_not_analyzed`.
 
 ## Documentation and syntax search
 
@@ -135,7 +106,8 @@ acdd docs get 'docs/architecture/indexing.md' --section 'Ownership and data flow
 acdd ast grep 'print($VALUE)' --lang python --path src
 ```
 
-`docs` reads indexed documents. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. Both can trigger the missing or incompatible-index rebuild described above; `ast grep` also requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
+- **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`).
+- **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (`--limit 1..=100` matches MCP page objects; `101..=10000` returns CLI-only aggregate matches).
 
 ### Unified architectural and documentation lint (`acdd lint`)
 
@@ -153,18 +125,9 @@ acdd lint --categories all --limit 50 --offset 0
 - `--limit`, `--offset`, `--generation`, `--detail <compact|full>`: standard generational paging matching `code_map_lint`.
 - Exits non-zero when `summary.errors > 0`.
 
-For `ast grep`, a `--limit` from 1 through 100 (default 100) returns the same
-JSON `matches` page object as MCP AST search, including applicable continuation
-and total-status fields. CLI limits 101..10000 retain the aggregate `matches`
-array, `limit`, and `truncated` result. That larger CLI-only range is outside
-shared page parity.
+## Unified state lifecycle
 
-## Unified state lifecycle (`0.6.2` flat commands)
-
-`0.6` replaces nested `task` / `plan` / `workflow` / `milestone` / `checkpoint`
-commands with one flat `Run` / `GateProfile` lifecycle CLI backed by
-`crates/acdd-state` and `src/state_bridge/`. See [state, tasks & lifecycle](tasks.md)
-for schemas, state machines, locks, candidate verification, and error codes.
+Flat `Run` and `GateProfile` commands backed by `crates/acdd-state` and `src/state_bridge/` (see [state, tasks & lifecycle](tasks.md) for schemas, locks, and error codes).
 
 ### Workspace initialization and specification drafting
 
@@ -189,7 +152,12 @@ acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]
 ```
 
 - `start`: Starts a new `Run` from a spec file (`<spec>`) or an ephemeral `--goal` (materializing `.acdd/run/<run_id>/spec.md`, attaching `--scope` globs as task scope or frontmatter `owners:` on taskless profiles like `audit`). Selects `worktree` (`--worktree`, `--worktree-path`, `--target-base`) or `--in-place` isolation (neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`).
-- `status`, `list`, `show`, `next`, `context`, `roadmap`: Read-only queries (`StateQuery`). `list` supports `--include-tombstones` for cleared/completed/cancelled `run_tombstones` and stable `runs.generation` paging. `show` renders the full run tree or a specific node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`). `next` lists currently schedulable node cursors and topological execution waves. `context` executes over `SQLITE_OPEN_READ_ONLY` and refreshes the 6-tier budgeted `ClaimResp` without mutating claim state or advancing `claim_revision` (auto-selecting the active or single ready node when `<node>` is omitted, failing closed on ambiguity); configure it as a `PostCompact` and `SessionStart(compact)` hook in agent environments to reload current contract and blackboard context automatically after context compactions. `roadmap` shows cross-collection in-progress runs, dependency waves, critical-path ordering, scope-overlap markers, and optional per-spec task drill-down (`--tasks` or `<spec_id>`); it never creates `.acdd/state.sqlite` and does not validate `--profile` when that flag is omitted.
+- **`status`**: renders active run summary and current gate status.
+- **`list`**: lists runs (`--include-tombstones` includes cleared/completed/cancelled `run_tombstones` with `runs.generation` paging).
+- **`show`**: renders the full run tree or one dotted node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
+- **`next`**: lists currently ready node cursors and topological execution waves.
+- **`context`**: reads `.acdd/state.sqlite` (`SQLITE_OPEN_READ_ONLY`) to refresh `ClaimResp` + blackboard without mutating claims or advancing `claim_revision` (ideal for `PostCompact` / `SessionStart(compact)` hooks).
+- **`roadmap`**: displays cross-collection runs, dependency waves, critical-path order, and scope overlaps (`--tasks` / `<spec_id>` drills down; never creates `state.sqlite`).
 
 ### Gate execution: `claim`, `verify`, `submit`
 
@@ -201,11 +169,15 @@ acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revis
 
 - `claim`: Claims `<node>` (or auto-selects the next ready cursor when `<node>` is omitted) under optimistic concurrency (`claim_revision` + `node_version`), returning the 6-tier budgeted `ClaimResp` (`contract` + `guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, `context_lenses`). Pass `--force` to take over an active claim (`--steal-remote` required across different host session fingerprints).
 - `verify`: Executes the node's `command:`, `call:`, `checks:` (`DomainProvider`), and write-scope perimeter barrier without advancing state. `--test` passes the targeted test filter to `{test_filter}` and `code.seam` (for example on `build` gates).
-- `submit`: Submits `--action pass` or `--action reject` for `claim_revision`. On `command` gates, omitting cached proof automatically triggers verification. Review gates require `--evidence` (JSON or `@path`); `reject` requires structured `--findings` (JSON or `@path`, with optional `kind`: `defect | architectural_drift`). Passing `receipt: true` with `save.post: commit` creates the scoped plumbing delivery commit (refusing `main`/`master` unless `--allow-main`). When the gate declares `save.report`, `--action pass` materializes the `.md` or `.json` report atomically and returns `report_path` in `SubmitResp`.
+- **`submit`**: submits `--action pass` or `--action reject` for `claim_revision`:
+  - Auto-triggers verification on `command` gates when cached proof is absent; requires `--evidence` on review gates and structured `--findings` (`kind`: `defect | architectural_drift`) on `reject`.
+  - Creates scoped plumbing commits on `receipt: true` + `save.post: commit` (blocking `main`/`master` unless `--allow-main`) and materializes `save.report` (`report_path`).
 
 ### Scope, reopening, sync, subtasks, and blackboard
 
-Use `acdd snapshot save|restore|list|clear [<target>] [--all] [--rev N] [--run RUN] [--delete] [--older-than DUR] [--worktree PATH]` to manage checkpoints. `--run` keeps per-task refs `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>`. Without `--run`, an active-run task ref stays on that task; any other label uses `refs/acdd/snapshots/_adhoc/<label>/r<rev>`. `--delete` is `clear`; with `--rev` or `--older-than` and no `--run`, it targets standalone refs even when an active run task exists. `--older-than` accepts `<N><s|m|h|d|w>`. See [task snapshots](tasks.md#task-snapshots).
+- **`acdd snapshot <save|restore|list|clear>`**: manages Git checkpoints:
+  - `--run RUN`: keeps per-task refs (`refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>`); omitting `--run` resolves unambiguously matching active tasks, otherwise standalone `refs/acdd/snapshots/_adhoc/<label>/r<rev>`.
+  - `--delete` / `clear`: supports `--rev N`, `--older-than <N><s|m|h|d|w>`, or `--all` (using `--rev`/`--older-than` without `--run` targets standalone refs; see [task snapshots](tasks.md#task-snapshots)).
 
 ```sh
 acdd extend-scope <node> --path PATH [--path PATH ...] --reason TEXT [--run RUN] [--worker ID]
@@ -269,4 +241,7 @@ acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree 
 acdd validate [<PATH>]
 ```
 
-- `validate [<PATH>]`: Routes through the single canonical validator (`acdd_state::validate` + `acdd_state::usecases::deps`) to validate `acdd.yaml` (`load_adapter_report`, rejecting legacy `0.5.x` keys with `CONFIG_MIGRATION_REQUIRED`), active `.acdd/profile.yaml` (requiring bound commands when `modules.state` is enabled), `DomainProvider` capabilities, and spec files fail-closed (collection prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths). When `<PATH>` is omitted, validates the full workspace configuration, active profile, and configured `specs:` collections. For manual upgrading from `0.5.x`, see the [0.6.0 migration guide](../runbooks/migration-0.6.md).
+- **`validate [<PATH>]`**: runs the unified workspace validator:
+  - **Config (`acdd.yaml`)**: validates schema keys, `specs:` collections, and `linked_workspaces` paths.
+  - **Profiles (`.acdd/profile.yaml`)**: verifies inheritance, fields, bound commands (when `modules.state` is enabled), and `DomainProvider` capabilities.
+  - **Specs**: validates collection prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths (omitting `<PATH>` checks the entire workspace).

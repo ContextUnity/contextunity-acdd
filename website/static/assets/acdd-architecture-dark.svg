@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">ContextUnity ACDD — Meta-Harness Architecture and Verified Gate Pipeline</title>
+  <desc id="desc">Diagram showing AI coding agents and CI connecting over stdio MCP, 5 companion skills, and CLI into the single pure-Rust acdd binary (Gate State Machine, AST Code and Docs Graph, Architectural Linter) and its 5-stage verified gate pipeline.</desc>
+
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1200" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#070a11"/>
+      <stop offset="50%" stop-color="#0a0f1a"/>
+      <stop offset="100%" stop-color="#07090e"/>
+    </linearGradient>
+
+    <radialGradient id="glowCyan" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(220 180) rotate(25) scale(420 260)">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.13"/>
+      <stop offset="100%" stop-color="#00f0ff" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="glowIndigo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(600 330) scale(460 270)">
+      <stop offset="0%" stop-color="#7c6cff" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#7c6cff" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="glowEmerald" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(980 340) scale(380 250)">
+      <stop offset="0%" stop-color="#2ee59d" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#2ee59d" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#131b2b" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0b101b" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <linearGradient id="pillGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#151e30"/>
+      <stop offset="100%" stop-color="#0d1320"/>
+    </linearGradient>
+
+    <linearGradient id="brandLine" x1="62" y1="0" x2="1138" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.65"/>
+      <stop offset="50%" stop-color="#2ee59d" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#ffbe55" stop-opacity="0.65"/>
+    </linearGradient>
+
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#ffffff" stroke-opacity="0.028" stroke-width="1"/>
+    </pattern>
+
+    <style>
+      .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <!-- Outer Canvas -->
+  <rect x="1" y="1" width="1198" height="618" rx="20" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="1.5"/>
+  <rect x="1" y="1" width="1198" height="618" rx="20" fill="url(#grid)"/>
+  <rect x="1" y="1" width="1198" height="618" rx="20" fill="url(#glowCyan)"/>
+  <rect x="1" y="1" width="1198" height="618" rx="20" fill="url(#glowIndigo)"/>
+  <rect x="1" y="1" width="1198" height="618" rx="20" fill="url(#glowEmerald)"/>
+
+  <!-- TIER 1: Existing Harnesses & Automation -->
+  <text x="600" y="36" text-anchor="middle" class="sans" font-size="11" font-weight="700" letter-spacing="1.6" fill="#7c8da6">YOUR EXISTING AI CODING HARNESSES &amp; CI PIPELINES</text>
+
+  <!-- 5 Client Pills: x = 62, 282, 502, 722, 942 (w=196, gap=24) -->
+  <g>
+    <rect x="62" y="50" width="196" height="42" rx="11" fill="url(#pillGrad)" stroke="#263449" stroke-width="1.2"/>
+    <circle cx="94" cy="71" r="4" fill="#00f0ff"/>
+    <text x="168" y="76" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#eef2f9">Claude Code</text>
+
+    <rect x="282" y="50" width="196" height="42" rx="11" fill="url(#pillGrad)" stroke="#263449" stroke-width="1.2"/>
+    <circle cx="318" cy="71" r="4" fill="#2ee59d"/>
+    <text x="388" y="76" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#eef2f9">Codex CLI</text>
+
+    <rect x="502" y="50" width="196" height="42" rx="11" fill="url(#pillGrad)" stroke="#263449" stroke-width="1.2"/>
+    <circle cx="536" cy="71" r="4" fill="#7c6cff"/>
+    <text x="608" y="76" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#eef2f9">Antigravity</text>
+
+    <rect x="722" y="50" width="196" height="42" rx="11" fill="url(#pillGrad)" stroke="#263449" stroke-width="1.2"/>
+    <circle cx="772" cy="71" r="4" fill="#00b4d8"/>
+    <text x="826" y="76" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#eef2f9">Cursor</text>
+
+    <rect x="942" y="50" width="196" height="42" rx="11" fill="url(#pillGrad)" stroke="#263449" stroke-width="1.2"/>
+    <circle cx="972" cy="71" r="4" fill="#ffbe55"/>
+    <text x="1048" y="76" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#eef2f9">Terminal &amp; CI</text>
+  </g>
+
+  <!-- Connector Bus -->
+  <g stroke="#2a3b55" stroke-width="1.5">
+    <line x1="160" y1="92" x2="160" y2="112"/>
+    <line x1="380" y1="92" x2="380" y2="112"/>
+    <line x1="600" y1="92" x2="600" y2="168"/>
+    <line x1="820" y1="92" x2="820" y2="112"/>
+    <line x1="1040" y1="92" x2="1040" y2="112"/>
+    <line x1="160" y1="112" x2="1040" y2="112"/>
+  </g>
+  <polygon points="595,161 605,161 600,168" fill="#00f0ff"/>
+
+  <!-- Protocol Pill -->
+  <rect x="255" y="121" width="690" height="32" rx="16" fill="#0b1322" stroke="#00f0ff" stroke-opacity="0.45" stroke-width="1.2"/>
+  <text x="600" y="141" text-anchor="middle" class="mono" font-size="12" font-weight="600" fill="#b8f7ff">stdio MCP (20 built-in tools + plugins)  ·  5 Companion Skills  ·  Flat acdd CLI</text>
+
+  <!-- TIER 2: Main Meta-Harness Shell -->
+  <rect x="40" y="168" width="1120" height="284" rx="16" fill="#0c111d" fill-opacity="0.9" stroke="#24344d" stroke-width="1.5"/>
+  <line x1="62" y1="168" x2="1138" y2="168" stroke="url(#brandLine)" stroke-width="2"/>
+
+  <!-- Shell Header -->
+  <circle cx="68" cy="192" r="5" fill="#00f0ff"/>
+  <text x="82" y="197" class="sans" font-size="13" font-weight="800" letter-spacing="1.2" fill="#f6f9ff">CONTEXTUNITY ACDD META-HARNESS</text>
+  <text x="372" y="197" class="mono" font-size="12" fill="#8ea0bc">single pure-Rust binary (acdd)</text>
+
+  <rect x="836" y="178" width="302" height="26" rx="13" fill="#111a2c" stroke="#25354f" stroke-width="1"/>
+  <text x="987" y="195" text-anchor="middle" class="mono" font-size="11.5" font-weight="600" fill="#9bd8ff">Zero Cloud · Zero Daemons · Local SQLite</text>
+
+  <!-- Card 01: State Machine (x=62..406) -->
+  <g>
+    <rect x="62" y="216" width="344" height="218" rx="14" fill="url(#cardGrad)" stroke="#00f0ff" stroke-opacity="0.35" stroke-width="1.3"/>
+    <rect x="80" y="232" width="88" height="22" rx="6" fill="#00f0ff" fill-opacity="0.12"/>
+    <text x="124" y="247" text-anchor="middle" class="mono" font-size="11" font-weight="700" fill="#5ceeff">01 · STATE</text>
+    <text x="388" y="247" text-anchor="end" class="mono" font-size="11" fill="#7e91ad">.acdd/state.sqlite</text>
+
+    <text x="80" y="278" class="sans" font-size="17" font-weight="700" fill="#f6f9ff">Gate State Machine</text>
+    <line x1="80" y1="292" x2="388" y2="292" stroke="#1f2d44" stroke-width="1"/>
+
+    <circle cx="86" cy="316" r="3" fill="#00f0ff"/>
+    <text x="98" y="320" class="sans" font-size="13" fill="#dce4f2">Spec DAG waves &amp; ad-hoc <tspan class="mono" font-size="12" fill="#9beeff">--goal</tspan> runs</text>
+
+    <circle cx="86" cy="346" r="3" fill="#00f0ff"/>
+    <text x="98" y="350" class="sans" font-size="13" fill="#dce4f2">6-tier budgeted <tspan class="mono" font-size="12" fill="#9beeff">ClaimResp</tspan> context</text>
+
+    <circle cx="86" cy="376" r="3" fill="#00f0ff"/>
+    <text x="98" y="380" class="sans" font-size="13" fill="#dce4f2">Isolated Git <tspan class="mono" font-size="12" fill="#9beeff">.worktrees/</tspan> &amp; snapshots</text>
+
+    <circle cx="86" cy="406" r="3" fill="#00f0ff"/>
+    <text x="98" y="410" class="sans" font-size="13" fill="#dce4f2">Independent review &amp; atomic commits</text>
+  </g>
+
+  <!-- Card 02: AST & Docs Graph (x=428..772) -->
+  <g>
+    <rect x="428" y="216" width="344" height="218" rx="14" fill="url(#cardGrad)" stroke="#2ee59d" stroke-opacity="0.35" stroke-width="1.3"/>
+    <rect x="446" y="232" width="88" height="22" rx="6" fill="#2ee59d" fill-opacity="0.12"/>
+    <text x="490" y="247" text-anchor="middle" class="mono" font-size="11" font-weight="700" fill="#4df0ae">02 · INDEX</text>
+    <text x="754" y="247" text-anchor="end" class="mono" font-size="11" fill="#7e91ad">.acdd/code-map.sqlite</text>
+
+    <text x="446" y="278" class="sans" font-size="17" font-weight="700" fill="#f6f9ff">AST Code &amp; Docs Graph</text>
+    <line x1="446" y1="292" x2="754" y2="292" stroke="#1f2d44" stroke-width="1"/>
+
+    <circle cx="452" cy="316" r="3" fill="#2ee59d"/>
+    <text x="464" y="320" class="sans" font-size="13" fill="#dce4f2">21 languages via native Tree-sitter</text>
+
+    <circle cx="452" cy="346" r="3" fill="#2ee59d"/>
+    <text x="464" y="350" class="sans" font-size="13" fill="#dce4f2">1-shot symbol reads (<tspan class="mono" font-size="12" fill="#8cf5c8">acdd_read</tspan>)</text>
+
+    <circle cx="452" cy="376" r="3" fill="#2ee59d"/>
+    <text x="464" y="380" class="sans" font-size="13" fill="#dce4f2">Caller blast radius &amp; test seams</text>
+
+    <circle cx="452" cy="406" r="3" fill="#2ee59d"/>
+    <text x="464" y="410" class="sans" font-size="13" fill="#dce4f2">BM25 living docs &amp; linked repos</text>
+  </g>
+
+  <!-- Card 03: Architectural Linter (x=794..1138) -->
+  <g>
+    <rect x="794" y="216" width="344" height="218" rx="14" fill="url(#cardGrad)" stroke="#ffbe55" stroke-opacity="0.38" stroke-width="1.3"/>
+    <rect x="812" y="232" width="84" height="22" rx="6" fill="#ffbe55" fill-opacity="0.14"/>
+    <text x="854" y="247" text-anchor="middle" class="mono" font-size="11" font-weight="700" fill="#ffd07b">03 · LINT</text>
+    <text x="1120" y="247" text-anchor="end" class="mono" font-size="11" fill="#7e91ad">acdd lint · code.lint</text>
+
+    <text x="812" y="278" class="sans" font-size="17" font-weight="700" fill="#f6f9ff">Architectural &amp; Graph Linter</text>
+    <line x1="812" y1="292" x2="1120" y2="292" stroke="#1f2d44" stroke-width="1"/>
+
+    <circle cx="818" cy="316" r="3" fill="#ffbe55"/>
+    <text x="830" y="320" class="sans" font-size="13" fill="#dce4f2">8 zone &amp; dependency boundary rules</text>
+
+    <circle cx="818" cy="346" r="3" fill="#ffbe55"/>
+    <text x="830" y="350" class="sans" font-size="13" fill="#dce4f2">Executable <tspan class="mono" font-size="12" fill="#ffda96">INV-*</tspan> Markdown rules</text>
+
+    <circle cx="818" cy="376" r="3" fill="#ffbe55"/>
+    <text x="830" y="380" class="sans" font-size="13" fill="#dce4f2">Doc links, anchors &amp; symbol claims</text>
+
+    <circle cx="818" cy="406" r="3" fill="#ffbe55"/>
+    <text x="830" y="410" class="sans" font-size="13" fill="#dce4f2">Clones, dead tails &amp; import cycles</text>
+  </g>
+
+  <!-- TIER 3: Verified Gate Pipeline -->
+  <rect x="40" y="468" width="1120" height="128" rx="16" fill="#0b101b" fill-opacity="0.92" stroke="#223149" stroke-width="1.4"/>
+  <text x="62" y="493" class="sans" font-size="11" font-weight="700" letter-spacing="1.4" fill="#7c8da6">VERIFIED GATE EXECUTION PIPELINE</text>
+  <text x="1138" y="493" text-anchor="end" class="sans" font-size="11.5" fill="#8ea0bc">Fail-closed CLI proofs · JSON Schema evidence · Independent worker review</text>
+
+  <!-- 5 Stage Boxes: w=192, gap=29 -> x = 62, 283, 504, 725, 946 -->
+  <g>
+    <!-- Stage 1 -->
+    <rect x="62" y="507" width="192" height="72" rx="11" fill="#111827" stroke="#293850" stroke-width="1.2"/>
+    <text x="158" y="527" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#7c8da6">INPUT</text>
+    <text x="158" y="548" text-anchor="middle" class="sans" font-size="14" font-weight="700" fill="#f1f5f9">Spec or --goal</text>
+    <text x="158" y="567" text-anchor="middle" class="mono" font-size="10.5" fill="#8ea0bc">AC-* &amp; file scope</text>
+
+    <text x="268.5" y="548" text-anchor="middle" class="sans" font-size="16" font-weight="700" fill="#5ceeff">→</text>
+
+    <!-- Stage 2 -->
+    <rect x="283" y="507" width="192" height="72" rx="11" fill="#111827" stroke="#293850" stroke-width="1.2"/>
+    <text x="379" y="527" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#8fd8ff">ARCHITECT</text>
+    <text x="379" y="548" text-anchor="middle" class="sans" font-size="14" font-weight="700" fill="#f1f5f9">1. Synthesize</text>
+    <text x="379" y="567" text-anchor="middle" class="mono" font-size="10.5" fill="#8ea0bc">Owners &amp; LOC budget</text>
+
+    <text x="489.5" y="548" text-anchor="middle" class="sans" font-size="16" font-weight="700" fill="#5ceeff">→</text>
+
+    <!-- Stage 3 -->
+    <rect x="504" y="507" width="192" height="72" rx="11" fill="#0c1c2c" stroke="#00f0ff" stroke-opacity="0.55" stroke-width="1.3"/>
+    <text x="600" y="527" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#5ceeff">BUILDER · WORKTREE</text>
+    <text x="600" y="548" text-anchor="middle" class="sans" font-size="14" font-weight="700" fill="#ffffff">2. Build &amp; Verify</text>
+    <text x="600" y="567" text-anchor="middle" class="mono" font-size="10.5" fill="#a5ecff">Tests + code.lint</text>
+
+    <text x="710.5" y="548" text-anchor="middle" class="sans" font-size="16" font-weight="700" fill="#a79bff">⇄</text>
+
+    <!-- Stage 4 -->
+    <rect x="725" y="507" width="192" height="72" rx="11" fill="#161430" stroke="#7c6cff" stroke-opacity="0.6" stroke-width="1.3"/>
+    <text x="821" y="527" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#b4a9ff">DISTINCT REVIEWER</text>
+    <text x="821" y="548" text-anchor="middle" class="sans" font-size="14" font-weight="700" fill="#ffffff">3. Review (↺ rework)</text>
+    <text x="821" y="567" text-anchor="middle" class="mono" font-size="10.5" fill="#cbc3ff">6 contours · 1:1 AC</text>
+
+    <text x="931.5" y="548" text-anchor="middle" class="sans" font-size="16" font-weight="700" fill="#4df0ae">→</text>
+
+    <!-- Stage 5 -->
+    <rect x="946" y="507" width="192" height="72" rx="11" fill="#0d221d" stroke="#2ee59d" stroke-opacity="0.55" stroke-width="1.3"/>
+    <text x="1042" y="527" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#4df0ae">IMMUTABLE TREE</text>
+    <text x="1042" y="548" text-anchor="middle" class="sans" font-size="14" font-weight="700" fill="#ffffff">4. Deliver &amp; Handoff</text>
+    <text x="1042" y="567" text-anchor="middle" class="mono" font-size="10.5" fill="#9cf7d1">Acdd-Claim commit</text>
+  </g>
+</svg>

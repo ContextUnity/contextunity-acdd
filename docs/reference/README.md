@@ -6,7 +6,7 @@ doc_type: guide
 # Reference
 
 - [Configuration](configuration.md): `acdd.yaml`, `specs:`, `state_db`, `modules:`, and `adapter.digest` isolation.
-- [CLI](cli.md): flat `0.6.2` CLI commands and global options.
+- [CLI](cli.md): flat CLI commands and global options.
 - [MCP tools](mcp-tools.md): 20 built-in tools, `<domain>_<name>` plugin tools, selectors, `code_map_lint`, and pagination.
 - [Markdown and JSON presentation](mcp-markdown-contracts.md): format selection, domain layouts, evidence preservation, and continuations.
 - [ACDD](acdd.md): unified `Run` / `GateProfile` lifecycle, `ClaimResp`, and embedded profile walkthrough.

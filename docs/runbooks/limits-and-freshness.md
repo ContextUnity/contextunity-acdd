@@ -27,25 +27,24 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Keeping the index current
 
-All 20 built-in static MCP tools (and any registered `<domain>_<name>` plugin tools) support the optional `worktree` selector. Omission retains the stable server root. Explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git-linked worktrees resolve the primary worktree's shared `.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`.
-
-The default code index is `<root>/.acdd/code-map.sqlite`; override it with `--db` or `ACDD_DB`. The default state database is `<primary_worktree>/.acdd/state.sqlite`; override it with `--state-db`, `ACDD_STATE_DB`, or `state_db` in `acdd.yaml`. The default workspace is `.`; use `--root` or `ACDD_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
-
-If a source file has changed since it was indexed, `acdd_read` snippet mode rejects stale content by digest. Refresh the index and retry. Core text modes read the current file directly. Response settings such as page size, source preview length, `state_db`, `retain_traces`, `profiles_dirs`, and `modules.state` do not change `adapter.digest` and do not trigger an index rebuild; changes to admitted roots, `specs.*.path`, linked workspaces, `modules.code`, `modules.docs`, or enabled language profiles do.
+- **`worktree` selector**: supported across all 20 built-in MCP tools and `<domain>_<name>` plugin tools (omission keeps the server root; explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git worktrees share `<primary_worktree>/.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`).
+- **`--db` / `ACDD_DB`**: overrides the default code index path (`<root>/.acdd/code-map.sqlite`).
+- **`--state-db` / `ACDD_STATE_DB` / `state_db`**: overrides the default state DB (`<primary_worktree>/.acdd/state.sqlite`).
+- **`--root` / `ACDD_WORKSPACE_ROOT`**: selects the target repository root (defaults to `.`).
+- **MCP freshness vs. CLI**: MCP validates workspace identity and `adapter.digest` per call and auto-runs `delta` or `build` (reusing warm inventory checks for up to 5 seconds), whereas CLI queries read the on-disk index until you run `build` or `delta`.
+- **Digest staleness**: `acdd_read` snippet mode fails closed when on-disk source differs from the indexed digest (core text modes still read live files).
+- **What triggers reindexing**: changes to `roots`, `specs.*.path`, `linked_workspaces`, `modules.code`, `modules.docs`, or language profiles change `adapter.digest` and trigger rebuilds; changes to `response.*`, `state_db`, `retain_traces`, `profiles_dirs`, or `modules.state` do not.
 
 ## Query and source safety
 
-`code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
+- **Read-only SQL (`code_map_analyze`)**: accepts one read-only `SELECT` or `WITH` statement (`include_cycles=true` computes structural cycles separately). Structural results reflect indexed syntax, not runtime behavior.
+- **Inspect/explain source previews**: omitted by default; when enabled, default to `5` leading lines and configured `max_body_lines` (default `200`, valid `1..=500`).
+- **`acdd_read` symbol paging**: returns the entire symbol when serialized output fits `max_output_bytes` (`1,024–98,304`); otherwise pages cleanly at complete line boundaries requiring `generation` on continuations (an explicit `max_body_lines` is normalized to `>= 1`; an oversized single line returns a budget error + recovery hint).
+- **Read-only state reads**: `acdd status|list|show|next|blackboard --action read`, `acdd_state` reads, and `acdd_blackboard(action="read")` open `state.sqlite` strictly via `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` without creating missing DB files (`list` and `blackboard` bind `runs.generation`). See [MCP tools](../reference/mcp-tools.md).
 
-Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `acdd_read`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `acdd_read` snippet mode defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. Indexed symbol source reads verify the indexed digest. Read-only state queries (`acdd status`, `list`, `show`, `next`, `blackboard --action read`, `acdd_state` read actions, `acdd_blackboard(action="read")`) open `state.sqlite` strictly with `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` and never create a missing database file; `list` and `blackboard` continuations bind `runs.generation`. See [MCP tools](../reference/mcp-tools.md) for the request fields.
 ## Reader layer admission
 
-Use `acdd_read(path="notes.txt", mode="lines")` for index-independent text.
-`mode="raw"` preserves returned line endings; `mode="search"` accepts `pattern`,
-`regex`, and bounded `context`. Text modes return at most 48 KiB and mark
-`truncated`; narrow the line window or advance `start_line` when needed.
-Core reads remain available when an optional index cannot be admitted; graph
-hints appear only from an admitted snapshot. Structural reads retain index
-freshness and digest checks. Configure `sensitive` patterns to block files before
-read/export; `output_file` destinations must be plain relative paths inside the
-selected workspace. See [layered reader inputs](../reference/mcp-tools.md#layered-file-reader).
+- **Text modes**: `mode="lines"` (index-free), `mode="raw"` (preserves line endings), and `mode="search"` (`pattern`, `regex`, bounded `context`).
+- **48 KiB text cap**: core text reads cap responses at `48 KiB` and mark `truncated: true` when narrowed windows or `start_line` continuations are needed.
+- **Layer fallback**: core text reads still succeed even if the optional code index is absent; graph hints appear only when an index is admitted.
+- **`sensitive` & `output_file`**: `sensitive` glob/regex rules block protected files before reading/exporting; `output_file` writes only to plain workspace-relative paths (see [layered reader inputs](../reference/mcp-tools.md#layered-file-reader)).

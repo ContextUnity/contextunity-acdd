@@ -4,10 +4,18 @@
 
 ## How gates work
 
-1. **Profile resolution**: When `acdd start` begins a run (or `acdd validate` checks a config), ACDD resolves the profile inheritance chain (`base` → `code` / `audit` / `documentation` / `spec_planning` → `.acdd/profile.yaml` → custom `.acdd/profiles/<name>.yaml`) under strict `deny_unknown_fields` validation.
-2. **DAG instantiation**: Top-level `gates:` (and any `- tasks:` blocks) materialize as `GateNode` rows inside `.acdd/state.sqlite`, addressed by dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `run_tests`, `handoff`).
-3. **Claim & 6-tier `ClaimResp` context**: When a worker calls `acdd_claim`, ACDD locks the node and builds a budgeted Markdown prompt (default 32 KiB) in strict tier order: `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → dynamic `context_lenses` (`docs.*`, `code.*`).
-4. **Verify & submit**: `acdd_verify` executes bound shell `commands:` and `DomainProvider` `checks:` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`), recording signed traces. `acdd_submit` validates proofs/reviews, checks `independent_from` and `need` invariants, runs `save:` policies (`snapshot`, `commit`, `immutable`, `archive`, `prune`, `report`), and routes to `pass`, `fail`, or `fail_drift`.
+1. **Profile resolution**:
+   - Resolves the inheritance chain (`base` → `code` / `audit` / `documentation` / `spec_planning` → `.acdd/profile.yaml` → custom `.acdd/profiles/<name>.yaml`).
+   - Enforces strict `deny_unknown_fields` validation on every key via `acdd validate`.
+2. **DAG instantiation**:
+   - Materializes top-level `gates:` and `- tasks:` blocks into `GateNode` rows inside `.acdd/state.sqlite`.
+   - Addresses every node via dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `run_tests`, `handoff`).
+3. **Claim & 6-tier `ClaimResp` context**:
+   - `acdd_claim` locks the node and assembles a budgeted Markdown prompt (default 32 KiB) in strict tier order:
+   - `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → `context_lenses` (`docs.*`, `code.*`).
+4. **Verify & submit**:
+   - `acdd_verify` runs bound shell `commands:` and `DomainProvider` `checks:` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`), recording signed traces.
+   - `acdd_submit` validates proofs/reviews, checks `independent_from` and `need` invariants, applies `save:` policies (`snapshot`, `commit`, `immutable`, `archive`, `prune`, `report`), and routes to `pass`, `fail`, or `fail_drift`.
 
 ## Pages in this section
 

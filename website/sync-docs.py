@@ -55,11 +55,11 @@ ALERT_TITLES = {
 # Exact repo-relative doc -> website route mapping
 ROUTE_MAP = {
     "README.md": "/docs/",
-    "INSTALL.md": "/docs/state/install/",
+    "INSTALL.md": "/docs/getting-started/install/",
     "docs/README.md": "/docs/",
     "docs/reference/acdd.md": "/docs/state/",
     "docs/reference/tasks.md": "/docs/state/state-machine/",
-    "docs/reference/mcp-setup.md": "/docs/state/mcp-cli-setup/",
+    "docs/reference/mcp-setup.md": "/docs/getting-started/mcp-cli-setup/",
     "docs/reference/cli.md": "/docs/state/cli/",
     "docs/reference/mcp-tools.md": "/docs/state/mcp-tools/",
     "docs/reference/configuration.md": "/docs/index/acdd-yaml/",
@@ -320,13 +320,18 @@ def main() -> None:
     # Documentation Hub root
     emit_from_curated("docs_root.md.in", "_index.md", weight=1, title="Documentation", is_section=True)
 
+    # 0. Getting Started
+    emit_from_curated("getting_started_index.md.in", "getting-started/_index.md", weight=5, title="Getting Started", is_section=True)
+    emit_from_curated("quickstart.md.in", "getting-started/quickstart.md", weight=10, title="5-Minute Quickstart")
+    emit_from_repo("INSTALL.md", "getting-started/install.md", weight=20, title="Installation")
+    emit_from_repo("docs/reference/mcp-setup.md", "getting-started/mcp-cli-setup.md", weight=30, title="Connect MCP & CLI")
+    emit_from_curated("mcp_vs_cli.md.in", "getting-started/mcp-vs-cli.md", weight=40, title="MCP vs. CLI Cheat Sheet")
+
     # 1. ACDD State
     emit_from_curated("state_specs_index.md.in", "state/_index.md", weight=10, title="ACDD State", is_section=True)
     emit_from_repo("docs/reference/tasks.md", "state/state-machine.md", weight=10, title="State Machine, Tasks & Receipts")
-    emit_from_repo("INSTALL.md", "state/install.md", weight=20, title="Installation")
-    emit_from_repo("docs/reference/mcp-setup.md", "state/mcp-cli-setup.md", weight=30, title="MCP & CLI Setup")
-    emit_from_repo("docs/reference/cli.md", "state/cli.md", weight=40, title="CLI Reference")
-    emit_from_repo("docs/reference/mcp-tools.md", "state/mcp-tools.md", weight=50, title="MCP Tools Reference")
+    emit_from_repo("docs/reference/cli.md", "state/cli.md", weight=20, title="CLI Reference")
+    emit_from_repo("docs/reference/mcp-tools.md", "state/mcp-tools.md", weight=30, title="MCP Tools Reference")
 
     # 2. ACDD Index
     emit_from_curated("index_index.md.in", "index/_index.md", weight=20, title="ACDD Index", is_section=True)

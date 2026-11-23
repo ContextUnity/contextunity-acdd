@@ -9,6 +9,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("acdd-theme");
+        var theme = (saved === "light" || saved === "dark")
+          ? saved
+          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.setAttribute("data-theme", theme);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="{{ get_url(path='main.css') }}" />
 </head>
 <body>
@@ -32,12 +43,16 @@
         <a href="{{ get_url(path='/') }}#code-index">Index</a>
         <a href="{{ get_url(path='/') }}#linter">Lint</a>
         <a href="{{ get_url(path='/') }}#profiles">Profiles</a>
-        <a href="{{ get_url(path='@/docs/_index.md') }}" {% if current_path is defined and '/docs/' in current_path %}class="active"{% endif %}>Docs</a>
       </nav>
 
       <div class="nav-actions">
-        <a class="btn btn-glass btn-sm" href="{{ config.extra.github_url }}" target="_blank" rel="noopener">GitHub</a>
-        <a class="btn btn-primary btn-sm" href="{{ get_url(path='@/docs/state/install.md') }}">Install</a>
+        <a class="btn btn-glass btn-sm {% if current_path is defined and '/docs/' in current_path %}is-active{% endif %}" href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
+        <a class="btn btn-glass btn-sm hide-xs" href="{{ config.extra.github_url }}" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn-primary btn-sm" href="{{ get_url(path='@/docs/getting-started/quickstart.md') }}">Quickstart</a>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">
+          <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
         <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation">☰</button>
       </div>
     </div>
@@ -66,6 +81,24 @@
     const navLinks = document.getElementById("navLinks");
     if (menuBtn && navLinks) {
       menuBtn.addEventListener("click", () => navLinks.classList.toggle("open"));
+    }
+
+    const themeToggle = document.getElementById("themeToggle");
+    if (themeToggle) {
+      const syncThemeBtn = (theme) => {
+        themeToggle.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
+        themeToggle.title = theme === "light" ? "Switch to dark theme" : "Switch to light theme";
+      };
+      syncThemeBtn(document.documentElement.getAttribute("data-theme") || "dark");
+      themeToggle.addEventListener("click", () => {
+        const current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+        const next = current === "light" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", next);
+        try {
+          localStorage.setItem("acdd-theme", next);
+        } catch (e) {}
+        syncThemeBtn(next);
+      });
     }
 
     document.querySelectorAll("[data-copy-target]").forEach((btn) => {
@@ -113,8 +146,10 @@
         const q = filterInput.value.trim().toLowerCase();
         document.querySelectorAll(".sidebar-group").forEach((group) => {
           let visibleCount = 0;
-          group.querySelectorAll(".sidebar-list li").forEach((li) => {
-            const match = li.textContent.toLowerCase().includes(q);
+          group.querySelectorAll(".sidebar-list > li").forEach((li) => {
+            const topLink = li.querySelector(":scope > a");
+            const label = topLink ? topLink.textContent : li.textContent;
+            const match = label.toLowerCase().includes(q);
             li.style.display = match ? "" : "none";
             if (match) visibleCount += 1;
           });
@@ -123,9 +158,18 @@
       });
     }
 
+    // Wrap markdown tables in scrollable container while keeping crisp table layout
+    document.querySelectorAll(".prose table").forEach((table) => {
+      if (table.parentElement && table.parentElement.classList.contains("table-scroll")) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "table-scroll";
+      table.parentNode.insertBefore(wrapper, table);
+      wrapper.appendChild(table);
+    });
+
     // Mouse-tracking glass spotlight on cards
     const spotlightCards = document.querySelectorAll(
-      ".contrast-card, .exec-card, .index-card, .linked-ws-panel, .linter-card, .profile-row, .task-step, .lang-strip"
+      ".contrast-card, .adopt-card, .exec-card, .index-card, .linked-ws-panel, .linter-card, .profile-row, .task-step, .lang-strip, .hub-card"
     );
     spotlightCards.forEach((card) => {
       card.addEventListener("pointermove", (e) => {

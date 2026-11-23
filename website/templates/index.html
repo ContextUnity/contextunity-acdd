@@ -17,21 +17,59 @@
     </p>
 
     <p class="hero-sub">
-      Build any sequence of verified gates, wire any AI agents and CLI tools into each stage,
-      and keep every change grounded in a live Tree-sitter code graph, parallel worktrees, and an architectural linter.
+      One local Rust binary (<code>MCP server</code> + <code>CLI</code>, zero daemons) that connects to your existing coding agents — giving them an instant Tree-sitter code graph, an architectural linter, and step-by-step verified gates.
     </p>
 
     <div class="hero-cta" style="margin-bottom: 0;">
-      <a class="btn btn-primary" href="{{ get_url(path='@/docs/_index.md') }}">Explore Documentation</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/_index.md') }}">Profiles</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">Connect MCP</a>
+      <a class="btn btn-primary" href="{{ get_url(path='@/docs/getting-started/quickstart.md') }}">5-Minute Quickstart</a>
       <a class="btn btn-glass" href="{{ get_url(path='/') }}#get-started">Install</a>
+      <a class="btn btn-glass" href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
+    </div>
+
+    <div class="arch-diagram" aria-label="How ContextUnity ACDD connects to AI agents">
+      <div class="arch-tier arch-tier-clients">
+        <span class="arch-tier-label">Your Existing Agents &amp; Tools</span>
+        <div class="arch-pills">
+          <span>Claude Code</span>
+          <span>Codex CLI</span>
+          <span>Antigravity</span>
+          <span>Cursor</span>
+          <span>Terminal &amp; CI</span>
+        </div>
+      </div>
+
+      <div class="arch-connector" aria-hidden="true">
+        <span class="arch-line"></span>
+        <span class="arch-proto">stdio MCP · 20 built-in tools &nbsp;|&nbsp; 5 companion skills &nbsp;|&nbsp; flat <code>acdd</code> CLI</span>
+        <span class="arch-line"></span>
+      </div>
+
+      <div class="arch-core">
+        <div class="arch-core-head">Single Local Binary (<code>acdd</code>) · Zero Cloud · Zero Background Daemons</div>
+        <div class="arch-engines">
+          <div class="arch-engine">
+            <span class="engine-tag">01 · State</span>
+            <strong>Gate State Machine</strong>
+            <span><code>.acdd/state.sqlite</code> · DAG waves, isolated worktrees &amp; independent review</span>
+          </div>
+          <div class="arch-engine">
+            <span class="engine-tag engine-tag-emerald">02 · Index</span>
+            <strong>Code &amp; Docs Graph</strong>
+            <span><code>.acdd/code-map.sqlite</code> · Tree-sitter AST reads, blast radius &amp; BM25 docs</span>
+          </div>
+          <div class="arch-engine">
+            <span class="engine-tag engine-tag-amber">03 · Lint</span>
+            <strong>Architectural Linter</strong>
+            <span><code>acdd lint</code> · <code>acdd.yaml</code> zones, Markdown <code>INV-*</code> rules, clones &amp; dead code</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   <div class="hero-horizon" aria-hidden="true"></div>
 </section>
 
-<section class="section section-tight" id="meta-harness">
+<section class="section section-tight section-theme section-theme-contrast" id="meta-harness">
   <div class="container">
     <div class="section-header">
       <div class="eyebrow">Regular Harnesses vs. ACDD</div>
@@ -65,19 +103,33 @@
       </div>
     </div>
 
-    <div class="meta-summary">
-      <p>
-        Build any scenario you need — from focused code generation and read-only audits to complex automated workflows coordinating multi-agent swarms across isolated worktrees.
-      </p>
-      <p>
-        Built-in profiles let you start immediately, while flexible overrides and extensions let you tailor every gate, check, and agent runner to your repository.
-      </p>
+    <div class="adopt-head">
+      <div class="eyebrow">Progressive Adoption</div>
+      <h3>Three ways to use ACDD — start simple, scale when ready</h3>
+    </div>
+
+    <div class="adopt-grid">
+      <div class="adopt-card">
+        <div class="adopt-step">Step 01 · Zero Workflow Setup</div>
+        <h4>AST Graph, Skills &amp; Linter</h4>
+        <p>Run <code>install.sh</code> (installs <code>acdd</code> + 5 companion agent skills) and <code>acdd init</code>. Your agent replaces blind <code>grep</code> loops with one-shot symbol reads (<code>acdd_read</code>), blast radius, and <code>acdd lint</code>.</p>
+      </div>
+      <div class="adopt-card">
+        <div class="adopt-step">Step 02 · Daily Bugfixes &amp; Features</div>
+        <h4>Guardrailed Ad-Hoc Goals (<code>--goal</code>)</h4>
+        <p>Run <code>acdd start --goal "Fix retry bug" --profile hotfix</code>. Enforces write scopes, automated test checks, and independent review without authoring a spec file.</p>
+      </div>
+      <div class="adopt-card">
+        <div class="adopt-step">Step 03 · Multi-Task Features</div>
+        <h4>Markdown Specs &amp; Parallel Swarms</h4>
+        <p>Scaffold numbered Markdown contracts from <code>acdd.yaml</code> <code>specs:</code> collections (<code>acdd draft milestones ...</code>) and dispatch parallel builders + reviewers inside isolated Git <code>.worktrees/</code>.</p>
+      </div>
     </div>
   </div>
 </section>
 
 <!-- 1. ACDD STATE -->
-<section class="section" id="state">
+<section class="section section-theme section-theme-state" id="state">
   <div class="container">
     <div class="section-header">
       <div class="eyebrow">01 · ACDD State</div>
@@ -85,6 +137,20 @@
       <p>
         Start workflows from versioned Markdown specifications or ad-hoc goals, drive stages via CLI or MCP subagents, and coordinate parallel waves inside isolated worktrees.
       </p>
+    </div>
+
+    <div class="pipeline-flow" aria-label="Typical code gate pipeline">
+      <div class="pf-node"><span>Input</span><strong>Spec or <code>--goal</code></strong></div>
+      <span class="pf-arrow">→</span>
+      <div class="pf-node"><span>Architect</span><strong>1. Synthesize</strong></div>
+      <span class="pf-arrow">→</span>
+      <div class="pf-node pf-node-highlight"><span>Builder (worktree)</span><strong>2. Build &amp; Verify</strong></div>
+      <span class="pf-arrow">⇄</span>
+      <div class="pf-node pf-node-review"><span>Distinct Worker</span><strong>3. Review (↺ rework)</strong></div>
+      <span class="pf-arrow">→</span>
+      <div class="pf-node"><span>Atomic Commit</span><strong>4. Deliver</strong></div>
+      <span class="pf-arrow">→</span>
+      <div class="pf-node"><span>Full Repo</span><strong>5. Tests &amp; Handoff</strong></div>
     </div>
 
     <div class="exec-grid" style="margin-bottom: 20px;">
@@ -99,22 +165,24 @@
             <span class="chrome-dots"><i></i><i></i><i></i></span>
             <span class="chrome-label">terminal · bash</span>
           </div>
-          <pre><code># 1. Draft or start a spec run (or ad-hoc goal) in an isolated worktree
-acdd draft milestones auth-tokens --prefix AC
-acdd start docs/milestones/AC-010-auth-tokens.md --worktree
-# acdd start --goal "Fix auth parser" --profile hotfix --scope src/auth/
+          <pre><code># 1a. Everyday task: start directly from a goal (creates task `goal`)
+acdd start --goal "Fix auth parser" --profile hotfix --scope src/auth/
 
-# 2. Check ready cursors &amp; claim a task gate
+# 1b. Or multi-task spec (`milestones` is a folder configured in acdd.yaml `specs:`)
+acdd draft milestones auth-tokens        # -> docs/milestones/AC-001-auth-tokens.md
+acdd start docs/milestones/AC-001-auth-tokens.md --worktree
+
+# 2. Check ready cursors &amp; claim a task gate (e.g. `goal.build` or `token-parser.build`)
 acdd next
-acdd claim T1.build --worker dev-1
+acdd claim goal.build --worker dev-1
 
 # 3. Verify scoped checks &amp; submit transition
-acdd verify T1.build --test parser_tests
-acdd submit T1.build --action pass
+acdd verify goal.build --test parser_tests
+acdd submit goal.build --action pass
 
 # 4. Independent review &amp; commit, or headless multi-wave runner
-acdd claim T1.review --worker rev-1
-acdd submit T1.review --action pass --evidence review.json
+acdd claim goal.review --worker rev-1
+acdd submit goal.review --action pass --evidence review.json
 # acdd run --jobs 4   # spawns configured role runners across waves</code></pre>
         </div>
       </div>
@@ -149,10 +217,10 @@ acdd submit T1.review --action pass --evidence review.json
     <div class="tasks-grid">
       <div class="tasks-steps">
         <div class="task-step">
-          <div class="step-badge">Spec Creation &amp; Collections</div>
-          <h3>Zero-collision spec drafting</h3>
+          <div class="step-badge">What is a Spec? · Collections in acdd.yaml</div>
+          <h3>Git-tracked Markdown contracts for multi-task waves</h3>
           <p>
-            Configure named specification directories (like milestones and plans) with automatic sequential IDs. Draft specs via <code>acdd draft</code> or launch the built-in <code>spec_planning</code> profile so an architect validates acceptance criteria and disjoint wave scopes.
+            A <strong>Spec</strong> splits a large feature into <code>AC-*</code> criteria and parallel <code>### task:</code> blocks with disjoint write scopes. <code>acdd init</code> sets up <code>specs.milestones</code> (<code>docs/milestones/AC-001-...md</code>) and <code>specs.plans</code> in <code>acdd.yaml</code> — scaffold via <code>acdd draft &lt;collection&gt; &lt;slug&gt;</code>, generate via <code>--profile spec_planning</code>, or rename collections freely.
           </p>
         </div>
 
@@ -192,15 +260,11 @@ verification_seam: tests/auth.rs::rejects_expired_token
       </div>
     </div>
 
-    <div class="explorer-footer">
-      <a class="btn btn-primary" href="{{ get_url(path='@/docs/state/_index.md') }}">Explore ACDD State →</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">MCP &amp; CLI Setup</a>
-    </div>
   </div>
 </section>
 
 <!-- 2. ACDD INDEX -->
-<section class="section" id="code-index">
+<section class="section section-theme section-theme-index" id="code-index">
   <div class="container">
     <div class="section-header">
       <div class="eyebrow">02 · ACDD Index</div>
@@ -281,15 +345,11 @@ verification_seam: tests/auth.rs::rejects_expired_token
       </div>
     </div>
 
-    <div class="explorer-footer">
-      <a class="btn btn-primary" href="{{ get_url(path='@/docs/index/_index.md') }}">Explore ACDD Index →</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/index/acdd-yaml.md') }}">acdd.yaml &amp; Limits</a>
-    </div>
   </div>
 </section>
 
 <!-- 3. ACDD LINT -->
-<section class="section" id="linter">
+<section class="section section-theme section-theme-lint" id="linter">
   <div class="container">
     <div class="section-header">
       <div class="eyebrow">03 · ACDD Lint</div>
@@ -363,15 +423,11 @@ ast_pattern: 'Command::new("git")'
       </aside>
     </div>
 
-    <div class="explorer-footer">
-      <a class="btn btn-primary" href="{{ get_url(path='@/docs/lint/writing-docs-and-rules.md') }}">Guide: Writing Docs &amp; Linter Rules →</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/lint/_index.md') }}">Lint Overview</a>
-    </div>
   </div>
 </section>
 
 <!-- 4. ACDD PROFILES -->
-<section class="section" id="profiles">
+<section class="section section-theme section-theme-profiles" id="profiles">
   <div class="container">
     <div class="section-header">
       <div class="eyebrow">04 · ACDD Profiles</div>
@@ -427,6 +483,12 @@ ast_pattern: 'Command::new("git")'
         </div>
         <p>Example custom repository overlay for localized fixes: keeps scoped checks and <code>run_tests</code> while pruning <code>blueprint_synthesis</code> and <code>integration_review</code>.</p>
       </div>
+    </div>
+
+    <div class="explorer-subhead">
+      <div class="eyebrow">Live Gate Context Example</div>
+      <h3>Example context delivered to each gate</h3>
+      <p>Switch tabs below to inspect the exact 6-tier budgeted Markdown payload injected into an agent's context window via <code>acdd_claim</code>.</p>
     </div>
 
     <div class="gate-explorer" id="gate-context">
@@ -827,15 +889,75 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
       </div>
     </div>
 
-    <div class="explorer-footer">
-      <a class="btn btn-primary" href="{{ get_url(path='@/docs/profiles/profile-options.md') }}">Full Profile Options &amp; Variables →</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/overriding-profiles.md') }}">How to Override Profiles</a>
-      <a class="btn btn-glass" href="{{ get_url(path='@/docs/profiles/builtin-code.md') }}">Full code.yaml Walkthrough</a>
+  </div>
+</section>
+
+<!-- 5. DUAL-SURFACE: MCP <-> CLI -->
+<section class="section section-theme section-theme-contrast" id="dual-surface">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">Dual-Surface Parity</div>
+      <h2>Every MCP agent tool has a 1:1 CLI equivalent</h2>
+      <p>AI agents call structured MCP tools over <code>acdd serve</code>; humans, scripts, and CI pipelines run the exact same engine from the terminal.</p>
+    </div>
+
+    <div class="dual-table-card">
+      <table class="dual-compare-table">
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>MCP Tool (AI Agents)</th>
+            <th>CLI Command (Terminal &amp; CI)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Build / Refresh Index</strong></td>
+            <td>Auto <code>delta</code> / <code>build</code> on file change</td>
+            <td><code>acdd scan</code> · <code>acdd build</code> · <code>acdd delta</code></td>
+          </tr>
+          <tr>
+            <td><strong>Search &amp; Inspect Symbols</strong></td>
+            <td><code>code_map_overview</code> · <code>code_map_search</code> · <code>code_map_inspect</code></td>
+            <td><code>acdd query overview | search | inspect</code></td>
+          </tr>
+          <tr>
+            <td><strong>Single-Shot Symbol &amp; File Read</strong></td>
+            <td><code>acdd_read(selector="SymbolName")</code></td>
+            <td><code>acdd read path --selector SymbolName</code></td>
+          </tr>
+          <tr>
+            <td><strong>Blast Radius, Tests &amp; Safe Delete</strong></td>
+            <td><code>code_map_explain</code> · <code>code_map_impact</code> · <code>code_map_tests</code> · <code>code_map_prove_removal</code></td>
+            <td><code>acdd query explain | impact | tests | remove</code></td>
+          </tr>
+          <tr>
+            <td><strong>Clones, Dead Code, AST &amp; SQL</strong></td>
+            <td><code>code_map_query</code> · <code>code_map_analyze</code> · <code>ast_grep_search</code></td>
+            <td><code>acdd query run &lt;op&gt;</code> · <code>query analyze</code> · <code>ast grep</code></td>
+          </tr>
+          <tr>
+            <td><strong>Unified Arch &amp; Living Docs Lint</strong></td>
+            <td><code>code_map_lint</code> · <code>search_docs</code> · <code>get_doc</code></td>
+            <td><code>acdd lint</code> · <code>acdd docs search | get | check</code></td>
+          </tr>
+          <tr>
+            <td><strong>Start, Queue, Roadmap &amp; Snapshots</strong></td>
+            <td><code>acdd_state(action="start" | "next" | "roadmap" | "snapshot" | ...)</code></td>
+            <td><code>acdd init | draft | start | next | roadmap | snapshot | run</code></td>
+          </tr>
+          <tr>
+            <td><strong>Gate Claim, Verify, Submit &amp; Board</strong></td>
+            <td><code>acdd_claim</code> · <code>acdd_verify</code> · <code>acdd_submit</code> · <code>acdd_blackboard</code></td>
+            <td><code>acdd claim</code> · <code>acdd verify</code> · <code>acdd submit</code> · <code>acdd blackboard</code></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </section>
 
-<section class="section" id="get-started">
+<section class="section section-theme section-theme-install" id="get-started">
   <div class="container">
     <div class="cta-banner">
       <div class="hero-pill" style="margin-bottom: 14px;">
@@ -859,12 +981,6 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
           <code id="installCmdText" data-raw-cmd="{{ config.extra.install_cmd }}"><span class="prompt-sign">$</span>{{ config.extra.install_cmd }}</code>
           <button type="button" class="copy-btn" data-copy-target="installCmdText">Copy</button>
         </div>
-      </div>
-
-      <div class="hero-cta" style="margin-bottom: 0;">
-        <a class="btn btn-primary" href="{{ get_url(path='@/docs/state/install.md') }}">Installation Guide</a>
-        <a class="btn btn-glass" href="{{ get_url(path='@/docs/state/mcp-cli-setup.md') }}">MCP &amp; CLI Setup</a>
-        <a class="btn btn-glass" href="{{ get_url(path='@/docs/_index.md') }}">Explore Documentation</a>
       </div>
 
       <p class="adoption-note">

@@ -61,9 +61,7 @@ and the example feature plan in [example-feature-plan.md](example-feature-plan.m
 
 ## Five Flat MCP State Tools and CLI Parity
 
-State operations map symmetrically across the flat `0.6.2` CLI and five state
-MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
-`acdd_blackboard`):
+State operations map symmetrically across the flat CLI and five state MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`):
 
 | Operation | MCP tool / action | CLI command | Purpose |
 | --- | --- | --- | --- |
@@ -77,15 +75,9 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear \| list")` | `acdd snapshot save\|restore\|list\|clear` | Save, restore, list, or delete task and standalone Git checkpoints |
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
-All 20 built-in MCP tools (plus `<domain>_<name>` plugin tools) accept an
-optional `worktree` selector. See [CLI reference](cli.md) and
-[MCP tools](mcp-tools.md) for exact flags and schemas.
-
-In Tier 6 `ClaimResp.context_lenses`, `docs.invariants` stamps `"enforced": true`
-and renders `[ENFORCED]` in Markdown prompts on invariants backed by `acdd.yaml`
-`architecture.rules` or indexed `acdd-rule` blocks. Gate `checks:` entries such
-as `code.lint` run scoped lint on task gates (workspace-wide on root gates) and
-bind `index_generation` + `live_files_digest` into `execution_digest` freshness.
+- **Optional `worktree` selector**: supported across all 20 built-in MCP tools and `<domain>_<name>` plugin tools (see [CLI reference](cli.md) and [MCP tools](mcp-tools.md)).
+- **Enforced invariants (`[ENFORCED]`)**: in Tier 6 `ClaimResp.context_lenses`, `docs.invariants` marks invariants backed by `acdd.yaml` `architecture.rules` or `acdd-rule` blocks with `[ENFORCED]`.
+- **Scoped vs. workspace lint checks**: `code.lint` runs scoped to the task's files on task gates and workspace-wide on root gates, binding `index_generation` and `live_files_digest` into `execution_digest`.
 
 ---
 
@@ -94,44 +86,21 @@ bind `index_generation` + `live_files_digest` into `execution_digest` freshness.
 Every gate transition is mediated by `claim -> (verify) -> submit` inside
 `crates/acdd-state/src/machine/`:
 
-- **Claim (`claim`)**: Acquires or resumes an active claim in `gate_claims`,
-  bumping `claim_revision` and `node_version` atomically, recording `claim_tree`
-  from the scoped Git tree (`WorkspacePathPolicy::is_candidate_included`), and
-  returning `ClaimResp` (including `context_reset_required: true` when re-entering
-  after `rearchitect`). When `git.worktrees: managed` (`acdd start --worktree` or
-  configured in the profile), claiming a `TaskGate` without an explicit
-  `worktree` override automatically creates `.worktrees/<run_name>-<task_ref>`
-  and branch `task/<run_name>-<task_ref>` (reused by downstream gates of that
-  task) and returns it in `ClaimResp.worktree`; under default `git.worktrees: manual`
-  or when an explicit `worktree` override is supplied, `claim` creates no new
-  worktree and binds to the active/selected checkout. Concurrent foreign claims
-  require `--force` (and `--steal-remote` if `session_fingerprint` differs across
-  hosts).
+- **Claim (`claim`)**:
+  - Atomically locks or resumes the gate in `gate_claims`, bumping `claim_revision` and `node_version` and recording `claim_tree`.
+  - Returns the 6-tier `ClaimResp` envelope (setting `context_reset_required: true` when re-entering after `rearchitect`).
+  - Under `git.worktrees: managed` (`acdd start --worktree`), claiming a task gate creates `.worktrees/<run_name>-<task_ref>` on branch `task/<run_name>-<task_ref>`; under `manual` or an explicit `worktree`, it binds to the selected checkout.
+  - Taking over another worker's active claim requires `--force` (plus `--steal-remote` across different host fingerprints).
 - **Verify (`verify`)**:
-  1. Validates working-tree changes against `WorkspacePathPolicy::is_agent_writable`.
-  2. Executes configured `command:` (applying `test_filter` / `{test_filter}`
-     when `--test` is supplied) or `call: <domain>.<action>` (`with:`), saving a
-     `gate_traces` row and streaming output to `.acdd/run/<run_id>/traces.jsonl`.
-  3. Runs configured `checks: [<domain>.<check>]` (e.g., `code.seam` reachability
-     and `code.signature_scope`).
-  4. Validates `ProofKind`: `command` requires exit `0`.
+  1. Validates working-tree edits against `WorkspacePathPolicy::is_agent_writable`.
+  2. Runs configured `command:` (expanding `{test_filter}` when `--test` is passed) or `call: <domain>.<action>`, streaming output to `.acdd/run/<run_id>/traces.jsonl`.
+  3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`).
+  4. Checks `ProofKind` (`command` requires exit status `0`).
 - **Submit (`submit`)**:
-  - Verifies `claim_revision` parity (`STALE_CLAIM_REVISION`) and
-    `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
-  - Checks `save.immutable` parity against `claim_tree` (`TASK_CANDIDATE_MISMATCH`)
-    and `need:` predecessor accepted tree parity, plus `blueprint` `max_net_loc`
-    production LOC budgets on `tasks.build` unless justified on `blackboard`
-    (`topic: decisions`).
-  - On `--action pass`: validates proof (auto-verifying `command` if
-    no fresh trace exists, validating `review_evidence` against `contours:`, or
-    validating `custom_evidence` against `proofs.<name>` / inline `{ scheme }`),
-    checks that all task `subtasks` are `completed` or `cancelled` with
-    non-empty evidence when `receipt: true`, executes `save.post` (`none`,
-    `commit`, or `snapshot`), materializes any declared `save.report` (returning `report_path` in `SubmitResp`), writes `gate_artifacts`, and transitions along `pass:`.
-  - On `--action reject`: requires structured `RejectionFindings` (`findings` +
-    `summary` + optional `kind`: `defect | architectural_drift`), routes to `fail:`
-    on `defect` or `fail_drift:` on `architectural_drift`, increments `attempt` /
-    `cycle_count`, or marks the node `escalated` when `max_attempts` is reached.
+  - **Concurrency & independence**: verifies `claim_revision` (`STALE_CLAIM_REVISION`) and `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
+  - **Tree & LOC guards**: checks `save.immutable` against `claim_tree` (`TASK_CANDIDATE_MISMATCH`), `need:` predecessor parity, and `max_net_loc` budgets on `tasks.build`.
+  - **On `--action pass`**: validates proofs (`command`, `review_evidence`, or JSON Schema `custom_evidence`), confirms all task `subtasks` have terminal evidence when `receipt: true`, runs `save.post` (`none`, `commit`, or `snapshot`), writes `save.report`, and advances along `pass:`.
+  - **On `--action reject`**: requires structured `RejectionFindings` (`defect` routes to `fail:`; `architectural_drift` routes to `fail_drift:`), or marks the node `escalated` at `max_attempts`.
 
 ### 6-Tier Claim Context Budget (`ClaimResp`)
 
@@ -170,7 +139,14 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 
 ## Task snapshots
 
-Use `acdd snapshot save|restore|list|clear [<target>] [--all] [--rev N] [--run RUN] [--delete] [--older-than DUR] [--worktree PATH]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear|list", task_ref: ..., name: ..., all: ..., rev: ..., run: ..., delete: ..., older_than: ..., worktree: ...)` to manage checkpoints. Save captures admitted files (task scope when a run task matches; otherwise the worktree candidates outside `.acdd/**`). Restore applies a selected revision inside that scope. Clear deletes one revision (`--rev`), refs older than `<N><s|m|h|d|w>`, a named prefix, or `--all`. Omitting `--run` resolves to task mode if the target matches a task in an unambiguously resolved active run (cleaned up on `deliver`, run `clear`, or `handoff`), except `clear` with `--rev` or `--older-than`, which requires `--run` to target task refs; otherwise it uses standalone refs at `refs/acdd/snapshots/_adhoc/<label>/r<rev>`, which `deliver`, run `clear`, and `handoff` do not remove. Profiles declare `save.post: snapshot` only on leaf task gates.
+Manage Git checkpoints via `acdd snapshot <save|restore|list|clear> ...` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear|list", ...)`:
+
+- **`save`**: captures admitted files (task scope when matched to a run task; otherwise all non-`.acdd/**` worktree candidates).
+- **`restore`**: reapplies a selected snapshot revision inside that scope.
+- **`list`**: lists saved snapshot revisions for a task or standalone label.
+- **`clear`**: deletes one revision (`--rev`), refs older than `<N><s|m|h|d|w>` (`--older-than`), a named prefix, or `--all` (alias `--delete`).
+- **Task vs. standalone refs**: omitting `--run` resolves to task mode if the target matches an unambiguously resolved active run (cleaned up automatically on `deliver`, run `clear`, or `handoff`). When clearing with `--rev` or `--older-than` without `--run`, it targets standalone refs at `refs/acdd/snapshots/_adhoc/<label>/r<rev>`, which task lifecycle events never delete.
+- **Profile hook**: `save.post: snapshot` is valid only on leaf task gates.
 
 ---
 
@@ -212,25 +188,14 @@ authority, and agent writes never conflate:
 
 ### Linked repository tasks
 
-In `0.6.2`, `linked_workspaces` in `acdd.yaml` applies solely to multi-repository
-code and documentation indexing (`acdd-index`), except read-only cross-workspace
-dependency resolution (`<ws>/<run>:<task>`) in `acdd_state::usecases::deps`
-which reads the linked workspace's own `acdd.yaml` (`specs` and `state_db`)
-strictly read-only. State runs (`runs`, `gate_nodes`) and write scopes stay
-confined to the primary workspace repository and its linked Git worktrees;
-cross-repository state writes are not admitted.
+- **Indexing & read-only dependencies**: `linked_workspaces` in `acdd.yaml` federates code/docs indexing and supports read-only cross-workspace task dependencies (`<ws>/<run>:<task>`).
+- **Write confinement**: active `runs`, `gate_nodes`, and agent write scopes remain strictly confined to the primary workspace repository and its Git worktrees.
 
 ---
 
 ## SQLite storage, locks, and backup recovery
 
-[`crates/acdd-state/src/store/`](../../crates/acdd-state/src/store/mod.rs)
-provides two `StateBackend` implementations (`SqliteStateBackend` for durable runs
-and `MemoryStateBackend` for in-memory `RunHarness` tests) over `StateReader` and
-`StateTx` optimistic CAS mutations (`node_version` and `runs.generation`).
-Read-only queries (`open_read_only_if_exists`) strictly open
-`SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NOFOLLOW` first (handling WAL databases
-without `-shm` without unintended writes) and never create missing DB files.
+[`crates/acdd-state/src/store/`](../../crates/acdd-state/src/store/mod.rs) provides two `StateBackend` implementations (`SqliteStateBackend` for durable runs and `MemoryStateBackend` for in-memory tests) using optimistic CAS counters (`node_version` and `runs.generation`). Read-only queries open SQLite with `SQLITE_OPEN_READ_ONLY` and never create missing database files.
 
 ### Primary worktree layout and advisory locks
 
@@ -260,7 +225,7 @@ defines `_sqlite_meta` (`schema_version = 2`, `write_seq`, `last_backup_seq`) pl
 | `task_dependencies` | Intra-run and cross-run task dependency DAG edges and satisfaction flags |
 | `subtasks` | Subtask status (`pending \| in_progress \| completed \| cancelled`) with mandatory terminal `evidence` CHECK constraint |
 | `gate_claims` | Active and historical claim revisions (`active \| passed \| rejected \| superseded \| reopened \| cancelled`) |
-| `gate_traces` | Observed command/action/check verification runs (`running`, `passed`, `failed`, `timed_out`, `check_failed`, `scope_violation`, `aborted`; schema CHECK also accepts legacy `expected_failure` and `compile_error` rows) |
+| `gate_traces` | Observed command, action, and check verification runs (`running`, `passed`, `failed`, `timed_out`, `check_failed`, `scope_violation`, `aborted`) |
 | `gate_artifacts` | Structured `proof`, `findings`, `receipt`, and accepted candidate tree JSON + commit OIDs |
 | `blackboard` | Scoped coordination messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with resolution status |
 | `run_tombstones` | Compact closed-run summaries, `metrics_json`, and cleanup manifests retained across `archive` / `prune` / `clear` |
@@ -273,21 +238,10 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
 
 ## Canonical Diagnostic Error Codes (`ErrorCode`)
 
-[`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) defines
-28 machine-readable `ErrorCode` variants mapped to stable CLI exit codes:
+[`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) maps machine-readable `ErrorCode` variants to stable CLI exit codes:
 
-- **Exit `2` (Usage / Config / Schema)**:
-  `CONFIG_MIGRATION_REQUIRED`, `ACDD_PROFILE_SCHEMA_INVALID`, `COMMAND_UNBOUND`,
-  `COMMAND_TEST_FILTER_UNSUPPORTED`, `COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`,
-  `UNKNOWN_GUIDANCE_SLOT`, `GUIDANCE_BUDGET_EXCEEDED`, `RUN_SELECTOR_AMBIGUOUS`,
-  `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED`.
-- **Exit `3` (State / Gate / Scope Violation)**:
-  `TASK_ALREADY_CLAIMED`, `STALE_CLAIM_REVISION`, `TASK_REVIEW_NOT_INDEPENDENT`,
-  `OUT_OF_SCOPE_CHANGES`, `TASK_SCOPE_CONFLICT`, `TASK_PROOF_UNOBSERVED`,
-  `TASK_CANDIDATE_MISMATCH`, `TASK_NOT_INTEGRATED`, `PRE_TASK_ARTIFACT_STALE`,
-  `DEPENDENT_TASK_COMPLETED`, `DOMAIN_CAPABILITY_UNAVAILABLE`,
-  `MAIN_BRANCH_PROTECTED`.
-- **Exit `4` (Execution / Git / Backend / Uncertainty)**:
-  `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`,
-  `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`,
-  `MUTATING_ACTION_UNCERTAIN_OUTCOME`, `BACKEND_CONFLICT`.
+| Exit Code | Category | Diagnostic Codes |
+| --- | --- | --- |
+| **`2`** | Usage, Config & Schema | `ACDD_PROFILE_SCHEMA_INVALID`, `COMMAND_UNBOUND`, `COMMAND_TEST_FILTER_UNSUPPORTED`, `COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`, `UNKNOWN_GUIDANCE_SLOT`, `GUIDANCE_BUDGET_EXCEEDED`, `RUN_SELECTOR_AMBIGUOUS`, `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED` |
+| **`3`** | State, Gate & Scope | `TASK_ALREADY_CLAIMED`, `STALE_CLAIM_REVISION`, `TASK_REVIEW_NOT_INDEPENDENT`, `OUT_OF_SCOPE_CHANGES`, `TASK_SCOPE_CONFLICT`, `TASK_PROOF_UNOBSERVED`, `TASK_CANDIDATE_MISMATCH`, `TASK_NOT_INTEGRATED`, `PRE_TASK_ARTIFACT_STALE`, `DEPENDENT_TASK_COMPLETED`, `DOMAIN_CAPABILITY_UNAVAILABLE`, `MAIN_BRANCH_PROTECTED` |
+| **`4`** | Execution, Git & Storage | `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`, `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`, `MUTATING_ACTION_UNCERTAIN_OUTCOME`, `BACKEND_CONFLICT` |

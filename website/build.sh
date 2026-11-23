@@ -3,11 +3,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-cleanup() {
-  rm -rf content/docs
-}
-trap cleanup EXIT
-
 python3 sync-docs.py
 
 case "${1:-build}" in

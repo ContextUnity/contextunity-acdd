@@ -1,10 +1,24 @@
 # ContextUnity ACDD Documentation
 
-**Augmented Context & Durable Dispatch (ACDD)** is a harness-agnostic meta-harness for AI coding agents — combining a Tree-sitter SQLite code map, verified documentation links, a declarative gate state machine, and an architectural linter in one pure-Rust binary.
+**Augmented Context & Durable Dispatch (ACDD)** is a single pure-Rust binary (`MCP server` + `CLI`) that gives AI coding agents and developers an incremental Tree-sitter code graph, an architectural linter, and a deterministic gate state machine — 100% locally, with zero background daemons.
 
-The documentation is organized around ACDD's four core subsystems:
+> [!TIP]
+> **New to ACDD?** Start with the **[5-Minute Quickstart](/docs/getting-started/quickstart/)** to install the binary, index your repository, connect your AI agent, and run your first verified task.
 
-1. **[ACDD State](/docs/state/)** — How workflows start from specs or ad-hoc goals, how the state machine drives tasks and parallel worktrees, installation, and MCP/CLI setup & reference.
-2. **[ACDD Index](/docs/index/)** — How the Tree-sitter indexer, documentation linking, `linked_workspaces`, and `acdd.yaml` configuration & limits work.
-3. **[ACDD Lint](/docs/lint/)** — How to write ACDD-indexed documentation, author architectural rules (`acdd.yaml` & `acdd-rule`), and run `acdd lint`.
-4. **[ACDD Profiles](/docs/profiles/)** — How profiles and gates work, the complete `GateProfile v2` option & variable reference, full built-in profiles, how to override each one, and what agents receive in context.
+---
+
+## Adopt ACDD in three progressive steps
+
+- **1. Smart Navigation & Linter (Zero Workflow Setup)**: Run `acdd init` and connect MCP. Agents immediately gain single-shot AST symbol reads (`acdd_read`), caller/blast-radius analysis (`code_map_impact`), BM25 docs search, and `acdd lint` boundary checks.
+- **2. Guardrailed Ad-Hoc Tasks (`--goal`)**: Run `acdd start --goal "..." --profile hotfix` for bugfixes and small features — enforcing write scopes, automated test checks, and independent review without authoring a spec file.
+- **3. Multi-Wave Specs & Parallel Agents**: Draft versioned specs (`acdd draft`), synthesize per-task architectural slices, and coordinate parallel builder and reviewer subagents across isolated Git `.worktrees/`.
+
+---
+
+## Documentation sections
+
+- **[Getting Started](/docs/getting-started/)** — [5-Minute Quickstart](/docs/getting-started/quickstart/), [Installation](/docs/getting-started/install/), [Connect MCP & CLI](/docs/getting-started/mcp-cli-setup/), and the [MCP vs. CLI Cheat Sheet](/docs/getting-started/mcp-vs-cli/).
+- **[ACDD State](/docs/state/)** — How workflows start from specs or `--goal`, parallel waves, Git snapshots, [State Machine & Receipts](/docs/state/state-machine/), [CLI Reference](/docs/state/cli/), and [MCP Tools Reference](/docs/state/mcp-tools/).
+- **[ACDD Index](/docs/index/)** — Tree-sitter AST extraction, living docs linking, `linked_workspaces`, [`acdd.yaml` & Limits](/docs/index/acdd-yaml/), [Languages & Coverage](/docs/index/languages/), and [Framework Manifests](/docs/index/framework-manifests/).
+- **[ACDD Lint](/docs/lint/)** — The 6 lint categories (`arch`, `docs`, `syntax`, `duplicates`, `dead_tails`, `cycles`) and [Writing Docs & Linter Rules](/docs/lint/writing-docs-and-rules/).
+- **[ACDD Profiles](/docs/profiles/)** — [Profile Options & Variables](/docs/profiles/profile-options/), [Overriding Built-in Profiles](/docs/profiles/overriding-profiles/), and full walkthroughs of [`code`](/docs/profiles/builtin-code/), [`base`](/docs/profiles/builtin-base/), [`audit`](/docs/profiles/builtin-audit/), [`documentation`](/docs/profiles/builtin-documentation/), and [`spec_planning`](/docs/profiles/builtin-spec-planning/).

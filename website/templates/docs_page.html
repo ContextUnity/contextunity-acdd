@@ -14,7 +14,25 @@
         <a class="sidebar-heading {% if current_path == sub.path %}active{% endif %}" href="{{ sub.permalink }}">{{ sub.title }}</a>
         <ul class="sidebar-list">
           {% for p in sub.pages %}
-            <li><a href="{{ p.permalink }}" {% if current_path == p.path %}class="active"{% endif %}>{{ p.title }}</a></li>
+            <li class="sidebar-item {% if current_path == p.path %}is-active{% endif %}">
+              <a href="{{ p.permalink }}" {% if current_path == p.path %}class="active"{% endif %}>{{ p.title }}</a>
+              {% if current_path == p.path and page.toc | length > 0 %}
+                <ul class="sidebar-subtoc" aria-label="On this page">
+                  {% for h1 in page.toc %}
+                    <li>
+                      <a href="{{ h1.permalink | safe }}">{{ h1.title }}</a>
+                      {% if h1.children %}
+                        <ul>
+                          {% for h2 in h1.children %}
+                            <li><a href="{{ h2.permalink | safe }}">{{ h2.title }}</a></li>
+                          {% endfor %}
+                        </ul>
+                      {% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </li>
           {% endfor %}
         </ul>
       </div>
@@ -26,6 +44,11 @@
       <a href="{{ get_url(path='/') }}">Home</a>
       <span>/</span>
       <a href="{{ docs_root.permalink }}">Docs</a>
+      {% if page.ancestors | length > 1 %}
+        {% set parent_sec = get_section(path=page.ancestors | last) %}
+        <span>/</span>
+        <a href="{{ parent_sec.permalink }}">{{ parent_sec.title }}</a>
+      {% endif %}
       <span>/</span>
       <span>{{ page.title }}</span>
     </div>
@@ -33,26 +56,25 @@
     <div class="prose">
       {{ page.content | safe }}
     </div>
-  </article>
 
-  <aside class="docs-toc">
-    {% if page.toc | length > 0 %}
-      <div class="toc-title">On This Page</div>
-      <ul>
-        {% for h1 in page.toc %}
-          <li>
-            <a href="{{ h1.permalink | safe }}">{{ h1.title }}</a>
-            {% if h1.children %}
-              <ul>
-                {% for h2 in h1.children %}
-                  <li><a href="{{ h2.permalink | safe }}">{{ h2.title }}</a></li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
+    {% if page.lower or page.higher %}
+      <nav class="docs-pager" aria-label="Page navigation">
+        {% if page.lower %}
+          <a class="pager-card pager-prev" href="{{ page.lower.permalink }}">
+            <span class="pager-label">← Previous</span>
+            <span class="pager-title">{{ page.lower.title }}</span>
+          </a>
+        {% else %}
+          <div></div>
+        {% endif %}
+        {% if page.higher %}
+          <a class="pager-card pager-next" href="{{ page.higher.permalink }}">
+            <span class="pager-label">Next →</span>
+            <span class="pager-title">{{ page.higher.title }}</span>
+          </a>
+        {% endif %}
+      </nav>
     {% endif %}
-  </aside>
+  </article>
 </div>
 {% endblock content %}

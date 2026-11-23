@@ -1,0 +1,217 @@
+# 5-Minute Quickstart
+
+**ContextUnity ACDD** is a single local Rust binary (zero background daemons, zero cloud dependencies) that upgrades any AI coding agent (Claude Code, Codex, Antigravity, Cursor) or CI script with three capabilities:
+
+- **Code & Docs Graph (`.acdd/code-map.sqlite`)**: Tree-sitter AST symbol reads, caller/callee blast radius, test discovery, and BM25 documentation search.
+- **Architectural Linter (`acdd lint`)**: Machine-enforced crate/folder boundaries (`acdd.yaml`), executable Markdown `INV-*` rules, duplicate-code detection, and dead-code checks.
+- **Gate State Machine (`.acdd/state.sqlite`)**: Step-by-step verified workflows (`build` → `independent review` → `deliver` → `handoff`) across isolated Git worktrees.
+
+You can adopt ACDD incrementally — start with AST navigation, companion skills, and linting on day one, then adopt verified gates whenever you want stricter engineering guarantees.
+
+---
+
+## Step 1: Install the binary & companion skills
+
+Run the one-line installer on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh
+```
+
+What `install.sh` sets up automatically:
+
+- **`~/.local/bin/acdd`**: SHA-256 verified single binary (`MCP server` + `CLI` in one executable).
+- **Companion Agent Skills (`~/.agents/skills/`)**: 5 `SKILL.md` playbooks automatically symlinked into your detected coding agents (`~/.claude/skills`, `~/.codex/skills`, `~/.gemini/config/skills`, `~/.cursor/skills`).
+- **`.mcp.json` registration**: wires `"contextunity-acdd": { "command": "acdd", "args": ["serve"] }` in your current project directory.
+
+> **Built from source (`cargo install --path . --locked`)?** Run `./skills/install.sh` once from the cloned repo to install and symlink the 5 companion skills.
+
+Confirm `~/.local/bin` is on your `PATH`:
+
+```bash
+acdd --version
+```
+
+### Why companion skills matter
+
+Connecting MCP gives your agent **tools**, while **companion skills** teach your agent **how and when** to use them instead of falling back to blind `grep` or `cat` loops:
+
+| Bundled Skill | When the Agent Loads It | What It Teaches the Agent |
+| --- | --- | --- |
+| **`acdd`** | Code exploration, symbol lookup, or gate execution | Prefer `acdd_read(selector=...)` and `code_map_*` over `grep`/`cat`, plus self-claim (`acdd_claim` → `acdd_verify` → `acdd_submit`) and blackboard handoffs. |
+| **`contract-planning`** | Planning features, milestones, or `blueprint_synthesis` | Audit canonical owners, reconcile ADRs/`INV-*` invariants, and split work into small tasks with disjoint write scopes. |
+| **`test-suite-rules`** | Writing, modifying, or reviewing tests | Test through real production seams, use table-driven matrices, and avoid temp-file or state leaks. |
+| **`close-review-findings`** | Fixing bugs or handling `review` rejections | Trace root causes across all entrypoints (CLI, MCP, internal handlers) so fixes do not patch only one surface. |
+| **`agent-instructions`** | Updating `AGENTS.md`, `README.md`, ADRs, or docs | Keep agent routers concise and structure Markdown (`doc_type`, headings, symbol links, `INV-*`) for ACDD indexing. |
+
+---
+
+## Step 2: Initialize your repository
+
+From the root of any Git project, generate starter configuration files:
+
+```bash
+acdd init
+```
+
+`acdd init` creates three things:
+
+- **`acdd.yaml`**: workspace config declaring indexed `roots:`, `ignore:` exclusions, and named `specs:` folders (`milestones` and `plans` by default).
+- **`.acdd/profile.yaml`**: workspace gate profile inheriting the built-in `code` lifecycle (where you bind your project's test command).
+- **`.gitignore` guard**: ignores `.acdd/code-map.sqlite` and `.acdd/state.sqlite` while keeping `.acdd/profile.yaml` tracked in Git.
+
+Starter `acdd.yaml` created by `acdd init`:
+
+```yaml
+roots:
+  - .
+ignore:
+  - target
+  - node_modules
+  - .venv
+  - .git
+specs:
+  milestones:
+    path: docs/milestones
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    prefixes: [PLAN]
+    digits: 3
+profiles_dirs:
+  - .acdd/profiles
+state_db: .acdd/state.sqlite
+```
+
+- **`roots`**: folders ACDD indexes for AST symbols, call edges, and Markdown docs.
+- **`specs`**: user-defined specification collections (used later by `acdd draft` — you can rename `milestones`/`plans` or add collections like `features` or `rfcs`).
+
+Build the initial code and documentation graph:
+
+```bash
+acdd build .
+```
+
+---
+
+## Step 3: Explore your codebase & run the linter
+
+Try querying symbols and checking architectural health from your terminal:
+
+```bash
+# 1. High-level summary of languages, entrypoints, and docs
+acdd query overview
+
+# 2. Search symbols by prefix, name, or parameter/return type
+acdd query search "parse*" --kind function
+
+# 3. Read an exact symbol body in one shot (verified by SHA-256 digest)
+acdd read src/main.rs --selector main
+
+# 4. Compute blast radius of staged Git changes
+acdd query impact --changes staged --depth 1
+
+# 5. Run architectural, syntax, clone, and dead-code lint
+acdd lint --categories all
+```
+
+---
+
+## Step 4: Connect your AI coding agent (MCP + Skills)
+
+`install.sh` automatically updates `.mcp.json` in the folder where you ran it. For any other repository or MCP client (Claude Code, Codex, Antigravity, Cursor), ensure `acdd serve` is registered:
+
+```json
+{
+  "mcpServers": {
+    "contextunity-acdd": {
+      "command": "acdd",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+How the two pieces work together inside your agent session:
+
+- **MCP Server (`acdd serve`)**: exposes 20 built-in tools and auto-refreshes `.acdd/code-map.sqlite` whenever files change.
+- **Companion Skills (`~/.agents/skills/`)**: guide your agent to call `code_map_search`, `acdd_read`, `code_map_impact`, and `code_map_lint` automatically instead of reading whole files line-by-line.
+
+---
+
+## Step 5: Run your first verified workflow
+
+Bind your project's test command in `.acdd/profile.yaml`:
+
+```yaml
+version: 2
+inherit: code
+
+commands:
+  build_check:
+    command: "cargo test {test_filter}"     # or "pytest -q {test_filter}", "npm test"
+    test_filter: "{test}"
+  verify_all: "cargo test --workspace"
+```
+
+You have two ways to start a verified run — **Option A (`--goal`)** for everyday tasks without extra files, or **Option B (Spec file)** for larger multi-task features.
+
+### Option A: Everyday bugfixes & focused changes (`--goal`, no spec file)
+
+Pass `--goal` to create an ephemeral single-task run (`goal.build` → `goal.review` → `goal.deliver`). Under `inherit: code`, `acdd next` starts at `blueprint_synthesis.synthesize` before `goal.build` — or jumps straight to `goal.build` if you add a lightweight `hotfix` overlay (see [Overriding Profiles](/docs/profiles/overriding-profiles/)):
+
+```bash
+# Start an isolated run scoped to src/auth/ and tests/
+acdd start --goal "Reject expired JWTs before DB lookup" --scope src/auth/ --scope tests/
+
+# Inspect the next ready cursor (`blueprint_synthesis.synthesize`, or `goal.build` with --profile hotfix)
+acdd next
+
+# Claim the ready gate (prints the 6-tier Markdown contract & code context)
+acdd claim
+
+# Once inside goal.build, run verification + lint checks and advance
+acdd verify goal.build --test rejects_expired_jwt
+acdd submit goal.build --action pass
+```
+
+### Option B: Multi-task specifications (`milestones` / `plans`)
+
+When a feature is too big for one agent turn and needs multiple coordinated tasks, use a **Specification** (`SpecDocument`):
+
+- **What is a Spec (Milestone or Plan)?**: A Git-tracked Markdown contract declaring acceptance criteria (`AC-*`), governing invariants (`INV-*`), and a DAG of `### task: <id>` blocks with non-overlapping file `scope:` globs so multiple agents can build in parallel waves.
+- **Where does `milestones` come from?**: `milestones` is **not** a magic built-in keyword — it is simply the collection name defined under `specs:` in `acdd.yaml` during `acdd init` (`milestones` → `docs/milestones/AC-001-...md`, `plans` → `docs/plans/PLAN-001-...md`). You can rename or add any collection key in `acdd.yaml`.
+- **Who writes the spec?**: Either scaffold the next numbered file with `acdd draft <collection> <slug>` and fill in the tasks (manually or with your agent), **or** run `acdd start --goal "Plan JWT rotation" --profile spec_planning` to have an architect agent synthesize and review the spec first.
+
+Scaffold and launch a spec from your `milestones` collection:
+
+```bash
+# 1. Allocate the next free ID in specs.milestones -> docs/milestones/AC-001-jwt-rotation.md
+acdd draft milestones jwt-rotation --title "JWT Key Rotation"
+
+# 2. After filling in AC-* criteria and ### task: blocks, start the run in an isolated Git worktree
+acdd start docs/milestones/AC-001-jwt-rotation.md --worktree
+```
+
+What the drafted `docs/milestones/AC-001-jwt-rotation.md` contract looks like:
+
+````markdown
+---
+id: AC-001-jwt-rotation
+title: "JWT Key Rotation"
+status: planned
+owners: [src/auth/, tests/auth_test.rs]
+acceptance_criteria:
+  - "AC-1: Tokens signed with the previous active key remain valid during grace window."
+---
+
+### task: rotation-verifier
+```yaml
+task_ref: rotation-verifier
+depends_on: []
+scope: [src/auth/jwt.rs, tests/auth_test.rs]
+```
+````
+
+Once started, you can either run gates from the CLI (`acdd next` → `acdd claim` → `acdd verify` → `acdd submit`) or ask your MCP-connected AI orchestrator to drive the run — spawning worker subagents per wave, enforcing independent review (`independent_from: [build]`), and landing atomic verified commits.

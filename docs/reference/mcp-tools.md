@@ -46,24 +46,16 @@ normalize these fields before querying. Supply one spelling per value; a nonempt
 canonical field together with an alias is a duplicate-field error. `code_map_query` resolves its separate
 optional fields as described under [SQL](#sql-queries).
 
-Start with `code_map_overview` to confirm the selected workspace and indexed
-coverage. Reuse a sufficient search preview instead of fetching the same source
-again. Use `code_map_inspect` for one declaration summary and `code_map_explain`
-when relationship edges are needed. Use `acdd_read` when source is absent
-from previews or a complete-symbol read is needed; it reads the complete body by
-default, with `max_body_lines` available to bound it. Use this instead of repeated
-`ctx_read` file chunks. Triage sections with `search_docs(query="...", include_excerpt=true)`,
-inspect outlines with `get_doc(path_or_id="...", detail="compact")`, and read a selected
-section with `get_doc(path_or_id="...", section="...")`; full detail includes content. Use
-`code_map_tests` for verified exact-call paths, and treat
-`code_map_prove_removal` as indexed static evidence, not runtime-safety proof.
-`code_map_analyze(lint=true)` reads stored syntax diagnostics;
-`include_cycles=true` opts into cycle analysis.
+Recommended navigation sequence:
 
-Inspect the connected server's tool schemas before selecting a checkout. Pass
-optional `worktree` on any tool call when the server root is not the intended
-checkout. Follow the resolution rules under [worktree selection](#worktree-selection).
-The client's current directory does not select an MCP request root.
+- **`code_map_overview`**: confirm workspace root, generation token, and indexed language/doc counts.
+- **`code_map_search`**: find candidate symbols (reuse search previews directly when sufficient).
+- **`code_map_inspect` / `code_map_explain`**: inspect one declaration's summary (`inspect`) or direct incoming/outgoing edges (`explain`).
+- **`acdd_read`**: read complete digest-verified symbol bodies (`max_body_lines` optional) instead of slicing files manually.
+- **`search_docs` / `get_doc`**: triage sections with `search_docs(include_excerpt=true)`, view outlines with `get_doc(detail="compact")`, and read one section with `get_doc(section="...")`.
+- **`code_map_tests` & `code_map_prove_removal`**: trace verified `calls` paths from `test_case` nodes and assess static incoming dependencies before deleting symbols.
+- **`code_map_lint` & `code_map_analyze`**: run unified architectural/hygiene rules (`code_map_lint`), syntax checks (`lint=true`), or cycle detection (`include_cycles=true`).
+- **`worktree` selector**: pass optional `worktree` on any tool call when targeting a secondary Git worktree (see [worktree selection](#worktree-selection)).
 
 ## Output format
 
@@ -93,97 +85,53 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
 
 ### Layered file reader
 
-Use `acdd_read(path: "notes.txt", mode: "lines")` or
-`acdd read notes.txt --mode lines`. CLI and MCP use the same
-reader and response budgets. `mode` accepts `auto` (default), `lines`, `raw`,
-`search`, `delta`, `outline`, and `snippet`. Auto selects snippet when `selector`
-is present, search when `pattern` is present, and lines otherwise.
+`acdd_read` and CLI `acdd read` share one layered file and symbol reader:
 
-When a symbol's unique name is already known, use
-`acdd_read(selector="SymbolName")` for a digest-verified symbol read. Add the
-owner path with `acdd_read(path="src/lib.rs", selector="SymbolName")` to
-restrict resolution. The response contains the complete body when it fits;
-continue any source pages using the returned offset and generation. Search when
-the name is unknown or disambiguation is needed.
-MCP also accepts `symbol` as an alias for `selector`, for example
-`acdd_read(symbol="SymbolName")`. Supplying both fields with non-null values
-is rejected, including when either is an empty string; `null` is treated as
-absent. The alias has the same path restriction and source paging.
+- **Modes (`mode`)**:
+  - `auto` (default): selects `snippet` when `selector` is set, `search` when `pattern` is set, and `lines` otherwise.
+  - `lines`: 1-based numbered source lines (`start_line`, `line_count` `1..=10,000`, default `200`; works without an index).
+  - `raw`: exact text preserving original line endings (works without an index).
+  - `search`: substring or `regex: true` search starting at `start_line` with `context` lines (`0..=100`, default `2`).
+  - `delta`: unified Git diff against `baseline`, the active task's candidate baseline, or `HEAD`.
+  - `outline`: Markdown heading tree (`docs` module) or AST declaration list (`code` module); `paths: [...]` batches multiple files.
+  - `snippet`: complete digest-verified symbol body (`selector` or alias `symbol`, optional `path` to disambiguate), paged cleanly via `source_offset` + `generation`.
+- **Argument aliases & helpers**:
+  - `end_line`: inclusive end line computed from `start_line`.
+  - `lines`: range string (`"100-200"`, `"100..200"`) or integer count.
+  - `max_lines` / `file_path` / `query` / `symbol`: aliases for `line_count`, `path`, `pattern`, and `selector` (passing both canonical and alias non-null values is rejected).
+  - **Workspace-prefix stripping**: absolute paths inside the workspace automatically normalize to relative paths.
+  - **Enclosing symbol footer**: reading raw lines inside an indexed function/struct appends a `💡 Enclosing symbol` hint with its exact `selector`.
+- **Safety & bounds**:
+  - **Text cap**: `lines`, `raw`, and `search` cap output at `48 KiB` (`truncated: true`); lines above `1 MiB` error cleanly.
+  - **Binary & secret guards**: NUL bytes in the first `8 KiB` return `BINARY_FILE`; symlinks, path traversal, and `sensitive` patterns are blocked on both reads and `output_file` exports (see [sensitive paths](configuration.md#sensitive-reader-paths)).
+  - **Active gate hints**: when a task gate is claimed in the selected worktree, responses include `write_scope: ALLOWED|OUT_OF_SCOPE` and copy-ready graph/verify/blackboard hints.
 
-Core text modes work with `profile: minimal` and create no code index.
-`start_line` is one-based; `line_count` defaults to 200 and accepts 1–10,000.
-Argument tolerance and aliasing:
-- `end_line`: computes the inclusive line count from `start_line` (default 1). Zero or an end before the start rejects with an error.
-- `lines`: accepts a range string (e.g. `"100-200"`, `"100..200"`) parsed into `start_line` and `line_count`, or an integer line count.
-- `max_lines`: alias for `line_count`.
-- `file_path`: alias for `path`.
-- `query`: alias for `pattern`.
-- Absolute path tolerance: paths starting with the workspace root automatically strip the workspace root prefix to resolve as relative workspace paths.
-- Enclosing symbol hint: reading lines inside an indexed function, method, or struct includes a helpful hint in the output footer (`💡 Enclosing symbol: 'fn <name>'...`) pointing directly to the exact `selector`.
-- Unrecognized parameter hints: invalid or unrecognized arguments emit informative schema errors explicitly listing supported parameter names and suggesting closest matches.
-- Batch reads: `paths: [...]` with `mode: "outline"` inspects subsystem admission across all supplied paths.
+### Built-in MCP tools & CLI parity
 
-Lines include source line numbers; raw preserves the returned text, including
-line endings. Search requires `pattern`, uses substring matching by default,
-and accepts `regex: true` and `context` (default 2, capped at 100). Search starts
-at `start_line`; its `line_count` budget includes matching and context lines,
-with overlapping context emitted once.
-Text collection stops at 48 KiB or the requested line count and reports
-`truncated`; a physical line over 1 MiB returns an error.
+Every static capability runs over identical index and state engines on both surfaces (`<domain>_<name>` plugin tools map to `acdd tool <domain>_<name>`):
 
-Delta returns a unified Git diff against `baseline`, the unique active task's
-candidate baseline, or `HEAD`, in that order. Git resolves the revision in the
-admitted physical file's repository, including configured linked workspaces;
-an unavailable revision fails explicitly. Active task baseline lookup remains
-bound to the selected primary workspace. Delta treats the admitted filename
-literally, including wildcard and
-Git pathspec-magic characters; it never expands that name to sibling files.
-`output_file` exports the returned
-content to a distinct workspace-relative destination. Input and output paths
-reject traversal and symlinks. Input files with a NUL byte in their first 8 KiB
-return `BINARY_FILE`; adapter `sensitive` patterns block reads and exports before
-content is returned. See [sensitive paths](configuration.md#sensitive-reader-paths).
-
-Markdown outline uses the docs subsystem and preserves heading hierarchy while
-excluding fenced-code headings. Code outline and snippet require codemap.
-Outline uses the compiled language profile's AST declarations; snippet accepts
-all existing symbol selectors and retains digest checks, complete-line source
-pagination, `source_offset`, and explicit continuation `generation`.
-Graph pulse counts describe indexed callers, verified tests, implementations,
-and invariants; unavailable test mapping contributes no test hint.
-Implementation-query hints require an explicitly selected symbol; file-level
-edge totals alone do not produce a type-query hint.
-
-With ACDD enabled, a unique in-progress task claimed in the selected worktree
-adds `write_scope: ALLOWED|OUT_OF_SCOPE`. Conditional `Hints` contain copy-ready
-calls bound to that worktree: graph relations and verified tests, indexed docs,
-scope extension, command verification, and blackboard navigation. Verify appears
-only when the active gate names a registered command. Disabled subsystems and
-absent signals produce no hints. CLI flags use hyphens, for example
-`--start-line 20 --line-count 40 --output-file exports/read.txt`.
-
-| Tool | Purpose and main input |
-| --- | --- |
-| `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
-| `code_map_search` | Search symbols by `pattern`; exact name or qualified-name matches have priority. When matching parameter or return types also exist, they appear in ranked results alongside exact names. Otherwise exact-name matches retain the exclusive default. Prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
-| `code_map_inspect` | Resolve a `selector` (`symbol` alias) and optional `path` (`file_path` alias) and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
-| `acdd_read` | Layered text, search, Git delta, Markdown/code outline, and digest-verified symbol reads by `path` or `selector`; optional confined `output_file` export. |
-| `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
-| `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
-| `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
-| `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
-| `code_map_query` | Route an `operation` to graph queries, clone detection (`operation="duplicates"`), dead-tail / phantom-test / dangling-call analysis (`operation="dead_tails"`), or paged read-only SQL (`operation="sql"`). |
-| `code_map_lint` | Run unified architectural (`acdd-rule` / `acdd.yaml`), graph hygiene (`duplicates`, `dead_tails`, `cycles`), syntax, and documentation (`docs`) lint rules across the workspace or a scoped `target`. Default categories: `["arch", "syntax", "docs"]`; filter with `categories`, `rules`, `severity`, and standard paging (`limit`, `offset`, `generation`). |
-| `code_map_analyze` | Read workspace or path diagnostics and paged declared-public production symbols not reached from an indexed test case through exact `calls`; exact-file diagnostic rows include a source snippet and a reason when persisted evidence identifies one. Exact Markdown paths can also return paged `doc_diagnostics` for broken links, stale source ranges, and dead symbol claims. Request stored syntax diagnostics with `lint:true` or opt into cycle analysis with `include_cycles`. |
-| `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
-| `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
-| `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
-| `acdd_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
-| `acdd_state` | Unified `0.6.2` run & lifecycle controller with 16 `action` values: read-only (`status`, `list`, `show`, `next`, `roadmap`, `observability`, `context`) and mutating (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`). Action `context` queries `SQLITE_OPEN_READ_ONLY` and materializes budgeted `ClaimResp` without claim or revision mutations; `roadmap` builds the read-only cross-collection dependency DAG, waves, and task drill-down. |
-| `acdd_claim` | Atomically claim a ready or active node (`node` optional to auto-select next ready node) and materialize its 6-tier `ClaimResp` envelope (`contract` + `guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, `context_lenses`, plus `context_reset_required` after `rearchitect`). |
-| `acdd_verify` | Execute gate verification (`command:`, `call:`, `checks:` `DomainProvider` verifiers, write-scope perimeter) without advancing state; accepts optional `test_target` and `claim_revision`. |
-| `acdd_submit` | Submit `pass` or `reject` for a claimed node (`claim_revision`-bound), supporting `review_evidence`, `rejection_findings` (with optional `kind`: `defect \| architectural_drift`), `custom_evidence`, `verified_invariants`, `summary`, `test_target`, and `allow_main`. |
-| `acdd_blackboard` | Read (`action: "read"`) or post (`action: "post"`) scoped blackboard messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with status filters (`open \| acknowledged \| resolved \| carried_over`) and `runs.generation` paging. |
+| MCP Tool | CLI Equivalent | Purpose |
+| --- | --- | --- |
+| `code_map_overview` | `acdd query overview` | Summarize workspace counts, languages, docs hubs, entrypoints, topology, and per-workspace coverage. |
+| `code_map_search` | `acdd query search` | Search symbols by exact name, prefix (`parse*`), FTS5 BM25 query, or type filter (`takes:`, `returns:`). |
+| `code_map_inspect` | `acdd query inspect` | Inspect one symbol's signature, docstring, caller/callee summary, governing invariants, and linked docs. |
+| `acdd_read` | `acdd read` | Read line slices, search matches, Git deltas, outlines, or digest-verified symbol bodies (plus `output_file` export). |
+| `code_map_explain` | `acdd query explain` | List direct `incoming`, `outgoing`, or `both` relationship edges and analysis gaps for a symbol. |
+| `code_map_impact` | `acdd query impact` | Trace multi-hop blast radius (`inbound` / `outbound`) for a symbol or `--changes staged\|unstaged\|head`. |
+| `code_map_tests` | `acdd query tests` | Trace exact `calls` paths between `test_case` roots and production targets (`inbound` / `outbound`). |
+| `code_map_prove_removal` | `acdd query remove` | Assess static incoming dependencies and target-scoped diagnostics before deleting a symbol. |
+| `code_map_query` | `acdd query run` / `sql` | Execute named graph operations (`slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, `sql`). |
+| `code_map_lint` | `acdd lint` | Evaluate architectural (`acdd-rule` / `acdd.yaml`), `docs`, `syntax`, `duplicates`, `dead_tails`, and `cycles` rules. |
+| `code_map_analyze` | `acdd query analyze` | Aggregate workspace/file resolver gaps, `untested_public_surface`, `doc_diagnostics`, stored syntax lint, and cycles. |
+| `ast_grep_search` | `acdd ast grep` | Match structural Tree-sitter patterns (`$NAME`, `$$$SEQ`) narrowed by indexed file candidates. |
+| `search_docs` | `acdd docs search` | Search indexed Markdown/MDX heading sections with BM25 ranking and optional `include_excerpt`. |
+| `get_doc` | `acdd docs get` | Read a document outline, specific heading section, citations, and verified/candidate symbol references. |
+| `acdd_guide` | `acdd guide` | Return capability-filtered usage guidance across 11 built-in topics (`query`, `code`, `ast`, `docs`, `acdd`, ...). |
+| `acdd_state` | `acdd start\|draft\|status\|...` | Drive run lifecycle actions (`start`, `draft`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `sync`, `clear`, `run`). |
+| `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` context envelope. |
+| `acdd_verify` | `acdd verify` | Run gate shell `commands:`, `call:`, `checks:` (`code.seam`, `code.lint`), and write-scope barrier without advancing state. |
+| `acdd_submit` | `acdd submit` | Submit `pass` or `reject` (`review_evidence`, structured `findings`, commits, reports, archive/prune). |
+| `acdd_blackboard` | `acdd blackboard` | Read or post scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`). |
 
 In addition to the 20 built-in static tools above, active `DomainProvider` plugins
 can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
@@ -205,7 +153,7 @@ adapter, and response formatter. Omitted or blank MCP topics select `query`. The
 | `code`, `ast` | Verified navigation, structural search, and language capabilities | `code` |
 | `docs` | Search, outlines, source reads, frontmatter, and invariants | `docs` |
 | `lifecycle` | Claims, verification, submission, role runners, rejection recovery, and commits | `state` |
-| `acdd` | Unified `0.6.2` `Run` / `GateProfile` lifecycle (`worktree`, `in_place`) | `state` |
+| `acdd` | Unified `Run` / `GateProfile` lifecycle (`worktree`, `in_place`) | `state` |
 | `gates` | Conditions, profile routes, persistence, and `DomainProvider` hooks | `state` |
 | `subtasks` | Subtask status, mandatory evidence, and delivery checks | `state` |
 
@@ -220,63 +168,53 @@ See [headless execution](cli.md#headless-run-execution) and
 
 ## Worktree selection
 
-All 20 built-in MCP tools (plus registered `<domain>_<name>` plugin tools)
-accept an optional `worktree` selector — no tool requires it unconditionally.
-When supplied, the same resolver selects a request-local root, adapter, and index
-before dispatch.
+Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
-Use `"."` for the server root. An absolute path or a path relative to the
-server root that contains a separator selects an existing directory directly;
-a missing explicit path returns `WORKTREE_NOT_FOUND`. Other selectors search
-canonicalized, deduplicated Git-registered worktrees and immediate
-`.worktrees/` children in this order:
-
-1. Exact directory name.
-2. Literal prefix, or a pure-digit milestone prefix compared with leading zeros
-   removed (`"23"` and `"023"` match the same numeric prefix).
-3. Literal suffix.
-4. Literal substring.
-
-The first nonempty tier must contain exactly one candidate. Multiple candidates
-at that tier return `WORKTREE_AMBIGUOUS`; lower tiers do not break a tie.
-No match, including an empty explicit selector, returns `WORKTREE_NOT_FOUND`.
-For example, `worktree: "sql-schema"` can select a unique directory containing
-that substring, while `worktree: "repair"` can select a unique suffix.
-
-Omitting `worktree` always keeps the canonical server root and its configured
-index database. Active claims or task settings never choose another root.
-Existing adapter/configuration validation and reserved database safety checks
-still apply; routing does not bypass them. An explicit selection uses that
-worktree's adapter, index, and manifests; selecting the server
-root retains a custom `--db` path. Git-linked worktrees share the state database
-resolved by the primary workspace's `state_db` configuration (`acdd.yaml`); standalone repositories
-remain independent unless explicitly configured to share a store.
-
-These human-friendly aliases are an MCP request feature. The CLI keeps its own
-path inputs: query commands select a workspace with `--root`, while CLI task
-claim/next operations use an existing `--worktree` directory path. MCP requests
-do not carry the client's current working directory. Set the server's
-`cwd`/`--root` to bind a session to a worktree, or pass `worktree` per call.
+- **Omitted (default)**: targets the MCP server's root workspace (active claims never silently switch roots).
+- **`"."` or path with `/` (`\`)**: selects the server root or an explicit directory path (`WORKTREE_NOT_FOUND` if missing).
+- **Short name / substring matching** (searches Git-registered worktrees and `.worktrees/*` in tier order):
+  1. Exact directory name.
+  2. Literal prefix or zero-normalized numeric prefix (`"23"` matches `"023"`).
+  3. Literal suffix.
+  4. Literal substring (e.g. `worktree: "sql-schema"`).
+- **Disambiguation**: the first non-empty tier must match a single worktree (`WORKTREE_AMBIGUOUS` on ties).
+- **Database isolation**: each worktree uses its own `acdd.yaml` and `.acdd/code-map.sqlite`, while linked Git worktrees share `<primary_worktree>/.acdd/state.sqlite`.
+- **CLI equivalent**: CLI query commands use `--root <PATH>`, while state commands (`claim`, `verify`, `submit`) accept `--worktree <PATH>`.
 
 ## Selectors and graph queries
 
-Use a known unique symbol name directly; use an identifier returned by search when discovery or disambiguation is needed. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
+- **Selector syntax**:
+  - **Known symbol / file**: pass a unique symbol name directly (or an identifier returned by `code_map_search`), or pass a file path to select that module/file.
+  - **Qualified selectors**: `path:name`, `path::name`, `path:known_kind:name` (for registered node kinds), or `path:line` / `path#Lline` (narrowest symbol covering that line).
+  - **Prefixes & ambiguity**: relative paths accept `./`, `file:`, or `file://`. Add the path when a bare name matches both a module and a symbol. Markdown belongs in `get_doc` / `search_docs`.
 
-`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller, excludes classified entrypoints, and reports their number in `summary.excluded_entrypoints_count`; it is not a dead-code proof. `dead_tails` computes workspace-wide production liveness first and returns scoped `phantom_tested` (reachable only from tests), `dead_tails` (zero prod and zero test reachability), and `dangling_calls` (unresolved `crate::` / `super::` / `self::` references). Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; `inspect` also uses the dedicated inspect Markdown layout and linked citation presentation. Explain retains its own `documents` page. Set `include_coverage=true` to add resolution coverage. For `operation="sql"` and SQL-targeted `code_map_analyze`, put exactly one read-only `SELECT` or `WITH` statement in `selector` or `target`. Leading whitespace and SQL comments are allowed, as are semicolons inside quoted values or comments and one trailing statement terminator; additional statements and writes are rejected. SQL rows preserve requested columns and SQLite values/text verbatim, including JSON-looking text; structural graph rows retain parsed JSON projections and omit internal ids. Secure SQL validation, query budget, and paged `QueryOptions` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
+- **`code_map_query` operations & aliases**:
+  - **Supported operations**: `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, and `sql` (aliases: `doctor` -> `overview`; `search` / `discover` / `find` -> symbol search).
+  - **`impact` & direction**: `code_map_query(operation="impact")` defaults to depth `2`, while `code_map_impact` defaults to depth `1`. Direction defaults to `inbound` (`outbound` follows outgoing dependencies).
+  - **`unwired`**: lists functions/methods with no static caller, excluding classified entrypoints (`summary.excluded_entrypoints_count` reports excluded entries; not a dead-code proof).
+  - **`dead_tails`**: evaluates workspace-wide production liveness first and returns scoped `phantom_tested` (tests-only), `dead_tails` (zero prod/test reachability), and `dangling_calls` (unresolved `crate::`/`super::`/`self::` refs).
+  - **`inspect` & `explain`**: return the same compact symbol summary and citation layout as the dedicated tools (`include_coverage=true` adds resolution coverage).
+  - **SQL mode (`operation="sql"` / `code_map_analyze`)**: pass one read-only `SELECT` or `WITH` statement in `selector` or `target`. Leading comments/whitespace and one trailing semicolon are allowed; additional statements or writes fail closed. SQL rows preserve requested columns verbatim; structural rows strip internal IDs. Use `limit`, `offset`, and `generation` to page results (see [CLI reference](cli.md)).
 
-Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
+- **Traversal & scope caps**: depth is capped at `16`; deep traversals whose first frontier exceeds `1,000` links fail (retry with depth `1` or a narrower selector), and removal proofs reject scopes above `10,000` nodes.
 
-`code_map_search` accepts `query` as an alias for `pattern`. Its `path` accepts an exact indexed file or a directory whose descendants should be searched; `path: ""` leaves results unfiltered. Use `pattern: "*"` with a nonempty `path` or `kind` to list all symbols in that scope, including when `exact: true`. Unscoped `*` and repeated wildcard-only patterns remain invalid. For example, `{"query":"*","path":"src","kind":"function"}` lists functions under `src` with normal pagination.
+- **`code_map_search`**:
+  - **`pattern` / `query`**: `query` is an alias for `pattern`. Use `pattern: "*"` with a non-empty `path` or `kind` to enumerate symbols in that scope (`path: ""` searches the whole workspace; bare/repeated `*` is rejected).
+  - **Type & decorator filters**: searches indexed parameter types, return types, and decorators via `takes:GateProfile`, `returns:Result`, or `@pytest.fixture` (wildcards rejected in type filters; `exact: true` matches names unless a type filter is given).
 
-Search text includes indexed parameter types, return types, and decorators. Use `takes:GateProfile` to find functions with a `GateProfile` parameter, `returns:Result` to find functions returning `Result`, or `@pytest.fixture` to find a decorator. Type filters match a literal type fragment and apply `kind`, `path`, and pagination; wildcards are rejected. Ordinary searches retain exact-name priority; `exact: true` selects names unless a type filter is supplied.
+- **Impact, slice, tests & removal details**:
+  - **`code_map_impact` & `slice`**: mark the seed node with `is_seed=true` and annotate multi-hop nodes with `via` (shortest path predecessor + edge kind). A directory selector in `slice` lists internal nodes (`graph_depth_applied=0`) plus a `boundary_contract`; unique directory suffixes are accepted.
+  - **`code_map_tests`**: traces exact `calls` edges from `test_case` roots (`call_path` IDs). Helpers/fixtures stay intermediate, `possible_calls` / imports do not count as coverage, and bounded lexical suggestions appear only when no graph path exists. Exceeded traversal budgets fail instead of returning partial coverage.
+  - **`code_map_analyze` (`untested_public_surface`)**: pages declared-public production symbols lacking exact `calls` paths from `test_case` nodes (visibility follows language syntax, not transitive crate/package re-exports).
+  - **`code_map_prove_removal`**: `assessment` returns a candidate-scoped verdict and blocking dependencies without mixing in unrelated workspace diagnostics.
 
-`code_map_impact` and node-scoped `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. A directory selector in `code_map_query(operation="slice")` lists its indexed nodes with `graph_depth_applied=0` and exact selectors for subsequent graph traversal. A unique directory suffix is accepted; ambiguous suffixes return candidate full paths. `code_map_tests` follows exact `calls` edges and returns shortest `call_path` IDs for verified graph evidence. Inbound results include only `test_case` roots; helpers and fixtures can appear within a path but are not treated as test roots. If no verified path exists, the bounded lexical fallback may suggest a test case without a `call_path`. `possible_calls`, imports, and lexical matches do not establish graph coverage. Traversal is bounded by graph node, frontier, and depth budgets; an exceeded budget returns an error instead of an incomplete coverage claim. `code_map_analyze` pages `untested_public_surface` for declared-public production symbols in the selected path scope that no indexed test case reaches through exact `calls` edges; tests outside the selected production path can cover symbols within it. Public visibility describes each language's declaration rules, not transitive package or crate export reachability. `code_map_prove_removal.assessment` leads with a verdict and candidate-scoped blocking reasons; `safe_to_remove` is separate from workspace-wide unresolved and parse-error diagnostics.
+- **`code_map_explain`**:
+  - **Direction**: `incoming`, `outgoing`, or `both` (aliases `inbound` / `outbound`).
+  - **Payload**: returns signature, docstring, receiver lexical container, distinct-edge/occurrence counts, and up to 5 callers/callees per direction (`include_coverage=true` adds coverage; `show_doc=false` omits linked docs).
 
-`code_map_explain` accepts `incoming`, `outgoing`, or `both`; `inbound` and `outbound` are aliases. Compact inspect and explain results include the exact indexed signature and docstring, a lexical container resolved from method receiver metadata when available, inbound/outbound distinct-edge and occurrence counts, and up to five direct callers/callees per direction. Set `include_coverage=true` to add paged resolution coverage, or `show_doc=false` to omit linked document results.
-
-`inspect` and `explain` include paged `analysis_gaps` for the selected symbol's source span, with reason, path, line, scope symbol, and resolver evidence. The reason `trait_object_dispatch` marks Rust trait-object calls whose concrete implementation depends on runtime dispatch. `macro_expansion_not_analyzed` marks an indexed Rust macro invocation; its edge to the macro declaration remains available for navigation. Gap pages use the query's `limit`, `offset`, and `generation`.
-
-`calls` edges identify exact indexed calls. `possible_calls` edges identify bounded local branch-join targets and carry confidence `possible`; candidate sets contain at most eight declarations, and overflow is recorded as incomplete coverage. Explain pages preserve the edge kind and paging fields such as `has_more` and `next_offset`. Inbound impact follows `possible_calls`, and removal analysis lists a possible caller as an incoming dependency that blocks `safe_to_remove`.
+- **`analysis_gaps` & edge types**:
+  - **`analysis_gaps`**: paged list on `inspect` / `explain` reporting `trait_object_dispatch` (Rust runtime trait dispatch), `macro_expansion_not_analyzed` (indexed macro call preserving navigation to macro declaration), path, line, and resolver evidence.
+  - **`calls` vs. `possible_calls`**: `calls` marks exact calls; `possible_calls` (`confidence: "possible"`) marks bounded branch joins (`<= 8` declarations; overflow widens coverage). Inbound impact and removal analysis treat `possible_calls` as incoming dependencies.
 
 Markdown traversal output preserves that distinction: explain marks only exact
 `calls` edges as proven and labels `possible_calls` as candidates; deeper impact
@@ -285,91 +223,61 @@ Graph-backed test paths render as ordered, linked case-to-helper-to-target
 breadcrumbs. Lexical suggestions remain explicitly unverified and have no graph
 breadcrumb. JSON continues to return the structured semantic result.
 
-For Python `from package import child`, a unique indexed child module contributes an import edge to that module and can resolve calls through its alias. A package can also expose a symbol through one explicit relative import in `__init__.py`; the graph links that import to the indexed declaration. When matching `.py` and `.pyi` modules exist, imports select the runtime `.py` module. If its indexed declarations omit a symbol, the matching type stub can supply that declaration; call evidence identifies the stub target. Other multiple child candidates remain ambiguous.
+- **Python stub & package imports**: `from package import child` resolves unique child modules or explicit `__init__.py` relative re-exports, preferring `.py` over `.pyi` (falling back to `.pyi` only if runtime omits the symbol).
 
-`code_map_analyze` groups unresolved references by recorded resolver cause and counts affected files. It also groups parse error records by language and affected files, and pages `untested_public_surface` by the requested path scope. A call through a proven external import has status `external` and contributes to `external_imports` instead of unresolved coverage. A non-empty analyze target outside the indexed file inventory fails with `PATH_NOT_INDEXED`; an empty target selects the workspace. The unindexed `diagnostics` and `cycles` targets retain their specific mode error. Use an exact indexed file as `target` to page individual locations; `detail="full"` includes the underlying resolver evidence. Test coverage is based only on exact `calls` paths from `test_case` roots; ambiguous `possible_calls`, helpers, fixtures, and lexical fallback suggestions do not remove a declared-public symbol from the untested page.
+- **`code_map_analyze` summary & diagnostics**:
+  - **Grouping**: aggregates unresolved references by resolver cause, groups parse diagnostics by language/file, and pages `untested_public_surface` (exact `test_case` `calls` only; external imports count toward `external_imports`).
+  - **Target rules**: omit `target` for workspace scope; unindexed non-empty targets fail with `PATH_NOT_INDEXED`. Exact indexed file targets emit per-location `snippet` (when digest matches) and resolver `reason`.
 
-For an exact indexed file, diagnostic locations include the source line as `snippet` when the file still matches its indexed digest. Their `reason` is derived from persisted resolver evidence only when a recognized cause is available; otherwise it is `null`. Full detail retains the existing evidence fields.
+- **Declared-public rules by language**:
+  - **Python**: module-level names without a leading `_` (excluding nested definitions; ignores `__all__`).
+  - **Rust**: declarations with unrestricted `pub` (including inside private modules).
+  - **TypeScript / JavaScript**: explicit named/default exports and public/default-public members of exported classes (excluding `private`/`protected`/`#private`, type-only declarations).
 
-Declared-public rules are language-specific: Python includes module-level names without a leading underscore, excluding nested declarations; Rust includes declarations written with unrestricted `pub`, even inside a private module; TypeScript includes local declarations in explicit named or default module exports and public/default-public members of exported classes, excluding private, protected, and `#private` members. The report does not infer whole-project re-export reachability, honor Python `__all__`, or treat type-only declarations as runtime call targets. Profiles without a declared-public rule leave visibility unknown.
+- **`code_map_overview` & `explain` / `inspect` details**:
+  - **Database aspects**: `counts`, `components`, `languages`, `coverage_by_workspace`, `cycles`, `entrypoints`, `entrypoints_with_tests`, `topology`, `compiled_profiles`, and `metadata`.
+  - **Discovery aspects**: `discovery`, `manifest_components`, `documentation_hubs`, `runs`, and `milestones`.
+  - **Default selection**: omitting `aspects` includes all database aspects + `discovery` except opt-in `cycles`, `topology`, `entrypoints`, and `entrypoints_with_tests` (`entrypoints_with_tests` includes tests; repeat the aspect when paging). Unsupported aspects fail listing valid choices.
+  - **`coverage_by_workspace`**: separates persisted primary vs. linked-workspace file/symbol counts across reopens.
+  - **Edge rows**: `code_map_explain` returns public endpoint IDs + relative direction (`detail="full"` adds stored evidence); `code_map_inspect` returns `{ "total": 0 }` for empty linked docs.
 
-Compact and full `code_map_explain` edge rows include both public endpoint IDs and direction relative to the selected node; full detail also includes stored edge evidence. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation. Its database aspects are `counts`, `components`, `languages`, `coverage_by_workspace`, `cycles`, `entrypoints`, `entrypoints_with_tests`, `topology`, `compiled_profiles`, and `metadata`. The discovery adapter additionally accepts `discovery`, `manifest_components`, `documentation_hubs`, `runs`, and `milestones`; `components` also includes discovery components. An omitted or empty aspect list selects every database aspect except opt-in `cycles`, `topology`, and both entrypoint aspects and includes discovery. The `entrypoints` aspect excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` page. If both are requested, tests are included. Repeat the selected aspect when continuing with the returned offset and generation. Entries are ordered by category, descending outgoing call count, and symbol ID; each includes its kind, signature, path, and start line. Unsupported aspects fail and list all accepted names. The `coverage_by_workspace` aspect pages counts from persisted primary and linked workspace metadata; linked paths retain their workspace identity after reopening the index.
+- **Query operations (`untested`, `implementations`, `duplicates`, `dead_tails`)**:
+  - **`untested`**: pages production functions/methods with no inbound `test_case` `calls` edge inside `target`/`selector` (static signal, not runtime coverage; rejects conflicting `target`+`selector`).
+  - **`implementations`**: recursively pages subclasses and trait implementors of `selector` (excluding the base type).
+  - **`duplicates`**: finds exact body-SHA-256 or near line-similar clones at `level="symbol"` (default) or `level="file"`, bounded by `min_lines` (`5` default in MCP; `10` in CLI unless set), with actionable refactoring `suggestion` entries.
+  - **`dead_tails`**: evaluates workspace-wide liveness first and returns scoped `phantom_tested`, `dead_tails`, and `dangling_calls` alongside `summary` counts.
 
-`code_map_query(operation="untested", target="src/core")` pages production functions and methods without a direct indexed `calls` edge from a test node. This is a static graph signal, not runtime coverage. The target is an exact file or a directory boundary; `selector` is the CLI-compatible equivalent and conflicting scopes are rejected. `code_map_query(operation="implementations", selector="LanguageLinker")` pages indexed subclasses and implementors recursively, excluding the selected base. `code_map_query(operation="duplicates")` identifies duplicate functions/methods (`level="symbol"`, default) or identical files (`level="file"`). `min_lines` sets the minimum line count threshold (default 5; the CLI `acdd query run duplicates --min-lines` flag still defaults to 10 unless set explicitly). `target` or `path` restricts search to an exact file or directory scope. Exact symbol duplicates are identified via SHA-256 hash comparison of AST-sliced symbol bodies (`(line..end_line)`), while near duplicates are clustered by line similarity. Responses return grouped duplicate locations, line counts, duplicate counts, and actionable refactoring suggestions (`suggestion`). `code_map_query(operation="dead_tails", path="crates/...")` computes production liveness across the entire workspace graph first (preserving cross-crate callers) and returns scoped `phantom_tested`, `dead_tails`, and `dangling_calls` collections alongside `summary` counts. All operations honor pagination and generation.
+- **Directory boundary slices (`code_map_query(operation="slice", selector="src/db")`)**:
+  - Lists externally referenced internal symbols and groups incoming/outgoing edges by external module directory (up to 5 representative edges per module).
+  - Pages internal edges and boundary collections together using `offset`, `limit`, and `generation`.
+- **Module topology (`code_map_overview(aspects=["topology"])`)**:
+  - Returns paged `topology.modules` (grouped by first 2 path components, or 3 under `src/engine`) and `topology.module_edges` sorted by edge count.
+  - Computes module **cohesion** (`internal / (internal + inbound + outbound)`) and classifies each module into `adapter_or_entrypoint`, `foundation`, `data_access`, `orchestrator`, or `domain`.
+- **Impact edge details (`code_map_impact`)**:
+  - Depth `1` returns exact endpoint IDs, edge kind, path, line, direction, confidence, and occurrence count; depth `> 1` records each node's shortest `via` predecessor.
 
-Request `{"operation":"slice","selector":"src/db"}` from `code_map_query`
-to include `boundary_contract` for an indexed directory. The contract lists
-externally used internal symbols and groups incoming and outgoing edges by the
-external file's parent directory. Counts include all indexed edge kinds; exported
-caller counts are distinct source symbols. Each collection is a page with total,
-offset, limit and generation. Continue with the next offset and generation; the
-same offset applies to internal edges and every boundary collection. Each module
-includes at most five deterministic representative edges. File and explicit
-symbol slices retain graph traversal.
-The directory query scans indexed path and node ranges, then follows indexed
-incoming and outgoing edges. Work depends on the paths and nodes in the
-directory and their incident edges; grouping may require SQLite temporary
-storage. Incompatible index metadata requires a rebuild.
-
-Request `{"aspects":["topology"]}` from `code_map_overview` for opt-in
-`topology.modules` and `topology.module_edges` pages. Module names use the
-first two directory components, except `src/engine` uses three where available;
-root files belong to the empty module and directory component nodes use their
-own path. Counts use indexed nodes and edges.
-Cohesion is internal edges divided by internal plus inbound and outbound edges,
-or zero for a module without edges. Roles are assigned in this order: an adapter
-entrypoint or no inbound with outbound is `adapter_or_entrypoint`; no outbound
-with inbound is `foundation`; at least 10% table nodes or three table-query
-edges is `data_access`; at least three incoming and three outgoing edges to
-at least three distinct neighbors is `orchestrator`; remaining modules are
-`domain`. Module edges sort by decreasing count and then module names; ties
-for dominant kind use the lexicographically first kind. Both pages use the
-request offset, limit and generation.
-
-Depth-one `code_map_impact` results include the exact selected edge on each non-seed node, with both endpoint IDs, kind, path, line, direction, confidence, and occurrence count; full detail includes stored edge evidence. At greater depths, nodes retain their shortest `via` predecessor.
-
-For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `changes:"head"` instead of a symbol selector. The response includes the changed files and paged `changed_symbols`, impacted `nodes`, related `tests`, and `unmapped_changes`. A range maps only when its selected Git postimage matches the indexed file; deleted, binary, rename-only, unindexed, stale, or non-symbol ranges remain explicit unmapped results and make `complete` false. The continuation `generation` binds both the graph and captured change snapshot, so a staged or working-tree change invalidates an older token even when the graph itself is unchanged.
+- **Git change view (`code_map_impact`)**:
+  - `changes`: pass `"staged"`, `"unstaged"`, or `"head"` instead of a symbol selector.
+  - **Response**: returns changed files plus paged `changed_symbols`, impacted `nodes`, related `tests`, and explicit `unmapped_changes` (`complete: false` if any range cannot be mapped because the Git postimage diverges from the index).
+  - **`generation`**: binds both the graph and captured Git change snapshot, invalidating older tokens on any working-tree or staged change.
 
 ## Result size and source
 
-For checkpoints, call `acdd_state` with `action: "snapshot"`, `snapshot_action: "save" | "restore" | "clear" | "list"` (or `delete: true` for clear), and optional `task_ref`, `name`, `all`, `rev`, `run`, `older_than`, and `worktree`. `worktree` selects the Git worktree. See [task snapshots](tasks.md#task-snapshots).
-
-`code_map_inspect` and `code_map_explain` clamp `leading_lines` above 20 to 20
-and requested `max_body_lines` to 1–500. When omitted, their body limit uses
-`response.source_context.max_body_lines` (200 by default). Adapter
-`response.source_context.max_body_lines` values remain strictly validated from
-1 to 500. `acdd_read` defaults to the complete selected symbol and honors
-an explicit `max_body_lines` limit normalized to at least one, without an
-implicit 500-line cap.
-All three tools clamp `leading_lines` above 20 to 20. Negative values and
-overflowing source offsets remain invalid.
-
-The maximum response-byte ceiling is 98,304 bytes; configured lower limits remain
-authoritative. Every continuation with
-`source_offset > 0` requires the `generation` returned by the previous page,
-including calls in the same MCP session. Missing tokens return an actionable
-error: provide that generation or restart at `source_offset=0`. Ordinary
-collection pagination also requires its explicit generation.
-
-`code_map_inspect`, `code_map_explain`, and `acdd_read` include serialized
-metadata and Markdown or JSON rendering in the configured byte limit.
-`acdd_read` pages an oversized symbol to fit that serialized limit, with
-truthful `next_source_offset`, `has_more`, and the active generation. Inspect and
-explain keep their configured preview line limits and 8 KiB source sub-budget;
-if the resulting response still exceeds the serialized limit after collection
-trimming, request fewer source lines, less detail, or `acdd_read` instead.
-Source pages contain only complete lines. A single line that cannot fit returns
-a clear budget error and a local-file recovery hint, never a partial line or a
-non-advancing cursor. Source reads still verify the on-disk digest and reject
-stale generations.
-
-Code-map paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result code-map page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 98,304 bytes; actual UTF-8 serialization, metadata, and JSON/Markdown escaping count toward it. Task-list pagination is separate: it always reports `total`, `limit`, `offset`, actual `returned`, `has_more`, and its task-view `generation`, with `next_offset` only when another page remains. When response trimming removes task or collection tails, it preserves whole records and advances to the actual returned offset. Task-view generations bind the selected workspace, task filters, and complete task/subtask state, not the code-index snapshot.
-
-Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `acdd_read` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
+- **`acdd_state(action: "snapshot")`**: manages checkpoints via `snapshot_action: "save" | "restore" | "clear" | "list"` (`delete: true` aliases `"clear"`), optional `task_ref`, `name`, `all`, `rev`, `run`, `older_than`, and `worktree` (see [task snapshots](tasks.md#task-snapshots)).
+- **Preview & line bounds**:
+  - `code_map_inspect` / `code_map_explain`: clamp `leading_lines` (`0..=20`, default `5`) and `max_body_lines` (`1..=500`, default from `response.source_context.max_body_lines` or `200`) with an `8 KiB` source sub-budget.
+  - `acdd_read`: returns the full selected symbol when it fits `max_output_bytes` (`1,024–98,304`), honoring explicit `max_body_lines >= 1` and paging strictly on complete line boundaries (oversized single lines return a budget error + local-file hint).
+- **Pagination & generations**:
+  - Code-map tools use `limit` (`1..=100`, default `30`), `offset`, `next_offset`, and code-index `generation` (`source_offset > 0` always requires the previous page's `generation`).
+  - Completed zero-result code-map pages return `total` and `items` cleanly without pagination fields; trimming removes tail records cleanly and advances `next_offset`.
+  - Task-list pagination (`acdd_state`) reports `total`, `limit`, `offset`, `returned`, `has_more`, and a separate `runs.generation` bound to task/subtask state.
+- **Search previews (`code_map_search`)**:
+  - Automatically attaches previews when total hits `<= 3` (or whenever `include_preview: true`, up to 3 hits / 20 lines / 12 KiB combined) after verifying the indexed SHA-256 digest.
+  - Every hit returns `signature` plus a copy-ready `inspect_selector` object for `code_map_inspect`.
 
 ## AST pattern capabilities
 
-`ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension (`{"pattern":"class Widget","path":"src/example.py"}` infers Python) or when `path` (or the workspace root when `path` is omitted) is an indexed directory containing sources of a single compiled language. An explicit language takes precedence; multi-language directories require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
+- **`ast_grep_search.language`**: accepts any compiled profile ID (`python`, `rust`, `typescript`, etc.) or infers it automatically when `path` is a recognized file or a single-language indexed directory (multi-language dirs require an explicit language).
 
 Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
@@ -380,17 +288,25 @@ Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples.
 | `fragment_probe` | Wraps root-rejected expressions, calls, macros, or assignments in a profile-provided probe container and unwraps the target syntax node. |
 | `attribute` | Matches declared decorators or annotations layered over declarations. |
 
-The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Python declaration patterns accept `class Widget`, `class Widget:`, `def target($$$)`, and `def target($$$):`. Rust accepts a parameterless function header such as `fn target`, completed as an empty parameter list with a wildcard body.
-
-Unsupported fragments and invalid syntax produce an MCP tool error with the diagnostic code, profile language, one-based line and column range, repair hint, and indented valid examples. The error text presents these fields directly without appending a raw JSON dump.
+- **Capability matrix**: Rust supports all 4; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`.
+- **Metavariables**: `$NAME` captures one node; `$$$SEQ` captures zero or more nodes (e.g. `class Widget`, `def target($$$)`, `fn target`).
+- **Errors**: invalid syntax or unsupported fragments return diagnostic code, language, line/column range, repair hint, and indented examples without raw JSON dumps.
 
 ## SQL queries
 
-`code_map_query` accepts operations `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, and `dead_tails`. Use `code_map_query(sql="SELECT count(*) FROM nodes")` to select SQL mode directly, or `code_map_query(operation="sql", selector="SELECT ...")`. A SELECT/WITH statement in `operation`, or in `query` when `operation` is omitted or blank, also selects SQL mode. In these inferred forms, the statement resolves from `sql`, then `query`, then `selector`, then SQL text in `operation`. With an explicit operation and no inferred form, the selector resolves from `target`, then `selector`, then `query`; `target` remains valid only for `untested`, `duplicates`, and `dead_tails`. SQL accepts exactly one read-only `SELECT` or `WITH` statement. Writes and additional statements remain rejected, with the same query budgets and pagination. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
+- **`code_map_query` operations**: `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, and `dead_tails`.
+- **SQL dispatch**: select SQL explicitly (`sql="SELECT ..."` or `operation="sql", selector="SELECT ..."`), or pass a `SELECT`/`WITH` query in `operation` / `query` (resolves `sql` -> `query` -> `selector` -> `operation`). Explicitly named non-SQL operations resolve from `target` -> `selector` -> `query` (`target` applies to `untested`, `duplicates`, `dead_tails`).
+- **Read-only guard**: allows one `SELECT` or `WITH` statement under SQLite query & pagination budgets; use `code_map_analyze(include_cycles=true)` for structural cycle detection.
 
 ### SQL columns and joins
 
-The SQL schema is `nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id)`, `path_dictionary(path_id, path)`, `edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count)`, `files(path, status, digest, size, language, is_test, generated, path_hash)`, and `doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant)`. Paths and endpoints use integer IDs/hashes; there are no compatibility views or `nodes.path`, `edges.src`, or `edges.dst` columns.
+- **SQLite tables (`code-map.sqlite`)**:
+  - `nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id)`
+  - `path_dictionary(path_id, path)`
+  - `edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count)`
+  - `files(path, status, digest, size, language, is_test, generated, path_hash)`
+  - `doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant)`
+  - Paths and endpoints use integer IDs/hashes (`nodes.path`, `edges.src`, and `edges.dst` do not exist).
 
 ```sql
 SELECT n.name, p.path, n.line
@@ -408,15 +324,14 @@ Missing-table or missing-column SQL errors retain the SQLite error and append a 
 
 ## Syntax diagnostics on demand
 
-Call `code_map_analyze` with `lint:true` and an indexed file or directory in `target`; an empty target covers indexed sources in the workspace. An unindexed non-empty target fails with `PATH_NOT_INDEXED`. An indexed target without compiled-language source, such as a documentation file, retains the compiled-profile error. This reads the syntax diagnostics already stored by compiled language profiles. It does not run another parser, an external linter, or additional work during indexing. The usual source freshness check still applies to MCP reads.
+- **Trigger**: call `code_map_analyze` with `lint:true` and an indexed `target` (empty targets the whole workspace; unindexed paths fail with `PATH_NOT_INDEXED`; non-code targets like Markdown preserve compiled-profile errors).
+- **Source**: surfaces stored Tree-sitter parse diagnostics (`rule ID`, `severity`, `language`, `path`, `line`, `message`, paged with `generation`) without launching external linters.
 
 ```json
 {"target":"src","lint":true,"limit":30}
 ```
 
-Results include a rule ID, severity, language, path, line, and message, with pagination and generation checks. Coverage describes indexed sources and language-specific limits; excluded or unsupported files are not checked. An empty diagnostics page does not certify semantic correctness or compliance with style rules. Vue coverage is limited to its embedded scripts; HTML template expressions and styles are not validated.
-
-Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custom SQL, a separate `code_map_analyze` request for cycles, or `code_map_lint` for unified architectural and hygiene checks. Ruff, Clippy, application-specific rules, and automatic fixes are outside `code_map_analyze(lint=true)`.
+- **Scope & limits**: Vue covers embedded `<script>` blocks only (HTML template expressions/styles are skipped); cycle detection requires `code_map_analyze(include_cycles=true)`, and unified rules/hygiene require `code_map_lint`.
 
 ## Unified lint and executable `acdd-rule` blocks (`code_map_lint`)
 
@@ -441,16 +356,20 @@ collection's page metadata independently. Keep verified document citations,
 referenced symbols, and invariant metadata separate from ambiguous candidates;
 candidates are navigation, not verified references or governance edges.
 
-Markdown and MDX in admitted roots are indexed as documents, including repository `AGENTS.md` files and configured milestone and plan documents. Optional frontmatter `doc_type`, `title`, and `status` describe a section; missing status stays unspecified. Natural-language searches ignore common English stop words and match a section when any remaining term appears. Section-title matches receive three times the BM25 weight of body and invariant text. A query containing only stop words returns an empty result page. `get_doc` addresses the document path and an exact heading section; a missing path or section is an error. Its default MCP response includes section content and line bounds. Set `detail="compact"` explicitly for a section outline without content; `search_docs` keeps compact discovery results by default. Set `include_excerpt=true` to add a short excerpt centered on a search match.
-
-Relative Markdown links and wikilinks create `cites_doc` and `cited_by_doc` edges only when their confined target path and heading resolve to one indexed section. `get_doc` pages those citations and `referenced_symbols`; a symbol is listed only when the indexed declaration is uniquely verified. For each documentary symbol claim, candidate resolution applies eligibility before priority: an explicit normalized file target must match that file, while an unscoped claim is limited to the source document's workspace. Document, invariant, and component nodes are excluded; module and file declarations remain eligible. Within eligible declarations, the first non-empty tier wins in this order: exact normalized qualified name (`::` and `.` are equivalent), exact declared name, then qualified-name segment suffix. Only a singleton winner in that selected tier can be a verified reference; lower-priority matches are not combined with it.
-
-Ambiguous winners appear in the full response's paged `referenced_symbol_candidates` collection. Each row contains a `source` object (`doc_id`, `path`, claim `name`, and `line`) and a `target` object (`id`, `name`, `qualname`, `kind`, `path`, and `line`). Candidate pages use the normal `limit`, `offset`, and `generation` fields. Candidates are navigational only, not verified documentation: they create no `documents`, `references_doc`, `governs`, or `governed_by` edges and do not count as verified coverage. A union of candidate targets is not verified coverage. For example, an unqualified `validate` claim in a document indexed from the same `[library]` workspace can show three eligible module candidates, such as `[library]/src/validate.py`, `[library]/src/validate/__init__.py`, and `[library]/src/validate/validate.py`; link the claim to the intended file or qualify it so one declaration wins in the first non-empty tier.
-
-Compact responses omit candidate data and return a hint to request full detail; the CLI `docs get` command requests full detail. A source link with a line range can retain its documented file claim after the declaration is removed, so `code_map_impact` can still report the affected document without treating a suggested replacement as verified.
-
-`code_map_inspect` returns paged `documented_in` sections for verified symbol references. Its Markdown presents each cited section once with document identity, citation line, and a resolved file URI; it does not repeat the separate JSON `documents` page. `code_map_explain` retains its own `documents` page. `code_map_impact` returns paged `affected_docs` for a selected path or symbol. Exact Markdown `code_map_analyze` responses may include paged `doc_diagnostics`: `broken_doc_link` for a link that does not resolve, `dead_doc_symbol` for a claim with no matching declaration (with an optional `suggested_symbol`), and `stale_doc_sections` when an in-bounds source range is disjoint from the unique current symbol range. Suggestions are remediation hints, not graph edges; ambiguous, unsafe, malformed, or out-of-bounds claims do not prove stale documentation.
-
-Lines that declare `INV-*` rules are indexed as invariant nodes. A `governs` / `governed_by` edge requires a uniquely resolved code claim within the invariant node's inclusive line span (with `end_line` at least `line`). Explicit source-file targets confine resolution to that file; unscoped claims use the document's workspace and the same first-tier uniqueness rule as `documents` edges. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.
-
-Archived documents under any `archive/` directory (`docs/milestones/archive/`, `docs/plans/archive/`, or `.../archive/...`, including paths prefixed by a linked workspace) are excluded from default `search_docs` results and overview documentation hubs. Pass a `component` or its `path` alias targeting `archive` to search them explicitly. `get_doc` can still read them directly. Archived documents emit no `documents`, `references_doc`, `governs`, or `governed_by` edges, so they contribute no live `documented_in`, `affected_docs`, or invariant governance. Document-to-document citations remain available. In claim context lenses (`ClaimResp.context_lenses`: `docs.adrs`, `docs.invariants`, and `code.symbols` `documented_by`), all indexed non-archive documentation across the repository is intersected while excluding `archive/**`, `docs/milestones/**`, and `docs/contracts/**`. See [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md#archive-exclusion-from-documentation-search-and-code-documentation-graph).
+- **Document indexing (`DocSection` & `search_docs`)**:
+  - Admitted Markdown/MDX (including `AGENTS.md`, milestones, and plans) indexes with optional `doc_type`, `title`, and `status`.
+  - Section titles carry 3x the BM25 weight of body/invariant text (`include_excerpt=true` adds match-centered excerpts; stop-word-only queries return empty pages).
+  - `get_doc` requires a document path and exact heading title (`detail="compact"` returns a content-free outline).
+- **Citations & symbol-claim priority**:
+  - Relative links and wikilinks create `cites_doc` / `cited_by_doc` edges only when resolving to one indexed section.
+  - Code claims check eligibility first (explicit file target or source document's workspace, excluding doc/invariant/component nodes), then select a singleton winner from the first non-empty tier: exact normalized `qualname` (`::` == `.`), exact declared `name`, then qualified segment suffix.
+- **Ambiguous candidates (`referenced_symbol_candidates`)**:
+  - Full detail exposes paged `source` + `target` candidate rows for navigation only (zero `documents` or `governs` edges). Compact detail omits candidate rows with a hint; `docs get` requests full detail.
+- **Reverse links & doc diagnostics**:
+  - `code_map_inspect` deduplicates `documented_in` sections per cited section/line (avoiding duplicate `documents` tables); `code_map_explain` keeps `documents`; `code_map_impact` lists `affected_docs`.
+  - `code_map_analyze` reports `broken_doc_link`, `dead_doc_symbol` (with optional `suggested_symbol`), and `stale_doc_sections` (disjoint source line ranges).
+- **Invariants (`INV-*`) & `governs` edges**:
+  - Uniquely resolved symbol claims within an invariant node's line span emit `governs` / `governed_by` edges (surfaced up to 5 direct + 5 one-hop rules cleanly without truncating task contracts or guidance).
+- **Archive exclusion rule**:
+  - Documents under any `archive/` path are omitted from default `search_docs` and overview hubs unless `component`/`path` targets `archive` (though `get_doc` remains available).
+  - Archived documents emit no `documents`, `references_doc`, `governs`, or `governed_by` edges; `ClaimResp` lenses (`docs.adrs`, `docs.invariants`, `documented_by`) exclude `archive/**`, `docs/milestones/**`, and `docs/contracts/**` (see [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md#archive-exclusion-from-documentation-search-and-code-documentation-graph)).

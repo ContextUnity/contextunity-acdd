@@ -26,21 +26,9 @@ operations; it does not add a parser or execute framework code.
 
 ## Inspect the actual result
 
-Call `code_map_overview` to verify the workspace and generation. Search the real
-consumer and provider with `code_map_search`, then use each returned selector in
-`code_map_inspect` and `code_map_explain`. Check the exact destination declaration
-or route, relation kind and source location. Use bounded read-only SQL through
-`code_map_query` when persisted coverage or exact occurrence identities are needed;
-the [MCP reference](../reference/mcp-tools.md) owns request shapes.
-
-Test both eligibility and causality in the admitted production seam: a unique
-static target, missing and duplicate targets, dynamic inputs and lexical shadows;
-then rule removal, replacement, disable/restore and provider edits. Check ordinary
-calls and imports survive. Warm-edit a provider while leaving its consumer
-unchanged, reopen the database and inspect targets and coverage. Compare an
-equal-final cold build with delta facts and commitments. External classification
-is not a local resolved edge, and a higher aggregate percentage cannot establish
-an individual exact target.
+1. **Verify workspace & generation**: call `code_map_overview` to confirm the active root and index generation.
+2. **Inspect consumer & provider edges**: locate both symbols with `code_map_search`, then inspect `calls`, `renders_template`, or route edges via `code_map_inspect` and `code_map_explain` (or run read-only SQL via `code_map_query`; see [MCP reference](../reference/mcp-tools.md)).
+3. **Test positive & negative cases**: verify a unique static target, missing/duplicate targets, dynamic inputs, lexical shadowing, rule disable/restore, and incremental `delta` parity against a clean `build`.
 
 ## Report a real-control comparison
 

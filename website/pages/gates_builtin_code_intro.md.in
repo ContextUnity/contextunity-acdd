@@ -21,14 +21,29 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
 
 ## What the agent receives at each gate
 
-1. **`blueprint_synthesis.synthesize`** (`architect`) — receives `milestone.synthesis` guidance, `docs.instructions`, `docs.adrs`, `docs.invariants`, and `blackboard` decisions; outputs `proof: blueprint` with per-task slices.
-2. **`blueprint_synthesis.review`** (`independent_reviewer`, `independent_from: [synthesize]`) — audits the blueprint across `claims`, `architecture`, `project_isolation`, `administration`; locks `save.immutable: true`.
-3. **`tasks.<id>.build`** (`builder`) — receives `pre_task_slice`, `unresolved_findings` + `failed_trace_log_tail` (on rework), `dependency_receipts`, `docs.*` lenses, plus `code.symbols`, `code.tests`, and `code.external_callers`. Must pass `build_check`, `code.seam`, and `code.lint`.
-4. **`tasks.<id>.review`** (`independent_reviewer`, `independent_from: [build]`) — audits all 6 contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`) with full `docs.*` and `code.*` lenses. Routes localized defects to `build` (`fail`) or systemic drift to `rearchitect` (`fail_drift`).
-5. **`tasks.<id>.deliver`** (`independent_reviewer`, `need: [build, review]`) — verifies `candidate_tree` OID parity and creates the atomic `Acdd-Claim` commit + durable receipt.
-6. **`tasks.<id>.rearchitect`** (`architect`, `max_attempts: 3`) — triggered on `architectural_drift` (`context_reset_required: true`), receives `docs.*` and `code.symbols` to realign the design.
-7. **`run_tests` & `polish`** — `run_tests` executes `verify_all` + `code.lint` (`[arch, syntax, docs]`); failures route to `polish` (`builder`, scoped to docs/skills/profiles/configs).
-8. **`integration_review` & `handoff`** — independent audit of the full integrated run branch (`independent_from: [polish, tasks.build]`), followed by `handoff` (`post: commit`, `archive: true`, `prune: true`).
+1. **`blueprint_synthesis.synthesize`** (`architect`):
+   - Receives `milestone.synthesis` guidance, `docs.instructions`, `docs.adrs`, `docs.invariants`, and `blackboard` decisions.
+   - Outputs `proof: blueprint` with per-task slices.
+2. **`blueprint_synthesis.review`** (`independent_reviewer`, `independent_from: [synthesize]`):
+   - Audits the blueprint across `claims`, `architecture`, `project_isolation`, and `administration`.
+   - Locks `save.immutable: true`.
+3. **`tasks.<id>.build`** (`builder`):
+   - Receives `pre_task_slice`, `unresolved_findings` + `failed_trace_log_tail` (on rework), `dependency_receipts`, `docs.*` lenses, `code.symbols`, `code.tests`, and `code.external_callers`.
+   - Must pass `build_check`, `code.seam`, and `code.lint`.
+4. **`tasks.<id>.review`** (`independent_reviewer`, `independent_from: [build]`):
+   - Audits all 6 contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`) with full `docs.*` and `code.*` lenses.
+   - Routes localized defects to `build` (`fail`) or systemic drift to `rearchitect` (`fail_drift`).
+5. **`tasks.<id>.deliver`** (`independent_reviewer`, `need: [build, review]`):
+   - Verifies `candidate_tree` OID parity and creates the atomic `Acdd-Claim` commit plus durable receipt.
+6. **`tasks.<id>.rearchitect`** (`architect`, `max_attempts: 3`):
+   - Triggered on `architectural_drift` (`context_reset_required: true`).
+   - Receives `docs.*` and `code.symbols` to realign the design.
+7. **`run_tests` & `polish`**:
+   - `run_tests` runs `verify_all` + `code.lint` (`[arch, syntax, docs]`).
+   - Failures route to `polish` (`builder`, scoped to docs/skills/profiles/configs).
+8. **`integration_review` & `handoff`**:
+   - `integration_review` audits the full integrated run branch (`independent_from: [polish, tasks.build]`).
+   - `handoff` finalizes the run (`post: commit`, `archive: true`, `prune: true`).
 
 ### Real Markdown delivered to an agent (`T1.build` example)
 
