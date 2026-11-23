@@ -1,8 +1,19 @@
-use super::*;
+use super::context::FileContext;
+use super::profile::LanguageProfile;
+use super::support as syntax;
+use super::support::c_family;
+use super::types::{
+    call, CallForm, DeclarationRole, ImportPath, LanguageFamily, SymbolMetadata, SyntaxContext,
+    SyntaxGrammarSpec,
+};
+use crate::ast::relations;
+use crate::ast::syntax::{text, ScopeBindings};
+use crate::models::{Facts, Node};
+use tree_sitter::Node as Syntax;
 /// Language profile for cpp source files.
-pub struct Cpp;
+struct Cpp;
 /// Shared cpp language profile.
-pub static CPP: Cpp = Cpp;
+static CPP: Cpp = Cpp;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -176,7 +187,7 @@ impl LanguageProfile for Cpp {
     fn receiver(&self, name: &str, _owner: &Node) -> bool {
         name == "this"
     }
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
         let mut bindings = c_family::bindings(self, node, source);
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
@@ -201,7 +212,6 @@ impl LanguageProfile for Cpp {
         bindings.rebindings.dedup();
         bindings
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         c_family::include(ctx, facts);
     }
@@ -217,7 +227,7 @@ impl LanguageProfile for Cpp {
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if let Some((class_name, _)) = out_of_line_method_parts(ctx.node, ctx.source) {
-            crate::ast::relations::reference(facts, ctx.owner, class_name, "references", ctx.line());
+            relations::reference(facts, ctx.owner, class_name, "references", ctx.line());
         }
         if let Some(bases) = syntax::child(ctx.node, &["base_class_clause"]) {
             syntax::types(
@@ -324,4 +334,4 @@ fn unparenthesized(mut node: Syntax<'_>) -> Option<Syntax<'_>> {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&CPP];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&CPP];

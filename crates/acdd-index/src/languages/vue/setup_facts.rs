@@ -1,5 +1,12 @@
-use super::*;
-use crate::semantic::{ComponentMacroFact, ComponentMacroRole, ExtractionRuleOrigin};
+use super::common::{source_position, Position};
+use crate::ast::syntax::{text, walk, Syntax};
+use crate::languages::{context::LanguageContext, manifests, typescript};
+use crate::models::ReceiverHint;
+use crate::semantic::{
+    ComponentMacroFact, ComponentMacroRole, ExtractionRuleOrigin, SourcePosition, TypeExpr,
+    VueSlotFact,
+};
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) struct RegisteredComponent {
     pub alias: String,
@@ -25,7 +32,153 @@ pub(super) struct SetupFactOutputs<'a> {
     pub component_reassignments: &'a mut HashSet<String>,
 }
 
+fn record_setup_reassignment(
+    node: Syntax<'_>,
+    source: &str,
+    setup_script: bool,
+    output: &mut SetupFactOutputs<'_>,
+) {
+    let field_name = match node.kind() {
+        "assignment_expression" | "augmented_assignment_expression" => "left",
+        "update_expression" => "argument",
+        _ => return,
+    };
+    let Some(target_node) = node
+        .child_by_field_name(field_name)
+        .filter(|n| n.kind() == "identifier")
+    else {
+        return;
+    };
+    let target = if setup_script {
+        &mut *output.setup_reassignments
+    } else {
+        &mut *output.component_reassignments
+    };
+    target.insert(text(target_node, source).to_owned());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_setup_declaration_facts(
+    node: Syntax<'_>,
+    source: &str,
+    depth: usize,
+    statement_kind: &str,
+    const_declaration: bool,
+    setup_script: bool,
+    typescript: bool,
+    slots_stopped: &mut bool,
+    output: &mut SetupFactOutputs<'_>,
+    rules: &LanguageContext,
+) {
+    if depth == 0 {
+        if !setup_script && node.kind() == "export_statement" {
+            collect_registered_component(
+                node,
+                source,
+                output.registered_components,
+                output.duplicate_components,
+                rules,
+            );
+        }
+        if setup_script && matches!(node.kind(), "function_declaration" | "class_declaration") {
+            if let Some(name) = node.child_by_field_name("name") {
+                insert_macro_name(text(name, source), output.shadowed_producers);
+            }
+        }
+    }
+    if depth != 1 {
+        return;
+    }
+    if setup_script && matches!(statement_kind, "lexical_declaration" | "variable_declaration") {
+        if let Some(name) = node.child_by_field_name("name") {
+            insert_macro_name(text(name, source), output.shadowed_producers);
+        }
+        if typescript
+            && !*slots_stopped
+            && node.kind() == "variable_declarator"
+            && node
+                .child_by_field_name("value")
+                .is_some_and(|value| is_slot_call(value, source, rules))
+        {
+            *output.typed_slots_invalid = true;
+            *slots_stopped = true;
+        }
+    }
+    if setup_script
+        && statement_kind == "lexical_declaration"
+        && const_declaration
+        && node.kind() == "variable_declarator"
+    {
+        collect_typed_prop_declaration(
+            node,
+            source,
+            output.typed_props,
+            output.duplicate_typed_props,
+            rules,
+            output.macro_calls,
+        );
+        collect_setup_callable_declaration(
+            node,
+            source,
+            output.setup_callables,
+            output.duplicate_callables,
+            rules,
+            output.macro_calls,
+        );
+        if typescript {
+            collect_typed_iterable_declaration(
+                node,
+                source,
+                output.typed_iterables,
+                output.duplicate_typed_iterables,
+            );
+        }
+    }
+}
+
 /// Collects Vue setup and component facts during one depth-first syntax walk.
+fn record_setup_import_shadow_and_slots(
+    node: Syntax<'_>,
+    source: &str,
+    (depth, in_import, setup_script, typescript): (usize, bool, bool, bool),
+    slots_stopped: &mut bool,
+    output: &mut SetupFactOutputs<'_>,
+    rules: &LanguageContext,
+) {
+    if setup_script && in_import {
+        if node.kind() == "import_specifier" {
+            if let Some(local) = node
+                .child_by_field_name("alias")
+                .or_else(|| node.child_by_field_name("name"))
+            {
+                insert_macro_name(text(local, source), output.shadowed_producers);
+            }
+        } else if node.kind() == "identifier" {
+            insert_macro_name(text(node, source), output.shadowed_producers);
+        }
+    }
+    record_setup_reassignment(node, source, setup_script, output);
+    if setup_script && node.kind() == "expression_statement" {
+        if let Some(call) = node
+            .named_child(0)
+            .filter(|node| node.kind() == "call_expression")
+        {
+            if let Some(fact) = macro_fact(call, source, rules, None) {
+                output.macro_calls.push(fact);
+            }
+            if depth == 0 && typescript && !*slots_stopped && is_slot_call(call, source, rules) {
+                *output.typed_slot_calls += 1;
+                if *output.typed_slot_calls > 1
+                    || collect_typed_slot_call(call, source, output.typed_slots)
+                {
+                    *output.typed_slots_invalid = true;
+                    *slots_stopped = true;
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn collect_setup_facts(
     root: Syntax<'_>,
     source: &str,
@@ -38,7 +191,7 @@ pub(super) fn collect_setup_facts(
     let mut contexts = Vec::new();
     let statements: Vec<_> = root.named_children(&mut root.walk()).collect();
     for statement in statements.into_iter().rev() {
-        ast::visitor::walk(statement, &mut |node, entering| {
+        walk(statement, &mut |node, entering| {
             if !entering {
                 contexts.pop();
                 return;
@@ -71,143 +224,26 @@ pub(super) fn collect_setup_facts(
             if !active {
                 return;
             }
-            if depth == 0 {
-                if !setup_script && node.kind() == "export_statement" {
-                    collect_registered_component(
-                        node,
-                        source,
-                        output.registered_components,
-                        output.duplicate_components,
-                        rules,
-                    );
-                }
-                if setup_script
-                    && matches!(node.kind(), "function_declaration" | "class_declaration")
-                {
-                    if let Some(name) = node.child_by_field_name("name") {
-                        insert_macro_name(text(name, source), output.shadowed_producers);
-                    }
-                }
-            }
-
-            if depth == 1 {
-                if matches!(
-                    statement_kind,
-                    "lexical_declaration" | "variable_declaration"
-                ) {
-                    if let Some(name) = node.child_by_field_name("name") {
-                        if setup_script {
-                            insert_macro_name(text(name, source), output.shadowed_producers);
-                        }
-                    }
-                    if setup_script
-                        && typescript
-                        && !slots_stopped
-                        && node.kind() == "variable_declarator"
-                        && node
-                            .child_by_field_name("value")
-                            .is_some_and(|value| is_slot_call(value, source, rules))
-                    {
-                        *output.typed_slots_invalid = true;
-                        slots_stopped = true;
-                    }
-                }
-
-                if setup_script
-                    && statement_kind == "lexical_declaration"
-                    && const_declaration
-                    && node.kind() == "variable_declarator"
-                {
-                    collect_typed_prop_declaration(
-                        node,
-                        source,
-                        output.typed_props,
-                        output.duplicate_typed_props,
-                        rules,
-                        output.macro_calls,
-                    );
-                    collect_setup_callable_declaration(
-                        node,
-                        source,
-                        output.setup_callables,
-                        output.duplicate_callables,
-                        rules,
-                        output.macro_calls,
-                    );
-                    if typescript {
-                        collect_typed_iterable_declaration(
-                            node,
-                            source,
-                            output.typed_iterables,
-                            output.duplicate_typed_iterables,
-                        );
-                    }
-                }
-            }
-
-            if setup_script && in_import {
-                if node.kind() == "import_specifier" {
-                    if let Some(local) = node
-                        .child_by_field_name("alias")
-                        .or_else(|| node.child_by_field_name("name"))
-                    {
-                        insert_macro_name(text(local, source), output.shadowed_producers);
-                    }
-                } else if node.kind() == "identifier" {
-                    insert_macro_name(text(node, source), output.shadowed_producers);
-                }
-            }
-
-            if matches!(
-                node.kind(),
-                "assignment_expression" | "augmented_assignment_expression"
-            ) {
-                if let Some(left) = node.child_by_field_name("left") {
-                    if left.kind() == "identifier" {
-                        let target = if setup_script {
-                            &mut *output.setup_reassignments
-                        } else {
-                            &mut *output.component_reassignments
-                        };
-                        target.insert(text(left, source).to_owned());
-                    }
-                }
-            } else if node.kind() == "update_expression" {
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    if argument.kind() == "identifier" {
-                        let target = if setup_script {
-                            &mut *output.setup_reassignments
-                        } else {
-                            &mut *output.component_reassignments
-                        };
-                        target.insert(text(argument, source).to_owned());
-                    }
-                }
-            }
-
-            if setup_script && node.kind() == "expression_statement" {
-                if let Some(call) = node
-                    .named_child(0)
-                    .filter(|node| node.kind() == "call_expression")
-                {
-                    if let Some(fact) = macro_fact(call, source, rules, None) {
-                        output.macro_calls.push(fact);
-                    }
-                    if depth == 0
-                        && typescript
-                        && !slots_stopped
-                        && is_slot_call(call, source, rules)
-                    {
-                        *output.typed_slot_calls += 1;
-                        if *output.typed_slot_calls > 1
-                            || collect_typed_slot_call(call, source, output.typed_slots)
-                        {
-                            *output.typed_slots_invalid = true;
-                            slots_stopped = true;
-                        }
-                    }
-                }
-            }
+            record_setup_declaration_facts(
+                node,
+                source,
+                depth,
+                statement_kind,
+                const_declaration,
+                setup_script,
+                typescript,
+                &mut slots_stopped,
+                output,
+                rules,
+            );
+            record_setup_import_shadow_and_slots(
+                node,
+                source,
+                (depth, in_import, setup_script, typescript),
+                &mut slots_stopped,
+                output,
+                rules,
+            );
         });
     }
 }

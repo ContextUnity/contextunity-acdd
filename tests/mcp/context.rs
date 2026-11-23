@@ -4,7 +4,7 @@ use crate::harness::McpTestHarness;
 use crate::sqlite_fixture::TaskClaimsFixture;
 use acdd_core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
 use acdd_index::{db::traversal, scanner};
-use contextunity_acdd::{format::OutputFormat, mcp::response};
+use contextunity_acdd::format::OutputFormat;
 use serde_json::{json, Value};
 use std::{fs, time::Duration};
 

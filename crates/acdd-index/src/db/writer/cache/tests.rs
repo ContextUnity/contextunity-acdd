@@ -675,7 +675,7 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
     encode_references(&facts.references, &mut raw);
     let encoded = zstd::stream::encode_all(raw.as_slice(), 1).unwrap();
     assert!(
-        std::panic::catch_unwind(|| crate::semantic::decode_catalog_references(
+        std::panic::catch_unwind(|| crate::typed_facts::decode_catalog_references(
             &encoded[..encoded.len() - 1],
             &[]
         ))
@@ -692,7 +692,7 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         .concat(),
     ] {
         assert_eq!(
-            serde_json::to_value(crate::semantic::decode_catalog_references(&encoded, &[]))
+            serde_json::to_value(crate::typed_facts::decode_catalog_references(&encoded, &[]))
                 .unwrap(),
             serde_json::to_value(&facts.references).unwrap()
         );
@@ -713,8 +713,8 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         leaves: Default::default(),
     };
     let encoded = prepared.encode_spill();
-    assert!(super::super::decode_prepared_storage(&encoded[..encoded.len() - 1]).is_err());
-    let reopened = super::super::decode_prepared_storage(&encoded).unwrap();
+    assert!(super::decode_prepared_catalog_storage_payload(&encoded[..encoded.len() - 1]).is_err());
+    let reopened = super::decode_prepared_catalog_storage_payload(&encoded).unwrap();
     assert_eq!(reopened.node_docs, prepared.node_docs);
     assert_eq!(reopened.doc_bodies, prepared.doc_bodies);
     assert_eq!(reopened.search_texts, prepared.search_texts);
@@ -743,5 +743,5 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         reference_keys: Vec::new(),
         leaves: Default::default(),
     };
-    assert!(super::super::decode_prepared_storage(&invalid_packed.encode_spill()).is_err());
+    assert!(super::decode_prepared_catalog_storage_payload(&invalid_packed.encode_spill()).is_err());
 }

@@ -5,25 +5,18 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub use acdd_core::fs::{canonical_root, checked_child, safe_relative};
-#[cfg(all(test, target_os = "linux"))]
-use acdd_core::sys::available_memory_from_sources;
-#[cfg(test)]
-use acdd_core::sys::memory_budget_from_available;
-pub use acdd_core::sys::{available_memory_bytes, memory_budget_bytes};
-use ignore::WalkBuilder;
 use rayon::prelude::*;
 
 use serde::Serialize;
 
-fn error(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
-}
-
 pub mod discovery;
-pub use crate::models::FileEntry;
-pub use crate::INDEX_SEMANTICS_VERSION;
+mod walk;
+pub use crate::models::INDEX_SEMANTICS_VERSION;
+use crate::models::FileEntry;
 pub use acdd_core::config::ENGINE_SCHEMA_VERSION;
 pub use acdd_core::config::*;
+pub use walk::dependency_manifests_for_build;
+use walk::{error, language, walk_candidate_paths, WatchedEntries};
 
 #[derive(Debug, Clone, Serialize)]
 /// Represents scan report data.
@@ -188,7 +181,8 @@ pub fn exact_paths_exist<'a>(
 
 /// Determine whether every component has the exact spelling reported by its directory.
 /// Errors inspecting a boundary are propagated rather than interpreted as absence.
-pub fn exact_path_exists(root: &Path, adapter: &Adapter, path: &str) -> std::io::Result<bool> {
+#[cfg(test)]
+pub(crate) fn exact_path_exists(root: &Path, adapter: &Adapter, path: &str) -> std::io::Result<bool> {
     Ok(exact_paths_exist(root, adapter, [path])?.contains(path))
 }
 
@@ -208,8 +202,6 @@ fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::R
     Ok(())
 }
 
-pub use acdd_core::config::check_root_scope;
-
 pub(crate) fn bounded_batch_size(
     memory_budget: u64,
     max_item_bytes: u64,
@@ -222,51 +214,6 @@ pub(crate) fn bounded_batch_size(
     ((memory_budget.max(1) / estimated_item_bytes)
         .max(1)
         .min(max_items.max(1) as u64)) as usize
-}
-
-fn dir_pattern_matches(rel_path: &str, dir_pattern: &str) -> bool {
-    let dir_norm = dir_pattern.trim_matches(['/', '\\']).replace('\\', "/");
-    let rel_norm = rel_path.trim_matches(['/', '\\']).replace('\\', "/");
-    if dir_norm.is_empty() || rel_norm.is_empty() {
-        return false;
-    }
-    let descendant_glob = format!("{}/**", dir_norm.trim_end_matches("/**"));
-    acdd_core::path_policy::glob_matches(&dir_norm, &rel_norm)
-        || acdd_core::path_policy::glob_matches(&descendant_glob, &rel_norm)
-}
-
-/// Checks if a relative path belongs to any configured milestone or plan directories.
-pub fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
-    let check = |dirs: &[String]| dirs.iter().any(|d| dir_pattern_matches(rel_str, d));
-    check(milestones) || check(plans)
-}
-
-fn is_spec_collection_path(rel_str: &str, adapter: &Adapter) -> bool {
-    is_milestone_or_plan_path(rel_str, &adapter.milestones, &adapter.plans)
-        || adapter
-            .specs
-            .values()
-            .any(|spec| spec.matches_rel_path(rel_str))
-}
-
-/// Performs language.
-pub fn language(path: &Path) -> Option<(&'static str, bool)> {
-    // ACDD verification receipt sidecars (`<db>.verified.json`) live next to caches
-    // (sometimes inside test or workspace roots) and must never be indexed as JSON source.
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".verified.json"))
-    {
-        return None;
-    }
-    if matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("md" | "mdx")
-    ) {
-        return Some(("markdown", true));
-    }
-    super::languages::for_path(path).map(|p| (p.id(), false))
 }
 
 /// Performs digest.
@@ -283,7 +230,7 @@ fn is_symlink_open_error(err: &std::io::Error) -> bool {
 }
 
 /// Performs entry with rel.
-pub fn entry_with_rel(
+pub(crate) fn entry_with_rel(
     path: &Path,
     relative: String,
     max_file_bytes: u64,
@@ -335,19 +282,6 @@ pub fn entry_with_rel(
         language: language.to_owned(),
         is_doc,
     }))
-}
-
-/// Performs entry.
-pub fn entry(root: &Path, path: &Path) -> std::io::Result<Option<FileEntry>> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| error("file escapes root"))?;
-    let path = checked_child(root, relative)?;
-    entry_with_rel(
-        &path,
-        relative.to_string_lossy().replace('\\', "/"),
-        DEFAULT_MAX_FILE_BYTES,
-    )
 }
 
 fn metadata_identity(metadata: &fs::Metadata) -> [u64; 3] {
@@ -564,14 +498,6 @@ pub fn collect_for_build(root: &Path, adapter: &Adapter) -> std::io::Result<Cold
     })
 }
 
-/// Discovers dependency manifests without retaining the cold-build candidate list.
-pub fn dependency_manifests_for_build(
-    root: &Path,
-    adapter: &Adapter,
-) -> std::io::Result<Vec<PathBuf>> {
-    walk_candidate_paths(root, adapter, None, false, |_, _| Ok(()))
-}
-
 type ScanCandidates = (Vec<(PathBuf, String)>, Vec<PathBuf>);
 
 fn collect_candidates(
@@ -588,400 +514,9 @@ fn collect_candidates(
     Ok((candidates, dependency_manifests))
 }
 
-struct WatchedEntries {
-    keys: BTreeSet<String>,
-    found: std::sync::Mutex<BTreeSet<String>>,
-    symlinks: std::sync::Mutex<BTreeSet<String>>,
-}
-
-impl WatchedEntries {
-    fn observe(&self, item: &ignore::DirEntry, root: &Path, prefix: &str) {
-        let Ok(relative) = item.path().strip_prefix(root) else {
-            return;
-        };
-        let Some(relative) = relative.to_str() else {
-            return;
-        };
-        let key = format!("{prefix}{}", relative.replace('\\', "/"));
-        if self.keys.contains(&key) {
-            let target = if item.path_is_symlink() {
-                &self.symlinks
-            } else {
-                &self.found
-            };
-            target.lock().unwrap().insert(key);
-        }
-    }
-}
-
-fn walk_candidate_paths(
-    root: &Path,
-    adapter: &Adapter,
-    watch: Option<&std::sync::Arc<WatchedEntries>>,
-    include_sources: bool,
-    mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
-) -> std::io::Result<Vec<PathBuf>> {
-    let code_enabled = adapter.modules.is_enabled("code");
-    let docs_enabled = adapter.modules.is_enabled("docs");
-    if !code_enabled && !docs_enabled {
-        return Ok(Vec::new());
-    }
-
-    let mut candidate_count = 0usize;
-    let mut seen_rel_paths = BTreeSet::new();
-    let mut dependency_manifests = BTreeSet::new();
-    let configuration_paths: BTreeSet<_> = [root.join("acdd.yaml")]
-        .into_iter()
-        .chain(adapter.adapter_path.iter().cloned())
-        .collect();
-
-    if docs_enabled && include_sources {
-        collect_documentation_paths(
-            root,
-            "",
-            (&adapter.ignored_names, watch),
-            adapter.limits.max_files,
-            &mut candidate_count,
-            &mut seen_rel_paths,
-            &mut visit,
-        )?;
-    }
-
-    for source_root in &adapter.roots {
-        if !source_root.exists() {
-            continue;
-        }
-        let mut builder = WalkBuilder::new(source_root);
-        builder
-            .hidden(false)
-            .follow_links(false)
-            .same_file_system(true)
-            .git_ignore(true)
-            .require_git(false);
-        let ignored_names = adapter.ignored_names.clone();
-        let watch_entry = watch.cloned();
-        let watch_root = root.to_path_buf();
-        builder.filter_entry(move |item| {
-            if let Some(watch) = &watch_entry {
-                watch.observe(item, &watch_root, "");
-            }
-            !item.path_is_symlink()
-                && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
-        });
-        for result in builder.build() {
-            let item = result.map_err(|e| error(e.to_string()))?;
-            if item.path_is_symlink()
-                || adapter
-                    .ignored_names
-                    .contains(&item.file_name().to_string_lossy().to_string())
-                || !item.file_type().is_some_and(|kind| kind.is_file())
-            {
-                continue;
-            }
-            let full = item.into_path();
-            if configuration_paths.contains(&full) {
-                continue;
-            }
-            let filename = full
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            let is_manifest = code_enabled
-                && super::languages::dependency_registry::is_dependency_manifest_filename(filename);
-            let file_language = include_sources.then(|| language(&full)).flatten();
-            let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
-            let is_source =
-                file_language.is_some() && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
-            if !is_manifest && !is_source {
-                continue;
-            }
-            let Ok(relative) = full.strip_prefix(root) else {
-                continue;
-            };
-            let relative = relative.to_string_lossy().replace('\\', "/");
-            if !is_doc && is_spec_collection_path(&relative, adapter) {
-                continue;
-            }
-            if is_manifest {
-                dependency_manifests.insert(full.clone());
-            }
-            if is_source {
-                visit_candidate(
-                    &mut candidate_count,
-                    &mut seen_rel_paths,
-                    full,
-                    relative,
-                    adapter.limits.max_files,
-                    &mut visit,
-                )?;
-            }
-        }
-    }
-
-    for workspace in &adapter.linked_workspaces {
-        for workspace_root in &workspace.roots {
-            if !workspace_root.exists() {
-                continue;
-            }
-            let mut builder = WalkBuilder::new(workspace_root);
-            builder
-                .hidden(false)
-                .follow_links(false)
-                .same_file_system(true)
-                .git_ignore(true)
-                .require_git(false);
-            let ignored_names = workspace.ignored_names.clone();
-            let watch_entry = watch.cloned();
-            let watch_root = workspace.path.clone();
-            let watch_prefix = format!("[{}]/", workspace.name);
-            builder.filter_entry(move |item| {
-                if let Some(watch) = &watch_entry {
-                    watch.observe(item, &watch_root, &watch_prefix);
-                }
-                !item.path_is_symlink()
-                    && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
-            });
-            for result in builder.build() {
-                let item = result.map_err(|e| error(e.to_string()))?;
-                if item.path_is_symlink()
-                    || workspace
-                        .ignored_names
-                        .contains(&item.file_name().to_string_lossy().to_string())
-                    || !item.file_type().is_some_and(|kind| kind.is_file())
-                {
-                    continue;
-                }
-                let full = item.into_path();
-                let filename = full
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default();
-                let is_manifest = code_enabled
-                    && super::languages::dependency_registry::is_dependency_manifest_filename(
-                        filename,
-                    );
-                let file_language = include_sources.then(|| language(&full)).flatten();
-                let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
-                let is_source = file_language.is_some()
-                    && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
-                if !is_manifest && !is_source {
-                    continue;
-                }
-                let Ok(relative) = full.strip_prefix(&workspace.path) else {
-                    continue;
-                };
-                let relative = relative.to_string_lossy().replace('\\', "/");
-                if !is_doc && is_spec_collection_path(&relative, adapter) {
-                    continue;
-                }
-                if is_manifest {
-                    dependency_manifests.insert(full.clone());
-                }
-                if is_source {
-                    visit_candidate(
-                        &mut candidate_count,
-                        &mut seen_rel_paths,
-                        full,
-                        format!("[{}]/{relative}", workspace.name),
-                        adapter.limits.max_files,
-                        &mut visit,
-                    )?;
-                }
-            }
-        }
-        if code_enabled {
-            collect_source_root_manifests(
-                &workspace.path,
-                &workspace.roots,
-                &workspace.ignored_names,
-                &mut dependency_manifests,
-            )?;
-        }
-        if docs_enabled && include_sources {
-            collect_documentation_paths(
-                &workspace.path,
-                &format!("[{}]/", workspace.name),
-                (&workspace.ignored_names, watch),
-                adapter.limits.max_files,
-                &mut candidate_count,
-                &mut seen_rel_paths,
-                &mut visit,
-            )?;
-        }
-    }
-    if code_enabled {
-        collect_source_root_manifests(
-            root,
-            &adapter.roots,
-            &adapter.ignored_names,
-            &mut dependency_manifests,
-        )?;
-    }
-    Ok(dependency_manifests.into_iter().collect())
-}
-
-fn collect_documentation_paths(
-    workspace_root: &Path,
-    prefix: &str,
-    policy: (&BTreeSet<String>, Option<&std::sync::Arc<WatchedEntries>>),
-    max_files: usize,
-    candidate_count: &mut usize,
-    seen_rel_paths: &mut BTreeSet<String>,
-    visit: &mut impl FnMut(PathBuf, String) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let (ignored_names, watch) = policy;
-    let agents = workspace_root.join("AGENTS.md");
-    if !ignored_names.contains("AGENTS.md") && agents.is_file() && !agents.is_symlink() {
-        visit_candidate(
-            candidate_count,
-            seen_rel_paths,
-            agents,
-            format!("{prefix}AGENTS.md"),
-            max_files,
-            visit,
-        )?;
-    }
-
-    let docs_root = workspace_root.join("docs");
-    if ignored_names.contains("docs") || !docs_root.is_dir() || docs_root.is_symlink() {
-        return Ok(());
-    }
-    let mut builder = WalkBuilder::new(&docs_root);
-    builder
-        .hidden(false)
-        .follow_links(false)
-        .same_file_system(true)
-        .git_ignore(true)
-        .require_git(false);
-    let ignored = ignored_names.clone();
-    let watch_entry = watch.cloned();
-    let watch_root = workspace_root.to_path_buf();
-    let watch_prefix = prefix.to_owned();
-    builder.filter_entry(move |item| {
-        if let Some(watch) = &watch_entry {
-            watch.observe(item, &watch_root, &watch_prefix);
-        }
-        !item.path_is_symlink()
-            && !ignored.contains(&item.file_name().to_string_lossy().to_string())
-    });
-    for result in builder.build() {
-        let item = result.map_err(|walk_error| error(walk_error.to_string()))?;
-        if item.path_is_symlink()
-            || !item.file_type().is_some_and(|kind| kind.is_file())
-            || !item
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| matches!(extension, "md" | "mdx"))
-        {
-            continue;
-        }
-        let full = item.into_path();
-        let Ok(relative) = full.strip_prefix(workspace_root) else {
-            continue;
-        };
-        let relative = format!("{prefix}{}", relative.to_string_lossy().replace('\\', "/"));
-        visit_candidate(
-            candidate_count,
-            seen_rel_paths,
-            full,
-            relative,
-            max_files,
-            visit,
-        )?;
-    }
-    Ok(())
-}
-
-fn visit_candidate(
-    candidate_count: &mut usize,
-    seen_rel_paths: &mut BTreeSet<String>,
-    full_path: PathBuf,
-    relative_path: String,
-    max_files: usize,
-    visit: &mut impl FnMut(PathBuf, String) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    if seen_rel_paths.insert(relative_path.clone()) {
-        *candidate_count += 1;
-        if *candidate_count > max_files {
-            return Err(error(format!(
-                "workspace exceeds file limit ({} > max_files {}) at {}",
-                *candidate_count, max_files, relative_path
-            )));
-        }
-        visit(full_path, relative_path)?;
-    }
-    Ok(())
-}
-
-fn collect_source_root_manifests(
-    workspace_root: &Path,
-    source_roots: &[PathBuf],
-    ignored_names: &BTreeSet<String>,
-    output: &mut BTreeSet<PathBuf>,
-) -> std::io::Result<()> {
-    let mut directories = BTreeSet::new();
-    for source_root in source_roots {
-        let mut directory = source_root.parent();
-        while let Some(path) = directory {
-            if !path.starts_with(workspace_root) || path == workspace_root {
-                break;
-            }
-            let relative = path
-                .strip_prefix(workspace_root)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            if relative.components().any(|component| {
-                component
-                    .as_os_str()
-                    .to_str()
-                    .is_some_and(|name| ignored_names.contains(name))
-            }) {
-                break;
-            }
-            directories.insert(path.to_path_buf());
-            directory = path.parent();
-        }
-    }
-    for directory in directories {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let filename = entry.file_name();
-            let Some(filename) = filename.to_str() else {
-                continue;
-            };
-            if ignored_names.contains(filename)
-                || !super::languages::dependency_registry::is_dependency_manifest_filename(filename)
-            {
-                continue;
-            }
-            let candidate = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&candidate) else {
-                continue;
-            };
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                continue;
-            }
-            let relative = candidate
-                .strip_prefix(workspace_root)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            output.insert(checked_child(workspace_root, relative)?);
-        }
-    }
-    Ok(())
-}
-
-/// Performs scan.
-pub fn scan(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<ScanReport> {
-    let root = canonical_root(root)?;
-    let adapter = load_adapter(&root, adapter_path)?;
-    check_root_scope(&root, adapter.limits.allow_broad_root)?;
-    scan_with_adapter(&root, &adapter)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::walk::is_milestone_or_plan_path;
     use super::*;
     use acdd_core::fs::ScopedTempDir;
 
@@ -1102,214 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_memory_budget_selection() {
-        // explicit_memory_budgets_validate_positive_mib_and_overflow
-        for (mib, expected) in [(50, Some(50 * 1024 * 1024)), (0, None), (u64::MAX, None)] {
-            let result = bytes_from_mebibytes(mib);
-            if let Some(bytes) = expected {
-                assert_eq!(result.unwrap(), bytes, "{mib} MiB");
-            } else {
-                assert!(result.is_err(), "{mib} MiB must be rejected");
-            }
-        }
-        // yaml_memory_budget_precedes_the_environment
-        for (yaml, environment, expected) in [
-            (Some(200), Some("not-a-number"), Some(Some(200))),
-            (None, Some("50"), Some(Some(50))),
-            (None, Some("0"), None),
-            (None, Some("bad"), None),
-            (None, None, Some(None)),
-        ] {
-            let result = memory_budget_mb_from_sources(yaml, environment);
-            if let Some(budget) = expected {
-                assert_eq!(
-                    result.unwrap(),
-                    budget,
-                    "yaml={yaml:?}, env={environment:?}"
-                );
-            } else {
-                assert!(result.is_err(), "yaml={yaml:?}, env={environment:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn memory_budget_uses_a_64_mib_floor_and_16_gib_cap() {
-        assert_eq!(memory_budget_from_available(0), 64 * 1024 * 1024);
-        assert_eq!(
-            memory_budget_from_available(768 * 1024 * 1024),
-            256 * 1024 * 1024
-        );
-        assert_eq!(
-            memory_budget_from_available(64 * 1024 * 1024 * 1024),
-            16 * 1024 * 1024 * 1024
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    struct CgroupFixture(ScopedTempDir);
-
-    #[cfg(target_os = "linux")]
-    impl CgroupFixture {
-        fn new() -> Self {
-            Self(ScopedTempDir::create("acdd_cgroup_memory").unwrap())
-        }
-
-        fn write(&self, path: &str, content: &str) {
-            let path = self.root().join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, content).unwrap();
-        }
-
-        fn root(&self) -> PathBuf {
-            self.0.path().join("cgroup")
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn cgroup_available_memory() {
-        struct Case {
-            case_id: &'static str,
-            host: u64,
-            membership: Option<&'static str>,
-            files: &'static [(&'static str, &'static str)],
-            expected: u64,
-        }
-        let nested = &[
-            ("pod/memory.max", "400\n"),
-            ("pod/memory.current", "200\n"),
-            ("pod/container/memory.max", "max\n"),
-        ];
-        let root_limit = &[("memory.max", "500\n"), ("memory.current", "200\n")];
-        let fixture = CgroupFixture::new();
-        for case in [
-            Case {
-                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::nested",
-                host: 500,
-                membership: Some("0::/pod/container\n"),
-                files: nested,
-                expected: 200,
-            },
-            Case {
-                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::host",
-                host: 100,
-                membership: Some("0::/pod/container\n"),
-                files: nested,
-                expected: 100,
-            },
-            Case {
-                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::absent",
-                host: 600,
-                membership: None,
-                files: root_limit,
-                expected: 300,
-            },
-            Case {
-                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::unresolved",
-                host: 600,
-                membership: Some("0::/namespace/path/not-mounted\n"),
-                files: root_limit,
-                expected: 300,
-            },
-            Case {
-                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::unlimited",
-                host: 321,
-                membership: Some("0::/pod/container\n"),
-                files: &[
-                    ("memory.max", "max\n"),
-                    ("pod/memory.max", "max\n"),
-                    ("pod/container/memory.max", "max\n"),
-                ],
-                expected: 321,
-            },
-            Case {
-                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::over_limit",
-                host: 321,
-                membership: Some("0::/pod/container\n"),
-                files: &[
-                    ("memory.max", "200\n"),
-                    ("memory.current", "100\n"),
-                    ("pod/memory.max", "100\n"),
-                    ("pod/memory.current", "101\n"),
-                    ("pod/container/memory.max", "max\n"),
-                ],
-                expected: 321,
-            },
-            Case {
-                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::malformed",
-                host: 321,
-                membership: Some("0::/bad\n"),
-                files: &[("bad/memory.max", "not-a-limit\n")],
-                expected: 321,
-            },
-            Case {
-                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::traversal",
-                host: 321,
-                membership: Some("0::/../host\n"),
-                files: &[("memory.max", "max\n")],
-                expected: 321,
-            },
-            Case {
-                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::available",
-                host: 321,
-                membership: Some("5:cpu,memory:/\n"),
-                files: &[
-                    ("memory/memory.limit_in_bytes", "100\n"),
-                    ("memory/memory.usage_in_bytes", "40\n"),
-                ],
-                expected: 60,
-            },
-            Case {
-                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::hybrid",
-                host: 321,
-                membership: Some("0::/nested\n7:memory:/nested\n"),
-                files: &[
-                    ("memory/memory.limit_in_bytes", "100\n"),
-                    ("memory/memory.usage_in_bytes", "40\n"),
-                    ("memory/nested/memory.limit_in_bytes", "100\n"),
-                    ("memory/nested/memory.usage_in_bytes", "40\n"),
-                ],
-                expected: 60,
-            },
-            Case {
-                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::over_limit",
-                host: 321,
-                membership: Some("5:cpu,memory:/\n"),
-                files: &[
-                    ("memory/memory.limit_in_bytes", "100\n"),
-                    ("memory/memory.usage_in_bytes", "101\n"),
-                ],
-                expected: 321,
-            },
-        ] {
-            if fixture.root().exists() {
-                fs::remove_dir_all(fixture.root()).unwrap();
-            }
-            for (path, content) in case.files {
-                fixture.write(path, content);
-            }
-            if case.membership == Some("0::/../host\n") {
-                fs::write(fixture.0.path().join("memory.max"), "max\n").unwrap();
-                let escaped = fixture.0.path().join("host");
-                fs::create_dir_all(&escaped).unwrap();
-                fs::write(escaped.join("memory.max"), "100\n").unwrap();
-                fs::write(escaped.join("memory.current"), "90\n").unwrap();
-            }
-            if case.membership == Some("0::/nested\n7:memory:/nested\n") {
-                // The unified path exists without v2 memory-controller files.
-                fs::create_dir_all(fixture.root().join("nested")).unwrap();
-            }
-            assert_eq!(
-                available_memory_from_sources(case.host, case.membership, &fixture.root()),
-                case.expected,
-                "{}",
-                case.case_id,
-            );
-        }
-    }
-
-    #[test]
     fn is_milestone_or_plan_path_supports_wildcards_trailing_slashes_and_custom_specs() {
         let milestones = vec![
             "extensions/*/docs/milestones/".to_owned(),
@@ -1346,8 +673,8 @@ mod tests {
                 digits: 3,
             },
         );
-        assert!(is_spec_collection_path("docs/rfcs/helper.py", &adapter));
-        assert!(!is_spec_collection_path(
+        assert!(super::walk::is_spec_collection_path("docs/rfcs/helper.py", &adapter));
+        assert!(!super::walk::is_spec_collection_path(
             "docs/rfcs_extra/helper.py",
             &adapter
         ));

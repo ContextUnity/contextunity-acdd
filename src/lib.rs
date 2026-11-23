@@ -13,10 +13,3 @@ pub mod mcp;
 pub mod state_bridge;
 /// Telemetry and debug logging.
 pub mod telemetry;
-
-/// Re-exported acdd-core crate.
-pub use acdd_core;
-/// Re-exported acdd-index crate.
-pub use acdd_index;
-/// Re-exported acdd-state crate.
-pub use acdd_state;

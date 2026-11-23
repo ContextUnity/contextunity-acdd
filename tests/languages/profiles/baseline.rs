@@ -419,8 +419,8 @@ impl acdd_index::languages::LanguageProfile for ScopeOrderProfile {
         &self,
         node: tree_sitter::Node<'tree>,
         source: &'source str,
-        file: &acdd_index::languages::FileContext,
-    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+        file: &acdd_index::languages::context::FileContext,
+    ) -> Option<ast::scope_analysis::ScopeAnalysis<'source, 'tree>> {
         acdd_index::languages::require("python")
             .unwrap()
             .scope_analysis(node, source, file)
@@ -444,7 +444,7 @@ impl acdd_index::languages::LanguageProfile for ScopeOrderProfile {
         module: &str,
         facts: &mut acdd_index::models::Facts,
     ) -> anyhow::Result<()> {
-        acdd_index::languages::parse_file(self, path, source, module, facts)
+        acdd_index::ast::parse::parse_file(self, path, source, module, facts)
     }
 }
 
@@ -452,7 +452,7 @@ impl acdd_index::languages::LanguageProfile for ScopeOrderProfile {
 fn incremental_scope_analysis_does_not_invoke_legacy_flow_hooks() {
     let profile = ScopeOrderProfile(std::sync::Mutex::new(Vec::new()));
     let mut facts = acdd_index::models::Facts::default();
-    acdd_index::languages::parse_file(
+    acdd_index::ast::parse::parse_file(
         &profile,
         "probe.py",
         "def outer():\n    first()\n    def inner():\n        nested()\n    last()\n",
@@ -495,7 +495,7 @@ impl LanguageProfile for DeclarativeProfile {
         module: &str,
         facts: &mut acdd_index::models::Facts,
     ) -> anyhow::Result<()> {
-        languages::parse_file(self, path, source, module, facts)
+        acdd_index::ast::parse::parse_file(self, path, source, module, facts)
     }
 }
 static SYNTAX: SyntaxGrammarSpec = SyntaxGrammarSpec {
@@ -540,7 +540,7 @@ const SYNTAX_SOURCE: &str =
 #[test]
 fn declarative_syntax_categories_validate_and_emit_facts() {
     let mut syntax_facts = acdd_index::models::Facts::default();
-    languages::parse_file(
+    acdd_index::ast::parse::parse_file(
         &DeclarativeProfile(&SYNTAX),
         "syntax.py",
         SYNTAX_SOURCE,
@@ -588,7 +588,7 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
     }
     for spec in &INVALID {
         let mut facts = acdd_index::models::Facts::default();
-        let error = languages::parse_file(
+        let error = acdd_index::ast::parse::parse_file(
             &DeclarativeProfile(spec),
             "invalid.py",
             SYNTAX_SOURCE,

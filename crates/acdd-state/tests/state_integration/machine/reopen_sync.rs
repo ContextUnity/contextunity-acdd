@@ -1,4 +1,4 @@
-use super::*;
+use super::helpers::*;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::NodeCursor;
 use acdd_state::machine::graph::is_post_task_root_node;
@@ -6,6 +6,55 @@ use acdd_state::machine::schedule::task_dependencies_satisfied;
 use acdd_state::types::{
     IsolationMode, NodeKind, NodeStatus, SubtaskStatus, TaskDependencyRecord,
 };
+
+fn plan_sync(
+    snapshot: &RunGraphSnapshot,
+    profile: &MachineProfileInput,
+    obs: &ValidatedObservations,
+    input: &SyncInput,
+) -> Result<SyncPlan, acdd_core::errors::StateError> {
+    let TransitionOutcome::Sync(plan) =
+        evaluate_transition(snapshot, profile, obs, &TransitionInput::Sync(input.clone()))?
+    else {
+        unreachable!("Sync input must yield TransitionOutcome::Sync");
+    };
+    Ok(*plan)
+}
+
+fn plan_extend_scope(
+    snapshot: &RunGraphSnapshot,
+    profile: &MachineProfileInput,
+    input: &ExtendScopeInput,
+) -> Result<TransitionPlan, acdd_core::errors::StateError> {
+    let TransitionOutcome::Plan(plan) = evaluate_transition(
+        snapshot,
+        profile,
+        &ValidatedObservations::default(),
+        &TransitionInput::ExtendScope(input.clone()),
+    )?
+    else {
+        unreachable!("ExtendScope input must yield TransitionOutcome::Plan");
+    };
+    Ok(*plan)
+}
+
+fn plan_reopen(
+    snapshot: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    input: &ReopenInput,
+) -> Result<TransitionPlan, acdd_core::errors::StateError> {
+    let (dummy_profile, _) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    let TransitionOutcome::Plan(plan) = evaluate_transition(
+        snapshot,
+        &dummy_profile,
+        obs,
+        &TransitionInput::Reopen(input.clone()),
+    )?
+    else {
+        unreachable!("Reopen input must yield TransitionOutcome::Plan");
+    };
+    Ok(*plan)
+}
 
 #[test]
 fn extend_scope_reopen_cascade_and_sync_matrices() {

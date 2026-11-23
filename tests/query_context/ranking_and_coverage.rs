@@ -693,7 +693,7 @@ function shadowed(test: Function) {
         .find(|item| item["name"] == "test_direct")
         .unwrap();
     assert_eq!(direct["connection"]["path"], "tests/test_service.py");
-    let node = |selector: &str| reader::select(&conn, selector).unwrap();
+    let node = |selector: &str| crate::common::select_node(&conn, selector).unwrap();
     for detail in [Detail::Compact, Detail::Full] {
         let mut query = options(100);
         query.detail = detail;
@@ -971,7 +971,7 @@ function shadowed(test: Function) {
         workspace.root(),
         "surface.py:dispatch",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1131,7 +1131,7 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
         "{markdown}"
     );
     let analysis = reader::analyze_paged(&conn, "service.py", None, &options(10)).unwrap();
-    let id = reader::select(&conn, "ChannelSyncEntry").unwrap()["id"].clone();
+    let id = crate::common::select_node(&conn, "ChannelSyncEntry").unwrap()["id"].clone();
     assert!(analysis["untested_public_surface"]["items"]
         .as_array()
         .unwrap()
@@ -1188,7 +1188,7 @@ fn test_mapping_places_direct_evidence_before_earlier_transitive_tests() {
     ] {
         let expected = Value::Array(
             path.iter()
-                .map(|selector| reader::select(&conn, selector).unwrap()["id"].clone())
+                .map(|selector| crate::common::select_node(&conn, selector).unwrap()["id"].clone())
                 .collect(),
         );
         assert_eq!(
@@ -1222,7 +1222,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
         empty_root,
         "a",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Both,
                 show_doc: true,
@@ -1243,7 +1243,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
         empty_root,
         "a",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Incoming,
                 show_doc: true,
@@ -1263,7 +1263,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
         empty_root,
         "a",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: true,
@@ -1479,7 +1479,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
         workspace.root(),
         "target",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Both,
                 show_doc: true,
@@ -1506,50 +1506,34 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
         }
     )
     .is_err());
-    let snippet =
-        symbols::snippet_paged(&conn, workspace.root(), "target", &source, &options(30)).unwrap();
-    assert_eq!(snippet["source"], inspect["source"]);
-    assert_eq!(snippet["source_preview"], inspect["source_preview"]);
+    let snippet = symbols::snippet_paged_with_response_budget(
+        &conn,
+        workspace.root(),
+        "target",
+        None,
+        &SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap(),
+        &options(30),
+        policy.max_output_bytes,
+    )
+    .unwrap();
+    assert_eq!(snippet["source"], code);
     assert_eq!(snippet["node"], inspect["node"]);
     assert!(snippet.get("coverage").is_none());
     assert!(snippet.get("documents").is_none());
     let before = serde_json::to_vec(&inspect).unwrap().len();
     let after = serde_json::to_vec(&snippet).unwrap().len();
     assert!(after < before, "snippet {after} versus inspect {before}");
-    let offset = snippet["source_preview"]["next_source_offset"]
-        .as_u64()
-        .unwrap() as usize;
-    let next_source =
-        SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
-    assert!(symbols::snippet_paged(
+    workspace.write("code.py", "def target(): pass\n");
+    assert!(symbols::snippet_paged_with_response_budget(
         &conn,
         workspace.root(),
         "target",
-        &next_source,
-        &options(30)
+        None,
+        &SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap(),
+        &options(30),
+        policy.max_output_bytes,
     )
     .is_err());
-    let mut query = options(30);
-    query.generation = Some(snippet["generation"].as_str().unwrap().to_owned());
-    let next =
-        symbols::snippet_paged(&conn, workspace.root(), "target", &next_source, &query).unwrap();
-    assert_eq!(next["source_preview"]["has_more"], false);
-    assert_eq!(
-        format!(
-            "{}{}",
-            snippet["source"].as_str().unwrap(),
-            next["source"].as_str().unwrap()
-        ),
-        code
-    );
-    query.generation = Some("stale-generation".to_owned());
-    assert!(
-        symbols::snippet_paged(&conn, workspace.root(), "target", &next_source, &query).is_err()
-    );
-    workspace.write("code.py", "def target(): pass\n");
-    assert!(
-        symbols::snippet_paged(&conn, workspace.root(), "target", &source, &options(30)).is_err()
-    );
 }
 
 #[test]

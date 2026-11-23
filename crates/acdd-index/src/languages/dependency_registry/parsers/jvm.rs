@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedManifest};
 
 /// Parser for JVM build manifests (`pom.xml`, `build.gradle`, `build.gradle.kts`).
-pub struct JvmParser;
+pub(crate) struct JvmParser;
 
 /// Shared JVM manifest parser instance.
-pub static JVM_PARSER: JvmParser = JvmParser;
+pub(crate) static JVM_PARSER: JvmParser = JvmParser;
 
 impl ManifestParser for JvmParser {
     fn ecosystem(&self) -> Ecosystem {

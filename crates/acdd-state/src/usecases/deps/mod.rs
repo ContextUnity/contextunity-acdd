@@ -15,11 +15,11 @@ pub(crate) use snapshot::{
     load_dep_snapshot, load_task_status_map, load_tombstone_archives, CollectedWorkspaceSpec,
     DepSnapshot, PreloadedDepContext, TombstoneArchiveError,
 };
-pub use syntax::{parse_task_dependency, try_resolve_effective_state_db};
+pub use syntax::try_resolve_effective_state_db;
 pub(crate) use syntax::{
     checkout_scoped_target_selector, effective_active_run_config, load_ws_adapter,
     parse_dep_syntax, parse_task_dependency_with_db, resolve_linked_workspace_root,
     resolve_spec_repositories, resolve_ws_context_canon, run_in_checkout, run_matches_selector,
     ParsedDepSyntax,
 };
-pub use validate::{validate_spec_dependencies, DepValidationIssue};
+pub use validate::validate_spec_dependencies;

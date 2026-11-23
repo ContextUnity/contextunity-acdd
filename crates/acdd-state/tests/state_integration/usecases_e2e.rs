@@ -14,7 +14,7 @@ use acdd_state::usecases::dto::{
     SubmitReq,
 };
 use acdd_state::usecases::{
-    execute_on, StateCommand, StateCommandOutput, StateEngine, StateQuery,
+    StateCommand, StateCommandOutput, StateEngine, StateQuery,
     StateQueryEngine, StateQueryOutput,
 };
 use serde_json::json;
@@ -30,7 +30,7 @@ fn seam_run_workflow_runner_required_and_dry_run_in_place() {
     let harness = RunHarness::in_memory().unwrap();
     harness.seed_run(&build_rich_graph(tmp.path(), "run-auto-001", IsolationMode::InPlace)).unwrap();
 
-    match execute_on(&cfg, &harness, &provider, StateCommand::Run(RunReq { run: Some("run-auto-001".to_owned()), jobs: Some(4), allow_main: false, dry_run: true })).unwrap() {
+    match harness.execute(&cfg, &provider, StateCommand::Run(RunReq { run: Some("run-auto-001".to_owned()), jobs: Some(4), allow_main: false, dry_run: true })).unwrap() {
         StateCommandOutput::Run(resp) => {
             assert_eq!(resp.report.waves_executed, 0);
             assert!(resp.report.halted_reason.as_deref().is_some_and(|s| s.contains("jobs=1")));
@@ -38,7 +38,7 @@ fn seam_run_workflow_runner_required_and_dry_run_in_place() {
         other => panic!("unexpected Run dry_run output: {other:?}"),
     }
     assert_eq!(
-        execute_on(&cfg, &harness, &provider, StateCommand::Run(RunReq { run: Some("run-auto-001".to_owned()), jobs: Some(1), allow_main: false, dry_run: false })).unwrap_err().code,
+        harness.execute(&cfg, &provider, StateCommand::Run(RunReq { run: Some("run-auto-001".to_owned()), jobs: Some(1), allow_main: false, dry_run: false })).unwrap_err().code,
         ErrorCode::WorkflowRunnerRequired
     );
     let t1_build = harness.load_run_graph(&RunId::new("run-auto-001").unwrap()).unwrap().unwrap()

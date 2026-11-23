@@ -1,14 +1,15 @@
 //! Roadmap DTO assembly, filtering, sorting, and per-task drill-down rendering.
 
 use super::discovery::materialize_checkout_spec;
+use super::types::{ActiveRunMap, DependencyGraphData, DiscoveredWorkspace, SpecInfo};
 use super::waves::{
     apply_spec_overlaps, apply_task_overlaps, compute_spec_waves, compute_task_waves,
 };
-use super::{ActiveRunMap, DependencyGraphData, DiscoveredWorkspace, SpecInfo};
 use crate::spec::SpecStatus;
 use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, ValidatedObservations,
 };
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::{
     collect_external_satisfied_deps_with_owned, run_in_checkout, ParsedDepSyntax,
 };
@@ -16,7 +17,6 @@ use crate::usecases::dto::{
     RoadmapActiveGateEntry, RoadmapDepEntry, RoadmapReq, RoadmapResp, RoadmapSpecEntry,
     RoadmapTaskEntry, RoadmapWave,
 };
-use crate::usecases::StateEngineConfig;
 use acdd_core::errors::StateError;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -379,6 +379,137 @@ fn resolve_task_status_and_gates(
     }
 }
 
+fn build_active_task_entries(
+    config: &StateEngineConfig,
+    info: &SpecInfo,
+    graph: &RunGraphSnapshot,
+    projection: &DependencyGraphData,
+) -> Result<Vec<RoadmapTaskEntry>, StateError> {
+    let ext_deps = match projection.active_ext_deps.get(&graph.run.run_id) {
+        Some(cached) => cached.clone(),
+        None => collect_external_satisfied_deps_with_owned(config, graph, None)?,
+    };
+    let obs = ValidatedObservations {
+        external_satisfied_deps: ext_deps,
+        external_deps_authoritative: true,
+        ..Default::default()
+    };
+    let task_nodes: Vec<&GateNodeRecord> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Task && n.task_ref.is_some())
+        .collect();
+    let completed_refs: BTreeSet<acdd_core::ids::TaskRef> = task_nodes
+        .iter()
+        .filter(|n| n.status == NodeStatus::Completed)
+        .filter_map(|n| n.task_ref.clone())
+        .collect();
+    let task_ids: Vec<String> = task_nodes
+        .iter()
+        .filter_map(|n| n.task_ref.as_ref().map(|t| t.as_str().to_owned()))
+        .collect();
+
+    let mut deps_by_task: BTreeMap<String, Vec<RoadmapDepEntry>> = BTreeMap::new();
+    let mut unsatisfied_local: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut has_unsatisfied_ext: BTreeMap<String, bool> = BTreeMap::new();
+    for node in &task_nodes {
+        let Some(ref task_ref) = node.task_ref else {
+            continue;
+        };
+        let t_ref = task_ref.as_str().to_owned();
+        let mut entries = Vec::new();
+        for dep in graph
+            .dependencies
+            .iter()
+            .filter(|d| &d.task_ref == task_ref)
+        {
+            let satisfied = crate::machine::schedule::is_dep_satisfied_against_statuses(
+                &graph.run.run_id,
+                dep,
+                |r| completed_refs.contains(r),
+                &obs,
+            );
+            let raw = if dep.depends_on_run_id == graph.run.run_id {
+                dep.depends_on_ref.as_str().to_owned()
+            } else if dep.depends_on_workspace == "." {
+                format!("{}:{}", dep.depends_on_run_id.as_str(), dep.depends_on_ref.as_str())
+            } else {
+                format!(
+                    "{}/{}:{}",
+                    dep.depends_on_workspace,
+                    dep.depends_on_run_id.as_str(),
+                    dep.depends_on_ref.as_str()
+                )
+            };
+            if !satisfied {
+                if dep.depends_on_run_id == graph.run.run_id {
+                    unsatisfied_local
+                        .entry(t_ref.clone())
+                        .or_default()
+                        .insert(dep.depends_on_ref.as_str().to_owned());
+                } else {
+                    has_unsatisfied_ext.insert(t_ref.clone(), true);
+                }
+            }
+            entries.push(RoadmapDepEntry {
+                raw,
+                status: if satisfied { "satisfied" } else { "planned" }.to_owned(),
+                satisfied,
+            });
+        }
+        deps_by_task.insert(t_ref, entries);
+    }
+
+    let task_wave = compute_task_waves(&task_ids, &unsatisfied_local, &has_unsatisfied_ext);
+    let claimed_scopes = crate::machine::schedule::claimed_unfinished_scopes(graph);
+    let mut out = Vec::with_capacity(task_nodes.len());
+    for node in &task_nodes {
+        let Some(ref task_ref) = node.task_ref else {
+            continue;
+        };
+        let t_ref = task_ref.as_str().to_owned();
+        let disk_task = info.doc.tasks.iter().find(|t| t.task_ref.as_str() == t_ref);
+        let deps = deps_by_task.remove(&t_ref).unwrap_or_default();
+        let all_deps_ok = crate::machine::schedule::task_dependencies_satisfied(graph, task_ref, &obs);
+        let (status, active_gates) = resolve_task_status_and_gates(
+            info,
+            &t_ref,
+            disk_task.map_or(SpecStatus::Planned, |t| t.status),
+            all_deps_ok,
+            Some(graph),
+            &claimed_scopes,
+        );
+        let mut scope = crate::machine::graph::container_scope(graph, node);
+        if scope.is_empty() {
+            if let Some(dt) = disk_task {
+                scope.clone_from(&dt.scope);
+                for ext in &dt.extended_scope {
+                    if !scope.contains(&ext.path) {
+                        scope.push(ext.path.clone());
+                    }
+                }
+            }
+        }
+        out.push(RoadmapTaskEntry {
+            task_ref: t_ref.clone(),
+            target: disk_task.map(|t| t.target.clone()).unwrap_or_default(),
+            status: status.to_owned(),
+            wave: task_wave.get(&t_ref).copied().unwrap_or(0),
+            depends_on: deps,
+            blocks: projection
+                .active_task_blocks
+                .get(&(graph.run.run_id.clone(), task_ref.clone()))
+                .map(|blocks| blocks.iter().cloned().collect())
+                .unwrap_or_default(),
+            scope,
+            scope_overlaps: Vec::new(),
+            active_gates,
+        });
+    }
+    apply_task_overlaps(&mut out);
+    Ok(out)
+}
+
 fn build_task_entries(
     config: &StateEngineConfig,
     info: &SpecInfo,
@@ -386,139 +517,7 @@ fn build_task_entries(
     projection: &DependencyGraphData,
 ) -> Result<Vec<RoadmapTaskEntry>, StateError> {
     if let Some(graph) = graph_opt {
-        let ext_deps = match projection.active_ext_deps.get(&graph.run.run_id) {
-            Some(cached) => cached.clone(),
-            None => collect_external_satisfied_deps_with_owned(config, graph, None)?,
-        };
-        let obs = ValidatedObservations {
-            external_satisfied_deps: ext_deps,
-            external_deps_authoritative: true,
-            ..Default::default()
-        };
-        let task_nodes: Vec<&GateNodeRecord> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.kind == NodeKind::Task && n.task_ref.is_some())
-            .collect();
-        let completed_refs: BTreeSet<acdd_core::ids::TaskRef> = task_nodes
-            .iter()
-            .filter(|n| n.status == NodeStatus::Completed)
-            .filter_map(|n| n.task_ref.clone())
-            .collect();
-        let task_ids: Vec<String> = task_nodes
-            .iter()
-            .filter_map(|n| n.task_ref.as_ref().map(|t| t.as_str().to_owned()))
-            .collect();
-
-        let mut deps_by_task: BTreeMap<String, Vec<RoadmapDepEntry>> = BTreeMap::new();
-        let mut unsatisfied_local: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut has_unsatisfied_ext: BTreeMap<String, bool> = BTreeMap::new();
-        for node in &task_nodes {
-            let Some(ref task_ref) = node.task_ref else {
-                continue;
-            };
-            let t_ref = task_ref.as_str().to_owned();
-            let mut entries = Vec::new();
-            for dep in graph
-                .dependencies
-                .iter()
-                .filter(|d| &d.task_ref == task_ref)
-            {
-                let satisfied = crate::machine::schedule::is_dep_satisfied_against_statuses(
-                    &graph.run.run_id,
-                    dep,
-                    |r| completed_refs.contains(r),
-                    &obs,
-                );
-                let raw = if dep.depends_on_run_id == graph.run.run_id {
-                    dep.depends_on_ref.as_str().to_owned()
-                } else if dep.depends_on_workspace == "." {
-                    format!(
-                        "{}:{}",
-                        dep.depends_on_run_id.as_str(),
-                        dep.depends_on_ref.as_str()
-                    )
-                } else {
-                    format!(
-                        "{}/{}:{}",
-                        dep.depends_on_workspace,
-                        dep.depends_on_run_id.as_str(),
-                        dep.depends_on_ref.as_str()
-                    )
-                };
-                if !satisfied {
-                    if dep.depends_on_run_id == graph.run.run_id {
-                        unsatisfied_local
-                            .entry(t_ref.clone())
-                            .or_default()
-                            .insert(dep.depends_on_ref.as_str().to_owned());
-                    } else {
-                        has_unsatisfied_ext.insert(t_ref.clone(), true);
-                    }
-                }
-                entries.push(RoadmapDepEntry {
-                    raw,
-                    status: if satisfied {
-                        "satisfied".to_owned()
-                    } else {
-                        "planned".to_owned()
-                    },
-                    satisfied,
-                });
-            }
-            deps_by_task.insert(t_ref, entries);
-        }
-
-        let task_wave = compute_task_waves(&task_ids, &unsatisfied_local, &has_unsatisfied_ext);
-        let claimed_scopes = crate::machine::schedule::claimed_unfinished_scopes(graph);
-        let mut out = Vec::with_capacity(task_nodes.len());
-        for node in &task_nodes {
-            let Some(ref task_ref) = node.task_ref else {
-                continue;
-            };
-            let t_ref = task_ref.as_str().to_owned();
-            let disk_task = info.doc.tasks.iter().find(|t| t.task_ref.as_str() == t_ref);
-            let deps = deps_by_task.remove(&t_ref).unwrap_or_default();
-            let all_deps_ok =
-                crate::machine::schedule::task_dependencies_satisfied(graph, task_ref, &obs);
-            let (status, active_gates) = resolve_task_status_and_gates(
-                info,
-                &t_ref,
-                disk_task.map_or(SpecStatus::Planned, |t| t.status),
-                all_deps_ok,
-                Some(graph),
-                &claimed_scopes,
-            );
-
-            let mut scope = crate::machine::graph::container_scope(graph, node);
-            if scope.is_empty() {
-                if let Some(dt) = disk_task {
-                    scope.clone_from(&dt.scope);
-                    for ext in &dt.extended_scope {
-                        if !scope.contains(&ext.path) {
-                            scope.push(ext.path.clone());
-                        }
-                    }
-                }
-            }
-            out.push(RoadmapTaskEntry {
-                task_ref: t_ref.clone(),
-                target: disk_task.map(|t| t.target.clone()).unwrap_or_default(),
-                status: status.to_owned(),
-                wave: task_wave.get(&t_ref).copied().unwrap_or(0),
-                depends_on: deps,
-                blocks: projection
-                    .active_task_blocks
-                    .get(&(graph.run.run_id.clone(), task_ref.clone()))
-                    .map(|blocks| blocks.iter().cloned().collect())
-                    .unwrap_or_default(),
-                scope,
-                scope_overlaps: Vec::new(),
-                active_gates,
-            });
-        }
-        apply_task_overlaps(&mut out);
-        return Ok(out);
+        return build_active_task_entries(config, info, graph, projection);
     }
 
     let mut deps_by_task: BTreeMap<String, Vec<RoadmapDepEntry>> = BTreeMap::new();

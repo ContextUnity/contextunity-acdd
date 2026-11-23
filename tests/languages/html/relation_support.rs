@@ -345,7 +345,7 @@ pub(super) fn persisted_facts(conn: &Connection) -> Vec<acdd_index::models::Fact
         .unwrap();
     blobs
         .iter()
-        .map(|blob| acdd_index::db::reader::decode_local_facts(blob).unwrap())
+        .map(|blob| crate::common::decode_local_facts(blob).unwrap())
         .collect()
 }
 

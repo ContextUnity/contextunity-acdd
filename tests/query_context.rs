@@ -90,9 +90,6 @@ fn persisted_state(conn: &Connection) -> Value {
     })
 }
 
-#[cfg(all(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
-#[path = "query_context/ast_grep_candidate_prefilter.rs"]
-mod ast_grep_candidate_prefilter;
 #[cfg(feature = "lang-python")]
 #[path = "query_context/diagnostics_and_source.rs"]
 mod diagnostics_and_source;

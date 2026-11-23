@@ -11,15 +11,6 @@ use crate::types::{
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path};
 
-/// Plan a pure `extend_scope` update for a task container and its child gates.
-pub fn plan_extend_scope(
-    snapshot: &RunGraphSnapshot,
-    profile: &MachineProfileInput,
-    input: &ExtendScopeInput,
-) -> Result<TransitionPlan, StateError> {
-    plan_extend_scope_with_obs(snapshot, profile, &ValidatedObservations::default(), input)
-}
-
 /// Plan a pure `extend_scope` update honoring shell `ValidatedObservations` (e.g. custom DB path policy).
 pub(crate) fn plan_extend_scope_with_obs(
     snapshot: &RunGraphSnapshot,

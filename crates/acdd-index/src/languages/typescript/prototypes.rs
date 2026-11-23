@@ -1,4 +1,11 @@
-use super::*;
+use crate::ast::syntax::{text, Syntax};
+
+pub(super) fn has_static_child(node: Syntax<'_>) -> bool {
+    (0..node.child_count()).any(|index| {
+        node.child(index)
+            .is_some_and(|child| child.kind() == "static")
+    })
+}
 
 pub(super) fn method_owner<'tree>(node: Syntax<'tree>) -> Option<Syntax<'tree>> {
     let mut current = node.parent()?;

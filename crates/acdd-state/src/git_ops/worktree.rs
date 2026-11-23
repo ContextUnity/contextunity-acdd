@@ -1,6 +1,6 @@
 //! Repository common-dir/worktree layout resolution, managed worktree lifecycle, and ref cleanup.
 
-use super::{run_git_checked, run_git_raw, run_git_stdout};
+use super::exec::{run_git_checked, run_git_raw, run_git_stdout};
 use super::snapshot::parse_canonical_revision;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, ensure_confined_dir_all, open_confined};

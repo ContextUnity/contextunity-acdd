@@ -1,22 +1,13 @@
 use super::super::paging;
 use super::selectors::select_detail_with_path;
 use super::sql::rows;
-use super::{select_detail, ExplainOptions};
+use super::types::{ExplainDirection, ExplainOptions};
 use crate::models::details::NodeDetailKey;
 use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
-
-/// Resolves one fail-closed code selector and returns its full node projection.
-///
-/// # Errors
-///
-/// Returns a typed [`super::SelectorError`] for missing, ambiguous, or invalid targets.
-pub fn select(conn: &Connection, selector: &str) -> Result<Value> {
-    select_detail(conn, selector, Detail::Full)
-}
 
 /// Inspects symbols matching path or symbol selector with paging options.
 pub fn inspect_paged_with_path(
@@ -86,13 +77,99 @@ pub fn explain_with_path_options(
         .context("invalid node id")?
         .to_owned();
     let node_hash = crate::models::stable_hash64(&id);
-    paging::populate_edge_relations(conn, &mut result, node_hash, request.direction, options)?;
+    populate_edge_relations(conn, &mut result, node_hash, request.direction, options)?;
     if let Some(gen) = result.as_object_mut().and_then(|m| m.remove("generation")) {
         if let Some(m) = result.as_object_mut() {
             m.insert("generation".into(), gen);
         }
     }
     Ok(result)
+}
+
+pub(crate) fn annotate_edge_direction(page: &mut Value, direction: &str) {
+    if let Some(items) = page["items"].as_array_mut() {
+        for item in items {
+            if let Some(edge) = item.as_object_mut() {
+                edge.insert("direction".into(), json!(direction));
+            }
+        }
+    }
+}
+
+pub(crate) fn populate_edge_relations(
+    conn: &Connection,
+    result: &mut Value,
+    node_hash: i64,
+    direction: ExplainDirection,
+    options: &QueryOptions,
+) -> Result<()> {
+    for (include, key, filter_col, order_col, dir_label) in [
+        (
+            direction.includes_incoming(),
+            "incoming",
+            "dst_hash",
+            "src_hash",
+            "inbound",
+        ),
+        (
+            direction.includes_outgoing(),
+            "outgoing",
+            "src_hash",
+            "dst_hash",
+            "outbound",
+        ),
+    ] {
+        if include {
+            let mut page = paging::query(
+                conn,
+                &format!(
+                    "SELECT {} FROM edges e WHERE e.{filter_col}=?1 ORDER BY e.kind,e.{order_col},e.path_id,e.line",
+                    paging::edges("e", options.detail)
+                ),
+                &[&node_hash],
+                options,
+            )?;
+            annotate_edge_direction(&mut page, dir_label);
+            result[key] = page;
+        } else {
+            let total = paging::count(
+                conn,
+                &format!("SELECT count(*) FROM edges WHERE {filter_col}=?1"),
+                &[&node_hash],
+            )?;
+            result[key] = json!({
+                "total": total,
+                "omitted": true,
+                "hint": format!("Pass direction='{key}' to page {key} edges.")
+            });
+        }
+    }
+    for (key, id_alias, join_col, filter_col) in [
+        ("implementors", "src_public_id", "src_hash", "dst_hash"),
+        ("implements", "dst_public_id", "dst_hash", "src_hash"),
+    ] {
+        let items = rows(
+            conn,
+            &format!(
+                "SELECT n.id AS {id_alias},e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind \
+                 FROM edges e JOIN nodes n ON n.node_hash=e.{join_col} \
+                 JOIN path_dictionary p ON p.path_id=e.path_id \
+                 JOIN coverage_evidence v ON v.evidence_id=e.evidence_id \
+                 WHERE e.{filter_col}=?1 AND e.kind IN('{implements}','{overrides}','{extends}') \
+                 ORDER BY p.path,e.line",
+                implements = EdgeKind::Implements.as_str(),
+                overrides = EdgeKind::Overrides.as_str(),
+                extends = EdgeKind::Extends.as_str(),
+            ),
+            &[&node_hash],
+            50,
+        )?;
+        if !items.is_empty() {
+            result[key] = json!(items);
+        }
+    }
+    result["direction"] = json!(direction.as_str());
+    Ok(())
 }
 
 fn governing_invariants_for_cte(

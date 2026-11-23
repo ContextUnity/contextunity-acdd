@@ -1,7 +1,7 @@
 pub(super) use crate::common::Workspace;
 pub(super) use acdd_index::{
     ast,
-    db::{commitments, reader, writer},
+    db::{commitments, writer},
     languages::{self, dependency_registry::DependencyRegistry, LanguageFamily},
     linker,
 };
@@ -15,7 +15,6 @@ pub(super) mod fastapi_rows;
 pub(super) use cross_pack_fixture::{
     cross_pack_sources, django_include_sources, GRIDVIEW_RECEIVER_CASES,
 };
-mod source_registry;
 mod virtual_workspace;
 pub(super) use virtual_workspace::VirtualWorkspace;
 
@@ -30,15 +29,12 @@ impl FrameworkHarness {
     }
 
     pub(super) fn from_manifests(files: &[(&str, &str)]) -> anyhow::Result<Self> {
-        use languages::dependency_registry::{ManifestSource, WorkspaceManifestSources};
-        let manifests: Vec<_> = files
-            .iter()
-            .map(|&(path, source)| ManifestSource { path, source })
-            .collect();
-        let registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
-            name: "",
-            manifests: &manifests,
-        }])?;
+        let workspace = Self::persisted(files);
+        let adapter = acdd_index::scanner::load_adapter(workspace.root(), None)?;
+        let registry = DependencyRegistry::try_collect_with_scan_config(
+            workspace.root(),
+            Some(&adapter),
+        )?;
         Ok(Self { registry })
     }
 
@@ -68,7 +64,7 @@ impl FrameworkHarness {
     pub(super) fn extract_with_registry(
         registry: &DependencyRegistry,
         files: &[(&str, &str, &str)],
-    ) -> anyhow::Result<BTreeMap<String, contextunity_acdd::acdd_index::typed_facts::TypedFacts>>
+    ) -> anyhow::Result<BTreeMap<String, acdd_index::typed_facts::TypedFacts>>
     {
         files
             .iter()
@@ -344,7 +340,7 @@ pub(super) fn all_local_facts(conn: &Connection) -> Vec<(String, Value)> {
             let (path, blob) = row.unwrap();
             (
                 path,
-                serde_json::to_value(reader::decode_local_facts(&blob).unwrap()).unwrap(),
+                serde_json::to_value(crate::common::decode_local_facts(&blob).unwrap()).unwrap(),
             )
         })
         .collect()

@@ -1,5 +1,5 @@
-use acdd_index::models::{Coverage, Facts, Graph, Node};
-use acdd_index::{ast, linker};
+use acdd_index::models::{types::Coverage, Facts, Graph, Node};
+use acdd_index::ast;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::ops::Deref;
@@ -303,19 +303,19 @@ impl<'a> ExtractorHarness<'a> {
     }
 
     pub(super) fn link_graph(facts: &BTreeMap<String, Facts>) -> Graph {
-        linker::link(facts)
+        crate::common::link_facts(facts)
     }
 
     pub(super) fn link_graph_with_root(
         facts: &BTreeMap<String, Facts>,
         root: Option<&std::path::Path>,
     ) -> Graph {
-        linker::link_with_root(facts, None, root)
+        crate::common::link_facts_with_root(facts, None, root)
     }
 
     pub(super) fn linked(&self, source: &str) -> LinkedFacts {
         let mut catalog = BTreeMap::from([(self.path.to_owned(), self.extract(source))]);
-        let graph = linker::link(&catalog);
+        let graph = crate::common::link_facts(&catalog);
         LinkedFacts {
             facts: catalog.remove(self.path).unwrap(),
             graph,
@@ -335,7 +335,7 @@ impl<'a> ExtractorHarness<'a> {
                 ((*path).to_owned(), parsed)
             })
             .collect::<BTreeMap<_, _>>();
-        let graph = linker::link_with_root(&facts, None, root);
+        let graph = crate::common::link_facts_with_root(&facts, None, root);
         LinkedCatalog { facts, graph }
     }
 }

@@ -1,4 +1,6 @@
-use super::*;
+use super::context::*;
+use crate::languages;
+use crate::linker::html;
 
 pub(super) fn phase_framework_projections<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where

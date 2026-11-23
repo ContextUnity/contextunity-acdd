@@ -1,7 +1,8 @@
-use super::{
-    encode_int, encode_null, encode_row, encode_text, key, new_leaf_hasher, shape,
-    CommitmentDomain, TextArena, TextSpan,
+use super::base::{
+    encode_int, encode_null, encode_row, encode_text, key, new_leaf_hasher, shape, TextArena,
+    TextSpan,
 };
+use crate::commitments::CommitmentDomain;
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
 use rayon::prelude::*;
@@ -85,26 +86,47 @@ pub(crate) fn hash_shared_owner_leaves<'a>(
         .collect()
 }
 
+fn prepare_owner_filtered_statement<'conn>(
+    conn: &'conn Connection,
+    owners: Option<&BTreeSet<String>>,
+    filter_column: &str,
+    build_sql: impl FnOnce(&str) -> String,
+) -> Result<(rusqlite::Statement<'conn>, Option<String>)> {
+    let filter = if owners.is_some() {
+        format!(
+            "WHERE {filter_column} IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+        )
+    } else {
+        String::new()
+    };
+    let stmt = conn.prepare(&build_sql(&filter))?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    Ok((stmt, encoded))
+}
+
+fn query_with_encoded<'stmt>(
+    stmt: &'stmt mut rusqlite::Statement<'_>,
+    encoded: Option<&str>,
+) -> rusqlite::Result<rusqlite::Rows<'stmt>> {
+    if let Some(encoded) = encoded {
+        stmt.query([encoded])
+    } else {
+        stmt.query([])
+    }
+}
+
 pub(super) fn leaves_nodes(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
     path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let filter = if owners.is_some() {
-        "WHERE owner_path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id FROM nodes {filter} ORDER BY owner_path_id,id"
-    );
-    let mut statement = conn.prepare(&sql)?;
-    let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        statement.query([encoded])?
-    } else {
-        statement.query([])?
-    };
+    let (mut statement, encoded) =
+        prepare_owner_filtered_statement(conn, owners, "owner_path_id", |filter| {
+            format!(
+                "SELECT id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id FROM nodes {filter} ORDER BY owner_path_id,id"
+            )
+        })?;
+    let mut rows = query_with_encoded(&mut statement, encoded.as_deref())?;
     let mut hashers: HashMap<i64, Sha256> = HashMap::new();
     while let Some(row) = rows.next()? {
         let owner_id: i64 = row.get(12)?;
@@ -176,21 +198,13 @@ pub(super) fn leaves_edge_occurrences(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let filter = if owners.is_some() {
-        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence_id, confidence_id FROM edge_occurrences {filter} ORDER BY owner_id, ordinal"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        stmt.query([encoded])?
-    } else {
-        stmt.query([])?
-    };
+    let (mut stmt, encoded) =
+        prepare_owner_filtered_statement(conn, owners, "owner_id", |filter| {
+            format!(
+                "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence_id, confidence_id FROM edge_occurrences {filter} ORDER BY owner_id, ordinal"
+            )
+        })?;
+    let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     let mut result = BTreeMap::new();
     let mut current_owner_id: Option<i64> = None;
@@ -271,21 +285,13 @@ pub(super) fn leaves_edges(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let filter = if owners.is_some() {
-        "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count FROM edges {filter}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        stmt.query([encoded])?
-    } else {
-        stmt.query([])?
-    };
+    let (mut stmt, encoded) =
+        prepare_owner_filtered_statement(conn, owners, "path_id", |filter| {
+            format!(
+                "SELECT src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count FROM edges {filter}"
+            )
+        })?;
+    let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     struct EdgeRow<'a> {
         src: &'a str,
@@ -392,19 +398,11 @@ pub(super) fn leaves_shared_owners(
         key_map.insert(hash, key);
     }
 
-    let filter = if owners.is_some() {
-        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
-    let sql = format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners {filter}");
-    let mut stmt = conn.prepare(&sql)?;
-    let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        stmt.query([encoded])?
-    } else {
-        stmt.query([])?
-    };
+    let (mut stmt, encoded) =
+        prepare_owner_filtered_statement(conn, owners, "owner_id", |filter| {
+            format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners {filter}")
+        })?;
+    let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     let mut by_owner: HashMap<&str, Vec<SharedOwnerRow<'_>>> = HashMap::new();
 
@@ -457,21 +455,13 @@ pub(super) fn leaves_dependencies(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let filter = if owners.is_some() {
-        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies {filter}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        stmt.query([encoded])?
-    } else {
-        stmt.query([])?
-    };
+    let (mut stmt, encoded) =
+        prepare_owner_filtered_statement(conn, owners, "owner_id", |filter| {
+            format!(
+                "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies {filter}"
+            )
+        })?;
+    let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     struct DepRow<'a> {
         target: Option<&'a str>,
@@ -553,11 +543,7 @@ pub(super) fn leaves_generic(
     ))?;
     let columns = stmt.column_count() - 1;
     let encoded = owners.map(serde_json::to_string).transpose()?;
-    let mut rows = if let Some(encoded) = &encoded {
-        stmt.query([encoded])?
-    } else {
-        stmt.query([])?
-    };
+    let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
     let mut result = BTreeMap::new();
     let mut current_owner: Option<String> = None;
     let mut current_hasher = Sha256::new();
@@ -588,7 +574,7 @@ pub(super) fn leaves_generic(
 #[cfg(test)]
 mod tests {
     use super::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
-    use crate::db::commitments::{
+    use super::super::base::{
         encode_int, encode_text, key, new_leaf_hasher, read_metadata, read_metadata_optional,
         write_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES, MAX_SQLITE_VALUE_BYTES,
     };

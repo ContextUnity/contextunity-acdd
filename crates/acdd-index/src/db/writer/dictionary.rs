@@ -1,4 +1,8 @@
-use super::*;
+use super::batch::{BorrowedSqlValue, MultiValueBatch};
+use crate::models::{compact_graph::CompactGraph, stable_hash64};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct PathDictionaryCache {
@@ -73,7 +77,7 @@ impl PathDictionaryCache {
     }
 }
 
-pub struct SharedKeyCache<'conn> {
+pub(crate) struct SharedKeyCache<'conn> {
     cache: hashbrown::HashMap<Arc<str>, i64>,
     pub(super) hash_to_key: hashbrown::HashMap<i64, Arc<str>>,
     stmt_insert: rusqlite::Statement<'conn>,

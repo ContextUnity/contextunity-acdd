@@ -96,6 +96,372 @@ fn test_prefilter_empty_candidate_fallback() {
     assert_eq!(result["matches"]["items"][0]["line"], 2);
 }
 
+#[cfg(all(test, feature = "lang-rust"))]
+#[test]
+fn public_rust_candidate_selection() {
+    let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-rust-select").unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "fn target() {}\nfn target(value: i32) {}\nfn target() -> i32 { 1 }\nfn target<T>(value: T) -> T { value }\nfn other() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("src/a_candidate.rs"),
+        "fn coverage_owner_language() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("src/z_body.rs"),
+        "fn other() { let value = \"coverage_owner_language\"; }\n",
+    )
+    .unwrap();
+    let database = root.path().join(".acdd/code-map.sqlite");
+    crate::engine::pipeline::build(root.path(), &database, None).unwrap();
+    let conn = acdd_index::db::reader::open(&database, root.path()).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+    for (case_id, pattern, expected, item) in [
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target",
+            4,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target()",
+            1,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target(value: i32)",
+            1,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target<T>",
+            1,
+            None,
+        ),
+        (
+            "public_ast_search_keeps_rust_body_only_literal_candidates",
+            "\"coverage_owner_language\"",
+            1,
+            Some(("src/z_body.rs", "\"coverage_owner_language\"")),
+        ),
+    ] {
+        let result = search_paged(&conn, root.path(), pattern, "rust", None, &options).unwrap();
+        assert_eq!(
+            result["matches"]["total"], expected,
+            "{case_id}: {pattern}: {result}"
+        );
+        if let Some((path, text)) = item {
+            let items = result["matches"]["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1, "{result}");
+            assert_eq!(items[0]["path"], path);
+            assert_eq!(items[0]["text"], text);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "lang-rust"))]
+#[test]
+fn public_pattern_diagnostics() {
+    fn smallest_error(root: tree_sitter::Node<'_>) -> Option<std::ops::Range<usize>> {
+        let mut stack = vec![root];
+        let mut smallest = None;
+        while let Some(node) = stack.pop() {
+            if node.is_error() && node.start_byte() < node.end_byte() {
+                let range = node.start_byte()..node.end_byte();
+                if smallest
+                    .as_ref()
+                    .is_none_or(|current: &std::ops::Range<usize>| range.len() < current.len())
+                {
+                    smallest = Some(range);
+                }
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        smallest
+    }
+
+    let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-pattern-diag").unwrap();
+    let database = root.path().join(".acdd/code-map.sqlite");
+    crate::engine::pipeline::build(root.path(), &database, None).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+    for rust_only in [false, true] {
+        if rust_only {
+            std::fs::create_dir_all(root.path().join("src")).unwrap();
+            std::fs::write(root.path().join("src/lib.rs"), "fn valid() {}\n").unwrap();
+            crate::engine::pipeline::delta_with_selection(
+                root.path(),
+                &database,
+                &[std::path::PathBuf::from("src/lib.rs")],
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let conn = acdd_index::db::reader::open(&database, root.path()).unwrap();
+        let mut cases = vec![(
+            "public_ast_search_reports_structured_tree_sitter_pattern_diagnostics",
+            "rust",
+            "src/lib.rs",
+            "let = ;",
+            Some("fn target()"),
+        )];
+        #[cfg(feature = "lang-python")]
+        cases.push((
+            "invalid_ast_patterns_report_diagnostics_without_candidate_files",
+            "python",
+            "service.py",
+            "def (",
+            Some("def target()"),
+        ));
+        for (case_id, language, path, pattern, valid) in cases {
+            let result =
+                search_paged(&conn, root.path(), pattern, language, None, &options).unwrap();
+            let diagnostic = &result["diagnostic"];
+            assert_eq!(
+                diagnostic["code"], "unsupported_ast_pattern",
+                "{case_id}: {result}"
+            );
+            assert_eq!(diagnostic["language"], language);
+            assert!(diagnostic["span"].is_object());
+            if language == "rust" {
+                let mut parser = acdd_index::languages::require(language)
+                    .unwrap()
+                    .create_parser(path)
+                    .unwrap();
+                let tree = parser.parse(pattern, None).unwrap();
+                let expected = smallest_error(tree.root_node()).expect("nonempty ERROR node");
+                assert_eq!(diagnostic["span"]["start_byte"], expected.start);
+                assert_eq!(diagnostic["span"]["end_byte"], expected.end);
+                assert!(
+                    diagnostic["span"]["end_byte"].as_u64().unwrap()
+                        > diagnostic["span"]["start_byte"].as_u64().unwrap()
+                );
+            }
+            assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
+            assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
+            if let Some(valid) = valid {
+                let result =
+                    search_paged(&conn, root.path(), valid, language, None, &options).unwrap();
+                assert_eq!(result["matches"]["total"], 0, "{case_id}: {result}");
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "lang-typescript"))]
+#[test]
+fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
+    let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-tsx-upfront").unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src/view.tsx"),
+        "const view = <Widget value={value} />;\n",
+    )
+    .unwrap();
+    let database = root.path().join(".acdd/code-map.sqlite");
+    crate::engine::pipeline::build(root.path(), &database, None).unwrap();
+    let conn = acdd_index::db::reader::open(&database, root.path()).unwrap();
+    let options =
+        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    for path in [None, Some("src/view.tsx")] {
+        let result = search_paged(
+            &conn,
+            root.path(),
+            "<Widget value={$VALUE} />",
+            "typescript",
+            path,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(result["matches"]["total"], 1, "{result}");
+        assert_eq!(result["matches"]["items"][0]["captures"]["VALUE"], "value");
+    }
+    let invalid = search_paged(
+        &conn,
+        root.path(),
+        "function (",
+        "typescript",
+        None,
+        &options,
+    )
+    .unwrap();
+    assert_eq!(invalid["diagnostic"]["code"], "unsupported_ast_pattern");
+}
+
+#[cfg(all(
+    test,
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript"
+))]
+#[test]
+fn prefiltered_ast_search_matches_full_scan_with_100_percent_recall() {
+    use acdd_index::ast::search::PreparedAstMatcher;
+    use acdd_index::db::reader;
+    use std::time::Instant;
+
+    let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-prefilter-recall").unwrap();
+    for dir in ["src", "pkg", "web"] {
+        std::fs::create_dir_all(root.path().join(dir)).unwrap();
+    }
+    for (rel, content) in [
+        (
+            "src/lib.rs",
+            "pub fn helper_fn(x: i32) -> i32 {\n    let local_value = foo(x);\n    local_value\n}\n",
+        ),
+        (
+            "src/client.rs",
+            "pub struct Obj;\nimpl Obj { pub fn method(&self, a: i32, b: i32) -> i32 { a + b } }\n\
+             pub fn call_site(obj: &Obj) -> i32 {\n    let a = obj.method(1, 2);\n    let b = obj.method(3, 4);\n    a + b\n}\n",
+        ),
+        ("src/empty.rs", "pub fn unrelated() -> i32 { 42 }\n"),
+        (
+            "pkg/app.py",
+            "def helper_fn(x):\n    return foo(x)\n\ndef run(obj):\n    return obj.method(10, 20)\n",
+        ),
+        (
+            "pkg/local.py",
+            "def compute():\n    local_value = 1 + 2\n    obj.method(5, 6)\n    return foo(local_value)\n",
+        ),
+        ("pkg/empty.py", "def idle():\n    return 0\n"),
+        (
+            "web/client.ts",
+            "export function helperFn(x: number) {\n  const local_value = foo(x);\n  return obj.method(local_value, 2);\n}\n",
+        ),
+        (
+            "web/unicode.ts",
+            "export function escaped() {\n  const \\u0066oo = 1;\n  return foo(1);\n}\n",
+        ),
+        (
+            "web/empty.tsx",
+            "export const View = () => <div>ok</div>;\n",
+        ),
+    ] {
+        std::fs::write(root.path().join(rel), content).unwrap();
+    }
+    let database = root.path().join(".acdd/code-map.sqlite");
+    crate::engine::pipeline::build(root.path(), &database, None).unwrap();
+    let conn = reader::open(&database, root.path()).unwrap();
+
+    let cases: &[(&str, &str, usize, bool)] = &[
+        ("rust", "foo($X)", 1, true),
+        ("rust", "obj.method($A, $B)", 1, true),
+        ("rust", "let $A = $B;", 2, false),
+        ("rust", "fn helper_fn($$$)", 5, true),
+        ("rust", "nonexistent_anchor_xyz($X)", 5, true),
+        ("python", "foo($X)", 1, true),
+        ("python", "obj.method($A, $B)", 1, true),
+        ("python", "local_value = $EXPR", 5, true),
+        ("python", "$A = $B", 2, false),
+        ("python", "nonexistent_anchor_xyz($X)", 5, true),
+        ("typescript", "foo($X)", 1, true),
+        ("typescript", "obj.method($A, $B)", 5, true),
+        ("typescript", "$A = $B", 2, false),
+        ("typescript", "nonexistent_anchor_xyz($X)", 5, true),
+    ];
+
+    for &(language, pattern, page_limit, expects_anchor) in cases {
+        let mut matcher = PreparedAstMatcher::new(language, pattern).unwrap();
+        let probe_path = match language {
+            "rust" => "src/lib.rs",
+            "python" => "pkg/app.py",
+            "typescript" => "web/client.ts",
+            _ => unreachable!(),
+        };
+        let anchors = matcher.required_anchors(probe_path).unwrap();
+        assert_eq!(
+            !anchors.is_empty(),
+            expects_anchor,
+            "unexpected anchor extraction for {language} pattern `{pattern}`: {anchors:?}"
+        );
+        for anchor in &anchors {
+            assert!(
+                !anchor.starts_with("__ACDD_") && !anchor.starts_with("__acdd_"),
+                "placeholder leaked into anchors: {anchor}"
+            );
+        }
+
+        let all_files = reader::rows(
+            &conn,
+            "SELECT path FROM files WHERE status='indexed' AND language=?1 ORDER BY path",
+            &[&language],
+            1000,
+        )
+        .unwrap();
+        let mut oracle_items: Vec<Value> = Vec::new();
+        let mut oracle_matcher = PreparedAstMatcher::new(language, pattern).unwrap();
+        for row in &all_files {
+            let file_path = row["path"].as_str().unwrap();
+            let source = std::fs::read_to_string(root.path().join(file_path)).unwrap();
+            let page = oracle_matcher
+                .search_page(
+                    &source,
+                    file_path,
+                    0,
+                    1000,
+                    Instant::now() + std::time::Duration::from_secs(5),
+                )
+                .unwrap();
+            oracle_items.extend(page.items);
+        }
+
+        let mut paged_items: Vec<Value> = Vec::new();
+        let mut offset = 0usize;
+        let mut generation: Option<String> = None;
+        loop {
+            let options = QueryOptions::resolve(
+                &ResponsePolicy::default(),
+                Some(page_limit),
+                offset,
+                Some(Detail::Compact),
+                generation.clone(),
+            )
+            .unwrap();
+            let response =
+                search_paged(&conn, root.path(), pattern, language, None, &options).unwrap();
+            let payload = &response["matches"];
+            let batch = payload["items"].as_array().unwrap();
+            paged_items.extend(batch.iter().cloned());
+            if payload["has_more"] != true {
+                assert_eq!(payload["total"], oracle_items.len(), "{language} `{pattern}`");
+                assert!(payload["next_offset"].is_null());
+                break;
+            }
+            let next_offset = payload["next_offset"].as_u64().unwrap() as usize;
+            assert_eq!(next_offset, offset + batch.len());
+            offset = next_offset;
+            generation = payload["generation"].as_str().map(str::to_owned);
+        }
+
+        assert_eq!(
+            paged_items, oracle_items,
+            "100% recall parity failed for {language} `{pattern}`"
+        );
+    }
+}
+
 /// Resolves an explicit AST language or infers it from a file extension or single-language directory.
 pub(crate) fn resolve_ast_language(
     conn: &rusqlite::Connection,
@@ -168,7 +534,8 @@ fn compiled_languages_summary() -> String {
 }
 
 /// Performs search paged.
-pub fn search_paged(
+#[cfg(test)]
+fn search_paged(
     conn: &rusqlite::Connection,
     root: &Path,
     pattern: &str,

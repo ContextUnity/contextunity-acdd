@@ -1,8 +1,8 @@
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
+use super::activation::{parse_language, ActivationCondition};
 use super::projections::{Api, NamedBindingForm};
-use super::semantic::{parse_language, ActivationCondition};
 use crate::models::tags::LanguageId;
 
 /// Bounded extraction operations; every API and keyword choice is input data.
@@ -492,11 +492,6 @@ impl ReturnTypeSpec {
         })
     }
 
-    /// Returns the raw specification string.
-    pub fn as_str(&self) -> &str {
-        &self.raw
-    }
-
     /// Returns the pre-parsed return-type AST.
     pub fn compiled(&self) -> &ReturnTypeNode {
         &self.compiled
@@ -579,7 +574,7 @@ fn find_matching_close(input: &str, open: char, close: char) -> Option<usize> {
 
 fn parse_return_type_node(raw: &str, depth: usize) -> Result<ReturnTypeNode> {
     ensure!(
-        depth <= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH,
+        depth <= crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH,
         "return type nesting exceeds MAX_VALUE_FLOW_TYPE_DEPTH"
     );
     let trimmed = raw.trim();
@@ -759,18 +754,18 @@ impl SyntaxRule {
     pub(crate) fn key(&self) -> String {
         serde_json::to_string(&(&self.pack, &self.id)).expect("rule identity strings serialize")
     }
-    pub(crate) fn activation_family(&self) -> Option<crate::languages::LanguageFamily> {
+    pub(crate) fn activation_family(&self) -> Option<crate::languages::types::LanguageFamily> {
         match self.package_family.as_deref() {
-            Some(family) => crate::languages::dependency_registry::Ecosystem::from_family(family)
+            Some(family) => crate::languages::types::Ecosystem::from_family(family)
                 .and_then(|ecosystem| ecosystem.families().first().copied()),
-            None => crate::languages::by_id(&self.language).map(|profile| profile.family()),
+            None => crate::languages::types::family_for_language(&self.language),
         }
     }
     pub(super) fn validate(&self) -> Result<()> {
         self.validate_display()?;
         ensure!(
             self.package_family.as_deref().is_none_or(|family| {
-                crate::languages::dependency_registry::Ecosystem::from_family(family).is_some()
+                crate::languages::types::Ecosystem::from_family(family).is_some()
             }),
             "invalid syntax package family"
         );
@@ -780,7 +775,7 @@ impl SyntaxRule {
         );
         let lang = parse_language(&self.language)?;
         ensure!(
-            crate::languages::profile_available(lang.as_str()),
+            crate::languages::types::profile_available(lang.as_str()),
             "unsupported syntax language"
         );
         ActivationCondition::validate_slice(&self.activation)?;

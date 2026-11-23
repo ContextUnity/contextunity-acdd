@@ -1,7 +1,9 @@
 //! Workspace path resolution, DB/memory budget resolution, and root scope checks.
 
+use super::constants::{error, ACDD_CONFIG_FILE, DEFAULT_CODE_DB};
 use super::schema::{Adapter, ScannerLimits};
-use super::{checked_child, error, memory_budget_bytes, ACDD_CONFIG_FILE, DEFAULT_CODE_DB};
+use crate::fs::checked_child;
+use crate::sys::memory_budget_bytes;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -59,7 +61,7 @@ pub fn resolve_memory_budget_bytes(limits: &ScannerLimits) -> std::io::Result<u6
 }
 
 /// Parses and validates transient memory budget from configuration or environment.
-pub fn memory_budget_mb_from_sources(
+fn memory_budget_mb_from_sources(
     configured_mb: Option<u64>,
     environment_mb: Option<&str>,
 ) -> std::io::Result<Option<u64>> {
@@ -80,7 +82,7 @@ pub fn memory_budget_mb_from_sources(
 }
 
 /// Converts mebibytes to bytes with overflow validation.
-pub fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
+fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
     if mebibytes == 0 {
         return Err(error("memory budget must be greater than zero MiB"));
     }
@@ -154,6 +156,62 @@ pub fn resolve_file_path(
     checked_child(root, Path::new(cleaned))
 }
 
+fn check_system_or_home_dir(root: &Path) -> std::io::Result<()> {
+    let Some(parent) = root.parent() else {
+        return Ok(());
+    };
+    let name = root.file_name().unwrap_or_default().to_string_lossy();
+    let is_top_system_dir = parent == Path::new("/")
+        && matches!(
+            name.as_ref(),
+            "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt"
+        );
+    let is_macos_private_system_dir =
+        parent == Path::new("/private") && matches!(name.as_ref(), "var" | "tmp" | "etc");
+    if is_top_system_dir || is_macos_private_system_dir {
+        return Err(error(format!(
+            "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
+        )));
+    }
+    if parent == Path::new("/home") || parent == Path::new("/Users") {
+        return Err(error(format!(
+            "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
+        )));
+    }
+    Ok(())
+}
+
+fn count_git_subdirs_in(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
+        .filter(|entry| entry.path().join(".git").exists())
+        .count()
+}
+
+fn has_multiple_git_subdirs(root: &Path) -> Option<usize> {
+    let entries = fs::read_dir(root).ok()?;
+    let mut git_subdirs = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        if path.join(".git").exists() {
+            git_subdirs += 1;
+        } else {
+            git_subdirs += count_git_subdirs_in(&path);
+        }
+        if git_subdirs >= 2 {
+            return Some(git_subdirs);
+        }
+    }
+    None
+}
+
 /// Checks root scope against filesystem roots, system directories, user home directories, and multi-repository containers.
 pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
     if allow_broad
@@ -164,35 +222,14 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
         return Ok(());
     }
 
-    // 1. Filesystem root
     if root == Path::new("/") {
         return Err(error(
             "refusing to index filesystem root '/'; specify a repository directory or set limits.allow_broad_root: true",
         ));
     }
 
-    // 2. Direct parent is / or /home or /Users, or macOS canonical /private/{var,tmp,etc}
-    if let Some(parent) = root.parent() {
-        let name = root.file_name().unwrap_or_default().to_string_lossy();
-        let is_top_system_dir = parent == Path::new("/")
-            && matches!(
-                name.as_ref(),
-                "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt"
-            );
-        let is_macos_private_system_dir =
-            parent == Path::new("/private") && matches!(name.as_ref(), "var" | "tmp" | "etc");
-        if is_top_system_dir || is_macos_private_system_dir {
-            return Err(error(format!(
-                "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-            )));
-        } else if parent == Path::new("/home") || parent == Path::new("/Users") {
-            return Err(error(format!(
-                "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-            )));
-        }
-    }
+    check_system_or_home_dir(root)?;
 
-    // 3. Multi-repository container check:
     let is_git_repo = root.join(".git").exists();
     let has_manifest = root.join(ACDD_CONFIG_FILE).exists()
         || root.join("Cargo.toml").exists()
@@ -201,31 +238,10 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
         || root.join("go.mod").exists();
 
     if !is_git_repo && !has_manifest {
-        if let Ok(entries) = fs::read_dir(root) {
-            let mut git_subdirs = 0;
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        let p = entry.path();
-                        if p.join(".git").exists() {
-                            git_subdirs += 1;
-                        } else if let Ok(sub_entries) = fs::read_dir(&p) {
-                            for sub_entry in sub_entries.flatten() {
-                                if let Ok(sft) = sub_entry.file_type() {
-                                    if sft.is_dir() && sub_entry.path().join(".git").exists() {
-                                        git_subdirs += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if git_subdirs >= 2 {
-                    return Err(error(format!(
-                        "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
-                    )));
-                }
-            }
+        if let Some(git_subdirs) = has_multiple_git_subdirs(root) {
+            return Err(error(format!(
+                "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
+            )));
         }
     }
 
@@ -304,15 +320,13 @@ mod tests {
 
     #[test]
     fn workspace_constants_and_db_path_resolution_matrix() {
-        assert_eq!(crate::ACDD_CONFIG_FILE, super::super::ACDD_CONFIG_FILE);
-        assert_eq!(crate::ACDD_DIR, ".acdd");
-        assert_eq!(crate::WORKTREES_DIR, ".worktrees");
-        assert_eq!(crate::DEFAULT_STATE_DB, ".acdd/state.sqlite");
-        assert_eq!(crate::DEFAULT_STATE_DB_REL, crate::DEFAULT_STATE_DB);
-        assert_eq!(crate::DEFAULT_CODE_DB, ".acdd/code-map.sqlite");
-        assert_eq!(crate::DEFAULT_CODE_DB_REL, crate::DEFAULT_CODE_DB);
-        assert_eq!(crate::SNAPSHOT_REF_PREFIX, "refs/acdd/snapshots/");
-        assert_eq!(crate::CLAIM_TRAILER_KEY, "Acdd-Claim");
+        assert_eq!(super::super::constants::ACDD_CONFIG_FILE, super::super::ACDD_CONFIG_FILE);
+        assert_eq!(super::super::constants::ACDD_DIR, ".acdd");
+        assert_eq!(super::super::constants::WORKTREES_DIR, ".worktrees");
+        assert_eq!(super::super::constants::DEFAULT_STATE_DB, ".acdd/state.sqlite");
+        assert_eq!(super::super::constants::DEFAULT_CODE_DB, ".acdd/code-map.sqlite");
+        assert_eq!(super::super::constants::SNAPSHOT_REF_PREFIX, "refs/acdd/snapshots/");
+        assert_eq!(super::super::constants::CLAIM_TRAILER_KEY, "Acdd-Claim");
 
         let root = Path::new("/repo");
         let adapter = Adapter::default();
@@ -328,5 +342,35 @@ mod tests {
             resolve_effective_state_db_path(root, Some(Path::new("alt/state.sqlite")), &adapter),
             root.join("alt/state.sqlite")
         );
+    }
+
+    #[test]
+    fn explicit_memory_budget_selection() {
+        for (mib, expected) in [(50, Some(50 * 1024 * 1024)), (0, None), (u64::MAX, None)] {
+            let result = bytes_from_mebibytes(mib);
+            if let Some(bytes) = expected {
+                assert_eq!(result.unwrap(), bytes, "{mib} MiB");
+            } else {
+                assert!(result.is_err(), "{mib} MiB must be rejected");
+            }
+        }
+        for (yaml, environment, expected) in [
+            (Some(200), Some("not-a-number"), Some(Some(200))),
+            (None, Some("50"), Some(Some(50))),
+            (None, Some("0"), None),
+            (None, Some("bad"), None),
+            (None, None, Some(None)),
+        ] {
+            let result = memory_budget_mb_from_sources(yaml, environment);
+            if let Some(budget) = expected {
+                assert_eq!(
+                    result.unwrap(),
+                    budget,
+                    "yaml={yaml:?}, env={environment:?}"
+                );
+            } else {
+                assert!(result.is_err(), "yaml={yaml:?}, env={environment:?}");
+            }
+        }
     }
 }

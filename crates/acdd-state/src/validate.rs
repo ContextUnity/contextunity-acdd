@@ -19,7 +19,7 @@ use crate::usecases::lifecycle::{
     effective_modules_for_profile, effective_spec_collections, match_spec_collection,
     read_confined_utf8, validate_profile_fail_closed,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{load_adapter_report, Adapter, SpecCollectionConfig, ACDD_CONFIG_FILE, ACDD_DIR};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
@@ -737,6 +737,39 @@ fn validate_spec_id_against_collection(
     }
 }
 
+fn load_reconciled_task_statuses(
+    state_db_path: Option<&Path>,
+    rel_path: &str,
+    spec_id: &str,
+) -> BTreeMap<String, NodeStatus> {
+    let mut reconciled_statuses = BTreeMap::new();
+    let Some(db_path) = state_db_path.filter(|p| p.is_file()) else {
+        return reconciled_statuses;
+    };
+    let reader = SqliteStateReader::new(db_path);
+    let Ok(runs) = crate::usecases::lifecycle::list_all_runs(&reader, Some(RunStatus::Active))
+    else {
+        return reconciled_statuses;
+    };
+    let Some(run) = runs
+        .into_iter()
+        .find(|r| r.spec_id.as_deref() == Some(spec_id) || r.spec_path.as_deref() == Some(rel_path))
+    else {
+        return reconciled_statuses;
+    };
+    let Ok(Some(snap)) = reader.load_run_graph(&run.run_id) else {
+        return reconciled_statuses;
+    };
+    for node in snap.nodes {
+        if let Some(tref) = node.task_ref {
+            if node.kind == crate::types::NodeKind::Task {
+                reconciled_statuses.insert(tref.as_str().to_owned(), node.status);
+            }
+        }
+    }
+    reconciled_statuses
+}
+
 fn validate_planned_spec_task_statuses(
     state_db_path: Option<&Path>,
     rel_path: &str,
@@ -754,27 +787,7 @@ fn validate_planned_spec_task_statuses(
     }
 
     // Check if an active Run in state.sqlite reconciles these task statuses.
-    let mut reconciled_statuses: BTreeMap<String, NodeStatus> = BTreeMap::new();
-    if let Some(db_path) = state_db_path.filter(|p| p.is_file()) {
-        let reader = SqliteStateReader::new(db_path);
-        if let Ok(runs) = crate::usecases::lifecycle::list_all_runs(&reader, Some(RunStatus::Active))
-        {
-            if let Some(run) = runs.into_iter().find(|r| {
-                r.spec_id.as_deref() == Some(spec.id.as_str())
-                    || r.spec_path.as_deref() == Some(rel_path)
-            }) {
-                if let Ok(Some(snap)) = reader.load_run_graph(&run.run_id) {
-                    for node in snap.nodes {
-                        if let Some(tref) = node.task_ref {
-                            if node.kind == crate::types::NodeKind::Task {
-                                reconciled_statuses.insert(tref.as_str().to_owned(), node.status);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let reconciled_statuses = load_reconciled_task_statuses(state_db_path, rel_path, &spec.id);
 
     for task in advanced {
         let reconciled = matches!(

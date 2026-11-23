@@ -1,15 +1,15 @@
 //! Rust-only wrapper and reference projection rules used by the shared reducer.
 
-use super::super::value_flow::{
-    resolve_type, ReadTrace, RustWrapperKind, SemanticLimits, SemanticResolver, Symbol, SymbolRole,
-    TypeTarget, ValueFlowIndex,
+use super::super::value_flow::types::{
+    import_path, node_position, resolve_type, ConfiguredReceiverAuthority, ReadTrace,
+    RustWrapperKind, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
+    ValueFlowLookup,
 };
 use crate::{
     models::Node,
     semantic::{SourcePosition, TypeExpr},
 };
 use hashbrown::HashMap;
-use std::borrow::Cow;
 
 pub(in crate::linker) fn deserializer_result<'a>(
     owner: &'a Node,
@@ -134,7 +134,7 @@ fn string_utf8_result(member: &str, owned: bool) -> Option<TypeTarget<'static>> 
 }
 
 fn constructor_local_result<'a>(
-    index: &ValueFlowIndex<'a>,
+    index: &impl ValueFlowLookup<'a>,
     target: &TypeTarget<'a>,
     (member, callee_clean): (&str, &str),
     owner: &'a Node,
@@ -216,7 +216,7 @@ fn constructor_builtin_result<'a>(
 }
 
 pub(in crate::linker) fn constructor_result<'a>(
-    index: &ValueFlowIndex<'a>,
+    index: &impl ValueFlowLookup<'a>,
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
@@ -276,7 +276,7 @@ pub(in crate::linker) fn constructor_result<'a>(
             let module = match origin.as_ref() {
                 TypeTarget::External { module, .. } => Some(module.as_str()),
                 _ => match authority.as_ref() {
-                    super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                    ConfiguredReceiverAuthority::Hierarchy {
                         rule,
                         ..
                     } => rule.bases.first().map(String::as_str),
@@ -323,7 +323,7 @@ fn external_constructor_result<'a>(
         if matches!(member, "new" | "from" | "with_capacity" | "default") {
             return Some(Some(target.clone()));
         }
-    } else if !super::resolution::is_registered_cargo_crate(crate_name) {
+    } else if !super::forwarding::is_registered_cargo_crate(crate_name) {
         // Reject unregistered Cargo crate homonyms before TOML or suffix fallbacks.
         return Some(None);
     }
@@ -683,7 +683,7 @@ fn receiver_matches(receiver: &TypeTarget<'_>, expected: &[&str]) -> bool {
     match receiver {
         TypeTarget::External { module, .. } | TypeTarget::Builtin(module) => matches(module),
         TypeTarget::ConfiguredReceiver { authority, .. } => match authority.as_ref() {
-            super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy { rule, .. } => {
+            ConfiguredReceiverAuthority::Hierarchy { rule, .. } => {
                 rule.bases.iter().any(|base| matches(base))
             }
             _ => false,
@@ -881,54 +881,6 @@ fn wrap_unwrapped_adapter_override<'a>(
         };
     }
     target
-}
-
-pub(in crate::linker) fn resolve_reference<'a>(
-    owner: &'a Node,
-    mutable: bool,
-    target: &TypeExpr,
-    at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
-    limits: SemanticLimits,
-) -> TypeTarget<'a> {
-    if owner.language != "rust" {
-        return TypeTarget::Unknown;
-    }
-    let inner = resolve_type(owner, target, at, resolver, limits);
-    if matches!(inner, TypeTarget::External { .. }) {
-        return inner;
-    }
-    TypeTarget::RustReference {
-        mutable,
-        target: Box::new(inner),
-    }
-}
-
-pub(in crate::linker) fn resolve_reference_expr<'a>(
-    owner: &'a Node,
-    base: &str,
-    args: &[TypeExpr],
-    at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
-    limits: SemanticLimits,
-) -> Option<TypeTarget<'a>> {
-    if owner.language != "rust" {
-        return None;
-    }
-    if base == "()" {
-        return Some(TypeTarget::RustTuple(
-            args.iter()
-                .map(|item| resolve_type(owner, item, at, resolver, limits))
-                .collect(),
-        ));
-    }
-    if !matches!(base, "&" | "&mut") {
-        return None;
-    }
-    Some(match args {
-        [target] => resolve_reference(owner, base == "&mut", target, at, resolver, limits),
-        _ => TypeTarget::Unknown,
-    })
 }
 
 fn resolve_applied_result_alias<'a>(
@@ -1248,14 +1200,19 @@ pub(in crate::linker) fn resolve_applied<'a>(
                 return Some(resolve_type(
                     node,
                     alias,
-                    crate::linker::value_flow::node_position(node),
+                    node_position(node),
                     resolver,
                     SemanticLimits::default(),
                 ));
             }
             None
         }
-        _ => super::semantic_context::nominal_application(owner, nominal),
+        Symbol::Type(TypeTarget::Local(node))
+            if owner.language == "rust" && matches!(node.kind.as_str(), "struct" | "enum") =>
+        {
+            Some(TypeTarget::Local(node))
+        }
+        _ => None,
     }
 }
 
@@ -1591,14 +1548,6 @@ fn deref_wrapper(target: &TypeTarget<'_>) -> Option<&'static str> {
             _ => None,
         },
         _ => None,
-    }
-}
-
-pub(super) fn import_path(module: &str) -> Cow<'_, str> {
-    if module.contains("::") {
-        Cow::Owned(module.replace("::", "."))
-    } else {
-        Cow::Borrowed(module)
     }
 }
 
@@ -2806,6 +2755,25 @@ fn deref_target<'a>(
             Some(TypeTarget::Builtin("str".to_owned()))
         }
         TypeTarget::RustCollection { item } => Some(TypeTarget::RustSlice { item: item.clone() }),
+        _ => None,
+    }
+}
+
+pub(in crate::linker) fn visible(owner: &Node, candidate: &Node) -> Option<bool> {
+    if candidate.language == "rust" && candidate.kind == "impl" {
+        Some(false)
+    } else if owner.language == "rust" {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+pub(in crate::linker) fn reference_target<'target, 'node>(
+    target: &'target TypeTarget<'node>,
+) -> Option<&'target TypeTarget<'node>> {
+    match target {
+        TypeTarget::RustReference { target, .. } => Some(target),
         _ => None,
     }
 }

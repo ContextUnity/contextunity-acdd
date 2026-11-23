@@ -190,6 +190,9 @@ Generate a starter `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore`
 acdd init
 ```
 
+Verify your workspace configuration and state store health anytime with `acdd validate`.
+
+
 ### Complete Configuration Schema
 
 A complete `acdd.yaml` template:

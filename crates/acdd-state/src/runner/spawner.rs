@@ -1,7 +1,7 @@
 //! Role runner subprocess spawning (`stdin` Markdown prompt, `ACDD_*` env, session reuse).
 
 use crate::profile::RoleDef;
-use crate::runner::{
+use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, BoundedLogWriter,
 };
 use crate::types::ClaimOutcome;

@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedManifest};
 
 /// Parser for Ruby manifests (`Gemfile`, `*.gemspec`).
-pub struct RubyParser;
+pub(crate) struct RubyParser;
 
 /// Shared Ruby manifest parser instance.
-pub static RUBY_PARSER: RubyParser = RubyParser;
+pub(crate) static RUBY_PARSER: RubyParser = RubyParser;
 
 impl ManifestParser for RubyParser {
     fn ecosystem(&self) -> Ecosystem {

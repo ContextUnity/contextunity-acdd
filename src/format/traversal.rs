@@ -1,4 +1,4 @@
-use super::{
+use super::core::{
     escape_label, escape_text, inline_code, line_number, page_items, render_markdown_fields,
     scalar_text, text_field, u64_field,
 };

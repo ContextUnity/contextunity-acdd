@@ -230,8 +230,7 @@ impl WorkspacePathPolicy {
     }
 }
 
-/// Validate and normalize a single binary extension entry (`".PNG"` -> `"png"`).
-pub fn normalize_binary_extension(raw: &str) -> Result<String, String> {
+fn normalize_binary_extension(raw: &str) -> Result<String, String> {
     if raw.chars().any(char::is_whitespace) {
         return Err(format!(
             "limits.allowed_binary_extensions entry '{raw}' must not contain whitespace"

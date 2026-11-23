@@ -1,18 +1,16 @@
 //! Shared lifecycle infrastructure: lock ordering, path policies, profile/spec resolution,
 //! cross-workspace dependency queries, PID liveness checks, and tombstone cleanup recovery.
 
+mod cleanup;
 mod io;
 mod runs;
 mod specs;
 mod workspace;
 
-pub use crate::usecases::deps::{
-    collect_external_satisfied_deps, parse_task_dependency, verify_run_level_depends_on,
-};
 pub(crate) use io::combine_check_observations;
 pub use io::{
-    append_trace_event, current_session_fingerprint, is_local_pid_alive, prune_old_run_trace_dirs,
-    read_confined_utf8,
+    append_trace_event, current_session_fingerprint, is_local_pid_alive, list_all_runs,
+    prune_old_run_trace_dirs, read_confined_utf8,
 };
 pub(super) use runs::cleanup_tombstone;
 pub(crate) use runs::{
@@ -20,9 +18,8 @@ pub(crate) use runs::{
     resume_pending_tombstone_cleanups_dyn,
 };
 pub use runs::{
-    collect_integration_inputs, compute_unintegrated_tasks, generate_run_id, list_all_runs,
-    list_all_tombstones, load_active_run_graph, resolve_active_run, resolve_run_optional,
-    LoadedRunGraph,
+    collect_integration_inputs, compute_unintegrated_tasks, generate_run_id, list_all_tombstones,
+    load_active_run_graph, resolve_active_run, resolve_run_optional, LoadedRunGraph,
 };
 pub(crate) use specs::{compute_archive_relpath, reconcile_restored_runs_with_archives};
 pub use specs::{
@@ -88,7 +85,7 @@ mod tests {
             .exec_tx(|tx| tx.insert_run_graph(&graph))
             .expect("insert graph");
 
-        let cfg = crate::usecases::StateEngineConfig {
+        let cfg = crate::usecases::config::StateEngineConfig {
             workspace_root: root.to_path_buf(),
             worktree: root.to_path_buf(),
             state_db_override: None,

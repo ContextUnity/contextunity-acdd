@@ -1,14 +1,27 @@
-use super::*;
-use crate::models::ReceiverHint;
-use crate::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFact};
+use crate::ast::syntax::parse_island;
+use crate::languages::context::LanguageContext;
+use crate::languages::manifests;
+use crate::languages::profile::{LanguageProfile, TreeExtractArgs, TreeExtractor};
+use crate::languages::types::{
+    with_warm_parser, AstSearchCapabilities, ImportPath, LanguageFamily,
+};
+use crate::languages::typescript;
+use crate::models::{Facts, Node, ReceiverHint};
+use crate::semantic::ValueFlowFacts;
+use anyhow::{Context, Result};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+
+mod common;
 mod setup_facts;
 mod template;
-use setup_facts::{collect_setup_facts, SetupFactOutputs};
+use common::{source_position, Position};
+use setup_facts::{collect_setup_facts, RegisteredComponent, SetupFactOutputs};
 
 /// Represents vue data.
-pub struct Vue;
+struct Vue;
 /// Shared vue language profile.
-pub static VUE: Vue = Vue;
+static VUE: Vue = Vue;
 impl LanguageProfile for Vue {
     fn id(&self) -> &'static str {
         "vue"
@@ -29,7 +42,7 @@ impl LanguageProfile for Vue {
         LanguageFamily("javascript")
     }
     fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        typescript::TYPESCRIPT.linker()
+        &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["vue"]
@@ -72,17 +85,6 @@ impl LanguageProfile for Vue {
     fn builtin_generic(&self, receiver: &str) -> bool {
         typescript::TYPESCRIPT.builtin_generic(receiver)
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        let registry = dependency_registry::DependencyRegistry::bundled_framework_rules();
-        let rules = registry.language_context_for_path(path);
-        extract_file_impl(path, source, module, facts, None, &rules)
-    }
 
     fn finish(&self, facts: &mut Facts) {
         typescript::TYPESCRIPT.finish(facts);
@@ -99,7 +101,7 @@ impl LanguageProfile for Vue {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&VUE];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&VUE];
 
 fn extract_file_impl(
     path: &str,
@@ -108,6 +110,7 @@ fn extract_file_impl(
     facts: &mut Facts,
     mut flows: Option<&mut crate::typed_facts::FlowStore>,
     rules: &Arc<LanguageContext>,
+    tree_extract: TreeExtractor,
 ) -> Result<()> {
     extract_file_routes(path, module, facts, rules);
     let module_id = format!("module:{path}");
@@ -163,7 +166,7 @@ fn extract_file_impl(
             &typescript::JAVASCRIPT
         };
         let tree = with_warm_parser(lang, profile.grammar(path), |parser| {
-            ast::parse_island(
+            parse_island(
                 parser,
                 script,
                 absolute_start,
@@ -198,8 +201,8 @@ fn extract_file_impl(
                 rules,
             );
         }
-        let bindings = ast::extract_tree_with_language_context(
-            ast::TreeExtractContext {
+        let bindings = tree_extract(
+            TreeExtractArgs {
                 profile,
                 root: tree.root_node(),
                 path,
@@ -218,6 +221,70 @@ fn extract_file_impl(
         rest = &source[base..];
     }
 
+    enrich_vue_module_flows(
+        path,
+        facts,
+        flows.as_deref_mut(),
+        &mut macro_calls,
+        &mut typed_slots,
+        &shadowed_producers,
+        &setup_reassignments,
+        script_setup_ranges_overflowed,
+        typed_slots_invalid,
+    );
+
+    retain_valid_vue_bindings(
+        facts,
+        rules,
+        &mut registered_components,
+        &duplicate_components,
+        &component_reassignments,
+        &mut typed_iterables,
+        &duplicate_typed_iterables,
+        &setup_reassignments,
+    );
+    template::extract(
+        path,
+        source,
+        module,
+        template::TemplateBindings {
+            setup_positions: &setup_positions,
+            registered_components: &registered_components,
+            typed_iterables: &typed_iterables,
+        },
+        facts,
+        flows,
+    )?;
+    if !script_setup_ranges_overflowed {
+        annotate_vue_setup_references(
+            path,
+            facts,
+            &setup_positions,
+            &script_setup_bindings,
+            &setup_callables,
+            &duplicate_callables,
+            &typed_props,
+            &duplicate_typed_props,
+            &macro_calls,
+            &shadowed_producers,
+            &setup_reassignments,
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enrich_vue_module_flows(
+    path: &str,
+    facts: &mut Facts,
+    flows: Option<&mut crate::typed_facts::FlowStore>,
+    macro_calls: &mut Vec<crate::semantic::ComponentMacroFact>,
+    typed_slots: &mut Vec<crate::semantic::VueSlotFact>,
+    shadowed_producers: &HashSet<String>,
+    setup_reassignments: &HashSet<String>,
+    script_setup_ranges_overflowed: bool,
+    typed_slots_invalid: bool,
+) {
     macro_calls.retain(|fact| {
         !shadowed_producers.contains(&fact.callee)
             && !setup_reassignments.contains(&fact.callee)
@@ -226,66 +293,79 @@ fn extract_file_impl(
                 .as_ref()
                 .is_none_or(|binding| !setup_reassignments.contains(binding))
     });
-    if let Some(module_node) = facts
+    let Some(module_node) = facts
         .nodes
         .iter_mut()
         .find(|node| node.kind == "module" && node.path == path)
+    else {
+        return;
+    };
+    if script_setup_ranges_overflowed {
+        macro_calls.clear();
+    }
+    if typed_slots_invalid
+        || !macro_calls
+            .iter()
+            .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots)
     {
-        if script_setup_ranges_overflowed {
-            macro_calls.clear();
+        typed_slots.clear();
+    }
+    if macro_calls.is_empty() && typed_slots.is_empty() {
+        return;
+    }
+    let mut enrich = |flow: &mut ValueFlowFacts| {
+        for fact in typed_slots.drain(..) {
+            flow.push_vue_slot(fact);
         }
-        if typed_slots_invalid
-            || !macro_calls
-                .iter()
-                .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots)
-        {
-            typed_slots.clear();
+        for fact in macro_calls.iter().cloned() {
+            flow.push_component_macro(fact);
         }
-        if !macro_calls.is_empty() || !typed_slots.is_empty() {
-            let mut enrich = |flow: &mut ValueFlowFacts| {
-                for fact in typed_slots.drain(..) {
-                    flow.push_vue_slot(fact);
-                }
-                for fact in macro_calls.iter().cloned() {
-                    flow.push_component_macro(fact);
-                }
-                for fact in &macro_calls {
-                    if let (Some(binding), Some(annotation)) = (&fact.binding, &fact.annotation) {
-                        for value in &mut flow.bindings {
-                            if value.name == *binding
-                                && matches!(&value.value, crate::semantic::ValueExpr::Call { callee, .. } if *callee == fact.callee)
-                            {
-                                value.value = crate::semantic::ValueExpr::Annotated {
-                                    type_expr: annotation.clone(),
-                                };
-                            }
-                        }
+        for fact in macro_calls.iter() {
+            if let (Some(binding), Some(annotation)) = (&fact.binding, &fact.annotation) {
+                for value in &mut flow.bindings {
+                    if value.name == *binding
+                        && matches!(&value.value, crate::semantic::ValueExpr::Call { callee, .. } if *callee == fact.callee)
+                    {
+                        value.value = crate::semantic::ValueExpr::Annotated {
+                            type_expr: annotation.clone(),
+                        };
                     }
                 }
-            };
-            if let Some(store) = flows.as_deref_mut() {
-                if !matches!(
-                    store.state(module_node),
-                    Some(crate::typed_facts::FlowState::Invalid(_))
-                ) {
-                    let mut flow = store.take(&module_node.id).unwrap_or_default();
-                    enrich(&mut flow);
-                    store.insert(module_node.id.clone(), flow);
-                    module_node.details["value_flow"] = serde_json::Value::Null;
-                }
-            } else {
-                let mut flow = module_node
-                    .details
-                    .get("value_flow")
-                    .and_then(|value| serde_json::from_value::<ValueFlowFacts>(value.clone()).ok())
-                    .unwrap_or_default();
-                enrich(&mut flow);
-                module_node.details["value_flow"] =
-                    serde_json::to_value(flow).expect("valid component flow");
             }
         }
+    };
+    if let Some(store) = flows {
+        if !matches!(
+            store.state(module_node),
+            Some(crate::typed_facts::FlowState::Invalid(_))
+        ) {
+            let mut flow = store.take(&module_node.id).unwrap_or_default();
+            enrich(&mut flow);
+            store.insert(module_node.id.clone(), flow);
+            module_node.details["value_flow"] = serde_json::Value::Null;
+        }
+    } else {
+        let mut flow = module_node
+            .details
+            .get("value_flow")
+            .and_then(|value| serde_json::from_value::<ValueFlowFacts>(value.clone()).ok())
+            .unwrap_or_default();
+        enrich(&mut flow);
+        module_node.details["value_flow"] = serde_json::to_value(flow).expect("valid component flow");
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn retain_valid_vue_bindings(
+    facts: &Facts,
+    rules: &Arc<LanguageContext>,
+    registered_components: &mut BTreeMap<String, RegisteredComponent>,
+    duplicate_components: &HashSet<String>,
+    component_reassignments: &HashSet<String>,
+    typed_iterables: &mut BTreeMap<String, crate::semantic::TypeExpr>,
+    duplicate_typed_iterables: &HashSet<String>,
+    setup_reassignments: &HashSet<String>,
+) {
     let imported_aliases: HashSet<&str> = facts
         .references
         .iter()
@@ -325,143 +405,156 @@ fn extract_file_impl(
     typed_iterables.retain(|name, _| {
         !duplicate_typed_iterables.contains(name) && !setup_reassignments.contains(name)
     });
-    template::extract(
-        path,
-        source,
-        module,
-        template::TemplateBindings {
-            setup_positions: &setup_positions,
-            registered_components: &registered_components,
-            typed_iterables: &typed_iterables,
-        },
-        facts,
-        flows,
-    )?;
-    if !script_setup_ranges_overflowed {
-        let nodes_by_id: HashMap<&str, &Node> = facts
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node))
-            .collect();
-        let template_scopes: HashSet<&str> = facts
-            .nodes
-            .iter()
-            .filter(|node| node.kind == "template_scope")
-            .map(|node| node.id.as_str())
-            .collect();
-        // Synthetic type-literal fields carry a line and name, but no column or
-        // parent path. Reject a repeated name on the same line rather than
-        // assigning one indexed field to two different nested property paths.
-        let mut field_path_counts: HashMap<(usize, &str), usize> = HashMap::new();
-        for properties in typed_props.values() {
-            for (member_path, position) in properties {
-                if let Some(member) = member_path.rsplit('.').next() {
-                    *field_path_counts
-                        .entry((position.line, member))
-                        .or_default() += 1;
-                }
+}
+
+fn collect_typed_prop_fields<'a>(
+    path: &str,
+    nodes: &'a [Node],
+    typed_props: &'a BTreeMap<String, BTreeMap<String, Position>>,
+    duplicate_typed_props: &HashSet<String>,
+    macro_calls: &'a [crate::semantic::ComponentMacroFact],
+    setup_reassignments: &HashSet<String>,
+) -> BTreeMap<(&'a str, &'a str), (&'a str, &'a crate::semantic::ExtractionRuleOrigin)> {
+    // Synthetic type-literal fields carry a line and name, but no column or
+    // parent path. Reject a repeated name on the same line rather than
+    // assigning one indexed field to two different nested property paths.
+    let mut field_path_counts: HashMap<(usize, &str), usize> = HashMap::new();
+    for properties in typed_props.values() {
+        for (member_path, position) in properties {
+            if let Some(member) = member_path.rsplit('.').next() {
+                *field_path_counts.entry((position.line, member)).or_default() += 1;
             }
         }
-        let mut typed_prop_fields = BTreeMap::new();
-        for (binding, properties) in &typed_props {
-            if duplicate_typed_props.contains(binding) || setup_reassignments.contains(binding) {
-                continue;
-            }
-            let mut origins = macro_calls.iter().filter(|fact| {
-                fact.role == crate::semantic::ComponentMacroRole::Props
-                    && fact.binding.as_ref() == Some(binding)
-            });
-            let Some(origin) = origins.next().map(|fact| &fact.origin) else {
+    }
+    let mut typed_prop_fields = BTreeMap::new();
+    for (binding, properties) in typed_props {
+        if duplicate_typed_props.contains(binding) || setup_reassignments.contains(binding) {
+            continue;
+        }
+        let mut origins = macro_calls.iter().filter(|fact| {
+            fact.role == crate::semantic::ComponentMacroRole::Props
+                && fact.binding.as_ref() == Some(binding)
+        });
+        let Some(origin) = origins.next().map(|fact| &fact.origin) else {
+            continue;
+        };
+        if origins.next().is_some() {
+            continue;
+        }
+        for (member_path, position) in properties {
+            let Some(member) = member_path.rsplit('.').next() else {
                 continue;
             };
-            if origins.next().is_some() {
+            if field_path_counts.get(&(position.line, member)) != Some(&1) {
                 continue;
             }
-            for (member_path, position) in properties {
-                let Some(member) = member_path.rsplit('.').next() else {
-                    continue;
-                };
-                if field_path_counts.get(&(position.line, member)) != Some(&1) {
-                    continue;
-                }
-                let mut matches = facts.nodes.iter().filter(|node| {
-                    node.path == path
-                        && node.kind == "field"
-                        && node.name == member
-                        && node.line == position.line
-                });
-                if let Some(field) = matches.next() {
-                    if matches.next().is_none() {
-                        typed_prop_fields.insert(
-                            (binding.as_str(), member_path.as_str()),
-                            (field.id.as_str(), origin),
-                        );
-                    }
-                }
-            }
-        }
-        for reference in &mut facts.references {
-            if reference.kind == "calls" {
-                let at = Position {
-                    line: reference.line,
-                    column: reference.column,
-                };
-                let owner = nodes_by_id.get(reference.source.as_str()).copied();
-                let in_template = owner.is_some_and(|node| node.kind == "template_scope");
-                let in_setup = setup_positions
-                    .iter()
-                    .any(|(start, end)| *start <= at && at < *end);
-                if (in_template || in_setup)
-                    && setup_callables
-                        .get(reference.expression.as_str())
-                        .is_some_and(|(hint, declaration)| {
-                            !setup_reassignments.contains(reference.expression.as_str())
-                                && !duplicate_callables.contains(reference.expression.as_str())
-                                && match hint {
-                                    ReceiverHint::ConfiguredMacroCallable { producer, .. } => {
-                                        !shadowed_producers.contains(producer)
-                                            && !setup_reassignments.contains(producer)
-                                    }
-                                    _ => return false,
-                                }
-                                && (in_template || *declaration < at)
-                        })
-                    && !setup_callable_shadowed(owner, reference.expression.as_str(), &facts.nodes)
-                {
-                    reference.receiver_hint = setup_callables
-                        .get(reference.expression.as_str())
-                        .map(|(hint, _)| hint.clone());
-                }
-            } else if reference.kind == "references"
-                && template_scopes.contains(reference.source.as_str())
-            {
-                if script_setup_bindings.contains(reference.expression.as_str()) {
-                    reference.receiver_hint = Some(ReceiverHint::VueSetupBinding);
-                }
-                let expression = if reference.expression.contains("?.") {
-                    std::borrow::Cow::Owned(reference.expression.replace("?.", "."))
-                } else {
-                    std::borrow::Cow::Borrowed(reference.expression.as_str())
-                };
-                if let Some((binding, member_path)) = expression.split_once('.') {
-                    if !member_path.is_empty() {
-                        if let Some((field_id, origin)) =
-                            typed_prop_fields.get(&(binding, member_path))
-                        {
-                            let owner = nodes_by_id.get(reference.source.as_str()).copied();
-                            if !setup_callable_shadowed(owner, binding, &facts.nodes) {
-                                reference.receiver_hint = Some(ReceiverHint::ConfiguredTypedMember {
-                                    origin: (*origin).clone(),
-                                    field_id: (*field_id).to_owned(),
-                                });
-                            }
-                        }
-                    }
+            let mut matches = nodes.iter().filter(|node| {
+                node.path == path
+                    && node.kind == "field"
+                    && node.name == member
+                    && node.line == position.line
+            });
+            if let Some(field) = matches.next() {
+                if matches.next().is_none() {
+                    typed_prop_fields.insert(
+                        (binding.as_str(), member_path.as_str()),
+                        (field.id.as_str(), origin),
+                    );
                 }
             }
         }
     }
-    Ok(())
+    typed_prop_fields
+}
+
+#[allow(clippy::too_many_arguments)]
+fn annotate_vue_setup_references(
+    path: &str,
+    facts: &mut Facts,
+    setup_positions: &[(Position, Position)],
+    script_setup_bindings: &std::collections::BTreeSet<String>,
+    setup_callables: &BTreeMap<String, (ReceiverHint, Position)>,
+    duplicate_callables: &HashSet<String>,
+    typed_props: &BTreeMap<String, BTreeMap<String, Position>>,
+    duplicate_typed_props: &HashSet<String>,
+    macro_calls: &[crate::semantic::ComponentMacroFact],
+    shadowed_producers: &HashSet<String>,
+    setup_reassignments: &HashSet<String>,
+) {
+    let typed_prop_fields = collect_typed_prop_fields(
+        path,
+        &facts.nodes,
+        typed_props,
+        duplicate_typed_props,
+        macro_calls,
+        setup_reassignments,
+    );
+    let nodes_by_id: HashMap<&str, &Node> = facts
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let template_scopes: HashSet<&str> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "template_scope")
+        .map(|node| node.id.as_str())
+        .collect();
+    for reference in &mut facts.references {
+        if reference.kind == "calls" {
+            let at = Position {
+                line: reference.line,
+                column: reference.column,
+            };
+            let owner = nodes_by_id.get(reference.source.as_str()).copied();
+            let in_template = owner.is_some_and(|node| node.kind == "template_scope");
+            let in_setup = setup_positions
+                .iter()
+                .any(|(start, end)| *start <= at && at < *end);
+            let eligible = (in_template || in_setup)
+                && setup_callables
+                    .get(reference.expression.as_str())
+                    .is_some_and(|(hint, declaration)| {
+                        !setup_reassignments.contains(reference.expression.as_str())
+                            && !duplicate_callables.contains(reference.expression.as_str())
+                            && matches!(hint, ReceiverHint::ConfiguredMacroCallable { producer, .. }
+                                if !shadowed_producers.contains(producer) && !setup_reassignments.contains(producer))
+                            && (in_template || *declaration < at)
+                    })
+                && !setup_callable_shadowed(owner, reference.expression.as_str(), &facts.nodes);
+            if eligible {
+                reference.receiver_hint = setup_callables
+                    .get(reference.expression.as_str())
+                    .map(|(hint, _)| hint.clone());
+            }
+        } else if reference.kind == "references" && template_scopes.contains(reference.source.as_str())
+        {
+            if script_setup_bindings.contains(reference.expression.as_str()) {
+                reference.receiver_hint = Some(ReceiverHint::VueSetupBinding);
+            }
+            let expression = if reference.expression.contains("?.") {
+                std::borrow::Cow::Owned(reference.expression.replace("?.", "."))
+            } else {
+                std::borrow::Cow::Borrowed(reference.expression.as_str())
+            };
+            let Some((binding, member_path)) = expression.split_once('.') else {
+                continue;
+            };
+            if member_path.is_empty() {
+                continue;
+            }
+            let Some((field_id, origin)) = typed_prop_fields.get(&(binding, member_path)) else {
+                continue;
+            };
+            let owner = nodes_by_id.get(reference.source.as_str()).copied();
+            if !setup_callable_shadowed(owner, binding, &facts.nodes) {
+                reference.receiver_hint = Some(ReceiverHint::ConfiguredTypedMember {
+                    origin: (*origin).clone(),
+                    field_id: (*field_id).to_owned(),
+                });
+            }
+        }
+    }
 }
 
 fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &LanguageContext) {
@@ -546,20 +639,6 @@ fn setup_callable_shadowed(owner: Option<&Node>, name: &str, nodes: &[Node]) -> 
     false
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Position {
-    line: usize,
-    column: usize,
-}
-
-fn source_position(source: &str, offset: usize) -> Position {
-    let prefix = &source[..offset];
-    Position {
-        line: prefix.bytes().filter(|byte| *byte == b'\n').count() + 1,
-        column: prefix.rsplit('\n').next().unwrap_or("").len(),
-    }
-}
-
 fn is_setup_script_tag(tag: &str) -> bool {
     let bytes = tag.as_bytes();
     let prefix = b"<script";
@@ -634,6 +713,7 @@ pub(crate) fn extract_typed(
     module: &str,
     typed: &mut crate::typed_facts::TypedFacts,
     rules: &Arc<LanguageContext>,
+    tree_extract: TreeExtractor,
 ) -> Result<()> {
     extract_file_impl(
         path,
@@ -642,6 +722,7 @@ pub(crate) fn extract_typed(
         &mut typed.facts,
         Some(&mut typed.flows),
         rules,
+        tree_extract,
     )?;
     VUE.finish(&mut typed.facts);
     typed.project_named_selectors();

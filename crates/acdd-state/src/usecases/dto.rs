@@ -15,7 +15,6 @@ use acdd_core::ports::DomainToolOutput;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Request payload for starting a new `Run` from a spec file or ephemeral `--goal`.
@@ -1086,6 +1085,3 @@ impl StateQueryOutput {
         }
     }
 }
-
-/// Map legacy `StateEngineConfig` / workspace fields helper placeholder.
-pub type LinkedWorkspacesMap = BTreeMap<String, PathBuf>;

@@ -5,7 +5,7 @@ use crate::languages::manifests::syntax::SyntaxOperation;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-pub struct PreparedHttpTargetContext {
+pub(crate) struct PreparedHttpTargetContext {
     pub request_owners: HashSet<String>,
     pub route_owners: HashSet<String>,
 }
@@ -13,12 +13,12 @@ pub struct PreparedHttpTargetContext {
 type RuleTargetContexts = HashMap<String, HashMap<String, PreparedHttpTargetContext>>;
 
 /// Current, validated HTTP target policy for the endpoint request owners being linked.
-pub struct HttpTargetContexts {
+pub(crate) struct HttpTargetContexts {
     by_owner: HashMap<String, RuleTargetContexts>,
 }
 
 impl HttpTargetContexts {
-    pub fn build<'p>(
+    pub(crate) fn build<'p>(
         paths: impl Iterator<Item = &'p str>,
         dependencies: &DependencyRegistry,
     ) -> Self {
@@ -56,7 +56,7 @@ impl HttpTargetContexts {
         Self { by_owner }
     }
 
-    pub fn get(
+    pub(crate) fn get(
         &self,
         request_owner: &str,
         origin: &ExtractionRuleOrigin,
@@ -68,13 +68,13 @@ impl HttpTargetContexts {
     }
 }
 
-pub struct RouteEntry<'a> {
+pub(crate) struct RouteEntry<'a> {
     pub node: &'a Node,
     pub method: &'a str,
     pub segments: Vec<Cow<'a, str>>,
 }
 
-pub struct RouteIndex<'a> {
+pub(crate) struct RouteIndex<'a> {
     pub entries: Vec<RouteEntry<'a>>,
     pub entries_by_len: HashMap<usize, Vec<usize>>,
     pub names: HashMap<&'a str, Vec<&'a Node>>,
@@ -140,30 +140,13 @@ impl<'a> RouteIndex<'a> {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     #[allow(clippy::result_unit_err)]
     pub fn match_route_name(&self, name: &str) -> Result<Option<&'a Node>, ()> {
         single_candidate(self.names.get(name).map(Vec::as_slice).unwrap_or_default())
     }
 
     #[allow(clippy::result_unit_err)]
-    pub fn match_route(
-        &self,
-        client_method: &str,
-        client_url: &str,
-    ) -> Result<Option<&'a Node>, ()> {
-        self.match_route_in_context(client_method, client_url, None, "")
-    }
-
-    #[allow(clippy::result_unit_err)]
-    pub fn match_route_in_context(
+    pub(crate) fn match_route_in_context(
         &self,
         client_method: &str,
         client_url: &str,
@@ -182,7 +165,7 @@ impl<'a> RouteIndex<'a> {
         self.matching_routes_in_context(client_method, client_url, None, "")
     }
 
-    pub fn matching_routes_in_context(
+    pub(crate) fn matching_routes_in_context(
         &self,
         client_method: &str,
         client_url: &str,
@@ -227,7 +210,7 @@ impl<'a> RouteIndex<'a> {
     }
 }
 
-pub fn is_remote_client_url(url: &str) -> bool {
+pub(crate) fn is_remote_client_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("//")
 }
 
@@ -266,11 +249,11 @@ fn parse_segments<'a>(path: &'a str, is_param: fn(&str) -> bool) -> Vec<Cow<'a, 
         .collect()
 }
 
-pub fn normalize_route_segments(path: &str) -> Vec<Cow<'_, str>> {
+pub(crate) fn normalize_route_segments(path: &str) -> Vec<Cow<'_, str>> {
     parse_segments(path.trim_start_matches('^'), is_route_param)
 }
 
-pub fn normalize_client_url(url: &str) -> (bool, Vec<Cow<'_, str>>) {
+pub(crate) fn normalize_client_url(url: &str) -> (bool, Vec<Cow<'_, str>>) {
     if is_remote_client_url(url) {
         return (true, Vec::new());
     }

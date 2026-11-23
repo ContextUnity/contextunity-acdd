@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Default maximum total size (in MiB) across retained `.acdd/run/*` trace directories.
-pub const DEFAULT_MAX_RETAINED_TRACE_MIB: u64 = 128;
+const DEFAULT_MAX_RETAINED_TRACE_MIB: u64 = 128;
 
 /// W3C Trace Context span guard recording bounded span events into `<primary_worktree>/.acdd/run/<run_id>/traces.jsonl`.
 pub struct SpanGuard {
@@ -197,7 +197,7 @@ impl SpanGuard {
 }
 
 /// Prepared JSONL debug log line awaiting persistence.
-pub struct PendingDebugLog {
+struct PendingDebugLog {
     root: PathBuf,
     date: String,
     line: String,
@@ -359,7 +359,7 @@ fn prepare_debug_log(
 }
 
 /// Prepare an MCP debug log entry for persistence.
-pub fn prepare_mcp_debug_log(
+fn prepare_mcp_debug_log(
     root: &Path,
     tool: &str,
     parameters: &str,
@@ -381,7 +381,7 @@ pub fn prepare_mcp_debug_log(
 }
 
 /// Persist a prepared debug log entry.
-pub fn write_pending_debug_log(pending: PendingDebugLog) {
+fn write_pending_debug_log(pending: PendingDebugLog) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(move || {
             write_entry_sync(&pending.root, &pending.date, &pending.line);
@@ -429,7 +429,7 @@ fn write_entry_sync(root: &Path, date: &str, line: &str) {
 #[derive(Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 /// Enumerates the supported debug log entry values.
-pub enum DebugLogEntry<'a> {
+enum DebugLogEntry<'a> {
     /// Represents the cli case.
     Cli {
         /// The timestamp value.
@@ -576,5 +576,54 @@ mod tests {
             super::log_cli(sym_ws.path(), "scan", None, &serde_json::json!({"ok": 1}));
             assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
         }
+    }
+
+    #[test]
+    fn debug_logger_writes_to_acdd_directory() {
+        let dir = ScopedTempDir::create("acdd-ut-debug-logger").unwrap();
+        let root = dir.path();
+        let utc_now = acdd_core::telemetry::now_utc_iso_ms();
+        let date_str = utc_now.split('T').next().unwrap();
+        let expected_jsonl_file = root
+            .join(".acdd")
+            .join(format!("command-log-debug--{date_str}.jsonl"));
+
+        assert!(!expected_jsonl_file.exists());
+
+        super::log_cli(
+            root,
+            "query overview",
+            None,
+            &serde_json::json!({"status": "ok"}),
+        );
+
+        if let Some(pending) = super::prepare_mcp_debug_log(
+            root,
+            "code_map_inspect",
+            "{\"selector\": \"foo::bar\"}",
+            &serde_json::json!({"found": true}),
+        ) {
+            super::write_pending_debug_log(pending);
+        }
+
+        assert!(
+            expected_jsonl_file.exists(),
+            "JSONL log file must be created"
+        );
+
+        let content = fs::read_to_string(&expected_jsonl_file).unwrap();
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let cli_entry: serde_json::Value = serde_json::from_str(lines[0]).expect("valid jsonl line 1");
+        assert_eq!(cli_entry["source"], "cli");
+        assert_eq!(cli_entry["command"], "query overview");
+        assert_eq!(cli_entry["output"]["status"], "ok");
+
+        let mcp_entry: serde_json::Value = serde_json::from_str(lines[1]).expect("valid jsonl line 2");
+        assert_eq!(mcp_entry["source"], "mcp");
+        assert_eq!(mcp_entry["tool"], "code_map_inspect");
+        assert_eq!(mcp_entry["parameters"]["selector"], "foo::bar");
+        assert_eq!(mcp_entry["output"]["found"], true);
     }
 }

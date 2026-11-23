@@ -2,7 +2,7 @@ use super::super::cache;
 use super::super::commitments::{
     read_metadata, read_metadata_optional, MetadataKey, MAX_SQLITE_VALUE_BYTES,
 };
-use super::IndexRebuildRequired;
+use super::types::IndexRebuildRequired;
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
@@ -228,7 +228,7 @@ pub fn open_with_diagnostics(
     }
     validate_workspace(&conn, root)?;
     let semantics = read_metadata_optional(&conn, MetadataKey::IndexSemanticsVersion)?;
-    if semantics.as_deref() != Some(crate::INDEX_SEMANTICS_VERSION) {
+    if semantics.as_deref() != Some(crate::models::INDEX_SEMANTICS_VERSION) {
         validate_database_integrity(&conn)?;
         return Err(IndexRebuildRequired("incompatible index semantics; rebuild index").into());
     }
@@ -281,16 +281,6 @@ pub fn open_with_diagnostics(
     Ok(conn)
 }
 
-/// Decodes one persisted local facts payload for integration-level storage checks.
-///
-/// # Errors
-///
-/// Returns an error when the payload is corrupt or uses an unsupported encoding.
-#[doc(hidden)]
-pub fn decode_local_facts(blob: &[u8]) -> Result<crate::models::Facts> {
-    Ok(crate::typed_facts::decode_facts(blob)?.into_public())
-}
-
 /// Reads the indexed files inventory snapshot from the database.
 pub fn inventory_snapshot(conn: &Connection) -> Result<Vec<crate::models::FileEntry>> {
     // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
@@ -315,4 +305,56 @@ pub fn read_policy(root: &Path, conn: &Connection) -> Result<acdd_core::config::
     let raw = read_metadata(conn, MetadataKey::Adapter)?;
     let value: serde_json::Value = serde_json::from_str(&raw)?;
     acdd_core::config::read_policy_from_value(root, &value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{
+        commitments::{seal, write_metadata, ALGORITHM},
+        schema::initialize_code_map_schema,
+    };
+
+    #[test]
+    fn inventory_snapshot_reads_over_limit_and_restores_sqlite_cell_cap() {
+        let dir = acdd_core::fs::ScopedTempDir::create("acdd-ut-large-inv").unwrap();
+        let db = dir.path().join("index.sqlite");
+        let conn = Connection::open(&db).unwrap();
+        initialize_code_map_schema(&conn).unwrap();
+        write_metadata(&conn, MetadataKey::SchemaVersion, acdd_core::config::ENGINE_SCHEMA_VERSION)
+            .unwrap();
+        write_metadata(&conn, MetadataKey::IndexerEngine, "contextunity-acdd-rust").unwrap();
+        write_metadata(
+            &conn,
+            MetadataKey::WorkspaceRoot,
+            &dir.path().canonicalize().unwrap().to_string_lossy(),
+        )
+        .unwrap();
+        write_metadata(
+            &conn,
+            MetadataKey::IndexSemanticsVersion,
+            crate::models::INDEX_SEMANTICS_VERSION,
+        )
+        .unwrap();
+        write_metadata(&conn, MetadataKey::CommitmentAlgorithm, ALGORITHM).unwrap();
+        let padded = format!("[]{}", " ".repeat(MAX_SQLITE_VALUE_BYTES as usize + 4096));
+        write_metadata(&conn, MetadataKey::InventorySnapshot, &padded).unwrap();
+        seal(&conn).unwrap();
+        drop(conn);
+
+        let opened = open(&db, dir.path()).unwrap();
+        assert_eq!(
+            opened.limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH),
+            MAX_SQLITE_VALUE_BYTES
+        );
+        assert!(
+            read_metadata(&opened, MetadataKey::InventorySnapshot).is_err(),
+            "public SQL queries must stay capped at MAX_SQLITE_VALUE_BYTES"
+        );
+        assert!(inventory_snapshot(&opened).unwrap().is_empty());
+        assert_eq!(
+            opened.limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH),
+            MAX_SQLITE_VALUE_BYTES
+        );
+    }
 }

@@ -1,4 +1,16 @@
-use super::*;
+use super::shared::component_owners;
+use acdd_core::config;
+use acdd_index::{
+    languages,
+    linker,
+    models::{stable_hash64, Facts, FileEntry},
+    typed_facts::{decode_facts, TypedFacts},
+};
+use anyhow::Result;
+use rayon::prelude::*;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 struct TempFrontierWriteGuard<'a> {
     conn: &'a Connection,
@@ -410,7 +422,10 @@ pub(super) fn named_projection_candidates(
     let mut unavailable_owners = BTreeSet::new();
     let mut collect = |path: &str, file: &TypedFacts| {
         if file.flows.named_uncertainty_faults().next().is_some() {
-            unavailable_scopes.insert(linker::named_binding_scope(path, dependencies));
+            unavailable_scopes.insert(languages::dependency_registry::named_binding_scope(
+                path,
+                dependencies,
+            ));
             unavailable_owners.insert(path.to_owned());
         }
         for reference in file.references.iter().filter(|reference| {
@@ -462,7 +477,10 @@ pub(super) fn named_projection_candidates(
     if !unavailable_scopes.is_empty() {
         for path in inventory.keys() {
             let admitted = unavailable_scopes
-                .contains(&linker::named_binding_scope(path, dependencies))
+                .contains(&languages::dependency_registry::named_binding_scope(
+                    path,
+                    dependencies,
+                ))
                 || dependencies.language_context_for_path(path).syntax_rules.iter().any(|rule| {
                     matches!(&rule.operation, languages::manifests::syntax::SyntaxOperation::NamedBinding { domain, .. }
                         if unavailable_owners.iter().any(|owner| dependencies.named_scope_admits(path, owner, domain)))

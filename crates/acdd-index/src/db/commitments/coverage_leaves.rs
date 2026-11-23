@@ -1,10 +1,37 @@
-use super::{encode_int, encode_text, key, new_leaf_hasher};
+use super::base::{encode_int, encode_text, key, new_leaf_hasher};
 use anyhow::{Context, Result};
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use rusqlite::{types::ValueRef, Connection};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+fn cmp_coverage_prefix(
+    left: (i64, &str, &str, &str),
+    right: (i64, &str, &str, &str),
+) -> std::cmp::Ordering {
+    left.0
+        .cmp(&right.0)
+        .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
+        .then_with(|| left.2.as_bytes().cmp(right.2.as_bytes()))
+        .then_with(|| left.3.as_bytes().cmp(right.3.as_bytes()))
+}
+
+fn encode_coverage_prefix(
+    hasher: &mut Sha256,
+    owner: &str,
+    line: i64,
+    expression: &str,
+    status: &str,
+    evidence: &str,
+) {
+    hasher.update([0xff]);
+    encode_text(hasher, owner);
+    encode_int(hasher, line);
+    encode_text(hasher, expression);
+    encode_text(hasher, status);
+    encode_text(hasher, evidence);
+}
 
 fn coverage_dictionary(
     conn: &Connection,
@@ -84,18 +111,39 @@ fn owner_language_expression_dictionary(
     Ok(Some(dictionary))
 }
 
-pub(super) fn canonical_coverage_leaves(
-    conn: &Connection,
-    owners: Option<&BTreeSet<String>>,
-    paths: &HashMap<i64, String>,
-) -> Result<Option<BTreeMap<String, String>>> {
+fn owner_filter(owners: Option<&BTreeSet<String>>) -> Result<(Option<String>, &'static str)> {
     let encoded = owners.map(serde_json::to_string).transpose()?;
-    let encoded = encoded.as_deref();
     let filter = if owners.is_some() {
         "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
     } else {
         ""
     };
+    Ok((encoded, filter))
+}
+
+fn collect_hashed_leaves<'a, R, F>(
+    by_owner: HashMap<&'a str, Vec<R>>,
+    parallel: bool,
+    hash_owner: F,
+) -> BTreeMap<String, String>
+where
+    R: Send,
+    F: Fn((&'a str, Vec<R>)) -> (String, String) + Sync + Send,
+{
+    if parallel {
+        by_owner.into_par_iter().map(hash_owner).collect()
+    } else {
+        by_owner.into_iter().map(hash_owner).collect()
+    }
+}
+
+pub(super) fn canonical_coverage_leaves(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+    paths: &HashMap<i64, String>,
+) -> Result<Option<BTreeMap<String, String>>> {
+    let (encoded, filter) = owner_filter(owners)?;
+    let encoded = encoded.as_deref();
     let expression_sql = if owners.is_some() {
         format!("SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN(SELECT expression_id FROM resolution_coverage {filter})")
     } else {
@@ -193,31 +241,28 @@ pub(super) fn canonical_coverage_leaves(
     }
     let hash_owner = |(owner, mut rows): (&str, Vec<CoverageRow<'_>>)| {
         rows.sort_unstable_by(|left, right| {
-            left.line
-                .cmp(&right.line)
-                .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
-                .then_with(|| left.status.as_bytes().cmp(right.status.as_bytes()))
-                .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
+            cmp_coverage_prefix(
+                (left.line, left.expression, left.status, left.evidence),
+                (right.line, right.expression, right.status, right.evidence),
+            )
         });
         let mut hasher = new_leaf_hasher("resolution_coverage", owner);
         for row in rows {
-            hasher.update([0xff]);
-            encode_text(&mut hasher, owner);
-            encode_int(&mut hasher, row.line);
-            encode_text(&mut hasher, row.expression);
-            encode_text(&mut hasher, row.status);
-            encode_text(&mut hasher, row.evidence);
+            encode_coverage_prefix(
+                &mut hasher,
+                owner,
+                row.line,
+                row.expression,
+                row.status,
+                row.evidence,
+            );
         }
         (
             key("resolution_coverage", owner),
             hex::encode(hasher.finalize()),
         )
     };
-    let leaves = if accepted >= 8192 {
-        by_owner.into_par_iter().map(hash_owner).collect()
-    } else {
-        by_owner.into_iter().map(hash_owner).collect()
-    };
+    let leaves = collect_hashed_leaves(by_owner, accepted >= 8192, hash_owner);
     Ok(Some(leaves))
 }
 
@@ -226,13 +271,8 @@ pub(super) fn canonical_owner_language_leaves(
     owners: Option<&BTreeSet<String>>,
     paths: &HashMap<i64, String>,
 ) -> Result<Option<BTreeMap<String, String>>> {
-    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let (encoded, filter) = owner_filter(owners)?;
     let encoded = encoded.as_deref();
-    let filter = if owners.is_some() {
-        "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
     let evidence_sql = format!(
         "SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM coverage_owner_language {filter})"
     );
@@ -302,21 +342,22 @@ pub(super) fn canonical_owner_language_leaves(
     }
     let hash_owner = |(owner, mut rows): (&str, Vec<OwnerLanguageRow<'_>>)| {
         rows.sort_unstable_by(|left, right| {
-            left.line
-                .cmp(&right.line)
-                .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
-                .then_with(|| left.status.as_bytes().cmp(right.status.as_bytes()))
-                .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
-                .then_with(|| left.language.as_bytes().cmp(right.language.as_bytes()))
+            cmp_coverage_prefix(
+                (left.line, left.expression, &left.status, left.evidence),
+                (right.line, right.expression, &right.status, right.evidence),
+            )
+            .then_with(|| left.language.as_bytes().cmp(right.language.as_bytes()))
         });
         let mut hasher = new_leaf_hasher("coverage_owner_language", owner);
         for row in rows {
-            hasher.update([0xff]);
-            encode_text(&mut hasher, owner);
-            encode_int(&mut hasher, row.line);
-            encode_text(&mut hasher, row.expression);
-            encode_text(&mut hasher, &row.status);
-            encode_text(&mut hasher, row.evidence);
+            encode_coverage_prefix(
+                &mut hasher,
+                owner,
+                row.line,
+                row.expression,
+                &row.status,
+                row.evidence,
+            );
             encode_text(&mut hasher, &row.language);
         }
         (
@@ -324,11 +365,7 @@ pub(super) fn canonical_owner_language_leaves(
             hex::encode(hasher.finalize()),
         )
     };
-    let leaves = if by_owner.len() >= 8192 {
-        by_owner.into_par_iter().map(hash_owner).collect()
-    } else {
-        by_owner.into_iter().map(hash_owner).collect()
-    };
+    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| hash_owner((o, r)));
     Ok(Some(leaves))
 }
 
@@ -337,13 +374,8 @@ pub(super) fn canonical_language_count_leaves(
     owners: Option<&BTreeSet<String>>,
     paths: &HashMap<i64, String>,
 ) -> Result<Option<BTreeMap<String, String>>> {
-    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let (encoded, filter) = owner_filter(owners)?;
     let encoded = encoded.as_deref();
-    let filter = if owners.is_some() {
-        "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
-    } else {
-        ""
-    };
     let mut statement = conn.prepare(&format!(
         "SELECT path_id,language,status,records FROM coverage_language_counts {filter}"
     ))?;
@@ -408,10 +440,6 @@ pub(super) fn canonical_language_count_leaves(
             hex::encode(hasher.finalize()),
         )
     };
-    let leaves = if by_owner.len() >= 8192 {
-        by_owner.into_par_iter().map(hash_owner).collect()
-    } else {
-        by_owner.into_iter().map(hash_owner).collect()
-    };
+    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| hash_owner((o, r)));
     Ok(Some(leaves))
 }

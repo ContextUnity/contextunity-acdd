@@ -1,7 +1,7 @@
 //! In-process MCP transport shared by integration test suites.
 
 use crate::common::Workspace;
-use contextunity_acdd::mcp::{response::BoundedWriter, server::Server};
+use contextunity_acdd::mcp::server::Server;
 use rmcp::{
     model::{CallToolRequestParams, CallToolResponse, NumberOrString},
     service::{serve_directly, RequestContext},
@@ -110,7 +110,7 @@ fn protocol() -> &'static DirectProtocol {
         let (reader, writer) = tokio::io::split(transport);
         let server = Server::new(std::path::PathBuf::new(), std::path::PathBuf::new());
         let (running, peer) = runtime.block_on(async {
-            let running = serve_directly(server, (reader, BoundedWriter::new(writer)), None);
+            let running = serve_directly(server, (reader, writer), None);
             let peer = running.peer().clone();
             (running, peer)
         });
@@ -169,7 +169,7 @@ impl McpTestHarness {
         let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
         let server_task = runtime.spawn(async move {
             let service = server
-                .serve((reader, BoundedWriter::new(writer)))
+                .serve((reader, writer))
                 .await
                 .map_err(|error| HarnessError::Server {
                     phase: "serve",

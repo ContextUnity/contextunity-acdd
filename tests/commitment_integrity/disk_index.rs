@@ -1,6 +1,5 @@
-use super::harness::*;
 use crate::common::Workspace;
-use acdd_index::db::{reader, SCHEMA_DDL};
+use acdd_index::db::{commitments, reader};
 use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::Connection;
 
@@ -202,33 +201,17 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
 
 #[test]
 fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
-    let workspace = Workspace::new();
-    let path = workspace.path("fts-commitments.sqlite");
-    let conn = Connection::open(&path).unwrap();
-    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
-    conn.execute_batch(SCHEMA_DDL).unwrap();
-    search_nodes(&conn, 1);
-    conn.execute(
-        "INSERT INTO node_search(rowid,search_text) VALUES(1,'stable node posting')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size) \
-         VALUES('doc-17','docs/17.md','Stable title','guide','stable content','stable invariant','',0,0)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO doc_search(rowid,section_title,content,invariants) \
-         SELECT rowid,section_title,content,invariants FROM doc_sections",
-        [],
-    )
-    .unwrap();
-    commitments::seal(&conn).unwrap();
+    let workspace = Workspace::with_files(&[
+        ("src/lib.rs", "pub fn stable_node_posting() {}\n"),
+        ("docs/17.md", "# Stable title\n\nstable content\n"),
+    ]);
+    let path = workspace.db();
+    contextunity_acdd::engine::pipeline::build(workspace.root(), &path, None).unwrap();
 
-    // Keep the writer connection open so `-shm` remains materialized for `SQLITE_OPEN_READ_ONLY` on macOS.
-    let writer = conn;
+    // Keep a writer connection open in WAL mode so `-shm` remains materialized for `SQLITE_OPEN_READ_ONLY` on macOS
+    // and the writer can commit concurrently with `reader`'s snapshot.
+    let writer = Connection::open(&path).unwrap();
+    writer.pragma_update(None, "journal_mode", "WAL").unwrap();
     let reader = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("read-only fixture open succeeds");
     reader.pragma_update(None, "query_only", true).unwrap();

@@ -1,4 +1,8 @@
-use super::*;
+use super::commit::*;
+use super::integrate::*;
+use super::snapshot::*;
+use super::worktree::*;
+use acdd_core::errors::ErrorCode;
 use acdd_core::format::sha256_hex;
 use acdd_core::git::git_command;
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
@@ -40,17 +44,20 @@ fn run_failpoint_child(case: &str, repo: &Path) {
     match case {
         "commit_plumbing_after_ref" => {
             let base_head = current_head_commit(repo).expect("base");
-            let _ = create_scoped_commit(&ScopedCommitReq {
-                worktree: repo.to_path_buf(),
-                run_id,
-                node_id: "task:t1:deliver".to_owned(),
-                claim_revision: 1,
-                base_head,
-                admitted_scope: vec!["src/**".to_owned()],
-                path_policy: policy,
-                message: "failpoint commit".to_owned(),
-                allow_main: false,
-            });
+            let _ = create_scoped_commit_with_expected(
+                &ScopedCommitReq {
+                    worktree: repo.to_path_buf(),
+                    run_id,
+                    node_id: "task:t1:deliver".to_owned(),
+                    claim_revision: 1,
+                    base_head,
+                    admitted_scope: vec!["src/**".to_owned()],
+                    path_policy: policy,
+                    message: "failpoint commit".to_owned(),
+                    allow_main: false,
+                },
+                None,
+            );
         }
         "integrate_rebase_conflict" => {
             let target_wt = repo.join("run-wt");
@@ -141,18 +148,21 @@ fn failpoint_crash_recovery_matrix() {
         let crashed_head = current_head_commit(&repo).expect("crashed head");
         assert_ne!(crashed_head, base_head);
 
-        // Retry create_scoped_commit under repo.lock semantics -> idempotently recovers crashed commit.
-        let retry = create_scoped_commit(&ScopedCommitReq {
-            worktree: repo.clone(),
-            run_id: run_id.clone(),
-            node_id: "task:t1:deliver".to_owned(),
-            claim_revision: 1,
-            base_head: base_head.clone(),
-            admitted_scope: vec!["src/**".to_owned()],
-            path_policy: policy.clone(),
-            message: "failpoint commit".to_owned(),
-            allow_main: false,
-        })
+        // Retry create_scoped_commit_with_expected under repo.lock semantics -> idempotently recovers crashed commit.
+        let retry = create_scoped_commit_with_expected(
+            &ScopedCommitReq {
+                worktree: repo.clone(),
+                run_id: run_id.clone(),
+                node_id: "task:t1:deliver".to_owned(),
+                claim_revision: 1,
+                base_head: base_head.clone(),
+                admitted_scope: vec!["src/**".to_owned()],
+                path_policy: policy.clone(),
+                message: "failpoint commit".to_owned(),
+                allow_main: false,
+            },
+            None,
+        )
         .expect("idempotent commit recovery");
         assert!(retry.recovered_idempotently, "{case}");
         assert_eq!(retry.committed_oid, Some(crashed_head));
@@ -162,17 +172,20 @@ fn failpoint_crash_recovery_matrix() {
         fs::write(repo.join("README.md"), "# External Drift\n").expect("drift");
         git_ok(&repo, &["add", "README.md"]);
         git_ok(&repo, &["commit", "-m", "external drift"]);
-        let drift_err = create_scoped_commit(&ScopedCommitReq {
-            worktree: repo,
-            run_id: run_id.clone(),
-            node_id: "task:t1:deliver".to_owned(),
-            claim_revision: 1,
-            base_head,
-            admitted_scope: vec!["src/**".to_owned()],
-            path_policy: policy.clone(),
-            message: "failpoint commit".to_owned(),
-            allow_main: false,
-        })
+        let drift_err = create_scoped_commit_with_expected(
+            &ScopedCommitReq {
+                worktree: repo,
+                run_id: run_id.clone(),
+                node_id: "task:t1:deliver".to_owned(),
+                claim_revision: 1,
+                base_head,
+                admitted_scope: vec!["src/**".to_owned()],
+                path_policy: policy.clone(),
+                message: "failpoint commit".to_owned(),
+                allow_main: false,
+            },
+            None,
+        )
         .expect_err("external drift expected");
         assert_eq!(drift_err.code, ErrorCode::ExternalGitDrift);
     }
@@ -224,7 +237,7 @@ fn failpoint_crash_recovery_matrix() {
             .expect("spawn integrate child");
         assert!(!child.status.success(), "{case} child should crash");
 
-        let gd = super::git_dir_path(&created_task.worktree).expect("gd");
+        let gd = super::exec::git_dir_path(&created_task.worktree).expect("gd");
         assert!(gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists());
         assert!(abort_in_progress_git_ops(&created_task.worktree).expect("abort rebase"));
         assert!(git_ok(&created_run.worktree, &["status", "--porcelain"]).is_empty());

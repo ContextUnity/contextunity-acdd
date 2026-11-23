@@ -1,4 +1,6 @@
-use super::super::*;
+use crate::languages::{self, ImportPath, LanguageFamily};
+use crate::models::{Node, ReceiverHint, Reference};
+use hashbrown::{HashMap, HashSet};
 
 pub(in crate::linker) fn reference_profile<'a>(
     profile: Option<&'a dyn languages::LanguageProfile>,
@@ -28,12 +30,12 @@ struct Include<'a> {
     line: usize,
 }
 
-pub(in crate::linker) struct Registry<'a> {
+pub(in crate::linker) struct ScriptRegistry<'a> {
     by_owner: HashMap<&'a str, HashMap<&'a str, Vec<Provider<'a>>>>,
     incoming: HashMap<&'a str, Vec<Include<'a>>>,
 }
 
-impl<'a> Registry<'a> {
+impl<'a> ScriptRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
         normalized_imports: &HashMap<(&str, &str), Option<ImportPath>>,

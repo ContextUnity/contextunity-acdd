@@ -413,9 +413,7 @@ fn declarations_and_static_constructor_metadata_are_preserved() {
     assert_eq!(constructor.details["receiver_type"], "Config");
     assert!(constructor.details.get("is_method").is_none());
     assert_eq!(constructor.details["is_static"], true);
-    assert_eq!(
-        acdd_index::languages::rust::kind("function_item"),
-        Some("function")
-    );
-    let _ = acdd_index::languages::rust::language();
+    let profile = acdd_index::languages::require("rust").expect("rust profile missing");
+    assert_eq!(profile.symbol_kind("function_item"), Some("function"));
+    let _ = profile.grammar("lib.rs");
 }

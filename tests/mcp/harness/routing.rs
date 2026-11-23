@@ -43,11 +43,12 @@ impl RoutingFixture {
     pub fn change_routes(&self, routes: &str) -> anyhow::Result<Value> {
         self.workspace
             .write("urls.py", &format!("{}{routes}\n", self.imports));
-        pipeline::delta_with_cache_dir(
+        pipeline::delta_with_selection(
             self.workspace.root(),
             &self.workspace.db(),
             &["urls.py".into()],
-            &self.workspace.path(".acdd/extraction-cache"),
+            None,
+            Some(&self.workspace.path(".acdd/extraction-cache")),
         )
     }
 

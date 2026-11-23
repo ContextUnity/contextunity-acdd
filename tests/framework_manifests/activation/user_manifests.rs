@@ -340,7 +340,6 @@ fn invalid_user_framework_manifest_fails_before_index_publication() {
 
 #[test]
 fn activation_condition_and_language_context_matrix() {
-    use languages::dependency_registry::{ManifestSource, WorkspaceManifestSources};
     use languages::manifests::semantic::{ActivationCondition, FileActivationSignals};
     use std::collections::BTreeSet;
 
@@ -352,20 +351,12 @@ package_family = "python"
 activation = [{ kind = "package", name = "django" }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["csrf_token"], filters = [], libraries = [], library_routes = {} }
 "#;
-    let legacy_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
-        name: "",
-        manifests: &[
-            ManifestSource {
-                path: "requirements.txt",
-                source: "django>=5\n",
-            },
-            ManifestSource {
-                path: ".acdd/frameworks/legacy.toml",
-                source: legacy_toml,
-            },
-        ],
-    }])
-    .unwrap();
+    let legacy_registry = FrameworkHarness::from_manifests(&[
+        ("requirements.txt", "django>=5\n"),
+        (".acdd/frameworks/legacy.toml", legacy_toml),
+    ])
+    .unwrap()
+    .registry;
     let legacy_ctx = legacy_registry.language_context_for_path("index.html");
     let legacy_rule = legacy_ctx
         .syntax_rules
@@ -461,14 +452,10 @@ operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], 
 
     #[cfg(feature = "lang-html")]
     {
-        let deferred_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
-            name: "",
-            manifests: &[ManifestSource {
-                path: ".acdd/frameworks/custom.toml",
-                source: syntax_pack,
-            }],
-        }])
-        .unwrap();
+        let deferred_registry =
+            FrameworkHarness::from_manifests(&[(".acdd/frameworks/custom.toml", syntax_pack)])
+                .unwrap()
+                .registry;
         let ctx = deferred_registry.language_context_for_path("templates/page.html");
         assert!(ctx.has_syntax_gated_rules());
         assert_eq!(
@@ -506,21 +493,12 @@ operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], 
 
         #[cfg(feature = "lang-typescript")]
         {
-            let pkg_registry =
-                DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
-                    name: "",
-                    manifests: &[
-                        ManifestSource {
-                            path: "package.json",
-                            source: r#"{"dependencies":{"alpinejs":"^3.13"}}"#,
-                        },
-                        ManifestSource {
-                            path: ".acdd/frameworks/custom.toml",
-                            source: syntax_pack,
-                        },
-                    ],
-                }])
-                .unwrap();
+            let pkg_registry = FrameworkHarness::from_manifests(&[
+                ("package.json", r#"{"dependencies":{"alpinejs":"^3.13"}}"#),
+                (".acdd/frameworks/custom.toml", syntax_pack),
+            ])
+            .unwrap()
+            .registry;
             let pkg_ctx = pkg_registry.language_context_for_path("app.js");
             let pkg_rule = pkg_ctx
                 .syntax_rules

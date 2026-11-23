@@ -1,6 +1,6 @@
 use super::support::{base_engine_config, git_cmd, init_git_repo_on_branch, TestProvider};
 use crate::common::Workspace;
-use acdd_core::config::AdapterFile;
+use acdd_core::config::schema::AdapterFile;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
 use acdd_core::path_policy::WorkspacePathPolicy;
@@ -11,7 +11,7 @@ use acdd_state::profile::{
 use acdd_state::spec::parse_spec;
 use acdd_state::types::SubmitAction;
 use acdd_state::usecases::dto::{ClaimReq, ExtendScopeReq, StartReq, SubmitReq};
-use acdd_state::usecases::{execute_on, StateCommand};
+use acdd_state::usecases::StateCommand;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -235,9 +235,8 @@ gates:
                 let harness = RunHarness::in_memory().unwrap();
                 let rel = format!("docs/plans/neg-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let err = execute_on(
+                let err = harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Start(StartReq {
                         spec_path: Some(rel),
@@ -252,9 +251,8 @@ gates:
                 let harness = RunHarness::in_memory().unwrap();
                 let rel = format!("docs/plans/neg-claim-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let started = match execute_on(
+                let started = match harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Start(StartReq {
                         spec_path: Some(rel),
@@ -267,9 +265,8 @@ gates:
                     acdd_state::usecases::StateCommandOutput::Start(s) => s,
                     _ => unreachable!(),
                 };
-                let err = execute_on(
+                let err = harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Claim(ClaimReq {
                         run: Some(started.run.run_id.to_string()),
@@ -290,9 +287,8 @@ gates:
                 fs::write(ws.path(&rel), &raw).unwrap();
                 git_cmd(ws.root(), &["add", "docs/plans"]);
                 git_cmd(ws.root(), &["commit", "-m", "add neg-sub"]);
-                let started = match execute_on(
+                let started = match harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Start(StartReq {
                         spec_path: Some(rel),
@@ -307,9 +303,8 @@ gates:
                 };
                 let rid = started.run.run_id.to_string();
                 let w = WorkerId::new("w1").unwrap();
-                execute_on(
+                harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Claim(ClaimReq {
                         run: Some(rid.clone()),
@@ -322,9 +317,8 @@ gates:
                     }),
                 )
                 .unwrap();
-                execute_on(
+                harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Submit(Box::new(SubmitReq {
                         run: Some(rid.clone()),
@@ -343,9 +337,8 @@ gates:
                     })),
                 )
                 .unwrap();
-                execute_on(
+                harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Claim(ClaimReq {
                         run: Some(rid.clone()),
@@ -358,9 +351,8 @@ gates:
                     }),
                 )
                 .unwrap();
-                let err = execute_on(
+                let err = harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Submit(Box::new(SubmitReq {
                         run: Some(rid),
@@ -392,9 +384,8 @@ gates:
                 );
                 let rel = format!("docs/plans/neg-scope-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let start_err = execute_on(
+                let start_err = harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Start(StartReq {
                         spec_path: Some(rel),
@@ -408,9 +399,8 @@ gates:
                 let valid_raw = fs::read_to_string(fixtures_dir.join("plans/linear.md")).unwrap();
                 let valid_rel = format!("docs/plans/neg-scope-valid-{idx}.md");
                 fs::write(ws.path(&valid_rel), &valid_raw).unwrap();
-                let started = match execute_on(
+                let started = match harness.execute(
                     &cfg,
-                    &harness,
                     &providers,
                     StateCommand::Start(StartReq {
                         spec_path: Some(valid_rel),
@@ -424,9 +414,8 @@ gates:
                     _ => unreachable!(),
                 };
                 for bad_paths in [unsafe_scope.clone(), vec!["src/{a".to_owned()]] {
-                    let err = execute_on(
+                    let err = harness.execute(
                         &cfg,
-                        &harness,
                         &providers,
                         StateCommand::ExtendScope(ExtendScopeReq {
                             run: Some(started.run.run_id.to_string()),

@@ -16,7 +16,7 @@ use acdd_state::usecases::dto::{
 };
 use acdd_state::usecases::{
     StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryEngine, StateQueryOutput,
-    execute_on, queries,
+    queries,
 };
 use serde_json::json;
 use std::fs;
@@ -1163,9 +1163,8 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
 
     let harness = RunHarness::in_memory().unwrap();
     assert_eq!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Draft(DraftReq {
                 collection: "milestones".to_owned(),
@@ -1182,9 +1181,8 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
 
     // #30: Stateless CallPluginTool remains usable with modules.state == false; run-scoped stays blocked.
     for (run, expect_ok) in [(None, true), (Some("run-x".to_owned()), false)] {
-        let res = execute_on(
+        let res = harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::CallPluginTool(CallPluginToolReq {
                 tool_name: "http_probe".to_owned(),
@@ -1225,9 +1223,8 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
         .is_ok()
     );
     assert_eq!(
-        execute_on(
+        harness.execute(
             &bb_cfg,
-            &harness,
             &bb_prov,
             StateCommand::BlackboardPost(BlackboardPostReq {
                 run: None,
@@ -1266,9 +1263,8 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
     no_http_cfg.modules.domains.insert("http".to_owned(), false);
     let (_, no_http_prov) = build_provider_with_mock(&no_http_cfg.modules);
     assert_eq!(
-        execute_on(
+        harness.execute(
             &no_http_cfg,
-            &harness,
             &no_http_prov,
             StateCommand::CallPluginTool(CallPluginToolReq {
                 tool_name: "http_probe".to_owned(),
@@ -1409,6 +1405,7 @@ gates:
     );
     let mut_cfg = base_config(mut_tmp.path());
     let (mut_mock, mut_prov) = build_provider_with_mock(&mut_cfg.modules);
+    mut_mock.set_assert_repo_lock_free(mut_tmp.path().join(".git/acdd/repo.lock"));
     let mut_engine = StateEngine::open(mut_cfg, mut_prov).unwrap();
     let mut_start = start_run(
         &mut_engine,
@@ -1572,9 +1569,8 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let harness = RunHarness::in_memory().unwrap();
 
-    match execute_on(
+    match harness.execute(
         &cfg,
-        &harness,
         &provider,
         StateCommand::Draft(DraftReq {
             collection: "milestones".to_owned(),
@@ -1594,9 +1590,8 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
         other => panic!("unexpected draft output: {other:?}"),
     }
     assert_eq!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Draft(DraftReq {
                 collection: "milestones".to_owned(),
@@ -1828,9 +1823,8 @@ fn seam_claim_context_hydrates_blueprint_slice_and_live_subtasks() {
     let long_evidence = "🦀\\\"".repeat(440);
     assert_eq!(long_evidence.len(), 2640);
     let set_subtask = |subtask_ref: &str, status, evidence: Option<&str>| {
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Subtask(SubtaskReq {
                 run: Some(run.to_owned()),
@@ -2436,9 +2430,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     harness.seed_run(&graph).unwrap();
 
     assert_eq!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Subtask(SubtaskReq {
                 run: Some("run-life-001".to_owned()),
@@ -2453,9 +2446,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         ErrorCode::ProfileSchemaInvalid
     );
     assert!(matches!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Subtask(SubtaskReq {
                 run: Some("run-life-001".to_owned()),
@@ -2469,9 +2461,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         StateCommandOutput::Subtask(_)
     ));
 
-    let bb_post_out = execute_on(
+    let bb_post_out = harness.execute(
         &cfg,
-        &harness,
         &provider,
         StateCommand::BlackboardPost(BlackboardPostReq {
             run: Some("run-life-001".to_owned()),
@@ -2493,9 +2484,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     for (author, payload, expected_field) in
         [(" ", "non-empty", "author"), ("worker-a", " ", "payload")]
     {
-        let err = execute_on(
+        let err = harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::BlackboardPost(BlackboardPostReq {
                 run: Some("run-life-001".to_owned()),
@@ -2535,9 +2525,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     }
 
     assert_eq!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::ExtendScope(ExtendScopeReq {
                 run: Some("run-life-001".to_owned()),
@@ -2551,9 +2540,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         .code,
         ErrorCode::TaskScopeConflict
     );
-    match execute_on(
+    match harness.execute(
         &cfg,
-        &harness,
         &provider,
         StateCommand::ExtendScope(ExtendScopeReq {
             run: Some("run-life-001".to_owned()),
@@ -2627,9 +2615,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         .unwrap();
 
     assert_eq!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Reopen(ReopenReq {
                 run: Some("run-life-001".to_owned()),
@@ -2643,9 +2630,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         ErrorCode::DependentTaskCompleted
     );
     assert!(matches!(
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &provider,
             StateCommand::Reopen(ReopenReq {
                 run: Some("run-life-001".to_owned()),
@@ -2659,9 +2645,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     ));
 
     fs::write(tmp.path().join("docs/milestones/AC-001-sample.md"), "---\nid: AC-001\ntitle: Sample Updated\nstatus: active\n---\n### task: t1\n```yaml\ntask_ref: t1\nscope: [crates/a/**]\nacceptance_criteria:\n  - One\n```\n### task: t2\n```yaml\ntask_ref: t2\nscope: [crates/b/**]\ndepends_on: [t1]\nacceptance_criteria:\n  - Two\n```\n### task: t3\n```yaml\ntask_ref: t3\nscope: [crates/d/**]\nacceptance_criteria:\n  - Three\n```\n").unwrap();
-    match execute_on(
+    match harness.execute(
         &cfg,
-        &harness,
         &provider,
         StateCommand::Sync(SyncReq {
             run: Some("run-life-001".to_owned()),
@@ -2673,9 +2658,8 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         StateCommandOutput::Sync(s) => assert!(s.added_nodes >= 2),
         other => panic!("unexpected Sync output: {other:?}"),
     }
-    match execute_on(
+    match harness.execute(
         &cfg,
-        &harness,
         &provider,
         StateCommand::Clear(ClearReq {
             run: Some("run-life-001".to_owned()),
@@ -2717,18 +2701,13 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
 
     // 1. Prefixless draft creates docs/plans/my-slug.md with id: my-slug and rejects collision.
-    let draft_plan = match execute_on(
-        &cfg,
-        engine.backend(),
-        &provider,
-        StateCommand::Draft(DraftReq {
-            collection: "plans".to_owned(),
-            slug: "my-slug".to_owned(),
-            title: Some("My Plan".to_owned()),
-            prefix: None,
-            profile: None,
-        }),
-    )
+    let draft_plan = match engine.execute(StateCommand::Draft(DraftReq {
+        collection: "plans".to_owned(),
+        slug: "my-slug".to_owned(),
+        title: Some("My Plan".to_owned()),
+        prefix: None,
+        profile: None,
+    }))
     .unwrap()
     {
         StateCommandOutput::Draft(d) => d,
@@ -2736,21 +2715,15 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     };
     assert_eq!(draft_plan.spec_id, "my-slug");
     assert_eq!(draft_plan.spec_path, "docs/plans/my-slug.md");
-    assert!(
-        execute_on(
-        &cfg,
-        engine.backend(),
-        &provider,
-        StateCommand::Draft(DraftReq {
+    assert!(engine
+        .execute(StateCommand::Draft(DraftReq {
             collection: "plans".to_owned(),
             slug: "my-slug".to_owned(),
             title: None,
             prefix: None,
             profile: None,
-        }),
-    )
-        .is_err()
-    );
+        }))
+        .is_err());
 
     // 2. Multi-path draft scans extensions/*/docs/milestones for max_num.
     fs::write(
@@ -2758,18 +2731,13 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-004\ntitle: Ext\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let draft_ms = match execute_on(
-        &cfg,
-        engine.backend(),
-        &provider,
-        StateCommand::Draft(DraftReq {
-            collection: "milestones".to_owned(),
-            slug: "next".to_owned(),
-            title: None,
-            prefix: None,
-            profile: None,
-        }),
-    )
+    let draft_ms = match engine.execute(StateCommand::Draft(DraftReq {
+        collection: "milestones".to_owned(),
+        slug: "next".to_owned(),
+        title: None,
+        prefix: None,
+        profile: None,
+    }))
     .unwrap()
     {
         StateCommandOutput::Draft(d) => d,
@@ -2813,18 +2781,13 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "p.yaml",
         "version: 2\ninherit: base\nroles:\n  builder:\n    mode: subagent\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          proof: none\n",
     );
-    let ac5_run = match execute_on(
-        &cfg,
-        engine.backend(),
-        &provider,
-        StateCommand::Start(StartReq {
-            spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
-            run_name: Some(RunName::new("ac5").unwrap()),
-            profile: Some(p),
-            in_place: true,
-            ..Default::default()
-        }),
-    )
+    let ac5_run = match engine.execute(StateCommand::Start(StartReq {
+        spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
+        run_name: Some(RunName::new("ac5").unwrap()),
+        profile: Some(p),
+        in_place: true,
+        ..Default::default()
+    }))
     .unwrap()
     {
         StateCommandOutput::Start(s) => s.run.run_id,

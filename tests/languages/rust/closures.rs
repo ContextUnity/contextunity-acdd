@@ -651,7 +651,7 @@ fn range_and_closure_map_fail_closed_boundaries() {
         }
     "#;
     let facts = acdd_index::ast::extract("src/range_closure_bounds.rs", "rust", source).unwrap();
-    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+    let graph = crate::common::link_facts(&std::collections::BTreeMap::from([(
         "src/range_closure_bounds.rs".to_owned(),
         facts,
     )]));

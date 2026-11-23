@@ -1,5 +1,13 @@
 use super::preview::{with_source, SourcePreviewMode};
-use super::{paging, reader, ExplainOptions, InspectOptions};
+use super::types::{InspectOptions, SymbolExplainOptions};
+use crate::db::paging;
+use crate::db::reader::{
+    docs::document_contents_by_ids,
+    inspect as reader_inspect,
+    selectors::select_detail_with_path,
+    sql::{rows, QueryBudget},
+    types as reader_types,
+};
 use crate::models::{
     details::NodeDetailKey,
     stable_hash64,
@@ -27,7 +35,8 @@ pub fn inspect_with_path_options(
 }
 
 /// Performs snippet paged.
-pub fn snippet_paged(
+#[cfg(test)]
+pub(crate) fn snippet_paged(
     conn: &Connection,
     root: &Path,
     selector: &str,
@@ -61,7 +70,7 @@ fn snippet_paged_with_mode(
     mode: SourcePreviewMode,
 ) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
+    let node = select_detail_with_path(conn, selector, path, options.detail)?;
     with_source(
         conn,
         root,
@@ -78,7 +87,7 @@ pub fn explain_with_path_options(
     root: &Path,
     selector: &str,
     path: Option<&str>,
-    options: &ExplainOptions<'_>,
+    options: &SymbolExplainOptions<'_>,
 ) -> Result<Value> {
     let result = explain_paged_response(conn, selector, path, &options.explain, options.coverage)?;
     with_source(
@@ -100,7 +109,7 @@ pub(crate) fn inspect_paged_response(
     coverage: CoverageOptions,
 ) -> Result<Value> {
     let mut result = if coverage.include_coverage {
-        reader::inspect_paged_with_path(conn, selector, path, show_doc, options)?
+        reader_inspect::inspect_paged_with_path(conn, selector, path, show_doc, options)?
     } else {
         inspect_without_coverage(conn, selector, path, show_doc, options)?
     };
@@ -114,7 +123,7 @@ pub(crate) fn inspect_paged_response(
         &[&stable_hash64(&id)],
         options,
     )?;
-    result["governing_invariants"] = reader::governing_invariants(conn, &id)?;
+    result["governing_invariants"] = reader_inspect::governing_invariants(conn, &id)?;
     let result = with_analysis_gaps(conn, result, options)?;
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }
@@ -168,7 +177,7 @@ pub fn attach_inspect_document_contents(conn: &Connection, result: &mut Value) -
         .difference(&available)
         .cloned()
         .collect::<BTreeSet<_>>();
-    contents.extend(reader::document_contents_by_ids(conn, &missing)?);
+    contents.extend(document_contents_by_ids(conn, &missing)?);
     ensure!(
         doc_ids.iter().all(|doc_id| contents.contains_key(doc_id)),
         "documented_in page has no matching document content"
@@ -205,11 +214,11 @@ pub(crate) fn explain_paged_response(
     conn: &Connection,
     selector: &str,
     path: Option<&str>,
-    explain: &reader::ExplainOptions<'_>,
+    explain: &reader_types::ExplainOptions<'_>,
     coverage: CoverageOptions,
 ) -> Result<Value> {
     let result = if coverage.include_coverage {
-        reader::explain_with_path_options(conn, selector, path, explain)?
+        reader_inspect::explain_with_path_options(conn, selector, path, explain)?
     } else {
         explain_without_coverage(conn, selector, path, explain)?
     };
@@ -262,7 +271,7 @@ fn inspect_without_coverage(
     options: &QueryOptions,
 ) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
+    let node = select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let mut documents = if show_doc {
         paging::query(
@@ -288,13 +297,13 @@ fn explain_without_coverage(
     conn: &Connection,
     selector: &str,
     path: Option<&str>,
-    explain: &reader::ExplainOptions<'_>,
+    explain: &reader_types::ExplainOptions<'_>,
 ) -> Result<Value> {
     let mut result =
         inspect_without_coverage(conn, selector, path, explain.show_doc, explain.page)?;
     let id = result["node"]["id"].as_str().context("invalid node id")?.to_owned();
     let node_hash = stable_hash64(&id);
-    paging::populate_edge_relations(conn, &mut result, node_hash, explain.direction, explain.page)?;
+    reader_inspect::populate_edge_relations(conn, &mut result, node_hash, explain.direction, explain.page)?;
     Ok(result)
 }
 
@@ -315,6 +324,67 @@ fn summarize_symbol(
         result["summary"] = summary;
     }
     Ok(result)
+}
+
+fn resolve_method_receiver_container(
+    conn: &Connection,
+    node: &Value,
+    container: &Value,
+    receiver: &str,
+) -> Result<Option<Value>> {
+    let path = node["path"].as_str().unwrap_or("");
+    let candidates = rows(
+        conn,
+        &format!(
+            "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY AND n.kind IN('{}','{}','{}','record','{}','{}','{}') ORDER BY n.line,n.id LIMIT 101",
+            NodeKind::Class.as_str(),
+            NodeKind::Enum.as_str(),
+            NodeKind::Interface.as_str(),
+            NodeKind::Struct.as_str(),
+            NodeKind::Trait.as_str(),
+            NodeKind::Type.as_str(),
+        ),
+        &[&path, &receiver],
+        101,
+    )?;
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next());
+    }
+    if !(2..=100).contains(&candidates.len()) {
+        return Ok(None);
+    }
+    let method_qualname = node["qualname"].as_str().unwrap_or("");
+    let module_qualname = container["qualname"].as_str().unwrap_or("");
+    let mut scoped = candidates
+        .into_iter()
+        .filter(|candidate| {
+            let qualname = candidate["qualname"].as_str().unwrap_or("");
+            let impl_owner = !module_qualname.is_empty() && qualname == module_qualname;
+            let method_owner = [".", "::"]
+                .iter()
+                .any(|separator| method_qualname.starts_with(&format!("{qualname}{separator}")));
+            let module_owner = [".", "::"]
+                .iter()
+                .any(|separator| qualname == format!("{module_qualname}{separator}{receiver}"));
+            impl_owner || method_owner || module_owner
+        })
+        .collect::<Vec<_>>();
+    if scoped.len() > 1 {
+        let method_line = node["line"].as_u64().unwrap_or_default();
+        if let Some(nearest_line) = scoped
+            .iter()
+            .filter_map(|candidate| candidate["line"].as_u64())
+            .map(|line| line.abs_diff(method_line))
+            .min()
+        {
+            scoped.retain(|candidate| {
+                candidate["line"]
+                    .as_u64()
+                    .is_some_and(|line| line.abs_diff(method_line) == nearest_line)
+            });
+        }
+    }
+    Ok((scoped.len() == 1).then(|| scoped.remove(0)))
 }
 
 fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
@@ -349,7 +419,7 @@ fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
     )?;
     let contains = EdgeKind::Contains.as_str();
     let module = NodeKind::Module.as_str();
-    let mut container = reader::rows(
+    let mut container = rows(
         conn,
         &format!(
             "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.dst_hash=?1 AND e.kind='{contains}' ORDER BY CASE WHEN n.kind IN('{module}','file') THEN 1 ELSE 0 END,n.line DESC,n.end_line,n.id LIMIT 1"
@@ -375,73 +445,15 @@ fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
     );
     if is_method && !is_type_container {
         if let Some(receiver) = receiver.as_deref() {
-            let path = node["path"].as_str().unwrap_or("");
-            let candidates = reader::rows(
-                conn,
-                &format!(
-                    "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY AND n.kind IN('{}','{}','{}','record','{}','{}','{}') ORDER BY n.line,n.id LIMIT 101",
-                    NodeKind::Class.as_str(),
-                    NodeKind::Enum.as_str(),
-                    NodeKind::Interface.as_str(),
-                    NodeKind::Struct.as_str(),
-                    NodeKind::Trait.as_str(),
-                    NodeKind::Type.as_str(),
-                ),
-                &[&path, &receiver],
-                101,
-            )?;
-            let receiver_container = if candidates.len() == 1 {
-                candidates.into_iter().next()
-            } else if (2..=100).contains(&candidates.len()) {
-                let method_qualname = node["qualname"].as_str().unwrap_or("");
-                let module_qualname = container["qualname"].as_str().unwrap_or("");
-                let mut scoped = candidates
-                    .into_iter()
-                    .filter(|candidate| {
-                        let qualname = candidate["qualname"].as_str().unwrap_or("");
-                        let impl_owner = !module_qualname.is_empty() && qualname == module_qualname;
-                        let method_owner = [".", "::"].iter().any(|separator| {
-                            method_qualname.starts_with(&format!("{qualname}{separator}"))
-                        });
-                        let module_owner = [".", "::"].iter().any(|separator| {
-                            qualname == format!("{module_qualname}{separator}{receiver}")
-                        });
-                        impl_owner || method_owner || module_owner
+            container = resolve_method_receiver_container(conn, node, &container, receiver)?
+                .unwrap_or_else(|| {
+                    json!({
+                        "kind": "receiver",
+                        "name": receiver,
+                        "path": node["path"],
+                        "line": node["line"]
                     })
-                    .collect::<Vec<_>>();
-                if scoped.len() > 1 {
-                    let method_line = node["line"].as_u64().unwrap_or_default();
-                    let nearest_line = scoped
-                        .iter()
-                        .filter_map(|candidate| candidate["line"].as_u64())
-                        .map(|line| line.abs_diff(method_line))
-                        .min();
-                    if let Some(nearest_line) = nearest_line {
-                        scoped.retain(|candidate| {
-                            candidate["line"]
-                                .as_u64()
-                                .is_some_and(|line| line.abs_diff(method_line) == nearest_line)
-                        });
-                    }
-                }
-                if scoped.len() == 1 {
-                    scoped.pop()
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(receiver_container) = receiver_container {
-                container = receiver_container;
-            } else {
-                container = json!({
-                    "kind": "receiver",
-                    "name": receiver,
-                    "path": node["path"],
-                    "line": node["line"]
                 });
-            }
         }
     }
     let inbound = direct_call_summary(conn, id, true, PREVIEW_LIMIT)?;
@@ -484,14 +496,14 @@ pub(super) fn direct_call_summary(
         "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.{join_col} JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.{filter_col}=?1 AND e.kind='{calls}' ORDER BY p.path,n.line,n.id LIMIT ?2"
     );
     let (count, occurrences) = {
-        let budget = reader::QueryBudget::new(conn);
+        let budget = QueryBudget::new(conn);
         let counts = conn.query_row(&count_sql, [stable_hash64(id)], |row| {
             Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?))
         })?;
         budget.check()?;
         counts
     };
-    let preview = reader::rows(
+    let preview = rows(
         conn,
         &preview_sql,
         &[&stable_hash64(id), &preview_limit],

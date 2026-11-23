@@ -15,26 +15,21 @@ pub mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use claim::admit_claim;
+use claim::admit_claim;
 pub use graph::{
-    build_initial_run_graph, container_scope, effective_task_tags, matches_when, WhenExpr,
+    build_initial_run_graph, container_scope, effective_task_tags, matches_when,
 };
 pub use inputs::{
     ActionExecutionOutcome, BuildGraphInput, ClaimDecision, ClaimInput, ExtendScopeInput,
     MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem, MachineProfileInput,
     MachineProofKind, MachineSavePolicy, MachineSpecInput, MachineSubtaskInput, MachineTaskDep,
     MachineTaskSpec, MachineTasksBlockDef, ReopenInput, SubmitEvaluation, SubmitInput, SyncInput,
-    SyncPlan, TransitionInput, TransitionOutcome, VerifyEvaluation, VerifyExecutionObservation,
-    VerifyInput,
+    SyncPlan, TransitionInput, TransitionOutcome, VerifyExecutionObservation, VerifyInput,
 };
-pub use reopen::plan_reopen;
-pub use schedule::{
-    check_post_task_integration_barrier, compute_schedule, patterns_overlap, scopes_overlap,
-    ScheduleReport,
-};
-pub use scope::plan_extend_scope;
+pub(crate) use reopen::plan_reopen;
+pub use schedule::compute_schedule;
 pub use submit::{evaluate_submit, plan_container_blackboard_cleanup};
-pub use sync::plan_sync;
+pub(crate) use sync::plan_sync;
 pub use verify::{compute_execution_digest, evaluate_verify, ExecutionDigestInput};
 
 use crate::types::{GateNodeRecord, NodeKind, RunGraphSnapshot, RunStatus, ValidatedObservations};

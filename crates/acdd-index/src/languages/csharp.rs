@@ -1,8 +1,15 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support::{self as syntax};
+use super::types::{
+    call, CallForm, DeclarationRole, ImportPath, LanguageFamily, SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::ast::syntax::{field, text, ScopeBindings};
+use crate::models::{Facts, Node};
+use tree_sitter::Node as Syntax;
 /// Represents csharp data.
-pub struct CSharp;
+struct CSharp;
 /// Shared csharp language profile.
-pub static CSHARP: CSharp = CSharp;
+static CSHARP: CSharp = CSharp;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -95,7 +102,7 @@ impl LanguageProfile for CSharp {
         Some(&SPEC)
     }
     fn module_name_for_source(&self, path: &str, source: &str) -> String {
-        support::parse_namespace_line(source)
+        syntax::parse_namespace_line(source)
             .map(str::to_owned)
             .unwrap_or_else(|| self.module_name(path))
     }
@@ -119,7 +126,7 @@ impl LanguageProfile for CSharp {
     fn receiver(&self, name: &str, _owner: &Node) -> bool {
         name == "this"
     }
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
         syntax::bindings(
             self,
             node,
@@ -128,7 +135,6 @@ impl LanguageProfile for CSharp {
             &["variable_declarator"],
         )
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "using_directive" {
             let mut c = ctx.node.walk();
@@ -173,4 +179,4 @@ impl LanguageProfile for CSharp {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&CSHARP];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&CSHARP];

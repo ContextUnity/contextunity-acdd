@@ -118,7 +118,7 @@ fn parser_slot_grammar_reuse() {
         let profile =
             acdd_index::languages::by_id(profile_id).expect("compiled profile");
         let mut facts = acdd_index::models::Facts::default();
-        acdd_index::languages::parse_file(profile, path, source, path, &mut facts)
+        acdd_index::ast::parse::parse_file(profile, path, source, path, &mut facts)
             .expect("parse failed");
         assert!(
             facts.errors.is_empty(),

@@ -1,164 +1,42 @@
-use super::flow_store::FlowStore;
-use crate::models::Node;
+use super::flow_store::{remap_identifier, FlowStore};
+use crate::models::types::Node;
+use crate::semantic::relations::{SemanticFact, SemanticFactRole};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, Default)]
-#[doc(hidden)]
-pub struct NodeSemanticEntry {
-    pub bindings: Vec<String>,
-    pub rebindings: Vec<String>,
-    pub param_types: Vec<(String, String)>,
-    pub(super) admitted: u8,
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum SemanticStateView<'a> {
+    Raw(&'a Value),
+    Facts(&'a [SemanticFact]),
 }
 
-macro_rules! semantic_fields {
-    ($($key:literal => $bit:literal => $field:ident),+ $(,)?) => {
-        const SEMANTIC_FIELDS: &[(&str, u8)] = &[$(($key, $bit)),+];
-
-        pub fn has(&self, key: &str) -> bool {
-            match key { $($key => self.admitted & $bit != 0,)+ _ => false }
-        }
-
-        pub fn merge_from(&mut self, incoming: Self) {
-            $(if incoming.admitted & $bit != 0 {
-                self.$field.extend(incoming.$field);
-                self.admitted |= $bit;
-            })+
-        }
-    };
-}
-
-fn take_strings(values: Vec<Value>) -> Vec<String> {
-    values
-        .into_iter()
-        .map(|value| match value {
-            Value::String(value) => value,
-            _ => unreachable!(),
-        })
-        .collect()
-}
-
-fn take_string_pairs(fields: serde_json::Map<String, Value>) -> Vec<(String, String)> {
-    fields
-        .into_iter()
-        .map(|(key, value)| match value {
-            Value::String(value) => (key, value),
-            _ => unreachable!(),
-        })
-        .collect()
-}
-
-impl NodeSemanticEntry {
-    semantic_fields!("bindings" => 1 => bindings, "rebindings" => 2 => rebindings, "param_types" => 4 => param_types);
-
-    pub fn with_parameters(param_types: std::collections::BTreeMap<String, String>) -> Self {
-        Self {
-            param_types: param_types.into_iter().collect(),
-            admitted: 4,
-            ..Default::default()
+impl<'a> From<&'a SemanticState> for SemanticStateView<'a> {
+    fn from(state: &'a SemanticState) -> Self {
+        match state {
+            SemanticState::Valid {
+                original: Some(value),
+                ..
+            }
+            | SemanticState::Invalid {
+                original: value, ..
+            } => Self::Raw(value),
+            SemanticState::Valid { facts, .. } => Self::Facts(facts),
         }
     }
-    pub fn ingest(node: &mut Node) {
-        let Some(details) = node.details.as_object_mut() else {
-            return;
-        };
-        for &(key, bit) in Self::SEMANTIC_FIELDS {
-            let Some(value) = details.remove(key) else {
-                continue;
-            };
-            if value.is_null()
-                && node
-                    .native_semantic
-                    .as_deref()
-                    .is_some_and(|entry| entry.has(key))
-            {
-                continue;
-            }
-            let valid = match (key, &value) {
-                ("param_types", Value::Object(fields)) => fields.values().all(Value::is_string),
-                ("bindings" | "rebindings", Value::Array(values)) => {
-                    values.iter().all(Value::is_string)
-                }
-                _ => false,
-            };
-            if !valid {
-                details.insert(key.to_owned(), value);
-                if let Some(entry) = node.native_semantic.as_mut() {
-                    entry.admitted &= !bit;
-                    match key {
-                        "bindings" => entry.bindings.clear(),
-                        "rebindings" => entry.rebindings.clear(),
-                        _ => entry.param_types.clear(),
-                    }
-                }
-                continue;
-            }
-            let empty = value.as_array().is_some_and(Vec::is_empty)
-                || value.as_object().is_some_and(serde_json::Map::is_empty);
-            if empty && node.native_semantic.is_none() {
-                details.insert(key.to_owned(), value);
-                continue;
-            }
-            let entry = node.native_semantic.get_or_insert_with(Default::default);
-            entry.admitted |= bit;
-            match (key, value) {
-                ("param_types", Value::Object(fields)) => {
-                    entry.param_types = take_string_pairs(fields)
-                }
-                ("bindings", Value::Array(values)) => entry.bindings = take_strings(values),
-                ("rebindings", Value::Array(values)) => entry.rebindings = take_strings(values),
-                _ => unreachable!(),
-            }
-        }
-        if node
-            .native_semantic
-            .as_deref()
-            .is_some_and(|entry| entry.admitted == 0)
-        {
-            node.native_semantic = None;
-        }
-    }
+}
 
-    pub fn set_bindings(node: &mut Node, bindings: Vec<String>, rebindings: Vec<String>) {
-        Self::ingest(node);
-        if bindings.is_empty() && rebindings.is_empty() && node.native_semantic.is_none() {
-            if let Some(details) = node.details.as_object_mut() {
-                details.remove("bindings");
-                details.remove("rebindings");
-            }
-            return;
-        }
-        let has_bindings = !bindings.is_empty();
-        let has_rebindings = !rebindings.is_empty();
-        let entry = node.native_semantic.get_or_insert_with(Default::default);
-        entry.bindings = bindings;
-        entry.rebindings = rebindings;
-        entry.admitted |= 3;
-        if let Some(details) = node.details.as_object_mut() {
-            for (key, present) in [("bindings", has_bindings), ("rebindings", has_rebindings)] {
-                if present
-                    && details
-                        .get(key)
-                        .is_some_and(|value| value.as_array().is_some_and(Vec::is_empty))
-                {
-                    details.remove(key);
-                }
-            }
-        }
-    }
-
-    pub fn parameters(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.param_types
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
+impl SemanticState {
+    pub fn view(&self) -> impl Serialize + '_ {
+        SemanticStateView::from(self)
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum SemanticState {
     Valid {
-        facts: Vec<crate::semantic::SemanticFact>,
+        facts: Vec<SemanticFact>,
         original: Option<Value>,
     },
     Invalid {
@@ -185,17 +63,17 @@ pub struct SemanticStore {
 }
 
 fn remap_semantic_fact(
-    fact: &mut crate::semantic::SemanticFact,
+    fact: &mut SemanticFact,
     ids: &HashMap<String, String>,
     original: &mut Option<Value>,
 ) {
-    let mut changed = super::remap_identifier(&mut fact.occurrence.owner_id, ids);
+    let mut changed = remap_identifier(&mut fact.occurrence.owner_id, ids);
     changed |= match &mut fact.role {
-        crate::semantic::SemanticFactRole::FileProvider { target } => {
-            super::remap_identifier(target, ids)
+        SemanticFactRole::FileProvider { target } => {
+            remap_identifier(target, ids)
         }
-        crate::semantic::SemanticFactRole::CallToFile { import_owner, .. } => {
-            super::remap_identifier(import_owner, ids)
+        SemanticFactRole::CallToFile { import_owner, .. } => {
+            remap_identifier(import_owner, ids)
         }
         _ => false,
     };
@@ -241,7 +119,7 @@ impl SemanticStore {
             },
         );
     }
-    pub fn push(&mut self, nodes: &mut [Node], fact: crate::semantic::SemanticFact) -> bool {
+    pub fn push(&mut self, nodes: &mut [Node], fact: SemanticFact) -> bool {
         let owner = &fact.occurrence.owner_id;
         let index = self
             .owners

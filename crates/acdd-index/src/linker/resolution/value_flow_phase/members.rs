@@ -1,4 +1,8 @@
-use super::*;
+use super::super::context::*;
+use super::super::input::ResolutionInput;
+use crate::languages::LanguageProfile;
+use crate::linker::{semantic_context, typescript, value_flow};
+use crate::models::{compact_graph::CompactGraph as Graph, Node, ReceiverHint, Reference};
 
 pub(super) fn resolve_computed_call(
     input: &ResolutionInput<'_>,
@@ -37,7 +41,7 @@ pub(super) fn resolve_computed_call(
             .filter(|receiver| !matches!(receiver, value_flow::TypeTarget::Unknown))
         {
             let (fields, final_member) = member.rsplit_once('.').unwrap_or(("", member));
-            if let Some(nested_receiver) = super::super::chained_member_receiver(
+            if let Some(nested_receiver) = chained_member_receiver(
                 receiver,
                 fields,
                 owner,
@@ -69,7 +73,7 @@ pub(super) fn resolve_computed_call(
                 }
                 let result = match result {
                     semantic_context::Member::Local(node)
-                        if !super::super::super::typescript::semantic_context::prototype_visible_at(
+                        if !typescript::semantic_context::prototype_visible_at(
                             node,
                             path,
                             reference.line,
@@ -151,7 +155,7 @@ pub(super) fn resolve_candidate_join(
             ) {
                 semantic_context::Member::Local(method)
                     if method.kind == "method"
-                        && super::super::super::typescript::semantic_context::prototype_visible_at(
+                        && typescript::semantic_context::prototype_visible_at(
                             method,
                             path,
                             reference.line,

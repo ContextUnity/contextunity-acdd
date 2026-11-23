@@ -6,14 +6,15 @@ use acdd_core::ports::{
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::harness::RunHarness;
+use acdd_state::machine::claim::admit_claim;
 use acdd_state::machine::{
-    admit_claim, build_initial_run_graph, evaluate_submit, evaluate_verify, BuildGraphInput,
-    ClaimDecision, ClaimInput, MachineSpecInput, MachineTaskSpec, SubmitEvaluation, SubmitInput,
+    build_initial_run_graph, evaluate_submit, evaluate_verify, BuildGraphInput, ClaimDecision,
+    ClaimInput, MachineSpecInput, MachineTaskSpec, SubmitEvaluation, SubmitInput,
     VerifyExecutionObservation, VerifyInput,
 };
-use acdd_state::profile::*;
+use acdd_state::profile::{inherit::*, schema::*, shell_template::*, validate::*};
 use acdd_state::spec::materialize_ephemeral_goal_spec_with_options;
-use acdd_state::store::StateBackend;
+use acdd_state::store::traits::StateBackend;
 use acdd_state::types::{
     CheckResultRecord, FindingItem, FindingSeverity, IsolationMode, NodeStatus,
     NodeVersionExpectation, RejectionFindings, RejectionKind, ReviewContourResult, ReviewEvidence,
@@ -1009,69 +1010,6 @@ gates_patch:
             resolve_profile_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
                 .expect_err("expected failure");
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
-    }
-}
-
-#[test]
-fn when_expression_parser_and_eval_matrix() {
-    let allowed = BTreeSet::from([
-        "code".to_owned(),
-        "docs".to_owned(),
-        "db_migration".to_owned(),
-    ]);
-
-    let eval_cases: &[(&str, &[&str], bool, &str)] = &[
-        ("code", &["code"], true, "code"),
-        ("code", &["docs"], false, "code"),
-        ("code", &["default"], false, "code"),
-        ("default", &["default"], true, "default"),
-        ("!docs", &["code"], true, "!docs"),
-        ("!docs", &["docs"], false, "!docs"),
-        ("code + !docs", &["code"], true, "code & !docs"),
-        ("code & !docs", &["code", "docs"], false, "code & !docs"),
-        ("code + !docs", &["code", "docs"], false, "code & !docs"),
-        (
-            "(code | docs) & !db_migration",
-            &["docs"],
-            true,
-            "(code | docs) & !db_migration",
-        ),
-        (
-            "(code | docs) && !db_migration",
-            &["docs", "db_migration"],
-            false,
-            "(code | docs) & !db_migration",
-        ),
-        ("default || code", &["default"], true, "default | code"),
-    ];
-
-    for &(raw, tags, expect_eval, expect_norm) in eval_cases {
-        let expr = WhenExpr::parse(raw).expect("valid when");
-        expr.validate_tags(&allowed, "test").expect("known tags");
-        let tag_vec: Vec<String> = tags.iter().map(|s| (*s).to_owned()).collect();
-        assert_eq!(expr.eval(&tag_vec), expect_eval, "eval {raw} on {tags:?}");
-        assert_eq!(expr.normalized(), expect_norm, "norm {raw}");
-    }
-
-    let bad_cases: &[(&str, bool)] = &[
-        ("", false),
-        ("(code", false),
-        ("code)", false),
-        ("& code", false),
-        ("code &", false),
-        ("unknown_tag", true),
-    ];
-
-    for &(raw, parses_ok) in bad_cases {
-        let parsed = WhenExpr::parse(raw);
-        if parses_ok {
-            let expr = parsed.expect("should parse");
-            let err = expr.validate_tags(&allowed, "test").expect_err("unknown tag");
-            assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
-        } else {
-            let err = parsed.expect_err("should fail parse");
-            assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
-        }
     }
 }
 

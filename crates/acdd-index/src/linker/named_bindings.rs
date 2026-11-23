@@ -10,14 +10,7 @@ use crate::languages::{self, dependency_registry::DependencyRegistry};
 use hashbrown::{HashMap, HashSet};
 
 pub(super) fn project<'a>(path: &'a str, dependencies: &'a DependencyRegistry) -> &'a str {
-    [
-        languages::LanguageFamily("python"),
-        languages::LanguageFamily("javascript"),
-    ]
-    .into_iter()
-    .filter_map(|family| dependencies.nearest_manifest_scope_for_path(family, path))
-    .max_by_key(|scope| scope.len())
-    .unwrap_or(languages::workspace_path(path).0)
+    crate::languages::dependency_registry::named_binding_project(path, dependencies)
 }
 
 pub(super) fn active(
@@ -103,241 +96,228 @@ pub(super) struct FactoryDefinition<'a> {
 }
 
 impl<'a> NamedBindings<'a> {
-    pub(crate) fn build_lookup(
-        all: &'a dyn crate::FactsLookup,
+    fn collect_call_reference_scopes(
+        &mut self,
+        scope: PathId,
+        rules: &languages::LanguageContext,
         interner: &LinkerInterner<'a>,
-        flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
-        uncertainties: Option<&'a HashMap<SymbolId, &'a [NamedDefinitionUncertainty]>>,
-        faults: Option<&HashSet<SymbolId>>,
         dependencies: &'a DependencyRegistry,
-        nodes: &HashMap<SymbolId, &'a Node>,
-    ) -> Self {
-        let mut index = Self::default();
-        let mut scanned_reference_scopes: HashSet<(PathId, usize)> = HashSet::new();
-        let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
-        for (path, file) in all.iter_facts() {
-            let scope = interner
-                .lookup_path(project(path, dependencies))
-                .expect("project scope is interned");
-            let rules = dependencies.language_context_for_path(path);
-            if scanned_reference_scopes.insert((scope, std::sync::Arc::as_ptr(&rules) as usize)) {
-                pinned_rules.push(std::sync::Arc::clone(&rules));
-                for rule in &rules.syntax_rules {
-                    use languages::manifests::{
-                        projections::NamedBindingForm, syntax::SyntaxOperation,
-                    };
-                    if let SyntaxOperation::NamedBinding {
-                        binding:
-                            NamedBindingForm::CallReference {
-                                provider_scopes, ..
-                            },
-                        ..
-                    } = &rule.operation
-                    {
-                        if !provider_scopes.is_empty() {
-                            let mut scopes = vec![scope];
-                            scopes.extend(provider_scopes.iter().filter_map(|provider| {
-                                dependencies.named_provider_scope(provider).map(|scope| {
-                                    interner
-                                        .lookup_path(scope)
-                                        .expect("named provider scope is interned")
-                                })
-                            }));
-                            scopes.sort_unstable();
-                            scopes.dedup();
-                            let (Some(pack), Some(rule_id)) = (
-                                interner.lookup_symbol(&rule.pack),
-                                interner.lookup_symbol(&rule.id),
-                            ) else {
-                                continue;
-                            };
-                            index
-                                .reference_scopes
-                                .insert((scope, pack, rule_id), scopes);
-                        }
-                    }
-                }
+    ) {
+        use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        for rule in &rules.syntax_rules {
+            let SyntaxOperation::NamedBinding {
+                binding: NamedBindingForm::CallReference { provider_scopes, .. },
+                ..
+            } = &rule.operation
+            else {
+                continue;
+            };
+            if provider_scopes.is_empty() {
+                continue;
             }
-            for owner in &file.nodes {
-                let owner_id = interner
-                    .lookup_symbol(&owner.id)
-                    .expect("named-binding owner id is interned");
-                if faults.is_some_and(|faults| faults.contains(&owner_id)) {
-                    index.unavailable_scopes.insert(scope);
+            let mut scopes = vec![scope];
+            scopes.extend(provider_scopes.iter().filter_map(|provider| {
+                dependencies.named_provider_scope(provider).map(|scope| {
+                    interner
+                        .lookup_path(scope)
+                        .expect("named provider scope is interned")
+                })
+            }));
+            scopes.sort_unstable();
+            scopes.dedup();
+            let (Some(pack), Some(rule_id)) = (
+                interner.lookup_symbol(&rule.pack),
+                interner.lookup_symbol(&rule.id),
+            ) else {
+                continue;
+            };
+            self.reference_scopes.insert((scope, pack, rule_id), scopes);
+        }
+    }
+
+    fn record_owner_uncertainties(
+        &mut self,
+        path: &str,
+        scope: PathId,
+        markers: &[NamedDefinitionUncertainty],
+        rules: &languages::LanguageContext,
+        interner: &LinkerInterner<'a>,
+    ) {
+        use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        for marker in markers {
+            let binding = rules.syntax_rules.iter().find_map(|rule| {
+                if rule.pack != marker.origin.pack || rule.id != marker.origin.rule {
+                    return None;
                 }
-                for marker in uncertainties
-                    .and_then(|markers| markers.get(&owner_id).copied())
-                    .into_iter()
-                    .flatten()
-                {
-                    use languages::manifests::{
-                        projections::NamedBindingForm, syntax::SyntaxOperation,
+                match &rule.operation {
+                    SyntaxOperation::NamedBinding { domain, binding }
+                        if domain == &marker.domain =>
+                    {
+                        Some(binding)
+                    }
+                    _ => None,
+                }
+            });
+            let domain = interner
+                .lookup_symbol(&marker.domain)
+                .expect("named-binding domain is interned");
+            let key = match &marker.key {
+                StaticString::Literal { value } => Some(
+                    interner
+                        .lookup_symbol(value)
+                        .expect("named-binding literal key is interned"),
+                ),
+                StaticString::Unknown => None,
+            };
+            match binding {
+                Some(NamedBindingForm::AssignmentDefinition { template_root, .. }) => {
+                    let root = RegistryRoot {
+                        config_path: interner
+                            .lookup_path(path)
+                            .expect("named-binding config path is interned"),
+                        template_root: interner
+                            .lookup_symbol(template_root)
+                            .expect("named-binding template root is interned"),
                     };
-                    let binding = rules.syntax_rules.iter().find_map(|rule| {
-                        if rule.pack != marker.origin.pack || rule.id != marker.origin.rule {
-                            return None;
-                        }
-                        match &rule.operation {
-                            SyntaxOperation::NamedBinding { domain, binding }
-                                if domain == &marker.domain =>
-                            {
-                                Some(binding)
-                            }
-                            _ => None,
-                        }
-                    });
-                    match binding {
-                        Some(NamedBindingForm::AssignmentDefinition { template_root, .. }) => {
-                            let root = RegistryRoot {
-                                config_path: interner
-                                    .lookup_path(path)
-                                    .expect("named-binding config path is interned"),
-                                template_root: interner
-                                    .lookup_symbol(template_root)
-                                    .expect("named-binding template root is interned"),
-                            };
-                            let domain = interner
-                                .lookup_symbol(&marker.domain)
-                                .expect("named-binding domain is interned");
-                            let key = match &marker.key {
-                                StaticString::Literal { value } => Some(
-                                    interner
-                                        .lookup_symbol(value)
-                                        .expect("named-binding literal key is interned"),
-                                ),
-                                StaticString::Unknown => None,
-                            };
-                            index
-                                .incomplete_registries
-                                .entry((scope, domain))
-                                .or_default()
-                                .push((root, key));
-                        }
-                        Some(
-                            NamedBindingForm::CallDefinition { .. }
-                            | NamedBindingForm::AttributeDefinition { .. },
-                        ) => {
-                            let domain = interner
-                                .lookup_symbol(&marker.domain)
-                                .expect("named-binding domain is interned");
-                            let key = match &marker.key {
-                                StaticString::Literal { value } => Some(
-                                    interner
-                                        .lookup_symbol(value)
-                                        .expect("named-binding literal key is interned"),
-                                ),
-                                StaticString::Unknown => None,
-                            };
-                            index
-                                .incomplete
-                                .entry((scope, domain))
-                                .or_default()
-                                .push(key);
-                        }
-                        _ => {}
-                    }
+                    self.incomplete_registries
+                        .entry((scope, domain))
+                        .or_default()
+                        .push((root, key));
                 }
-                let Some(FlowState::Valid { facts, .. }) =
-                    flows.and_then(|flows| flows.get(&owner_id).copied())
-                else {
-                    continue;
-                };
-                if facts.fact_limit_exceeded {
-                    continue;
+                Some(
+                    NamedBindingForm::CallDefinition { .. }
+                    | NamedBindingForm::AttributeDefinition { .. },
+                ) => {
+                    self.incomplete
+                        .entry((scope, domain))
+                        .or_default()
+                        .push(key);
                 }
-                for fact in facts.factory_results() {
-                    if active_in_context(&fact.origin, &rules) {
-                        index
-                            .factories
-                            .entry((
-                                interner.lookup_symbol(&owner.id).expect("catalog owner"),
-                                interner
-                                    .lookup_symbol(&fact.binding)
-                                    .expect("factory binding is interned"),
-                            ))
-                            .or_insert_with(|| FactoryDefinition {
-                                facts: Vec::new(),
-                                value: super::value_flow::TypeTarget::Unknown,
-                            })
-                            .facts
-                            .push(fact);
-                    }
+                _ => {}
+            }
+        }
+    }
+
+    fn record_owner_flows(
+        &mut self,
+        path: &str,
+        scope: PathId,
+        owner: &'a Node,
+        facts: &'a crate::semantic::ValueFlowFacts,
+        rules: &languages::LanguageContext,
+        interner: &LinkerInterner<'a>,
+    ) {
+        if facts.fact_limit_exceeded {
+            return;
+        }
+        for fact in facts.factory_results() {
+            if !active_in_context(&fact.origin, rules) {
+                continue;
+            }
+            self.factories
+                .entry((
+                    interner.lookup_symbol(&owner.id).expect("catalog owner"),
+                    interner
+                        .lookup_symbol(&fact.binding)
+                        .expect("factory binding is interned"),
+                ))
+                .or_insert_with(|| FactoryDefinition {
+                    facts: Vec::new(),
+                    value: super::value_flow::TypeTarget::Unknown,
+                })
+                .facts
+                .push(fact);
+        }
+        for fact in facts.named_bindings() {
+            if !active_in_context(&fact.origin, rules) {
+                continue;
+            }
+            if matches!(fact.role, NamedBindingRole::RegistryDefinition { .. }) {
+                self.record_registry_definition(path, scope, owner, fact, rules, interner);
+                continue;
+            }
+            if !matches!(fact.role, NamedBindingRole::Definition { .. }) {
+                continue;
+            }
+            let definition = Definition { owner, fact };
+            let domain = interner
+                .lookup_symbol(&fact.domain)
+                .expect("named-binding domain is interned");
+            match &fact.key {
+                StaticString::Literal { value } => {
+                    let key = interner
+                        .lookup_symbol(value)
+                        .expect("named-binding literal key is interned");
+                    self.definitions
+                        .entry((scope, domain, key))
+                        .or_default()
+                        .push(definition);
                 }
-                for fact in facts.named_bindings() {
-                    if matches!(fact.role, NamedBindingRole::RegistryDefinition { .. })
-                        && active_in_context(&fact.origin, &rules)
-                    {
-                        use languages::manifests::{
-                            projections::NamedBindingForm, syntax::SyntaxOperation,
-                        };
-                        let policy = rules.syntax_rules.iter().find(|rule| {
-                            rule.pack == fact.origin.pack && rule.id == fact.origin.rule
-                        });
-                        if let Some(SyntaxOperation::NamedBinding {
-                            binding:
-                                NamedBindingForm::AssignmentDefinition {
-                                    receiver_type,
-                                    template_root,
-                                    ..
-                                },
-                            ..
-                        }) = policy.map(|rule| &rule.operation)
-                        {
-                            let root = RegistryRoot {
-                                config_path: interner
-                                    .lookup_path(path)
-                                    .expect("named-binding config path is interned"),
-                                template_root: interner
-                                    .lookup_symbol(template_root)
-                                    .expect("named-binding template root is interned"),
-                            };
-                            let domain = interner
-                                .lookup_symbol(&fact.domain)
-                                .expect("named-binding domain is interned");
-                            index.registries.entry((scope, domain)).or_default().push(
-                                RegistryDefinition {
-                                    definition: Definition { owner, fact },
-                                    root,
-                                    receiver_type: receiver_type.clone(),
-                                    target: Ok(None),
-                                },
-                            );
-                        }
-                        continue;
-                    }
-                    if !matches!(fact.role, NamedBindingRole::Definition { .. })
-                        || !active_in_context(&fact.origin, &rules)
-                    {
-                        continue;
-                    }
-                    let definition = Definition { owner, fact };
-                    let domain = interner
-                        .lookup_symbol(&fact.domain)
-                        .expect("named-binding domain is interned");
-                    match &fact.key {
-                        StaticString::Literal { value } => {
-                            let key = interner
-                                .lookup_symbol(value)
-                                .expect("named-binding literal key is interned");
-                            index
-                                .definitions
-                                .entry((scope, domain, key))
-                                .or_default()
-                                .push(definition);
-                        }
-                        StaticString::Unknown => {
-                            index
-                                .unknown
-                                .entry((scope, domain))
-                                .or_default()
-                                .push(definition);
-                        }
-                    }
+                StaticString::Unknown => {
+                    self.unknown
+                        .entry((scope, domain))
+                        .or_default()
+                        .push(definition);
                 }
             }
         }
+    }
+
+    fn record_registry_definition(
+        &mut self,
+        path: &str,
+        scope: PathId,
+        owner: &'a Node,
+        fact: &'a crate::semantic::NamedBindingFact,
+        rules: &languages::LanguageContext,
+        interner: &LinkerInterner<'a>,
+    ) {
+        use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        let policy = rules
+            .syntax_rules
+            .iter()
+            .find(|rule| rule.pack == fact.origin.pack && rule.id == fact.origin.rule);
+        if let Some(SyntaxOperation::NamedBinding {
+            binding:
+                NamedBindingForm::AssignmentDefinition {
+                    receiver_type,
+                    template_root,
+                    ..
+                },
+            ..
+        }) = policy.map(|rule| &rule.operation)
+        {
+            let root = RegistryRoot {
+                config_path: interner
+                    .lookup_path(path)
+                    .expect("named-binding config path is interned"),
+                template_root: interner
+                    .lookup_symbol(template_root)
+                    .expect("named-binding template root is interned"),
+            };
+            let domain = interner
+                .lookup_symbol(&fact.domain)
+                .expect("named-binding domain is interned");
+            self.registries
+                .entry((scope, domain))
+                .or_default()
+                .push(RegistryDefinition {
+                    definition: Definition { owner, fact },
+                    root,
+                    receiver_type: receiver_type.clone(),
+                    target: Ok(None),
+                });
+        }
+    }
+
+    fn resolve_factory_positions(
+        &mut self,
+        all: &'a dyn crate::FactsLookup,
+        interner: &LinkerInterner<'a>,
+        nodes: &HashMap<SymbolId, &'a Node>,
+    ) {
         let mut position_paths = HashSet::<PathId>::new();
-        for ((owner, _), definition) in &index.factories {
+        for ((owner, _), definition) in &self.factories {
             if let [fact] = definition.facts.as_slice() {
                 if !fact.members.is_empty() {
                     if let Some(owner) = nodes.get(owner).copied() {
@@ -347,7 +327,7 @@ impl<'a> NamedBindings<'a> {
                 }
             }
         }
-        for definition in index.definitions.values().flatten() {
+        for definition in self.definitions.values().flatten() {
             let NamedBindingRole::Definition {
                 target: SymbolOperand::Node { id },
                 target_kind,
@@ -375,8 +355,7 @@ impl<'a> NamedBindings<'a> {
             for owner in all.values_facts().flat_map(|file| &file.nodes) {
                 let path = interner.lookup_path(&owner.path).expect("catalog path");
                 if position_paths.contains(&path) {
-                    index
-                        .positions
+                    self.positions
                         .entry((
                             path,
                             crate::semantic::SourcePosition {
@@ -389,7 +368,7 @@ impl<'a> NamedBindings<'a> {
                 }
             }
         }
-        for ((owner, _), definition) in &mut index.factories {
+        for ((owner, _), definition) in &mut self.factories {
             use super::value_flow::TypeTarget;
             let [fact] = definition.facts.as_slice() else {
                 definition.value = TypeTarget::Ambiguous;
@@ -401,7 +380,7 @@ impl<'a> NamedBindings<'a> {
             let mut members = HashMap::new();
             let mut value = None;
             for member in &fact.members {
-                let mut nodes = index
+                let mut candidates = self
                     .positions
                     .get(&(
                         interner.lookup_path(&owner.path).expect("catalog path"),
@@ -411,11 +390,12 @@ impl<'a> NamedBindings<'a> {
                     .flatten()
                     .copied()
                     .filter(|node| node.name == member.declaration_name());
-                let Some(node) = nodes.next() else {
+                let Some(node) = candidates.next() else {
                     value = Some(TypeTarget::Unknown);
                     break;
                 };
-                if nodes.next().is_some() || members.insert(member.name.clone(), node).is_some() {
+                if candidates.next().is_some() || members.insert(member.name.clone(), node).is_some()
+                {
                     value = Some(TypeTarget::Ambiguous);
                     break;
                 }
@@ -423,6 +403,47 @@ impl<'a> NamedBindings<'a> {
             definition.value =
                 value.unwrap_or_else(|| TypeTarget::Object(std::sync::Arc::new(members)));
         }
+    }
+
+    pub(crate) fn build_lookup(
+        all: &'a dyn crate::FactsLookup,
+        interner: &LinkerInterner<'a>,
+        flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
+        uncertainties: Option<&'a HashMap<SymbolId, &'a [NamedDefinitionUncertainty]>>,
+        faults: Option<&HashSet<SymbolId>>,
+        dependencies: &'a DependencyRegistry,
+        nodes: &HashMap<SymbolId, &'a Node>,
+    ) -> Self {
+        let mut index = Self::default();
+        let mut scanned_reference_scopes: HashSet<(PathId, usize)> = HashSet::new();
+        let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
+        for (path, file) in all.iter_facts() {
+            let scope = interner
+                .lookup_path(project(path, dependencies))
+                .expect("project scope is interned");
+            let rules = dependencies.language_context_for_path(path);
+            if scanned_reference_scopes.insert((scope, std::sync::Arc::as_ptr(&rules) as usize)) {
+                pinned_rules.push(std::sync::Arc::clone(&rules));
+                index.collect_call_reference_scopes(scope, &rules, interner, dependencies);
+            }
+            for owner in &file.nodes {
+                let owner_id = interner
+                    .lookup_symbol(&owner.id)
+                    .expect("named-binding owner id is interned");
+                if faults.is_some_and(|faults| faults.contains(&owner_id)) {
+                    index.unavailable_scopes.insert(scope);
+                }
+                if let Some(markers) = uncertainties.and_then(|m| m.get(&owner_id).copied()) {
+                    index.record_owner_uncertainties(path, scope, markers, &rules, interner);
+                }
+                if let Some(FlowState::Valid { facts, .. }) =
+                    flows.and_then(|flows| flows.get(&owner_id).copied())
+                {
+                    index.record_owner_flows(path, scope, owner, facts, &rules, interner);
+                }
+            }
+        }
+        index.resolve_factory_positions(all, interner, nodes);
         index
     }
 

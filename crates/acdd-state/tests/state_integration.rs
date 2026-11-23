@@ -2,7 +2,6 @@
 
 mod state_integration {
     pub mod common;
-    pub mod context;
     pub mod git_ops;
     pub mod machine;
     pub mod profile;

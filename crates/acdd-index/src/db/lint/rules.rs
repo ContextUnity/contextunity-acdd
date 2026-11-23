@@ -1,4 +1,4 @@
-use super::{is_archived_path, IndexedEdge, IndexedNode, LintViolation, RuleSource};
+use super::types::{is_archived_path, IndexedEdge, IndexedNode, LintViolation, RuleSource};
 use crate::db::commitments::{read_metadata_optional, MetadataKey};
 use crate::models::details::NodeDetailKey;
 use acdd_core::lint::{

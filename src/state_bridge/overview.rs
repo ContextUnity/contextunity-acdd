@@ -95,10 +95,22 @@ fn active_runs(root: &Path, adapter: Option<&Adapter>, page: &QueryOptions) -> V
         offset: page.offset,
         generation: None,
     });
-    let Ok(providers) = super::build_domain_providers(root, cfg, None, Vec::new()) else {
+    let Ok(providers) = super::common::build_composite_providers(
+        cfg,
+        vec![
+            std::sync::Arc::new(super::code_domain::CodeDomainProvider::new(
+                root.to_path_buf(),
+                cfg.clone(),
+            )),
+            std::sync::Arc::new(super::docs_domain::DocsDomainProvider::new(
+                root.to_path_buf(),
+                cfg.clone(),
+            )),
+        ],
+    ) else {
         return unavailable("active_runs", "domain providers unavailable");
     };
-    match super::execute_state_query(root, root, None, None, cfg, providers, query) {
+    match super::common::execute_state_query(root, root, None, None, cfg, providers, query) {
         Ok(StateQueryOutput::List(resp)) => {
             let items: Vec<Value> = resp
                 .page

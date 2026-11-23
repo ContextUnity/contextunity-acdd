@@ -73,10 +73,12 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     writer::build(workspace.root(), &database, Some(&config)).unwrap();
     workspace.write("src/custom.yaml", &configuration(2));
     workspace.write("src/settings.yaml", "service: after\n");
-    let delta = writer::delta(
+    let delta = writer::delta_with_selection(
         workspace.root(),
         &database,
         &[PathBuf::from("src/settings.yaml")],
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(delta["changed_files"], 1, "{delta}");
@@ -177,7 +179,13 @@ fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
 
     workspace.write(".acdd/frameworks/acme.toml", "receivers = [\n");
     workspace.write_bytes("src/main.rs", b"\xff");
-    let result = writer::delta(workspace.root(), &database, &[PathBuf::from("src/main.rs")]);
+    let result = writer::delta_with_selection(
+        workspace.root(),
+        &database,
+        &[PathBuf::from("src/main.rs")],
+        None,
+        None,
+    );
     let error = match result {
         Err(error) => error,
         Ok(summary) => panic!(

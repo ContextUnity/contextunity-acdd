@@ -1,6 +1,6 @@
 use super::macros::{collect_ancestor_shadows, file_macro_facts};
 use super::types::{static_name, type_expr, type_expr_has_unknown, type_expr_inner};
-use crate::ast::text;
+use crate::ast::syntax::text;
 use crate::semantic::{CallSiteEvidence, SourcePosition, TypeExpr, ValueExpr};
 use std::borrow::Cow;
 use std::collections::HashSet;

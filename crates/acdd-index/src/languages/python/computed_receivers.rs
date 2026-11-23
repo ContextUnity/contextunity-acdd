@@ -1,5 +1,6 @@
+use crate::ast::syntax::{bounded_expression, text};
+use crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH;
 use crate::models::ReceiverHint;
-use crate::ast::{bounded_expression, text};
 use tree_sitter::Node;
 
 fn static_callee(node: Node<'_>) -> bool {
@@ -91,7 +92,7 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
             let mut parts = vec![text(member, source)];
             let mut cur = receiver;
             while cur.kind() == "attribute" {
-                if parts.len() >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+                if parts.len() >= MAX_VALUE_FLOW_TYPE_DEPTH {
                     return None;
                 }
                 let attr = cur

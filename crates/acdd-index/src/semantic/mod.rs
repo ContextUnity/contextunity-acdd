@@ -1,12 +1,10 @@
 //! Language-neutral evidence for statically inferred receiver types.
 
-mod builtins;
-mod catalog;
-mod relations;
-mod types;
+pub mod builtins;
+pub mod relations;
+pub mod types;
 
 pub use builtins::*;
-pub use catalog::*;
 pub use relations::*;
 pub use types::*;
 
@@ -238,36 +236,5 @@ mod tests {
                 column: 5
             }
         );
-    }
-
-    #[test]
-    fn receiver_catalog_and_typescript_bindings_round_trip() {
-        let mut catalog = ReceiverCatalog::new();
-        catalog.register("AppService", "service:app");
-        assert_eq!(catalog.lookup("AppService"), Some("service:app"));
-        assert_eq!(catalog.lookup("Missing"), None);
-
-        let json = serde_json::to_string(&catalog).expect("serialize catalog");
-        let deserialized: ReceiverCatalog =
-            serde_json::from_str(&json).expect("deserialize catalog");
-        assert_eq!(catalog, deserialized);
-
-        let bindings = TypeScriptBindings {
-            bindings: vec![TypeScriptBinding {
-                alias: "express".into(),
-                module: "express".into(),
-                declaration: SourcePosition { line: 1, column: 1 },
-                completed: SourcePosition {
-                    line: 1,
-                    column: 25,
-                },
-                invalidated: false,
-                captured_safe: true,
-            }],
-        };
-        let bindings_json = serde_json::to_string(&bindings).expect("serialize bindings");
-        let deserialized_bindings: TypeScriptBindings =
-            serde_json::from_str(&bindings_json).expect("deserialize bindings");
-        assert_eq!(bindings, deserialized_bindings);
     }
 }

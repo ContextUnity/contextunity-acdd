@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ModulePrefix, ParsedManifest};
 
 /// Parser for C# MSBuild `*.csproj` manifests (`PackageReference` and `RootNamespace`).
-pub struct CSharpParser;
+pub(crate) struct CSharpParser;
 
 /// Shared C# manifest parser instance.
-pub static CSHARP_PARSER: CSharpParser = CSharpParser;
+pub(crate) static CSHARP_PARSER: CSharpParser = CSharpParser;
 
 impl ManifestParser for CSharpParser {
     fn ecosystem(&self) -> Ecosystem {

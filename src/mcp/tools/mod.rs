@@ -1,12 +1,13 @@
 mod code_tools;
 mod dispatch;
-mod inputs;
+/// Typed MCP tool request schemas.
+pub mod inputs;
 mod state_tools;
 
-pub use inputs::{
+use inputs::{
     Analyze, Ast, BlackboardInput, ClaimInput, Explain, GetDoc, Guide, Impact, Inspect, Lint,
-    McpBlackboardAction, McpStateAction, OverviewInput, PageInput, Query, SearchDocs,
-    SearchSymbols, Selector, Snippet, StateInput, SubmitInput, Tests, VerifyInput, WorktreeInput,
+    OverviewInput, Query, SearchDocs, SearchSymbols, Selector, Snippet, StateInput, SubmitInput,
+    Tests, VerifyInput,
 };
 
 use super::server::Server;
@@ -189,7 +190,7 @@ mod tests {
     use crate::mcp::response;
     use acdd_core::errors::{ErrorCode, StateError};
     use acdd_core::ports::{
-        BUILTIN_MCP_TOOLS, DomainActionReq, DomainActionResult, DomainCapabilities,
+        is_builtin_mcp_tool, DomainActionReq, DomainActionResult, DomainCapabilities,
         DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider, DomainToolDef,
         DomainToolOutput, DomainToolReq,
     };
@@ -323,10 +324,15 @@ mod tests {
             .iter()
             .map(|t| t.name.as_ref().to_owned())
             .collect();
-        let mut expected: BTreeSet<String> =
-            BUILTIN_MCP_TOOLS.iter().map(|s| (*s).to_owned()).collect();
-        expected.insert("http_probe".to_owned());
-        assert_eq!(names, expected);
+        assert_eq!(names.len(), 21);
+        assert!(names.contains("http_probe"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.as_str() != "http_probe" && is_builtin_mcp_tool(name))
+                .count(),
+            20
+        );
         for legacy in [
             "task_list",
             "task_claim",

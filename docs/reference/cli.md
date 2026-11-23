@@ -119,7 +119,7 @@ acdd lint --categories all --limit 50 --offset 0
 ```
 
 `acdd lint [TARGET]` runs the unified language-agnostic lint engine over `.acdd/code-map.sqlite` (matching MCP `code_map_lint`):
-- `--categories`: comma-separated `arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`, or `all` (omitted defaults to `arch,syntax,docs`).
+- `--categories`: comma-separated `arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`, or `all` (omitted defaults to `arch,syntax,docs`). `syntax` evaluates `architecture.complexity` (`ComplexityLimits`: `cognitive_complexity`, `max_nesting_depth`, `high_fanout`), `fact_budget_exceeded`, and `intra_crate_type_homonym`; `cycles` inspects multi-node module `imports` SCCs (enforceable as errors via `forbid_cycles` rules); `duplicates` inspects AST-statement clones; `dead_tails` computes workspace-wide production liveness and reports `dead_tails.phantom_tested`, `dead_tails.unreachable`, `dead_tails.dangling_call` (`error`), and `dead_tails.unused_public_api` (`error` on unused/test-only `pub use` re-exports and internal `pub` items lacking non-test cross-module production callers).
 - `--rule <ID>`: repeat or pass comma-separated rule/invariant IDs to filter evaluated diagnostics.
 - `--severity <warn|error>`: minimum diagnostic severity threshold.
 - `--limit`, `--offset`, `--generation`, `--detail <compact|full>`: standard generational paging matching `code_map_lint`.
@@ -241,7 +241,7 @@ acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree 
 acdd validate [<PATH>]
 ```
 
-- **`validate [<PATH>]`**: runs the unified workspace validator:
-  - **Config (`acdd.yaml`)**: validates schema keys, `specs:` collections, and `linked_workspaces` paths.
+- **`validate [<PATH>]`**: runs the unified workspace validator (`acdd_state::validate` + `acdd_state::usecases::deps`):
+  - **Config (`acdd.yaml`)**: validates schema keys (`load_adapter_report`, rejecting unknown keys via `#[serde(deny_unknown_fields)]`), `specs:` collections, and `linked_workspaces` paths.
   - **Profiles (`.acdd/profile.yaml`)**: verifies inheritance, fields, bound commands (when `modules.state` is enabled), and `DomainProvider` capabilities.
   - **Specs**: validates collection prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths (omitting `<PATH>` checks the entire workspace).

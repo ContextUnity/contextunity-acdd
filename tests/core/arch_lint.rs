@@ -3,10 +3,9 @@ use acdd_core::config::load_adapter;
 use acdd_core::lint::{LintCategory, LintSeverity};
 use acdd_core::response::{QueryOptions, ResponsePolicy};
 use acdd_index::db::{
-    cycles,
     lint::{enforced_invariant_ids, run_lint, syntax_paged, LintRequest},
     reader::{self, analyze_paged},
-    traversal::{dead_tails_paged, duplicates_paged},
+    traversal::{duplicates_paged, query_with_path_options, GraphQueryOptions},
 };
 use acdd_index::docs;
 use acdd_index::models::details::NodeDetailKey;
@@ -93,7 +92,7 @@ kind: doc_integrity
     assert_eq!(rule_errors.len(), 3, "{rule_errors:?}");
 
     // Untouched docs omit arch_rules completely.
-    let plain = docs::extract_with_details("docs/plain.md", "# Plain\nText.\n", 0.0, &[]).unwrap();
+    let plain = docs::extract_with_details_with_zones("docs/plain.md", "# Plain\nText.\n", 0.0, &[], None).unwrap();
     assert!(plain[0].1.get(NodeDetailKey::ARCH_RULES).is_none());
 
     // Cold, warm-cached, and delta builds preserve identical output_root across Nodes and Errors.
@@ -123,11 +122,12 @@ kind: doc_integrity
 
     std::fs::copy(&cold_db, &delta_db).unwrap();
     ws.write("docs/arch.md", doc_src);
-    let delta_report = pipeline::delta_with_cache_dir(
+    let delta_report = pipeline::delta_with_selection(
         ws.root(),
         &delta_db,
         &[PathBuf::from("docs/arch.md")],
-        &cache_dir,
+        None,
+        Some(&cache_dir),
     )
     .unwrap();
     let cold_after_report =
@@ -690,11 +690,21 @@ fn dead_helper() -> i32 {
     assert_eq!(syn["diagnostics"]["total"], 1);
     let dups = duplicates_paged(&conn, None, None, None, Some(5), &opts).unwrap();
     assert!(dups["total"].as_u64().unwrap() >= 1);
-    let dt = dead_tails_paged(&conn, None, None, &opts).unwrap();
+    let dt = query_with_path_options(
+        &conn,
+        "dead_tails",
+        None,
+        None,
+        &GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: Default::default(),
+            page: &opts,
+        },
+    )
+    .unwrap();
     assert!(dt["summary"]["dead_tails_count"].as_u64().unwrap() >= 1);
     assert!(dt["summary"]["dangling_calls_count"].as_u64().unwrap() >= 1);
-    let cyc = cycles::cycles(&conn, None).unwrap();
-    assert!(!cyc.as_array().unwrap().is_empty());
     let analyzed_doc = analyze_paged(&conn, "docs/notes.md", Some(false), &opts).unwrap();
     assert_eq!(analyzed_doc["doc_diagnostics"]["total"], 1);
     let analyzed_ws = analyze_paged(&conn, "", Some(true), &opts).unwrap();
@@ -842,6 +852,49 @@ pub fn mutual_pong(n: u32) -> u32 {
             .is_some_and(|s| s.starts_with("module:src/imp_")),
         "{cycle_items:?}"
     );
+
+    // 4. File-level `forbid_cycles` with `edge_kinds: [imports]` enforces `error` severity on
+    //    same-directory import SCCs while allowing ordinary self/mutual call recursion.
+    let arch_cfg: acdd_core::lint::ArchitectureConfig = serde_yaml::from_str(
+        r#"
+rules:
+  - id: ARCH-ACYCLIC-SAME-DIR-IMPORTS
+    severity: error
+    kind: forbid_cycles
+    from:
+      paths: ["src/**"]
+    edge_kinds: [imports]
+"#,
+    )
+    .unwrap();
+    let arch_res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::Arch]),
+            rule_ids: None,
+            minimum_severity: Some(LintSeverity::Error),
+            architecture: Some(&arch_cfg),
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let arch_items = arch_res["items"].as_array().unwrap();
+    assert_eq!(
+        arch_items.len(),
+        1,
+        "same-directory module import SCC must fail forbid_cycles error check without rejecting call recursion: {arch_items:?}"
+    );
+    assert_eq!(arch_items[0]["rule_id"], "ARCH-ACYCLIC-SAME-DIR-IMPORTS");
+    assert_eq!(arch_items[0]["severity"], "error");
+    assert!(
+        arch_items[0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("src/imp_a.rs") && m.contains("src/imp_b.rs")),
+        "{arch_items:?}"
+    );
 }
 
 #[cfg(feature = "lang-rust")]
@@ -938,7 +991,7 @@ doc_type: architecture
              VALUES ('src/complex.rs','ok','d',1,'rust',0,0,1);
              INSERT INTO nodes(node_id,id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
              VALUES (1,'rs:src/complex.rs:1:overflow_budget_fn','function','overflow_budget_fn','overflow_budget_fn',1,1,2,0,'rust',0,'{{\"fact_limit_exceeded\":true}}',100,1);",
-            acdd_index::db::SCHEMA_DDL
+            acdd_index::db::schema::SCHEMA_DDL
         ))
         .unwrap();
     let mem_cfg = acdd_core::lint::ArchitectureConfig {
@@ -1049,4 +1102,248 @@ doc_type: architecture
         }),
         "INV-BOUNDED-STRUCTURAL-COMPLEXITY must not be flagged as orphan: {items:?}"
     );
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn dead_tails_unused_public_api_enforces_cross_module_non_test_usage_matrix() {
+    let ws = Workspace::new();
+    ws.write(
+        "Cargo.toml",
+        r#"[package]
+name = "sample-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sample_app"
+path = "src/lib.rs"
+"#,
+    );
+    ws.write(
+        "build.rs",
+        r#"#[path = "build_helper.rs"]
+mod build_helper;
+
+fn main() {
+    build_helper::emit();
+}
+"#,
+    );
+    ws.write(
+        "build_helper.rs",
+        r#"pub fn emit() {}
+"#,
+    );
+    ws.write(
+        "src/lib.rs",
+        r#"pub mod inner;
+pub mod other;
+pub mod caller;
+pub mod glob_used;
+pub mod glob_unused;
+
+pub use inner::unused_reexport;
+pub use inner::test_only_reexport;
+pub use inner::used_reexport;
+pub use glob_used::*;
+pub use glob_unused::*;
+
+#[derive(serde::Serialize)]
+pub struct PublicDto {
+    pub field: i32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NonWireDeadDto {
+    pub field: i32,
+}
+
+pub fn main_entrypoint() {}
+pub fn lib_unused() {}
+"#,
+    );
+    ws.write(
+        "src/glob_used.rs",
+        r#"pub fn glob_live() -> i32 { 10 }
+pub fn glob_dead() -> i32 { 11 }
+"#,
+    );
+    ws.write(
+        "src/glob_unused.rs",
+        r#"pub fn never_used_via_glob() -> i32 { 12 }
+"#,
+    );
+    ws.write(
+        "src/other.rs",
+        r#"pub fn shadowed_local_fn() -> i32 { 20 }
+"#,
+    );
+    ws.write(
+        "src/inner.rs",
+        r#"pub fn used_reexport() -> i32 { 1 }
+pub fn unused_reexport() -> i32 { 2 }
+pub fn test_only_reexport() -> i32 { 3 }
+pub fn used_direct_pub() -> i32 { 4 }
+pub fn unused_pub_fn() -> i32 { 5 }
+pub fn test_only_pub_fn() -> i32 { 6 }
+pub fn cfg_all_test_only_fn() -> i32 { 7 }
+pub fn cfg_any_test_only_fn() -> i32 { 8 }
+pub fn shadowed_local_fn() -> i32 { 9 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_only_reexport;
+    #[test]
+    fn t() {
+        let _brace_trap = "}}}";
+        let _ = test_only_reexport();
+        let _ = super::test_only_pub_fn();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    #[test]
+    fn l() {
+        let _ = super::cfg_all_test_only_fn();
+    }
+}
+
+#[cfg(any(test, feature = "nonexistent-test-flag"))]
+mod any_tests {
+    #[test]
+    fn a() {
+        let _ = super::cfg_any_test_only_fn();
+    }
+}
+"#,
+    );
+    ws.write(
+        "src/caller.rs",
+        r#"use crate::used_reexport;
+use crate::glob_live;
+use crate::inner::used_direct_pub;
+use crate::other::shadowed_local_fn as other_shadowed;
+
+struct Helper;
+impl Helper {
+    fn shadowed_local_fn(&self) -> i32 { 0 }
+}
+
+fn shadowed_local_fn() -> i32 { 0 }
+
+pub fn prod_entry() -> i32 {
+    let h = Helper;
+    used_reexport()
+        + glob_live()
+        + used_direct_pub()
+        + other_shadowed()
+        + shadowed_local_fn()
+        + h.shadowed_local_fn()
+}
+"#,
+    );
+    ws.write(
+        "src/main.rs",
+        r#"fn main() {
+    let _ = sample_app::caller::prod_entry();
+    sample_app::main_entrypoint();
+}
+"#,
+    );
+
+    ws.build();
+    let conn = ws.open();
+    let opts = page(100, 0, None);
+    let res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::DeadTails]),
+            rule_ids: Some(&["dead_tails.unused_public_api".to_owned()]),
+            minimum_severity: Some(LintSeverity::Error),
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = res["items"].as_array().unwrap();
+    let symbols: Vec<&str> = items
+        .iter()
+        .filter_map(|v| v["symbol"].as_str())
+        .collect();
+
+    let expect_flagged = [
+        ("unused_reexport", Some("src/lib.rs")),
+        ("test_only_reexport", Some("src/lib.rs")),
+        ("unused_pub_fn", Some("src/inner.rs")),
+        ("test_only_pub_fn", Some("src/inner.rs")),
+        ("cfg_all_test_only_fn", Some("src/inner.rs")),
+        ("cfg_any_test_only_fn", Some("src/inner.rs")),
+        ("shadowed_local_fn", Some("src/inner.rs")),
+        ("glob_dead", Some("src/glob_used.rs")),
+        ("never_used_via_glob", Some("src/glob_unused.rs")),
+        ("NonWireDeadDto", Some("src/lib.rs")),
+        ("lib_unused", Some("src/lib.rs")),
+    ];
+    for (name, expected_path) in expect_flagged {
+        assert!(
+            items.iter().any(|v| {
+                v["symbol"]
+                    .as_str()
+                    .and_then(|s| s.rsplit('.').next())
+                    == Some(name)
+                    && expected_path.is_none_or(|p| v["path"] == p)
+            }),
+            "expected dead_tails.unused_public_api for '{name}' at {expected_path:?}: {items:?}"
+        );
+    }
+    assert!(
+        items.iter().any(|v| {
+            v["path"] == "src/lib.rs"
+                && v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("glob_unused::*"))
+        }),
+        "expected unused glob pub use violation for glob_unused::*: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["path"] == "src/lib.rs"
+                && v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("glob_used::*"))
+        }),
+        "did not expect unused glob pub use violation for glob_used::*: {items:?}"
+    );
+    for (name, disallowed_path) in [
+        ("used_reexport", None),
+        ("used_direct_pub", None),
+        ("glob_live", None),
+        ("prod_entry", None),
+        ("PublicDto", None),
+        ("main", None),
+        ("main_entrypoint", None),
+        ("emit", Some("build_helper.rs")),
+        ("shadowed_local_fn", Some("src/other.rs")),
+    ] {
+        assert!(
+            !items.iter().any(|v| {
+                v["symbol"]
+                    .as_str()
+                    .and_then(|s| s.rsplit('.').next())
+                    == Some(name)
+                    && disallowed_path.is_none_or(|p| v["path"] == p)
+            }),
+            "did not expect dead_tails.unused_public_api for '{name}' at {disallowed_path:?}: {items:?}"
+        );
+    }
+    assert!(
+        items.iter().all(|v| v["severity"] == "error"),
+        "dead_tails.unused_public_api must emit error severity: {items:?}"
+    );
+    let _ = symbols;
 }

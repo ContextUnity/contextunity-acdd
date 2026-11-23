@@ -392,8 +392,7 @@ impl ArchitectureConfig {
     }
 }
 
-/// Split an external symbol or module specifier strictly on `::`, `.`, `/`, and `:` boundaries.
-pub fn normalize_external_symbol_segments(symbol: &str) -> Vec<&str> {
+fn normalize_external_symbol_segments(symbol: &str) -> Vec<&str> {
     symbol.trim().split([':', '.', '/']).filter(|seg| !seg.is_empty()).collect()
 }
 

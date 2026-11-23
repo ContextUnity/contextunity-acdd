@@ -6,7 +6,7 @@ pub const MAX_OUTPUT_BYTES: usize = 96 * 1024;
 /// The max page size value.
 pub const MAX_PAGE_SIZE: usize = 100;
 /// The min output bytes value.
-pub const MIN_OUTPUT_BYTES: usize = 1024;
+const MIN_OUTPUT_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -1,1667 +1,42 @@
-#[doc(hidden)]
-pub mod support;
-/// Supported language profile registry for multi-language extraction.
-#[derive(Debug, Clone, Default)]
-pub struct LanguageRegistry {
-    enabled_languages: HashSet<String>,
-}
-
-impl LanguageRegistry {
-    /// Creates a new empty language registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Enables a language profile by identifier.
-    pub fn enable(&mut self, language: &str) {
-        self.enabled_languages.insert(language.to_string());
-    }
-
-    /// Checks if a language profile is enabled.
-    pub fn is_enabled(&self, language: &str) -> bool {
-        self.enabled_languages.contains(language)
-    }
-
-    /// Returns the number of enabled language profiles.
-    pub fn len(&self) -> usize {
-        self.enabled_languages.len()
-    }
-
-    /// Checks whether any language profiles are enabled.
-    pub fn is_empty(&self) -> bool {
-        self.enabled_languages.is_empty()
-    }
-}
-use crate::models::{Facts, Node, Reference};
-use crate::ast::{self, field, text};
-use crate::linker::traits::{LanguageLinker, GENERIC_LINKER};
-use anyhow::{Context, Result};
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    path::Path,
-    sync::Arc,
-};
-#[cfg(any(
-    feature = "lang-c",
-    feature = "lang-cpp",
-    feature = "lang-csharp",
-    feature = "lang-java",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby"
-))]
-pub(crate) use support as syntax;
-#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
-pub(crate) use support::c_family;
-use tree_sitter::{Node as Syntax, Parser};
 pub(crate) mod build_manifest;
+/// Per-file language context, rule IR, and scope projections.
+pub mod context;
 /// Workspace dependency discovery and classification.
 pub mod dependency_registry;
 /// Typed framework manifests consumed by existing language linkers.
 pub mod manifests;
+/// Core trait implemented by compiled language profiles.
+pub mod profile;
 /// Package and TypeScript path registries.
 pub mod registries;
+/// Framework route extraction and prefix resolution.
+pub mod routes;
 /// Semantic dependency facts and rule matching.
 pub mod semantic;
+/// SQL embedded-query profile and literal extractors.
+pub(crate) mod sql;
+#[doc(hidden)]
+pub mod support;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
 pub mod template;
 #[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-toml"))]
 pub(crate) mod toml_manifest;
-
-pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
-
-struct ThreadLocalParsers {
-    builtin: [Vec<tree_sitter::Parser>; 6],
-    other: HashMap<&'static str, Vec<tree_sitter::Parser>>,
-}
-
-impl ThreadLocalParsers {
-    fn new() -> Self {
-        Self {
-            builtin: std::array::from_fn(|_| Vec::new()),
-            other: HashMap::new(),
-        }
-    }
-
-    fn builtin_index(key: &str) -> Option<usize> {
-        Some(match key {
-            "python" => 0,
-            "rust" => 1,
-            "html" => 2,
-            "javascript" => 3,
-            "typescript-tsx" => 4,
-            "typescript" => 5,
-            _ => return None,
-        })
-    }
-
-    fn take(&mut self, key: &'static str) -> Option<tree_sitter::Parser> {
-        if let Some(index) = Self::builtin_index(key) {
-            self.builtin[index].pop()
-        } else {
-            self.other.get_mut(key).and_then(Vec::pop)
-        }
-    }
-
-    fn give_back(&mut self, key: &'static str, parser: tree_sitter::Parser) {
-        if let Some(index) = Self::builtin_index(key) {
-            self.builtin[index].push(parser);
-        } else {
-            self.other.entry(key).or_default().push(parser);
-        }
-    }
-}
-
-thread_local! {
-    static THREAD_LOCAL_PARSERS: std::cell::RefCell<ThreadLocalParsers> =
-        std::cell::RefCell::new(ThreadLocalParsers::new());
-}
-
-/// Executes a closure with a warm, thread-local Tree-sitter parser configured for the grammar.
-pub fn with_warm_parser<R>(
-    lang_key: &'static str,
-    grammar: tree_sitter::Language,
-    f: impl FnOnce(&mut tree_sitter::Parser) -> R,
-) -> Result<R> {
-    let parser = THREAD_LOCAL_PARSERS.with(|cell| -> Result<tree_sitter::Parser> {
-        let mut pool = cell.borrow_mut();
-        if let Some(mut p) = pool.take(lang_key) {
-            p.reset();
-            p.set_language(&grammar)?;
-            Ok(p)
-        } else {
-            let mut p = tree_sitter::Parser::new();
-            p.set_language(&grammar)?;
-            Ok(p)
-        }
-    })?;
-
-    struct ReturnGuard {
-        lang_key: &'static str,
-        parser: Option<tree_sitter::Parser>,
-    }
-    impl Drop for ReturnGuard {
-        fn drop(&mut self) {
-            if let Some(p) = self.parser.take() {
-                THREAD_LOCAL_PARSERS.with(|cell| {
-                    if let Ok(mut pool) = cell.try_borrow_mut() {
-                        pool.give_back(self.lang_key, p);
-                    }
-                });
-            }
-        }
-    }
-
-    let mut guard = ReturnGuard {
-        lang_key,
-        parser: Some(parser),
-    };
-
-    let result = f(guard.parser.as_mut().expect("parser present"));
-    Ok(result)
-}
-
-pub(crate) fn source_start(node: Syntax<'_>) -> crate::semantic::SourcePosition {
-    let position = node.start_position();
-    crate::semantic::SourcePosition {
-        line: position.row + 1,
-        column: position.column,
-    }
-}
-
-pub(crate) fn source_end(node: Syntax<'_>) -> crate::semantic::SourcePosition {
-    let position = node.end_position();
-    crate::semantic::SourcePosition {
-        line: position.row + 1,
-        column: position.column,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-/// Import namespace shared by language profiles that can resolve one another.
-pub struct LanguageFamily(pub &'static str);
-
-/// Normalized module namespace and import interpretation for the linker.
-pub struct ImportPath {
-    /// Canonical namespace used for module lookup.
-    pub namespace: String,
-    /// Whether the import is relative to its owning module.
-    pub relative: bool,
-    /// Whether the namespace includes an imported symbol suffix.
-    pub symbol_path: bool,
-}
-impl ImportPath {
-    /// Creates an absolute module import with no symbol suffix.
-    pub fn absolute(namespace: String) -> Self {
-        Self {
-            namespace,
-            relative: false,
-            symbol_path: false,
-        }
-    }
-}
-
-/// Typed per-file extraction state for Python profiles.
-#[derive(Default)]
-pub struct PythonFileState {
-    /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
-    pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
-}
-
-/// Typed per-file extraction state for TypeScript and JavaScript profiles.
-#[derive(Default)]
-pub struct TypeScriptFileState {
-    /// Names exported as defaults.
-    pub default_exports: HashSet<String>,
-    /// Local bindings imported from `node:test` or configured test runners as executable test cases.
-    pub test_case_imports: HashSet<String>,
-    /// Local bindings imported from `node:test` as test fixtures.
-    pub test_fixture_imports: HashSet<String>,
-    /// Scope identifiers where a local binding shadows CommonJS `require`.
-    pub shadowed_require_scopes: Arc<HashSet<usize>>,
-    /// Scope identifiers where a source binding shadows the standard Array type.
-    pub shadowed_array_type_scopes: Arc<HashSet<usize>>,
-    /// Lexical scopes where a binding or assignment masks a DOM global.
-    pub shadowed_dom_global_scopes: Arc<HashMap<usize, HashSet<String>>>,
-    /// Exact DOM receiver parameter annotations indexed by function syntax node.
-    pub dom_listener_receivers: Arc<HashMap<usize, HashMap<String, String>>>,
-    /// Direct class field DOM annotations; duplicate or unknown fields have no type.
-    pub dom_listener_class_fields: Arc<HashMap<usize, HashMap<String, Option<String>>>>,
-    /// Source positions of lexical receiver writes within each enclosing scope.
-    pub dom_listener_local_writes: Arc<HashMap<usize, HashMap<String, Vec<usize>>>>,
-    /// Exact direct lexical declarations used to bound DOM receiver factory flow.
-    pub dom_listener_local_declarations:
-        Arc<HashMap<usize, HashMap<String, DomListenerLocalDeclaration>>>,
-    /// Parameter and catch bindings that shadow DOM receiver names in their scope.
-    pub dom_listener_parameter_bindings: Arc<HashMap<usize, HashSet<String>>>,
-    /// Function scopes and names whose parameters are reassigned or rebound.
-    pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
-}
-
-/// Typed language-owned extraction state stored on [`FileContext`].
-#[derive(Default)]
-pub enum LanguageFileState {
-    /// Profile requires no language-specific per-file state.
-    #[default]
-    None,
-    /// Python-specific per-file extraction state.
-    Python(PythonFileState),
-    /// TypeScript/JavaScript-specific per-file extraction state.
-    TypeScript(TypeScriptFileState),
-}
-
-impl LanguageFileState {
-    /// Borrows Python state when active.
-    pub fn python(&self) -> Option<&PythonFileState> {
-        match self {
-            Self::Python(state) => Some(state),
-            _ => None,
-        }
-    }
-
-    /// Borrows TypeScript/JavaScript state when active.
-    pub fn typescript(&self) -> Option<&TypeScriptFileState> {
-        match self {
-            Self::TypeScript(state) => Some(state),
-            _ => None,
-        }
-    }
-
-    /// Ensures and mutably borrows TypeScript/JavaScript state.
-    pub fn typescript_mut(&mut self) -> &mut TypeScriptFileState {
-        if !matches!(self, Self::TypeScript(_)) {
-            *self = Self::TypeScript(TypeScriptFileState::default());
-        }
-        match self {
-            Self::TypeScript(state) => state,
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[derive(Default)]
-/// Per-file extraction state shared by hooks of one language profile.
-pub struct FileContext {
-    /// Effective validated extraction context for this file.
-    pub rules: Arc<LanguageContext>,
-    /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
-    pub root_bindings: Option<(usize, ast::ScopeBindings)>,
-    /// Typed per-language state owned by the active profile.
-    pub state: LanguageFileState,
-}
-
-/// Manifest-backed extraction rules prepared once for one source file.
-#[doc(hidden)]
-#[derive(Clone, Debug, Default)]
-pub struct LanguageContext {
-    /// External class hierarchy receiver rules.
-    pub class_hierarchy_receivers: Vec<manifests::ClassHierarchyReceiverRule>,
-    /// Decorator route rules.
-    pub route_decorators: Vec<manifests::RouteDecoratorRule>,
-    /// Registration call route rules.
-    pub route_calls: Vec<manifests::RouteCallRule>,
-    pub(crate) route_rule_origins:
-        HashMap<(bool, usize), crate::semantic::ExtractionRuleOrigin>,
-    /// Dependency-injection call rules.
-    pub di_calls: Vec<manifests::DiCallRule>,
-    pub(crate) di_rule_origins: HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
-    /// Semantic extraction rules.
-    pub semantic_rules: Vec<semantic::EffectiveSemanticRule>,
-    /// Syntax operation rules.
-    pub syntax_rules: Vec<manifests::syntax::SyntaxRule>,
-    /// Necessary operation families derived during effective rule preparation.
-    pub(crate) has_factory_members: bool,
-    pub(crate) has_object_call_definitions: bool,
-    named_member_rules: HashMap<String, Vec<usize>>,
-    projection_rules: Option<ProjectionRuleIndex>,
-    prepared_projections: HashMap<String, manifests::semantic::PreparedRules>,
-    file_provider_rules: Option<HashMap<String, Vec<usize>>>,
-    syntax_activation_keys: manifests::semantic::SyntaxActivationKeys,
-    has_syntax_gated_rules: bool,
-    pub(crate) workspace_activated_rules: BTreeMap<String, BTreeSet<String>>,
-    pub(crate) rule_ir: manifests::RuleIRHandle,
-}
-
-#[derive(Clone, Debug, Default)]
-struct ProjectionRuleIndex {
-    globals: HashMap<String, Vec<usize>>,
-    members: HashMap<String, Vec<usize>>,
-    imported: Vec<usize>,
-}
-
-/// Merge necessary candidates without allocating or changing effective row order.
-pub(crate) struct ProjectionRuleCandidates<'a> {
-    slices: [&'a [usize]; 4],
-    positions: [usize; 4],
-    legacy: std::ops::Range<usize>,
-}
-
-impl Iterator for ProjectionRuleCandidates<'_> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(index) = self.legacy.next() {
-            return Some(index);
-        }
-        let next = self
-            .slices
-            .iter()
-            .zip(self.positions)
-            .filter_map(|(slice, position)| slice.get(position))
-            .min()
-            .copied()?;
-        for (slice, position) in self.slices.iter().zip(&mut self.positions) {
-            if slice.get(*position) == Some(&next) {
-                *position += 1;
-            }
-        }
-        Some(next)
-    }
-}
-
-impl LanguageContext {
-    fn is_workspace_activated(&self, rule: &manifests::syntax::SyntaxRule) -> bool {
-        self.workspace_activated_rules
-            .get(&rule.pack)
-            .is_some_and(|ids| ids.contains(&rule.id))
-    }
-
-    pub(crate) fn prepare_named_member_rules(&mut self) {
-        use manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
-        self.named_member_rules.clear();
-        self.has_factory_members = false;
-        self.has_object_call_definitions = false;
-        self.syntax_activation_keys = manifests::semantic::SyntaxActivationKeys::default();
-        self.has_syntax_gated_rules = false;
-        let mut projections = ProjectionRuleIndex::default();
-        for (index, rule) in self.syntax_rules.iter().enumerate() {
-            if !rule.activation.is_empty()
-                && !self.is_workspace_activated(rule)
-                && rule
-                    .activation
-                    .iter()
-                    .any(manifests::semantic::ActivationCondition::is_file_scoped)
-            {
-                self.has_syntax_gated_rules = true;
-                for condition in &rule.activation {
-                    condition.collect_syntax_keys(&mut self.syntax_activation_keys);
-                }
-            }
-            self.has_factory_members |=
-                matches!(&rule.operation, SyntaxOperation::FactoryMembers { .. });
-            self.has_object_call_definitions |= matches!(
-                &rule.operation,
-                SyntaxOperation::NamedBinding {
-                    binding: NamedBindingForm::CallDefinition {
-                        target_kind: manifests::projections::DefinitionKind::Object,
-                        ..
-                    },
-                    ..
-                }
-            );
-            if let SyntaxOperation::NamedBinding {
-                binding: NamedBindingForm::MemberReference { root },
-                ..
-            } = &rule.operation
-            {
-                self.named_member_rules
-                    .entry(root.clone())
-                    .or_default()
-                    .push(index);
-            }
-            let api = manifests::semantic::syntax_rule_api(rule).and_then(Result::ok);
-            match api {
-                Some(manifests::projections::Api::Global { name }) => {
-                    projections
-                        .globals
-                        .entry(name.clone())
-                        .or_default()
-                        .push(index);
-                }
-                Some(manifests::projections::Api::GlobalMember { member, .. }) => {
-                    projections
-                        .members
-                        .entry(member.clone())
-                        .or_default()
-                        .push(index);
-                }
-                Some(manifests::projections::Api::Imported { .. }) => {
-                    projections.imported.push(index)
-                }
-                _ => {}
-            }
-        }
-        self.projection_rules = Some(projections);
-        let mut providers: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, effective) in self
-            .semantic_rules
-            .iter()
-            .enumerate()
-            .filter(|(_, rule)| rule.active)
-        {
-            if let manifests::SemanticOperation::CallToFile {
-                target: manifests::SemanticTarget::ProjectPathSuffix { language, .. },
-                ..
-            }
-            | manifests::SemanticOperation::ClassAttributeToFile {
-                target: manifests::SemanticTarget::ProjectPathSuffix { language, .. },
-                ..
-            } = &effective.rule.operation
-            {
-                providers.entry(language.clone()).or_default().push(index);
-            }
-        }
-        self.file_provider_rules = Some(providers);
-        self.prepared_projections = manifests::semantic::prepare_projection_rules(self);
-    }
-
-    pub(crate) fn prepared_projections(
-        &self,
-        language: &str,
-    ) -> Option<&manifests::semantic::PreparedRules> {
-        self.prepared_projections.get(language)
-    }
-
-    /// Returns manifest-declared syntax attribute names and prefixes collected for deferred rules.
-    pub fn syntax_activation_keys(&self) -> &manifests::semantic::SyntaxActivationKeys {
-        &self.syntax_activation_keys
-    }
-
-    /// Reports whether any retained syntax rule requires per-file extension or syntax signal checks.
-    pub fn has_syntax_gated_rules(&self) -> bool {
-        self.has_syntax_gated_rules
-    }
-
-    /// Evaluates whether `rule` is active for `path` and its observed `signals` in O(1) fast-path.
-    pub fn is_syntax_rule_active(
-        &self,
-        rule: &manifests::syntax::SyntaxRule,
-        path: &str,
-        signals: &manifests::semantic::FileActivationSignals,
-    ) -> bool {
-        if !self.has_syntax_gated_rules
-            || rule.activation.is_empty()
-            || self.is_workspace_activated(rule)
-            || !rule
-                .activation
-                .iter()
-                .any(manifests::semantic::ActivationCondition::is_file_scoped)
-        {
-            return true;
-        }
-        manifests::semantic::ActivationCondition::matches_file_slice(&rule.activation, path, signals)
-    }
-
-    /// Iterates over syntax rules active for `path` and `signals`.
-    pub fn syntax_rules_for_signals<'a>(
-        &'a self,
-        path: &'a str,
-        signals: &'a manifests::semantic::FileActivationSignals,
-    ) -> impl Iterator<Item = &'a manifests::syntax::SyntaxRule> + 'a {
-        self.syntax_rules
-            .iter()
-            .filter(move |rule| self.is_syntax_rule_active(rule, path, signals))
-    }
-
-    pub(crate) fn named_member_rules(&self, root: &str) -> &[usize] {
-        self.named_member_rules.get(root).map_or(&[], Vec::as_slice)
-    }
-
-    pub(crate) fn has_projection_rules_for_kind(&self, kind: &str) -> bool {
-        match kind {
-            "call_expression" => self.projection_rules.as_ref().is_none_or(|rules| {
-                !rules.globals.is_empty()
-                    || !rules.members.is_empty()
-                    || !rules.imported.is_empty()
-                    || !self.named_member_rules.is_empty()
-            }),
-            "member_expression" => {
-                self.projection_rules.is_none() || !self.named_member_rules.is_empty()
-            }
-            _ => false,
-        }
-    }
-
-    pub(crate) fn projection_rule_candidates(
-        &self,
-        kind: &str,
-        callee: &str,
-    ) -> ProjectionRuleCandidates<'_> {
-        let mut candidates = ProjectionRuleCandidates {
-            slices: [&[]; 4],
-            positions: [0; 4],
-            legacy: 0..0,
-        };
-        let Some(index) = &self.projection_rules else {
-            candidates.legacy = 0..self.syntax_rules.len();
-            return candidates;
-        };
-        if kind == "call_expression" {
-            candidates.slices[0] = index.globals.get(callee).map_or(&[], Vec::as_slice);
-            if let Some((_, member)) = callee.rsplit_once('.') {
-                candidates.slices[1] = index.members.get(member).map_or(&[], Vec::as_slice);
-            }
-            if callee.split('.').count() <= 2 {
-                candidates.slices[2] = &index.imported;
-            }
-        }
-        if matches!(kind, "call_expression" | "member_expression") {
-            if let Some((root, _)) = callee.split_once('.') {
-                candidates.slices[3] = self.named_member_rules(root);
-            }
-        }
-        candidates
-    }
-
-    pub(crate) fn file_provider_rules_for_language(&self, language: &str) -> Option<&[usize]> {
-        self.file_provider_rules
-            .as_ref()
-            .map(|rules| rules.get(language).map_or(&[][..], Vec::as_slice))
-    }
-
-    pub(crate) fn component_macro(
-        &self,
-        name: &str,
-    ) -> Option<(
-        &manifests::syntax::SyntaxRule,
-        crate::semantic::ComponentMacroRole,
-    )> {
-        use crate::semantic::ComponentMacroRole;
-        let mut matches = self.syntax_rules.iter().filter_map(|rule| {
-            let manifests::syntax::SyntaxOperation::ComponentMacros {
-                props,
-                emits,
-                slots,
-                markers,
-            } = &rule.operation
-            else {
-                return None;
-            };
-            let role = if name == props {
-                ComponentMacroRole::Props
-            } else if name == emits {
-                ComponentMacroRole::Emits
-            } else if name == slots {
-                ComponentMacroRole::Slots
-            } else if markers.iter().any(|marker| marker == name) {
-                ComponentMacroRole::Marker
-            } else {
-                return None;
-            };
-            Some((rule, role))
-        });
-        let first = matches.next()?;
-        matches.next().is_none().then_some(first)
-    }
-    pub(crate) fn bind_rule_ir(&self, grammar: &tree_sitter::Language) -> manifests::RuleIRHandle {
-        self.rule_ir.bind(grammar, self)
-    }
-}
-
-/// Typed declaration role mapped onto [`crate::models::tags::NodeKind`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DeclarationRole {
-    /// Top-level or nested function declaration.
-    Function,
-    /// Method declaration owned by a type.
-    Method,
-    /// Constructor declaration.
-    Constructor,
-    /// Class declaration.
-    Class,
-    /// Struct or record declaration.
-    Struct,
-    /// Enum declaration.
-    Enum,
-    /// Interface or protocol declaration.
-    Interface,
-    /// Trait or typeclass declaration.
-    Trait,
-    /// Implementation block.
-    Impl,
-    /// Module or file-level container.
-    Module,
-    /// Field or member variable declaration.
-    Field,
-    /// Property declaration.
-    Property,
-    /// Constant declaration.
-    Constant,
-    /// Variable declaration.
-    Variable,
-    /// Type alias or typedef declaration.
-    Type,
-    /// Namespace or package declaration.
-    Namespace,
-    /// Macro definition.
-    Macro,
-}
-
-impl DeclarationRole {
-    /// Returns the canonical [`crate::models::tags::NodeKind`] for this declaration role.
-    pub const fn node_kind(self) -> crate::models::tags::NodeKind {
-        use crate::models::tags::NodeKind;
-        match self {
-            Self::Function => NodeKind::Function,
-            Self::Method => NodeKind::Method,
-            Self::Constructor => NodeKind::Constructor,
-            Self::Class => NodeKind::Class,
-            Self::Struct => NodeKind::Struct,
-            Self::Enum => NodeKind::Enum,
-            Self::Interface => NodeKind::Interface,
-            Self::Trait => NodeKind::Trait,
-            Self::Impl => NodeKind::Impl,
-            Self::Module => NodeKind::Module,
-            Self::Field => NodeKind::Field,
-            Self::Property => NodeKind::Property,
-            Self::Constant => NodeKind::Constant,
-            Self::Variable => NodeKind::Variable,
-            Self::Type => NodeKind::Type,
-            Self::Namespace => NodeKind::Namespace,
-            Self::Macro => NodeKind::Macro,
-        }
-    }
-
-    /// Returns the wire node-kind string for this declaration role.
-    pub const fn as_str(self) -> &'static str {
-        self.node_kind().as_str()
-    }
-
-    /// Parses a wire node-kind string into a typed [`DeclarationRole`], when mapped.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "function" => Some(Self::Function),
-            "method" => Some(Self::Method),
-            "constructor" => Some(Self::Constructor),
-            "class" => Some(Self::Class),
-            "struct" => Some(Self::Struct),
-            "enum" => Some(Self::Enum),
-            "interface" => Some(Self::Interface),
-            "trait" => Some(Self::Trait),
-            "impl" => Some(Self::Impl),
-            "module" => Some(Self::Module),
-            "field" => Some(Self::Field),
-            "property" => Some(Self::Property),
-            "constant" => Some(Self::Constant),
-            "variable" => Some(Self::Variable),
-            "type" => Some(Self::Type),
-            "namespace" => Some(Self::Namespace),
-            "macro" => Some(Self::Macro),
-            _ => None,
-        }
-    }
-}
-
-/// Typed import form for declarative grammar classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ImportKind {
-    /// Imports a module or namespace.
-    Module,
-    /// Imports a named member from a module/type.
-    Member,
-    /// Wildcard/glob import.
-    Wildcard,
-    /// Static member or type import.
-    Static,
-    /// Preprocessor or textual include.
-    Include,
-    /// Relative path import.
-    Relative,
-}
-
-/// Typed call form for declarative grammar classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CallForm {
-    /// Direct function/procedure call.
-    Direct,
-    /// Receiver-qualified method/member call.
-    Member,
-    /// Object/type construction expression.
-    Constructor,
-    /// Namespace/associated-path call.
-    Scoped,
-    /// Macro invocation.
-    Macro,
-}
-
-/// Typed declaration visibility classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Visibility {
-    /// Exported / publicly visible.
-    Public,
-    /// Private to module or enclosing type.
-    Private,
-    /// Protected to subclasses/derived types.
-    Protected,
-    /// Internal to assembly/package/crate.
-    Internal,
-    /// Package-private visibility.
-    Package,
-}
-
-/// Declarative syntax categories for profiles using the shared extractor.
-/// Every selector is a named kind in the actual source grammar; absent selectors
-/// are errors rather than the grammar's zero/error kind.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SyntaxGrammarSpec {
-    /// Grammar declaration kinds paired with indexed symbol categories.
-    pub declarations: &'static [(&'static str, &'static str)],
-    /// Typed declaration kinds paired with [`DeclarationRole`].
-    pub declaration_roles: &'static [(&'static str, DeclarationRole)],
-    /// Kinds whose expressions produce references through the call hook.
-    pub references: &'static [&'static str],
-    /// Typed call syntax kinds paired with [`CallForm`].
-    pub call_forms: &'static [(&'static str, CallForm)],
-    /// Kinds that own lexical binding summaries.
-    pub scopes: &'static [&'static str],
-    /// Kinds passed to the import hook.
-    pub imports: &'static [&'static str],
-    /// Typed import syntax kinds paired with [`ImportKind`].
-    pub import_forms: &'static [(&'static str, ImportKind)],
-    /// Kinds whose member expressions produce read references.
-    pub member_access: &'static [&'static str],
-    /// Kinds accepted as attached documentation comments.
-    pub comments: &'static [&'static str],
-    /// Kinds representing typed parameter/variable bindings for [`GenericScopeAnalysis`](support::value_flow_core::GenericScopeAnalysis).
-    pub typed_bindings: &'static [&'static str],
-    /// Kinds representing assignment statements/expressions for [`GenericScopeAnalysis`](support::value_flow_core::GenericScopeAnalysis).
-    pub assignments: &'static [&'static str],
-    /// Kinds representing constructor expressions.
-    pub constructors: &'static [&'static str],
-    /// Kinds representing member-call expressions.
-    pub member_calls: &'static [&'static str],
-    /// Kinds representing inheritance/heritage clauses.
-    pub heritage: &'static [&'static str],
-    /// Kinds introducing conditional control-flow frames.
-    pub conditionals: &'static [&'static str],
-    /// Visibility modifier syntax kinds paired with [`Visibility`].
-    pub visibility_modifiers: &'static [(&'static str, Visibility)],
-}
-
-impl SyntaxGrammarSpec {
-    /// Empty declarative grammar spec suitable for struct update syntax in `static` items.
-    pub const DEFAULT: Self = Self {
-        declarations: &[],
-        declaration_roles: &[],
-        references: &[],
-        call_forms: &[],
-        scopes: &[],
-        imports: &[],
-        import_forms: &[],
-        member_access: &[],
-        comments: &[],
-        typed_bindings: &[],
-        assignments: &[],
-        constructors: &[],
-        member_calls: &[],
-        heritage: &[],
-        conditionals: &[],
-        visibility_modifiers: &[],
-    };
-}
-
-pub(crate) struct CompiledSyntaxGrammar {
-    kinds: Vec<Option<CompiledSyntaxKind>>,
-    has_value_flow_selectors: bool,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(crate) struct CompiledSyntaxKind {
-    declaration: Option<&'static str>,
-    declaration_role: Option<DeclarationRole>,
-    import_kind: Option<ImportKind>,
-    call_form: Option<CallForm>,
-    visibility: Option<Visibility>,
-    flags: u16,
-}
-
-impl CompiledSyntaxKind {
-    const REFERENCE: u16 = 1 << 0;
-    const SCOPE: u16 = 1 << 1;
-    const IMPORT: u16 = 1 << 2;
-    const MEMBER_ACCESS: u16 = 1 << 3;
-    const COMMENT: u16 = 1 << 4;
-    const TYPED_BINDING: u16 = 1 << 5;
-    const CONSTRUCTOR: u16 = 1 << 6;
-    const MEMBER_CALL: u16 = 1 << 7;
-    const HERITAGE: u16 = 1 << 8;
-    const CONDITIONAL: u16 = 1 << 9;
-    const ASSIGNMENT: u16 = 1 << 10;
-
-    fn has(self, flag: u16) -> bool {
-        self.flags & flag != 0
-    }
-
-    pub(crate) fn declaration(self) -> Option<&'static str> {
-        self.declaration
-    }
-
-    pub(crate) fn declaration_role(self) -> Option<DeclarationRole> {
-        self.declaration_role
-    }
-
-    #[cfg(test)]
-    pub(crate) fn import_kind(self) -> Option<ImportKind> {
-        self.import_kind
-    }
-
-    #[cfg(test)]
-    pub(crate) fn call_form(self) -> Option<CallForm> {
-        self.call_form
-    }
-
-    #[cfg(test)]
-    pub(crate) fn visibility(self) -> Option<Visibility> {
-        self.visibility
-    }
-
-    pub(crate) fn is_reference(self) -> bool {
-        self.has(Self::REFERENCE)
-    }
-
-    pub(crate) fn is_scope(self) -> bool {
-        self.has(Self::SCOPE)
-    }
-
-    pub(crate) fn is_import(self) -> bool {
-        self.has(Self::IMPORT)
-    }
-
-    pub(crate) fn is_member_access(self) -> bool {
-        self.has(Self::MEMBER_ACCESS)
-    }
-
-    pub(crate) fn is_comment(self) -> bool {
-        self.has(Self::COMMENT)
-    }
-
-    pub(crate) fn is_typed_binding(self) -> bool {
-        self.has(Self::TYPED_BINDING)
-    }
-
-    pub(crate) fn is_assignment(self) -> bool {
-        self.has(Self::ASSIGNMENT)
-    }
-
-    pub(crate) fn is_constructor(self) -> bool {
-        self.has(Self::CONSTRUCTOR)
-    }
-
-    pub(crate) fn is_member_call(self) -> bool {
-        self.has(Self::MEMBER_CALL)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_heritage(self) -> bool {
-        self.has(Self::HERITAGE)
-    }
-
-    pub(crate) fn is_conditional(self) -> bool {
-        self.has(Self::CONDITIONAL)
-    }
-}
-
-impl CompiledSyntaxGrammar {
-    pub(crate) fn classify(&self, kind_id: u16) -> Option<CompiledSyntaxKind> {
-        self.kinds.get(usize::from(kind_id)).copied().flatten()
-    }
-
-    pub(crate) fn has_value_flow_selectors(&self) -> bool {
-        self.has_value_flow_selectors
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-struct SyntaxGrammarCacheKey {
-    grammar: tree_sitter::Language,
-    spec_identity: usize,
-}
-
-thread_local! {
-    static SYNTAX_GRAMMAR_CACHE: RefCell<HashMap<SyntaxGrammarCacheKey, Arc<CompiledSyntaxGrammar>>> = RefCell::new(HashMap::new());
-}
-
-impl SyntaxGrammarSpec {
-    pub(crate) fn compile(&self, grammar: &tree_sitter::Language) -> Result<CompiledSyntaxGrammar> {
-        let kind = |name: &str| -> Result<u16> {
-            let id = grammar.id_for_node_kind(name, true);
-            anyhow::ensure!(
-                grammar.node_kind_for_id(id) == Some(name) && grammar.node_kind_is_named(id),
-                "SyntaxGrammarSpec names unknown named kind '{name}'"
-            );
-            Ok(id)
-        };
-        let mut compiled_kinds = vec![None::<CompiledSyntaxKind>; grammar.node_kind_count()];
-        let mut register_decl =
-            |name: &str, category: &'static str, role: Option<DeclarationRole>| -> Result<()> {
-                anyhow::ensure!(
-                    !category.is_empty(),
-                    "SyntaxGrammarSpec declaration category is empty"
-                );
-                let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-                anyhow::ensure!(
-                    compiled.declaration.is_none(),
-                    "SyntaxGrammarSpec repeats declaration kind '{name}'"
-                );
-                compiled.declaration = Some(category);
-                compiled.declaration_role = role;
-                Ok(())
-            };
-        for (name, category) in self.declarations {
-            register_decl(name, category, DeclarationRole::parse(category))?;
-        }
-        for (name, role) in self.declaration_roles {
-            register_decl(name, role.as_str(), Some(*role))?;
-        }
-        for (names, flag) in [
-            (self.references, CompiledSyntaxKind::REFERENCE),
-            (self.scopes, CompiledSyntaxKind::SCOPE),
-            (self.imports, CompiledSyntaxKind::IMPORT),
-            (self.member_access, CompiledSyntaxKind::MEMBER_ACCESS),
-            (self.comments, CompiledSyntaxKind::COMMENT),
-            (self.typed_bindings, CompiledSyntaxKind::TYPED_BINDING),
-            (self.assignments, CompiledSyntaxKind::ASSIGNMENT),
-            (self.constructors, CompiledSyntaxKind::CONSTRUCTOR),
-            (self.member_calls, CompiledSyntaxKind::MEMBER_CALL),
-            (self.heritage, CompiledSyntaxKind::HERITAGE),
-            (self.conditionals, CompiledSyntaxKind::CONDITIONAL),
-        ] {
-            for name in names {
-                compiled_kinds[usize::from(kind(name)?)]
-                    .get_or_insert_default()
-                    .flags |= flag;
-            }
-        }
-        for (name, form) in self.import_forms {
-            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-            compiled.flags |= CompiledSyntaxKind::IMPORT;
-            compiled.import_kind = Some(*form);
-        }
-        for (name, form) in self.call_forms {
-            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-            compiled.flags |= CompiledSyntaxKind::REFERENCE;
-            compiled.call_form = Some(*form);
-            if *form == CallForm::Constructor {
-                compiled.flags |= CompiledSyntaxKind::CONSTRUCTOR;
-            } else if *form == CallForm::Member {
-                compiled.flags |= CompiledSyntaxKind::MEMBER_CALL;
-            }
-        }
-        for (name, visibility) in self.visibility_modifiers {
-            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-            compiled.visibility = Some(*visibility);
-        }
-        let has_value_flow_selectors = !self.typed_bindings.is_empty()
-            || !self.assignments.is_empty()
-            || !self.constructors.is_empty()
-            || !self.member_calls.is_empty()
-            || !self.conditionals.is_empty()
-            || self
-                .call_forms
-                .iter()
-                .any(|(_, form)| matches!(form, CallForm::Constructor | CallForm::Member));
-        Ok(CompiledSyntaxGrammar {
-            kinds: compiled_kinds,
-            has_value_flow_selectors,
-        })
-    }
-
-    /// Reuses the immutable kind-id table for this exact static spec and grammar.
-    pub(crate) fn compile_cached(
-        &'static self,
-        grammar: &tree_sitter::Language,
-    ) -> Result<Arc<CompiledSyntaxGrammar>> {
-        let key = SyntaxGrammarCacheKey {
-            grammar: grammar.clone(),
-            spec_identity: self as *const Self as usize,
-        };
-        if let Some(compiled) = SYNTAX_GRAMMAR_CACHE.with(|cache| cache.borrow().get(&key).cloned())
-        {
-            return Ok(compiled);
-        }
-
-        let compiled = Arc::new(self.compile(grammar)?);
-        Ok(SYNTAX_GRAMMAR_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() >= 128 {
-                cache.clear();
-            }
-            cache.entry(key).or_insert_with(|| compiled.clone()).clone()
-        }))
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-/// A bounded expression shape retained for DOM listener receiver inference.
-pub enum DomListenerReceiverExpression {
-    /// An identifier read at a source position.
-    Identifier {
-        /// Identifier spelling.
-        name: String,
-        /// Byte offset of the identifier read.
-        position: usize,
-    },
-    /// A field on lexical `this`.
-    ThisField {
-        /// Field spelling.
-        name: String,
-        /// Syntax identifier of the containing class.
-        class_scope: usize,
-        /// Whether the containing method is static.
-        static_method: bool,
-    },
-    /// A call to a member on a recursively described receiver.
-    MemberCall {
-        /// Receiver expression for the member call.
-        receiver: Box<DomListenerReceiverExpression>,
-        /// Member spelling.
-        method: String,
-        /// Exact type argument spellings, if supplied.
-        type_arguments: Vec<String>,
-        /// Whether the call has one or more explicit arguments.
-        has_arguments: bool,
-    },
-    /// A parenthesized receiver expression.
-    Parenthesized(Box<DomListenerReceiverExpression>),
-    /// Any syntax outside the bounded receiver expression grammar.
-    #[default]
-    Unsupported,
-}
-
-#[derive(Clone, Debug, Default)]
-/// A lexical binding summary used by DOM listener receiver inference.
-pub struct DomListenerLocalDeclaration {
-    /// Number of same-name declarations in the lexical block.
-    pub declaration_count: usize,
-    /// Whether the unique declaration uses `const`.
-    pub is_const: bool,
-    /// End byte of the declaration statement.
-    pub statement_end: usize,
-    /// Bounded initializer shape for the unique declaration, when present.
-    pub initializer: Option<DomListenerReceiverExpression>,
-    /// Ancestor scope identifiers at the declaration site.
-    pub scope_chain: Arc<Vec<usize>>,
-}
-
-#[derive(serde::Serialize)]
-/// Export that refers to another module or member and resolves during linking.
-pub struct LazyExport {
-    /// Exported name in the current module.
-    pub name: String,
-    /// Module that supplies the binding.
-    pub module: String,
-    /// Named member, or the module itself when absent.
-    pub member: Option<String>,
-    /// Whether the module path is relative to the current module.
-    pub relative_to_module: bool,
-}
-#[derive(Default)]
-/// Compact semantic metadata projected into an indexed symbol.
-pub struct SymbolMetadata {
-    /// Optional return type value.
-    pub return_type: Option<crate::semantic::TypeExpr>,
-    /// The param types value.
-    pub param_types: BTreeMap<String, String>,
-    /// Optional receiver name value.
-    pub receiver_name: Option<String>,
-    /// The decorators value.
-    pub decorators: Vec<String>,
-    /// Optional bases value.
-    pub bases: Option<String>,
-    /// Optional receiver value.
-    pub receiver: Option<String>,
-    /// Optional manifest provenance for rule-caused object ownership.
-    pub object_ownership: Option<crate::semantic::ObjectOwnershipFact>,
-    /// Optional receiver type value.
-    pub receiver_type: Option<String>,
-    /// Whether method applies.
-    pub is_method: Option<bool>,
-    /// Whether static applies.
-    pub is_static: Option<bool>,
-    /// Whether default export applies.
-    pub default_export: bool,
-    /// Whether async applies.
-    pub is_async: bool,
-    /// Whether overload applies.
-    pub is_overload: bool,
-    /// Whether stub applies.
-    pub is_stub: bool,
-    /// Whether a declaration is guarded by source control flow in its owner scope.
-    pub is_conditional: bool,
-    /// Whether the declaration is public under this language's visibility rules.
-    pub is_public: Option<bool>,
-}
-
-/// Borrowed syntax and source context passed to extraction hooks.
-pub struct SyntaxContext<'a, 'tree> {
-    /// The node value.
-    pub node: Syntax<'tree>,
-    /// The source value.
-    pub source: &'a str,
-    /// The owner value.
-    pub owner: &'a str,
-    /// The offset value.
-    pub offset: usize,
-    /// Borrowed typed per-language file state.
-    pub file_state: &'a LanguageFileState,
-}
-impl SyntaxContext<'_, '_> {
-    /// Returns the one-based source line after applying the file offset.
-    pub fn line(&self) -> usize {
-        self.node.start_position().row + self.offset + 1
-    }
-    /// Appends an import reference at this syntax node to the file facts.
-    pub fn import(
-        &self,
-        facts: &mut Facts,
-        expression: String,
-        alias: Option<String>,
-        module: Option<String>,
-    ) {
-        facts.references.push(Reference {
-            source: self.owner.into(),
-            dynamic: false,
-            expression,
-            kind: "imports".into(),
-            line: self.line(),
-            column: self.node.start_position().column,
-            alias,
-            module,
-            receiver_hint: None,
-        });
-    }
-}
-
-/// AST pattern-search capabilities declared by a language profile.
-#[derive(Clone, Copy, Debug)]
-pub struct AstSearchCapabilities {
-    /// Grammar node kinds that may omit their bodies in declaration patterns.
-    pub declaration_kinds: &'static [&'static str],
-    /// Grammar node kinds treated as declaration bodies when the pattern omits them.
-    pub declaration_body_kinds: &'static [&'static str],
-    /// Suffixes the shared adapter may append to complete a bodyless declaration.
-    pub declaration_completions: &'static [&'static str],
-    /// Optional isolated syntax wrapper for root-rejected fragment forms.
-    pub fragment_probe: Option<AstSearchProbe>,
-    /// Grammar node kinds used for profile-specific attribute patterns.
-    pub attribute_kinds: &'static [&'static str],
-    /// Valid patterns included with unsupported-pattern diagnostics.
-    pub valid_examples: &'static [&'static str],
-    /// Actionable guidance included with unsupported-pattern diagnostics.
-    pub diagnostic_hint: &'static str,
-}
-
-impl Default for AstSearchCapabilities {
-    fn default() -> Self {
-        Self {
-            declaration_kinds: &[],
-            declaration_body_kinds: &[],
-            declaration_completions: &[],
-            fragment_probe: None,
-            attribute_kinds: &[],
-            valid_examples: &["name"],
-            diagnostic_hint: "Use complete syntax accepted by this language profile, or one of its declared fragment forms.",
-        }
-    }
-}
-
-/// Synthetic wrapper used to parse an isolated AST fragment.
-#[derive(Clone, Copy, Debug)]
-pub struct AstSearchProbe {
-    /// Text inserted before the user pattern.
-    pub prefix: &'static str,
-    /// Text inserted after the user pattern.
-    pub suffix: &'static str,
-}
-
-/// Supplies syntax extraction and normalization rules for one language.
-///
-/// Profiles are shared as `Send + Sync` statics. Default hooks keep extraction
-/// bounded to a source file; cross-file resolution belongs to `LanguageLinker`.
-pub trait LanguageProfile: Send + Sync {
-    /// Returns the stable language identifier used in indexed nodes.
-    fn id(&self) -> &'static str;
-    /// Lists manifest filenames recognized by this profile.
-    fn manifest_filenames(&self) -> &'static [&'static str] {
-        &[]
-    }
-    /// Extracts dependency names from a recognized manifest file.
-    fn extract_manifest_dependencies(&self, _filename: &str, _content: &str) -> Vec<String> {
-        Vec::new()
-    }
-    /// Reports whether a module belongs to this language's standard library.
-    fn is_stdlib(&self, _module: &str) -> bool {
-        false
-    }
-    /// Returns the namespace family used for cross-profile import matching.
-    fn family(&self) -> LanguageFamily {
-        LanguageFamily(self.id())
-    }
-    /// Returns the cross-file linker owning import and receiver resolution for this profile.
-    fn linker(&self) -> &'static dyn LanguageLinker {
-        &GENERIC_LINKER
-    }
-    /// Returns source file extensions accepted by this profile.
-    fn extensions(&self) -> &'static [&'static str];
-    /// Whether this profile supports Tree-sitter parsing and AST search.
-    fn has_grammar(&self) -> bool {
-        true
-    }
-    /// Selects the Tree-sitter grammar for a source path.
-    fn grammar(&self, path: &str) -> tree_sitter::Language;
-    /// Creates a Tree-sitter parser configured for the source path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Tree-sitter rejects the grammar.
-    fn create_parser(&self, path: &str) -> Result<Parser> {
-        anyhow::ensure!(
-            self.has_grammar(),
-            "AST search is not supported for {}",
-            self.id()
-        );
-        let mut parser = Parser::new();
-        parser.set_language(&self.grammar(path))?;
-        Ok(parser)
-    }
-    /// Maps a grammar node kind to an indexed symbol category.
-    fn symbol_kind(&self, kind: &str) -> Option<&'static str>;
-    /// Supplies declarative syntax selectors; legacy profiles retain their hooks.
-    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
-        None
-    }
-    /// Creates incremental language body state consumed by the shared DFS.
-    fn scope_analysis<'source, 'tree>(
-        &self,
-        _node: Syntax<'tree>,
-        _source: &'source str,
-        _file: &FileContext,
-    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
-        None
-    }
-    /// Classifies a syntax node as an indexed symbol when applicable.
-    fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
-        self.symbol_kind(node.kind())
-    }
-    /// Classifies a syntax node using its source text when needed.
-    fn symbol_with_source(&self, node: Syntax<'_>, _source: &str) -> Option<&'static str> {
-        self.symbol(node)
-    }
-    /// Returns the identifier prefix for a symbol category.
-    fn node_prefix(&self, kind: &str) -> &'static str;
-    /// Derives a module name from a workspace-relative path.
-    fn module_name(&self, path: &str) -> String {
-        module_stem(path).replace('/', ".")
-    }
-    /// Derives a module name when source content can affect its namespace.
-    fn module_name_for_source(&self, path: &str, _source: &str) -> String {
-        self.module_name(path)
-    }
-    /// Reports whether a declaration in one file is visible to a sibling file.
-    fn sibling_accessible(&self, _path_a: &str, _path_b: &str) -> bool {
-        false
-    }
-    /// Normalizes an import expression against its owning source path.
-    fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath>;
-    /// Normalizes an import when workspace root context is available.
-    fn normalize_import_with_root(
-        &self,
-        _root: Option<&Path>,
-        owner: &str,
-        module: &str,
-    ) -> Option<ImportPath> {
-        self.normalize_import(owner, module)
-    }
-    /// Classifies declarations using the prepared effective rule context.
-    fn symbol_with_context(
-        &self,
-        node: Syntax<'_>,
-        source: &str,
-        _file: &FileContext,
-    ) -> Option<&'static str> {
-        self.symbol_with_source(node, source)
-    }
-    /// Classifies a module as an external dependency when known.
-    fn external_import(&self, _module: &str) -> Option<&'static str> {
-        None
-    }
-    /// Reports whether a name is a language builtin.
-    fn builtin(&self, _name: &str) -> bool {
-        false
-    }
-    /// Reports whether a name is a builtin type.
-    fn builtin_type(&self, _name: &str) -> bool {
-        false
-    }
-    /// Reports whether a member is builtin on a receiver type.
-    fn builtin_member(&self, _receiver: &str, _member: &str) -> bool {
-        false
-    }
-    /// Reports whether a receiver names a builtin generic type.
-    fn builtin_generic(&self, _receiver: &str) -> bool {
-        false
-    }
-    /// Extracts documentation text attached to a syntax node.
-    fn doc_comment(&self, node: Syntax<'_>, source: &str) -> String {
-        ast::doc_comment(node, source)
-    }
-    /// Extracts a symbol name borrowed from the source text.
-    fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
-        ast::symbol_name(node, source)
-    }
-    /// Initializes per-file extraction state before walking the syntax tree.
-    fn prepare(&self, _root: Syntax<'_>, _source: &str) -> FileContext {
-        FileContext::default()
-    }
-    /// Initializes grammar-owned state with the effective validated rule context.
-    fn prepare_with_context(
-        &self,
-        root: Syntax<'_>,
-        source: &str,
-        rules: &Arc<LanguageContext>,
-    ) -> FileContext {
-        let mut file = self.prepare(root, source);
-        file.rules = Arc::clone(rules);
-        file
-    }
-    /// Derives module exports after the shared walk has collected root bindings.
-    fn module_exports_with_bindings(
-        &self,
-        _root: Syntax<'_>,
-        _source: &str,
-        _bindings: &ast::ScopeBindings,
-    ) -> Option<Vec<crate::semantic::ExportBinding>> {
-        None
-    }
-    /// Projects bounded semantic metadata for an indexed declaration.
-    fn metadata(
-        &self,
-        _node: Syntax<'_>,
-        _source: &str,
-        _name: &str,
-        _file: &FileContext,
-    ) -> SymbolMetadata {
-        SymbolMetadata::default()
-    }
-    /// Projects supported test declarations into stable semantic roles.
-    fn test_role(
-        &self,
-        _node: Syntax<'_>,
-        _source: &str,
-        _path: &str,
-        _file: &FileContext,
-    ) -> Option<&'static str> {
-        None
-    }
-    /// Returns a proven source-local entrypoint category for this declaration.
-    fn entrypoint_role(
-        &self,
-        _node: Syntax<'_>,
-        _source: &str,
-        _name: &str,
-        _file: &FileContext,
-    ) -> Option<&'static str> {
-        None
-    }
-    /// Applies canonical module export facts to declaration visibility metadata.
-    fn finalize_file_visibility(
-        &self,
-        _root: Syntax<'_>,
-        _source: &str,
-        _facts: &mut Facts,
-        _exports: &[crate::semantic::ExportBinding],
-    ) {
-    }
-    /// Analyzes one declaration, allowing profiles to share local intermediate facts.
-    fn declaration(
-        &self,
-        node: Syntax<'_>,
-        source: &str,
-        name: &str,
-        file: &FileContext,
-    ) -> (SymbolMetadata, crate::semantic::ValueFlowFacts) {
-        (
-            self.metadata(node, source, name, file),
-            self.value_flow_with_context(node, source, file),
-        )
-    }
-    /// Reports whether a syntax node marks a test declaration.
-    fn test_attribute(&self, _node: Syntax<'_>, _source: &str) -> bool {
-        false
-    }
-    /// Reports whether this grammar needs class-scoped binding extraction.
-    fn class_scope(&self) -> bool {
-        false
-    }
-    /// Extracts local scope bindings from a syntax node.
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
-        ast::scope_bindings(node, source)
-    }
-    /// Extracts bounded local value-flow facts from a syntax node.
-    fn value_flow(
-        &self,
-        _node: Syntax<'_>,
-        _source: &str,
-    ) -> crate::semantic::ValueFlowFacts {
-        crate::semantic::ValueFlowFacts::default()
-    }
-    /// Extracts local value-flow facts using information prepared for the file.
-    fn value_flow_with_context(
-        &self,
-        node: Syntax<'_>,
-        source: &str,
-        _file: &FileContext,
-    ) -> crate::semantic::ValueFlowFacts {
-        self.value_flow(node, source)
-    }
-    /// Reports whether a reference can use local value-flow bindings.
-    fn value_binding_applies(&self, _reference: &Reference) -> bool {
-        true
-    }
-    /// Reports whether a name denotes the receiver of its owning method.
-    fn receiver(&self, name: &str, _owner: &Node) -> bool {
-        name == "self" || name == "this" || name == "cls"
-    }
-    /// Appends import references found at the current syntax node.
-    fn extract_imports(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {
-        if self.syntax_grammar_spec().is_some() {
-            let expression = field(_ctx.node, _ctx.source, "module_name")
-                .or_else(|| field(_ctx.node, _ctx.source, "source"))
-                .unwrap_or_else(|| text(_ctx.node, _ctx.source));
-            _ctx.import(_facts, expression.to_owned(), None, None);
-        }
-    }
-    /// Appends structural relations found at the current syntax node.
-    fn extract_relations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
-    /// Appends call references found at the current syntax node.
-    fn extract_calls(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {
-        if self.syntax_grammar_spec().is_some() {
-            let expression = field(_ctx.node, _ctx.source, "function")
-                .unwrap_or_else(|| text(_ctx.node, _ctx.source));
-            _facts.references.push(Reference {
-                source: _ctx.owner.into(),
-                expression: expression.into(),
-                kind: "calls".into(),
-                line: _ctx.line(),
-                column: _ctx.node.start_position().column,
-                alias: None,
-                module: None,
-                dynamic: false,
-                receiver_hint: None,
-            });
-        }
-    }
-    /// Appends mutation references found at the current syntax node.
-    fn extract_mutations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
-    /// Reports whether this profile extracts route facts and needs per-file route context.
-    fn route_extraction_enabled(&self) -> bool {
-        true
-    }
-    /// Appends route relationships found at the current syntax node.
-    fn extract_routes(
-        &self,
-        _ctx: &SyntaxContext<'_, '_>,
-        _facts: &mut Facts,
-        _symbols: &HashMap<usize, String>,
-    ) {
-    }
-    /// Extracts manifest-backed routes using rule and prefix context prepared once per file.
-    fn extract_routes_with_context(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &LanguageContext,
-        routes: &crate::ast::routes::RouteContext,
-    ) {
-        if self.typed_scope_projections() {
-            self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, routes);
-        } else {
-            self.extract_routes(ctx, facts, symbols);
-        }
-    }
-    /// Appends routes using a grammar-bound manifest dispatch table.
-    #[doc(hidden)]
-    fn extract_routes_with_rule_ir(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &LanguageContext,
-        rule_ir: &manifests::RuleIRHandle,
-        routes: &crate::ast::routes::RouteContext,
-    ) {
-        if self.typed_scope_projections() {
-            let mut projections = HashMap::new();
-            self.extract_routes_with_typed_projections(
-                ctx,
-                facts,
-                symbols,
-                rules,
-                rule_ir,
-                routes,
-                &mut projections,
-            );
-            publish_scope_projections(facts, projections);
-        } else {
-            self.extract_routes_with_context(ctx, facts, symbols, rules, routes);
-        }
-    }
-    #[doc(hidden)]
-    fn typed_scope_projections(&self) -> bool {
-        false
-    }
-    #[doc(hidden)]
-    #[allow(clippy::too_many_arguments)]
-    fn extract_routes_with_typed_projections(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &LanguageContext,
-        rule_ir: &manifests::RuleIRHandle,
-        routes: &crate::ast::routes::RouteContext,
-        _projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
-    ) {
-        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, rule_ir, routes);
-    }
-    /// Finalizes extracted facts after the syntax walk.
-    fn finish(&self, _facts: &mut Facts) {}
-    /// Describes AST search syntax supported by this profile.
-    ///
-    /// New profiles support complete grammar syntax without overriding this method.
-    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
-        AstSearchCapabilities::default()
-    }
-    /// Reports whether a syntax kind only wraps a searchable pattern.
-    fn pattern_wrapper(&self, kind: &str) -> bool {
-        matches!(
-            kind,
-            "module" | "program" | "source_file" | "expression_statement"
-        )
-    }
-    /// Extracts symbols and references from a source file into bounded facts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the grammar cannot parse or extract the file.
-    fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts)
-        -> Result<()>;
-}
+/// Shared leaf language types, parser pool, and grammar selectors.
+pub mod types;
+
+pub(crate) use context::file_providers;
+pub use context::LanguageContext;
+pub(crate) use context::RuleIRHandle;
+pub use profile::LanguageProfile;
+pub use types::*;
+
+use anyhow::{Context, Result};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    path::Path,
+};
 
 include!(concat!(env!("OUT_DIR"), "/language_profiles.rs"));
-pub mod sql;
-
-pub(crate) fn publish_scope_projections(
-    facts: &mut Facts,
-    mut projections: HashMap<String, crate::semantic::ValueFlowFacts>,
-) {
-    if projections.is_empty() {
-        return;
-    }
-    for node in &mut facts.nodes {
-        let Some(flow) = projections.remove(&node.id) else {
-            continue;
-        };
-        let output = &mut node.details["value_flow"];
-        if !output.is_object() {
-            *output = serde_json::json!({});
-        }
-        for (key, mut value, present) in [
-            (
-                "component_configurations",
-                serde_json::to_value(flow.component_configurations().collect::<Vec<_>>())
-                    .expect("typed configurations"),
-                flow.component_configurations().next().is_some(),
-            ),
-            (
-                "symbol_attachments",
-                serde_json::to_value(flow.symbol_attachments().collect::<Vec<_>>())
-                    .expect("typed attachments"),
-                flow.symbol_attachments().next().is_some(),
-            ),
-            (
-                "named_bindings",
-                serde_json::to_value(flow.named_bindings().collect::<Vec<_>>())
-                    .expect("typed named bindings"),
-                flow.named_bindings().next().is_some(),
-            ),
-            (
-                "endpoint_requests",
-                serde_json::to_value(flow.endpoint_requests().collect::<Vec<_>>())
-                    .expect("typed endpoints"),
-                flow.endpoint_requests().next().is_some(),
-            ),
-        ] {
-            if present {
-                if output.get(key).is_none() {
-                    output[key] = serde_json::json!([]);
-                }
-                let values = output[key]
-                    .as_array_mut()
-                    .expect("parser-owned projection vector");
-                let incoming = value.as_array_mut().expect("typed projection vector");
-                if key == "component_configurations" {
-                    values.append(incoming);
-                } else {
-                    let overflow = values.len().saturating_add(incoming.len()) > 128;
-                    values.extend(
-                        incoming
-                            .drain(..)
-                            .take(129usize.saturating_sub(values.len())),
-                    );
-                    if overflow {
-                        output["fact_limit_exceeded"] = true.into();
-                    }
-                }
-            }
-        }
-        if flow.fact_limit_exceeded {
-            output["fact_limit_exceeded"] = true.into();
-        }
-    }
-}
 
 fn registry() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     PROFILE_GROUPS
@@ -1669,8 +44,9 @@ fn registry() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
         .flat_map(|group| group.iter().copied())
         .chain(std::iter::once(&sql::SQL as &'static dyn LanguageProfile))
 }
-/// Performs validate profiles.
-pub fn validate_profiles(
+
+/// Validates uniqueness and extension invariants across language profiles.
+fn validate_profiles(
     profiles: impl IntoIterator<Item = &'static dyn LanguageProfile>,
 ) -> Result<()> {
     let mut ids = HashSet::new();
@@ -1697,26 +73,21 @@ pub fn validate_profiles(
     }
     Ok(())
 }
-/// Performs profiles.
+
+/// Iterates over all compiled [`LanguageProfile`] instances.
 pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     static VALIDATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    VALIDATED
-        .get_or_init(|| validate_profiles(registry()).expect("invalid compiled language registry"));
+    VALIDATED.get_or_init(|| {
+        validate_profiles(registry()).expect("invalid compiled language registry")
+    });
     registry()
 }
 
-pub(crate) fn profile_available(id: &str) -> bool {
-    let provider = if id == "javascript" { "typescript" } else { id };
-    provider == "sql"
-        || AVAILABLE_LANGUAGE_FEATURES
-            .iter()
-            .any(|feature| feature.strip_prefix("lang-") == Some(provider))
-}
-
-/// Performs by id.
+/// Looks up a compiled language profile by identifier.
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
 }
+
 /// Locates sorted UTF-8 byte ranges for syntax nodes matching `kind`, `start` (1-based line), and `name`.
 pub(crate) fn find_symbol_byte_ranges(
     profile: &dyn LanguageProfile,
@@ -1756,11 +127,8 @@ pub(crate) fn find_symbol_byte_ranges(
     matches.sort_by_key(|range| range.start);
     Ok(matches)
 }
-/// Returns the [`LanguageLinker`] registered for `id`, or [`GENERIC_LINKER`].
-pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
-    by_id(id).map_or(&GENERIC_LINKER, LanguageProfile::linker)
-}
-/// Performs require.
+
+/// Looks up a required language profile or returns an actionable feature diagnostic.
 pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
     if let Some(profile) = by_id(id) {
         return Ok(profile);
@@ -1780,149 +148,14 @@ pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
     }
     anyhow::bail!("unknown AST language '{id}'; compiled languages: {compiled}");
 }
-/// Performs for path.
+
+/// Finds the compiled language profile matching a file path's extension.
 pub fn for_path(path: &Path) -> Option<&'static dyn LanguageProfile> {
     let extension = path.extension()?.to_str()?;
     profiles().find(|p| p.extensions().contains(&extension))
 }
-/// Performs module stem.
-pub fn module_stem(path: &str) -> &str {
-    let file_start = path.rfind('/').map_or(0, |index| index + 1);
-    path[file_start..]
-        .rsplit_once('.')
-        .map_or(path, |(stem, _)| &path[..file_start + stem.len()])
-}
-pub use acdd_core::config::workspace_path;
-/// Performs relative namespace.
-pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
-    let (_, owner) = workspace_path(owner);
-    let mut parts: Vec<_> = owner
-        .rsplit_once('/')
-        .map_or("", |(p, _)| p)
-        .split('/')
-        .filter(|p| !p.is_empty())
-        .collect();
-    for part in module.split('/') {
-        match part {
-            "." | "" => {}
-            ".." => {
-                parts.pop()?;
-            }
-            _ => parts.push(part),
-        }
-    }
-    Some(parts.join("."))
-}
-fn parser_slot(profile_id: &'static str, path: &str) -> &'static str {
-    match profile_id {
-        "python" => "python",
-        "rust" => "rust",
-        "html" => "html",
-        "javascript" => "javascript",
-        "vue" | "typescript" if path.ends_with(".tsx") => "typescript-tsx",
-        "vue" | "typescript"
-            if path.ends_with(".js")
-                || path.ends_with(".jsx")
-                || path.ends_with(".mjs")
-                || path.ends_with(".cjs") =>
-        {
-            "javascript"
-        }
-        "vue" | "typescript" => "typescript",
-        active_profile => active_profile,
-    }
-}
 
-fn parse_tree(
-    profile: &dyn LanguageProfile,
-    path: &str,
-    source: &str,
-) -> Result<tree_sitter::Tree> {
-    let grammar = profile.grammar(path);
-    if let Some(spec) = profile.syntax_grammar_spec() {
-        spec.compile_cached(&grammar)?;
-    }
-    with_warm_parser(parser_slot(profile.id(), path), grammar, |parser| {
-        parser.parse(source, None)
-    })?
-    .context("Tree-sitter parse cancelled")
-}
-
-/// Parses one source file into indexed facts.
-pub fn parse_file(
-    profile: &dyn LanguageProfile,
-    path: &str,
-    source: &str,
-    module: &str,
-    facts: &mut Facts,
-) -> Result<()> {
-    if !profile.has_grammar() {
-        return profile.extract_file(path, source, module, facts);
-    }
-    let tree = parse_tree(profile, path, source)?;
-    ast::extract_tree(profile, tree.root_node(), path, source, module, facts);
-    Ok(())
-}
-pub(crate) fn parse_file_typed(
-    profile: &dyn LanguageProfile,
-    path: &str,
-    source: &str,
-    module: &str,
-    typed: &mut crate::typed_facts::TypedFacts,
-    language_context: &Arc<LanguageContext>,
-) -> Result<()> {
-    let tree = parse_tree(profile, path, source)?;
-    ast::extract_tree_with_language_context(
-        ast::TreeExtractContext {
-            profile,
-            root: tree.root_node(),
-            path,
-            source,
-            module,
-            owner: &format!("module:{path}"),
-            language_context,
-        },
-        &mut typed.facts,
-        Some(&mut typed.flows),
-    );
-    typed.project_named_selectors();
-    Ok(())
-}
-/// Performs call.
-pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: bool) {
-    let Some(callee) =
-        field(ctx.node, ctx.source, "function").or_else(|| field(ctx.node, ctx.source, "macro"))
-    else {
-        return;
-    };
-    let dynamic = dynamic_imports && matches!(callee, "import" | "require");
-    let import_path = if dynamic {
-        ctx.node
-            .child_by_field_name("arguments")
-            .and_then(|n| n.named_child(0))
-            .filter(|n| n.kind() == "string")
-            .map(|n| text(n, ctx.source).trim_matches(['\'', '"']).to_owned())
-    } else {
-        None
-    };
-    facts.references.push(Reference {
-        source: ctx.owner.into(),
-        dynamic: !callee
-            .chars()
-            .all(|c| c.is_alphanumeric() || "_.:!".contains(c)),
-        expression: import_path
-            .clone()
-            .unwrap_or_else(|| ast::bounded_expression(callee)),
-        kind: if dynamic { "imports" } else { "calls" }.into(),
-        line: ctx.line(),
-        column: ctx.node.start_position().column,
-        alias: None,
-        module: import_path,
-        receiver_hint: None,
-    });
-}
-
-/// Performs module name.
+/// Computes a dotted module name for `path` using the matching compiled language profile.
 pub fn module_name(path: &str) -> String {
     for_path(Path::new(path)).map_or_else(
         || module_stem(path).replace('/', "."),
@@ -1930,11 +163,281 @@ pub fn module_name(path: &str) -> String {
     )
 }
 
+fn push_namespace_candidates(
+    profile: &dyn LanguageProfile,
+    ns: &str,
+    out: &mut BTreeSet<String>,
+) {
+    let mut cur = ns;
+    loop {
+        if !cur.is_empty() {
+            let slash = cur.replace('.', "/");
+            for ext in profile.extensions() {
+                out.insert(format!("{slash}.{ext}"));
+                if *ext == "rs" {
+                    out.insert(format!("{slash}/mod.rs"));
+                    out.insert(format!("{slash}/lib.rs"));
+                    out.insert(format!("{slash}/main.rs"));
+                    out.insert(format!("{slash}/src/lib.rs"));
+                    out.insert(format!("{slash}/src/main.rs"));
+                } else if *ext == "py" {
+                    out.insert(format!("{slash}/__init__.py"));
+                } else if matches!(profile.family().0, "javascript") {
+                    out.insert(format!("{slash}/index.{ext}"));
+                }
+            }
+        }
+        match cur.rsplit_once('.') {
+            Some((parent, _)) => cur = parent,
+            None => break,
+        }
+    }
+}
+
+fn collect_js_import_candidates(
+    registry: &dependency_registry::DependencyRegistry,
+    profile: &dyn LanguageProfile,
+    owner_dir: &Path,
+    owner_path: &str,
+    module: &str,
+    out: &mut BTreeSet<String>,
+) {
+    if module.starts_with("./") || module.starts_with("../") {
+        let joined = acdd_core::fs::normalize_path(&owner_dir.join(module));
+        let rel = joined.to_string_lossy().replace('\\', "/");
+        if !rel.starts_with("..") && !rel.starts_with('/') && !rel.is_empty() {
+            out.insert(rel.clone());
+            for ext in profile.extensions() {
+                out.insert(format!("{rel}.{ext}"));
+                out.insert(format!("{rel}/index.{ext}"));
+            }
+        }
+        return;
+    }
+    if profile.id() == "typescript" {
+        for cand in registry.typescript_paths.candidate_paths(owner_path, module) {
+            out.insert(cand.clone());
+            for ext in profile.extensions() {
+                out.insert(format!("{cand}.{ext}"));
+                out.insert(format!("{cand}/index.{ext}"));
+            }
+        }
+    }
+    if let Some(pkg) = registry.javascript_packages.normalize_import(owner_path, module) {
+        push_namespace_candidates(profile, &pkg.namespace, out);
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+fn collect_rust_import_candidates(
+    registry: &dependency_registry::DependencyRegistry,
+    profile: &dyn LanguageProfile,
+    owner_path: &str,
+    module: &str,
+    out: &mut BTreeSet<String>,
+) {
+    if let Some(root_crate) = registry.root_rust_crate_for_path(owner_path) {
+        if let Some(norm) = rust::RUST.normalize_root_crate_import(root_crate, module) {
+            push_namespace_candidates(profile, &norm.namespace, out);
+        }
+    }
+    let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+    let mut push_rust_scope = |pkg_scope: &str, use_slash: bool| {
+        let base = if pkg_scope.is_empty() {
+            "src".to_owned()
+        } else if use_slash {
+            format!("{}.src", pkg_scope.replace('/', "."))
+        } else {
+            format!("{pkg_scope}.src")
+        };
+        let ns = if tail.is_empty() || tail == "*" {
+            base
+        } else {
+            format!("{base}.{}", tail.replace("::", "."))
+        };
+        push_namespace_candidates(profile, &ns, out);
+    };
+    if let Some((pkg_scope, own_lib)) = registry.sibling_rust_package_library_for_path(owner_path) {
+        if own_lib == first {
+            push_rust_scope(pkg_scope, true);
+        }
+    }
+    for (target_workspace, lib_name) in &registry.rust_libraries {
+        if lib_name == first
+            && (registry.sibling_rust_library_for_path(owner_path) == Some(lib_name.as_str())
+                || registry.declares_for_path(LanguageFamily("rust"), owner_path, first))
+        {
+            push_rust_scope(target_workspace, false);
+        }
+    }
+}
+
+impl dependency_registry::DependencyRegistry {
+    /// Resolves bounded worktree-relative file candidates referenced by an import expression.
+    pub fn import_file_candidates(
+        &self,
+        root: Option<&Path>,
+        owner_path: &str,
+        module: &str,
+    ) -> Vec<String> {
+        let Some(profile) = for_path(Path::new(owner_path)) else {
+            return Vec::new();
+        };
+        let mut out = BTreeSet::new();
+        let owner_dir = Path::new(owner_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+
+        if matches!(profile.family().0, "javascript") {
+            collect_js_import_candidates(self, profile, owner_dir, owner_path, module, &mut out);
+        }
+        #[cfg(feature = "lang-rust")]
+        if profile.id() == "rust" {
+            collect_rust_import_candidates(self, profile, owner_path, module, &mut out);
+        }
+        if let Some(norm) = profile.normalize_import_with_root(root, owner_path, module) {
+            push_namespace_candidates(profile, &norm.namespace, &mut out);
+        }
+        out.into_iter().collect()
+    }
+
+    fn is_removed_rule_identity_active(
+        &self,
+        path: &str,
+        language: &str,
+        bundled: &manifests::FrameworkManifest,
+        identity: &manifests::RuleIdentity,
+    ) -> bool {
+        use manifests::{ActivationCondition, ActivationMatch, RuleIdentity};
+        match identity {
+            RuleIdentity::Semantic { id } => bundled.semantic_rules.iter().any(|rule| {
+                &rule.id == id
+                    && rule.language() == language
+                    && ActivationCondition::matches_workspace_slice(&rule.activation, |name| {
+                        by_id(rule.language())
+                            .is_some_and(|p| self.declares_for_path(p.family(), path, name))
+                    }) != ActivationMatch::Inactive
+            }),
+            _ => true,
+        }
+    }
+
+    fn collect_removed_rules_for_file(
+        &self,
+        path: &str,
+        language: &str,
+        removed_by_group: &mut BTreeMap<(String, String, String, manifests::RuleDomain), BTreeSet<manifests::RuleIdentity>>,
+    ) {
+        use manifests::{named_kind, RuleDomain};
+        let Some(profile) = by_id(language) else {
+            return;
+        };
+        if !profile.has_grammar() {
+            return;
+        }
+        let grammar = profile.grammar(path);
+        let (workspace, _) = workspace_path(path);
+        let call = ["call", "call_expression"]
+            .into_iter()
+            .any(|name| named_kind(&grammar, name).is_some());
+        let has_type_decl = [
+            "class_definition",
+            "class_declaration",
+            "struct_item",
+            "enum_item",
+            "trait_item",
+            "interface_declaration",
+            "type_spec",
+        ]
+        .into_iter()
+        .any(|name| named_kind(&grammar, name).is_some());
+        let routes = profile.route_extraction_enabled();
+        for ((scope, framework), effective) in &self.framework_manifests {
+            if scope != workspace {
+                continue;
+            }
+            let Some(bundled) = self.standard_framework_manifests.get(framework) else {
+                continue;
+            };
+            for (domain, eligible) in [
+                (RuleDomain::ClassHierarchyReceivers, has_type_decl),
+                (RuleDomain::DiCalls, call),
+                (RuleDomain::RouteCalls, routes && call),
+                (
+                    RuleDomain::RouteDecorators,
+                    routes && call && named_kind(&grammar, "decorator").is_some(),
+                ),
+                (
+                    RuleDomain::SemanticRules,
+                    call && bundled
+                        .semantic_rules
+                        .iter()
+                        .any(|rule| rule.language() == language),
+                ),
+            ] {
+                if !eligible {
+                    continue;
+                }
+                let baseline = bundled.rule_identities(domain);
+                let current = effective.rule_identities(domain);
+                for identity in baseline.difference(&current) {
+                    if self.is_removed_rule_identity_active(path, language, bundled, identity) {
+                        removed_by_group
+                            .entry((
+                                framework.clone(),
+                                workspace.to_owned(),
+                                language.to_owned(),
+                                domain,
+                            ))
+                            .or_default()
+                            .insert(identity.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reports removed eligible bundled identities for the complete current file inventory.
+    pub fn framework_rule_diagnostics<'a>(
+        &self,
+        inventory: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Vec<manifests::RuleCoverageDiagnostic> {
+        use manifests::{RuleCoverageCode, RuleCoverageDiagnostic, RuleDomain, RuleIdentity};
+        let mut removed_by_group =
+            BTreeMap::<(String, String, String, RuleDomain), BTreeSet<RuleIdentity>>::new();
+        for (path, language) in inventory {
+            self.collect_removed_rules_for_file(path, language, &mut removed_by_group);
+        }
+        removed_by_group
+            .into_iter()
+            .map(|((framework, workspace, language, rule_domain), removed)| {
+                RuleCoverageDiagnostic {
+                    framework,
+                    workspace,
+                    language,
+                    rule_domain,
+                    code: RuleCoverageCode::EligibleRuleIdentityRemoved,
+                    removed_eligible_rule_identities: removed.into_iter().collect(),
+                }
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::manifests::semantic::{ActivationCondition, FileActivationSignals};
     use super::manifests::syntax::{SyntaxOperation, SyntaxRule};
-    use super::LanguageContext;
+    use super::{profiles, validate_profiles, LanguageContext};
+
+    #[test]
+    fn registry_profiles_validate_and_reject_duplicates() {
+        let all: Vec<_> = profiles().collect();
+        validate_profiles(all.iter().copied()).unwrap();
+        if let Some(first) = all.first() {
+            assert!(validate_profiles([*first, *first]).is_err());
+        }
+    }
 
     #[test]
     fn language_context_gates_syntax_rules_by_persisted_activation_signals() {
@@ -1951,10 +454,8 @@ mod tests {
                 names: vec!["$el".into()],
             },
         };
-        let mut ctx = LanguageContext {
-            syntax_rules: vec![rule.clone()],
-            ..Default::default()
-        };
+        let mut ctx = LanguageContext::default();
+        ctx.syntax_rules = vec![rule.clone()];
         ctx.prepare_named_member_rules();
 
         let mut active_signals = FileActivationSignals::default();

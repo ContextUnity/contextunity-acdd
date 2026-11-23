@@ -7,7 +7,7 @@ use crate::machine::inputs::{BuildGraphInput, MachineProfileInput, SyncInput, Sy
 use crate::machine::schedule::{is_dep_satisfied_against_statuses, pre_task_barrier_satisfied};
 use crate::types::{
     ArtifactKind, ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, InvariantsState, NodeKind,
-    NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, SubtaskStatus,
+    NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, SubtaskRecord, SubtaskStatus,
     TaskDependencyRecord, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
@@ -136,6 +136,58 @@ fn collect_descendant_ids(snap: &RunGraphSnapshot, added: &[GateNodeRecord], roo
     out
 }
 
+fn demote_ready_ordered_nodes<'a>(
+    ordered_ids: &[String],
+    snap: &'a RunGraphSnapshot,
+    added: &mut [GateNodeRecord],
+    acc: &mut PatchAccumulator<'a>,
+) {
+    let mut seen_non_terminal = false;
+    for id in ordered_ids {
+        if let Some(a) = added.iter().find(|n| &n.node_id == id) {
+            if !matches!(a.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+                seen_non_terminal = true;
+            }
+            continue;
+        }
+        let Some(n) = snap.nodes.iter().find(|n| &n.node_id == id) else {
+            continue;
+        };
+        let eff = acc.effective_status(n);
+        if !(seen_non_terminal && eff == NodeStatus::Ready && n.claim_revision == 0) {
+            if !matches!(eff, NodeStatus::Completed | NodeStatus::Cancelled) {
+                seen_non_terminal = true;
+            }
+            continue;
+        }
+        if n.kind != NodeKind::Container {
+            acc.upsert(n, |patch| patch.new_status = NodeStatus::Pending);
+            continue;
+        }
+        let desc = collect_descendant_ids(snap, added, &n.node_id);
+        let desc_safe = desc.iter().all(|did| {
+            snap.nodes
+                .iter()
+                .chain(added.iter())
+                .find(|x| &x.node_id == did)
+                .is_some_and(|x| x.claim_revision == 0)
+                && acc
+                    .status(snap, added, did)
+                    .is_some_and(|st| matches!(st, NodeStatus::Pending | NodeStatus::Ready))
+        });
+        if !desc_safe {
+            seen_non_terminal = true;
+            continue;
+        }
+        acc.set_status(snap, added, &n.node_id, NodeStatus::Pending);
+        for did in desc {
+            if acc.status(snap, added, &did) == Some(NodeStatus::Ready) {
+                acc.set_status(snap, added, &did, NodeStatus::Pending);
+            }
+        }
+    }
+}
+
 /// Shared sequential readiness reconciler for root sequences, root containers, and task gates.
 fn reconcile_ordered_sequence<'a>(
     ordered_ids: &[String],
@@ -146,39 +198,7 @@ fn reconcile_ordered_sequence<'a>(
     acc: &mut PatchAccumulator<'a>,
 ) {
     if demote {
-        let mut seen_non_terminal = false;
-        for id in ordered_ids {
-            if let Some(a) = added.iter().find(|n| &n.node_id == id) {
-                if !matches!(a.status, NodeStatus::Completed | NodeStatus::Cancelled) {
-                    seen_non_terminal = true;
-                }
-            } else if let Some(n) = snap.nodes.iter().find(|n| &n.node_id == id) {
-                let eff = acc.effective_status(n);
-                if seen_non_terminal && eff == NodeStatus::Ready && n.claim_revision == 0 {
-                    if n.kind == NodeKind::Container {
-                        let desc = collect_descendant_ids(snap, added, &n.node_id);
-                        let desc_safe = desc.iter().all(|did| {
-                            snap.nodes.iter().chain(added.iter()).find(|x| &x.node_id == did).is_some_and(|x| x.claim_revision == 0)
-                                && acc.status(snap, added, did).is_some_and(|st| matches!(st, NodeStatus::Pending | NodeStatus::Ready))
-                        });
-                        if desc_safe {
-                            acc.set_status(snap, added, &n.node_id, NodeStatus::Pending);
-                            for did in desc {
-                                if acc.status(snap, added, &did) == Some(NodeStatus::Ready) {
-                                    acc.set_status(snap, added, &did, NodeStatus::Pending);
-                                }
-                            }
-                        } else {
-                            seen_non_terminal = true;
-                        }
-                    } else {
-                        acc.upsert(n, |patch| patch.new_status = NodeStatus::Pending);
-                    }
-                } else if !matches!(eff, NodeStatus::Completed | NodeStatus::Cancelled) {
-                    seen_non_terminal = true;
-                }
-            }
-        }
+        demote_ready_ordered_nodes(ordered_ids, snap, added, acc);
     }
 
     if ordered_ids.iter().any(|id| acc.status(snap, added, id).is_some_and(is_active_status)) {
@@ -228,8 +248,353 @@ fn dep_satisfied_for_sync(
     is_dep_satisfied_against_statuses(&snapshot.run.run_id, &probe, |r| completed_tasks.contains(r), obs)
 }
 
+struct SyncBuffers<'a> {
+    acc: PatchAccumulator<'a>,
+    claim_patches: Vec<ClaimOutcomePatch>,
+    new_subtasks: Vec<SubtaskRecord>,
+    added_nodes: Vec<GateNodeRecord>,
+    added_dependencies: Vec<TaskDependencyRecord>,
+    removed_dependencies: Vec<TaskDependencyRecord>,
+    pre_task_added_ids: BTreeSet<String>,
+}
+
+fn reconcile_rebound_root_nodes<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    target: &RunGraphSnapshot,
+    existing_by_id: &BTreeMap<&str, &'a GateNodeRecord>,
+    target_by_id: &BTreeMap<&str, &GateNodeRecord>,
+    target_first_tasks_seq: Option<u32>,
+    now_utc: &str,
+    buf: &mut SyncBuffers<'a>,
+) -> Result<(), StateError> {
+    for node in &snapshot.nodes {
+        if !matches!(node.kind, NodeKind::RootGate | NodeKind::Container)
+            || node.node_id.starts_with("tasks#")
+            || matches!(node.status, NodeStatus::Completed | NodeStatus::Cancelled)
+        {
+            continue;
+        }
+        match target_by_id.get(node.node_id.as_str()) {
+            Some(t_node) if t_node.kind == node.kind => {
+                if node.kind == NodeKind::RootGate {
+                    buf.acc.upsert(node, |patch| {
+                        patch.scope = Some(t_node.scope.clone());
+                        patch.invariants = Some(InvariantsState::default());
+                    });
+                }
+            }
+            Some(t_node) => {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "cannot rebind gate '{}' across node kind change ({} -> {})",
+                        node.node_id, node.kind, t_node.kind
+                    ),
+                ));
+            }
+            None => cancel_node(
+                snapshot,
+                node,
+                now_utc,
+                &mut buf.acc,
+                &mut buf.claim_patches,
+                None,
+            ),
+        }
+    }
+    for t_node in &target.nodes {
+        if matches!(t_node.kind, NodeKind::RootGate | NodeKind::Container)
+            && !existing_by_id.contains_key(t_node.node_id.as_str())
+            && !has_completed_or_cancelled_ancestor(
+                snapshot,
+                target_by_id,
+                &buf.acc,
+                t_node.parent_id.as_deref(),
+            )
+        {
+            if target_first_tasks_seq.is_some_and(|ts| t_node.seq_order < ts)
+                && !t_node.node_id.starts_with("tasks#")
+            {
+                buf.pre_task_added_ids.insert(t_node.node_id.clone());
+            }
+            let mut inserted = t_node.clone();
+            inserted.status = NodeStatus::Pending;
+            buf.added_nodes.push(inserted);
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_task_dependencies(
+    snapshot: &RunGraphSnapshot,
+    target: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    task_ref: &TaskRef,
+    completed_tasks: &BTreeSet<&TaskRef>,
+    added_dependencies: &mut Vec<TaskDependencyRecord>,
+    removed_dependencies: &mut Vec<TaskDependencyRecord>,
+) -> bool {
+    let target_deps: Vec<&TaskDependencyRecord> = target
+        .dependencies
+        .iter()
+        .filter(|d| &d.task_ref == task_ref)
+        .collect();
+    for t_dep in &target_deps {
+        if !snapshot.dependencies.iter().any(|d| {
+            d.task_ref == t_dep.task_ref
+                && d.depends_on_workspace == t_dep.depends_on_workspace
+                && d.depends_on_run_id == t_dep.depends_on_run_id
+                && d.depends_on_ref == t_dep.depends_on_ref
+        }) {
+            let mut dep = (*t_dep).clone();
+            dep.satisfied = dep_satisfied_for_sync(snapshot, completed_tasks, t_dep, obs);
+            added_dependencies.push(dep);
+        }
+    }
+    for existing_dep in snapshot.dependencies.iter().filter(|d| &d.task_ref == task_ref) {
+        if !target_deps.iter().any(|d| {
+            d.depends_on_workspace == existing_dep.depends_on_workspace
+                && d.depends_on_run_id == existing_dep.depends_on_run_id
+                && d.depends_on_ref == existing_dep.depends_on_ref
+        }) {
+            removed_dependencies.push(existing_dep.clone());
+        }
+    }
+    target_deps
+        .iter()
+        .all(|d| dep_satisfied_for_sync(snapshot, completed_tasks, d, obs))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_existing_task<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    target: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    task_ref: &TaskRef,
+    existing_task: &'a GateNodeRecord,
+    rebind_profile: bool,
+    pre_ok: bool,
+    completed_tasks: &BTreeSet<&TaskRef>,
+    existing_by_id: &BTreeMap<&str, &'a GateNodeRecord>,
+    target_by_id: &BTreeMap<&str, &GateNodeRecord>,
+    acc: &mut PatchAccumulator<'a>,
+    claim_patches: &mut Vec<ClaimOutcomePatch>,
+    new_subtasks: &mut Vec<SubtaskRecord>,
+    added_dependencies: &mut Vec<TaskDependencyRecord>,
+    removed_dependencies: &mut Vec<TaskDependencyRecord>,
+    added_nodes: &mut Vec<GateNodeRecord>,
+) {
+    let Some(t_task) = target_by_id.get(existing_task.node_id.as_str()).copied() else {
+        if !matches!(existing_task.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+            cancel_node(snapshot, existing_task, &obs.now_utc, acc, claim_patches, None);
+            for child in snapshot
+                .nodes
+                .iter()
+                .filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str()))
+            {
+                cancel_node(snapshot, child, &obs.now_utc, acc, claim_patches, None);
+            }
+        }
+        return;
+    };
+    if matches!(existing_task.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+        return;
+    }
+
+    for sub in target.subtasks.iter().filter(|s| s.node_id == existing_task.node_id) {
+        let mut merged = sub.clone();
+        if let Some(prev) = snapshot
+            .subtasks
+            .iter()
+            .find(|s| s.node_id == sub.node_id && s.subtask_ref == sub.subtask_ref)
+        {
+            let has_prev_ev = prev.evidence.as_deref().is_some_and(|ev| !ev.trim().is_empty());
+            if prev.status != SubtaskStatus::Pending || has_prev_ev {
+                merged.status = prev.status;
+                if has_prev_ev {
+                    merged.evidence = prev.evidence.clone();
+                }
+            }
+        }
+        new_subtasks.push(merged);
+    }
+
+    let remaining_deps_satisfied = reconcile_task_dependencies(
+        snapshot,
+        target,
+        obs,
+        task_ref,
+        completed_tasks,
+        added_dependencies,
+        removed_dependencies,
+    );
+    let existing_children: Vec<&GateNodeRecord> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str()))
+        .collect();
+    let any_child_started = existing_children.iter().any(|c| {
+        c.claim_revision > 0
+            || matches!(
+                c.status,
+                NodeStatus::InProgress | NodeStatus::Completed | NodeStatus::Stale | NodeStatus::Escalated
+            )
+    });
+    let new_task_status =
+        if existing_task.status == NodeStatus::Pending && pre_ok && remaining_deps_satisfied {
+            NodeStatus::Ready
+        } else if existing_task.status == NodeStatus::Ready
+            && existing_task.claim_revision == 0
+            && (!pre_ok || !remaining_deps_satisfied)
+            && !any_child_started
+        {
+            NodeStatus::Pending
+        } else {
+            existing_task.status
+        };
+
+    let mut inv = existing_task.invariants.clone();
+    inv.applicable = t_task.invariants.applicable.clone();
+    acc.upsert(existing_task, |patch| {
+        patch.new_status = new_task_status;
+        patch.tags = Some(t_task.tags.clone());
+        patch.scope = Some(t_task.scope.clone());
+        patch.invariants = Some(inv.clone());
+    });
+    if new_task_status == NodeStatus::Ready {
+        if let Some(ref pid) = existing_task.parent_id {
+            if acc.status(snapshot, added_nodes, pid) == Some(NodeStatus::Pending) {
+                acc.set_status(snapshot, added_nodes, pid, NodeStatus::Ready);
+            }
+        }
+    }
+
+    for &child in &existing_children {
+        if matches!(child.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+            continue;
+        }
+        if rebind_profile && !target_by_id.contains_key(child.node_id.as_str()) {
+            cancel_node(
+                snapshot,
+                child,
+                &obs.now_utc,
+                acc,
+                claim_patches,
+                Some((&t_task.tags, &t_task.scope, &inv)),
+            );
+        } else {
+            let demoted = if new_task_status == NodeStatus::Pending
+                && child.status == NodeStatus::Ready
+                && child.claim_revision == 0
+            {
+                NodeStatus::Pending
+            } else {
+                child.status
+            };
+            acc.upsert(child, |patch| {
+                patch.new_status = demoted;
+                patch.tags = Some(t_task.tags.clone());
+                patch.scope = Some(t_task.scope.clone());
+                patch.invariants = Some(inv.clone());
+            });
+        }
+    }
+
+    let mut task_added_gates = Vec::new();
+    if rebind_profile {
+        for t_gate in target
+            .nodes
+            .iter()
+            .filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str()))
+        {
+            if !existing_by_id.contains_key(t_gate.node_id.as_str()) {
+                let mut gate = t_gate.clone();
+                gate.status = NodeStatus::Pending;
+                gate.invariants = inv.clone();
+                gate.extended_scope = existing_task.extended_scope.clone();
+                task_added_gates.push(gate);
+            }
+        }
+    }
+    if matches!(new_task_status, NodeStatus::Ready | NodeStatus::InProgress) {
+        let ordered_gates =
+            ordered_children_ids(&existing_task.node_id, snapshot, target, &task_added_gates);
+        reconcile_ordered_sequence(
+            &ordered_gates,
+            rebind_profile,
+            snapshot,
+            target,
+            &mut task_added_gates,
+            acc,
+        );
+    }
+    added_nodes.extend(task_added_gates);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn instantiate_new_task<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    target: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    t_task: &GateNodeRecord,
+    tref: &TaskRef,
+    pre_ok: bool,
+    completed_tasks: &BTreeSet<&TaskRef>,
+    existing_by_id: &BTreeMap<&str, &'a GateNodeRecord>,
+    target_by_id: &BTreeMap<&str, &GateNodeRecord>,
+    acc: &mut PatchAccumulator<'a>,
+    added_nodes: &mut Vec<GateNodeRecord>,
+    added_dependencies: &mut Vec<TaskDependencyRecord>,
+    new_subtasks: &mut Vec<SubtaskRecord>,
+) {
+    if let Some(ref block_id) = t_task.parent_id {
+        if !existing_by_id.contains_key(block_id.as_str())
+            && !added_nodes.iter().any(|n| &n.node_id == block_id)
+        {
+            if let Some(t_block) = target_by_id.get(block_id.as_str()) {
+                let mut block = (*t_block).clone();
+                block.status = if pre_ok { NodeStatus::Ready } else { NodeStatus::Pending };
+                added_nodes.push(block);
+            }
+        } else if pre_ok && acc.status(snapshot, added_nodes, block_id) == Some(NodeStatus::Pending) {
+            acc.set_status(snapshot, added_nodes, block_id, NodeStatus::Ready);
+        }
+    }
+    let task_deps: Vec<&TaskDependencyRecord> = target
+        .dependencies
+        .iter()
+        .filter(|d| &d.task_ref == tref)
+        .collect();
+    let deps_satisfied =
+        pre_ok && task_deps.iter().all(|d| dep_satisfied_for_sync(snapshot, completed_tasks, d, obs));
+    for dep in task_deps {
+        let mut dep = dep.clone();
+        dep.satisfied = dep_satisfied_for_sync(snapshot, completed_tasks, &dep, obs);
+        added_dependencies.push(dep);
+    }
+    new_subtasks.extend(target.subtasks.iter().filter(|s| s.node_id == t_task.node_id).cloned());
+
+    let mut added_task = t_task.clone();
+    added_task.status = if deps_satisfied { NodeStatus::Ready } else { NodeStatus::Pending };
+    added_nodes.push(added_task);
+    for (g_idx, t_gate) in target
+        .nodes
+        .iter()
+        .filter(|n| n.parent_id.as_deref() == Some(t_task.node_id.as_str()))
+        .enumerate()
+    {
+        let mut gate = t_gate.clone();
+        gate.status = if deps_satisfied && g_idx == 0 {
+            NodeStatus::Ready
+        } else {
+            NodeStatus::Pending
+        };
+        added_nodes.push(gate);
+    }
+}
+
 /// Plan a pure `sync` or `sync --rebind-profile` update against `snapshot`.
-pub fn plan_sync(
+pub(crate) fn plan_sync(
     snapshot: &RunGraphSnapshot,
     current_profile: &MachineProfileInput,
     obs: &ValidatedObservations,
@@ -289,67 +654,45 @@ pub fn plan_sync(
     let target_by_id: BTreeMap<&str, &GateNodeRecord> = target.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
     let target_first_tasks_seq = target.nodes.iter().find(|n| n.node_id.starts_with("tasks#")).map(|n| n.seq_order);
 
-    let mut acc = PatchAccumulator::new();
-    let mut claim_patches = Vec::new();
-    let mut new_subtasks = Vec::new();
-    let mut added_nodes = Vec::new();
-    let mut added_dependencies = Vec::new();
-    let mut removed_dependencies = Vec::new();
-    let mut pre_task_added_ids = BTreeSet::new();
+    let mut buf = SyncBuffers {
+        acc: PatchAccumulator::new(),
+        claim_patches: Vec::new(),
+        new_subtasks: Vec::new(),
+        added_nodes: Vec::new(),
+        added_dependencies: Vec::new(),
+        removed_dependencies: Vec::new(),
+        pre_task_added_ids: BTreeSet::new(),
+    };
 
     // 1. Reconcile root gates/containers and `tasks#N` containers on `rebind_profile`.
     if input.rebind_profile {
-        for node in &snapshot.nodes {
-            if !matches!(node.kind, NodeKind::RootGate | NodeKind::Container)
-                || node.node_id.starts_with("tasks#")
-                || matches!(node.status, NodeStatus::Completed | NodeStatus::Cancelled)
-            {
-                continue;
-            }
-            match target_by_id.get(node.node_id.as_str()) {
-                Some(t_node) if t_node.kind == node.kind => {
-                    if node.kind == NodeKind::RootGate {
-                        acc.upsert(node, |patch| {
-                            patch.scope = Some(t_node.scope.clone());
-                            patch.invariants = Some(InvariantsState::default());
-                        });
-                    }
-                }
-                Some(t_node) => {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "cannot rebind gate '{}' across node kind change ({} -> {})",
-                            node.node_id, node.kind, t_node.kind
-                        ),
-                    ));
-                }
-                None => cancel_node(snapshot, node, &obs.now_utc, &mut acc, &mut claim_patches, None),
-            }
-        }
-        for t_node in &target.nodes {
-            if matches!(t_node.kind, NodeKind::RootGate | NodeKind::Container)
-                && !existing_by_id.contains_key(t_node.node_id.as_str())
-                && !has_completed_or_cancelled_ancestor(
-                    snapshot,
-                    &target_by_id,
-                    &acc,
-                    t_node.parent_id.as_deref(),
-                )
-            {
-                if target_first_tasks_seq.is_some_and(|ts| t_node.seq_order < ts) && !t_node.node_id.starts_with("tasks#") {
-                    pre_task_added_ids.insert(t_node.node_id.clone());
-                }
-                let mut inserted = t_node.clone();
-                inserted.status = NodeStatus::Pending;
-                added_nodes.push(inserted);
-            }
-        }
+        reconcile_rebound_root_nodes(
+            snapshot,
+            &target,
+            &existing_by_id,
+            &target_by_id,
+            target_first_tasks_seq,
+            &obs.now_utc,
+            &mut buf,
+        )?;
     }
+
+    let SyncBuffers {
+        mut acc,
+        mut claim_patches,
+        mut new_subtasks,
+        mut added_nodes,
+        mut added_dependencies,
+        mut removed_dependencies,
+        pre_task_added_ids,
+    } = buf;
 
     let pre_ok = if input.rebind_profile {
         pre_task_added_ids.is_empty()
-            && snapshot.nodes.iter().filter(|n| is_pre_task_root_node(snapshot, n))
+            && snapshot
+                .nodes
+                .iter()
+                .filter(|n| is_pre_task_root_node(snapshot, n))
                 .all(|n| matches!(acc.effective_status(n), NodeStatus::Completed | NodeStatus::Cancelled))
     } else {
         pre_task_barrier_satisfied(snapshot)
@@ -357,122 +700,24 @@ pub fn plan_sync(
 
     // 2. Reconcile existing tasks (`INV-SYNC-COMPLETED-IMMUTABLE`: never mutate Completed/Cancelled).
     for (task_ref, existing_task) in &existing_tasks {
-        let Some(t_task) = target_by_id.get(existing_task.node_id.as_str()).copied() else {
-            if !matches!(existing_task.status, NodeStatus::Completed | NodeStatus::Cancelled) {
-                cancel_node(snapshot, existing_task, &obs.now_utc, &mut acc, &mut claim_patches, None);
-                for child in snapshot.nodes.iter().filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str())) {
-                    cancel_node(snapshot, child, &obs.now_utc, &mut acc, &mut claim_patches, None);
-                }
-            }
-            continue;
-        };
-        if matches!(existing_task.status, NodeStatus::Completed | NodeStatus::Cancelled) {
-            continue;
-        }
-
-        for sub in target.subtasks.iter().filter(|s| s.node_id == existing_task.node_id) {
-            let mut merged = sub.clone();
-            if let Some(prev) = snapshot.subtasks.iter().find(|s| s.node_id == sub.node_id && s.subtask_ref == sub.subtask_ref) {
-                let has_prev_ev = prev.evidence.as_deref().is_some_and(|ev| !ev.trim().is_empty());
-                if prev.status != SubtaskStatus::Pending || has_prev_ev {
-                    merged.status = prev.status;
-                    if has_prev_ev {
-                        merged.evidence = prev.evidence.clone();
-                    }
-                }
-            }
-            new_subtasks.push(merged);
-        }
-
-        let target_deps: Vec<&TaskDependencyRecord> = target.dependencies.iter().filter(|d| &d.task_ref == task_ref).collect();
-        for t_dep in &target_deps {
-            if !snapshot.dependencies.iter().any(|d| {
-                d.task_ref == t_dep.task_ref && d.depends_on_workspace == t_dep.depends_on_workspace
-                    && d.depends_on_run_id == t_dep.depends_on_run_id && d.depends_on_ref == t_dep.depends_on_ref
-            }) {
-                let mut dep = (*t_dep).clone();
-                dep.satisfied = dep_satisfied_for_sync(snapshot, &completed_tasks, t_dep, obs);
-                added_dependencies.push(dep);
-            }
-        }
-        for existing_dep in snapshot.dependencies.iter().filter(|d| &d.task_ref == task_ref) {
-            if !target_deps.iter().any(|d| {
-                d.depends_on_workspace == existing_dep.depends_on_workspace
-                    && d.depends_on_run_id == existing_dep.depends_on_run_id && d.depends_on_ref == existing_dep.depends_on_ref
-            }) {
-                removed_dependencies.push(existing_dep.clone());
-            }
-        }
-
-        let remaining_deps_satisfied = target_deps.iter().all(|d| dep_satisfied_for_sync(snapshot, &completed_tasks, d, obs));
-        let existing_children: Vec<&GateNodeRecord> = snapshot.nodes.iter()
-            .filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str()))
-            .collect();
-        let any_child_started = existing_children.iter().any(|c| {
-            c.claim_revision > 0 || matches!(c.status, NodeStatus::InProgress | NodeStatus::Completed | NodeStatus::Stale | NodeStatus::Escalated)
-        });
-        let new_task_status = if existing_task.status == NodeStatus::Pending && pre_ok && remaining_deps_satisfied {
-            NodeStatus::Ready
-        } else if existing_task.status == NodeStatus::Ready && existing_task.claim_revision == 0 && (!pre_ok || !remaining_deps_satisfied) && !any_child_started {
-            NodeStatus::Pending
-        } else {
-            existing_task.status
-        };
-
-        let mut inv = existing_task.invariants.clone();
-        inv.applicable = t_task.invariants.applicable.clone();
-        acc.upsert(existing_task, |patch| {
-            patch.new_status = new_task_status;
-            patch.tags = Some(t_task.tags.clone());
-            patch.scope = Some(t_task.scope.clone());
-            patch.invariants = Some(inv.clone());
-        });
-        if new_task_status == NodeStatus::Ready {
-            if let Some(ref pid) = existing_task.parent_id {
-                if acc.status(snapshot, &added_nodes, pid) == Some(NodeStatus::Pending) {
-                    acc.set_status(snapshot, &mut added_nodes, pid, NodeStatus::Ready);
-                }
-            }
-        }
-
-        for &child in &existing_children {
-            if matches!(child.status, NodeStatus::Completed | NodeStatus::Cancelled) {
-                continue;
-            }
-            if input.rebind_profile && !target_by_id.contains_key(child.node_id.as_str()) {
-                cancel_node(snapshot, child, &obs.now_utc, &mut acc, &mut claim_patches, Some((&t_task.tags, &t_task.scope, &inv)));
-            } else {
-                let demoted = if new_task_status == NodeStatus::Pending && child.status == NodeStatus::Ready && child.claim_revision == 0 {
-                    NodeStatus::Pending
-                } else {
-                    child.status
-                };
-                acc.upsert(child, |patch| {
-                    patch.new_status = demoted;
-                    patch.tags = Some(t_task.tags.clone());
-                    patch.scope = Some(t_task.scope.clone());
-                    patch.invariants = Some(inv.clone());
-                });
-            }
-        }
-
-        let mut task_added_gates = Vec::new();
-        if input.rebind_profile {
-            for t_gate in target.nodes.iter().filter(|n| n.parent_id.as_deref() == Some(existing_task.node_id.as_str())) {
-                if !existing_by_id.contains_key(t_gate.node_id.as_str()) {
-                    let mut gate = t_gate.clone();
-                    gate.status = NodeStatus::Pending;
-                    gate.invariants = inv.clone();
-                    gate.extended_scope = existing_task.extended_scope.clone();
-                    task_added_gates.push(gate);
-                }
-            }
-        }
-        if matches!(new_task_status, NodeStatus::Ready | NodeStatus::InProgress) {
-            let ordered_gates = ordered_children_ids(&existing_task.node_id, snapshot, &target, &task_added_gates);
-            reconcile_ordered_sequence(&ordered_gates, input.rebind_profile, snapshot, &target, &mut task_added_gates, &mut acc);
-        }
-        added_nodes.extend(task_added_gates);
+        reconcile_existing_task(
+            snapshot,
+            &target,
+            obs,
+            task_ref,
+            existing_task,
+            input.rebind_profile,
+            pre_ok,
+            &completed_tasks,
+            &existing_by_id,
+            &target_by_id,
+            &mut acc,
+            &mut claim_patches,
+            &mut new_subtasks,
+            &mut added_dependencies,
+            &mut removed_dependencies,
+            &mut added_nodes,
+        );
     }
 
     // 3. Instantiate newly added tasks from `target` (plus missing `tasks#N` containers).
@@ -481,34 +726,21 @@ pub fn plan_sync(
         if existing_tasks.contains_key(tref) {
             continue;
         }
-        if let Some(ref block_id) = t_task.parent_id {
-            if !existing_by_id.contains_key(block_id.as_str()) && !added_nodes.iter().any(|n| &n.node_id == block_id) {
-                if let Some(t_block) = target_by_id.get(block_id.as_str()) {
-                    let mut block = (*t_block).clone();
-                    block.status = if pre_ok { NodeStatus::Ready } else { NodeStatus::Pending };
-                    added_nodes.push(block);
-                }
-            } else if pre_ok && acc.status(snapshot, &added_nodes, block_id) == Some(NodeStatus::Pending) {
-                acc.set_status(snapshot, &mut added_nodes, block_id, NodeStatus::Ready);
-            }
-        }
-        let task_deps: Vec<&TaskDependencyRecord> = target.dependencies.iter().filter(|d| &d.task_ref == tref).collect();
-        let deps_satisfied = pre_ok && task_deps.iter().all(|d| dep_satisfied_for_sync(snapshot, &completed_tasks, d, obs));
-        for dep in task_deps {
-            let mut dep = dep.clone();
-            dep.satisfied = dep_satisfied_for_sync(snapshot, &completed_tasks, &dep, obs);
-            added_dependencies.push(dep);
-        }
-        new_subtasks.extend(target.subtasks.iter().filter(|s| s.node_id == t_task.node_id).cloned());
-
-        let mut added_task = t_task.clone();
-        added_task.status = if deps_satisfied { NodeStatus::Ready } else { NodeStatus::Pending };
-        added_nodes.push(added_task);
-        for (g_idx, t_gate) in target.nodes.iter().filter(|n| n.parent_id.as_deref() == Some(t_task.node_id.as_str())).enumerate() {
-            let mut gate = t_gate.clone();
-            gate.status = if deps_satisfied && g_idx == 0 { NodeStatus::Ready } else { NodeStatus::Pending };
-            added_nodes.push(gate);
-        }
+        instantiate_new_task(
+            snapshot,
+            &target,
+            obs,
+            t_task,
+            tref,
+            pre_ok,
+            &completed_tasks,
+            &existing_by_id,
+            &target_by_id,
+            &mut acc,
+            &mut added_nodes,
+            &mut added_dependencies,
+            &mut new_subtasks,
+        );
     }
 
     // 4. Reconcile root-level readiness when `rebind_profile == true`.

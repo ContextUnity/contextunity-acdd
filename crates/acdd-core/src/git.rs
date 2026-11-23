@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 ///
 /// Prevents inherited hook or worktree variables (such as `GIT_DIR` or `GIT_INDEX_FILE`
 /// during `pre-commit` hooks) from redirecting subprocesses to the wrong repository.
-pub const STRIPPED_GIT_ENV_VARS: &[&str] = &[
+const STRIPPED_GIT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -27,7 +27,7 @@ pub fn scrub_git_env(cmd: &mut Command) {
 }
 
 /// Builds a `git` [`Command`] bound to `worktree` with inherited Git override variables cleared.
-pub fn base_git_command(worktree: &Path) -> Result<Command> {
+fn base_git_command(worktree: &Path) -> Result<Command> {
     if !worktree.exists() {
         bail!(
             "TASK_GIT_WORKTREE_MISSING: worktree '{}' does not exist on disk",
@@ -94,8 +94,16 @@ pub fn run_git_raw(
     }
 }
 
+/// Formats a git command failure message from stderr (falling back to stdout).
+pub fn format_git_failure(args: &[&str], worktree: &Path, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+    format!("git {:?} failed in '{}': {detail}", args, worktree.display())
+}
+
 /// Executes `git` via [`run_git_raw`] and returns trimmed UTF-8-lossy stdout on exit code 0.
-pub fn run_git_stdout(
+fn run_git_stdout(
     worktree: &Path,
     args: &[&str],
     index_file: Option<&Path>,
@@ -104,14 +112,7 @@ pub fn run_git_stdout(
 ) -> Result<String> {
     let output = run_git_raw(worktree, args, index_file, extra_env, stdin_bytes)?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        bail!(
-            "git {:?} failed in '{}': {detail}",
-            args,
-            worktree.display()
-        );
+        bail!("{}", format_git_failure(args, worktree, &output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
@@ -188,7 +189,7 @@ pub fn git_common_dir(worktree: &Path) -> Result<PathBuf> {
 
 /// Resolves the exact repository top-level directory via `git rev-parse --path-format=absolute --show-toplevel`
 /// without trimming whitespace from path segments.
-pub fn git_toplevel_exact(worktree: &Path) -> Result<PathBuf> {
+fn git_toplevel_exact(worktree: &Path) -> Result<PathBuf> {
     git_rev_parse_path_exact(worktree, "--show-toplevel")
 }
 
@@ -613,6 +614,17 @@ pub fn diff_worktree_file_against_rev(
     ))
 }
 
+/// Parses a single `git ls-tree -z` record into `(mode, object_kind, oid, raw_path)`.
+pub fn parse_ls_tree_z_record(record: &[u8]) -> Option<(String, String, String, &[u8])> {
+    let tab = record.iter().position(|b| *b == b'\t')?;
+    let header = String::from_utf8_lossy(&record[..tab]);
+    let mut parts = header.split_whitespace();
+    let mode = parts.next()?.to_owned();
+    let kind = parts.next()?.to_owned();
+    let oid = parts.next()?.to_owned();
+    Some((mode, kind, oid, &record[tab + 1..]))
+}
+
 fn baseline_blob_entry(worktree: &Path, tree_oid: &str, norm_rel: &str) -> Result<Option<(String, String)>> {
     let out = run_git_raw(
         worktree,
@@ -625,13 +637,10 @@ fn baseline_blob_entry(worktree: &Path, tree_oid: &str, norm_rel: &str) -> Resul
         return Ok(None);
     }
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
-            continue;
-        };
-        let header = String::from_utf8_lossy(&record[..tab]);
-        let mut parts = header.split_whitespace();
-        if let (Some(mode), Some("blob"), Some(oid)) = (parts.next(), parts.next(), parts.next()) {
-            return Ok(Some((mode.to_owned(), oid.to_owned())));
+        if let Some((mode, kind, oid, _)) = parse_ls_tree_z_record(record) {
+            if kind == "blob" {
+                return Ok(Some((mode, oid)));
+            }
         }
     }
     Ok(None)

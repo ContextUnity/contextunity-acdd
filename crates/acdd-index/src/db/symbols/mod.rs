@@ -3,66 +3,29 @@
 mod inspect;
 mod preview;
 mod search;
-mod source;
 mod test_discovery;
-
-use super::{paging, reader};
-use acdd_core::response::{CoverageOptions, QueryOptions, SourceOptions};
+mod types;
 
 pub use inspect::{
     attach_inspect_document_contents, explain_with_path_options, inspect_with_path_options,
-    snippet_paged, snippet_paged_with_response_budget,
+    snippet_paged_with_response_budget,
 };
+#[cfg(test)]
+pub(crate) use inspect::snippet_paged;
 pub(crate) use inspect::{explain_paged_response, inspect_paged_response};
 pub use search::{search_results_with_navigation, search_with_options};
-pub(crate) use source::{read_confined_source_bytes, verified_source, VerifiedSourceCache};
 pub use test_discovery::tests_paged_with_path;
-
-/// Filters and paging for a symbol search.
-pub struct SearchOptions<'a> {
-    /// Optional symbol kind.
-    pub kind: Option<&'a str>,
-    /// Workspace-relative file or directory scope.
-    pub path: Option<&'a str>,
-    /// Whether Markdown document symbols are included.
-    pub include_docs: bool,
-    /// Whether the name or qualified name must match exactly.
-    pub exact: bool,
-    /// Bounded page and generation contract.
-    pub page: &'a QueryOptions,
-}
-
-/// Output controls for symbol inspection.
-pub struct InspectOptions<'a> {
-    /// Whether linked documentation is included.
-    pub show_doc: bool,
-    /// Optional bounded source preview.
-    pub source: &'a SourceOptions,
-    /// Optional resolution coverage.
-    pub coverage: CoverageOptions,
-    /// Bounded page and generation contract.
-    pub page: &'a QueryOptions,
-}
-
-/// Output controls for symbol explanation.
-pub struct ExplainOptions<'a> {
-    /// Core explanation direction, documentation inclusion, and paging contract.
-    pub explain: reader::ExplainOptions<'a>,
-    /// Optional bounded source preview.
-    pub source: &'a SourceOptions,
-    /// Optional resolution coverage.
-    pub coverage: CoverageOptions,
-}
+pub use types::{InspectOptions, SearchOptions, SymbolExplainOptions};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::{
         commitments::{write_metadata, MetadataKey},
-        initialize_code_map_schema,
-        reader::ExplainDirection,
+        reader::{self, ExplainDirection},
+        schema::initialize_code_map_schema,
     };
-    use acdd_core::response::{Detail, ResponsePolicy};
+    use acdd_core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions};
     use rusqlite::Connection;
     use std::path::Path;
 
@@ -120,7 +83,7 @@ mod tests {
             Path::new("."),
             "alpha",
             Some("src/lib.rs"),
-            &ExplainOptions {
+            &SymbolExplainOptions {
                 explain: reader::ExplainOptions {
                     direction: ExplainDirection::Outgoing,
                     show_doc: false,
@@ -149,5 +112,140 @@ mod tests {
         .unwrap();
         assert_eq!(searched["nodes"]["total"], 1);
         assert_eq!(searched["nodes"]["items"][0]["name"], "alpha");
+    }
+
+    #[test]
+    fn snippet_paged_chunks_source_lines_with_generation_guard() {
+        let dir = acdd_core::fs::ScopedTempDir::create("acdd-ut-snippet-paged").unwrap();
+        let root = dir.path();
+        let code: String = std::iter::once("def target():\n".to_owned())
+            .chain((1..=60).map(|idx| format!("    x_{idx} = {idx}\n")))
+            .collect();
+        std::fs::write(root.join("code.py"), &code).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_code_map_schema(&conn).unwrap();
+        write_metadata(&conn, MetadataKey::OutputRoot, "gen1").unwrap();
+        write_metadata(&conn, MetadataKey::WorkspaceRoot, &root.canonicalize().unwrap().to_string_lossy()).unwrap();
+        conn.execute("INSERT INTO path_dictionary(path_id, path) VALUES (1, 'code.py')", []).unwrap();
+        let digest = acdd_index_digest(&code);
+        conn.execute(
+            "INSERT INTO files(path, status, digest, size, language, is_test, generated, path_hash) VALUES ('code.py', 'indexed', ?1, 0, 'python', 0, 0, ?2)",
+            rusqlite::params![digest, crate::models::stable_hash64("code.py")],
+        ).unwrap();
+        let h = crate::models::stable_hash64("py:code.py:1:target");
+        conn.execute(
+            "INSERT INTO nodes(node_hash, id, kind, name, qualname, path_id, owner_path_id, line, end_line, language, generated, details, is_test)
+             VALUES (?1,'py:code.py:1:target','function','target','code.target',1,1,1,61,'python',0,'{\"signature\":\"def target()\"}',0)",
+            [h],
+        ).unwrap();
+        let policy = ResponsePolicy::default();
+        let opts = QueryOptions::resolve(&policy, Some(30), 0, Some(Detail::Compact), None).unwrap();
+        let source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), 0).unwrap();
+        let first = snippet_paged(&conn, root, "target", &source, &opts).unwrap();
+        let offset = first["source_preview"]["next_source_offset"].as_u64().unwrap() as usize;
+        assert_eq!(offset, 35);
+        let next_source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
+        assert!(snippet_paged(&conn, root, "target", &next_source, &opts).is_err());
+        let mut pinned = opts.clone();
+        pinned.generation = Some("gen1".to_owned());
+        let second = snippet_paged(&conn, root, "target", &next_source, &pinned).unwrap();
+        assert_eq!(second["source_preview"]["has_more"], false);
+        assert_eq!(
+            format!("{}{}", first["source"].as_str().unwrap(), second["source"].as_str().unwrap()),
+            code
+        );
+        pinned.generation = Some("stale".to_owned());
+        assert!(snippet_paged(&conn, root, "target", &next_source, &pinned).is_err());
+    }
+
+    fn acdd_index_digest(source: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(source.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+
+    #[test]
+    fn out_of_bounds_symbol_boundary_rejects_inspect_explain_and_select() {
+        let dir = acdd_core::fs::ScopedTempDir::create("acdd-ut-oob-boundary").unwrap();
+        let root = dir.path();
+        let source = "def resilient_hit(): return 1\n# no declaration\n";
+        std::fs::write(root.join("a.py"), source).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_code_map_schema(&conn).unwrap();
+        write_metadata(&conn, MetadataKey::OutputRoot, "gen1").unwrap();
+        write_metadata(
+            &conn,
+            MetadataKey::WorkspaceRoot,
+            &root.canonicalize().unwrap().to_string_lossy(),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO path_dictionary(path_id, path) VALUES (1, 'a.py')",
+            [],
+        )
+        .unwrap();
+        let digest = acdd_index_digest(source);
+        conn.execute(
+            "INSERT INTO files(path, status, digest, size, language, is_test, generated, path_hash) VALUES ('a.py', 'indexed', ?1, 0, 'python', 0, 0, ?2)",
+            rusqlite::params![digest, crate::models::stable_hash64("a.py")],
+        )
+        .unwrap();
+        let h = crate::models::stable_hash64("py:a.py:2:resilient_hit");
+        conn.execute(
+            "INSERT INTO nodes(node_hash, id, kind, name, qualname, path_id, owner_path_id, line, end_line, language, generated, details, is_test)
+             VALUES (?1,'py:a.py:2:resilient_hit','function','resilient_hit','a.resilient_hit',1,1,2,2,'python',0,'{\"signature\":\"def resilient_hit()\"}',0)",
+            [h],
+        )
+        .unwrap();
+
+        let page = QueryOptions::resolve(
+            &ResponsePolicy::default(),
+            Some(10),
+            0,
+            Some(Detail::Compact),
+            None,
+        )
+        .unwrap();
+        let source_opts =
+            SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
+        let expected = "indexed symbol boundary is unavailable";
+
+        let inspect_err = inspect_with_path_options(
+            &conn,
+            root,
+            "a.py:resilient_hit",
+            None,
+            &InspectOptions {
+                show_doc: false,
+                source: &source_opts,
+                coverage: CoverageOptions::default(),
+                page: &page,
+            },
+        )
+        .unwrap_err();
+        assert!(inspect_err.to_string().contains(expected), "{inspect_err:#}");
+
+        let explain_err = explain_with_path_options(
+            &conn,
+            root,
+            "a.py:resilient_hit",
+            None,
+            &SymbolExplainOptions {
+                explain: reader::ExplainOptions {
+                    direction: ExplainDirection::Both,
+                    show_doc: false,
+                    page: &page,
+                },
+                source: &source_opts,
+                coverage: CoverageOptions::default(),
+            },
+        )
+        .unwrap_err();
+        assert!(explain_err.to_string().contains(expected), "{explain_err:#}");
+
+        let select_err =
+            snippet_paged(&conn, root, "a.py:resilient_hit", &source_opts, &page).unwrap_err();
+        assert!(select_err.to_string().contains(expected), "{select_err:#}");
     }
 }

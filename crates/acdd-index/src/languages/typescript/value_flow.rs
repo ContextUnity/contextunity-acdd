@@ -1,8 +1,12 @@
-use super::*;
+use super::commonjs::required_module;
+use super::setup_summaries;
+use super::types::kind;
+use crate::ast::syntax::{field, text, Syntax};
 use crate::languages::support::value_flow_core::{ScopeFrameFlags, ValueFlowCollectorCore};
 use crate::semantic::{
     ExportBinding, ObjectMember, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
 };
+use std::collections::{BTreeMap, HashSet};
 
 /// Builds the same bounded call-result receiver identity for calls and property reads.
 pub(super) fn computed_member_hint(
@@ -12,9 +16,9 @@ pub(super) fn computed_member_hint(
     property_read: bool,
 ) -> Option<crate::models::ReceiverHint> {
     let mut receiver = node;
-    let mut members = [""; crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH];
+    let mut members = [""; crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH];
     let mut count = 0;
-    for _ in 0..crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    for _ in 0..crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH {
         if receiver.kind() == "parenthesized_expression" {
             receiver = receiver.named_child(0)?;
             continue;
@@ -72,11 +76,11 @@ pub(super) fn computed_member_hint(
 }
 
 fn position(node: Syntax<'_>) -> SourcePosition {
-    crate::languages::source_start(node)
+    crate::languages::types::source_start(node)
 }
 
 fn completed(node: Syntax<'_>) -> SourcePosition {
-    crate::languages::source_end(node)
+    crate::languages::types::source_end(node)
 }
 
 pub(crate) fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
@@ -84,7 +88,7 @@ pub(crate) fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
 }
 
 fn type_expr(node: Syntax<'_>, source: &str, depth: usize) -> TypeExpr {
-    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     if node.kind() == "type_annotation" {
@@ -425,7 +429,7 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
 }
 
 fn member_value(node: Syntax<'_>, source: &str, depth: usize) -> ValueExpr {
-    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH {
         return ValueExpr::Unknown;
     }
     let (Some(receiver), Some(member)) = (
@@ -467,7 +471,7 @@ pub(super) fn call_value(node: Syntax<'_>, source: &str, offset: usize) -> Value
 
 fn call_value_at(node: Syntax<'_>, source: &str, offset: usize, depth: usize) -> ValueExpr {
     use crate::semantic::{CallSiteEvidence, StaticArgument};
-    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH
+    if depth >= crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH
         || node.kind() != "call_expression"
     {
         return ValueExpr::Unknown;
@@ -585,7 +589,7 @@ fn is_simple_assignment(node: Syntax<'_>, source: &str) -> bool {
     true
 }
 
-pub(crate) struct Collector<'source, 'tree> {
+pub(crate) struct TypeScriptValueFlowCollector<'source, 'tree> {
     root: Syntax<'tree>,
     source: &'source str,
     core: ValueFlowCollectorCore,
@@ -600,7 +604,7 @@ pub(crate) struct Collector<'source, 'tree> {
     terminal: bool,
 }
 
-impl<'source, 'tree> Collector<'source, 'tree> {
+impl<'source, 'tree> TypeScriptValueFlowCollector<'source, 'tree> {
     fn empty(root: Syntax<'tree>, source: &'source str, result: ValueFlowFacts) -> Self {
         let mut core = ValueFlowCollectorCore::default();
         *core.facts_mut() = result;
@@ -738,14 +742,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         }
     }
 
-    pub(crate) fn enter(&mut self, node: Syntax<'tree>) {
-        if self.terminal {
-            return;
-        }
+    fn record_direct_body_definition(
+        &mut self,
+        node: Syntax<'tree>,
+        body: Option<Syntax<'tree>>,
+    ) {
         let source = self.source;
-        let body = self.root.child_by_field_name("body");
-        // Returned object members require direct callable definitions and all writes,
-        // including writes in nested closures. Both are recorded by shared events.
         if node.kind() == "function_declaration" && node.parent() == body {
             if let Some(name) = node.child_by_field_name("name") {
                 let name = text(name, source);
@@ -773,11 +775,220 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 }
             }
         }
+    }
+
+    fn record_variable_declarator_flow(
+        &mut self,
+        node: Syntax<'tree>,
+        branch_conditional: bool,
+        try_conditional: bool,
+    ) {
+        let source = self.source;
+        let lexical = node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "lexical_declaration");
+        let immutable = node.parent().is_some_and(|parent| {
+            parent.kind() == "lexical_declaration"
+                && parent
+                    .child_by_field_name("kind")
+                    .is_some_and(|keyword| text(keyword, source) == "const")
+        });
+        let binding_conditional = branch_conditional || (try_conditional && !lexical);
+        let scope_end = (try_conditional && lexical && !branch_conditional)
+            .then(|| {
+                let mut parent = node.parent();
+                while let Some(ancestor) = parent {
+                    if ancestor.kind() == "statement_block" {
+                        return Some(completed(ancestor));
+                    }
+                    parent = ancestor.parent();
+                }
+                None
+            })
+            .flatten();
+        let scoped = |value| match scope_end {
+            Some(body_end) => ValueExpr::Scoped {
+                value: Box::new(value),
+                body_end,
+            },
+            None => value,
+        };
+        if let Some(name) = node
+            .child_by_field_name("name")
+            .filter(|name| name.kind() == "identifier")
+        {
+            let initializer = node.child_by_field_name("value");
+            let expression = initializer
+                .map(|initializer| {
+                    node.child_by_field_name("type")
+                        .map(|ty| named_type(ty, source))
+                        .or_else(|| jsdoc(node, source).2)
+                        .map(|type_expr| ValueExpr::Annotated { type_expr })
+                        .unwrap_or_else(|| value(initializer, source))
+                })
+                .unwrap_or(ValueExpr::Unknown);
+            let local = text(name, source);
+            self.object_aliases.remove(local);
+            if matches!(
+                &expression,
+                ValueExpr::Object { .. } | ValueExpr::Alias { .. }
+            ) {
+                self.object_aliases.insert(local);
+            }
+            self.core.push_binding(
+                local.to_owned(),
+                position(node),
+                scoped(ValueExpr::Unknown),
+                binding_conditional,
+            );
+            if !matches!(&expression, ValueExpr::Unknown) {
+                if immutable && !binding_conditional {
+                    self.core.facts_mut().immutable_initializers.push(completed(node));
+                }
+                self.core.push_binding(
+                    local.to_owned(),
+                    completed(node),
+                    scoped(expression),
+                    binding_conditional,
+                );
+            }
+        } else if let (Some(pattern), Some(initializer)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("value"),
+        ) {
+            if matches!(pattern.kind(), "object_pattern" | "array_pattern")
+                && pattern.named_child_count() <= 32
+            {
+                let source_value = value(initializer, source);
+                let mut bindings = Vec::new();
+                ValueFlowCollectorCore::collect_destructuring_bindings(
+                    pattern,
+                    source_value,
+                    source,
+                    &mut bindings,
+                );
+                let projected = self.core.push_destructured_bindings(
+                    bindings,
+                    completed(node),
+                    Some(position(node)),
+                    binding_conditional,
+                    scoped,
+                );
+                if immutable && !binding_conditional && projected {
+                    self.core.facts_mut().immutable_initializers.push(completed(node));
+                }
+            }
+        }
+    }
+
+    fn record_field_or_assignment_flow(&mut self, node: Syntax<'tree>, conditional: bool) {
+        let source = self.source;
+        if matches!(
+            node.kind(),
+            "public_field_definition" | "field_definition" | "property_signature"
+        ) {
+            if let Some(name) = node.child_by_field_name("name") {
+                let value = node
+                    .child_by_field_name("type")
+                    .map(|ty| named_type(ty, source))
+                    .or_else(|| jsdoc(node, source).2)
+                    .map(|type_expr| ValueExpr::Annotated { type_expr })
+                    .or_else(|| {
+                        node.child_by_field_name("value")
+                            .map(|initializer| value(initializer, source))
+                    })
+                    .unwrap_or(ValueExpr::Unknown);
+                self.core.push_field(
+                    text(name, source).to_owned(),
+                    position(node),
+                    value,
+                    conditional,
+                );
+            }
+            return;
+        }
+        if !matches!(
+            node.kind(),
+            "assignment_expression" | "augmented_assignment_expression" | "update_expression"
+        ) {
+            return;
+        }
+        let left = node
+            .child_by_field_name("left")
+            .or_else(|| node.child_by_field_name("argument"));
+        if let Some(name) = left.filter(|left| left.kind() == "identifier") {
+            let assigned = if is_simple_assignment(node, source) {
+                node.child_by_field_name("right")
+                    .map(|right| value(right, source))
+                    .unwrap_or(ValueExpr::Unknown)
+            } else {
+                ValueExpr::Unknown
+            };
+            self.core.push_binding(
+                text(name, source).to_owned(),
+                completed(node),
+                assigned,
+                conditional,
+            );
+        }
+        let Some(member) = left.filter(|left| left.kind() == "member_expression") else {
+            return;
+        };
+        if let Some(receiver) = member
+            .child_by_field_name("object")
+            .filter(|receiver| receiver.kind() == "identifier")
+        {
+            let name = text(receiver, source);
+            if self.object_aliases.contains(name) {
+                for name in std::mem::take(&mut self.object_aliases) {
+                    self.core.push_binding(
+                        name.to_owned(),
+                        completed(node),
+                        ValueExpr::Unknown,
+                        conditional,
+                    );
+                }
+            }
+        }
+        if member
+            .child_by_field_name("object")
+            .is_some_and(|object| object.kind() == "this")
+        {
+            if let Some(prop) = member
+                .child_by_field_name("property")
+                .filter(|p| p.kind() == "property_identifier")
+            {
+                let name = text(prop, source).to_owned();
+                if is_simple_assignment(node, source) {
+                    let assigned = node
+                        .child_by_field_name("right")
+                        .map(|right| value(right, source))
+                        .unwrap_or(ValueExpr::Unknown);
+                    self.core.push_field(
+                        name,
+                        position(node),
+                        assigned,
+                        conditional,
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn enter(&mut self, node: Syntax<'tree>) {
+        if self.terminal {
+            return;
+        }
+        let source = self.source;
+        let body = self.root.child_by_field_name("body");
+        // Returned object members require direct callable definitions and all writes,
+        // including writes in nested closures. Both are recorded by shared events.
+        self.record_direct_body_definition(node, body);
         self.record_write(node);
         let current = self.core.scope_state().current_or_default();
         let active = node == self.root || (current.is_active() && !nested_scope(node));
         let annotation_owner = node == self.root
-            || (current.is_annotation_owner() && super::kind(node.kind()).is_none());
+            || (current.is_annotation_owner() && kind(node.kind()).is_none());
         let branch_conditional = current.is_branch_conditional()
             || matches!(
                 node.kind(),
@@ -835,190 +1046,9 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             }
         }
         if node.kind() == "variable_declarator" {
-            let lexical = node
-                .parent()
-                .is_some_and(|parent| parent.kind() == "lexical_declaration");
-            let immutable = node.parent().is_some_and(|parent| {
-                parent.kind() == "lexical_declaration"
-                    && parent
-                        .child_by_field_name("kind")
-                        .is_some_and(|keyword| text(keyword, source) == "const")
-            });
-            let binding_conditional = branch_conditional || (try_conditional && !lexical);
-            let scope_end = (try_conditional && lexical && !branch_conditional)
-                .then(|| {
-                    let mut parent = node.parent();
-                    while let Some(ancestor) = parent {
-                        if ancestor.kind() == "statement_block" {
-                            return Some(completed(ancestor));
-                        }
-                        parent = ancestor.parent();
-                    }
-                    None
-                })
-                .flatten();
-            let scoped = |value| match scope_end {
-                Some(body_end) => ValueExpr::Scoped {
-                    value: Box::new(value),
-                    body_end,
-                },
-                None => value,
-            };
-            if let Some(name) = node
-                .child_by_field_name("name")
-                .filter(|name| name.kind() == "identifier")
-            {
-                let initializer = node.child_by_field_name("value");
-                let expression = initializer
-                    .map(|initializer| {
-                        node.child_by_field_name("type")
-                            .map(|ty| named_type(ty, source))
-                            .or_else(|| jsdoc(node, source).2)
-                            .map(|type_expr| ValueExpr::Annotated { type_expr })
-                            .unwrap_or_else(|| value(initializer, source))
-                    })
-                    .unwrap_or(ValueExpr::Unknown);
-                let local = text(name, source);
-                self.object_aliases.remove(local);
-                if matches!(
-                    &expression,
-                    ValueExpr::Object { .. } | ValueExpr::Alias { .. }
-                ) {
-                    self.object_aliases.insert(local);
-                }
-                self.core.push_binding(
-                    local.to_owned(),
-                    position(node),
-                    scoped(ValueExpr::Unknown),
-                    binding_conditional,
-                );
-                if !matches!(&expression, ValueExpr::Unknown) {
-                    if immutable && !binding_conditional {
-                        self.core.facts_mut().immutable_initializers.push(completed(node));
-                    }
-                    self.core.push_binding(
-                        local.to_owned(),
-                        completed(node),
-                        scoped(expression),
-                        binding_conditional,
-                    );
-                }
-            } else if let (Some(pattern), Some(initializer)) = (
-                node.child_by_field_name("name"),
-                node.child_by_field_name("value"),
-            ) {
-                if matches!(pattern.kind(), "object_pattern" | "array_pattern")
-                    && pattern.named_child_count() <= 32
-                {
-                    let source_value = value(initializer, source);
-                    let mut bindings = Vec::new();
-                    ValueFlowCollectorCore::collect_destructuring_bindings(
-                        pattern,
-                        source_value,
-                        source,
-                        &mut bindings,
-                    );
-                    let projected = self.core.push_destructured_bindings(
-                        bindings,
-                        completed(node),
-                        Some(position(node)),
-                        binding_conditional,
-                        scoped,
-                    );
-                    if immutable && !binding_conditional && projected {
-                        self.core.facts_mut().immutable_initializers.push(completed(node));
-                    }
-                }
-            }
+            self.record_variable_declarator_flow(node, branch_conditional, try_conditional);
         }
-        if matches!(
-            node.kind(),
-            "public_field_definition" | "field_definition" | "property_signature"
-        ) {
-            if let Some(name) = node.child_by_field_name("name") {
-                let value = node
-                    .child_by_field_name("type")
-                    .map(|ty| named_type(ty, source))
-                    .or_else(|| jsdoc(node, source).2)
-                    .map(|type_expr| ValueExpr::Annotated { type_expr })
-                    .or_else(|| {
-                        node.child_by_field_name("value")
-                            .map(|initializer| value(initializer, source))
-                    })
-                    .unwrap_or(ValueExpr::Unknown);
-                self.core.push_field(
-                    text(name, source).to_owned(),
-                    position(node),
-                    value,
-                    conditional,
-                );
-            }
-        }
-        if matches!(
-            node.kind(),
-            "assignment_expression" | "augmented_assignment_expression" | "update_expression"
-        ) {
-            let left = node
-                .child_by_field_name("left")
-                .or_else(|| node.child_by_field_name("argument"));
-            if let Some(name) = left.filter(|left| left.kind() == "identifier") {
-                let assigned = if is_simple_assignment(node, source) {
-                    node.child_by_field_name("right")
-                        .map(|right| value(right, source))
-                        .unwrap_or(ValueExpr::Unknown)
-                } else {
-                    ValueExpr::Unknown
-                };
-                self.core.push_binding(
-                    text(name, source).to_owned(),
-                    completed(node),
-                    assigned,
-                    conditional,
-                );
-            }
-            if let Some(receiver) = left
-                .filter(|left| left.kind() == "member_expression")
-                .and_then(|left| left.child_by_field_name("object"))
-                .filter(|receiver| receiver.kind() == "identifier")
-            {
-                let name = text(receiver, source);
-                if self.object_aliases.contains(name) {
-                    for name in std::mem::take(&mut self.object_aliases) {
-                        self.core.push_binding(
-                            name.to_owned(),
-                            completed(node),
-                            ValueExpr::Unknown,
-                            conditional,
-                        );
-                    }
-                }
-            }
-            if let Some(left) = left.filter(|left| left.kind() == "member_expression") {
-                if left
-                    .child_by_field_name("object")
-                    .is_some_and(|object| object.kind() == "this")
-                {
-                    if let Some(prop) = left
-                        .child_by_field_name("property")
-                        .filter(|p| p.kind() == "property_identifier")
-                    {
-                        let name = text(prop, source).to_owned();
-                        if is_simple_assignment(node, source) {
-                            let assigned = node
-                                .child_by_field_name("right")
-                                .map(|right| value(right, source))
-                                .unwrap_or(ValueExpr::Unknown);
-                            self.core.push_field(
-                                name,
-                                position(node),
-                                assigned,
-                                conditional,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        self.record_field_or_assignment_flow(node, conditional);
     }
     pub(crate) fn exit(&mut self, _node: Syntax<'tree>) {
         self.core.scope_state_mut().pop();
@@ -1039,7 +1069,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             if let (Some(definitions), Some(expression)) =
                 (definitions, self.returned.expression(true))
             {
-                super::projections::complete_setup(self.root, expression, source, definitions);
+                setup_summaries::complete_setup(self.root, expression, source, definitions);
             }
         }
         if asynchronous && !generator && self.core.facts().async_return_type.is_none() {
@@ -1164,16 +1194,37 @@ impl<'tree> ReturnSummary<'tree> {
 pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
     extract_with_return(root, source, || jsdoc(root, source).1)
 }
-impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for Collector<'_, 'tree> {
+impl<'tree> crate::ast::syntax::SyntaxCollector<'tree> for TypeScriptValueFlowCollector<'_, 'tree> {
     type Output = ValueFlowFacts;
     fn enter(&mut self, node: Syntax<'tree>) {
-        Collector::enter(self, node);
+        TypeScriptValueFlowCollector::enter(self, node);
     }
     fn exit(&mut self, node: Syntax<'tree>) {
-        Collector::exit(self, node);
+        TypeScriptValueFlowCollector::exit(self, node);
     }
     fn finish(self) -> ValueFlowFacts {
-        Collector::finish(self)
+        TypeScriptValueFlowCollector::finish(self)
+    }
+}
+
+impl<'source, 'tree> crate::ast::syntax::ScopeVisitor<'source, 'tree> for TypeScriptValueFlowCollector<'source, 'tree> {
+    fn enter(&mut self, node: Syntax<'tree>) {
+        TypeScriptValueFlowCollector::enter(self, node);
+    }
+
+    fn exit(&mut self, node: Syntax<'tree>) {
+        TypeScriptValueFlowCollector::exit(self, node);
+    }
+
+    fn enter_suspended(&mut self, node: Syntax<'tree>) {
+        TypeScriptValueFlowCollector::enter_suspended(self, node);
+    }
+
+    fn finish(
+        self: Box<Self>,
+        _collect_module_aliases: bool,
+    ) -> (ValueFlowFacts, Option<HashSet<String>>) {
+        ((*self).finish(), None)
     }
 }
 
@@ -1182,7 +1233,7 @@ pub(super) fn extract_with_return(
     source: &str,
     _documented_return: impl FnOnce() -> Option<TypeExpr>,
 ) -> ValueFlowFacts {
-    crate::ast::visitor::collect(root, Collector::new(root, source))
+    crate::ast::syntax::collect(root, TypeScriptValueFlowCollector::new(root, source))
 }
 
 fn extract_ts_callable_signature(
@@ -1363,7 +1414,7 @@ fn callback_call_expr(call: Syntax<'_>, source: &str) -> Option<ValueExpr> {
 pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
     let mut summary = ReturnSummary::new(root);
     let mut active = Vec::new();
-    crate::ast::visitor::walk(root, &mut |node, entering| {
+    crate::ast::syntax::walk(root, &mut |node, entering| {
         if entering {
             let included =
                 node == root || (active.last().copied().unwrap_or(false) && !nested_scope(node));
@@ -1392,18 +1443,11 @@ fn binding(
     }
 }
 
-pub(super) fn exports(
+fn scan_export_imports_and_mutations<'a>(
     root: Syntax<'_>,
-    source: &str,
-    bindings: &crate::ast::ScopeBindings,
-) -> Vec<ExportBinding> {
-    let mut result = Vec::new();
-    let commonjs_shadowed = bindings
-        .all
-        .iter()
-        .any(|name| matches!(name.as_str(), "module" | "exports"));
+    source: &'a str,
+) -> (bool, HashSet<&'a str>) {
     let mut commonjs_invalidated = false;
-    let mut module_replacements = 0;
     let mut type_imports = HashSet::new();
     let mut pending = vec![(root, true, true, false)];
     while let Some((node, scan_mutations, scan_imports, inherited_type_only)) = pending.pop() {
@@ -1421,7 +1465,6 @@ pub(super) fn exports(
         {
             commonjs_invalidated = true;
         }
-
         let type_only = scan_imports
             && (inherited_type_only
                 || (node.kind() == "import_statement"
@@ -1434,7 +1477,6 @@ pub(super) fn exports(
                 type_imports.insert(name);
             }
         }
-
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             let child_mutations = scan_mutations
@@ -1456,187 +1498,218 @@ pub(super) fn exports(
             }
         }
     }
-    let mut cursor = root.walk();
-    for node in root.named_children(&mut cursor) {
-        if node.kind() == "export_statement" {
-            let module =
-                field(node, source, "source").map(|module| module.trim_matches(['\'', '"']));
-            let type_only = text(node, source).trim_start().starts_with("export type ");
-            let default = text(node, source)
-                .trim_start()
-                .starts_with("export default ");
-            if default {
-                if let Some(local) = node
-                    .child_by_field_name("value")
-                    .filter(|value| value.kind() == "identifier")
-                {
+    (commonjs_invalidated, type_imports)
+}
+
+fn collect_es_export_statement(node: Syntax<'_>, source: &str, result: &mut Vec<ExportBinding>) {
+    let module = field(node, source, "source").map(|module| module.trim_matches(['\'', '"']));
+    let type_only = text(node, source).trim_start().starts_with("export type ");
+    let default = text(node, source).trim_start().starts_with("export default ");
+    if default {
+        if let Some(local) = node
+            .child_by_field_name("value")
+            .filter(|value| value.kind() == "identifier")
+        {
+            result.push(binding("default", Some(text(local, source)), None, false, false));
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "export_clause" => {
+                let mut cursor = child.walk();
+                for item in child.named_children(&mut cursor) {
+                    if let Some(local) = field(item, source, "name") {
+                        result.push(binding(
+                            field(item, source, "alias").unwrap_or(local),
+                            Some(local),
+                            module,
+                            type_only || text(item, source).trim_start().starts_with("type "),
+                            false,
+                        ));
+                    }
+                }
+            }
+            "namespace_export" => {
+                if let Some(name) = child.named_child(0) {
+                    result.push(binding(text(name, source), None, module, type_only, false));
+                }
+            }
+            "function_declaration"
+            | "class_declaration"
+            | "enum_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration" => {
+                if let Some(name) = field(child, source, "name") {
                     result.push(binding(
-                        "default",
-                        Some(text(local, source)),
+                        if default { "default" } else { name },
+                        Some(name),
                         None,
-                        false,
+                        type_only
+                            || matches!(
+                                child.kind(),
+                                "interface_declaration" | "type_alias_declaration"
+                            ),
                         false,
                     ));
                 }
             }
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                match child.kind() {
-                    "export_clause" => {
-                        let mut cursor = child.walk();
-                        for item in child.named_children(&mut cursor) {
-                            if let Some(local) = field(item, source, "name") {
-                                result.push(binding(
-                                    field(item, source, "alias").unwrap_or(local),
-                                    Some(local),
-                                    module,
-                                    type_only
-                                        || text(item, source).trim_start().starts_with("type "),
-                                    false,
-                                ));
-                            }
-                        }
+            "lexical_declaration" | "variable_declaration" => {
+                let mut cursor = child.walk();
+                for declaration in child.named_children(&mut cursor) {
+                    if let Some(name) = declaration
+                        .child_by_field_name("name")
+                        .filter(|name| name.kind() == "identifier")
+                    {
+                        result.push(binding(
+                            text(name, source),
+                            Some(text(name, source)),
+                            None,
+                            type_only,
+                            false,
+                        ));
                     }
-                    "namespace_export" => {
-                        if let Some(name) = child.named_child(0) {
-                            result.push(binding(
-                                text(name, source),
-                                None,
-                                module,
-                                type_only,
-                                false,
-                            ));
-                        }
-                    }
-                    "function_declaration"
-                    | "class_declaration"
-                    | "enum_declaration"
-                    | "interface_declaration"
-                    | "type_alias_declaration" => {
-                        if let Some(name) = field(child, source, "name") {
-                            result.push(binding(
-                                if default { "default" } else { name },
-                                Some(name),
-                                None,
-                                type_only
-                                    || matches!(
-                                        child.kind(),
-                                        "interface_declaration" | "type_alias_declaration"
-                                    ),
-                                false,
-                            ));
-                        }
-                    }
-                    "lexical_declaration" | "variable_declaration" => {
-                        let mut cursor = child.walk();
-                        for declaration in child.named_children(&mut cursor) {
-                            if let Some(name) = declaration
-                                .child_by_field_name("name")
-                                .filter(|name| name.kind() == "identifier")
-                            {
-                                result.push(binding(
-                                    text(name, source),
-                                    Some(text(name, source)),
-                                    None,
-                                    type_only,
-                                    false,
-                                ));
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
-            if module.is_some() && text(node, source).trim_start().starts_with("export * from") {
-                result.push(binding("*", None, module, type_only, true));
+            _ => {}
+        }
+    }
+    if module.is_some() && text(node, source).trim_start().starts_with("export * from") {
+        result.push(binding("*", None, module, type_only, true));
+    }
+}
+
+fn collect_commonjs_assignment(
+    node: Syntax<'_>,
+    source: &str,
+    result: &mut Vec<ExportBinding>,
+    module_replacements: &mut usize,
+    commonjs_invalidated: &mut bool,
+) {
+    let Some(assignment) = node
+        .named_child(0)
+        .filter(|item| item.kind() == "assignment_expression")
+    else {
+        return;
+    };
+    let (Some(left), Some(right)) = (
+        assignment.child_by_field_name("left"),
+        assignment.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    let left = text(left, source).trim();
+    if left == "module.exports" {
+        *module_replacements += 1;
+    }
+    let function_local = |right: Syntax<'_>| {
+        field(right, source, "name")
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "anonymous@{}:{}",
+                    right.start_position().row + 1,
+                    right.start_position().column + 1
+                )
+            })
+    };
+    if let Some(name) = left
+        .strip_prefix("exports.")
+        .or_else(|| left.strip_prefix("module.exports."))
+    {
+        if right.kind() == "identifier" {
+            result.push(binding(name, Some(text(right, source)), None, false, false));
+        } else if let Some(module) = required_module(right, source) {
+            result.push(binding(name, None, Some(&module), false, false));
+        } else if matches!(right.kind(), "function_expression" | "arrow_function") {
+            let local = function_local(right);
+            result.push(binding(name, Some(&local), None, false, false));
+        } else {
+            result.push(binding(name, None, None, false, false));
+        }
+        return;
+    }
+    if left != "module.exports" {
+        return;
+    }
+    if let Some(module) = required_module(right, source) {
+        result.push(binding("*", None, Some(&module), false, true));
+    } else if matches!(right.kind(), "function_expression" | "arrow_function") {
+        let local = function_local(right);
+        result.push(binding("default", Some(&local), None, false, false));
+    } else if right.kind() == "object" {
+        collect_commonjs_object_exports(right, source, result, commonjs_invalidated);
+    } else {
+        *commonjs_invalidated = true;
+    }
+}
+
+fn collect_commonjs_object_exports(
+    right: Syntax<'_>,
+    source: &str,
+    result: &mut Vec<ExportBinding>,
+    commonjs_invalidated: &mut bool,
+) {
+    let mut cursor = right.walk();
+    for item in right.named_children(&mut cursor) {
+        if item.kind() == "spread_element" {
+            *commonjs_invalidated = true;
+        }
+        if item.kind() == "shorthand_property_identifier" {
+            result.push(binding(
+                text(item, source),
+                Some(text(item, source)),
+                None,
+                false,
+                false,
+            ));
+        } else if let (Some(key), Some(value)) = (
+            item.child_by_field_name("key"),
+            item.child_by_field_name("value"),
+        ) {
+            if !matches!(
+                key.kind(),
+                "property_identifier" | "identifier" | "string"
+            ) {
+                *commonjs_invalidated = true;
             }
+            if value.kind() == "identifier" {
+                result.push(binding(
+                    text(key, source).trim_matches(['\'', '"']),
+                    Some(text(value, source)),
+                    None,
+                    false,
+                    false,
+                ));
+            }
+        }
+    }
+}
+
+pub(super) fn exports(
+    root: Syntax<'_>,
+    source: &str,
+    bindings: &crate::ast::syntax::ScopeBindings,
+) -> Vec<ExportBinding> {
+    let mut result = Vec::new();
+    let commonjs_shadowed = bindings
+        .all
+        .iter()
+        .any(|name| matches!(name.as_str(), "module" | "exports"));
+    let (mut commonjs_invalidated, type_imports) = scan_export_imports_and_mutations(root, source);
+    let mut module_replacements = 0;
+    let mut cursor = root.walk();
+    for node in root.named_children(&mut cursor) {
+        if node.kind() == "export_statement" {
+            collect_es_export_statement(node, source, &mut result);
         } else if node.kind() == "expression_statement" && !commonjs_shadowed {
-            let Some(assignment) = node
-                .named_child(0)
-                .filter(|item| item.kind() == "assignment_expression")
-            else {
-                continue;
-            };
-            let (Some(left), Some(right)) = (
-                assignment.child_by_field_name("left"),
-                assignment.child_by_field_name("right"),
-            ) else {
-                continue;
-            };
-            let left = text(left, source).trim();
-            if left == "module.exports" {
-                module_replacements += 1;
-            }
-            let function_local = |right: Syntax<'_>| {
-                field(right, source, "name")
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| {
-                        format!(
-                            "anonymous@{}:{}",
-                            right.start_position().row + 1,
-                            right.start_position().column + 1
-                        )
-                    })
-            };
-            if let Some(name) = left
-                .strip_prefix("exports.")
-                .or_else(|| left.strip_prefix("module.exports."))
-            {
-                if right.kind() == "identifier" {
-                    result.push(binding(name, Some(text(right, source)), None, false, false));
-                } else if let Some(module) = required_module(right, source) {
-                    result.push(binding(name, None, Some(&module), false, false));
-                } else if matches!(right.kind(), "function_expression" | "arrow_function") {
-                    let local = function_local(right);
-                    result.push(binding(name, Some(&local), None, false, false));
-                } else {
-                    result.push(binding(name, None, None, false, false));
-                }
-            } else if left == "module.exports" {
-                if let Some(module) = required_module(right, source) {
-                    result.push(binding("*", None, Some(&module), false, true));
-                } else if matches!(right.kind(), "function_expression" | "arrow_function") {
-                    let local = function_local(right);
-                    result.push(binding("default", Some(&local), None, false, false));
-                } else if right.kind() == "object" {
-                    let mut cursor = right.walk();
-                    for item in right.named_children(&mut cursor) {
-                        if item.kind() == "spread_element" {
-                            commonjs_invalidated = true;
-                        }
-                        if item.kind() == "shorthand_property_identifier" {
-                            result.push(binding(
-                                text(item, source),
-                                Some(text(item, source)),
-                                None,
-                                false,
-                                false,
-                            ));
-                        } else if let (Some(key), Some(value)) = (
-                            item.child_by_field_name("key"),
-                            item.child_by_field_name("value"),
-                        ) {
-                            if !matches!(
-                                key.kind(),
-                                "property_identifier" | "identifier" | "string"
-                            ) {
-                                commonjs_invalidated = true;
-                            }
-                            if value.kind() == "identifier" {
-                                result.push(binding(
-                                    text(key, source).trim_matches(['\'', '"']),
-                                    Some(text(value, source)),
-                                    None,
-                                    false,
-                                    false,
-                                ));
-                            }
-                        }
-                    }
-                } else {
-                    commonjs_invalidated = true;
-                }
-            }
+            collect_commonjs_assignment(
+                node,
+                source,
+                &mut result,
+                &mut module_replacements,
+                &mut commonjs_invalidated,
+            );
         }
     }
     if commonjs_invalidated || module_replacements > 1 {

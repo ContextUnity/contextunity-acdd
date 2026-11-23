@@ -1,21 +1,10 @@
-use super::*;
+use super::types::{SyntaxContext};
+#[cfg(any(feature = "lang-bash", feature = "lang-css", feature = "lang-json"))]
+use super::types::{module_stem, relative_namespace, ImportPath};
+use crate::ast::syntax as ast;
+use crate::models::{Facts, Reference};
 
 pub mod value_flow_core;
-
-macro_rules! delegate_extract_file {
-    () => {
-        fn extract_file(
-            &self,
-            path: &str,
-            source: &str,
-            module: &str,
-            facts: &mut crate::models::Facts,
-        ) -> anyhow::Result<()> {
-            crate::languages::parse_file(self, path, source, module, facts)
-        }
-    };
-}
-pub(crate) use delegate_extract_file;
 
 #[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
 pub(super) fn symbol_import_path(module: &str) -> Option<ImportPath> {
@@ -127,16 +116,13 @@ pub(crate) mod c_family;
     feature = "lang-ruby"
 ))]
 mod shared {
-    use super::*;
-    #[cfg(any(
-        feature = "lang-cpp",
-        feature = "lang-csharp",
-        feature = "lang-java",
-        feature = "lang-php",
-        feature = "lang-ruby"
-    ))]
     use crate::ast::relations;
+    use crate::ast::syntax::{text, ScopeBindings};
+    use crate::languages::profile::LanguageProfile;
+    use crate::languages::types::SyntaxContext;
+    use crate::models::Facts;
     use std::collections::BTreeSet;
+    use tree_sitter::Node as Syntax;
 
     pub(in crate::languages) fn child<'tree>(
         node: Syntax<'tree>,
@@ -279,7 +265,7 @@ mod shared {
         source: &str,
         parameters: &[&str],
         locals: &[&str],
-    ) -> ast::ScopeBindings {
+    ) -> ScopeBindings {
         let mut bound = BTreeSet::new();
         let mut rebindings = BTreeSet::new();
         let mut stack = vec![root];
@@ -314,7 +300,7 @@ mod shared {
             let mut c = node.walk();
             stack.extend(node.named_children(&mut c));
         }
-        ast::ScopeBindings {
+        ScopeBindings {
             all: bound.into_iter().collect(),
             rebindings: rebindings.into_iter().collect(),
         }

@@ -4,8 +4,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::format::sha256_hex;
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
 use acdd_core::path_policy::{normalize_binary_extensions, WorkspacePathPolicy};
-use acdd_state::git_ops::commit::create_scoped_commit_with_expected;
-use acdd_state::git_ops::*;
+use acdd_state::git_ops::{commit::*, integrate::*, snapshot, snapshot::*, worktree::*};
 use acdd_state::store::sqlite::SqliteStateReader;
 use acdd_state::types::IsolationMode;
 use acdd_state::usecases::lifecycle::build_path_policy;
@@ -287,17 +286,20 @@ fn scoped_commit_plumbing_and_archive_matrix() {
 
     // 1. MainBranchProtected on main (unless allow_main: true).
     fs::write(repo.join("src/lib.rs"), "pub fn base() -> i32 { 2 }\n").expect("edit");
-    let protected_err = create_scoped_commit(&ScopedCommitReq {
-        worktree: repo.clone(),
-        run_id: run_id.clone(),
-        node_id: "task:t1:deliver".to_owned(),
-        claim_revision: 1,
-        base_head: base_head.clone(),
-        admitted_scope: vec!["src/**".to_owned()],
-        path_policy: policy.clone(),
-        message: "deliver t1".to_owned(),
-        allow_main: false,
-    })
+    let protected_err = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:deliver".to_owned(),
+            claim_revision: 1,
+            base_head: base_head.clone(),
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy.clone(),
+            message: "deliver t1".to_owned(),
+            allow_main: false,
+        },
+        None,
+    )
     .expect_err("main protected");
     assert_eq!(protected_err.code, ErrorCode::MainBranchProtected);
 
@@ -315,17 +317,20 @@ fn scoped_commit_plumbing_and_archive_matrix() {
         "#!/bin/sh\nblob=$(printf 'hooked' | git hash-object -w --stdin)\ngit update-index --add --cacheinfo 100644,\"$blob\",src/lib.rs\nexit 0\n",
     );
 
-    let plumbing_resp = create_scoped_commit(&ScopedCommitReq {
-        worktree: repo.clone(),
-        run_id: run_id.clone(),
-        node_id: "task:t1:deliver".to_owned(),
-        claim_revision: 1,
-        base_head: base_head.clone(),
-        admitted_scope: vec!["src/**".to_owned()],
-        path_policy: policy.clone(),
-        message: "deliver t1 plumbing".to_owned(),
-        allow_main: false,
-    })
+    let plumbing_resp = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:deliver".to_owned(),
+            claim_revision: 1,
+            base_head: base_head.clone(),
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy.clone(),
+            message: "deliver t1 plumbing".to_owned(),
+            allow_main: false,
+        },
+        None,
+    )
     .expect("plumbing commit");
     let plumbing_oid = plumbing_resp.committed_oid.clone().expect("oid");
     assert!(!plumbing_resp.recovered_idempotently);
@@ -366,9 +371,9 @@ fn scoped_commit_plumbing_and_archive_matrix() {
     .expect("broad commit");
     let broad_oid = broad_commit.committed_oid.expect("broad oid");
     let tree = snapshot::resolve_git_tree_oid(&repo, broad_oid.as_str()).unwrap();
-    let expected = snapshot::list_git_tree_entries(&repo, "HEAD", "src").unwrap();
+    let expected = snapshot::list_git_tree_entries_multi(&repo, "HEAD", &["src"]).unwrap();
     for reference in [tree.as_str(), broad_oid.as_str(), "HEAD"] {
-        assert_eq!(snapshot::list_git_tree_entries(&repo, reference, "src").unwrap(), expected);
+        assert_eq!(snapshot::list_git_tree_entries_multi(&repo, reference, &["src"]).unwrap(), expected);
     }
     for (reference, directory, code) in [
         ("-invalid", "src", ErrorCode::ProfileSchemaInvalid),
@@ -376,7 +381,7 @@ fn scoped_commit_plumbing_and_archive_matrix() {
         ("0000000000000000000000000000000000000000", "src", ErrorCode::ExternalGitDrift),
         ("missing-reference", "src", ErrorCode::ExternalGitDrift),
     ] {
-        assert_eq!(snapshot::list_git_tree_entries(&repo, reference, directory).unwrap_err().code, code);
+        assert_eq!(snapshot::list_git_tree_entries_multi(&repo, reference, &[directory]).unwrap_err().code, code);
     }
     assert!(
         blob_oid_at(&repo, broad_oid.as_str(), "docs/milestones/AC-002.md")
@@ -467,17 +472,20 @@ fn integrate_rebase_ff_conflict_abort_and_completeness_matrix() {
         .expect("write task file");
         let accepted_tree =
             current_scope_tree(&created_task.worktree, None, &policy).expect("accepted tree");
-        create_scoped_commit(&ScopedCommitReq {
-            worktree: created_task.worktree.clone(),
-            run_id: run_id.clone(),
-            node_id: "task:t0:deliver".to_owned(),
-            claim_revision: 1,
-            base_head: created_task.head_commit.clone(),
-            admitted_scope: vec!["src/**".to_owned()],
-            path_policy: policy.clone(),
-            message: "task 0".to_owned(),
-            allow_main: false,
-        })
+        create_scoped_commit_with_expected(
+            &ScopedCommitReq {
+                worktree: created_task.worktree.clone(),
+                run_id: run_id.clone(),
+                node_id: "task:t0:deliver".to_owned(),
+                claim_revision: 1,
+                base_head: created_task.head_commit.clone(),
+                admitted_scope: vec!["src/**".to_owned()],
+                path_policy: policy.clone(),
+                message: "task 0".to_owned(),
+                allow_main: false,
+            },
+            None,
+        )
         .expect("commit task");
 
         // Advance run_wt with a non-conflicting commit so rebase-ff must rebase + fast-forward.

@@ -1,11 +1,235 @@
-use super::{
-    ast_legacy_error, compact, file_uri_for_path, render_for_operation, DiscoveryKind,
-    OperationKind, OutputFormat,
+use super::coordination;
+use super::core::{
+    append_fenced_block, escape_label, is_freshness_envelope, is_tool_metadata, ordered_fields,
+    render_field, render_markdown, render_markdown_fields, shorten_hash, text_field,
+    KNOWN_PAGE_FIELDS,
 };
+use super::core::{OperationKind, OutputFormat};
+use super::discovery::{self, file_uri_for_path, DiscoveryKind};
+use super::lint;
+use super::traversal;
 use acdd_core::config::{resolve_file_path, Adapter};
 use acdd_core::fs::canonical_root;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::Path;
+
+/// Formats one resolved semantic value for the requested surface.
+pub(crate) fn render(value: &Value, format: OutputFormat, title: &str) -> String {
+    if format == OutputFormat::Json {
+        return serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned());
+    }
+    match title {
+        "code_map_overview" => discovery::render(value, title, DiscoveryKind::Overview),
+        "code_map_inspect" => discovery::render(value, title, DiscoveryKind::Inspect),
+        "code_map_search" => discovery::render(value, title, DiscoveryKind::Search),
+        "ast_grep_search" => discovery::render(value, title, DiscoveryKind::Ast),
+        "code_map_lint" => lint::render(value, title),
+        "search_docs" | "get_doc" => coordination::render_docs(value, title),
+        "acdd_read" => render_acdd_read(value),
+        _ => render_markdown(value, title),
+    }
+}
+
+/// Formats a discovery result using its semantic operation identity.
+pub(super) fn render_presented(
+    value: &Value,
+    format: OutputFormat,
+    title: &str,
+    discovery: Option<DiscoveryKind>,
+) -> String {
+    match (format, discovery) {
+        (OutputFormat::Markdown, Some(kind)) => discovery::render(value, title, kind),
+        _ => render(value, format, title),
+    }
+}
+
+/// Renders one operation with an admitted domain layout when its semantic operation is known.
+pub fn render_for_operation(
+    value: &Value,
+    format: OutputFormat,
+    title: &str,
+    discovery: Option<DiscoveryKind>,
+    operation: OperationKind,
+) -> String {
+    if format == OutputFormat::Markdown && operation == OperationKind::Navigation && discovery.is_none() {
+        if let Some(kind) = traversal::kind_for(title, value) {
+            return traversal::render(value, title, kind);
+        }
+    }
+    render_presented(value, format, title, discovery)
+}
+
+pub(crate) fn ast_legacy_error(diagnostic: &Value) -> String {
+    discovery::ast_legacy_error(diagnostic)
+}
+
+/// Applies only presentation compaction permitted for a known operation.
+pub fn compact(value: &mut Value, operation: OperationKind, explain: Option<bool>) {
+    if operation != OperationKind::Navigation { return; }
+    super::core::shorten_metadata_hashes(value);
+    let Some(root) = value.as_object_mut() else { return; };
+    if let Some(explain) = explain { compact_symbol(root, explain); }
+    let source_cont = root.get("source_preview").and_then(Value::as_object).is_some_and(|p| {
+        p.get("has_more") == Some(&Value::Bool(true))
+            || p.get("next_source_offset").and_then(Value::as_u64).is_some_and(|o| o > 0)
+    });
+    let (mut nested_cont, mut saw_page, mut all_empty) = (false, false, true);
+    for key in KNOWN_PAGE_FIELDS {
+        if let Some(page) = root.get_mut(*key).and_then(Value::as_object_mut) {
+            if is_paging_envelope(page) {
+                saw_page = true;
+                all_empty &= empty_page(page);
+                nested_cont |= has_continuation(page);
+            }
+            compact_navigation_page(page);
+        }
+    }
+    if !source_cont && !nested_cont && !has_continuation(root) { root.remove("generation"); }
+    compact_freshness(root);
+    if saw_page && all_empty && !source_cont && root.get("freshness").and_then(Value::as_object).is_some_and(|f| {
+        f.get("status") == Some(&Value::String("matched".into()))
+            && f.get("refresh") == Some(&Value::String("none".into()))
+    }) {
+        root.remove("freshness");
+    }
+    move_owned_metadata_to_end(root);
+}
+
+fn render_acdd_read(value: &Value) -> String {
+    let mut out = String::from("# acdd_read\n");
+    render_read_node(&mut out, None, value, 0);
+    out
+}
+
+fn render_read_node(out: &mut String, key: Option<&str>, value: &Value, depth: usize) {
+    match value {
+        Value::Object(obj) if !obj.is_empty() => {
+            let d = key.map_or(depth, |k| {
+                super::core::indent(out, depth);
+                out.push_str(&format!("- **{}**\n", escape_label(k)));
+                depth + 1
+            });
+            let (lang, mut deferred) = (infer_read_language(obj), Vec::new());
+            for (k, child) in ordered_fields(obj) {
+                if matches!(k, "content" | "source") { if let Some(code) = child.as_str() { deferred.push((k, code)); continue; } }
+                render_read_node(out, Some(k), child, d);
+            }
+            for (k, code) in deferred {
+                super::core::indent(out, d);
+                out.push_str(&format!("- **{}**:\n", escape_label(k)));
+                append_fenced_block(out, lang, code, 0);
+            }
+        }
+        Value::Array(items) if !items.is_empty() && key.is_some() => {
+            super::core::indent(out, depth);
+            out.push_str(&format!("- **{}**\n", escape_label(key.unwrap_or(""))));
+            for (i, item) in items.iter().enumerate() { render_read_node(out, Some(&format!("[{i}]")), item, depth + 1); }
+        }
+        _ => match key { Some(k) => render_field(out, k, value, depth), None => render_markdown_fields(out, value, depth, &[]) },
+    }
+}
+
+fn infer_read_language(object: &Map<String, Value>) -> &str {
+    if object.get("mode").and_then(Value::as_str) == Some("delta") { return "diff"; }
+    if let Some(lang) = object.get("node").and_then(|n| text_field(n, "language")) { return lang; }
+    let path = object.get("path").and_then(Value::as_str).or_else(|| object.get("node").and_then(|n| text_field(n, "path"))).unwrap_or("");
+    if object.get("mode").and_then(Value::as_str) == Some("search") && path.contains(['*', '?', '[']) { return "text"; }
+    match path.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
+        Some("rs") => "rust", Some("py") => "python", Some("ts" | "tsx") => "typescript",
+        Some("js" | "jsx" | "mjs" | "cjs") => "javascript", Some("md" | "markdown") => "markdown",
+        Some("yaml" | "yml") => "yaml", Some("json") => "json", Some("toml") => "toml",
+        Some("sh" | "bash") => "bash", Some("sql") => "sql", _ => "text",
+    }
+}
+
+fn has_continuation(object: &Map<String, Value>) -> bool {
+    object.get("has_more") == Some(&Value::Bool(true)) || object.get("next_offset").is_some_and(|o| !o.is_null())
+}
+
+fn compact_navigation_page(page: &mut Map<String, Value>) {
+    if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+        items.iter_mut().for_each(compact_navigation_item);
+    }
+    if let Some(groups) = page.get_mut("grouped_by_file").and_then(Value::as_object_mut) {
+        for g in groups.values_mut().filter_map(Value::as_array_mut) { g.iter_mut().for_each(compact_navigation_item); }
+    }
+    if !is_paging_envelope(page) || has_continuation(page) { return; }
+    if page_limited(page) {
+        if let Some(Value::String(gen)) = page.get_mut("generation") { *gen = shorten_hash(gen).to_owned(); }
+        return;
+    }
+    if empty_page(page) {
+        for f in ["offset", "limit", "has_more", "generation", "next_offset", "continuation_hint"] { page.remove(f); }
+        return;
+    }
+    page.remove("generation");
+    page.remove("continuation_hint");
+    if page.get("has_more") == Some(&Value::Bool(false)) { page.remove("next_offset"); }
+}
+
+fn empty_page(page: &Map<String, Value>) -> bool {
+    !page_limited(page) && page.get("has_more") != Some(&Value::Bool(true))
+        && (page.get("total").is_some_and(|t| t == 0) || page.get("items").and_then(Value::as_array).is_some_and(Vec::is_empty))
+}
+
+fn compact_navigation_item(value: &mut Value) {
+    let Some(item) = value.as_object_mut() else { return; };
+    if !["id", "kind", "name", "path"].iter().all(|k| item.get(*k).is_some_and(Value::is_string)) { return; }
+    for flag in ["is_test", "generated"] {
+        if let Some(v) = item.get_mut(flag) {
+            if v == false || v == 0 { item.remove(flag); }
+            else if v == true || v.as_i64().is_some_and(|n| n != 0) { *v = Value::Bool(true); }
+        }
+    }
+    if item.get("qualname") == item.get("name") { item.remove("qualname"); }
+}
+
+fn is_paging_envelope(object: &Map<String, Value>) -> bool {
+    object.contains_key("offset") && object.contains_key("limit") && object.get("generation").is_some_and(Value::is_string)
+}
+
+fn page_limited(page: &Map<String, Value>) -> bool {
+    ["computation_truncated", "byte_limited"].iter().any(|f| page.get(*f) == Some(&Value::Bool(true)))
+}
+
+fn compact_symbol(object: &mut Map<String, Value>, explain: bool) {
+    for key in ["documents", "coverage"] {
+        if object.get(key).is_some_and(is_empty_collection) { object.remove(key); }
+    }
+    if explain {
+        const RELATIONS: &[&str] = &["calls", "callers", "implements", "implementors", "overrides", "dependencies", "unwired", "incoming", "outgoing"];
+        for key in RELATIONS { if object.get(*key).is_some_and(is_empty_collection) { object.remove(*key); } }
+        let present: Vec<&str> = RELATIONS.iter().copied().filter(|k| object.contains_key(*k)).collect();
+        object.insert("relations".into(), serde_json::json!(present));
+    }
+}
+
+fn is_empty_collection(value: &Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty) || value.get("total").is_some_and(|t| t == 0)
+        || (value.get("total").is_none() && value.get("items").and_then(Value::as_array).is_some_and(Vec::is_empty))
+        || value.get("items").and_then(Value::as_object).is_some_and(Map::is_empty)
+}
+
+fn compact_freshness(root: &mut Map<String, Value>) {
+    let Some(f) = root.get_mut("freshness").and_then(Value::as_object_mut) else { return; };
+    if !is_freshness_envelope(f, false) { return; }
+    f.remove("checked_at_unix_ms");
+    f.remove("inventory_scan_ms");
+    if matches!(f.get("status").and_then(Value::as_str), Some("matched" | "source_inventory_matched"))
+        && f.get("refresh") == Some(&Value::String("none".into()))
+    {
+        for field in ["output_root", "corpus_hash", "generation"] { f.remove(field); }
+        f.insert("status".into(), Value::String("matched".into()));
+    }
+}
+
+fn move_owned_metadata_to_end(root: &mut Map<String, Value>) {
+    let metadata = root.get("metadata").and_then(Value::as_object).is_some_and(is_tool_metadata).then(|| root.remove("metadata")).flatten();
+    let (generation, freshness) = (root.remove("generation"), root.remove("freshness"));
+    for (k, val) in [("metadata", metadata), ("generation", generation), ("freshness", freshness)] {
+        if let Some(v) = val { root.insert(k.into(), v); }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct PresentationOptions<'a> {
@@ -407,77 +631,65 @@ fn snippet_source_candidate(
     Some(candidate)
 }
 
-fn trim_page_tails(value: &mut Value, allow_tasks: bool, allow_items: bool) -> bool {
-    let Some(object) = value.as_object_mut() else {
+fn trim_tasks_page_tail(object: &mut serde_json::Map<String, Value>) -> bool {
+    let Some(pagination) = object.get("pagination").and_then(Value::as_object).cloned() else {
         return false;
     };
-    if allow_tasks {
-        if let Some(pagination) = object.get("pagination").and_then(Value::as_object).cloned() {
-            let page_is_continuable = pagination.get("total").and_then(Value::as_u64).is_some()
-                && pagination.get("offset").and_then(Value::as_u64).is_some()
-                && pagination
-                    .get("generation")
-                    .and_then(Value::as_str)
-                    .is_some_and(|generation| !generation.is_empty());
-            if page_is_continuable {
-                if let Some(tasks) = object.get_mut("tasks").and_then(Value::as_array_mut) {
-                    if tasks.len() > 1 {
-                        tasks.pop();
-                        let returned = tasks.len() as u64;
-                        let offset = pagination
-                            .get("offset")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
-                        let total = pagination
-                            .get("total")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(returned);
-                        let next = offset.saturating_add(returned);
-                        if let Some(page) =
-                            object.get_mut("pagination").and_then(Value::as_object_mut)
-                        {
-                            page.insert("returned".into(), json!(returned));
-                            let omitted = page
-                                .get("byte_omitted")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0);
-                            page.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
-                            page.insert("has_more".into(), json!(next < total));
-                            let filters = page.get("filters").cloned().unwrap_or(Value::Null);
-                            let generation = page
-                                .get("generation")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned();
-                            if next < total {
-                                page.insert("next_offset".into(), json!(next));
-                                let hint = page
-                                    .get("continuation_hint")
-                                    .and_then(Value::as_object)
-                                    .cloned();
-                                if let Some(mut hint) = hint {
-                                    hint.insert("offset".into(), json!(next));
-                                    hint.insert("generation".into(), json!(generation));
-                                    page.insert("continuation_hint".into(), Value::Object(hint));
-                                } else {
-                                    page.insert("continuation_hint".into(), json!(format!("Repeat the same tool with the same filters ({filters}) and generation={generation}, offset={next}.")));
-                                }
-                            } else {
-                                page.remove("next_offset");
-                                page.insert("continuation_hint".into(), json!(format!(
-                                    "No next page. Repeat the same tool with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
-                                )));
-                            }
-                        }
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    if allow_tasks && object.contains_key("tasks") {
+    let page_is_continuable = pagination.get("total").and_then(Value::as_u64).is_some()
+        && pagination.get("offset").and_then(Value::as_u64).is_some()
+        && pagination
+            .get("generation")
+            .and_then(Value::as_str)
+            .is_some_and(|generation| !generation.is_empty());
+    if !page_is_continuable {
         return false;
     }
+    let Some(tasks) = object.get_mut("tasks").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if tasks.len() <= 1 {
+        return false;
+    }
+    tasks.pop();
+    let returned = tasks.len() as u64;
+    let offset = pagination.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let total = pagination.get("total").and_then(Value::as_u64).unwrap_or(returned);
+    let next = offset.saturating_add(returned);
+    if let Some(page) = object.get_mut("pagination").and_then(Value::as_object_mut) {
+        page.insert("returned".into(), json!(returned));
+        let omitted = page.get("byte_omitted").and_then(Value::as_u64).unwrap_or(0);
+        page.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
+        page.insert("has_more".into(), json!(next < total));
+        let filters = page.get("filters").cloned().unwrap_or(Value::Null);
+        let generation = page
+            .get("generation")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if next < total {
+            page.insert("next_offset".into(), json!(next));
+            let hint = page
+                .get("continuation_hint")
+                .and_then(Value::as_object)
+                .cloned();
+            if let Some(mut hint) = hint {
+                hint.insert("offset".into(), json!(next));
+                hint.insert("generation".into(), json!(generation));
+                page.insert("continuation_hint".into(), Value::Object(hint));
+            } else {
+                page.insert("continuation_hint".into(), json!(format!("Repeat the same tool with the same filters ({filters}) and generation={generation}, offset={next}.")));
+            }
+        } else {
+            page.remove("next_offset");
+            page.insert("continuation_hint".into(), json!(format!(
+                "No next page. Repeat the same tool with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
+            )));
+        }
+    }
+    true
+}
+
+fn trim_items_page_tail(object: &mut serde_json::Map<String, Value>) -> bool {
     let total = object.get("total").and_then(Value::as_u64);
     let offset = object.get("offset").and_then(Value::as_u64);
     let generation = object
@@ -487,48 +699,63 @@ fn trim_page_tails(value: &mut Value, allow_tasks: bool, allow_items: bool) -> b
         .map(str::to_owned);
     let has_more = object.get("has_more").and_then(Value::as_bool) == Some(true);
     let has_usable_cursor = object.get("next_offset").and_then(Value::as_u64).is_some();
-    if allow_items
-        && offset.is_some()
-        && generation.is_some()
-        && (total.is_some() || (has_more && has_usable_cursor))
+    if offset.is_none()
+        || generation.is_none()
+        || (total.is_none() && !(has_more && has_usable_cursor))
     {
-        if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
-            if items.len() > 1 {
-                items.pop();
-                let returned = items.len() as u64;
-                let offset = offset.unwrap_or_default();
-                let next = offset.saturating_add(returned);
-                let has_more = total.map_or(has_more, |total| next < total);
-                let omitted = object
-                    .get("byte_omitted")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                object.insert("returned".into(), json!(returned));
-                object.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
-                object.insert("has_more".into(), json!(has_more));
-                if has_more {
-                    object.insert("next_offset".into(), json!(next));
-                    object.insert("byte_limited".into(), json!(true));
-                    let generation = generation.unwrap_or_default();
-                    let filters = object
-                        .get("filters")
-                        .or_else(|| object.get("request_scope"))
-                        .or_else(|| {
-                            object
-                                .get("continuation_hint")
-                                .filter(|hint| hint.is_object())
-                        })
-                        .cloned()
-                        .unwrap_or(json!("the original request filters"));
-                    object.insert("continuation_hint".into(), json!(format!("Repeat the same tool and filters ({filters}) with generation={generation} and offset={next}; whole items after this offset were omitted to respect max_output_bytes.")));
-                } else {
-                    object.remove("next_offset");
-                    object.remove("continuation_hint");
-                }
-                return true;
-            }
-            return false;
-        }
+        return false;
+    }
+    let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if items.len() <= 1 {
+        return false;
+    }
+    items.pop();
+    let returned = items.len() as u64;
+    let next = offset.unwrap_or_default().saturating_add(returned);
+    let has_more = total.map_or(has_more, |total| next < total);
+    let omitted = object.get("byte_omitted").and_then(Value::as_u64).unwrap_or(0);
+    object.insert("returned".into(), json!(returned));
+    object.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
+    object.insert("has_more".into(), json!(has_more));
+    if has_more {
+        object.insert("next_offset".into(), json!(next));
+        object.insert("byte_limited".into(), json!(true));
+        let generation = generation.unwrap_or_default();
+        let filters = object
+            .get("filters")
+            .or_else(|| object.get("request_scope"))
+            .or_else(|| {
+                object
+                    .get("continuation_hint")
+                    .filter(|hint| hint.is_object())
+            })
+            .cloned()
+            .unwrap_or(json!("the original request filters"));
+        object.insert("continuation_hint".into(), json!(format!("Repeat the same tool and filters ({filters}) with generation={generation} and offset={next}; whole items after this offset were omitted to respect max_output_bytes.")));
+    } else {
+        object.remove("next_offset");
+        object.remove("continuation_hint");
+    }
+    true
+}
+
+fn trim_page_tails(value: &mut Value, allow_tasks: bool, allow_items: bool) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    if allow_tasks && trim_tasks_page_tail(object) {
+        return true;
+    }
+    if allow_tasks && object.contains_key("tasks") {
+        return false;
+    }
+    if allow_items && trim_items_page_tail(object) {
+        return true;
+    }
+    if allow_items && object.contains_key("items") {
+        return false;
     }
     for child in object.values_mut() {
         if trim_page_tails(child, allow_tasks, allow_items) {
@@ -726,48 +953,47 @@ pub(crate) fn attach_lint_presentation_uris(root: &Path, adapter: &Adapter, valu
     }
 }
 
+fn attach_array_items_uris(
+    root: &Path,
+    adapter: &Adapter,
+    parent: Option<&mut Value>,
+    array_key: &str,
+    nested_key: Option<&str>,
+    line_key: &str,
+) {
+    let Some(items) = parent
+        .and_then(|value| value.get_mut(array_key))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for item in items {
+        let target = match nested_key {
+            Some(key) => item.get_mut(key),
+            None => Some(item),
+        };
+        if let Some(target) = target {
+            attach_uri_from_fields(root, adapter, target, "path", line_key);
+        }
+    }
+}
+
 /// Adds guarded file links for supplied traversal coordinates in Markdown output.
 pub(crate) fn attach_traversal_presentation_uris(
     root: &Path,
     adapter: &Adapter,
     value: &mut Value,
 ) {
-    if let Some(selector) = value.get_mut("selector") {
-        attach_uri_from_fields(root, adapter, selector, "path", "line");
-    }
-    if let Some(node) = value.get_mut("node") {
-        attach_uri_from_fields(root, adapter, node, "path", "line");
-    }
-
-    for field in ["nodes", "changed_symbols", "tests", "unmapped_changes"] {
-        if let Some(page) = value.get_mut(field) {
-            attach_traversal_page(root, adapter, page, "line");
-        }
-    }
-    for field in ["incoming", "outgoing"] {
-        if let Some(page) = value.get_mut(field) {
-            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-                for item in items {
-                    attach_uri_from_fields(root, adapter, item, "path", "line");
-                }
-            }
-        }
-    }
-    if let Some(page) = value.get_mut("affected_docs") {
-        if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-            for item in items {
-                attach_uri_from_fields(root, adapter, item, "path", "__no_line");
-            }
-        }
-    }
-    if let Some(page) = value.get_mut("documents") {
-        if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-            for item in items {
-                attach_uri_from_fields(root, adapter, item, "path", "doc_line");
-            }
+    for field in ["selector", "node"] {
+        if let Some(entry) = value.get_mut(field) {
+            attach_uri_from_fields(root, adapter, entry, "path", "line");
         }
     }
     for field in [
+        "nodes",
+        "changed_symbols",
+        "tests",
+        "unmapped_changes",
         "analysis_gaps",
         "untested_public_surface",
         "errors",
@@ -785,15 +1011,19 @@ pub(crate) fn attach_traversal_presentation_uris(
             attach_traversal_page(root, adapter, page, "line");
         }
     }
+    for (field, line_key) in [
+        ("incoming", "line"),
+        ("outgoing", "line"),
+        ("affected_docs", "__no_line"),
+        ("documents", "doc_line"),
+    ] {
+        attach_array_items_uris(root, adapter, value.get_mut(field), "items", None, line_key);
+    }
     if let Some(page) = value.get_mut("phantom_tested") {
         attach_traversal_page(root, adapter, page, "line");
         if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
             for item in items {
-                if let Some(callers) = item.get_mut("test_callers").and_then(Value::as_array_mut) {
-                    for caller in callers {
-                        attach_uri_from_fields(root, adapter, caller, "path", "line");
-                    }
-                }
+                attach_array_items_uris(root, adapter, Some(item), "test_callers", None, "line");
             }
         }
     }
@@ -801,44 +1031,14 @@ pub(crate) fn attach_traversal_presentation_uris(
         attach_traversal_page(root, adapter, page, "__no_line");
     }
     if let Some(invariants) = value.get_mut("governing_invariants") {
-        if let Some(rules) = invariants.get_mut("direct").and_then(Value::as_array_mut) {
-            for rule in rules {
-                if let Some(source) = rule.get_mut("source") {
-                    attach_uri_from_fields(root, adapter, source, "path", "line");
-                }
-            }
-        }
-        if let Some(entries) = invariants
-            .get_mut("omitted_sources")
-            .and_then(Value::as_array_mut)
-        {
-            for entry in entries {
-                if let Some(source) = entry.get_mut("source") {
-                    attach_uri_from_fields(root, adapter, source, "path", "line");
-                }
-            }
+        for key in ["direct", "omitted_sources"] {
+            attach_array_items_uris(root, adapter, Some(invariants), key, Some("source"), "line");
         }
     }
-    if let Some(changes) = value.get_mut("changes") {
-        if let Some(files) = changes.get_mut("files").and_then(Value::as_array_mut) {
-            for file in files {
-                attach_uri_from_fields(root, adapter, file, "path", "__no_line");
-            }
-        }
-    }
-    if let Some(summary) = value.get_mut("summary") {
-        if let Some(calls) = summary.get_mut("calls") {
-            for direction in ["inbound", "outbound"] {
-                if let Some(preview) = calls
-                    .get_mut(direction)
-                    .and_then(|direction| direction.get_mut("preview"))
-                    .and_then(Value::as_array_mut)
-                {
-                    for item in preview {
-                        attach_uri_from_fields(root, adapter, item, "path", "line");
-                    }
-                }
-            }
+    attach_array_items_uris(root, adapter, value.get_mut("changes"), "files", None, "__no_line");
+    if let Some(calls) = value.get_mut("summary").and_then(|s| s.get_mut("calls")) {
+        for direction in ["inbound", "outbound"] {
+            attach_array_items_uris(root, adapter, calls.get_mut(direction), "preview", None, "line");
         }
     }
 }

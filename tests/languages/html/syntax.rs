@@ -180,10 +180,12 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         "x".repeat(300)
     ));
     workspace.write("page.html", &updated);
-    writer::delta(
+    writer::delta_with_selection(
         workspace.root(),
         &workspace.db(),
         &[std::path::PathBuf::from("page.html")],
+        None,
+        None,
     )
     .unwrap();
     let delta = reader::open(&workspace.db(), workspace.root()).unwrap();

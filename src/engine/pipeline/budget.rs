@@ -1,5 +1,6 @@
-use super::*;
-use std::sync::Condvar;
+use anyhow::{bail, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Default)]
 pub(super) struct ByteBudgetState {

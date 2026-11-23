@@ -1,49 +1,44 @@
-pub use self::routes::*;
-pub const PARALLEL_LINKER_PREP_MIN_NODES: usize = 2048;
+const PARALLEL_LINKER_PREP_MIN_NODES: usize = 2048;
 
-#[cfg(feature = "lang-html")]
-use crate::languages::ImportPath;
-use crate::languages::{self, module_name, LanguageFamily};
-use crate::linker::traits::{ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER};
+use crate::interner;
+
+use crate::languages::{self};
 use crate::models::*;
 use crate::models::{
-    compact_graph::{CompactEdge as Edge, CompactGraph as Graph, Coverage},
+    compact_graph::CompactGraph as Graph,
     Graph as PublicGraph,
 };
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::interner;
-/// Per-node symbol IDs collected for declaration and rebinding lookups.
-pub type NodeBindingIndex = HashMap<interner::SymbolId, Vec<interner::SymbolId>>;
-
 mod compact;
 pub mod contracts;
-use compact::GraphPart;
+use compact::{compare_coverage, compare_edges, sort_graph, GraphPart};
 mod framework_relations;
 mod html;
-#[cfg(feature = "lang-html")]
-use html::templates as html_templates;
 mod indexing;
 mod javascript;
 mod named_bindings;
 mod projections;
 pub(crate) mod python;
 mod resolution;
-pub mod routes;
-mod rust;
+pub(crate) mod routes;
+pub(crate) mod rust;
 pub(crate) mod semantic_context;
+pub(crate) mod semantic_facts;
 pub mod traits;
-mod typescript;
+pub(crate) mod types;
+pub(crate) mod typescript;
 /// Implements value flow support.
 pub mod value_flow;
 mod vue;
 use crate::models::tags::NodeKind;
-use javascript::commonjs_bindings as commonjs;
 use python::receivers;
+pub use types::NodeBindingIndex;
+pub(crate) use types::qualified;
+
 /// Performs needs reference identity.
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
     let language = facts
@@ -51,7 +46,11 @@ pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
         .iter()
         .find(|node| node.kind == NodeKind::Module.as_str())
         .map_or("", |node| node.language.as_str());
-    languages::linker_for(language).needs_reference_identity(path, facts)
+    languages::by_id(language)
+        .map_or(&traits::GENERIC_LINKER as &dyn traits::LanguageLinker, |profile| {
+            profile.linker()
+        })
+        .needs_reference_identity(path, facts)
 }
 /// Performs reference identity changed.
 pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
@@ -60,22 +59,11 @@ pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool 
         .iter()
         .find(|node| node.kind == NodeKind::Module.as_str())
         .map_or("", |node| node.language.as_str());
-    languages::linker_for(language).reference_identity_changed(path, old, new)
-}
-/// Performs required full facts.
-pub fn required_full_facts(
-    facts: &BTreeMap<String, Facts>,
-    affected: &std::collections::BTreeSet<String>,
-    catalog: &[(&str, &str)],
-) -> std::collections::BTreeSet<String> {
-    let mut required = std::collections::BTreeSet::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for profile in languages::profiles() {
-        if seen.insert(profile.id()) {
-            required.extend(profile.linker().required_full_facts(facts, affected, catalog));
-        }
-    }
-    required
+    languages::by_id(language)
+        .map_or(&traits::GENERIC_LINKER as &dyn traits::LanguageLinker, |profile| {
+            profile.linker()
+        })
+        .reference_identity_changed(path, old, new)
 }
 
 /// Resolves full typed facts required for linker resolution.
@@ -193,7 +181,7 @@ pub fn required_full_typed_facts(
     let mut seen = std::collections::BTreeSet::new();
     for profile in languages::profiles() {
         if seen.insert(profile.id()) {
-            required.extend(languages::linker_for(profile.id()).required_full_facts(
+            required.extend(profile.linker().required_full_facts(
                 facts,
                 &projection_owners,
                 catalog,
@@ -201,7 +189,7 @@ pub fn required_full_typed_facts(
         }
     }
     #[cfg(feature = "lang-typescript")]
-    required.extend(languages::typescript::linker::required_configuration_facts(
+    required.extend(typescript::profile_linker::required_configuration_facts(
         facts,
         catalog,
         dependencies,
@@ -338,24 +326,6 @@ pub fn configured_result_names(
     names
 }
 
-/// Computes named binding scope for a file path.
-pub fn named_binding_scope(
-    path: &str,
-    dependencies: &languages::dependency_registry::DependencyRegistry,
-) -> String {
-    named_bindings::project(path, dependencies).to_owned()
-}
-/// Performs link.
-pub fn link(all: &BTreeMap<String, Facts>) -> PublicGraph {
-    link_with_root(all, None, None)
-}
-
-/// Resolves the lean catalog with the same semantic rules as extracted facts.
-pub fn link_catalog(catalog: &crate::semantic::SymbolCatalog) -> PublicGraph {
-    let dependencies = languages::dependency_registry::DependencyRegistry::collect(None);
-    link_compact_catalog_with_registry(catalog, None, &dependencies).into()
-}
-
 type InternedFlows<'a> = HashMap<interner::SymbolId, &'a crate::typed_facts::FlowState>;
 type InternedUncertainties<'a> =
     HashMap<interner::SymbolId, &'a [crate::semantic::NamedDefinitionUncertainty]>;
@@ -401,7 +371,7 @@ fn intern_flow_inputs<'a>(
 
 /// Links compact catalog symbols using dependency registry.
 pub fn link_compact_catalog_with_registry(
-    catalog: &crate::semantic::SymbolCatalog,
+    catalog: &crate::typed_facts::SymbolCatalog,
     root: Option<&Path>,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
@@ -419,29 +389,13 @@ pub fn link_compact_catalog_with_registry(
         root,
         dependencies,
         &mut interner,
-        ResolutionInput {
+        CompactLinkInputs {
             flows: Some(&flows),
             uncertainties: Some(&uncertainties),
             faults: Some(&faults),
         },
         Some(&catalog.occurrences),
     )
-}
-/// Performs link owners.
-pub fn link_owners(
-    all: &BTreeMap<String, Facts>,
-    owners: Option<&std::collections::BTreeSet<String>>,
-) -> PublicGraph {
-    link_with_root(all, owners, None)
-}
-/// Performs link with root.
-pub fn link_with_root(
-    all: &BTreeMap<String, Facts>,
-    owners: Option<&std::collections::BTreeSet<String>>,
-    root: Option<&Path>,
-) -> PublicGraph {
-    let dependency_registry = languages::dependency_registry::DependencyRegistry::collect(root);
-    link_with_registry(all, owners, root, &dependency_registry)
 }
 
 /// Performs link with registry.
@@ -455,7 +409,7 @@ pub fn link_with_registry(
 }
 
 /// Links compact graph using untyped facts and dependency registry.
-pub fn link_compact_with_registry(
+fn link_compact_with_registry(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
@@ -502,7 +456,7 @@ pub fn link_compact_with_registry(
         root,
         dependency_registry,
         &mut interner,
-        ResolutionInput {
+        CompactLinkInputs {
             flows: (!flows.is_empty()).then_some(&flows),
             uncertainties: Some(&uncertainties),
             faults: Some(&faults),
@@ -529,7 +483,7 @@ pub fn link_compact_with_typed_registry(
         root,
         dependency_registry,
         &mut interner,
-        ResolutionInput {
+        CompactLinkInputs {
             flows: Some(&flows),
             uncertainties: Some(&uncertainties),
             faults: Some(&faults),
@@ -538,7 +492,7 @@ pub fn link_compact_with_typed_registry(
     )
 }
 
-struct ResolutionInput<'maps, 'facts, 'uncertainties> {
+struct CompactLinkInputs<'maps, 'facts, 'uncertainties> {
     flows: Option<&'maps HashMap<interner::SymbolId, &'facts crate::typed_facts::FlowState>>,
     uncertainties: Option<
         &'maps HashMap<
@@ -605,21 +559,141 @@ fn language_context_key_hash(
     hasher.finish()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn link_compact_impl<'a, 'maps, 'uncertainties>(
-    all: &'a (dyn crate::FactsLookup + Sync),
-    owners: Option<&std::collections::BTreeSet<String>>,
-    root: Option<&Path>,
+fn intern_component_environment_rule(
+    rule: &languages::manifests::syntax::SyntaxRule,
+    path: &str,
+    all: &dyn crate::FactsLookup,
+    dependency_registry: &languages::dependency_registry::DependencyRegistry,
+    interner: &mut interner::LinkerInterner<'_>,
+    component_name_scopes: &mut HashSet<(String, String, String)>,
+) {
+    let languages::manifests::syntax::SyntaxOperation::ComponentEnvironment {
+        directory,
+        extension,
+        autoimports,
+        builtins,
+        modules,
+        callable_imports,
+        ..
+    } = &rule.operation
+    else {
+        return;
+    };
+    if let Some(scope) = dependency_registry
+        .nearest_manifest_scope_for_path(languages::LanguageFamily("javascript"), path)
+    {
+        let scope_key = (scope.to_owned(), rule.pack.clone(), rule.id.clone());
+        if component_name_scopes.insert(scope_key) {
+            for provider_path in all.keys_facts() {
+                if let Some((pascal, kebab)) =
+                    semantic_context::component_names(provider_path, scope, directory, extension)
+                {
+                    interner.intern_owned_symbol(pascal);
+                    interner.intern_owned_symbol(kebab);
+                }
+            }
+        }
+    }
+    for name in autoimports.iter().chain(builtins) {
+        interner.intern_owned_symbol_str(name);
+    }
+    if let Some(imports) = callable_imports {
+        for alias in &imports.aliases {
+            interner.intern_owned_symbol_str(alias);
+        }
+    }
+    for (name, module) in modules {
+        interner.intern_owned_symbol_str(name);
+        interner.intern_owned_symbol_str(&module.package);
+        for component in &module.components {
+            interner.intern_owned_symbol_str(component);
+        }
+        for (callee, members) in &module.call_results {
+            interner.intern_owned_symbol_str(callee);
+            for member in members {
+                interner.intern_owned_symbol_str(member);
+            }
+        }
+    }
+}
+
+fn intern_syntax_rule<'a>(
+    rule: &languages::manifests::syntax::SyntaxRule,
+    path: &str,
+    all: &dyn crate::FactsLookup,
     dependency_registry: &'a languages::dependency_registry::DependencyRegistry,
     interner: &mut interner::LinkerInterner<'a>,
-    input: ResolutionInput<'maps, 'a, 'uncertainties>,
-    occurrences: Option<&BTreeMap<String, Vec<u8>>>,
-) -> Graph {
-    let ResolutionInput {
-        flows,
-        uncertainties,
-        faults,
-    } = input;
+    component_name_scopes: &mut HashSet<(String, String, String)>,
+) {
+    interner.intern_owned_symbol_str(&rule.pack);
+    interner.intern_owned_symbol_str(&rule.id);
+    use languages::manifests::syntax::SyntaxOperation;
+    match &rule.operation {
+        SyntaxOperation::ComponentEnvironment { .. } => {
+            intern_component_environment_rule(
+                rule,
+                path,
+                all,
+                dependency_registry,
+                interner,
+                component_name_scopes,
+            );
+        }
+        SyntaxOperation::ImplicitBuiltins { names } => {
+            for name in names {
+                interner.intern_owned_symbol_str(name);
+            }
+        }
+        SyntaxOperation::ReceiverType { receiver } => {
+            interner.intern_owned_symbol_str(&receiver.name);
+            for callback in &receiver.callback_callees {
+                interner.intern_owned_symbol_str(callback);
+            }
+            for factory in &receiver.argument_factories {
+                if let languages::manifests::projections::Api::GlobalMember { receiver, member } =
+                    &factory.callee
+                {
+                    let callee = format!("{receiver}.{member}");
+                    interner.intern_owned_symbol(callee);
+                }
+                for literal in &factory.literals {
+                    interner.intern_owned_symbol_str(literal);
+                }
+            }
+        }
+        SyntaxOperation::NamedBinding {
+            binding:
+                languages::manifests::projections::NamedBindingForm::CallReference {
+                    provider_scopes,
+                    ..
+                },
+            ..
+        } => {
+            for provider in provider_scopes {
+                if let Some(scope) = dependency_registry.named_provider_scope(provider) {
+                    interner.intern_path(scope);
+                }
+            }
+        }
+        SyntaxOperation::NamedBinding {
+            binding:
+                languages::manifests::projections::NamedBindingForm::AssignmentDefinition {
+                    template_root,
+                    ..
+                },
+            ..
+        } => {
+            interner.intern_owned_symbol_str(template_root);
+        }
+        _ => {}
+    }
+}
+
+fn intern_manifest_rule_symbols<'a>(
+    all: &dyn crate::FactsLookup,
+    dependency_registry: &'a languages::dependency_registry::DependencyRegistry,
+    interner: &mut interner::LinkerInterner<'a>,
+) {
     let mut component_name_scopes = HashSet::new();
     let families: std::collections::BTreeSet<&'static str> = languages::profiles()
         .map(|profile| profile.family().0)
@@ -647,117 +721,76 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
 
         let rules = dependency_registry.language_context_for_path(path);
         for rule in &rules.syntax_rules {
-            interner.intern_owned_symbol_str(&rule.pack);
-            interner.intern_owned_symbol_str(&rule.id);
-            use languages::manifests::syntax::SyntaxOperation;
-            match &rule.operation {
-                SyntaxOperation::ComponentEnvironment {
-                    directory,
-                    extension,
-                    autoimports,
-                    builtins,
-                    modules,
-                    callable_imports,
-                    ..
-                } => {
-                    if let Some(scope) = dependency_registry.nearest_manifest_scope_for_path(
-                        languages::LanguageFamily("javascript"),
-                        path,
-                    ) {
-                        let scope_key = (scope.to_owned(), rule.pack.clone(), rule.id.clone());
-                        if component_name_scopes.insert(scope_key) {
-                            for provider_path in all.keys_facts() {
-                                if let Some((pascal, kebab)) = semantic_context::component_names(
-                                    provider_path,
-                                    scope,
-                                    directory,
-                                    extension,
-                                ) {
-                                    interner.intern_owned_symbol(pascal);
-                                    interner.intern_owned_symbol(kebab);
-                                }
-                            }
-                        }
-                    }
-                    for name in autoimports.iter().chain(builtins) {
-                        interner.intern_owned_symbol_str(name);
-                    }
-                    if let Some(imports) = callable_imports {
-                        for alias in &imports.aliases {
-                            interner.intern_owned_symbol_str(alias);
-                        }
-                    }
-                    for (name, module) in modules {
-                        interner.intern_owned_symbol_str(name);
-                        interner.intern_owned_symbol_str(&module.package);
-                        for component in &module.components {
-                            interner.intern_owned_symbol_str(component);
-                        }
-                        for (callee, members) in &module.call_results {
-                            interner.intern_owned_symbol_str(callee);
-                            for member in members {
-                                interner.intern_owned_symbol_str(member);
-                            }
-                        }
-                    }
-                }
-                SyntaxOperation::ImplicitBuiltins { names } => {
-                    for name in names {
-                        interner.intern_owned_symbol_str(name);
-                    }
-                }
-                SyntaxOperation::ReceiverType { receiver } => {
-                    interner.intern_owned_symbol_str(&receiver.name);
-                    for callback in &receiver.callback_callees {
-                        interner.intern_owned_symbol_str(callback);
-                    }
-                    for factory in &receiver.argument_factories {
-                        if let languages::manifests::projections::Api::GlobalMember {
-                            receiver,
-                            member,
-                        } = &factory.callee
-                        {
-                            let callee = format!("{receiver}.{member}");
-                            interner.intern_owned_symbol(callee);
-                        }
-                        for literal in &factory.literals {
-                            interner.intern_owned_symbol_str(literal);
-                        }
-                    }
-                }
-                SyntaxOperation::NamedBinding {
-                    binding:
-                        languages::manifests::projections::NamedBindingForm::CallReference {
-                            provider_scopes,
-                            ..
-                        },
-                    ..
-                } => {
-                    for provider in provider_scopes {
-                        if let Some(scope) = dependency_registry.named_provider_scope(provider) {
-                            interner.intern_path(scope);
-                        }
-                    }
-                }
-                SyntaxOperation::NamedBinding {
-                    binding:
-                        languages::manifests::projections::NamedBindingForm::AssignmentDefinition {
-                            template_root,
-                            ..
-                        },
-                    ..
-                } => {
-                    interner.intern_owned_symbol_str(template_root);
-                }
-                _ => {}
-            }
+            intern_syntax_rule(
+                rule,
+                path,
+                all,
+                dependency_registry,
+                interner,
+                &mut component_name_scopes,
+            );
         }
         for (pack, base) in dependency_registry.hierarchy_return_targets_for_path(path) {
             interner.intern_owned_symbol_str(pack);
             interner.intern_owned_symbol_str(base);
         }
     }
+}
 
+fn intern_flow_symbols<'a>(
+    interner: &mut interner::LinkerInterner<'a>,
+    flows: &HashMap<interner::SymbolId, &'a crate::typed_facts::FlowState>,
+) {
+    let mut flow_entries: Vec<_> = flows.iter().map(|(&id, &state)| (id, state)).collect();
+    flow_entries.sort_unstable_by_key(|(id, _)| *id);
+    for (_, state) in flow_entries {
+        let crate::typed_facts::FlowState::Valid { facts, .. } = state else {
+            continue;
+        };
+        for binding in &facts.bindings {
+            interner.intern_symbol(&binding.name);
+            intern_call_site_symbols(interner, &binding.value);
+        }
+        for join in &facts.branch_joins {
+            interner.intern_symbol(&join.name);
+            intern_call_site_symbols(interner, &join.value);
+        }
+        for field in &facts.fields {
+            interner.intern_symbol(&field.name);
+            intern_call_site_symbols(interner, &field.value);
+        }
+        for result in facts.factory_results() {
+            interner.intern_symbol(&result.binding);
+            interner.intern_symbol(&result.origin.pack);
+            interner.intern_symbol(&result.origin.rule);
+        }
+        for binding in facts.named_bindings() {
+            interner.intern_symbol(&binding.domain);
+            interner.intern_symbol(&binding.origin.pack);
+            interner.intern_symbol(&binding.origin.rule);
+            if let crate::semantic::StaticString::Literal { value } = &binding.key {
+                interner.intern_symbol(value);
+            }
+        }
+        for configuration in facts.component_configurations() {
+            interner.intern_symbol(&configuration.origin.pack);
+            interner.intern_symbol(&configuration.origin.rule);
+            for module in &configuration.modules {
+                interner.intern_symbol(module);
+            }
+        }
+    }
+}
+
+fn intern_workspace_and_flow_symbols<'a>(
+    all: &'a dyn crate::FactsLookup,
+    dependency_registry: &'a languages::dependency_registry::DependencyRegistry,
+    interner: &mut interner::LinkerInterner<'a>,
+    flows: Option<&HashMap<interner::SymbolId, &'a crate::typed_facts::FlowState>>,
+    uncertainties: Option<
+        &HashMap<interner::SymbolId, &[crate::semantic::NamedDefinitionUncertainty]>,
+    >,
+) {
     for path in all.keys_facts() {
         interner.intern_path(languages::workspace_path(path).0);
         for family in [
@@ -770,44 +803,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         }
     }
     if let Some(flows) = flows {
-        let mut flow_entries: Vec<_> = flows.iter().map(|(&id, &state)| (id, state)).collect();
-        flow_entries.sort_unstable_by_key(|(id, _)| *id);
-        for (_, state) in flow_entries {
-            if let crate::typed_facts::FlowState::Valid { facts, .. } = state {
-                for binding in &facts.bindings {
-                    interner.intern_symbol(&binding.name);
-                    intern_call_site_symbols(interner, &binding.value);
-                }
-                for join in &facts.branch_joins {
-                    interner.intern_symbol(&join.name);
-                    intern_call_site_symbols(interner, &join.value);
-                }
-                for field in &facts.fields {
-                    interner.intern_symbol(&field.name);
-                    intern_call_site_symbols(interner, &field.value);
-                }
-                for result in facts.factory_results() {
-                    interner.intern_symbol(&result.binding);
-                    interner.intern_symbol(&result.origin.pack);
-                    interner.intern_symbol(&result.origin.rule);
-                }
-                for binding in facts.named_bindings() {
-                    interner.intern_symbol(&binding.domain);
-                    interner.intern_symbol(&binding.origin.pack);
-                    interner.intern_symbol(&binding.origin.rule);
-                    if let crate::semantic::StaticString::Literal { value } = &binding.key {
-                        interner.intern_symbol(value);
-                    }
-                }
-                for configuration in facts.component_configurations() {
-                    interner.intern_symbol(&configuration.origin.pack);
-                    interner.intern_symbol(&configuration.origin.rule);
-                    for module in &configuration.modules {
-                        interner.intern_symbol(module);
-                    }
-                }
-            }
-        }
+        intern_flow_symbols(interner, flows);
     }
     if let Some(uncertainties) = uncertainties {
         let mut uncertainty_entries: Vec<_> = uncertainties
@@ -821,11 +817,149 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                 interner.intern_owned_symbol_str(&marker.origin.pack);
                 interner.intern_owned_symbol_str(&marker.origin.rule);
                 if let crate::semantic::StaticString::Literal { value } = &marker.key {
-                    interner.intern_owned_symbol_str(value);
+                    interner.intern_owned_symbol_str(value.as_str());
                 }
             }
         }
     }
+}
+
+fn build_node_binding_indexes(
+    nodes: &[&Node],
+    interner: &interner::LinkerInterner<'_>,
+    flows: Option<&HashMap<interner::SymbolId, &crate::typed_facts::FlowState>>,
+) -> (NodeBindingIndex, NodeBindingIndex) {
+    let mut node_bindings: NodeBindingIndex = HashMap::new();
+    let mut node_rebindings: NodeBindingIndex = HashMap::new();
+    for &n in nodes {
+        let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
+        if n.binding_count() > 0 {
+            node_bindings.insert(
+                node_id,
+                n.binding_names()
+                    .map(|name| {
+                        interner
+                            .lookup_symbol(name)
+                            .expect("binding name is interned")
+                    })
+                    .collect(),
+            );
+        }
+        if n.rebinding_count() > 0 {
+            node_rebindings.insert(
+                node_id,
+                n.rebinding_names()
+                    .map(|name| {
+                        interner
+                            .lookup_symbol(name)
+                            .expect("rebinding name is interned")
+                    })
+                    .collect(),
+            );
+        }
+        if n.kind == "module" && n.language == "python" {
+            if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
+                flows.and_then(|states| states.get(&node_id))
+            {
+                let rebindings = node_rebindings.entry(node_id).or_default();
+                rebindings.extend(facts.bindings.iter().map(|binding| {
+                    interner
+                        .lookup_symbol(&binding.name)
+                        .expect("flow binding name is interned")
+                }));
+                rebindings.extend(facts.branch_joins.iter().map(|join| {
+                    interner
+                        .lookup_symbol(&join.name)
+                        .expect("branch join name is interned")
+                }));
+            }
+        }
+    }
+    for names in node_bindings.values_mut() {
+        names.sort_unstable();
+        names.dedup();
+    }
+    for names in node_rebindings.values_mut() {
+        names.sort_unstable();
+        names.dedup();
+    }
+    (node_bindings, node_rebindings)
+}
+
+fn merge_compact_graph_parts(
+    all: &dyn crate::FactsLookup,
+    owners: Option<&std::collections::BTreeSet<String>>,
+    parts: Vec<GraphPart>,
+    occurrences: Option<&BTreeMap<String, Vec<u8>>>,
+    sort_per_file: bool,
+) -> Graph {
+    let mut result = Graph {
+        edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
+        coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),
+        path_arc: None,
+        path_pool: HashSet::new(),
+        node_id_pool: HashSet::new(),
+        evidence_pool: HashSet::new(),
+    };
+    let mut remaining = parts.into_iter();
+    loop {
+        let mut batch = Vec::new();
+        let mut rows = 0;
+        for part in remaining.by_ref() {
+            let (edges, coverage) = part.counts();
+            rows += edges + coverage;
+            batch.push(part);
+            if rows >= 4096 || occurrences.is_none() {
+                break;
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        let graphs: Vec<_> = if occurrences.is_some() {
+            batch.into_par_iter().map(GraphPart::into_graph).collect()
+        } else {
+            batch.into_iter().map(GraphPart::into_graph).collect()
+        };
+        for graph in graphs {
+            result.merge(graph);
+        }
+    }
+    compact::release_unpack_scratch(occurrences.is_some());
+    manifest_entrypoint_edges(all, owners, &mut result);
+    if !sort_per_file
+        || !result
+            .edges
+            .windows(2)
+            .all(|rows| compare_edges(&rows[0], &rows[1]).is_le())
+        || !result
+            .coverage
+            .windows(2)
+            .all(|rows| compare_coverage(&rows[0], &rows[1]).is_le())
+    {
+        sort_graph(&mut result);
+    }
+    result.clear_pools();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn link_compact_impl<'a, 'maps, 'uncertainties>(
+    all: &'a (dyn crate::FactsLookup + Sync),
+    owners: Option<&std::collections::BTreeSet<String>>,
+    root: Option<&Path>,
+    dependency_registry: &'a languages::dependency_registry::DependencyRegistry,
+    interner: &mut interner::LinkerInterner<'a>,
+    input: CompactLinkInputs<'maps, 'a, 'uncertainties>,
+    occurrences: Option<&BTreeMap<String, Vec<u8>>>,
+) -> Graph {
+    let CompactLinkInputs {
+        flows,
+        uncertainties,
+        faults,
+    } = input;
+    intern_manifest_rule_symbols(all, dependency_registry, interner);
+    intern_workspace_and_flow_symbols(all, dependency_registry, interner, flows, uncertainties);
     let profiling = std::env::var_os("ACDD_PROFILE_LINKER").is_some();
     let mut checkpoint = std::time::Instant::now();
     let mut mark = |phase: &str| {
@@ -889,63 +1023,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             }
             (by_id, by_module, by_suffix)
         };
-        let build_bindings = || {
-            let mut node_bindings: NodeBindingIndex = HashMap::new();
-            let mut node_rebindings: NodeBindingIndex = HashMap::new();
-            for &n in &nodes {
-                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
-                if n.binding_count() > 0 {
-                    node_bindings.insert(
-                        node_id,
-                        n.binding_names()
-                            .map(|name| {
-                                interner
-                                    .lookup_symbol(name)
-                                    .expect("binding name is interned")
-                            })
-                            .collect(),
-                    );
-                }
-                if n.rebinding_count() > 0 {
-                    node_rebindings.insert(
-                        node_id,
-                        n.rebinding_names()
-                            .map(|name| {
-                                interner
-                                    .lookup_symbol(name)
-                                    .expect("rebinding name is interned")
-                            })
-                            .collect(),
-                    );
-                }
-                if n.kind == "module" && n.language == "python" {
-                    if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
-                        flows.and_then(|states| states.get(&node_id))
-                    {
-                        let rebindings = node_rebindings.entry(node_id).or_default();
-                        rebindings.extend(facts.bindings.iter().map(|binding| {
-                            interner
-                                .lookup_symbol(&binding.name)
-                                .expect("flow binding name is interned")
-                        }));
-                        rebindings.extend(facts.branch_joins.iter().map(|join| {
-                            interner
-                                .lookup_symbol(&join.name)
-                                .expect("branch join name is interned")
-                        }));
-                    }
-                }
-            }
-            for names in node_bindings.values_mut() {
-                names.sort_unstable();
-                names.dedup();
-            }
-            for names in node_rebindings.values_mut() {
-                names.sort_unstable();
-                names.dedup();
-            }
-            (node_bindings, node_rebindings)
-        };
+        let build_bindings = || build_node_binding_indexes(&nodes, interner, flows);
         let ((by_name, by_qual), ((by_id, by_module, by_suffix), (node_bindings, node_rebindings))) =
             if nodes.len() >= PARALLEL_LINKER_PREP_MIN_NODES {
                 rayon::join(build_names, || rayon::join(build_lookup, build_bindings))
@@ -1023,7 +1101,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         let semantic_context = semantic_context.with_rust(&rust_members);
         #[cfg(feature = "lang-typescript")]
         let typescript_members =
-            languages::typescript::linker::TypeScriptMembers::build(all, &semantic_context);
+            typescript::members::TypeScriptMembers::build(all, &semantic_context);
         #[cfg(feature = "lang-typescript")]
         let semantic_context = semantic_context.with_typescript(&typescript_members);
         mark("semantic admission and members");
@@ -1044,7 +1122,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         acdd_core::sys::trim_allocator();
         mark("value flow");
         let prepared_semantic_facts =
-            framework_relations::PreparedSemanticFacts::build(all, interner);
+            semantic_facts::PreparedSemanticFacts::build(all, interner);
         let mut parts = resolution::resolve(resolution::ResolutionInput {
             all,
             interner,
@@ -1085,7 +1163,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                 dependency_registry,
                 profiles,
                 &semantic_context,
-                framework_relations::CompositionInput {
+                semantic_facts::CompositionInput {
                     nodes: &nodes,
                     by_id: &by_id,
                     semantic: &prepared_semantic_facts,
@@ -1098,53 +1176,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         (parts, sort_per_file)
     };
     acdd_core::sys::trim_allocator();
-    let mut result = Graph {
-        edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
-        coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),
-        path_arc: None,
-        path_pool: HashSet::new(),
-        node_id_pool: HashSet::new(),
-        evidence_pool: HashSet::new(),
-    };
-    let mut remaining = parts.into_iter();
-    loop {
-        let mut batch = Vec::new();
-        let mut rows = 0;
-        for part in remaining.by_ref() {
-            let (edges, coverage) = part.counts();
-            rows += edges + coverage;
-            batch.push(part);
-            if rows >= 4096 || occurrences.is_none() {
-                break;
-            }
-        }
-        if batch.is_empty() {
-            break;
-        }
-        let graphs: Vec<_> = if occurrences.is_some() {
-            batch.into_par_iter().map(GraphPart::into_graph).collect()
-        } else {
-            batch.into_iter().map(GraphPart::into_graph).collect()
-        };
-        for graph in graphs {
-            result.merge(graph);
-        }
-    }
-    compact::release_unpack_scratch(occurrences.is_some());
-    manifest_entrypoint_edges(all, owners, &mut result);
-    if !sort_per_file
-        || !result
-            .edges
-            .windows(2)
-            .all(|rows| compare_edges(&rows[0], &rows[1]).is_le())
-        || !result
-            .coverage
-            .windows(2)
-            .all(|rows| compare_coverage(&rows[0], &rows[1]).is_le())
-    {
-        sort_graph(&mut result);
-    }
-    result.clear_pools();
+    let result = merge_compact_graph_parts(all, owners, parts, occurrences, sort_per_file);
     mark("graph merge and sort");
     result
 }
@@ -1248,178 +1280,6 @@ fn manifest_entrypoint_edges(
     }
 }
 
-fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {
-    (&a.path, a.line, &a.src, &a.dst, &a.kind).cmp(&(&b.path, b.line, &b.src, &b.dst, &b.kind))
-}
-
-fn compare_coverage(a: &Coverage, b: &Coverage) -> std::cmp::Ordering {
-    (&a.path, a.line, &a.expression, &a.status, &a.evidence).cmp(&(
-        &b.path,
-        b.line,
-        &b.expression,
-        &b.status,
-        &b.evidence,
-    ))
-}
-
-fn sort_graph(graph: &mut Graph) {
-    graph.edges.sort_by(compare_edges);
-    graph.coverage.sort_by(compare_coverage);
-}
-
-pub(crate) fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str {
-    buffer.clear();
-    buffer.push_str(namespace);
-    buffer.push('.');
-    buffer.push_str(name);
-    buffer
-}
-
-#[derive(Clone, Copy)]
-enum ReceiverType<'a> {
-    Local(&'a Node),
-    External(&'a str, usize),
-    Ambiguous,
-    Unknown,
-}
-
-fn receiver_language_requires_static(node: &Node) -> bool {
-    matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
-}
-
-fn emit_inferred(
-    graph: &mut Graph,
-    path: &str,
-    reference: &Reference,
-    result: semantic_context::Member<'_>,
-    builtin_origin: Option<&str>,
-) {
-    let (status, evidence): (&str, Cow<'static, str>) = match &result {
-        semantic_context::Member::Local(node) => ("resolved", format!("statically inferred value receiver: {}", node.qualname).into()),
-        semantic_context::Member::ConfiguredExternal { authority, origin, evidence } => {
-            let authority = match authority {
-                value_flow::ConfiguredReceiverAuthority::Hierarchy { pack, rule } => format!("pack {pack}; hierarchy provider {}; ordered bases {}", rule.provider, rule.bases.join(",")),
-                value_flow::ConfiguredReceiverAuthority::Nominal { pack, rule_id, .. } => format!("pack {pack}; receiver rule {rule_id}"),
-            };
-            let origin = match origin {
-                value_flow::TypeTarget::External { module, import_line } => format!("external import {module} at line {import_line}"),
-                value_flow::TypeTarget::Local(node) | value_flow::TypeTarget::Callable(node) => format!("local receiver {} in {} at line {}", node.qualname, node.path, node.line),
-                value_flow::TypeTarget::ConfiguredReceiver { evidence, .. } => format!("configured receiver {evidence}"),
-                _ => "non-import receiver without an exact local declaration".to_owned(),
-            };
-            let language = languages::for_path(Path::new(path)).map_or("unknown", |profile| profile.id());
-            ("external", format!("finite {language} configured member {}; {authority}; receiver origin {origin}; configuration {evidence}", reference.expression).into())
-        }
-        semantic_context::Member::External(module, line, Some(provider)) => {
-            let member = reference.expression.rsplit('.').next().unwrap_or_default();
-            let diagnostic_marker = if languages::for_path(Path::new(path))
-                .is_some_and(|profile| profile.id() == "python" && !profile.is_stdlib(module))
-            {
-                "; diagnostic_reason=framework_magic"
-            } else {
-                ""
-            };
-            (
-                "external",
-                format!("finite Python framework member from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred{diagnostic_marker}").into(),
-            )
-        }
-        semantic_context::Member::External(module, line, None) => ("external", format!("call through external import {module} at line {line}; receiver origin statically inferred").into()),
-        semantic_context::Member::Builtin => match builtin_origin {
-            Some(origin) => ("external", format!("{origin} built-in: {}", reference.expression).into()),
-            None => ("resolved", format!("standard library or built-in callee: {}", reference.expression).into()),
-        },
-        semantic_context::Member::Ambiguous => ("ambiguous", "statically inferred receiver has multiple method candidates".into()),
-        semantic_context::Member::Unknown => ("unresolved", "statically inferred receiver has no verified method candidate".into()),
-    };
-    graph.reference_coverage(path, reference, status, evidence);
-    if let semantic_context::Member::Local(node) = result {
-        graph.reference_edge(
-            path,
-            reference,
-            node.id.clone(),
-            reference.kind.as_str(),
-            "inferred",
-        );
-    }
-}
-
-fn strip_trailing_generics(name: &str) -> &str {
-    let Some((base, generic)) = name.split_once('<') else {
-        return name;
-    };
-    if !name.ends_with('>') {
-        return name;
-    }
-    let mut depth = 1usize;
-    let closes_at_end = generic.char_indices().all(|(index, character)| {
-        match character {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 && index + character.len_utf8() != generic.len() {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-        depth > 0 || index + character.len_utf8() == generic.len()
-    }) && depth == 0;
-    if closes_at_end {
-        base.trim_end()
-    } else {
-        name
-    }
-}
-
-fn receiver_type_name(annotation: &str) -> Option<Cow<'_, str>> {
-    let mut name = annotation.trim().trim_matches(['\'', '"']);
-    while let Some(rest) = name.strip_prefix('&') {
-        name = rest.trim_start();
-        if name.starts_with('\'') {
-            name = name.split_once(char::is_whitespace)?.1.trim_start();
-        }
-        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
-    }
-    name = strip_trailing_generics(name);
-    if let Some((base, _)) = name.split_once('[') {
-        name = base.trim_end();
-    }
-
-    if name.is_empty()
-        || !name.chars().all(|character| {
-            character.is_alphanumeric() || matches!(character, '_' | '.' | ':' | '$')
-        })
-    {
-        return None;
-    }
-    Some(if name.contains("::") {
-        Cow::Owned(name.replace("::", "."))
-    } else {
-        Cow::Borrowed(name)
-    })
-}
-
-fn receiver_head(annotation: &str) -> &str {
-    let mut name = annotation.trim().trim_matches(['\'', '"']);
-    while let Some(rest) = name.strip_prefix('&') {
-        name = rest.trim_start();
-        if name.starts_with('\'') {
-            if let Some((_, rest)) = name.split_once(char::is_whitespace) {
-                name = rest.trim_start();
-            }
-        }
-        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
-    }
-    let head = name
-        .split_once("::")
-        .or_else(|| name.split_once('.'))
-        .map(|(h, _)| h)
-        .unwrap_or(name);
-    let head = head.split_once('<').map(|(h, _)| h).unwrap_or(head);
-    head.split_once('[').map(|(h, _)| h).unwrap_or(head).trim()
-}
-
 #[cfg(test)]
 mod route_extraction_contract {
     #[test]
@@ -1428,75 +1288,5 @@ mod route_extraction_contract {
             super::routes::normalize_route_segments("/Users/<id>/posts/:slug/{page}"),
             vec!["users", "{param}", "posts", "{param}", "{param}"]
         );
-    }
-}
-
-#[cfg(all(test, feature = "lang-python"))]
-mod local_field_reference_contract {
-    use super::link;
-
-    fn linked_graph(source: &str) -> crate::models::Graph {
-        let facts = crate::ast::extract("service.py", "python", source).unwrap();
-        let all = std::collections::BTreeMap::from([("service.py".to_owned(), facts)]);
-        link(&all)
-    }
-
-    #[test]
-    fn same_class_field_references_retain_exact_resolution() {
-        let graph = linked_graph(
-            "class Host:\n    request = None\n    def current(self): return self.request\n",
-        );
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == "self.request")
-            .unwrap();
-        assert_eq!(coverage.status, "resolved", "{coverage:?}");
-        let edge = graph
-            .edges
-            .iter()
-            .find(|edge| edge.kind == "references" && edge.evidence == "self.request")
-            .unwrap();
-        assert_eq!(edge.confidence, "exact", "{edge:?}");
-    }
-
-    #[test]
-    fn constructor_assigned_field_reads_keep_field_identity() {
-        let source = "class Host:\n    def __init__(self, request):\n        self.request = request\n    def current(self):\n        return self.request\n";
-        let graph = linked_graph(source);
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == "self.request" && coverage.line == 5)
-            .unwrap();
-        assert_eq!(coverage.status, "resolved", "{coverage:?}");
-        let edge = graph
-            .edges
-            .iter()
-            .find(|edge| {
-                edge.kind == "references" && edge.evidence == "self.request" && edge.line == 5
-            })
-            .unwrap();
-        assert_eq!(
-            edge.dst, "field:service.py:3:service.Host.request",
-            "{edge:?}"
-        );
-    }
-
-    #[test]
-    fn field_values_do_not_become_callable_targets() {
-        let graph = linked_graph(
-            "class Host:\n    def __init__(self, request):\n        self.request = request\n    def current(self):\n        return self.request()\n",
-        );
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == "self.request" && coverage.line == 5)
-            .unwrap();
-        assert_eq!(coverage.status, "unresolved", "{coverage:?}");
-        assert!(!graph
-            .edges
-            .iter()
-            .any(|edge| { edge.kind == "calls" && edge.evidence == "self.request()" }));
     }
 }

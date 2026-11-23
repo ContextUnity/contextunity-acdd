@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use crate::ast::{field, text};
-use crate::languages::{manifests::syntax::SyntaxOperation, LanguageContext};
+use crate::ast::syntax::{field, text};
+use crate::languages::{context::LanguageContext, manifests::syntax::SyntaxOperation};
 use tree_sitter::Node;
 
 thread_local! {

@@ -123,7 +123,7 @@ This maintenance and architectural hardening release enforces single-owner bound
 
 ## [0.6.0] - 2026-11-17
 
-This release replaces the legacy task engine with a unified, domain-agnostic profile, workflow graph, and SQLite state engine (`crates/acdd-core` + `crates/acdd-state`), introduces pluggable `DomainProvider` extensions, flattens the CLI and MCP surface around `.acdd/state.sqlite`, consolidates ADRs to `0001..0012`, promotes `ROADMAP.md`, and documents manual `0.5 -> 0.6` upgrading in [migration-0.6.md](docs/runbooks/migration-0.6.md).
+This release replaces the legacy task engine with a unified, domain-agnostic profile, workflow graph, and SQLite state engine (`crates/acdd-core` + `crates/acdd-state`), introduces pluggable `DomainProvider` extensions, flattens the CLI and MCP surface around `.acdd/state.sqlite`, consolidates ADRs to `0001..0012`, promotes `ROADMAP.md`, and documents manual `0.5 -> 0.6` upgrading.
 
 ### Added
 

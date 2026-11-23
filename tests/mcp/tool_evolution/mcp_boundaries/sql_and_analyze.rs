@@ -572,8 +572,8 @@ fn duplicates_query_discovers_identical_files_and_function_clones_with_actionabl
     // Overlapping groups must not double-count duplicate lines in aggregate accounting
     let total_dup_lines = sym_dups["total_duplicated_lines"].as_u64().unwrap();
     assert_eq!(
-        total_dup_lines, 23,
-        "shared_worker (6 exact + 6 near) + loop_func (5 near) + string_fn (6 near) = 23 lines; overlapping duplicate locations are not double-counted"
+        total_dup_lines, 12,
+        "shared_worker (6 exact + 6 near) = 12 lines under AST-statement min_lines=5 window without double-counting overlapping locations"
     );
 
     // 3. Stale generation rejection on offset > 0

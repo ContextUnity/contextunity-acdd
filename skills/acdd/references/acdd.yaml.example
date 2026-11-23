@@ -54,3 +54,19 @@ response:
   detail: compact
   page_size: 30
   max_output_bytes: 65536
+
+# Optional architectural zones, rules, and complexity limits
+# architecture:
+#   complexity:
+#     max_cognitive_complexity: 50
+#     max_nesting_depth: 6
+#     max_fanout: 40
+#     severity: warn
+#   zones:
+#     core: ["crates/core/src/**"]
+#   rules:
+#     - id: ARCH-ACYCLIC-CORE
+#       severity: error
+#       kind: forbid_cycles
+#       from: { zones: ["core"] }
+#       depth: 2

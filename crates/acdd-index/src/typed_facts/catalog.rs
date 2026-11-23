@@ -1,14 +1,14 @@
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-
 use crate::{
     models::{
         details::NodeDetailKey,
+        facts::Facts,
         tags::{EdgeKind, LanguageId, NodeKind},
-        Facts,
+        types::{CallableFingerprints, Node, Reference},
     },
-    typed_facts::{FlowStore, TypedFacts},
+    typed_facts::{binary::decode_references, bundle::TypedFacts, flow_store::FlowStore},
 };
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Workspace linking inputs, without storage-only syntax and documentation.
 ///
@@ -26,7 +26,7 @@ impl SymbolCatalog {
     pub fn from_facts(files: BTreeMap<String, Facts>) -> Self {
         let mut catalog = Self::default();
         for (path, facts) in files {
-            catalog.insert_typed(path, TypedFacts::from_public(facts), false);
+            catalog.insert_typed(path, TypedFacts::from_public(facts));
         }
         catalog
     }
@@ -38,7 +38,7 @@ impl SymbolCatalog {
     }
 
     /// Restores one file's reference occurrences while definitions stay borrowed.
-    pub fn references(&self, path: &str) -> Option<Vec<crate::models::Reference>> {
+    pub fn references(&self, path: &str) -> Option<Vec<Reference>> {
         self.files.get(path).map(|facts| {
             self.occurrences.get(path).map_or_else(
                 || facts.references.clone(),
@@ -56,7 +56,20 @@ impl SymbolCatalog {
         self.occurrences.extend(other.occurrences);
     }
 
-    pub fn insert_typed(
+    /// Inserts typed facts into the linking catalog, discarding storage-only fields.
+    pub fn insert_typed(&mut self, path: String, facts: TypedFacts) {
+        self.insert_typed_inner(path, facts, false);
+    }
+
+    pub(crate) fn insert_typed_with_payload(
+        &mut self,
+        path: String,
+        facts: TypedFacts,
+    ) -> CatalogStoragePayload {
+        self.insert_typed_inner(path, facts, true)
+    }
+
+    fn insert_typed_inner(
         &mut self,
         path: String,
         mut facts: TypedFacts,
@@ -99,12 +112,11 @@ impl SymbolCatalog {
                         || kind == EdgeKind::References.as_str()
                 ) || reference.receiver_hint.is_some()
             });
-            facts.facts.references.shrink_to_fit();
         }
         for node in &facts.facts.nodes {
             if matches!(
                 facts.flows.state(node),
-                Some(crate::typed_facts::FlowState::Valid {
+                Some(crate::typed_facts::flow_store::FlowState::Valid {
                     original: Some(_),
                     ..
                 })
@@ -117,7 +129,6 @@ impl SymbolCatalog {
                 if let Some(details) = node.details.as_object_mut() {
                     details.retain(|key, _| !storage_only_detail(key));
                 }
-                continue;
             }
             let Some(details) = node.details.as_object() else {
                 continue;
@@ -132,7 +143,7 @@ impl SymbolCatalog {
                 .filter(|(key, _)| !storage_only_detail(key))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            let original = std::mem::replace(&mut node.details, serde_json::Value::Object(lean));
+            let original = std::mem::replace(&mut node.details, Value::Object(lean));
             if retain_storage {
                 payload.node_details.push((node.id.clone(), original));
             }
@@ -161,16 +172,16 @@ fn storage_only_detail(key: &str) -> bool {
 
 /// Storage-only fields recovered from one file's durable fact blob.
 #[derive(Default)]
-pub struct CatalogStoragePayload {
-    node_details: Vec<(String, serde_json::Value)>,
+pub(crate) struct CatalogStoragePayload {
+    node_details: Vec<(String, Value)>,
     docs: Vec<(usize, String, Vec<String>)>,
     flows: FlowStore,
-    references: Option<Vec<crate::models::Reference>>,
-    statement_fingerprints: Vec<crate::models::CallableFingerprints>,
+    references: Option<Vec<Reference>>,
+    statement_fingerprints: Vec<CallableFingerprints>,
 }
 
 impl CatalogStoragePayload {
-    pub fn restore_composed_node(&self, node: &mut crate::models::Node) {
+    pub fn restore_composed_node(&self, node: &mut Node) {
         let Some(source_id) = node.details["source_id"].as_str() else {
             return;
         };
@@ -213,10 +224,7 @@ impl CatalogStoragePayload {
     }
 }
 
-fn append_composed_references(
-    references: &mut Vec<crate::models::Reference>,
-    composed: &[crate::models::Reference],
-) {
+fn append_composed_references(references: &mut Vec<Reference>, composed: &[Reference]) {
     let original_len = references.len();
     for reference in composed
         .iter()
@@ -234,10 +242,7 @@ fn append_composed_references(
     }
 }
 
-pub fn decode_catalog_references(
-    bytes: &[u8],
-    composed: &[crate::models::Reference],
-) -> Vec<crate::models::Reference> {
+pub(crate) fn decode_catalog_references(bytes: &[u8], composed: &[Reference]) -> Vec<Reference> {
     use std::io::Read;
     thread_local! {
         static DECODER: std::cell::RefCell<(zstd::zstd_safe::DCtx<'static>, Vec<u8>)> =
@@ -251,37 +256,11 @@ pub fn decode_catalog_references(
         zstd::stream::read::Decoder::with_context(bytes, context)
             .read_to_end(decoded)
             .expect("catalog reference compression is lossless");
-        crate::typed_facts::binary::decode_references(decoded).unwrap_or_else(|| {
+        decode_references(decoded).unwrap_or_else(|| {
             serde_json::from_slice(decoded)
                 .expect("catalog reference JSON was serialized internally")
         })
     });
     append_composed_references(&mut references, composed);
     references
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-/// Language-neutral receiver catalog mapping type names and expressions to receiver hints and target types.
-pub struct ReceiverCatalog {
-    /// Statically known receiver hints indexed by canonical type or expression.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub receivers: BTreeMap<String, String>,
-}
-
-impl ReceiverCatalog {
-    /// Creates an empty receiver catalog.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers a receiver hint for a canonical type or expression.
-    pub fn register(&mut self, type_name: impl Into<String>, receiver_hint: impl Into<String>) {
-        self.receivers
-            .insert(type_name.into(), receiver_hint.into());
-    }
-
-    /// Looks up a receiver hint for a type or expression.
-    pub fn lookup(&self, type_name: &str) -> Option<&str> {
-        self.receivers.get(type_name).map(String::as_str)
-    }
 }

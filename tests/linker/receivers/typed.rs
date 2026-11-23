@@ -5,7 +5,7 @@
 ))]
 
 use acdd_index::models::{Facts, Graph};
-use acdd_index::{ast, linker};
+use acdd_index::ast;
 use std::collections::BTreeMap;
 
 #[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
@@ -22,11 +22,11 @@ fn linked(files: &[(&str, &str, &str)]) -> (BTreeMap<String, Facts>, Graph) {
             )
         })
         .collect();
-    let graph = linker::link(&facts);
+    let graph = crate::common::link_facts(&facts);
     (facts, graph)
 }
 
-fn call<'a>(graph: &'a Graph, expression: &str) -> &'a acdd_index::models::Coverage {
+fn call<'a>(graph: &'a Graph, expression: &str) -> &'a acdd_index::models::types::Coverage {
     graph
         .coverage
         .iter()

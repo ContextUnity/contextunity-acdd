@@ -395,6 +395,59 @@ fn verify_required_checks(
     Ok(())
 }
 
+pub(super) fn reset_fail_target_and_intermediates<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    node: &GateNodeRecord,
+    fail_id: &str,
+    clear_mid_claims: bool,
+    watch_ids: &mut Vec<&'a str>,
+    node_patches: &mut Vec<NodeStatusPatch>,
+) -> Result<&'a GateNodeRecord, StateError> {
+    let target = snapshot
+        .nodes
+        .iter()
+        .find(|n| n.parent_id == node.parent_id && n.gate_id == fail_id)
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!(
+                    "fail target '{fail_id}' not found in container of '{}'",
+                    node.node_id
+                ),
+            )
+        })?;
+    watch_ids.push(target.node_id.as_str());
+
+    let mut target_patch = NodeStatusPatch::status_only(&target.node_id, NodeStatus::Ready);
+    target_patch.accepted_tree = Some(None);
+    target_patch.accepted_definition_digest = Some(None);
+    target_patch.worker_id = Some(None);
+    target_patch.session_fingerprint = Some(None);
+    target_patch.active_span_id = Some(None);
+    node_patches.push(target_patch);
+
+    if target.seq_order <= node.seq_order {
+        for mid in &snapshot.nodes {
+            if mid.parent_id == node.parent_id
+                && mid.seq_order > target.seq_order
+                && mid.seq_order < node.seq_order
+            {
+                watch_ids.push(mid.node_id.as_str());
+                let mut mid_patch = NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
+                mid_patch.accepted_tree = Some(None);
+                mid_patch.accepted_definition_digest = Some(None);
+                if clear_mid_claims {
+                    mid_patch.worker_id = Some(None);
+                    mid_patch.session_fingerprint = Some(None);
+                    mid_patch.active_span_id = Some(None);
+                }
+                node_patches.push(mid_patch);
+            }
+        }
+    }
+    Ok(target)
+}
+
 fn build_mechanical_failure_transition(
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
@@ -438,42 +491,14 @@ fn build_mechanical_failure_transition(
         patch.active_span_id = Some(None);
         node_patches.push(patch);
     } else {
-        let target = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.parent_id == node.parent_id && n.gate_id == fail_id)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "fail target '{fail_id}' not found in container of '{}'",
-                        node.node_id
-                    ),
-                )
-            })?;
-        watch_ids.push(target.node_id.as_str());
-
-        let mut target_patch = NodeStatusPatch::status_only(&target.node_id, NodeStatus::Ready);
-        target_patch.accepted_tree = Some(None);
-        target_patch.accepted_definition_digest = Some(None);
-        target_patch.worker_id = Some(None);
-        target_patch.session_fingerprint = Some(None);
-        target_patch.active_span_id = Some(None);
-        node_patches.push(target_patch);
-
-        // Reset any intermediate sibling gates strictly between target and current node.
-        for mid in &snapshot.nodes {
-            if mid.parent_id == node.parent_id
-                && mid.seq_order > target.seq_order
-                && mid.seq_order < node.seq_order
-            {
-                watch_ids.push(mid.node_id.as_str());
-                let mut mid_patch = NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
-                mid_patch.accepted_tree = Some(None);
-                mid_patch.accepted_definition_digest = Some(None);
-                node_patches.push(mid_patch);
-            }
-        }
+        let target = reset_fail_target_and_intermediates(
+            snapshot,
+            node,
+            fail_id,
+            false,
+            &mut watch_ids,
+            &mut node_patches,
+        )?;
 
         if target.node_id != node.node_id {
             let mut cur_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Pending);

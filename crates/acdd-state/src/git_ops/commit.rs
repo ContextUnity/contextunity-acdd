@@ -4,10 +4,12 @@ use super::snapshot::{
     blob_oid_at, collect_literal_scope_paths, guard_candidate_path, list_stage_entries,
     list_untracked_entries, remove_confined_file, TemporaryGitIndex,
 };
-use super::{
-    commit_has_exact_trailer, ensure_non_empty_git_identity, run_git_checked, run_git_raw,
-    run_git_stdout, sync_default_index_paths, ScopedTempDir,
+use super::exec::{
+    commit_has_exact_trailer, ensure_non_empty_git_identity, failpoint_hit,
+    format_message_with_trailer, run_git_checked, run_git_raw, run_git_stdout,
+    sync_default_index_paths,
 };
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::{atomic_write, checked_child, open_confined};
@@ -142,11 +144,6 @@ pub fn is_protected_main_branch(branch: Option<&str>) -> bool {
         branch,
         Some("main" | "master" | "refs/heads/main" | "refs/heads/master")
     )
-}
-
-/// Create or idempotently recover a scoped plumbing commit.
-pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, StateError> {
-    create_scoped_commit_with_expected(req, None)
 }
 
 /// Create or idempotently recover a scoped plumbing commit while verifying the staged scoped subset matches `expected_scoped_tree`.
@@ -442,7 +439,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
             format!("failed writing archive '{norm_archive}': {err}"),
         )
     })?;
-    super::failpoint_hit("archive_after_write");
+    failpoint_hit("archive_after_write");
 
     if will_commit {
         let base_head = current_head_commit(&req.worktree)?;
@@ -476,7 +473,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
                 return Err(err);
             }
         };
-        super::failpoint_hit("archive_after_commit");
+        failpoint_hit("archive_after_commit");
         remove_confined_file(&req.worktree, &norm_spec)?;
         return Ok(ArchiveCommitResp {
             archive_path: norm_archive,
@@ -549,11 +546,11 @@ fn commit_temp_index(
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-    super::failpoint_hit("git_commit_after_update_ref");
+    failpoint_hit("git_commit_after_update_ref");
 
     let changed = diff_tree_paths(worktree, base_head.as_str(), new_head.as_str())?;
     sync_default_index_paths(worktree, new_head.as_str(), &changed)?;
-    super::failpoint_hit("git_commit_after_index_sync");
+    failpoint_hit("git_commit_after_index_sync");
     Ok(new_head)
 }
 
@@ -632,16 +629,4 @@ pub(crate) fn find_claim_commit_in_range(
         }
     }
     Ok(None)
-}
-
-fn format_message_with_trailer(message: &str, trailer: &str) -> String {
-    let trimmed = message.trim_end();
-    if trimmed.lines().any(|line| line.trim() == trailer) {
-        return format!("{trimmed}\n");
-    }
-    if trimmed.is_empty() {
-        format!("{trailer}\n")
-    } else {
-        format!("{trimmed}\n\n{trailer}\n")
-    }
 }

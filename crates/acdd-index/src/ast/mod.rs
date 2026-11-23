@@ -1,200 +1,23 @@
 pub(crate) mod fingerprints;
-pub mod visitor;
-pub use visitor::ScopeAnalysis;
+/// Low-level AST file extraction entrypoint.
+pub mod parse;
 pub mod relations;
 pub mod route_includes;
-pub mod routes;
+pub mod scope_analysis;
 pub mod search;
-use crate::languages::{self, FileContext, LanguageProfile, SyntaxContext};
-use crate::models::{
-    details::NodeDetailKey,
-    tags::{LanguageId, NodeKind},
-    *,
+pub mod syntax;
+pub mod visitor;
+pub(crate) use parse::{
+    clear_direct_module_markers, compact_node_details, extract_tree_with_language_context,
+    parse_file, parse_file_typed,
 };
+use crate::languages;
+use crate::models::{tags::{LanguageId, NodeKind}, *};
 use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
 pub use search::{
-    pattern_symbol_name, search, search_page, PatternErrorSpan, PatternSearchDiagnostic,
-    SearchPage, SEARCH_MATCH_HORIZON,
+    pattern_symbol_name, search, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON,
 };
-use serde::Deserialize;
-use serde_json::json;
-use std::collections::{HashMap, HashSet};
-use tree_sitter::{Node as Syntax, Parser};
-
-#[cfg(feature = "lang-typescript")]
-fn commonjs_default_callable(node: tree_sitter::Node<'_>, source: &str) -> bool {
-    crate::languages::typescript::commonjs_default_callable(node, source)
-}
-
-#[cfg(not(feature = "lang-typescript"))]
-fn commonjs_default_callable(_node: tree_sitter::Node<'_>, _source: &str) -> bool {
-    false
-}
-/// Performs parser.
-pub fn parser(language: &str, path: &str) -> Result<Parser> {
-    languages::require(language)?.create_parser(path)
-}
-/// Performs text.
-pub fn text<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
-    &source[node.byte_range()]
-}
-/// Extracts child field text by field name.
-pub fn field<'a>(node: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
-    node.child_by_field_name(name).map(|n| text(n, source))
-}
-pub(crate) fn strip_outer_parentheses(value: &str) -> &str {
-    let trimmed = value.trim();
-    if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        let mut depth = 0_usize;
-        let mut closed_at_end = false;
-        for (index, character) in trimmed.char_indices() {
-            match character {
-                '(' => depth += 1,
-                ')' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 && index == trimmed.len() - 1 {
-                        closed_at_end = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if closed_at_end {
-            trimmed[1..trimmed.len() - 1].trim()
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    }
-}
-fn qualified(module: &str, scopes: &[String], name: &str) -> String {
-    std::iter::once(module)
-        .chain(scopes.iter().map(String::as_str))
-        .chain(std::iter::once(name))
-        .collect::<Vec<_>>()
-        .join(".")
-}
-/// Extracts doc comments preceding the syntax node.
-pub fn doc_comment(node: Syntax<'_>, source: &str) -> String {
-    let mut anchor = node;
-    while let Some(parent) = anchor.parent() {
-        if matches!(
-            parent.kind(),
-            "export_statement"
-                | "variable_declarator"
-                | "lexical_declaration"
-                | "variable_declaration"
-                | "decorated_definition"
-        ) {
-            anchor = parent;
-        } else {
-            break;
-        }
-    }
-    let mut comments = Vec::new();
-    let mut previous = anchor.prev_named_sibling();
-    while let Some(n) = previous {
-        if !n.kind().contains("comment") {
-            break;
-        }
-        comments.push(text(n, source));
-        previous = n.prev_named_sibling();
-    }
-    comments.reverse();
-    comments.join("\n")
-}
-/// Represents scope bindings data.
-#[derive(Debug)]
-pub struct ScopeBindings {
-    /// The all value.
-    pub all: Vec<String>,
-    /// The rebindings value.
-    pub rebindings: Vec<String>,
-}
-/// Extracts scope bindings for a syntax node.
-pub fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
-    visitor::bindings(node, source)
-}
-
-fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
-    let mut c = node.walk();
-    let body_node = node.child_by_field_name("body").or_else(|| {
-        node.named_children(&mut c)
-            .find(|ch| matches!(ch.kind(), "message_body" | "enum_body"))
-    });
-    let end = body_node.map_or(node.end_byte(), |b| b.start_byte());
-    source[node.start_byte()..end]
-        .trim()
-        .trim_end_matches(';')
-        .trim()
-        .chars()
-        .take(512)
-        .collect()
-}
-fn declaration_signature_is_informative(node: Syntax<'_>, source: &str) -> bool {
-    if node.named_children(&mut node.walk()).any(|child| {
-        child.kind() == "visibility_modifier" && text(child, source).starts_with("pub(")
-    }) {
-        return true;
-    }
-    let parameters = node
-        .child_by_field_name("parameters")
-        .or_else(|| node.child_by_field_name("formal_parameters"));
-    let has_parameters = parameters.is_none_or(|parameters| parameters.named_child_count() > 0);
-    if has_parameters
-        || ["return_type", "type", "type_parameters", "type_arguments"]
-            .into_iter()
-            .any(|field| node.child_by_field_name(field).is_some())
-    {
-        return true;
-    }
-    let Some(body) = node.child_by_field_name("body") else {
-        return true;
-    };
-    if !matches!(
-        body.kind(),
-        "block" | "statement_block" | "function_body" | "compound_statement"
-    ) {
-        return true;
-    }
-    let mut cursor = body.walk();
-    let has_body = body.named_children(&mut cursor).any(|child| {
-        !child.kind().contains("comment")
-            && !matches!(child.kind(), "pass_statement" | "empty_statement")
-    });
-    has_body
-}
-fn declaration_signature_if_informative(node: Syntax<'_>, source: &str) -> Option<String> {
-    declaration_signature_is_informative(node, source).then(|| declaration_signature(node, source))
-}
-/// Produces a length-bounded string expression representation.
-pub fn bounded_expression(value: &str) -> String {
-    if value.len() <= 512 {
-        return value.into();
-    }
-    format!(
-        "{}… [sha256:{}]",
-        value.chars().take(256).collect::<String>(),
-        crate::db::commitments::hash(value.as_bytes())
-    )
-}
-/// Extracts symbol name from a syntax node.
-pub fn symbol_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
-    let inferred = node.parent().and_then(|p| {
-        if matches!(p.kind(), "variable_declarator" | "pair" | "assignment") {
-            field(p, source, "name")
-                .or_else(|| field(p, source, "left"))
-                .or_else(|| field(p, source, "key"))
-        } else {
-            None
-        }
-    });
-    field(node, source, "name")
-        .or_else(|| field(node, source, "type"))
-        .or(inferred)
-}
 
 /// Performs extract.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
@@ -220,57 +43,6 @@ fn is_trivial_source(source: &str, language: &str) -> bool {
             s.is_empty() || (s.starts_with("//") && !s.starts_with("///"))
         }),
         _ => false,
-    }
-}
-
-fn compact_node_details(facts: &mut Facts, path: &str) {
-    let mut declarations_per_line = HashMap::new();
-    for node in facts
-        .nodes
-        .iter()
-        .filter(|node| node.path == path && node.kind != NodeKind::Module.as_str())
-    {
-        *declarations_per_line.entry(node.line).or_insert(0usize) += 1;
-    }
-    for node in facts.nodes.iter_mut().filter(|node| node.path == path) {
-        let empty = if let Some(details) = node.details.as_object_mut() {
-            details.retain(|key, value| match key.as_str() {
-                "value_flow" => !value.is_null(),
-                "bindings" | "rebindings" => {
-                    !value.as_array().is_some_and(|values| values.is_empty())
-                }
-                k if k == NodeDetailKey::ASYNC
-                    || k == NodeDetailKey::DEFAULT_EXPORT
-                    || k == "is_method"
-                    || k == "is_public" =>
-                {
-                    value != &serde_json::Value::Bool(false)
-                }
-                "is_static" => value != &serde_json::Value::Bool(false),
-                _ => true,
-            });
-            let has_other_details = details.keys().any(|key| key != "column");
-            let keep_column = !matches!(
-                node.kind.as_str(),
-                k if k == NodeKind::Function.as_str() || k == NodeKind::Method.as_str()
-            ) || has_other_details
-                || details
-                    .get("column")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|column| column > 0)
-                || declarations_per_line
-                    .get(&node.line)
-                    .is_some_and(|count| *count > 1);
-            if !keep_column {
-                details.remove("column");
-            }
-            details.is_empty()
-        } else {
-            false
-        };
-        if empty && node.native_semantic.is_none() {
-            node.details = serde_json::Value::Null;
-        }
     }
 }
 
@@ -362,14 +134,6 @@ fn manifest_entrypoint_candidates(
     }
 }
 
-fn clear_direct_module_markers(facts: &mut Facts) {
-    for node in &mut facts.nodes {
-        if let Some(details) = node.details.as_object_mut() {
-            details.remove("entrypoint_direct_module");
-        }
-    }
-}
-
 /// Extracts typed facts using a language dependency registry.
 pub fn extract_typed_with_registry(
     path: &str,
@@ -409,14 +173,14 @@ pub fn extract_typed_with_registry(
     };
     if is_trivial_source(source, language) {
         profile.finish(&mut typed.facts);
-        languages::semantic::file_providers(&mut typed.facts, &language_context);
+        languages::file_providers(&mut typed.facts, &language_context);
         typed.facts.semantic.mark_complete();
         compact_node_details(&mut typed.facts, path);
         return Ok(typed);
     }
     match language {
         "python" | "rust" | "typescript" | "javascript" => {
-            languages::parse_file_typed(
+            parse_file_typed(
                 profile,
                 path,
                 source,
@@ -433,13 +197,19 @@ pub fn extract_typed_with_registry(
             &module,
             &mut typed,
             &language_context,
+            extract_tree_with_language_context,
         )?,
         #[cfg(feature = "lang-vue")]
-        "vue" => {
-            languages::vue::extract_typed(path, source, &module, &mut typed, &language_context)?
-        }
+        "vue" => languages::vue::extract_typed(
+            path,
+            source,
+            &module,
+            &mut typed,
+            &language_context,
+            extract_tree_with_language_context,
+        )?,
         _ => {
-            profile.extract_file(path, source, &module, &mut typed.facts)?;
+            parse_file(profile, path, source, &module, &mut typed.facts)?;
             profile.finish(&mut typed.facts);
             for (index, node) in typed.facts.nodes.iter_mut().enumerate() {
                 typed.flows.ingest(node);
@@ -448,7 +218,7 @@ pub fn extract_typed_with_registry(
         }
     }
     manifest_entrypoint_candidates(path, language, registry, &mut typed.facts);
-    languages::semantic::file_providers(&mut typed.facts, &language_context);
+    languages::file_providers(&mut typed.facts, &language_context);
     // Only generated declarations retain a parser-owned JSON flow projection.
     // Body scopes publish directly into their canonical native store.
     for index in std::mem::take(&mut typed.facts.pending_flow_nodes) {
@@ -469,95 +239,332 @@ pub fn extract_typed_with_registry(
     Ok(typed)
 }
 
-pub(crate) fn extract_tree(
-    profile: &dyn LanguageProfile,
-    root: Syntax<'_>,
-    path: &str,
-    source: &str,
-    module: &str,
-    facts: &mut Facts,
-) {
-    let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
-    let language_context = registry.language_context_for_path(path);
-    extract_tree_with_language_context(
-        TreeExtractContext {
-            profile,
-            root,
-            path,
-            source,
-            module,
-            owner: &format!("module:{path}"),
-            language_context: &language_context,
-        },
-        facts,
-        None,
-    );
-    if profile.id() == "python" {
-        clear_direct_module_markers(facts);
+#[cfg(test)]
+mod tests {
+    use crate::languages::LanguageProfile;
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn persistence_type_only_imports_populate_module_ast_facts() {
+        let source = "from typing import TYPE_CHECKING\n\nclass PersistenceMixin:\n    if TYPE_CHECKING:\n        from contextunity.router.service.payloads import GraphEntry\n";
+        let ast_facts = super::extract("persistence.py", "python", source).unwrap();
+        let ast_facts = serde_json::to_value(&ast_facts).unwrap();
+        let module = ast_facts["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == "module:persistence.py")
+            .unwrap();
+        let type_only = &module["details"]["value_flow"]["type_only_imports"];
+        assert_eq!(type_only[0]["alias"], "GraphEntry");
     }
-    facts.semantic.mark_complete();
-    compact_node_details(facts, path);
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn test_ast_parameterless_declaration() {
+        let capabilities = crate::languages::rust::RUST.ast_search_capabilities();
+        assert!(capabilities.declaration_kinds.contains(&"function_item"));
+        let matches = super::search(
+            "fn target() { call(value); }\nfn other() {}",
+            "lib.rs",
+            "rust",
+            "fn target",
+            10,
+        )
+        .expect("a Rust function header without parameters is searchable");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["text"], "fn target() { call(value); }");
+    }
+
+    #[cfg(feature = "lang-html")]
+    #[test]
+    fn django_url_tag_emits_named_route_reference() {
+        let facts = super::extract("templates/products.html", "html", "{% url 'product-list' %}")
+            .unwrap();
+
+        assert!(facts.references.iter().any(|reference| {
+            reference.kind == "references_route"
+                && reference.expression == "django.route_name.product-list"
+        }));
+    }
 }
 
-pub(crate) fn parse_island(
-    parser: &mut tree_sitter::Parser,
-    input: &str,
-    offset: usize,
-    position: tree_sitter::Point,
-) -> Option<tree_sitter::Tree> {
-    let mut padded = String::with_capacity(input.len() + 1);
-    padded.push('\n');
-    padded.push_str(input);
-    let mut tree = parser.parse(&padded, None)?;
-    // A virtual prefix keeps parent traversal in the same coordinate system.
-    tree.edit(&tree_sitter::InputEdit {
-        start_byte: 0,
-        old_end_byte: 1,
-        new_end_byte: offset,
-        start_position: tree_sitter::Point::new(0, 0),
-        old_end_position: tree_sitter::Point::new(1, 0),
-        new_end_position: position,
-    });
-    Some(tree)
-}
-
-pub(crate) struct TreeExtractContext<'a, 'tree> {
-    pub(crate) profile: &'a dyn LanguageProfile,
-    pub(crate) root: Syntax<'tree>,
-    pub(crate) path: &'a str,
-    pub(crate) source: &'a str,
-    pub(crate) module: &'a str,
-    pub(crate) owner: &'a str,
-    pub(crate) language_context: &'a std::sync::Arc<languages::LanguageContext>,
-}
-
-pub(crate) fn extract_tree_with_language_context(
-    ctx: TreeExtractContext<'_, '_>,
-    facts: &mut Facts,
-    flows: Option<&mut FlowStore>,
-) -> ScopeBindings {
-    let rule_ir = ctx.language_context.bind_rule_ir(&ctx.root.language());
-    let route_context = if ctx.profile.route_extraction_enabled() {
-        routes::RouteContext::prepare(ctx.root, ctx.source, ctx.language_context)
-    } else {
-        routes::RouteContext::default()
+#[cfg(all(test, feature = "lang-python"))]
+mod legacy_hook_tests {
+    use super::visitor::SinglePassExtractor;
+    use crate::{
+        ast::syntax::ScopeBindings,
+        languages::{self, context::FileContext, routes, LanguageProfile, SyntaxContext},
+        models::Facts,
+        semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
+        typed_facts::TypedFacts,
     };
-    let bindings = visitor::SinglePassExtractor {
-        source: ctx.source,
-        path: ctx.path,
-        profile: ctx.profile,
-        language_context: ctx.language_context,
-        rule_ir,
-        route_context,
-        file: ctx
-            .profile
-            .prepare_with_context(ctx.root, ctx.source, ctx.language_context),
-        module: ctx.module,
-        offset: 0,
-        symbols: HashMap::new(),
-        ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
-        flows,
+    use anyhow::Result;
+    use std::collections::HashMap;
+    use tree_sitter::Node as Syntax;
+
+    struct Legacy;
+    impl LanguageProfile for Legacy {
+        fn id(&self) -> &'static str {
+            "legacy-typed"
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["py"]
+        }
+        fn grammar(&self, path: &str) -> tree_sitter::Language {
+            languages::require("python").unwrap().grammar(path)
+        }
+        fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
+            (kind == "function_definition").then_some("function")
+        }
+        fn node_prefix(&self, _: &str) -> &'static str {
+            "legacy"
+        }
+        fn normalize_import(&self, _: &str, _: &str) -> Option<languages::ImportPath> {
+            None
+        }
+        fn prepare(&self, root: Syntax<'_>, _: &str) -> FileContext {
+            FileContext {
+                root_bindings: Some((
+                    root.id(),
+                    ScopeBindings {
+                        all: vec!["prepared".into()],
+                        rebindings: vec!["rebound".into()],
+                    },
+                )),
+                ..Default::default()
+            }
+        }
+        fn declaration(
+            &self,
+            _: Syntax<'_>,
+            _: &str,
+            _: &str,
+            _: &FileContext,
+        ) -> (languages::SymbolMetadata, ValueFlowFacts) {
+            (
+                languages::SymbolMetadata {
+                    is_static: Some(true),
+                    return_type: Some(TypeExpr::Named {
+                        name: "MetadataReturn".into(),
+                    }),
+                    ..Default::default()
+                },
+                {
+                    ValueFlowFacts {
+                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
+                            alias_type: Some(TypeExpr::Named {
+                                name: "Alias".into(),
+                            }),
+                            ..Default::default()
+                        })),
+                        bindings: vec![BindingFact {
+                            name: "local".into(),
+                            position: SourcePosition { line: 2, column: 4 },
+                            value: ValueExpr::Alias {
+                                name: "argument".into(),
+                            },
+                            conditional: false,
+                        }],
+                        ..Default::default()
+                    }
+                },
+            )
+        }
+        fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
+            super::parse_file(self, path, source, module, facts)
+        }
     }
-    .visit(ctx.root, &mut Vec::new(), ctx.owner, facts);
-    bindings
+
+    struct Incremental(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl LanguageProfile for Incremental {
+        fn id(&self) -> &'static str {
+            "scope-order"
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["py"]
+        }
+        fn grammar(&self, path: &str) -> tree_sitter::Language {
+            Legacy.grammar(path)
+        }
+        fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
+            Legacy.symbol_kind(kind)
+        }
+        fn node_prefix(&self, _: &str) -> &'static str {
+            "scope-order"
+        }
+        fn normalize_import(&self, _: &str, _: &str) -> Option<languages::ImportPath> {
+            None
+        }
+        fn scope_analysis<'source, 'tree>(
+            &self,
+            node: Syntax<'tree>,
+            source: &'source str,
+            file: &FileContext,
+        ) -> Option<super::scope_analysis::ScopeAnalysis<'source, 'tree>> {
+            let inner = languages::require("python")
+                .unwrap()
+                .scope_analysis(node, source, file)?;
+            if node.kind() != "function_definition" {
+                return Some(inner);
+            }
+            let name = node
+                .child_by_field_name("name")
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap()
+                .to_owned();
+            let trace = self.0.clone();
+            Some(inner.with_finish_hook(move || {
+                trace.lock().unwrap().push(format!("flow:{name}"));
+            }))
+        }
+        fn value_flow(&self, _: Syntax<'_>, _: &str) -> ValueFlowFacts {
+            panic!("incremental profile requested legacy body summary")
+        }
+        fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, _: &mut Facts) {
+            if ctx.node.kind() == "call" {
+                self.0.lock().unwrap().push(format!(
+                    "call:{}",
+                    ctx.node.utf8_text(ctx.source.as_bytes()).unwrap()
+                ));
+            }
+        }
+        fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
+            super::parse_file(self, path, source, module, facts)
+        }
+    }
+
+    #[test]
+    fn incremental_analysis_finishes_after_its_descendants() {
+        let trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut facts = Facts::default();
+        super::parse_file(
+            &Incremental(trace.clone()),
+            "probe.py",
+            "def outer():\n    first()\n    def inner():\n        nested()\n    last()\n",
+            "probe",
+            &mut facts,
+        )
+        .unwrap();
+        assert!(facts.errors.is_empty());
+        assert_eq!(
+            *trace.lock().unwrap(),
+            [
+                "call:first()",
+                "call:nested()",
+                "flow:inner",
+                "call:last()",
+                "flow:outer"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_hooks_preserve_typed_flow_and_offset_composition() {
+        let path = "typed.py";
+        let source = "def sample(argument):\n    local = argument\n    return local\n";
+        let mut failures = Vec::new();
+        for offset in [0, 7] {
+            let mut typed =
+                TypedFacts::from_public(super::extract(path, "python", "").unwrap());
+            if offset == 0 {
+                super::parse_file_typed(
+                    &Legacy,
+                    path,
+                    source,
+                    "typed",
+                    &mut typed,
+                    &std::sync::Arc::new(languages::LanguageContext::default()),
+                )
+                .unwrap();
+            } else {
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(&Legacy.grammar(path)).unwrap();
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                let language_context = languages::LanguageContext::default();
+                let rule_ir = language_context.bind_rule_ir(&root.language());
+                let summary = SinglePassExtractor {
+                    source,
+                    path,
+                    profile: &Legacy,
+                    language_context: &language_context,
+                    rule_ir,
+                    route_context: routes::RouteContext::build(root, source, &language_context),
+                    file: Legacy.prepare(root, source),
+                    module: "typed",
+                    offset,
+                    symbols: HashMap::new(),
+                    ids: typed.facts.nodes.iter().map(|n| n.id.clone()).collect(),
+                    flows: Some(&mut typed.flows),
+                }
+                .visit(
+                    root,
+                    &mut Vec::new(),
+                    &format!("module:{path}"),
+                    &mut typed.facts,
+                );
+                if summary.all != ["prepared"] || summary.rebindings != ["rebound"] {
+                    failures.push(format!("offset={offset}: exact-root returned summary"));
+                }
+            }
+            let symbol = typed
+                .facts
+                .nodes
+                .iter()
+                .find(|n| n.name == "sample")
+                .unwrap();
+            if symbol.details["is_static"] != true || symbol.line != offset + 1 {
+                failures.push(format!("offset={offset}: metadata and owner position"));
+            }
+            let flow = typed
+                .flows
+                .get(symbol)
+                .expect("actual typed FlowStore entry");
+            if flow.return_type
+                != Some(TypeExpr::Named {
+                    name: "MetadataReturn".into(),
+                })
+                || flow.alias_type
+                    != Some(TypeExpr::Named {
+                        name: "Alias".into(),
+                    })
+                || flow.bindings[0].position.line != offset + 2
+            {
+                failures.push(format!("offset={offset}: typed flow/return/offset"));
+            }
+            if !symbol.details["value_flow"].is_null() {
+                failures.push(format!("offset={offset}: typed composition must own flow"));
+            }
+            let module = typed
+                .facts
+                .nodes
+                .iter()
+                .find(|n| n.kind == "module")
+                .unwrap();
+            if module.binding_names().collect::<Vec<_>>() != ["prepared"]
+                || module.rebinding_names().collect::<Vec<_>>() != ["rebound"]
+            {
+                failures.push(format!("offset={offset}: typed root summary publication"));
+            }
+            let public = serde_json::to_value(&typed).unwrap();
+            let symbol = public["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["name"] == "sample")
+                .unwrap();
+            let decoded: ValueFlowFacts =
+                serde_json::from_value(symbol["details"]["value_flow"].clone()).unwrap();
+            if decoded.return_type
+                != Some(TypeExpr::Named {
+                    name: "MetadataReturn".into(),
+                })
+                || decoded.bindings[0].position.line != offset + 2
+            {
+                failures.push(format!("offset={offset}: public serialized typed flow"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 }

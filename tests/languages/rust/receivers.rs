@@ -255,7 +255,7 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
             .any(|r| r.expression.ends_with(".join") && !r.dynamic),
         "expected slice[..k].join with dynamic: false: {facts:#?}"
     );
-    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+    let graph = crate::common::link_facts(&std::collections::BTreeMap::from([(
         "src/ac1_ac2.rs".to_owned(),
         facts,
     )]));

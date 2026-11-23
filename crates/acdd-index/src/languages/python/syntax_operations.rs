@@ -1,8 +1,13 @@
+use super::common::module_scope;
+use super::lexical::lexical_binding_owner;
+use super::template_loaders::BindingWrites;
+use crate::ast::syntax::{field, text};
+use crate::languages::context::LanguageContext;
+use crate::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
+use crate::languages::routes::RouteContext;
+use crate::languages::types::SyntaxContext;
 use crate::models::Facts;
 use crate::semantic::{SourcePosition, TemplateContextFact};
-use crate::ast::{field, text};
-use crate::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
-use crate::languages::LanguageContext;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -264,7 +269,7 @@ pub(super) fn has_class_registration_import() -> bool {
 
 pub(super) fn extract_class_method_registrations(
     facts: &mut Facts,
-    lexical: &crate::ast::routes::RouteContext,
+    lexical: &RouteContext,
 ) {
     PREPARED_SYNTAX_CONTEXT.with(|context| {
         let context = context.borrow();
@@ -410,7 +415,7 @@ struct ReceiverRegistrations<'tree> {
 }
 
 struct ReceiverModuleProof {
-    binding_counts: super::template_loaders::BindingWrites,
+    binding_counts: BindingWrites,
     router_initializers: HashMap<String, (usize, usize, String)>,
 }
 
@@ -673,7 +678,7 @@ pub(super) fn lexical_import_owner<'a>(
     source: &str,
     alias: &str,
 ) -> Option<Node<'a>> {
-    super::lexical_binding_owner(node, source, alias).filter(|scope| scope.kind() == "module")
+    lexical_binding_owner(node, source, alias).filter(|scope| scope.kind() == "module")
 }
 
 pub(super) fn extract(node: Node<'_>, source: &str) -> Option<TemplateContextFact> {
@@ -969,7 +974,7 @@ fn static_symbol(node: Node<'_>, source: &str) -> Option<String> {
     }
 }
 
-pub(super) fn record_model_factory(ctx: &super::super::SyntaxContext<'_, '_>) {
+pub(super) fn record_model_factory(ctx: &SyntaxContext<'_, '_>) {
     let Some(parent) = ctx
         .node
         .parent()
@@ -1008,9 +1013,9 @@ pub(super) fn record_model_factory(ctx: &super::super::SyntaxContext<'_, '_>) {
 }
 
 pub(super) fn record_model_attribute(
-    ctx: &super::super::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     symbols: &HashMap<usize, String>,
-    context: &super::super::LanguageContext,
+    context: &LanguageContext,
 ) {
     let Some(left) = ctx
         .node
@@ -1080,7 +1085,7 @@ pub(super) fn extract_class_attribute(
     owner: &str,
     offset: usize,
     facts: &mut Facts,
-    context: &super::super::LanguageContext,
+    context: &LanguageContext,
 ) {
     if !matches!(node.kind(), "assignment" | "annotated_assignment") {
         return;
@@ -1148,10 +1153,10 @@ pub(super) fn extract_class_attribute(
 }
 
 pub(super) fn extract_default_table(
-    ctx: &super::super::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    context: &super::super::LanguageContext,
-    lexical: &crate::ast::routes::RouteContext,
+    context: &LanguageContext,
+    lexical: &RouteContext,
 ) {
     let Some(bases) = ctx.node.child_by_field_name("superclasses") else {
         return;
@@ -1276,7 +1281,7 @@ fn resolve_model_base(
     root: usize,
     path: &str,
     index: &mut ModelIndex,
-    lexical: &crate::ast::routes::RouteContext,
+    lexical: &RouteContext,
     visiting: &mut HashSet<String>,
 ) -> Vec<String> {
     if visiting.len() >= 16 {
@@ -1411,7 +1416,7 @@ pub(super) fn is_receiver_registration(
     let Some(handler_argument) = handler_argument else {
         return false;
     };
-    if !super::module_scope(node) {
+    if !module_scope(node) {
         return false;
     }
     let Some(handler) =
@@ -1429,15 +1434,60 @@ pub(super) fn is_receiver_registration(
 }
 
 #[cfg(test)]
+fn test_python_context() -> Arc<LanguageContext> {
+    let mut context = LanguageContext::default();
+    context.syntax_rules = vec![
+            SyntaxRule {
+                pack: "django".into(),
+                id: "django.named_route.reverse".into(),
+                language: "python".into(),
+                package_family: None,
+                activation: Vec::new(),
+                display: Default::default(),
+                operation: SyntaxOperation::NamedRouteCall {
+                    module: "django.urls".into(),
+                    export: "reverse".into(),
+                    argument: 0,
+                    expression_prefix: "django.route_name.".into(),
+                },
+            },
+            SyntaxRule {
+                pack: "drf".into(),
+                id: "drf.router.register".into(),
+                language: "python".into(),
+                package_family: None,
+                activation: Vec::new(),
+                display: Default::default(),
+                operation: SyntaxOperation::ReceiverRegistration {
+                    module: "rest_framework.routers".into(),
+                    constructors: vec!["DefaultRouter".into()],
+                    member: "register".into(),
+                    path_argument: 0,
+                    handler_argument: 1,
+                    name_keyword: "basename".into(),
+                },
+            },
+        ];
+    context.prepare_named_member_rules();
+    Arc::new(context)
+}
+
+#[cfg(test)]
+fn parse_prepared_python(source: &str) -> tree_sitter::Tree {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&super::common::language()).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    prepare_file(tree.root_node(), source, &test_python_context());
+    tree
+}
+
+#[cfg(test)]
 #[test]
 fn reverse_call_candidate_rejects_unrelated_identifier_calls() {
     let source =
         "len(items)\nprint(items)\nreverse('home')\nurls.reverse('home')\nlogger.info(items)\n";
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&super::language()).unwrap();
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parse_prepared_python(source);
     let root = tree.root_node();
-    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let mut cursor = root.walk();
     let calls = root
         .named_children(&mut cursor)
@@ -1467,11 +1517,8 @@ fn reverse_call_candidate_rejects_unrelated_identifier_calls() {
 #[test]
 fn imported_reverse_alias_remains_a_candidate() {
     let source = "from django.urls import reverse as route_reverse\nroute_reverse('home')\n";
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&super::language()).unwrap();
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parse_prepared_python(source);
     let root = tree.root_node();
-    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let call = root.named_child(1).unwrap().named_child(0).unwrap();
     let mut facts = crate::models::Facts::default();
 
@@ -1486,11 +1533,8 @@ fn imported_reverse_alias_remains_a_candidate() {
 #[test]
 fn receiver_registration_conflicts_are_prepared_once_per_module_scope() {
     let source = "from rest_framework.routers import DefaultRouter\nrouter = DefaultRouter()\nrouter.register('duplicate', First, basename='first')\nrouter.register('duplicate', Second, basename='second')\nrouter.register('unique', Third, basename='third')\ndef nested():\n    router.register('duplicate', Nested, basename='nested')\n";
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&super::language()).unwrap();
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parse_prepared_python(source);
     let root = tree.root_node();
-    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let binding_counts = super::template_loaders::binding_counts(root, source);
     for name in ["DefaultRouter", "router", "First", "Nested", "missing"] {
         assert_eq!(

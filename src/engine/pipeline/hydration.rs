@@ -1,4 +1,17 @@
-use super::*;
+use super::shared::{
+    extract_typed_source_with_digest, hash_source_bytes, open_and_read_verified_source,
+    sanitize_extracted_facts, SourceSnapshotMismatch,
+};
+use acdd_core::config::Adapter;
+use acdd_index::{
+    db::writer::cache::{self as extraction_cache, ExtractionCache},
+    languages::dependency_registry::DependencyRegistry,
+    models::FileEntry,
+    typed_facts::TypedFacts,
+    INDEX_SEMANTICS_VERSION,
+};
+use anyhow::Result;
+use std::path::Path;
 
 pub(super) fn extraction_cache_key_and_limit(
     digest: &str,
@@ -39,31 +52,15 @@ pub(super) fn extract_typed_with_cache(
     effective_ruleset_hash: &str,
     source: &mut String,
 ) -> Result<TypedFacts> {
-    let path = resolve_file_path(root, adapter, &file.path)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut source_file = options.open(&path)?;
-    let source_capacity =
-        usize::try_from(file.bytes).context("source size exceeds addressable memory")?;
-    source.clear();
-    source.try_reserve_exact(source_capacity)?;
-    source_file
-        .by_ref()
-        .take(adapter.limits.max_file_bytes.saturating_add(1))
-        .read_to_string(source)?;
-    if source.len() as u64 > adapter.limits.max_file_bytes {
-        return Err(SourceSnapshotMismatch(format!(
-            "source changed during extraction: {}",
-            file.path
-        ))
-        .into());
-    }
-    let source_digest = commitments::hash(source.as_bytes());
+    let _source_file = open_and_read_verified_source(
+        root,
+        adapter,
+        &file.path,
+        file.bytes,
+        None,
+        source,
+    )?;
+    let source_digest = hash_source_bytes(source);
     if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(
             "source changed during extraction: {}",

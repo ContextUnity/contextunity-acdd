@@ -1,3 +1,4 @@
+pub(crate) mod profile_linker;
 pub(crate) mod receivers;
 pub(super) mod resolution;
 pub(super) mod semantic_context;

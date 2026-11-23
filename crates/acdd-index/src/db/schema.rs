@@ -1,8 +1,5 @@
 //! SQLite index database storage, schema management, and query helpers.
 
-use anyhow::Result;
-use rusqlite::Connection;
-
 /// Canonical SQLite schema for a ACDD index generation.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS metadata (
@@ -206,7 +203,8 @@ CREATE INDEX IF NOT EXISTS idx_shared_keys_node ON shared_keys(key) WHERE typeof
 "#;
 
 /// Initializes SQLite schema tables for code map nodes, edges, and coverage.
-pub fn initialize_code_map_schema(conn: &Connection) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn initialize_code_map_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(SCHEMA_DDL)?;
     Ok(())
 }

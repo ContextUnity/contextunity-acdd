@@ -189,9 +189,7 @@ fn reject_parent_dir_components(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Prepares a symlink-confined path for `SQLITE_OPEN_NOFOLLOW`, rejecting symlink
-/// targets and symlinked ancestor directories (`ADR-0002`).
-pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<PathBuf> {
+fn resolve_confined_abs(path: &Path) -> Result<PathBuf> {
     reject_parent_dir_components(path)?;
     let absolute = if path.is_absolute() {
         normalize_path(path)
@@ -199,6 +197,13 @@ pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<Pat
         normalize_path(&std::env::current_dir()?.join(path))
     };
     check_ancestors_no_symlinks_abs(&absolute)?;
+    Ok(absolute)
+}
+
+/// Prepares a symlink-confined path for `SQLITE_OPEN_NOFOLLOW`, rejecting symlink
+/// targets and symlinked ancestor directories (`ADR-0002`).
+fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<PathBuf> {
+    let absolute = resolve_confined_abs(path)?;
     match fs::symlink_metadata(&absolute) {
         Ok(meta) if meta.file_type().is_symlink() => bail!("database must not be a symlink"),
         Ok(_) => {}
@@ -261,13 +266,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
 
 /// Atomically replace a file with the supplied contents.
 pub fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
-    reject_parent_dir_components(path)?;
-    let absolute = if path.is_absolute() {
-        normalize_path(path)
-    } else {
-        normalize_path(&std::env::current_dir()?.join(path))
-    };
-    check_ancestors_no_symlinks_abs(&absolute)?;
+    let absolute = resolve_confined_abs(path)?;
     ensure_target_not_symlink(&absolute)?;
     let name = absolute
         .file_name()
@@ -772,6 +771,327 @@ impl Drop for ScopedTempDir {
     }
 }
 
+fn live_executable_path(exe: PathBuf) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        if let Some(stripped) = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+            return PathBuf::from(std::ffi::OsString::from_vec(stripped.to_vec()));
+        }
+    }
+    exe
+}
+
+/// Outcome of verifying a long-lived process against the current executable on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutableDrift {
+    /// On-disk binary still matches startup executable bytes/identity.
+    Current,
+    /// On-disk binary was replaced with different contents at `live_path`.
+    Replaced { live_path: PathBuf },
+    /// On-disk executable path no longer exists at `live_path`.
+    Missing { live_path: PathBuf },
+}
+
+/// Startup identity snapshot of a running binary used to detect in-place upgrades or unlinks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutableIdentity {
+    /// Live path captured at startup (normalized without Linux ` (deleted)` suffix).
+    pub path: PathBuf,
+    /// SHA-256 digest of the executable bytes at startup.
+    pub digest: [u8; 32],
+    /// File length at startup.
+    pub len: u64,
+}
+
+fn canonicalize_parent_preserving_leaf(path: &Path) -> PathBuf {
+    let norm = normalize_path(path);
+    let Some(file_name) = norm.file_name() else {
+        return norm;
+    };
+    match norm.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => match fs::canonicalize(parent) {
+            Ok(canon_parent) => canon_parent.join(file_name),
+            Err(_) => norm,
+        },
+        None => norm,
+    }
+}
+
+fn same_target_file_identity(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(ma), Ok(mb)) = (fs::metadata(a), fs::metadata(b)) else {
+            return false;
+        };
+        ma.dev() == mb.dev() && ma.ino() == mb.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        (meta.permissions().mode() & 0o111) != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn hash_file_identity(path: &Path) -> std::io::Result<(u64, [u8; 32])> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let digest = crate::format::sha256_reader(&mut file)?;
+    Ok((len, digest))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_running_vnode_stat() -> std::io::Result<libc::vinfo_stat> {
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct ProcRegionInfo {
+        pri_protection: u32,
+        pri_max_protection: u32,
+        pri_inheritance: u32,
+        pri_flags: u32,
+        pri_offset: u64,
+        pri_behavior: u32,
+        pri_user_wired_count: u32,
+        pri_user_tag: u32,
+        pri_pages_resident: u32,
+        pri_pages_shared_now_private: u32,
+        pri_pages_swapped_out: u32,
+        pri_pages_dirtied: u32,
+        pri_ref_count: u32,
+        pri_shadow_depth: u32,
+        pri_share_mode: u32,
+        pri_private_pages_resident: u32,
+        pri_shared_pages_resident: u32,
+        pri_obj_id: u32,
+        pri_depth: u32,
+        pri_address: u64,
+        pri_size: u64,
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct ProcRegionWithPathInfo {
+        prp_prinfo: ProcRegionInfo,
+        prp_vip: libc::vnode_info_path,
+    }
+    const PROC_PIDREGIONPATHINFO: libc::c_int = 8;
+    extern "C" {
+        fn _dyld_get_image_header(image_index: u32) -> *const libc::c_void;
+    }
+
+    let mut info = std::mem::MaybeUninit::<ProcRegionWithPathInfo>::zeroed();
+    let expected = std::mem::size_of::<ProcRegionWithPathInfo>() as libc::c_int;
+    // SAFETY: `_dyld_get_image_header(0)` returns the main executable Mach-O header pointer mapped in-process,
+    // and `proc_pidinfo` writes at most `expected` bytes into `info`.
+    let written = unsafe {
+        let header = _dyld_get_image_header(0);
+        if header.is_null() {
+            return Err(path_error("missing dyld main executable image header"));
+        }
+        libc::proc_pidinfo(
+            libc::getpid(),
+            PROC_PIDREGIONPATHINFO,
+            header as u64,
+            info.as_mut_ptr().cast::<libc::c_void>(),
+            expected,
+        )
+    };
+    if written != expected {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `proc_pidinfo` populated the full `ProcRegionWithPathInfo` struct.
+    Ok(unsafe { info.assume_init() }.prp_vip.vip_vi.vi_stat)
+}
+
+fn resolve_bound_installed_path(
+    reported_exe: &Path,
+    running_image_path: &Path,
+    arg0: Option<&std::ffi::OsStr>,
+    current_dir: Option<&Path>,
+    path_env: Option<&std::ffi::OsStr>,
+) -> std::io::Result<PathBuf> {
+    let exe_live_raw = live_executable_path(reported_exe.to_path_buf());
+    let exe_live = canonicalize_parent_preserving_leaf(&exe_live_raw);
+    let Some(arg0) = arg0.filter(|s| !s.is_empty()) else {
+        return Err(path_error(
+            "cannot bind installed executable path: empty argv[0]",
+        ));
+    };
+    let arg0_path = Path::new(arg0);
+    let has_separator = arg0_path.components().count() > 1
+        || arg0_path.is_absolute()
+        || arg0.to_string_lossy().contains('/')
+        || arg0.to_string_lossy().contains('\\');
+    let candidate = if has_separator {
+        if arg0_path.is_absolute() {
+            canonicalize_parent_preserving_leaf(arg0_path)
+        } else {
+            let cwd = current_dir.ok_or_else(|| {
+                path_error("cannot resolve relative launch executable without current directory")
+            })?;
+            canonicalize_parent_preserving_leaf(&cwd.join(arg0_path))
+        }
+    } else if let Some(paths) = path_env {
+        if let Some(found) = std::env::split_paths(paths)
+            .filter_map(|dir| {
+                if dir.as_os_str().is_empty() || dir.is_relative() {
+                    current_dir.map(|cwd| cwd.join(&dir).join(arg0_path))
+                } else {
+                    Some(dir.join(arg0_path))
+                }
+            })
+            .find(|entry| is_executable_file(entry))
+        {
+            canonicalize_parent_preserving_leaf(&found)
+        } else if reported_exe != exe_live_raw && exe_live.file_name() == Some(arg0) {
+            exe_live.clone()
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("launch executable '{}' not found in PATH", arg0_path.display()),
+            ));
+        }
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("launch executable '{}' cannot resolve without PATH", arg0_path.display()),
+        ));
+    };
+
+    if candidate == exe_live
+        || fs::canonicalize(&candidate)
+            .ok()
+            .map(|p| canonicalize_parent_preserving_leaf(&p))
+            .as_ref()
+            == Some(&exe_live)
+        || same_target_file_identity(&candidate, running_image_path)
+    {
+        Ok(candidate)
+    } else {
+        Err(path_error(format!(
+            "launch path '{}' does not match running executable '{}'",
+            candidate.display(),
+            exe_live.display()
+        )))
+    }
+}
+
+impl ExecutableIdentity {
+    /// Captures running image bytes from `running_path` while recording `installed_path` for drift checks and re-exec.
+    fn capture_running_and_live(running_path: &Path, installed_path: &Path) -> std::io::Result<Self> {
+        let live = live_executable_path(installed_path.to_path_buf());
+        let (len, digest) = hash_file_identity(running_path)?;
+        Ok(Self {
+            path: live,
+            digest,
+            len,
+        })
+    }
+
+    /// Captures the running executable identity separately from the bound installed launch path, failing closed if unreadable or unbound.
+    pub fn current() -> std::io::Result<Self> {
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "cannot independently verify running executable image on this platform",
+            ));
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let exe = std::env::current_exe()?;
+            #[cfg(target_os = "linux")]
+            let running_image_path = Path::new("/proc/self/exe");
+            #[cfg(target_os = "macos")]
+            let running_image_path = exe.as_path();
+
+            let arg0 = std::env::args_os().next();
+            let cwd = std::env::current_dir().ok();
+            let path_env = std::env::var_os("PATH");
+            let installed = resolve_bound_installed_path(
+                &exe,
+                running_image_path,
+                arg0.as_deref(),
+                cwd.as_deref(),
+                path_env.as_deref(),
+            )?;
+            #[cfg(target_os = "macos")]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let running_stat = macos_running_vnode_stat()?;
+                let disk_before = fs::metadata(&installed)?;
+                if disk_before.dev() != u64::from(running_stat.vst_dev)
+                    || disk_before.ino() != running_stat.vst_ino
+                    || disk_before.len() != running_stat.vst_size as u64
+                {
+                    return Err(path_error(format!(
+                        "running image vnode does not match installed path '{}'",
+                        installed.display()
+                    )));
+                }
+                let captured = Self::capture_running_and_live(&installed, &installed)?;
+                let disk_after = fs::metadata(&installed)?;
+                if disk_after.dev() != u64::from(running_stat.vst_dev)
+                    || disk_after.ino() != running_stat.vst_ino
+                    || disk_after.len() != running_stat.vst_size as u64
+                {
+                    return Err(path_error(format!(
+                        "installed path '{}' changed during startup identity capture",
+                        installed.display()
+                    )));
+                }
+                Ok(captured)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                Self::capture_running_and_live(running_image_path, &installed)
+            }
+        }
+    }
+
+    /// Verifies whether `observed_exe` (or `self.path`) still matches this startup identity.
+    pub fn check_current(&self, observed_exe: Option<&Path>) -> std::io::Result<ExecutableDrift> {
+        let live_path = observed_exe
+            .map(|p| live_executable_path(p.to_path_buf()))
+            .unwrap_or_else(|| self.path.clone());
+        let mut file = match fs::File::open(&live_path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ExecutableDrift::Missing { live_path });
+            }
+            Err(err) => return Err(err),
+        };
+        let meta = file.metadata()?;
+        if meta.len() != self.len {
+            return Ok(ExecutableDrift::Replaced { live_path });
+        }
+        let digest = crate::format::sha256_reader(&mut file)?;
+        if digest == self.digest {
+            Ok(ExecutableDrift::Current)
+        } else {
+            Ok(ExecutableDrift::Replaced { live_path })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,5 +1267,98 @@ mod tests {
 
         let other_absent = alias_root.join(".acdd/code-map.sqlite");
         assert!(!same_filesystem_path(&absent_real, &other_absent));
+    }
+
+    #[test]
+    fn executable_identity_detects_replacement_missing_and_bound_launch_paths() {
+        let dir = ScopedTempDir::create("acdd_bin_id").unwrap();
+        let bin = dir.write_private_file("acdd-bin", b"version-1").unwrap();
+        let captured = ExecutableIdentity::capture_running_and_live(&bin, &bin).unwrap();
+        assert_eq!(
+            captured.check_current(Some(&bin)).unwrap(),
+            ExecutableDrift::Current
+        );
+
+        let backup = dir.path().join("acdd-bin.bak");
+        let bound = resolve_bound_installed_path(
+            &backup,
+            &bin,
+            Some(bin.as_os_str()),
+            Some(dir.path()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(bound, canonicalize_parent_preserving_leaf(&bin));
+
+        let unrelated = dir.path().join("other/fake");
+        assert!(resolve_bound_installed_path(
+            &bin,
+            &bin,
+            Some(unrelated.as_os_str()),
+            Some(dir.path()),
+            None,
+        )
+        .is_err());
+
+        let same_dir_sibling = dir.write_private_file("unrelated-sibling", b"sibling").unwrap();
+        assert!(resolve_bound_installed_path(
+            &bin,
+            &bin,
+            Some(same_dir_sibling.as_os_str()),
+            Some(dir.path()),
+            None,
+        )
+        .is_err());
+
+        let replaced_distinct = dir.write_private_file("acdd-bin-v2", b"version-2-distinct").unwrap();
+        assert!(resolve_bound_installed_path(
+            &backup,
+            &bin,
+            Some(replaced_distinct.as_os_str()),
+            Some(dir.path()),
+            None,
+        )
+        .is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let non_exec_dir = dir.path().join("non-exec-path");
+            fs::create_dir_all(&non_exec_dir).unwrap();
+            let non_exec_bin = non_exec_dir.join("acdd-bin");
+            fs::write(&non_exec_bin, b"not-executable").unwrap();
+            let mut perms = fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&bin, perms).unwrap();
+            let path_val = std::env::join_paths([
+                PathBuf::new(),
+                non_exec_dir.clone(),
+                dir.path().to_path_buf(),
+            ])
+            .unwrap();
+            let resolved_via_path = resolve_bound_installed_path(
+                &bin,
+                &bin,
+                Some(std::ffi::OsStr::new("acdd-bin")),
+                Some(&non_exec_dir),
+                Some(path_val.as_os_str()),
+            )
+            .unwrap();
+            assert_eq!(resolved_via_path, canonicalize_parent_preserving_leaf(&bin));
+        }
+
+        std::fs::write(&bin, b"version-2").unwrap();
+        assert_eq!(
+            captured.check_current(Some(&bin)).unwrap(),
+            ExecutableDrift::Replaced {
+                live_path: bin.clone()
+            }
+        );
+
+        std::fs::remove_file(&bin).unwrap();
+        assert_eq!(
+            captured.check_current(Some(&bin)).unwrap(),
+            ExecutableDrift::Missing { live_path: bin }
+        );
     }
 }

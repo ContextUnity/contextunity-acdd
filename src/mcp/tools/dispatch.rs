@@ -396,6 +396,223 @@ impl PreparedCall {
     }
 }
 
+fn prepare_tool_call_blocking(
+    server_prep: &Server,
+    requested_worktree: Option<&str>,
+    tool_name_prep: &str,
+    args_prep: Option<&serde_json::Map<String, Value>>,
+    output_format: OutputFormat,
+    operation: OperationKind,
+) -> PreparedCall {
+    if let Err(error) =
+        validate_explicit_worktree_git_ancestors(&server_prep.root, requested_worktree)
+    {
+        return PreparedCall::failed(server_prep, error, output_format, operation, tool_name_prep);
+    }
+    let primary_adapter = server_prep.load_adapter(&server_prep.root);
+    let (target_root, target_db) = match server_prep
+        .resolve_target_root_and_db_with_adapter(requested_worktree, primary_adapter.as_ref().ok())
+    {
+        Ok(pair) => pair,
+        Err(error) => {
+            return PreparedCall::failed(
+                server_prep,
+                error,
+                output_format,
+                operation,
+                tool_name_prep,
+            );
+        }
+    };
+    let adapter_result =
+        if requested_worktree.is_none() || target_root == server_prep.root {
+            primary_adapter
+        } else {
+            server_prep.load_adapter(&target_root)
+        };
+    let (adapter, loaded_adapter) = match adapter_result {
+        Ok(adapter) => {
+            let arc = std::sync::Arc::new(adapter);
+            (
+                RequestAdapter::Loaded(std::sync::Arc::clone(&arc)),
+                Some(arc),
+            )
+        }
+        Err(error) => (
+            RequestAdapter::Failed {
+                kind: error.kind(),
+                message: error.to_string(),
+            },
+            None,
+        ),
+    };
+    if let Some(ref arc) = loaded_adapter {
+        if let Some(message) =
+            acdd_core::subsystems::disabled_tool_error(tool_name_prep, &arc.modules)
+        {
+            let early_response = Some(response::result_for(
+                Err(StateError::new(ErrorCode::FeatureDisabled, message).into()),
+                &arc.response,
+                output_format,
+                operation,
+                tool_name_prep,
+                None,
+            ));
+            return PreparedCall {
+                target_root,
+                target_db,
+                adapter,
+                loaded_adapter,
+                providers: None,
+                span_ctx: None,
+                early_response,
+            };
+        }
+    }
+    let is_static_route = Server::tool_router().has_route(tool_name_prep);
+    let ws_root = primary_workspace_root_for(&server_prep.root, &target_root);
+    // Lazily build CompositeDomainProvider only for dynamic plugin tools.
+    let providers = if !is_static_route {
+        loaded_adapter.as_ref().and_then(|a| {
+            server_prep
+                .domain_providers_for(&ws_root, Some(&target_db), a)
+                .ok()
+        })
+    } else {
+        None
+    };
+
+    if let Some(providers) = providers.as_ref() {
+        if let Some((_, def)) = providers
+            .plugin_tools()
+            .into_iter()
+            .find(|(n, _)| n == tool_name_prep)
+        {
+            if let Some((rejected, allowed)) = rejected_plugin_fields(&def, args_prep) {
+                let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
+                return PreparedCall {
+                    target_root,
+                    target_db,
+                    adapter,
+                    loaded_adapter,
+                    providers: Some(std::sync::Arc::clone(providers)),
+                    span_ctx: None,
+                    early_response: Some(rejected_arguments_error(
+                        tool_name_prep,
+                        &rejected,
+                        &allowed_refs,
+                    )),
+                };
+            }
+        }
+    }
+
+    let span_ctx = loaded_adapter.as_ref().and_then(|a| {
+        a.modules
+            .is_subsystem_enabled(SubsystemId::State)
+            .then(|| {
+                crate::state_bridge::resolve_worktree_span_context(
+                    &ws_root,
+                    &target_root,
+                    server_prep.state_db(),
+                    a,
+                )
+                .ok()
+                .flatten()
+            })
+            .flatten()
+    });
+
+    PreparedCall {
+        target_root,
+        target_db,
+        adapter,
+        loaded_adapter,
+        providers,
+        span_ctx,
+        early_response: None,
+    }
+}
+
+async fn execute_plugin_tool_route(
+    server: &Server,
+    prep: PreparedCall,
+    tool_name: &str,
+    raw_args: serde_json::Map<String, Value>,
+    policy: &ResponsePolicy,
+    output_format: OutputFormat,
+    operation: OperationKind,
+) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+    let providers = prep
+        .providers
+        .expect("providers checked in is_plugin_route");
+    let server_root = server.root.clone();
+    let target_root = prep.target_root;
+    let span_ctx = prep.span_ctx;
+    let tool_name_owned = tool_name.to_owned();
+    let plugin_res = tokio::task::spawn_blocking(move || {
+        let mut filtered_args = raw_args;
+        let declared_props = providers
+            .plugin_tools()
+            .into_iter()
+            .find(|(n, _)| n == &tool_name_owned)
+            .map(|(_, def)| def.input_schema.properties);
+        if !declared_props
+            .as_ref()
+            .is_some_and(|p| p.contains_key("format"))
+        {
+            filtered_args.remove("format");
+        }
+        if !declared_props
+            .as_ref()
+            .is_some_and(|p| p.contains_key("worktree"))
+        {
+            filtered_args.remove("worktree");
+        }
+        let workspace_root = primary_workspace_root_for(&server_root, &target_root);
+        let req = DomainToolReq {
+            workspace_root,
+            worktree: Some(target_root),
+            run_id: span_ctx.as_ref().map(|c| c.run_id.clone()),
+            node_cursor: span_ctx
+                .as_ref()
+                .and_then(|c| NodeCursor::from_node_id(&c.node_id).ok()),
+        };
+        providers.call_tool(&tool_name_owned, &Value::Object(filtered_args), &req)
+    })
+    .await;
+    match plugin_res {
+        Ok(Ok(output)) => {
+            let text = match output_format {
+                OutputFormat::Markdown => {
+                    crate::format::render_plugin_tool_markdown(tool_name, &output)
+                }
+                OutputFormat::Json => {
+                    let val = match output {
+                        DomainToolOutput::Json(v) => v,
+                        DomainToolOutput::Markdown(m) => serde_json::json!({ "markdown": m }),
+                    };
+                    serde_json::to_string(&val).unwrap_or_else(|_| "null".to_owned())
+                }
+            };
+            Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
+        }
+        Ok(Err(err)) => Ok(response::result_for(
+            Err(err),
+            policy,
+            output_format,
+            operation,
+            tool_name,
+            None,
+        )
+        .into()),
+        Err(join_err) => Err(rmcp::ErrorData::internal_error(
+            format!("plugin tool blocking task failed: {join_err}"),
+            None,
+        )),
+    }
+}
+
 pub(super) async fn call_tool(
     server: &Server,
     request: rmcp::model::CallToolRequestParams,
@@ -445,144 +662,14 @@ pub(super) async fn call_tool(
     let args_prep = request.arguments.clone();
 
     let prep = tokio::task::spawn_blocking(move || {
-        if let Err(error) = validate_explicit_worktree_git_ancestors(
-            &server_prep.root,
+        prepare_tool_call_blocking(
+            &server_prep,
             requested_worktree.as_deref(),
-        ) {
-            return PreparedCall::failed(
-                &server_prep,
-                error,
-                output_format,
-                operation,
-                &tool_name_prep,
-            );
-        }
-        let primary_adapter = server_prep.load_adapter(&server_prep.root);
-        let (target_root, target_db) = match server_prep
-            .resolve_target_root_and_db_with_adapter(
-                requested_worktree.as_deref(),
-                primary_adapter.as_ref().ok(),
-            ) {
-            Ok(pair) => pair,
-            Err(error) => {
-                return PreparedCall::failed(
-                    &server_prep,
-                    error,
-                    output_format,
-                    operation,
-                    &tool_name_prep,
-                );
-            }
-        };
-        let adapter_result =
-            if requested_worktree.is_none() || target_root == server_prep.root {
-                primary_adapter
-            } else {
-                server_prep.load_adapter(&target_root)
-            };
-        let (adapter, loaded_adapter) = match adapter_result {
-            Ok(adapter) => {
-                let arc = std::sync::Arc::new(adapter);
-                (
-                    RequestAdapter::Loaded(std::sync::Arc::clone(&arc)),
-                    Some(arc),
-                )
-            }
-            Err(error) => (
-                RequestAdapter::Failed {
-                    kind: error.kind(),
-                    message: error.to_string(),
-                },
-                None,
-            ),
-        };
-        if let Some(ref arc) = loaded_adapter {
-            if let Some(message) =
-                acdd_core::subsystems::disabled_tool_error(&tool_name_prep, &arc.modules)
-            {
-                let early_response = Some(response::result_for(
-                    Err(StateError::new(ErrorCode::FeatureDisabled, message).into()),
-                    &arc.response,
-                    output_format,
-                    operation,
-                    &tool_name_prep,
-                    None,
-                ));
-                return PreparedCall {
-                    target_root,
-                    target_db,
-                    adapter,
-                    loaded_adapter,
-                    providers: None,
-                    span_ctx: None,
-                    early_response,
-                };
-            }
-        }
-        let is_static_route = Server::tool_router().has_route(&tool_name_prep);
-        let ws_root = primary_workspace_root_for(&server_prep.root, &target_root);
-        // Lazily build CompositeDomainProvider only for dynamic plugin tools.
-        let providers = if !is_static_route {
-            loaded_adapter.as_ref().and_then(|a| {
-                server_prep
-                    .domain_providers_for(&ws_root, Some(&target_db), a)
-                    .ok()
-            })
-        } else {
-            None
-        };
-
-        if let Some(providers) = providers.as_ref() {
-            if let Some((_, def)) = providers
-                .plugin_tools()
-                .into_iter()
-                .find(|(n, _)| n == &tool_name_prep)
-            {
-                if let Some((rejected, allowed)) =
-                    rejected_plugin_fields(&def, args_prep.as_ref())
-                {
-                    let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
-                    return PreparedCall {
-                        target_root,
-                        target_db,
-                        adapter,
-                        loaded_adapter,
-                        providers: Some(std::sync::Arc::clone(providers)),
-                        span_ctx: None,
-                        early_response: Some(rejected_arguments_error(
-                            &tool_name_prep,
-                            &rejected,
-                            &allowed_refs,
-                        )),
-                    };
-                }
-            }
-        }
-
-        let span_ctx = loaded_adapter.as_ref().and_then(|a| {
-            if a.modules.is_subsystem_enabled(SubsystemId::State) {
-                crate::state_bridge::resolve_worktree_span_context(
-                    &ws_root,
-                    &target_root,
-                    server_prep.state_db(),
-                    a,
-                )
-                .ok()
-                .flatten()
-            } else {
-                None
-            }
-        });
-
-        PreparedCall {
-            target_root,
-            target_db,
-            adapter,
-            loaded_adapter,
-            providers,
-            span_ctx,
-            early_response: None,
-        }
+            &tool_name_prep,
+            args_prep.as_ref(),
+            output_format,
+            operation,
+        )
     })
     .await
     .map_err(|error| {
@@ -633,8 +720,8 @@ pub(super) async fn call_tool(
         });
 
     let default_policy = ResponsePolicy::default();
-    let policy = prep
-        .loaded_adapter
+    let loaded_adapter = prep.loaded_adapter.clone();
+    let policy = loaded_adapter
         .as_ref()
         .map_or(&default_policy, |a| &a.response);
 
@@ -649,77 +736,17 @@ pub(super) async fn call_tool(
         });
 
     let result: Result<rmcp::model::CallToolResponse, rmcp::ErrorData> = if is_plugin_route {
-        let providers = prep
-            .providers
-            .expect("providers checked in is_plugin_route");
-        let server_root = server.root.clone();
-        let target_root = prep.target_root.clone();
-        let span_ctx = prep.span_ctx.clone();
-        let tool_name_owned = tool_name.to_string();
         let raw_args = request.arguments.clone().unwrap_or_default();
-        let plugin_res = tokio::task::spawn_blocking(move || {
-            let mut filtered_args = raw_args;
-            let declared_props = providers
-                .plugin_tools()
-                .into_iter()
-                .find(|(n, _)| n == &tool_name_owned)
-                .map(|(_, def)| def.input_schema.properties);
-            if !declared_props
-                .as_ref()
-                .is_some_and(|p| p.contains_key("format"))
-            {
-                filtered_args.remove("format");
-            }
-            if !declared_props
-                .as_ref()
-                .is_some_and(|p| p.contains_key("worktree"))
-            {
-                filtered_args.remove("worktree");
-            }
-            let workspace_root = primary_workspace_root_for(&server_root, &target_root);
-            let req = DomainToolReq {
-                workspace_root,
-                worktree: Some(target_root),
-                run_id: span_ctx.as_ref().map(|c| c.run_id.clone()),
-                node_cursor: span_ctx
-                    .as_ref()
-                    .and_then(|c| NodeCursor::from_node_id(&c.node_id).ok()),
-            };
-            providers.call_tool(&tool_name_owned, &Value::Object(filtered_args), &req)
-        })
-        .await;
-        match plugin_res {
-            Ok(Ok(output)) => {
-                let text = match output_format {
-                    OutputFormat::Markdown => {
-                        crate::format::render_plugin_tool_markdown(&tool_name, &output)
-                    }
-                    OutputFormat::Json => {
-                        let val = match output {
-                            DomainToolOutput::Json(v) => v,
-                            DomainToolOutput::Markdown(m) => {
-                                serde_json::json!({ "markdown": m })
-                            }
-                        };
-                        serde_json::to_string(&val).unwrap_or_else(|_| "null".to_owned())
-                    }
-                };
-                Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
-            }
-            Ok(Err(err)) => Ok(response::result_for(
-                Err(err),
-                policy,
-                output_format,
-                operation,
-                &tool_name,
-                None,
-            )
-            .into()),
-            Err(join_err) => Err(rmcp::ErrorData::internal_error(
-                format!("plugin tool blocking task failed: {join_err}"),
-                None,
-            )),
-        }
+        execute_plugin_tool_route(
+            server,
+            prep,
+            &tool_name,
+            raw_args,
+            policy,
+            output_format,
+            operation,
+        )
+        .await
     } else {
         let request_server =
             server.with_root_and_db(prep.target_root, prep.target_db, prep.adapter);
@@ -788,5 +815,6 @@ pub(super) async fn call_tool(
         span_guard.set_debug_mcp(&server.root, &tool_name, &tool_args, &output_val);
     }
     span_guard.finish_async().await;
+    server.arm_pending_reload();
     final_response
 }

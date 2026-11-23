@@ -72,7 +72,6 @@ impl CacheFixture {
             RebuildCause::Schema => {
                 let index = IndexFixture::open(&self.db());
                 index.outdated(MetadataVersion::Schema);
-                index.seal();
             }
             RebuildCause::Adapter => {
                 self.write("acdd.yaml", "roots: [src]\nadapter_version: changed\n");

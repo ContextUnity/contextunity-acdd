@@ -7,6 +7,7 @@ mod budget;
 mod freshness;
 mod post_save;
 
+use self::archive::RecoveredArchiveGitState;
 use crate::git_ops::integrate::verify_tasks_integrated;
 use crate::git_ops::snapshot::{
     current_scope_tree, diff_scope_changed_paths, remove_confined_file,
@@ -18,23 +19,26 @@ use crate::machine::{
     container_scope, evaluate_submit, MachineProfileInput,
     SubmitEvaluation, SubmitInput,
 };
+use crate::profile::ResolvedGateProfile;
 use crate::spec::Receipt;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    ArtifactKind, NodeKind, NodeStatus,
+    ArtifactKind, GateNodeRecord, NodeKind, NodeStatus,
     RunGraphSnapshot, RunStatus,
     SaveAction, SubmitAction, TransitionPlan, ValidatedObservations,
 };
 use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
+use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event, collect_external_satisfied_deps,
+    acquire_repo_lock, append_trace_event,
     collect_integration_inputs, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
     resolve_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
 };
+use acdd_core::path_policy::WorkspacePathPolicy;
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, handle_verify_dyn};
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
@@ -123,6 +127,113 @@ pub(crate) fn handle_submit_dyn(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn prepare_submit_observations<'m>(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    snapshot: &RunGraphSnapshot,
+    resolved_profile: &ResolvedGateProfile,
+    machine_profile: &'m MachineProfileInput,
+    node: &GateNodeRecord,
+    machine_gate: &crate::machine::MachineGateDef,
+    cursor: &NodeCursor,
+    target_worktree: &Path,
+    admitted_scope: &[String],
+    current_tree: &TreeOid,
+    policy: &WorkspacePathPolicy,
+    recovered: Option<&RecoveredArchiveGitState>,
+    req: &SubmitReq,
+    verified_hint: Option<&(TreeOid, String)>,
+) -> Result<(ValidatedObservations, Option<String>, std::borrow::Cow<'m, MachineProfileInput>), StateError> {
+    if recovered.is_some_and(|rec| rec.already_committed) {
+        let mut relaxed = machine_profile.clone();
+        relax_need_for_node(&mut relaxed, &node.gate_id);
+        let obs = ValidatedObservations {
+            current_tree: Some(current_tree.clone()),
+            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+            ..ValidatedObservations::default()
+        };
+        return Ok((obs, None, std::borrow::Cow::Owned(relaxed)));
+    }
+
+    let mut changed_paths = diff_scope_changed_paths(
+        target_worktree,
+        node.isolation,
+        node.baseline_commit.as_ref(),
+        node.claim_tree.as_ref(),
+        policy,
+    )?;
+    if let Some(rec) = recovered {
+        changed_paths.retain(|p| p != &rec.archive_rel);
+    }
+    let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
+    let scope_obs = ValidatedObservations {
+        current_tree: Some(current_tree.clone()),
+        changed_paths: changed_paths.clone(),
+        path_policy: Some(policy.clone()),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+        ..ValidatedObservations::default()
+    };
+    let scope_violations = detect_scope_violations(
+        snapshot,
+        machine_profile,
+        &scope_obs,
+        admitted_scope,
+        is_unscoped_root,
+    );
+    if !scope_violations.is_empty() {
+        return Err(StateError::new(
+            ErrorCode::OutOfScopeChanges,
+            format!(
+                "cannot submit '{}': working tree has out-of-scope changes: {}",
+                node.node_id,
+                scope_violations.join(", ")
+            ),
+        ));
+    }
+
+    let expected_digest = ensure_fresh_trace_or_auto_verify(
+        backend,
+        snapshot,
+        resolved_profile,
+        machine_profile,
+        node,
+        machine_gate,
+        cursor,
+        admitted_scope,
+        current_tree,
+        &changed_paths,
+        policy,
+        req,
+        verified_hint,
+    )?;
+
+    let unintegrated_tasks = if machine_gate.receipt && is_post_task_root_node(snapshot, node) {
+        let inputs = collect_integration_inputs(snapshot);
+        verify_tasks_integrated(&snapshot.run.run_id, target_worktree, &inputs)?
+    } else {
+        Vec::new()
+    };
+    let external_satisfied_deps = collect_external_satisfied_deps(config, snapshot)?;
+    let container_tree = if admitted_scope.is_empty() && machine_gate.save.post != SaveAction::Snapshot {
+        None
+    } else {
+        Some(current_scope_tree(target_worktree, Some(admitted_scope), policy)?)
+    };
+    let obs = ValidatedObservations {
+        current_tree: Some(current_tree.clone()),
+        container_tree,
+        changed_paths,
+        out_of_scope_paths: Vec::new(),
+        unintegrated_tasks,
+        external_satisfied_deps,
+        external_deps_authoritative: true,
+        path_policy: Some(policy.clone()),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+    };
+    Ok((obs, expected_digest, std::borrow::Cow::Borrowed(machine_profile)))
+}
+
 /// Core `submit` implementation executed while `repo.lock` is held.
 pub(crate) fn submit_holding_repo_lock(
     config: &StateEngineConfig,
@@ -205,104 +316,23 @@ pub(crate) fn submit_holding_repo_lock(
         None => current_scope_tree(&target_worktree, None, &policy)?,
     };
 
-    let (obs, expected_digest, effective_machine_profile) = if recovered
-        .as_ref()
-        .is_some_and(|rec| rec.already_committed)
-    {
-        // Never relax `need:` in no-commit mode; only do so when a verified `Acdd-Claim` commit
-        // already finalized Git state before SQLite prune.
-        let mut relaxed = machine_profile.clone();
-        relax_need_for_node(&mut relaxed, &node.gate_id);
-        let obs = ValidatedObservations {
-            current_tree: Some(current_tree.clone()),
-            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-            ..ValidatedObservations::default()
-        };
-        (obs, None, std::borrow::Cow::Owned(relaxed))
-    } else {
-        let mut changed_paths = diff_scope_changed_paths(
-            &target_worktree,
-            node.isolation,
-            node.baseline_commit.as_ref(),
-            node.claim_tree.as_ref(),
-            &policy,
-        )?;
-        if let Some(ref rec) = recovered {
-            changed_paths.retain(|p| p != &rec.archive_rel);
-        }
-        let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
-        let scope_obs = ValidatedObservations {
-            current_tree: Some(current_tree.clone()),
-            changed_paths: changed_paths.clone(),
-            path_policy: Some(policy.clone()),
-            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-            ..ValidatedObservations::default()
-        };
-        let scope_violations = detect_scope_violations(
-            &snapshot,
-            &machine_profile,
-            &scope_obs,
-            &admitted_scope,
-            is_unscoped_root,
-        );
-        if !scope_violations.is_empty() {
-            return Err(StateError::new(
-                ErrorCode::OutOfScopeChanges,
-                format!(
-                    "cannot submit '{}': working tree has out-of-scope changes: {}",
-                    node.node_id,
-                    scope_violations.join(", ")
-                ),
-            ));
-        }
-
-        let expected_digest = ensure_fresh_trace_or_auto_verify(
-            backend,
-            &snapshot,
-            &resolved_profile,
-            &machine_profile,
-            &node,
-            &machine_gate,
-            &cursor,
-            &admitted_scope,
-            &current_tree,
-            &changed_paths,
-            &policy,
-            &req,
-            verified_hint,
-        )?;
-
-        let unintegrated_tasks = if machine_gate.receipt && is_post_task_root_node(&snapshot, &node)
-        {
-            let inputs = collect_integration_inputs(&snapshot);
-            verify_tasks_integrated(&snapshot.run.run_id, &target_worktree, &inputs)?
-        } else {
-            Vec::new()
-        };
-        let external_satisfied_deps =
-            collect_external_satisfied_deps(config, &snapshot)?;
-        let container_tree = if admitted_scope.is_empty() && machine_gate.save.post != SaveAction::Snapshot {
-            None
-        } else {
-            Some(current_scope_tree(
-                &target_worktree,
-                Some(&admitted_scope),
-                &policy,
-            )?)
-        };
-        let obs = ValidatedObservations {
-            current_tree: Some(current_tree.clone()),
-            container_tree,
-            changed_paths,
-            out_of_scope_paths: Vec::new(),
-            unintegrated_tasks,
-            external_satisfied_deps,
-            external_deps_authoritative: true,
-            path_policy: Some(policy.clone()),
-            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-        };
-        (obs, expected_digest, std::borrow::Cow::Borrowed(&machine_profile))
-    };
+    let (obs, expected_digest, effective_machine_profile) = prepare_submit_observations(
+        config,
+        backend,
+        &snapshot,
+        &resolved_profile,
+        &machine_profile,
+        &node,
+        &machine_gate,
+        &cursor,
+        &target_worktree,
+        &admitted_scope,
+        &current_tree,
+        &policy,
+        recovered.as_ref(),
+        &req,
+        verified_hint,
+    )?;
 
     let expected_scoped_tree = obs.container_tree.as_ref().unwrap_or(&current_tree);
     let was_recovered = recovered.is_some();

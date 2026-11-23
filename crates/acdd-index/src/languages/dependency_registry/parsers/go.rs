@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ModulePrefix, ParsedManifest};
 
 /// Parser for `go.mod` manifests.
-pub struct GoParser;
+pub(crate) struct GoParser;
 
 /// Shared `go.mod` manifest parser instance.
-pub static GO_PARSER: GoParser = GoParser;
+pub(crate) static GO_PARSER: GoParser = GoParser;
 
 impl ManifestParser for GoParser {
     fn ecosystem(&self) -> Ecosystem {

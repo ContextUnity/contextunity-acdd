@@ -8,11 +8,6 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// Validate one document, or `acdd.yaml`, the active workspace profile, `DomainProvider`s, and all open specs.
-pub fn run(root: &Path, relative: Option<&Path>) -> Result<Value> {
-    run_with_options(root, relative, None, None)
-}
-
 /// Validate one document or workspace with explicit `--config` and `--profile` overrides.
 pub fn run_with_options(
     root: &Path,

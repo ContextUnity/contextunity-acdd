@@ -330,10 +330,19 @@ architecture:
       zones: [core, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
       message: "Architectural workspace zones must remain an acyclic DAG"
 
-    - id: ARCH-ACYCLIC-HOST-LEAF-ZONES
+    - id: ARCH-ACYCLIC-HOST-MODULES
       severity: error
       kind: forbid_cycles
       from:
-        zones: [host_format, host_telemetry]
+        zones: [host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
       depth: 2
-      message: "Acyclic host leaf zones must remain free of module dependency cycles"
+      message: "Host architectural modules must remain free of dependency cycles"
+
+    - id: ARCH-ACYCLIC-WORKSPACE-MODULES
+      severity: error
+      kind: forbid_cycles
+      from:
+        zones: [core, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+        paths: ["src/*.rs"]
+      edge_kinds: [imports]
+      message: "Workspace production module import graph must remain acyclic (including same-directory modules)"

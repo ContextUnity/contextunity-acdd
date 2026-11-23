@@ -1,4 +1,4 @@
-use crate::db::writer::MAX_MULTI_VALUE_BATCH_ROWS;
+pub(crate) const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 use anyhow::{bail, Context, Result};
 use rusqlite::limits::Limit;
 use rusqlite::params_from_iter;
@@ -141,12 +141,11 @@ pub(super) fn insert_multi_value_batch<const COLUMNS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{dictionary::*, ingest::*, MAX_MULTI_VALUE_BATCH_ROWS};
-    use super::{insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue};
+    use super::super::{dictionary::*, ingest::*};
+    use super::{insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue, MAX_MULTI_VALUE_BATCH_ROWS};
     use crate::db::schema::SCHEMA_DDL;
-    use crate::models::compact_graph::{CompactEdge, CompactGraph, Coverage};
-    use crate::models::{Facts, Node, Reference};
-    use crate::scanner::FileEntry;
+    use crate::models::compact_graph::{CompactCoverage as Coverage, CompactEdge, CompactGraph};
+    use crate::models::{Facts, FileEntry, Node, Reference};
     use crate::typed_facts::TypedFacts;
     use rusqlite::{limits::Limit, types::Value as SqlValue, Connection};
     use serde_json::json;
@@ -248,14 +247,19 @@ mod tests {
 
     #[test]
     fn cold_dictionary_batches_match_first_seen_ids_and_delta_keeps_existing_ids() {
+        fn open_dict_db(constrain: bool) -> Connection {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(SCHEMA_DDL).unwrap();
+            if constrain {
+                constrain_variable_limit(&conn);
+            }
+            conn
+        }
         let values = (0..251)
             .flat_map(|index| [format!("callee_{index}_λ'"), "duplicate".into()])
             .collect::<Vec<_>>();
-        let old = Connection::open_in_memory().unwrap();
-        old.execute_batch(SCHEMA_DDL).unwrap();
-        let cold = Connection::open_in_memory().unwrap();
-        cold.execute_batch(SCHEMA_DDL).unwrap();
-        constrain_variable_limit(&cold);
+        let old = open_dict_db(false);
+        let cold = open_dict_db(true);
         let mut expressions = CoverageDictionaryTestCache::expressions(&old).unwrap();
         let mut evidence = CoverageDictionaryTestCache::evidence(&old).unwrap();
         for value in &values {

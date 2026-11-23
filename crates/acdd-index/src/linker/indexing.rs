@@ -12,7 +12,7 @@ use crate::{
 use hashbrown::HashMap;
 use rayon::prelude::*;
 
-pub const PARALLEL_LINKER_PREP_MIN_FILES: usize = 32;
+const PARALLEL_LINKER_PREP_MIN_FILES: usize = 32;
 use std::path::Path;
 
 pub(super) struct NamespaceIndexes<'a> {
@@ -21,10 +21,63 @@ pub(super) struct NamespaceIndexes<'a> {
     pub(super) modules_by_namespace: ModulesByNamespace<'a>,
     pub(super) rust_library_modules: HashMap<&'a str, (&'a str, &'a Node)>,
     #[cfg(feature = "lang-rust")]
-    pub(super) rust_forwarding: languages::rust::linker::RustForwarding<'a>,
+    pub(super) rust_forwarding: super::rust::forwarding::RustForwarding<'a>,
 }
 
 impl<'a> NamespaceIndexes<'a> {
+    fn collect_modules_by_namespace(
+        nodes: &[&'a Node],
+        profiles: &HashMap<&str, &'static dyn LanguageProfile>,
+        dependency_registry: &'a DependencyRegistry,
+    ) -> ModulesByNamespace<'a> {
+        let mut modules_by_namespace: ModulesByNamespace<'a> = HashMap::new();
+        for node in nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Module.as_str())
+        {
+            let Some(profile) = profiles.get(node.path.as_str()) else {
+                continue;
+            };
+            let (workspace, local_path) = languages::workspace_path(&node.path);
+            let local_module = profile.module_name(local_path);
+            let mut namespaces = vec![node.qualname.clone()];
+            if !workspace.is_empty() && node.qualname.starts_with(&format!("{workspace}.")) {
+                namespaces.push(node.qualname[workspace.len() + 1..].to_string());
+            }
+            if !namespaces.contains(&local_module) {
+                namespaces.push(local_module);
+            }
+            profile.linker().module_namespaces(
+                *profile,
+                node,
+                dependency_registry,
+                &mut namespaces,
+            );
+            if let Some((_, source_relative)) = local_path.split_once("/src/") {
+                let source_module = profile.module_name(source_relative);
+                if !namespaces.contains(&source_module) {
+                    namespaces.push(source_module);
+                }
+            } else if let Some(source_relative) = local_path.strip_prefix("src/") {
+                let source_module = profile.module_name(source_relative);
+                if !namespaces.contains(&source_module) {
+                    namespaces.push(source_module);
+                }
+            }
+            for namespace in namespaces {
+                let modules = modules_by_namespace
+                    .entry(profile.family())
+                    .or_default()
+                    .entry(namespace)
+                    .or_default();
+                if !modules.iter().any(|existing| existing.id == node.id) {
+                    modules.push(node);
+                }
+            }
+        }
+        modules_by_namespace
+    }
+
     pub(super) fn build(
         all: &'a (dyn crate::FactsLookup + Sync),
         nodes: &[&'a Node],
@@ -98,54 +151,7 @@ impl<'a> NamespaceIndexes<'a> {
                 files.iter().flat_map(normalize_file).collect()
             }
         };
-        let build_modules = || {
-            let mut modules_by_namespace: ModulesByNamespace<'a> = HashMap::new();
-            for node in nodes
-                .iter()
-                .filter(|node| node.kind == NodeKind::Module.as_str())
-            {
-                if let Some(profile) = profiles.get(node.path.as_str()) {
-                    let (workspace, local_path) = languages::workspace_path(&node.path);
-                    let local_module = profile.module_name(local_path);
-                    let mut namespaces = vec![node.qualname.clone()];
-                    if !workspace.is_empty() && node.qualname.starts_with(&format!("{workspace}."))
-                    {
-                        namespaces.push(node.qualname[workspace.len() + 1..].to_string());
-                    }
-                    if !namespaces.contains(&local_module) {
-                        namespaces.push(local_module);
-                    }
-                    profile.linker().module_namespaces(
-                        *profile,
-                        node,
-                        dependency_registry,
-                        &mut namespaces,
-                    );
-                    if let Some((_, source_relative)) = local_path.split_once("/src/") {
-                        let source_module = profile.module_name(source_relative);
-                        if !namespaces.contains(&source_module) {
-                            namespaces.push(source_module);
-                        }
-                    } else if let Some(source_relative) = local_path.strip_prefix("src/") {
-                        let source_module = profile.module_name(source_relative);
-                        if !namespaces.contains(&source_module) {
-                            namespaces.push(source_module);
-                        }
-                    }
-                    for namespace in namespaces {
-                        let modules = modules_by_namespace
-                            .entry(profile.family())
-                            .or_default()
-                            .entry(namespace)
-                            .or_default();
-                        if !modules.iter().any(|existing| existing.id == node.id) {
-                            modules.push(node);
-                        }
-                    }
-                }
-            }
-            modules_by_namespace
-        };
+        let build_modules = || Self::collect_modules_by_namespace(nodes, &profiles, dependency_registry);
         let (normalized_imports, modules_by_namespace) =
             if files.len() >= PARALLEL_LINKER_PREP_MIN_FILES {
                 rayon::join(build_imports, build_modules)
@@ -154,7 +160,7 @@ impl<'a> NamespaceIndexes<'a> {
             };
 
         #[cfg(feature = "lang-rust")]
-        let rust_forwarding = languages::rust::linker::RustForwarding::build(
+        let rust_forwarding = super::rust::forwarding::RustForwarding::build(
             all,
             &modules_by_namespace,
             &normalized_imports,
@@ -181,7 +187,7 @@ pub(super) fn package_exports<'index, 'a>(
     all: &'a dyn crate::FactsLookup,
     root: Option<&Path>,
     interner: &mut LinkerInterner<'a>,
-    #[cfg(feature = "lang-rust")] rust_forwarding: &'index languages::rust::linker::RustForwarding<
+    #[cfg(feature = "lang-rust")] rust_forwarding: &'index super::rust::forwarding::RustForwarding<
         'a,
     >,
 ) -> HashMap<&'static str, PackageExports<'a>> {
@@ -219,7 +225,7 @@ pub(super) fn package_exports<'index, 'a>(
 pub(super) struct InheritanceIndexes<'a> {
     pub(super) python_receivers: super::python::receivers::PythonReceivers<'a>,
     #[cfg(feature = "lang-rust")]
-    pub(super) rust_members: languages::rust::linker::RustMembers<'a>,
+    pub(super) rust_members: super::rust::profile_linker::RustMembers<'a>,
 }
 
 impl<'a> InheritanceIndexes<'a> {
@@ -242,7 +248,7 @@ impl<'a> InheritanceIndexes<'a> {
         let build_python = || {
             #[cfg(feature = "lang-python")]
             {
-                languages::python::linker::build_python_receivers(
+                super::python::profile_linker::build_python_receivers(
                     all,
                     interner,
                     by_id,
@@ -271,7 +277,7 @@ impl<'a> InheritanceIndexes<'a> {
         };
         #[cfg(feature = "lang-rust")]
         let (python_receivers, rust_members) = rayon::join(build_python, || {
-            languages::rust::linker::RustMembers::build(
+            super::rust::profile_linker::RustMembers::build(
                 all,
                 interner,
                 flows,

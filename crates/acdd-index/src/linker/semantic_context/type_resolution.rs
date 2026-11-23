@@ -1,4 +1,4 @@
-use super::*;
+use super::context::*;
 
 impl<'a> LanguageMemberLookup<'_, 'a> {
     pub(in crate::linker) fn rust_alias_member(
@@ -14,6 +14,93 @@ impl<'a> LanguageMemberLookup<'_, 'a> {
             return None;
         };
         Some(self.context.member(target, member, true, owner))
+    }
+}
+
+fn scope_nodes_shadow_value<'a>(
+    owner: &'a Node,
+    raw_name: &str,
+    head: &str,
+    role: SymbolRole,
+    scope_nodes: Option<&Vec<&'a Node>>,
+) -> bool {
+    let value_shadows_role = !(owner.language == "rust"
+        && (matches!(role, SymbolRole::Type)
+            || raw_name
+                .split_once('.')
+                .map_or(raw_name, |(before_dot, _)| before_dot)
+                .contains("::")));
+    value_shadows_role
+        && scope_nodes.is_some_and(|nodes| {
+            nodes
+                .iter()
+                .filter(|node| node.path == owner.path)
+                .any(|node| node.binding_names().any(|name| name == head))
+        })
+}
+
+impl<'a> Context<'a> {
+    fn resolve_receiver_rule_member(
+        &self,
+        owner: &'a Node,
+        receiver: &TypeTarget<'a>,
+        origin: &TypeTarget<'a>,
+        pack: &str,
+        rule: &crate::languages::manifests::syntax::ReceiverTypeRule,
+        member: &str,
+    ) -> Option<TypeTarget<'a>> {
+        if !rule.members.iter().any(|allowed| allowed == member) {
+            return None;
+        }
+        let spec = rule.member_returns.get(member)?;
+        Some(self.project_return_node(
+            spec.compiled(),
+            &ReturnProjection {
+                owner,
+                pack: None,
+                receiver: Some(receiver),
+                origin,
+                import_line: 0,
+                is_dom_pack: pack == "web",
+            },
+            0,
+        ))
+    }
+
+    fn resolve_configured_receiver_member(
+        &self,
+        owner: &'a Node,
+        receiver: &TypeTarget<'a>,
+        authority: &super::super::value_flow::ConfiguredReceiverAuthority,
+        origin: &TypeTarget<'a>,
+        member: &str,
+    ) -> Option<TypeTarget<'a>> {
+        use super::super::value_flow::ConfiguredReceiverAuthority as Authority;
+        match authority {
+            Authority::Nominal {
+                pack,
+                receiver: nominal,
+                ..
+            } => self.resolve_receiver_rule_member(
+                owner,
+                receiver,
+                origin,
+                pack,
+                &nominal.rule,
+                member,
+            ),
+            Authority::Hierarchy { pack, rule } => {
+                if !rule.members.iter().any(|allowed| allowed == member) {
+                    return None;
+                }
+                let policy = rule.returns.get(member)?;
+                let import_line = match origin {
+                    TypeTarget::External { import_line, .. } => *import_line,
+                    _ => 0,
+                };
+                self.project_hierarchy_policy(owner, receiver, pack, policy, import_line)
+            }
+        }
     }
 }
 
@@ -46,12 +133,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             import_line: 0,
         });
         let receiver = extension_receiver.as_ref().unwrap_or(receiver);
-        if let TypeTarget::External {
-            module,
-            import_line,
-        } = receiver
-        {
-            if owner.language == "rust" {
+        match receiver {
+            TypeTarget::External {
+                module,
+                import_line,
+            } if owner.language == "rust" => {
                 let base = module.replace('.', "::");
                 let (pack, rule) = self.dependencies.class_hierarchy_authority_for_path(
                     &owner.path,
@@ -61,123 +147,55 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 if !rule.members.iter().any(|allowed| allowed == member) {
                     return None;
                 }
-                return self.project_hierarchy_policy(
+                self.project_hierarchy_policy(
                     owner,
                     receiver,
                     pack,
                     rule.returns.get(member)?,
                     *import_line,
-                );
+                )
             }
-        }
-        if let TypeTarget::Builtin(name) = receiver {
-            let lookup_name = if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
-            {
-                let unprefixed = name.strip_prefix("Web.").unwrap_or(name);
-                super::super::typescript::semantic_context::typed_dom_receiver(unprefixed)
-                    .unwrap_or(unprefixed)
-            } else {
-                name.as_str()
-            };
-            if let Some((pack, _rule_id, rule)) = self.receiver_rule_with_meta(&owner.path, lookup_name) {
-                if rule.members.iter().any(|allowed| allowed == member) {
-                    if let Some(spec) = rule.member_returns.get(member) {
-                        return Some(self.project_return_node(
-                            spec.compiled(),
-                            &ReturnProjection {
-                                owner,
-                                pack: None,
-                                receiver: Some(receiver),
-                                origin: receiver,
-                                import_line: 0,
-                                is_dom_pack: pack == "web",
-                            },
-                            0,
-                        ));
-                    }
-                }
+            TypeTarget::Builtin(name) => {
+                let lookup_name =
+                    if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+                        let unprefixed = name.strip_prefix("Web.").unwrap_or(name);
+                        super::super::typescript::semantic_context::typed_dom_receiver(unprefixed)
+                            .unwrap_or(unprefixed)
+                    } else {
+                        name.as_str()
+                    };
+                let (pack, _rule_id, rule) =
+                    self.receiver_rule_with_meta(&owner.path, lookup_name)?;
+                self.resolve_receiver_rule_member(owner, receiver, receiver, pack, rule, member)
             }
-            return None;
-        }
-        if let TypeTarget::Collection { base, .. } = receiver {
-            if let Some((pack, authority)) = self.hierarchy_authority_for_base(&owner.path, base) {
-                if let Authority::Hierarchy { rule, .. } = authority.as_ref() {
-                    if rule.members.iter().any(|allowed| allowed == member) {
-                        if let Some(policy) = rule.returns.get(member) {
-                            return self.project_hierarchy_policy(owner, receiver, &pack, policy, 0);
+            TypeTarget::Collection { base, .. } => {
+                if let Some((pack, authority)) = self.hierarchy_authority_for_base(&owner.path, base)
+                {
+                    if let Authority::Hierarchy { rule, .. } = authority.as_ref() {
+                        if rule.members.iter().any(|allowed| allowed == member) {
+                            if let Some(policy) = rule.returns.get(member) {
+                                return self.project_hierarchy_policy(
+                                    owner, receiver, &pack, policy, 0,
+                                );
+                            }
                         }
                     }
                 }
+                let (pack, _rule_id, rule) = self.receiver_rule_with_meta(&owner.path, base)?;
+                self.resolve_receiver_rule_member(owner, receiver, receiver, pack, rule, member)
             }
-            if let Some((pack, _rule_id, rule)) = self.receiver_rule_with_meta(&owner.path, base) {
-                if rule.members.iter().any(|allowed| allowed == member) {
-                    if let Some(spec) = rule.member_returns.get(member) {
-                        return Some(self.project_return_node(
-                            spec.compiled(),
-                            &ReturnProjection {
-                                owner,
-                                pack: None,
-                                receiver: Some(receiver),
-                                origin: receiver,
-                                import_line: 0,
-                                is_dom_pack: pack == "web",
-                            },
-                            0,
-                        ));
-                    }
-                }
-            }
-            return None;
-        }
-        if let TypeTarget::ConfiguredReceiver {
-            authority, origin, ..
-        } = receiver
-        {
-            match authority.as_ref() {
-                Authority::Nominal {
-                    pack,
-                    receiver: nominal,
-                    ..
-                } => {
-                    if !nominal.rule.members.iter().any(|allowed| allowed == member) {
-                        return None;
-                    }
-                    let spec = nominal.rule.member_returns.get(member)?;
-                    return Some(self.project_return_node(
-                        spec.compiled(),
-                        &ReturnProjection {
-                            owner,
-                            pack: None,
-                            receiver: Some(receiver),
-                            origin: origin.as_ref(),
-                            import_line: 0,
-                            is_dom_pack: pack == "web",
-                        },
-                        0,
-                    ));
-                }
-                Authority::Hierarchy { pack, rule } => {
-                    if !rule.members.iter().any(|allowed| allowed == member) {
-                        return None;
-                    }
-                    let policy = rule.returns.get(member)?;
-                    return self.project_hierarchy_policy(
-                        owner,
-                        receiver,
-                        pack,
-                        policy,
-                        match origin.as_ref() {
-                            TypeTarget::External { import_line, .. } => *import_line,
-                            _ => 0,
-                        },
-                    );
-                }
-            }
-        }
-        if let TypeTarget::Local(class) = receiver {
-            if class.language == "python" {
+            TypeTarget::ConfiguredReceiver {
+                authority, origin, ..
+            } => self.resolve_configured_receiver_member(
+                owner,
+                receiver,
+                authority.as_ref(),
+                origin.as_ref(),
+                member,
+            ),
+            TypeTarget::Local(class) if class.language == "python" => {
                 let (pack, _row, policy) = self.python?.return_policy(class, member)?;
-                let super::super::receivers::Member::External(module, line, _, _) =
+                let super::super::receivers::PythonReceiverMember::External(module, line, _, _) =
                     self.python?.lookup(class, member, false)
                 else {
                     return None;
@@ -186,17 +204,12 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                     module: module.to_owned(),
                     import_line: line,
                 };
-                return self.project_hierarchy_policy_with_origin(
-                    owner,
-                    receiver,
-                    pack,
-                    policy,
-                    line,
-                    &origin,
-                );
+                self.project_hierarchy_policy_with_origin(
+                    owner, receiver, pack, policy, line, &origin,
+                )
             }
+            _ => None,
         }
-        None
     }
 
     fn resolve_call_result(
@@ -207,7 +220,6 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         at: SourcePosition,
         fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
-        use crate::semantic::StaticArgument;
         if owner.language == "rust" && callee == "__rust_identity_some" {
             return Some(if self.unshadowed_global(owner, "Some", at) {
                 fallback.unwrap_or(TypeTarget::Unknown)
@@ -219,95 +231,31 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             return None;
         }
         if let Some(site) = site {
-            if let Some((global, _member)) = callee.split_once('.') {
-                if let Some(mappings) = self
-                    .interner
-                    .lookup_path(&owner.path)
-                    .and_then(|path| self.argument_factories.get(&path))
-                {
-                    if let Some(callee_id) = self.symbol_id(callee) {
-                        let mut selected: Option<
-                            std::sync::Arc<super::super::value_flow::ConfiguredReceiverAuthority>,
-                        > = None;
-                        let mut ambiguous = false;
-                        for (argument, literal) in site.arguments.iter().enumerate() {
-                            let StaticArgument::String { value } = literal else {
-                                continue;
-                            };
-                            let Some(value_id) = self.symbol_id(value) else {
-                                continue;
-                            };
-                            for candidate in mappings
-                                .get(&(callee_id, argument, value_id))
-                                .into_iter()
-                                .flatten()
-                            {
-                                if let Some(previous) = &selected {
-                                    let same = match (previous.as_ref(), candidate.as_ref()) {
-                                        (
-                                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                                                pack: a,
-                                                rule_id: x,
-                                                ..
-                                            },
-                                            super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                                                pack: b,
-                                                rule_id: y,
-                                                ..
-                                            },
-                                        ) => a == b && x == y,
-                                        _ => false,
-                                    };
-                                    if !same {
-                                        ambiguous = true;
-                                        break;
-                                    }
-                                } else {
-                                    if !self.unshadowed_global(owner, global, at) {
-                                        return None;
-                                    }
-                                    selected = Some(candidate.clone());
-                                }
-                            }
-                            if ambiguous {
-                                return fallback;
-                            }
-                        }
-                        if let Some(authority) = selected {
-                            return Some(TypeTarget::ConfiguredReceiver {
-                                authority,
-                                origin: Box::new(TypeTarget::External {
-                                    module: callee.to_owned(),
-                                    import_line: site.position.line,
-                                }),
-                                fallback: fallback.map(Box::new),
-                                evidence: format!("{}:{}", self.dependencies.digest(), owner.path),
-                            });
-                        }
-                    }
+            match self.resolve_argument_factory_call(owner, callee, site, at) {
+                Some(Some(TypeTarget::ConfiguredReceiver {
+                    authority,
+                    origin,
+                    evidence,
+                    ..
+                })) => {
+                    return Some(TypeTarget::ConfiguredReceiver {
+                        authority,
+                        origin,
+                        fallback: fallback.map(Box::new),
+                        evidence,
+                    });
                 }
+                Some(Some(other)) => return Some(other),
+                Some(None) => return fallback,
+                None => {}
             }
         }
         let head = callee.split('.').next().unwrap_or(callee);
-        let has_imported_alias = |head: &str| {
-            let mut scope = owner.qualname.as_str();
-            loop {
-                if self
-                    .nodes_in_path(scope, &owner.path)
-                    .any(|node| self.imported_alias(node, head).is_some())
-                {
-                    return true;
-                }
-                let Some((parent, _)) = scope.rsplit_once('.') else {
-                    return false;
-                };
-                scope = parent;
-            }
-        };
         let unshadowed = !matches!(
             self.resolve_symbol(owner, head, at, SymbolRole::Callable),
             Symbol::Callable(_)
-        ) && (self.unshadowed_global(owner, head, at) || has_imported_alias(head));
+        ) && (self.unshadowed_global(owner, head, at)
+            || self.has_imported_alias_in_scope(owner, head));
         if !unshadowed {
             return fallback;
         }
@@ -750,6 +698,95 @@ struct ReturnProjection<'p, 'a> {
 }
 
 impl<'a> Context<'a> {
+    fn same_nominal_authority(
+        a: &super::super::value_flow::ConfiguredReceiverAuthority,
+        b: &super::super::value_flow::ConfiguredReceiverAuthority,
+    ) -> bool {
+        matches!(
+            (a, b),
+            (
+                super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                    pack: pack_a,
+                    rule_id: rule_a,
+                    ..
+                },
+                super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                    pack: pack_b,
+                    rule_id: rule_b,
+                    ..
+                },
+            ) if pack_a == pack_b && rule_a == rule_b
+        )
+    }
+
+    fn resolve_argument_factory_call(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+        site: &crate::semantic::CallSiteEvidence,
+        at: SourcePosition,
+    ) -> Option<Option<TypeTarget<'a>>> {
+        use crate::semantic::StaticArgument;
+        let (global, _member) = callee.split_once('.')?;
+        let path = self.interner.lookup_path(&owner.path)?;
+        let mappings = self.argument_factories.get(&path)?;
+        let callee_id = self.symbol_id(callee)?;
+        let mut selected: Option<
+            std::sync::Arc<super::super::value_flow::ConfiguredReceiverAuthority>,
+        > = None;
+        for (argument, literal) in site.arguments.iter().enumerate() {
+            let StaticArgument::String { value } = literal else {
+                continue;
+            };
+            let Some(value_id) = self.symbol_id(value) else {
+                continue;
+            };
+            for candidate in mappings
+                .get(&(callee_id, argument, value_id))
+                .into_iter()
+                .flatten()
+            {
+                if let Some(previous) = &selected {
+                    if !Self::same_nominal_authority(previous.as_ref(), candidate.as_ref()) {
+                        return Some(None);
+                    }
+                    continue;
+                }
+                if !self.unshadowed_global(owner, global, at) {
+                    return None;
+                }
+                selected = Some(candidate.clone());
+            }
+        }
+        selected.map(|authority| {
+            Some(TypeTarget::ConfiguredReceiver {
+                authority,
+                origin: Box::new(TypeTarget::External {
+                    module: callee.to_owned(),
+                    import_line: site.position.line,
+                }),
+                fallback: None,
+                evidence: format!("{}:{}", self.dependencies.digest(), owner.path),
+            })
+        })
+    }
+
+    fn has_imported_alias_in_scope(&self, owner: &'a Node, head: &str) -> bool {
+        let mut scope = owner.qualname.as_str();
+        loop {
+            if self
+                .nodes_in_path(scope, &owner.path)
+                .any(|node| self.imported_alias(node, head).is_some())
+            {
+                return true;
+            }
+            let Some((parent, _)) = scope.rsplit_once('.') else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
     fn resolve_nominal_target(
         &self,
         owner: &'a Node,
@@ -1146,6 +1183,285 @@ impl<'a> Context<'a> {
         }
         Some(TypeTarget::Unknown)
     }
+    fn resolve_receiver_access_symbol(
+        &self,
+        owner: &'a Node,
+        head: &str,
+        member: &str,
+    ) -> Option<Symbol<'a>> {
+        let receiver_access = super::super::python::semantic_context::receiver_access(owner, head)
+            .or_else(|| super::super::javascript::semantic_context::receiver_access(owner, head));
+        let (associated, include_interface) = receiver_access.filter(|_| !name_rebound(owner, head))?;
+        let mut scope = owner.qualname.as_str();
+        while let Some((parent, _)) = scope.rsplit_once('.') {
+            if let Some(class) = self
+                .nodes_in_path(parent, &owner.path)
+                .find(|n| n.kind == "class" || (include_interface && n.kind == "interface"))
+            {
+                return Some(if member.is_empty() {
+                    Symbol::Type(TypeTarget::Local(class))
+                } else {
+                    self.member(class, member, associated, owner)
+                });
+            }
+            scope = parent;
+        }
+        None
+    }
+
+    fn resolve_imported_node_targets(
+        &self,
+        owner: &'a Node,
+        targets: &[&'a Node],
+        member: &str,
+        role: SymbolRole,
+        lookup_key: &mut String,
+    ) -> Symbol<'a> {
+        if member.is_empty() {
+            return self.classify(targets.iter().copied(), role);
+        }
+        #[cfg(feature = "lang-rust")]
+        if owner.language == "rust" {
+            return self.resolve_rust_member_path(owner, targets, member, role);
+        }
+        if matches!(role, SymbolRole::Callable) {
+            if let [target] = targets {
+                if matches!(
+                    target.kind.as_str(),
+                    "class" | "struct" | "enum" | "interface"
+                ) {
+                    return self.member(target, member, true, owner);
+                }
+            }
+        }
+        let mut nodes = Vec::new();
+        for target in targets {
+            if target.kind == "module"
+                && matches!(
+                    target.language.as_str(),
+                    "typescript" | "javascript" | "vue"
+                )
+            {
+                let (export, rest) = member.split_once('.').unwrap_or((member, ""));
+                let Some(exported) = self
+                    .exports
+                    .get(target.language.as_str())
+                    .and_then(|exports| {
+                        self.interner
+                            .lookup_path(target.path.as_str())
+                            .and_then(|path| exports.get(&path))
+                    })
+                    .and_then(|exports| {
+                        self.interner
+                            .lookup_symbol(export)
+                            .and_then(|name| exports.get(&name))
+                    })
+                else {
+                    continue;
+                };
+                let Some(exported) = exported else {
+                    return Symbol::Ambiguous;
+                };
+                if rest.is_empty() {
+                    nodes.push(*exported);
+                } else if targets.len() == 1
+                    && matches!(role, SymbolRole::Callable)
+                    && matches!(exported.kind.as_str(), "class" | "interface")
+                {
+                    return self.member(exported, rest, true, owner);
+                }
+                continue;
+            }
+            nodes.extend(
+                self.by_qual
+                    .get(super::super::qualified(lookup_key, &target.qualname, member))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|node| node.path == target.path),
+            );
+        }
+        self.classify(nodes.into_iter(), role)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_imported_symbol_in_scope(
+        &self,
+        owner: &'a Node,
+        scope: &str,
+        name: &str,
+        head: &str,
+        member: &str,
+        at: SourcePosition,
+        role: SymbolRole,
+        import: &Imported<'a>,
+        lookup_key: &mut String,
+    ) -> Symbol<'a> {
+        let imported_at = match import {
+            Imported::Nodes(_, position, _) | Imported::External(_, position, _, _) => {
+                Some(*position)
+            }
+            Imported::Unknown => None,
+        };
+        if let Some(imported_at) = imported_at {
+            let local = self
+                .by_qual
+                .get(super::super::qualified(lookup_key, scope, name))
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|candidate| {
+                    candidate.path == owner.path
+                        && SourcePosition {
+                            line: candidate.line,
+                            column: candidate.details["column"].as_u64().unwrap_or(0) as usize,
+                        } > imported_at
+                        && Self::visible(owner, candidate, at, role)
+                });
+            if local.clone().next().is_some() {
+                return self.classify(local, role);
+            }
+        }
+        let type_only = match import {
+            Imported::Nodes(_, _, type_only) => *type_only,
+            Imported::External(_, _, reference, _) => matches!(
+                reference.receiver_hint.as_ref(),
+                Some(ReceiverHint::TypeOnlyImport)
+            ),
+            Imported::Unknown => false,
+        };
+        if type_only && matches!(role, SymbolRole::Callable | SymbolRole::Constructor) {
+            return Symbol::Unknown;
+        }
+        match import {
+            Imported::Nodes(targets, position, _)
+                if *position <= at
+                    || super::super::vue::semantic_context::template_import_visible(owner) =>
+            {
+                self.resolve_imported_node_targets(owner, targets, member, role, lookup_key)
+            }
+            Imported::External(module, position, reference, _) if *position <= at => {
+                if matches!(module.as_str(), "typing" | "typing_extensions")
+                    && (member == "Any" || head == "Any")
+                {
+                    return Symbol::Unknown;
+                }
+                if let Some(symbol) = super::super::python::semantic_context::external_import_type(
+                    owner,
+                    module,
+                    reference,
+                    head,
+                    member,
+                    role,
+                    position.line,
+                ) {
+                    return symbol;
+                }
+                let matched = self
+                    .path_id(&owner.path)
+                    .and_then(|path| self.receiver_types.get(&path))
+                    .into_iter()
+                    .flat_map(|receivers| receivers.iter())
+                    .find(|receiver| {
+                        matches!(role, SymbolRole::Type)
+                            && receiver.module.as_deref() == Some(module)
+                            && receiver.export.as_deref().is_some_and(|export| {
+                                (reference.expression == export && member.is_empty())
+                                    || (reference.expression == *module && member == export)
+                            })
+                    });
+                Symbol::Type(TypeTarget::External {
+                    module: matched.map_or_else(|| module.clone(), |r| r.name.clone()),
+                    import_line: position.line,
+                })
+            }
+            _ => Symbol::Unknown,
+        }
+    }
+
+    fn resolve_rust_external_or_crate_symbol(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        role: SymbolRole,
+    ) -> Option<Symbol<'a>> {
+        if owner.language != "rust" {
+            return None;
+        }
+        #[cfg(feature = "lang-rust")]
+        if let Some((crate_name, tail)) = name.split_once('.') {
+            if let Some(root_module) =
+                self.rust_forwarding
+                    .workspace_crate_root(self.dependencies, &owner.path, crate_name)
+            {
+                if tail.is_empty() {
+                    return Some(self.classify(std::iter::once(root_module), role));
+                }
+                let resolved = self.resolve_rust_member_path(owner, &[root_module], tail, role);
+                if !matches!(resolved, Symbol::Unknown) {
+                    return Some(resolved);
+                }
+            }
+        }
+        let canonical = name.replace('.', "::");
+        let crate_name = canonical.split("::").next().unwrap_or("");
+        if ((canonical.contains("::") && matches!(crate_name, "std" | "core" | "alloc"))
+            || self.dependencies.declares_for_path(
+                languages::LanguageFamily("rust"),
+                &owner.path,
+                crate_name,
+            ))
+            && self
+                .dependencies
+                .class_hierarchy_authority_for_path(&owner.path, &canonical, None)
+                .is_some()
+        {
+            return Some(Symbol::Type(TypeTarget::External {
+                module: canonical,
+                import_line: 0,
+            }));
+        }
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_symbol_in_node(
+        &self,
+        owner: &'a Node,
+        node: &'a Node,
+        scope: &str,
+        name: &str,
+        head: &str,
+        member: &str,
+        at: SourcePosition,
+        role: SymbolRole,
+        lookup_key: &mut String,
+    ) -> Option<Symbol<'a>> {
+        if self.commonjs.tracks(node, head) && !self.admits_commonjs_binding(node, head, owner, at) {
+            return Some(Symbol::Unknown);
+        }
+        if (node.rebinding_names().any(|n| n == head) || self.node_has_rebinding(node, head))
+            && !self.admits_commonjs_binding(node, head, owner, at)
+        {
+            return Some(Symbol::Unknown);
+        }
+        let import = self
+            .symbol_id(&node.id)
+            .and_then(|node_id| self.imports.get(&node_id))
+            .and_then(|aliases| self.symbol_id(head).and_then(|head| aliases.get(&head)))?;
+        Some(self.resolve_imported_symbol_in_scope(
+            owner,
+            scope,
+            name,
+            head,
+            member,
+            at,
+            role,
+            import,
+            lookup_key,
+        ))
+    }
+
     fn resolve_symbol_raw(
         &self,
         owner: &'a Node,
@@ -1156,7 +1472,7 @@ impl<'a> Context<'a> {
         if let Some(symbol) = self.named_member(owner, raw_name, at) {
             return symbol;
         }
-        let Some(name) = super::super::receiver_type_name(raw_name) else {
+        let Some(name) = crate::linker::types::receiver_type_name(raw_name) else {
             return Symbol::Unknown;
         };
         if owner.language == "rust" {
@@ -1171,25 +1487,8 @@ impl<'a> Context<'a> {
             }
         }
         let (head, member) = name.split_once('.').unwrap_or((&name, ""));
-        let receiver_access = super::super::python::semantic_context::receiver_access(owner, head)
-            .or_else(|| super::super::javascript::semantic_context::receiver_access(owner, head));
-        if let Some((associated, include_interface)) =
-            receiver_access.filter(|_| !name_rebound(owner, head))
-        {
-            let mut scope = owner.qualname.as_str();
-            while let Some((parent, _)) = scope.rsplit_once('.') {
-                if let Some(class) = self
-                    .nodes_in_path(parent, &owner.path)
-                    .find(|n| n.kind == "class" || (include_interface && n.kind == "interface"))
-                {
-                    if member.is_empty() {
-                        return Symbol::Type(TypeTarget::Local(class));
-                    } else {
-                        return self.member(class, member, associated, owner);
-                    }
-                }
-                scope = parent;
-            }
+        if let Some(symbol) = self.resolve_receiver_access_symbol(owner, head, member) {
+            return symbol;
         }
         let mut scope = owner.qualname.as_str();
         let mut lookup_key = String::with_capacity(128);
@@ -1197,199 +1496,18 @@ impl<'a> Context<'a> {
             let scope_nodes = self.by_qual.get(scope);
             if let Some(nodes) = scope_nodes {
                 for node in nodes.iter().copied().filter(|node| node.path == owner.path) {
-                    if self.commonjs.tracks(node, head)
-                        && !self.admits_commonjs_binding(node, head, owner, at)
-                    {
-                        return Symbol::Unknown;
-                    }
-                    if (node.rebinding_names().any(|name| name == head)
-                        || self.node_has_rebinding(node, head))
-                        && !self.admits_commonjs_binding(node, head, owner, at)
-                    {
-                        return Symbol::Unknown;
-                    }
-                    if let Some(import) = self
-                        .symbol_id(&node.id)
-                        .and_then(|node_id| self.imports.get(&node_id))
-                        .and_then(|aliases| {
-                            self.symbol_id(head).and_then(|head| aliases.get(&head))
-                        })
-                    {
-                        let imported_at = match import {
-                            Imported::Nodes(_, position, _)
-                            | Imported::External(_, position, _, _) => Some(*position),
-                            Imported::Unknown => None,
-                        };
-                        if let Some(imported_at) = imported_at {
-                            let local = self
-                                .by_qual
-                                .get(super::super::qualified(&mut lookup_key, scope, &name))
-                                .into_iter()
-                                .flatten()
-                                .copied()
-                                .filter(|candidate| {
-                                    candidate.path == owner.path
-                                        && SourcePosition {
-                                            line: candidate.line,
-                                            column: candidate.details["column"]
-                                                .as_u64()
-                                                .unwrap_or(0)
-                                                as usize,
-                                        } > imported_at
-                                        && Self::visible(owner, candidate, at, role)
-                                });
-                            if local.clone().next().is_some() {
-                                return self.classify(local, role);
-                            }
-                        }
-                        let type_only = match import {
-                            Imported::Nodes(_, _, type_only) => *type_only,
-                            Imported::External(_, _, reference, _) => matches!(
-                                reference.receiver_hint.as_ref(),
-                                Some(ReceiverHint::TypeOnlyImport)
-                            ),
-                            Imported::Unknown => false,
-                        };
-                        if type_only
-                            && matches!(role, SymbolRole::Callable | SymbolRole::Constructor)
-                        {
-                            return Symbol::Unknown;
-                        }
-                        return match import {
-                            Imported::Nodes(targets, position, _)
-                                if *position <= at
-                                    || super::super::vue::semantic_context::template_import_visible(
-                                        owner,
-                                    ) =>
-                            {
-                                if member.is_empty() {
-                                    self.classify(targets.iter().copied(), role)
-                                } else {
-                                    #[cfg(feature = "lang-rust")]
-                                    if owner.language == "rust" {
-                                        return self.resolve_rust_member_path(
-                                            owner,
-                                            targets,
-                                            member,
-                                            role,
-                                        );
-                                    }
-                                    if matches!(role, SymbolRole::Callable) {
-                                        if let [target] = targets.as_slice() {
-                                            if matches!(
-                                                target.kind.as_str(),
-                                                "class" | "struct" | "enum" | "interface"
-                                            ) {
-                                                return self.member(target, member, true, owner);
-                                            }
-                                        }
-                                    }
-                                    let mut nodes = Vec::new();
-                                    for target in targets {
-                                        if target.kind == "module"
-                                            && matches!(
-                                                target.language.as_str(),
-                                                "typescript" | "javascript" | "vue"
-                                            )
-                                        {
-                                            let (export, rest) =
-                                                member.split_once('.').unwrap_or((member, ""));
-                                            let Some(exported) = self
-                                                .exports
-                                                .get(target.language.as_str())
-                                                .and_then(|exports| {
-                                                    self.interner
-                                                        .lookup_path(target.path.as_str())
-                                                        .and_then(|path| exports.get(&path))
-                                                })
-                                                .and_then(|exports| {
-                                                    self.interner
-                                                        .lookup_symbol(export)
-                                                        .and_then(|name| exports.get(&name))
-                                                })
-                                            else {
-                                                continue;
-                                            };
-                                            let Some(exported) = exported else {
-                                                return Symbol::Ambiguous;
-                                            };
-                                            if rest.is_empty() {
-                                                nodes.push(*exported);
-                                            } else if targets.len() == 1
-                                                && matches!(role, SymbolRole::Callable)
-                                                && matches!(
-                                                    exported.kind.as_str(),
-                                                    "class" | "interface"
-                                                )
-                                            {
-                                                return self.member(exported, rest, true, owner);
-                                            }
-                                            continue;
-                                        }
-                                        nodes.extend(
-                                            self.by_qual
-                                                .get(super::super::qualified(
-                                                    &mut lookup_key,
-                                                    &target.qualname,
-                                                    member,
-                                                ))
-                                                .into_iter()
-                                                .flatten()
-                                                .copied()
-                                                .filter(|node| node.path == target.path),
-                                        );
-                                    }
-                                    self.classify(nodes.into_iter(), role)
-                                }
-                            }
-                            Imported::External(module, position, reference, _)
-                                if *position <= at =>
-                            {
-                                if matches!(module.as_str(), "typing" | "typing_extensions")
-                                    && (member == "Any" || head == "Any")
-                                {
-                                    Symbol::Unknown
-                                } else if let Some(symbol) =
-                                    super::super::python::semantic_context::external_import_type(
-                                        owner,
-                                        module,
-                                        reference,
-                                        head,
-                                        member,
-                                        role,
-                                        position.line,
-                                    )
-                                {
-                                    symbol
-                                } else if let Some(receiver) = self
-                                    .path_id(&owner.path)
-                                    .and_then(|path| self.receiver_types.get(&path))
-                                    .into_iter()
-                                    .flat_map(|receivers| receivers.iter())
-                                    .find(|receiver| {
-                                        matches!(role, SymbolRole::Type)
-                                            && receiver.module.as_deref() == Some(module)
-                                            && receiver.export.as_deref().is_some_and(|export| {
-                                                (reference.expression == export
-                                                    && member.is_empty())
-                                                    || (reference.expression == *module
-                                                        && member == export)
-                                            })
-                                    })
-                                {
-                                    Symbol::Type(TypeTarget::External {
-                                        module: receiver.name.clone(),
-                                        import_line: position.line,
-                                    })
-                                } else {
-                                    Symbol::Type(TypeTarget::External {
-                                        module: module.clone(),
-                                        import_line: position.line,
-                                    })
-                                }
-                            }
-                            _ => Symbol::Unknown,
-                        };
+                    if let Some(symbol) = self.resolve_symbol_in_node(
+                        owner,
+                        node,
+                        scope,
+                        &name,
+                        head,
+                        member,
+                        at,
+                        role,
+                        &mut lookup_key,
+                    ) {
+                        return symbol;
                     }
                 }
             }
@@ -1418,20 +1536,7 @@ impl<'a> Context<'a> {
             if local.clone().next().is_some() {
                 return self.classify(local, role);
             }
-            let value_shadows_role = !(owner.language == "rust"
-                && (matches!(role, SymbolRole::Type)
-                    || raw_name
-                        .split_once('.')
-                        .map_or(raw_name, |(before_dot, _)| before_dot)
-                        .contains("::")));
-            if value_shadows_role
-                && scope_nodes.is_some_and(|nodes| {
-                    nodes
-                        .iter()
-                        .filter(|node| node.path == owner.path)
-                        .any(|node| node.binding_names().any(|name| name == head))
-                })
-            {
+            if scope_nodes_shadow_value(owner, raw_name, head, role, scope_nodes) {
                 return Symbol::Unknown;
             }
             let Some((parent, _)) = scope.rsplit_once('.') else {
@@ -1439,46 +1544,8 @@ impl<'a> Context<'a> {
             };
             scope = parent;
         }
-        if owner.language == "rust" {
-            #[cfg(feature = "lang-rust")]
-            if let Some((crate_name, tail)) = name.split_once('.') {
-                if let Some(root_module) = self.rust_forwarding.workspace_crate_root(
-                    self.dependencies,
-                    &owner.path,
-                    crate_name,
-                ) {
-                    if tail.is_empty() {
-                        return self.classify(std::iter::once(root_module), role);
-                    }
-                    let resolved = self.resolve_rust_member_path(
-                        owner,
-                        &[root_module],
-                        tail,
-                        role,
-                    );
-                    if !matches!(resolved, Symbol::Unknown) {
-                        return resolved;
-                    }
-                }
-            }
-            let canonical = name.replace('.', "::");
-            let crate_name = canonical.split("::").next().unwrap_or("");
-            if ((canonical.contains("::") && matches!(crate_name, "std" | "core" | "alloc"))
-                || self.dependencies.declares_for_path(
-                    languages::LanguageFamily("rust"),
-                    &owner.path,
-                    crate_name,
-                ))
-                && self
-                    .dependencies
-                    .class_hierarchy_authority_for_path(&owner.path, &canonical, None)
-                    .is_some()
-            {
-                return Symbol::Type(TypeTarget::External {
-                    module: canonical,
-                    import_line: 0,
-                });
-            }
+        if let Some(symbol) = self.resolve_rust_external_or_crate_symbol(owner, &name, role) {
+            return symbol;
         }
         let builtin = languages::by_id(&owner.language).is_some_and(|profile| {
             profile.builtin_type(&name)

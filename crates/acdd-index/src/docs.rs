@@ -79,14 +79,273 @@ pub fn render_outline(_path: &str, source: &str, _spec_paths: &[String]) -> Resu
     Ok(lines.join("\n"))
 }
 
-/// Source-derived metadata retained on the generic document node.
-pub fn extract_with_details(
-    path: &str,
-    source: &str,
+struct SectionScanState<'a> {
+    path: &'a str,
+    spec_paths: &'a [String],
+    known_zones: Option<&'a BTreeSet<String>>,
+    line_starts: &'a [usize],
+    body_offset: usize,
+    meta: &'a Frontmatter,
+    frontmatter_error: Option<&'a str>,
+}
+
+struct ScannedSectionEvents {
+    symbols: Vec<String>,
+    invariants: Vec<String>,
+    citations: Vec<Value>,
+    symbol_claims: Vec<Value>,
+    arch_rules: Vec<Value>,
+    arch_rule_errors: Vec<Value>,
+    fenced_line_ranges: Vec<(usize, usize)>,
+}
+
+struct DocSectionEntryInput<'a> {
+    index: usize,
+    start: usize,
+    end: usize,
+    title: &'a str,
+    content: &'a str,
     mtime: f64,
-    spec_paths: &[String],
-) -> Result<Vec<(DocSection, Value)>> {
-    extract_with_details_with_zones(path, source, mtime, spec_paths, None)
+}
+
+fn scan_section_events(
+    path: &str,
+    content: &str,
+    section_line: usize,
+    base_offset: usize,
+    line_starts: &[usize],
+    known_zones: Option<&BTreeSet<String>>,
+    seen_rule_ids: &mut BTreeSet<String>,
+) -> ScannedSectionEvents {
+    let line_at = |offset: usize| -> usize {
+        let pos = base_offset + offset;
+        line_starts.partition_point(|&start_pos| start_pos <= pos)
+    };
+    let mut symbols = Vec::new();
+    let mut invariants = Vec::new();
+    let mut citations = Vec::new();
+    let mut symbol_claims: Vec<Value> = Vec::new();
+    let mut arch_rules: Vec<Value> = Vec::new();
+    let mut arch_rule_errors: Vec<Value> = Vec::new();
+    let mut fenced_line_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut active_fenced_block: Option<(usize, usize, bool, String)> = None;
+    let mut quote = String::new();
+    let mut in_quote = false;
+    let mut active_link: Option<ActiveLink> = None;
+    let mut next_link_occurrence = 0usize;
+    for (event, range) in Parser::new(content).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                let is_acdd_rule = info.split_whitespace().next() == Some("acdd-rule");
+                active_fenced_block = Some((
+                    range.start,
+                    line_at(range.start),
+                    is_acdd_rule,
+                    String::new(),
+                ));
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some((block_start, start_line, is_acdd_rule, yaml)) =
+                    active_fenced_block.take()
+                {
+                    let end_offset = range.end.saturating_sub(1).max(block_start);
+                    fenced_line_ranges.push((start_line, line_at(end_offset)));
+                    if is_acdd_rule {
+                        parse_acdd_rule_block(
+                            &yaml,
+                            start_line,
+                            known_zones,
+                            seen_rule_ids,
+                            &mut arch_rules,
+                            &mut arch_rule_errors,
+                        );
+                    }
+                }
+            }
+            Event::Text(value) => {
+                if let Some((_, _, true, ref mut yaml)) = active_fenced_block {
+                    yaml.push_str(&value);
+                }
+                if in_quote && active_fenced_block.is_none() {
+                    quote.push_str(&value);
+                }
+            }
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let line = line_at(range.start);
+                let target = dest_url.to_string();
+                citations.push(json!({"target":target,"line":line}));
+                let raw_path = target.split('#').next().unwrap_or_default();
+                let explicit_path = !raw_path.is_empty();
+                let target_path = explicit_path
+                    .then(|| normalize_claim_path(path, raw_path))
+                    .flatten();
+                let range = line_anchor(&target).and_then(|(raw_path, first, last)| {
+                    normalize_claim_path(path, &raw_path)
+                        .map(|target_path| (target_path, first, last))
+                });
+                active_link = Some(ActiveLink {
+                    line,
+                    target_path,
+                    explicit_path,
+                    range: range.map(|(_, first, last)| (first, last)),
+                    occurrence: next_link_occurrence,
+                    claim_start: symbol_claims.len(),
+                });
+                next_link_occurrence = next_link_occurrence.saturating_add(1);
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(link) = active_link.take() {
+                    let label_count = symbol_claims.len().saturating_sub(link.claim_start);
+                    for claim in &mut symbol_claims[link.claim_start..] {
+                        claim["label_count"] = json!(label_count);
+                    }
+                }
+            }
+            Event::Code(value) => {
+                let name = value.trim_end_matches("()").trim();
+                if is_symbol_token(name) {
+                    symbols.push(name.to_owned());
+                    let mut claim = json!({
+                        "name":name,
+                        "line":line_at(range.start),
+                        "explicit_path":active_link.as_ref().is_some_and(|link| link.explicit_path),
+                        "label_count":1,
+                    });
+                    if let Some(link) = &active_link {
+                        claim["link_occurrence"] = json!(link.occurrence);
+                        claim["line"] = json!(link.line);
+                        if let Some(target_path) = &link.target_path {
+                            claim["target_path"] = json!(target_path);
+                        }
+                        if let Some((first, last)) = link.range {
+                            claim["start_line"] = json!(first);
+                            claim["end_line"] = json!(last);
+                        }
+                    }
+                    symbol_claims.push(claim);
+                }
+                if in_quote {
+                    quote.push_str(&value);
+                }
+            }
+            Event::Start(Tag::BlockQuote) => {
+                in_quote = true;
+                quote.clear();
+            }
+            Event::End(TagEnd::BlockQuote) => {
+                if quote.contains("Invariant:")
+                    && ["[!IMPORTANT]", "[!WARNING]", "[!NOTE]"]
+                        .iter()
+                        .any(|alert| quote.contains(alert))
+                {
+                    invariants.push(quote.trim().to_owned());
+                }
+                in_quote = false;
+            }
+            Event::SoftBreak | Event::HardBreak if in_quote => quote.push('\n'),
+            _ => {}
+        }
+    }
+    append_wikilinks(content, section_line, &mut citations);
+    symbols.sort();
+    symbols.dedup();
+    ScannedSectionEvents {
+        symbols,
+        invariants,
+        citations,
+        symbol_claims,
+        arch_rules,
+        arch_rule_errors,
+        fenced_line_ranges,
+    }
+}
+
+fn build_doc_section_entry(
+    state: &SectionScanState<'_>,
+    entry: DocSectionEntryInput<'_>,
+    seen_rule_ids: &mut BTreeSet<String>,
+) -> (DocSection, Value) {
+    let DocSectionEntryInput {
+        index,
+        start,
+        end,
+        title,
+        content,
+        mtime,
+    } = entry;
+    let base_offset = state.body_offset + start;
+    let section_line = state.line_starts.partition_point(|&start_pos| start_pos <= base_offset);
+    let section_end_line = section_line + content.lines().count().saturating_sub(1);
+    let ScannedSectionEvents {
+        symbols,
+        invariants,
+        citations,
+        symbol_claims,
+        arch_rules,
+        arch_rule_errors,
+        fenced_line_ranges,
+    } = scan_section_events(
+        state.path,
+        content,
+        section_line,
+        base_offset,
+        state.line_starts,
+        state.known_zones,
+        seen_rule_ids,
+    );
+    let declared_invariants = content
+        .lines()
+        .enumerate()
+        .filter_map(|(offset, line)| {
+            let line_num = section_line + offset;
+            if fenced_line_ranges
+                .iter()
+                .any(|&(block_start, block_end)| line_num >= block_start && line_num <= block_end)
+            {
+                return None;
+            }
+            let id = invariant_id(line)?;
+            let rule = line.trim().trim_start_matches(['-', '*']).trim();
+            (!rule.is_empty()).then(|| json!({"id":id,"rule":rule,"line":line_num}))
+        })
+        .collect::<Vec<_>>();
+    let _ = end;
+    let is_invariant = !invariants.is_empty() || !declared_invariants.is_empty();
+    let doc = DocSection {
+        doc_id: format!("doc:{}:{index}", state.path),
+        path: state.path.into(),
+        section_title: title.to_owned(),
+        doc_type: state
+            .meta
+            .doc_type
+            .clone()
+            .unwrap_or_else(|| default_doc_type(state.path, state.spec_paths).into()),
+        content: content.into(),
+        is_invariant,
+        invariants,
+        referenced_symbols: symbols,
+        mtime,
+        size: content.len() as u64,
+    };
+    let mut details = json!({
+        "line":section_line,
+        "end_line":section_end_line,
+        "status":state.meta.status,
+        "citations":citations,
+        "symbol_claims":symbol_claims,
+        "declared_invariants":declared_invariants,
+        "is_invariant":doc.is_invariant,
+    });
+    if let Some(error) = state.frontmatter_error {
+        details["frontmatter_error"] = json!(error);
+    }
+    if !arch_rules.is_empty() {
+        details["arch_rules"] = json!(arch_rules);
+    }
+    if !arch_rule_errors.is_empty() {
+        details["arch_rule_errors"] = json!(arch_rule_errors);
+    }
+    (doc, details)
 }
 
 /// Source-derived metadata retained on the generic document node with optional known architecture zones.
@@ -131,6 +390,15 @@ pub fn extract_with_details_with_zones(
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
+    let state = SectionScanState {
+        path,
+        spec_paths,
+        known_zones,
+        line_starts: &line_starts,
+        body_offset,
+        meta: &meta,
+        frontmatter_error: frontmatter_error.as_deref(),
+    };
     let mut seen_rule_ids = BTreeSet::new();
     let mut output = Vec::new();
     for (index, (start, title)) in headings.iter().enumerate() {
@@ -141,195 +409,18 @@ pub fn extract_with_details_with_zones(
         if content.trim().is_empty() {
             continue;
         }
-        let line_at = |offset: usize| -> usize {
-            let pos = body_offset + *start + offset;
-            line_starts.partition_point(|&start_pos| start_pos <= pos)
-        };
-        let section_line = line_at(0);
-        let section_end_line = section_line + content.lines().count().saturating_sub(1);
-
-        let mut symbols = Vec::new();
-        let mut invariants = Vec::new();
-        let mut citations = Vec::new();
-        let mut symbol_claims: Vec<Value> = Vec::new();
-        let mut arch_rules: Vec<Value> = Vec::new();
-        let mut arch_rule_errors: Vec<Value> = Vec::new();
-        let mut fenced_line_ranges: Vec<(usize, usize)> = Vec::new();
-        let mut active_fenced_block: Option<(usize, usize, bool, String)> = None;
-        let mut quote = String::new();
-        let mut in_quote = false;
-        let mut active_link: Option<ActiveLink> = None;
-        let mut next_link_occurrence = 0usize;
-        for (event, range) in Parser::new(content).into_offset_iter() {
-            match event {
-                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
-                    let is_acdd_rule = info.split_whitespace().next() == Some("acdd-rule");
-                    active_fenced_block = Some((
-                        range.start,
-                        line_at(range.start),
-                        is_acdd_rule,
-                        String::new(),
-                    ));
-                }
-                Event::End(TagEnd::CodeBlock) => {
-                    if let Some((block_start, start_line, is_acdd_rule, yaml)) =
-                        active_fenced_block.take()
-                    {
-                        let end_offset = range.end.saturating_sub(1).max(block_start);
-                        let end_line = line_at(end_offset);
-                        fenced_line_ranges.push((start_line, end_line));
-                        if is_acdd_rule {
-                            parse_acdd_rule_block(
-                                &yaml,
-                                start_line,
-                                known_zones,
-                                &mut seen_rule_ids,
-                                &mut arch_rules,
-                                &mut arch_rule_errors,
-                            );
-                        }
-                    }
-                }
-                Event::Text(value) => {
-                    if let Some((_, _, true, ref mut yaml)) = active_fenced_block {
-                        yaml.push_str(&value);
-                    }
-                    if in_quote && active_fenced_block.is_none() {
-                        quote.push_str(&value);
-                    }
-                }
-                Event::Start(Tag::Link { dest_url, .. }) => {
-                    let line = line_at(range.start);
-                    let target = dest_url.to_string();
-                    citations.push(json!({"target":target,"line":line}));
-                    let raw_path = target.split('#').next().unwrap_or_default();
-                    let explicit_path = !raw_path.is_empty();
-                    let target_path = explicit_path
-                        .then(|| normalize_claim_path(path, raw_path))
-                        .flatten();
-                    let range = line_anchor(&target).and_then(|(raw_path, first, last)| {
-                        normalize_claim_path(path, &raw_path)
-                            .map(|target_path| (target_path, first, last))
-                    });
-                    active_link = Some(ActiveLink {
-                        line,
-                        target_path,
-                        explicit_path,
-                        range: range.map(|(_, first, last)| (first, last)),
-                        occurrence: next_link_occurrence,
-                        claim_start: symbol_claims.len(),
-                    });
-                    next_link_occurrence = next_link_occurrence.saturating_add(1);
-                }
-                Event::End(TagEnd::Link) => {
-                    if let Some(link) = active_link.take() {
-                        let label_count = symbol_claims.len().saturating_sub(link.claim_start);
-                        for claim in &mut symbol_claims[link.claim_start..] {
-                            claim["label_count"] = json!(label_count);
-                        }
-                    }
-                }
-                Event::Code(value) => {
-                    let name = value.trim_end_matches("()").trim();
-                    if is_symbol_token(name) {
-                        symbols.push(name.to_owned());
-                        let mut claim = json!({
-                            "name":name,
-                            "line":line_at(range.start),
-                            "explicit_path":active_link.as_ref().is_some_and(|link| link.explicit_path),
-                            "label_count":1,
-                        });
-                        if let Some(link) = &active_link {
-                            claim["link_occurrence"] = json!(link.occurrence);
-                            claim["line"] = json!(link.line);
-                            if let Some(target_path) = &link.target_path {
-                                claim["target_path"] = json!(target_path);
-                            }
-                            if let Some((first, last)) = link.range {
-                                claim["start_line"] = json!(first);
-                                claim["end_line"] = json!(last);
-                            }
-                        }
-                        symbol_claims.push(claim);
-                    }
-                    if in_quote {
-                        quote.push_str(&value);
-                    }
-                }
-                Event::Start(Tag::BlockQuote) => {
-                    in_quote = true;
-                    quote.clear();
-                }
-                Event::End(TagEnd::BlockQuote) => {
-                    if quote.contains("Invariant:")
-                        && ["[!IMPORTANT]", "[!WARNING]", "[!NOTE]"]
-                            .iter()
-                            .any(|alert| quote.contains(alert))
-                    {
-                        invariants.push(quote.trim().to_owned());
-                    }
-                    in_quote = false;
-                }
-                Event::SoftBreak | Event::HardBreak if in_quote => quote.push('\n'),
-                _ => {}
-            }
-        }
-        append_wikilinks(content, section_line, &mut citations);
-        symbols.sort();
-        symbols.dedup();
-
-        let declared_invariants = content
-            .lines()
-            .enumerate()
-            .filter_map(|(offset, line)| {
-                let line_num = section_line + offset;
-                if fenced_line_ranges
-                    .iter()
-                    .any(|&(block_start, block_end)| line_num >= block_start && line_num <= block_end)
-                {
-                    return None;
-                }
-                let id = invariant_id(line)?;
-                let rule = line.trim().trim_start_matches(['-', '*']).trim();
-                (!rule.is_empty()).then(|| json!({"id":id,"rule":rule,"line":line_num}))
-            })
-            .collect::<Vec<_>>();
-        let is_invariant = !invariants.is_empty() || !declared_invariants.is_empty();
-        let doc_id = format!("doc:{path}:{index}");
-        let doc = DocSection {
-            doc_id: doc_id.clone(),
-            path: path.into(),
-            section_title: title.clone(),
-            doc_type: meta
-                .doc_type
-                .clone()
-                .unwrap_or_else(|| default_doc_type(path, spec_paths).into()),
-            content: content.into(),
-            is_invariant,
-            invariants: invariants.clone(),
-            referenced_symbols: symbols,
-            mtime,
-            size: content.len() as u64,
-        };
-        let mut details = json!({
-            "line":section_line,
-            "end_line":section_end_line,
-            "status":meta.status,
-            "citations":citations,
-            "symbol_claims":symbol_claims,
-            "declared_invariants":declared_invariants,
-            "is_invariant":doc.is_invariant,
-        });
-        if let Some(ref error) = frontmatter_error {
-            details["frontmatter_error"] = json!(error);
-        }
-        if !arch_rules.is_empty() {
-            details["arch_rules"] = json!(arch_rules);
-        }
-        if !arch_rule_errors.is_empty() {
-            details["arch_rule_errors"] = json!(arch_rule_errors);
-        }
-        output.push((doc, details));
+        output.push(build_doc_section_entry(
+            &state,
+            DocSectionEntryInput {
+                index,
+                start: *start,
+                end,
+                title,
+                content,
+                mtime,
+            },
+            &mut seen_rule_ids,
+        ));
     }
     Ok(output)
 }
@@ -409,21 +500,8 @@ fn parse_acdd_rule_block(
     }
 }
 
-/// Performs extract.
-pub fn extract(
-    path: &str,
-    source: &str,
-    mtime: f64,
-    spec_paths: &[String],
-) -> Result<Vec<DocSection>> {
-    Ok(extract_with_details(path, source, mtime, spec_paths)?
-        .into_iter()
-        .map(|(doc, _)| doc)
-        .collect())
-}
-
 /// Returns the default `doc_type` inferred from path and configured `specs.*.path` when frontmatter omits `doc_type`.
-pub fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
+fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
     let relative = path
         .strip_prefix('[')
         .and_then(|rest| rest.split_once("]/").map(|(_, rel)| rel))
@@ -588,7 +666,7 @@ mod tests {
 
         // Malformed frontmatter surfaces frontmatter_error and declared INV- aligns is_invariant.
         let bad_fm = "---\ntitle: [unterminated\n---\n# Rules\n- INV-ONLY-DECLARED: must align.\n";
-        let extracted = extract_with_details("docs/rules.md", bad_fm, 0.0, &specs).unwrap();
+        let extracted = extract_with_details_with_zones("docs/rules.md", bad_fm, 0.0, &specs, None).unwrap();
         assert_eq!(extracted.len(), 1);
         let (doc, details) = &extracted[0];
         assert!(doc.is_invariant);

@@ -1,7 +1,12 @@
-use super::super::resolution::ResolutionInput;
-use super::super::*;
+use crate::languages::{self, LanguageFamily};
+use crate::linker::{
+    resolution::input::ResolutionInput,
+    semantic_context, value_flow,
+};
+use crate::models::{compact_graph::CompactGraph as Graph, Facts, Node, Reference};
 use crate::semantic::{TemplateContextFact, ValueExpr, ValueFlowFacts};
 use crate::typed_facts::FlowState;
+use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeSet;
 
 pub(in crate::linker) struct TemplateRootRegistry<'a> {
@@ -314,11 +319,11 @@ fn node_value_flow<'a>(
         .map(std::borrow::Cow::Owned)
 }
 
-pub(in crate::linker) struct Registry<'a> {
+pub(in crate::linker) struct TemplateRegistry<'a> {
     by_scope: HashMap<String, HashMap<&'a str, Vec<Library<'a>>>>,
 }
 
-impl<'a> Registry<'a> {
+impl<'a> TemplateRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
         flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
@@ -670,22 +675,11 @@ pub(in crate::linker) struct RenderContextRegistry<'a> {
 }
 
 impl<'a> RenderContextRegistry<'a> {
-    pub(in crate::linker) fn build(
+    fn collect_template_includes(
         all: &'a dyn crate::FactsLookup,
-        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
-        semantic_context: &semantic_context::Context<'a>,
+        modules: &HashMap<&'a str, &'a Node>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
-    ) -> Self {
-        let modules: HashMap<&'a str, &'a Node> = all
-            .iter_facts()
-            .filter_map(|(path, source)| {
-                source
-                    .nodes
-                    .iter()
-                    .find(|node| node.kind == "module" && node.language == "html")
-                    .map(|node| (path, node))
-            })
-            .collect();
+    ) -> HashMap<&'a str, Vec<&'a str>> {
         let mut includes: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
         for (path, source) in all.iter_facts() {
             if !modules.contains_key(path) {
@@ -710,6 +704,57 @@ impl<'a> RenderContextRegistry<'a> {
                 }
             }
         }
+        includes
+    }
+
+    fn record_transitive_render_targets(
+        (path, target_path, index, workspace, scope): (&'a str, &'a str, usize, &str, &str),
+        modules: &HashMap<&'a str, &'a Node>,
+        includes: &HashMap<&'a str, Vec<&'a str>>,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
+        by_template: &mut HashMap<&'a str, Vec<usize>>,
+        by_provider: &mut HashMap<&'a str, Vec<(usize, &'a Node)>>,
+    ) {
+        let mut visited = HashSet::new();
+        let mut frontier = vec![(target_path, 0usize)];
+        while let Some((current, depth)) = frontier.pop() {
+            if !visited.insert(current) || depth > 16 {
+                continue;
+            }
+            if languages::workspace_path(current).0 != workspace
+                || dependencies.nearest_manifest_scope_for_path(LanguageFamily("python"), current)
+                    != Some(scope)
+            {
+                continue;
+            }
+            let Some(module) = modules.get(current).copied() else {
+                continue;
+            };
+            by_template.entry(current).or_default().push(index);
+            by_provider.entry(path).or_default().push((index, module));
+            if let Some(children) = includes.get(current) {
+                frontier.extend(children.iter().map(|&child| (child, depth + 1)));
+            }
+        }
+    }
+
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
+        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
+        semantic_context: &semantic_context::Context<'a>,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
+    ) -> Self {
+        let modules: HashMap<&'a str, &'a Node> = all
+            .iter_facts()
+            .filter_map(|(path, source)| {
+                source
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == "module" && node.language == "html")
+                    .map(|node| (path, node))
+            })
+            .collect();
+        let includes = Self::collect_template_includes(all, &modules, dependencies);
         let mut providers = Vec::new();
         let mut by_template: HashMap<&'a str, Vec<usize>> = HashMap::new();
         let mut by_provider: HashMap<&'a str, Vec<(usize, &'a Node)>> = HashMap::new();
@@ -791,31 +836,14 @@ impl<'a> RenderContextRegistry<'a> {
                         source: node,
                         context: context.clone(),
                     });
-                    let mut visited = HashSet::new();
-                    let mut frontier = vec![(target_path, 0usize)];
-                    while let Some((current, depth)) = frontier.pop() {
-                        if !visited.insert(current) || depth > 16 {
-                            continue;
-                        }
-                        if languages::workspace_path(current).0 != workspace
-                            || dependencies
-                                .nearest_manifest_scope_for_path(LanguageFamily("python"), current)
-                                != Some(scope)
-                        {
-                            continue;
-                        }
-                        let Some(module) = modules.get(current).copied() else {
-                            continue;
-                        };
-                        by_template.entry(current).or_default().push(index);
-                        by_provider
-                            .entry(path)
-                            .or_default()
-                            .push((index, module));
-                        if let Some(children) = includes.get(current) {
-                            frontier.extend(children.iter().map(|&child| (child, depth + 1)));
-                        }
-                    }
+                    Self::record_transitive_render_targets(
+                        (path, target_path, index, workspace, scope),
+                        &modules,
+                        &includes,
+                        dependencies,
+                        &mut by_template,
+                        &mut by_provider,
+                    );
                 }
             }
         }
@@ -941,49 +969,11 @@ fn verified_library_instance(
     })
 }
 
-pub(in crate::linker) fn builtin_evidence(
+fn match_template_symbol<'a>(
     expression: &str,
-    template_rules: &[&languages::manifests::syntax::SyntaxRule],
-) -> String {
-    let tag_name = expression.strip_prefix("template.tag.");
-    let filter_name = expression.strip_prefix("template.filter.");
-    for rule in template_rules {
-        let languages::manifests::syntax::SyntaxOperation::TemplateSymbols {
-            tags,
-            filters,
-            library_routes,
-            ..
-        } = &rule.operation
-        else {
-            continue;
-        };
-        let matched = tag_name.is_some_and(|name| {
-            tags.iter().any(|tag| tag == name) || library_routes.contains_key(name)
-        }) || filter_name
-            .is_some_and(|name| filters.iter().any(|filter| filter == name));
-        if matched {
-            let label = rule.display.builtin.as_deref();
-            return format!(
-                "{}; rule:{}:{}",
-                label.unwrap_or("builtin:configured_template"),
-                rule.pack,
-                rule.id
-            );
-        }
-    }
-    "builtin:shared_template".to_owned()
-}
-
-pub(in crate::linker) fn builtin_in_scope(
-    expression: &str,
-    reference: &Reference,
-    profile: Option<&dyn crate::languages::LanguageProfile>,
-    template_loads: &[&Reference],
-    template_rules: &[&languages::manifests::syntax::SyntaxRule],
-) -> Option<bool> {
-    if !profile.is_some_and(|profile| profile.id() == "html") {
-        return None;
-    }
+    template_rules: &[&'a languages::manifests::syntax::SyntaxRule],
+    mut match_library: impl FnMut(&str, &str) -> bool,
+) -> Option<&'a languages::manifests::syntax::SyntaxRule> {
     let tag_name = expression.strip_prefix("template.tag.");
     let filter_name = expression.strip_prefix("template.filter.");
     for rule in template_rules {
@@ -1001,19 +991,55 @@ pub(in crate::linker) fn builtin_in_scope(
                 .get(tag)
                 .map(|library| (tag, library.as_str()))
         }) {
-            if template_loads.iter().any(|load| {
-                load.expression == library
-                    && load.line < reference.line
-                    && load.alias.as_deref().is_none_or(|selected| selected == tag)
-            }) {
-                return Some(true);
+            if match_library(tag, library) {
+                return Some(rule);
             }
         }
         if tag_name.is_some_and(|name| tags.iter().any(|tag| tag == name))
             || filter_name.is_some_and(|name| filters.iter().any(|filter| filter == name))
         {
-            return Some(true);
+            return Some(rule);
         }
+    }
+    None
+}
+
+pub(in crate::linker) fn builtin_evidence(
+    expression: &str,
+    template_rules: &[&languages::manifests::syntax::SyntaxRule],
+) -> String {
+    if let Some(rule) = match_template_symbol(expression, template_rules, |_, _| true) {
+        let label = rule.display.builtin.as_deref();
+        return format!(
+            "{}; rule:{}:{}",
+            label.unwrap_or("builtin:configured_template"),
+            rule.pack,
+            rule.id
+        );
+    }
+    "builtin:shared_template".to_owned()
+}
+
+pub(in crate::linker) fn builtin_in_scope(
+    expression: &str,
+    reference: &Reference,
+    profile: Option<&dyn crate::languages::LanguageProfile>,
+    template_loads: &[&Reference],
+    template_rules: &[&languages::manifests::syntax::SyntaxRule],
+) -> Option<bool> {
+    if !profile.is_some_and(|profile| profile.id() == "html") {
+        return None;
+    }
+    if match_template_symbol(expression, template_rules, |tag, library| {
+        template_loads.iter().any(|load| {
+            load.expression == library
+                && load.line < reference.line
+                && load.alias.as_deref().is_none_or(|selected| selected == tag)
+        })
+    })
+    .is_some()
+    {
+        return Some(true);
     }
     Some(
         expression.starts_with("template.")
@@ -1023,7 +1049,7 @@ pub(in crate::linker) fn builtin_in_scope(
 
 pub(in crate::linker) fn resolve_reference(
     input: &ResolutionInput<'_>,
-    templates: &Registry<'_>,
+    templates: &TemplateRegistry<'_>,
     path: &str,
     loads: &[&Reference],
     registry_rules: &[&languages::manifests::syntax::SyntaxRule],

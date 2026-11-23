@@ -1,14 +1,38 @@
 //! Canonical POSIX shell template validation, quoting, and placeholder expansion.
 
 use super::schema::TestFilterConfig;
-use super::validate::glob_specificity;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::path_policy::glob_matches;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// Glob specificity ordering: `(literal_segments, single_wildcard_segments, !globstar_count, literal_len)`.
+pub fn glob_specificity(pattern: &str) -> (usize, usize, usize, usize) {
+    let norm = pattern.trim().replace('\\', "/");
+    let mut literal_segs = 0usize;
+    let mut single_wild_segs = 0usize;
+    let mut globstar_segs = 0usize;
+    let mut literal_chars = 0usize;
+    for seg in norm.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        if seg == "**" {
+            globstar_segs += 1;
+        } else if seg.contains('*') || seg.contains('?') {
+            single_wild_segs += 1;
+        } else {
+            literal_segs += 1;
+            literal_chars += seg.len();
+        }
+    }
+    (
+        literal_segs,
+        single_wild_segs,
+        usize::MAX - globstar_segs,
+        literal_chars,
+    )
+}
+
 /// POSIX single-quote escape (`'` -> `'\''`) wrapped in single quotes.
-pub fn posix_single_quote(raw: &str) -> String {
+fn posix_single_quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
@@ -204,7 +228,7 @@ fn substitute_active_placeholder(
 }
 
 /// Return `true` if `cmd` terminates inside an unquoted POSIX `#` comment.
-pub fn ends_inside_shell_comment(cmd: &str) -> bool {
+fn ends_inside_shell_comment(cmd: &str) -> bool {
     scan_shell_template(cmd.trim_end(), &[]).ends_in_comment
 }
 
@@ -321,6 +345,76 @@ struct ValidatedScopeArg<'a> {
     placeholders: Vec<(&'static str, usize)>,
 }
 
+fn expand_matched_scope_arg(path: &str, entry: &ValidatedScopeArg<'_>) -> Option<String> {
+    let trimmed = entry.arg.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if entry.placeholders.is_empty() {
+        return Some(trimmed.to_owned());
+    }
+    if path.contains('*') || path.contains('?') || path.contains('[') || path.contains('{') {
+        return None;
+    }
+    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if entry
+        .placeholders
+        .iter()
+        .any(|&(ph, _)| ph == "{file_stem}")
+        && stem.is_empty()
+    {
+        return None;
+    }
+    let lead_ws = entry.arg.len() - entry.arg.trim_start().len();
+    let quoted_stem = posix_single_quote(stem);
+    let quoted_path = posix_single_quote(path);
+    let mut expanded = String::with_capacity(trimmed.len() + quoted_path.len());
+    let mut cursor = 0usize;
+    for &(ph, abs_pos) in &entry.placeholders {
+        let pos = abs_pos - lead_ws;
+        expanded.push_str(&trimmed[cursor..pos]);
+        match ph {
+            "{file_stem}" => expanded.push_str(&quoted_stem),
+            "{path}" => expanded.push_str(&quoted_path),
+            _ => {}
+        }
+        cursor = pos + ph.len();
+    }
+    expanded.push_str(&trimmed[cursor..]);
+    (!expanded.is_empty()).then_some(expanded)
+}
+
+fn select_scope_args(
+    validated_args: &[ValidatedScopeArg<'_>],
+    paths: &[String],
+) -> Vec<String> {
+    if validated_args.is_empty() {
+        return Vec::new();
+    }
+    type Specificity = (usize, usize, usize, usize);
+    let mut selected_args: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        let mut best: Option<(Specificity, &ValidatedScopeArg<'_>)> = None;
+        for entry in validated_args {
+            if entry.pattern == path.as_str() || glob_matches(entry.pattern, path) {
+                let spec = glob_specificity(entry.pattern);
+                if best.is_none_or(|(best_spec, _)| spec > best_spec) {
+                    best = Some((spec, entry));
+                }
+            }
+        }
+        if let Some((_, entry)) = best {
+            if let Some(arg) = expand_matched_scope_arg(path, entry) {
+                if seen.insert(arg.clone()) {
+                    selected_args.push(arg);
+                }
+            }
+        }
+    }
+    selected_args
+}
+
 /// Render `command` by resolving `scope_args_by_pattern` against `paths` and substituting every
 /// active `{scope_target}` placeholder using boundary-safe replacement.
 ///
@@ -344,72 +438,7 @@ pub fn render_command_with_scope_target(
         });
     }
 
-    let mut selected_args: Vec<String> = Vec::new();
-    let mut seen = BTreeSet::new();
-
-    type Specificity = (usize, usize, usize, usize);
-    if !validated_args.is_empty() {
-        for path in paths {
-            let mut best: Option<(Specificity, &ValidatedScopeArg<'_>)> = None;
-            for entry in &validated_args {
-                if entry.pattern == path.as_str() || glob_matches(entry.pattern, path) {
-                    let spec = glob_specificity(entry.pattern);
-                    let better = match best {
-                        None => true,
-                        Some((best_spec, _)) => spec > best_spec,
-                    };
-                    if better {
-                        best = Some((spec, entry));
-                    }
-                }
-            }
-            if let Some((_, entry)) = best {
-                let arg = entry.arg;
-                let placeholders = &entry.placeholders;
-                let trimmed = arg.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if !placeholders.is_empty() {
-                    if path.contains('*')
-                        || path.contains('?')
-                        || path.contains('[')
-                        || path.contains('{')
-                    {
-                        continue;
-                    }
-                    let stem = Path::new(path)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
-                    if placeholders.iter().any(|&(ph, _)| ph == "{file_stem}") && stem.is_empty() {
-                        continue;
-                    }
-                    let lead_ws = arg.len() - arg.trim_start().len();
-                    let quoted_stem = posix_single_quote(stem);
-                    let quoted_path = posix_single_quote(path);
-                    let mut expanded = String::with_capacity(trimmed.len() + quoted_path.len());
-                    let mut cursor = 0usize;
-                    for &(ph, abs_pos) in placeholders {
-                        let pos = abs_pos - lead_ws;
-                        expanded.push_str(&trimmed[cursor..pos]);
-                        match ph {
-                            "{file_stem}" => expanded.push_str(&quoted_stem),
-                            "{path}" => expanded.push_str(&quoted_path),
-                            _ => {}
-                        }
-                        cursor = pos + ph.len();
-                    }
-                    expanded.push_str(&trimmed[cursor..]);
-                    if !expanded.is_empty() && seen.insert(expanded.clone()) {
-                        selected_args.push(expanded);
-                    }
-                } else if seen.insert(trimmed.to_owned()) {
-                    selected_args.push(trimmed.to_owned());
-                }
-            }
-        }
-    }
+    let selected_args = select_scope_args(&validated_args, paths);
 
     let scope_positions: Vec<usize> = cmd_scan
         .active_placeholders

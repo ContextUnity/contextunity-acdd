@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use acdd_index::models::{Facts, Graph};
-use acdd_index::{ast, docs, linker};
+use acdd_index::{ast, docs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -116,9 +116,9 @@ fn linker_borrows_arena_keys_and_reuses_qualified_lookup_storage() {
                 ast::extract("buf.py", "python", &source).unwrap(),
             ),
         ]);
-        let baseline = pool.install(|| linker::link(&facts));
+        let baseline = pool.install(|| crate::common::link_facts(&facts));
         let (graph, allocations) =
-            pool.install(|| measured_lookup_allocations(allocation_size, || linker::link(&facts)));
+            pool.install(|| measured_lookup_allocations(allocation_size, || crate::common::link_facts(&facts)));
         assert_eq!(
             serde_json::to_value((&graph.edges, &graph.coverage)).unwrap(),
             serde_json::to_value((&baseline.edges, &baseline.coverage)).unwrap(),
@@ -189,7 +189,7 @@ fn linker_borrows_arena_keys_and_reuses_qualified_lookup_storage() {
                 ast::extract("buf.py", "python", source).unwrap(),
             ),
         ]);
-        let graph = pool.install(|| linker::link(&facts));
+        let graph = pool.install(|| crate::common::link_facts(&facts));
         let method = facts["a.py"]
             .nodes
             .iter()
@@ -225,7 +225,11 @@ fn fixture() -> BTreeMap<String, Facts> {
     facts.insert(
         "docs/api.md".into(),
         Facts {
-            docs: docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0., &[]).unwrap(),
+            docs: docs::extract_with_details_with_zones("docs/api.md", "# API\n`Foo.method`\n", 0., &[], None)
+                .unwrap()
+                .into_iter()
+                .map(|(doc, _)| doc)
+                .collect(),
             ..Facts::default()
         },
     );
@@ -243,7 +247,7 @@ fn calls(graph: &Graph) -> Vec<(&str, &str, usize)> {
 #[test]
 fn imported_class_keeps_unknown_receivers_unknown_with_or_without_docs() {
     let mut facts = fixture();
-    let graph = linker::link(&facts);
+    let graph = crate::common::link_facts(&facts);
     let target = facts["a.py"]
         .nodes
         .iter()
@@ -261,10 +265,10 @@ fn imported_class_keeps_unknown_receivers_unknown_with_or_without_docs() {
         .iter()
         .any(|c| c.expression == "obj.method" && c.status == "unresolved"));
     let owners = BTreeSet::from(["consumer.py".to_owned()]);
-    let scoped = linker::link_owners(&facts, Some(&owners));
+    let scoped = crate::common::link_facts_with_root(&facts, Some(&owners), None);
     assert_eq!(calls(&graph), calls(&scoped));
     facts.remove("docs/api.md");
-    assert_eq!(calls(&graph), calls(&linker::link(&facts)));
+    assert_eq!(calls(&graph), calls(&crate::common::link_facts(&facts)));
 }
 
 #[test]
@@ -278,14 +282,18 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
             .count(),
         2
     );
-    let graph = linker::link_owners(&facts, Some(&BTreeSet::from(["docs/api.md".to_owned()])));
+    let graph = crate::common::link_facts_with_root(&facts, Some(&BTreeSet::from(["docs/api.md".to_owned()])), None);
     assert!(!graph
         .edges
         .iter()
         .any(|e| matches!(e.kind.as_str(), "documents" | "references_doc")));
     facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract("docs/api.md", "# API\n`a.Foo.method`\n", 0., &[]).unwrap();
-    let graph = linker::link(&facts);
+        docs::extract_with_details_with_zones("docs/api.md", "# API\n`a.Foo.method`\n", 0., &[], None)
+            .unwrap()
+            .into_iter()
+            .map(|(doc, _)| doc)
+            .collect();
+    let graph = crate::common::link_facts(&facts);
     let targets: Vec<_> = graph
         .edges
         .iter()
@@ -303,8 +311,12 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
     );
     facts.remove("b.py");
     facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0., &[]).unwrap();
-    let graph = linker::link(&facts);
+        docs::extract_with_details_with_zones("docs/api.md", "# API\n`Foo.method`\n", 0., &[], None)
+            .unwrap()
+            .into_iter()
+            .map(|(doc, _)| doc)
+            .collect();
+    let graph = crate::common::link_facts(&facts);
     let targets: Vec<_> = graph
         .edges
         .iter()

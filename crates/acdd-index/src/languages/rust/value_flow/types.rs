@@ -1,4 +1,4 @@
-use crate::ast::{relations, text};
+use crate::ast::{relations, syntax::text};
 use crate::models::Facts;
 use crate::semantic::{CallableParameter, CallableSignature, TypeExpr};
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ pub(super) fn type_expr_inner(
     generic_names: &HashSet<&str>,
     depth: usize,
 ) -> TypeExpr {
-    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::types::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     match node.kind() {

@@ -25,7 +25,6 @@ enum HarnessBackend {
     Memory(MemoryStateBackend),
     Disk {
         backend: Box<SqliteStateBackend>,
-        backup_dir: Option<PathBuf>,
         workspace_root: Option<PathBuf>,
         _temp_dir: Option<ScopedTempDir>,
     },
@@ -75,7 +74,7 @@ impl RunHarness {
         let db_path = workspace_root.join(".acdd/state.sqlite");
         let backend = Self::open_sqlite_with_archive_reconciler(SqliteBackendOptions {
             db_path,
-            backup_dir: Some(backup_dir.clone()),
+            backup_dir: Some(backup_dir),
             workspace_root: Some(workspace_root.clone()),
             spec_collection_paths,
             is_custom_db: false,
@@ -84,7 +83,6 @@ impl RunHarness {
         Ok(Self {
             inner: HarnessBackend::Disk {
                 backend: Box::new(backend),
-                backup_dir: Some(backup_dir),
                 workspace_root: Some(workspace_root),
                 _temp_dir: Some(temp_guard),
             },
@@ -104,14 +102,6 @@ impl RunHarness {
         match &self.inner {
             HarnessBackend::Memory(_) => None,
             HarnessBackend::Disk { backend, .. } => Some(backend.db_path()),
-        }
-    }
-
-    /// Return the backup directory path when configured on disk.
-    pub fn backup_dir(&self) -> Option<&Path> {
-        match &self.inner {
-            HarnessBackend::Memory(_) => None,
-            HarnessBackend::Disk { backup_dir, .. } => backup_dir.as_deref(),
         }
     }
 
@@ -544,6 +534,16 @@ impl RunHarness {
         };
         let snap = build_initial_run_graph(&profile, &input).expect("valid machine sample graph");
         (profile, snap)
+    }
+
+    /// Execute a [`StateCommand`] against this harness backend.
+    pub fn execute(
+        &self,
+        config: &crate::usecases::StateEngineConfig,
+        provider: &acdd_core::ports::CompositeDomainProvider,
+        cmd: crate::usecases::StateCommand,
+    ) -> Result<crate::usecases::StateCommandOutput, StateError> {
+        crate::usecases::execute_on(config, self, provider, cmd)
     }
 }
 

@@ -20,7 +20,7 @@ use crate::types::{
     TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{GateSelector, TaskRef, WorkerId};
+use acdd_core::ids::{GateSelector, TaskRef, TreeOid, WorkerId};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -356,47 +356,17 @@ fn evaluate_reject(
         patch.active_span_id = Some(None);
         node_patches.push(patch);
     } else if let Some(fail_id) = target_fail_id {
-        let target = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.parent_id == node.parent_id && n.gate_id == *fail_id)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "fail target '{fail_id}' not found in container of '{}'",
-                        node.node_id
-                    ),
-                )
-            })?;
-        watch_ids.push(target.node_id.as_str());
+        let target = super::verify::reset_fail_target_and_intermediates(
+            snapshot,
+            node,
+            fail_id,
+            true,
+            &mut watch_ids,
+            &mut node_patches,
+        )?;
 
-        let mut target_patch = NodeStatusPatch::status_only(&target.node_id, NodeStatus::Ready);
-        target_patch.accepted_tree = Some(None);
-        target_patch.accepted_definition_digest = Some(None);
-        target_patch.worker_id = Some(None);
-        target_patch.session_fingerprint = Some(None);
-        target_patch.active_span_id = Some(None);
-        node_patches.push(target_patch);
-
-        if target.seq_order <= node.seq_order {
-            for mid in &snapshot.nodes {
-                if mid.parent_id == node.parent_id
-                    && mid.seq_order > target.seq_order
-                    && mid.seq_order < node.seq_order
-                {
-                    watch_ids.push(mid.node_id.as_str());
-                    let mut mid_patch =
-                        NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
-                    mid_patch.accepted_tree = Some(None);
-                    mid_patch.accepted_definition_digest = Some(None);
-                    mid_patch.worker_id = Some(None);
-                    mid_patch.session_fingerprint = Some(None);
-                    mid_patch.active_span_id = Some(None);
-                    node_patches.push(mid_patch);
-                }
-            }
-        } else if let Some(ref fallback_fail_id) = gate.fail {
+        if target.seq_order > node.seq_order {
+            if let Some(ref fallback_fail_id) = gate.fail {
             // `fail_drift` targets placed after `node` (e.g. `rearchitect`): also reset
             // `gate.fail` (`build`) and intermediate gates (`< node.seq_order`) to `Pending`.
             let fb_node = snapshot
@@ -429,6 +399,7 @@ fn evaluate_reject(
                     prev_patch.active_span_id = Some(None);
                     node_patches.push(prev_patch);
                 }
+            }
             }
         }
 
@@ -569,151 +540,26 @@ fn evaluate_pass(
     }
 
     // 4. Trace freshness + `current_tree` check.
-    let needs_trace = matches!(
-        gate.proof,
-        MachineProofKind::Command | MachineProofKind::Call
-    ) || !gate.checks.is_empty()
-        || gate.command.is_some()
-        || gate.call.is_some();
-
-    if needs_trace {
-        let trace = snapshot
-            .traces
-            .iter()
-            .filter(|t| {
-                t.node_id == node.node_id
-                    && t.claim_revision == claim_revision
-                    && t.status == TraceStatus::Passed
-            })
-            .max_by_key(|t| t.trace_row_id.unwrap_or(0))
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::TaskProofUnobserved,
-                    format!(
-                        "missing fresh '{}' verification trace for '{}' at claim_revision {}",
-                        TraceStatus::Passed,
-                        node.node_id,
-                        claim_revision
-                    ),
-                )
-            })?;
-
-        if trace.contract_revision != node.contract_revision {
-            return Err(StateError::new(
-                ErrorCode::TaskProofUnobserved,
-                format!(
-                    "trace contract_revision {} is stale (current contract_revision: {})",
-                    trace.contract_revision, node.contract_revision
-                ),
-            ));
-        }
-
-        if let Some(ref expected_digest) = input.expected_execution_digest {
-            if &trace.execution_digest != expected_digest {
-                return Err(StateError::new(
-                    ErrorCode::TaskProofUnobserved,
-                    format!(
-                        "trace execution_digest '{}' does not match current '{}'",
-                        trace.execution_digest, expected_digest
-                    ),
-                ));
-            }
-        }
-
-        let tree_after_ok = trace.candidate_tree_after.as_ref() == Some(current_tree);
-        if &trace.candidate_tree_before != current_tree || !tree_after_ok {
-            return Err(StateError::new(
-                ErrorCode::TaskProofUnobserved,
-                format!(
-                    "trace candidate trees ({} -> {:?}) do not match current_tree '{}'",
-                    trace.candidate_tree_before, trace.candidate_tree_after, current_tree
-                ),
-            ));
-        }
-    }
-
-    // 5. Proof evidence validation (`review` / `CustomSchema`).
-    let mut new_artifacts = Vec::new();
-    match &gate.proof {
-        MachineProofKind::Review => {
-            let rev = input.review_evidence.as_ref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("proof: review on '{}' requires --evidence", node.node_id),
-                )
-            })?;
-            validate_review_evidence(gate, rev, SubmitAction::Pass)?;
-            new_artifacts.push(GateArtifactRecord {
-                run_id: snapshot.run.run_id.clone(),
-                node_id: node.node_id.clone(),
-                claim_revision,
-                kind: ArtifactKind::Proof,
-                payload_json: serde_json::to_string(rev).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("failed to serialize review evidence: {err}"),
-                    )
-                })?,
-                snapshot_commit: input.snapshot_commit.clone(),
-                created_at: obs.now_utc.clone(),
-            });
-        }
-        MachineProofKind::CustomSchema(schema_name) => {
-            let schema = profile.proof_schemas.get(schema_name).ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("proof schema '{schema_name}' is not declared in profile.proofs"),
-                )
-            })?;
-            let val = input.custom_evidence.as_ref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "proof schema '{schema_name}' on '{}' requires --evidence JSON",
-                        node.node_id
-                    ),
-                )
-            })?;
-            schema.validate_value(val, &format!("proof.{schema_name}"))?;
-            new_artifacts.push(GateArtifactRecord {
-                run_id: snapshot.run.run_id.clone(),
-                node_id: node.node_id.clone(),
-                claim_revision,
-                kind: ArtifactKind::Proof,
-                payload_json: serde_json::to_string(val).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("failed to serialize custom proof evidence: {err}"),
-                    )
-                })?,
-                snapshot_commit: input.snapshot_commit.clone(),
-                created_at: obs.now_utc.clone(),
-            });
-        }
-        _ => {}
-    }
-
-    // Record accepted_snapshot artifact for `sync --rebind-profile` immutability.
-    let snapshot_payload = json!({
-        "gate_id": gate.id.as_str(),
-        "definition_digest": gate.definition_digest,
-        "accepted_tree": current_tree.as_str(),
-        "contract_revision": node.contract_revision,
-    });
-    new_artifacts.push(GateArtifactRecord {
-        run_id: snapshot.run.run_id.clone(),
-        node_id: node.node_id.clone(),
+    verify_pass_trace(
+        snapshot,
+        node,
+        gate,
         claim_revision,
-        kind: ArtifactKind::AcceptedSnapshot,
-        payload_json: serde_json::to_string(&snapshot_payload).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to serialize accepted_snapshot: {err}"),
-            )
-        })?,
-        snapshot_commit: input.snapshot_commit.clone(),
-        created_at: obs.now_utc.clone(),
-    });
+        current_tree,
+        input.expected_execution_digest.as_ref(),
+    )?;
+
+    // 5. Proof evidence validation (`review` / `CustomSchema`) + `accepted_snapshot`.
+    let mut new_artifacts = collect_pass_proof_artifacts(
+        snapshot,
+        profile,
+        node,
+        gate,
+        claim_revision,
+        current_tree,
+        input,
+        obs,
+    )?;
 
     // 6. Compute node, dependency, blackboard, and run transitions.
     let mut watch_ids = vec![node.node_id.as_str()];
@@ -752,243 +598,45 @@ fn evaluate_pass(
     // Handle `receipt: true` container completion & readiness fan-out.
     if gate.receipt {
         match node.kind {
-            NodeKind::TaskGate => {
-                let parent_id = node.parent_id.as_deref().ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("task_gate '{}' has no parent task container", node.node_id),
-                    )
-                })?;
-                let parent_task = find_node(snapshot, parent_id)?;
-                let task_ref = parent_task.task_ref.as_ref().ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("task container '{parent_id}' missing task_ref"),
-                    )
-                })?;
-                watch_ids.push(parent_task.node_id.as_str());
-
-                // Verify all subtasks are completed/cancelled with non-empty evidence.
-                for sub in snapshot.subtasks.iter().filter(|s| s.node_id == parent_task.node_id) {
-                    if !matches!(sub.status, SubtaskStatus::Completed | SubtaskStatus::Cancelled) {
-                        return Err(StateError::new(
-                            ErrorCode::GateVerificationFailed,
-                            format!(
-                                "cannot complete task '{task_ref}': subtask '{}' is '{}' (expected completed or cancelled)",
-                                sub.subtask_ref, sub.status
-                            ),
-                        ));
-                    }
-                    let has_ev = sub
-                        .evidence
-                        .as_deref()
-                        .is_some_and(|e| !e.trim().is_empty());
-                    if !has_ev {
-                        return Err(StateError::new(
-                            ErrorCode::GateVerificationFailed,
-                            format!(
-                                "cannot complete task '{task_ref}': subtask '{}' missing non-empty evidence",
-                                sub.subtask_ref
-                            ),
-                        ));
-                    }
-                }
-
-                let mut task_patch =
-                    NodeStatusPatch::status_only(&parent_task.node_id, NodeStatus::Completed);
-                task_patch.accepted_tree = Some(Some(current_tree.clone()));
-                let mut inv = parent_task.invariants.clone();
-                for v in &input.verified_invariants {
-                    if !inv.verified.contains(v) {
-                        inv.verified.push(v.clone());
-                    }
-                }
-                task_patch.invariants = Some(inv.clone());
-                node_patches.push(task_patch);
-
-                // Cancel unused fallback gates (such as `rearchitect`) still `Pending` in this task container.
-                for sibling in &snapshot.nodes {
-                    if sibling.kind == NodeKind::TaskGate
-                        && sibling.parent_id.as_deref() == Some(parent_task.node_id.as_str())
-                        && sibling.node_id != node.node_id
-                        && sibling.status == NodeStatus::Pending
-                    {
-                        watch_ids.push(sibling.node_id.as_str());
-                        node_patches.push(NodeStatusPatch::status_only(
-                            &sibling.node_id,
-                            NodeStatus::Cancelled,
-                        ));
-                    }
-                }
-
-                dependency_patches.push(DependencySatisfiedPatch {
-                    depends_on_ref: task_ref.clone(),
-                    dependent_task_ref: None,
-                    satisfied: true,
-                });
-
-                // Record task receipt artifact.
-                let receipt_payload = json!({
-                    "run_id": snapshot.run.run_id.as_str(),
-                    "node_cursor": input.node_cursor.to_string(),
-                    "gate_id": gate.id.as_str(),
-                    "worker_id": input.worker_id.as_str(),
-                    "claim_revision": claim_revision,
-                    "contract_revision": node.contract_revision,
-                    "candidate_tree": current_tree.as_str(),
-                    "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
-                    "accepted_at": obs.now_utc,
-                    "rollup": {
-                        "verified_invariants": inv,
-                        "review_summary": input.summary,
-                    }
-                });
-                new_artifacts.push(GateArtifactRecord {
-                    run_id: snapshot.run.run_id.clone(),
-                    node_id: node.node_id.clone(),
-                    claim_revision,
-                    kind: ArtifactKind::Receipt,
-                    payload_json: serde_json::to_string(&receipt_payload).map_err(|err| {
-                        StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!("failed to serialize task receipt: {err}"),
-                        )
-                    })?,
-                    snapshot_commit: input.snapshot_commit.clone(),
-                    created_at: obs.now_utc.clone(),
-                });
-
-                // Unblock dependent tasks whose dependencies are now satisfied.
-                unblock_newly_ready_tasks(
-                    snapshot,
-                    task_ref,
-                    obs,
-                    &mut watch_ids,
-                    &mut node_patches,
-                );
-
-                // If all non-cancelled tasks are now completed and integrated, ready the first post-task root gate.
-                let others_done = snapshot.nodes.iter().all(|n| {
-                    if n.kind != NodeKind::Task
-                        || n.node_id == parent_task.node_id
-                        || n.status == NodeStatus::Cancelled
-                    {
-                        true
-                    } else {
-                        n.status == NodeStatus::Completed
-                    }
-                });
-                if others_done
-                    && (snapshot.run.isolation != IsolationMode::Worktree
-                        || obs.unintegrated_tasks.is_empty())
-                {
-                    if let Some(first_post) = snapshot
-                        .nodes
-                        .iter()
-                        .filter(|n| is_post_task_root_node(snapshot, n))
-                        .min_by_key(|n| n.seq_order)
-                    {
-                        if first_post.status == NodeStatus::Pending {
-                            watch_ids.push(first_post.node_id.as_str());
-                            node_patches.push(NodeStatusPatch::status_only(
-                                &first_post.node_id,
-                                NodeStatus::Ready,
-                            ));
-                        }
-                    }
-                }
-            }
-            NodeKind::RootGate => {
-                // Post-task root receipt requires all non-cancelled tasks completed & integrated.
-                if is_post_task_root_node(snapshot, node) {
-                    if !all_non_cancelled_tasks_completed(snapshot) {
-                        return Err(StateError::new(
-                            ErrorCode::GateVerificationFailed,
-                            "cannot close root receipt gate before all non-cancelled tasks complete",
-                        ));
-                    }
-                    check_post_task_integration_barrier(snapshot, obs)?;
-                }
-
-                let receipt_payload = json!({
-                    "run_id": snapshot.run.run_id.as_str(),
-                    "node_cursor": input.node_cursor.to_string(),
-                    "gate_id": gate.id.as_str(),
-                    "worker_id": input.worker_id.as_str(),
-                    "claim_revision": claim_revision,
-                    "contract_revision": node.contract_revision,
-                    "candidate_tree": current_tree.as_str(),
-                    "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
-                    "accepted_at": obs.now_utc,
-                    "rollup": {
-                        "verified_invariants": {
-                            "applicable": input.verified_invariants,
-                            "verified": input.verified_invariants,
-                        },
-                        "review_summary": input.summary,
-                    }
-                });
-                new_artifacts.push(GateArtifactRecord {
-                    run_id: snapshot.run.run_id.clone(),
-                    node_id: node.node_id.clone(),
-                    claim_revision,
-                    kind: ArtifactKind::Receipt,
-                    payload_json: serde_json::to_string(&receipt_payload).map_err(|err| {
-                        StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!("failed to serialize root receipt: {err}"),
-                        )
-                    })?,
-                    snapshot_commit: input.snapshot_commit.clone(),
-                    created_at: obs.now_utc.clone(),
-                });
-
-                if gate.pass.is_none() {
-                    new_run_status = Some(RunStatus::Completed);
-                    completed_at = Some(obs.now_utc.clone());
-                }
-            }
+            NodeKind::TaskGate => handle_task_receipt_completion(
+                snapshot,
+                obs,
+                node,
+                gate,
+                claim_revision,
+                current_tree,
+                input,
+                &mut watch_ids,
+                &mut node_patches,
+                &mut dependency_patches,
+                &mut new_artifacts,
+            )?,
+            NodeKind::RootGate => handle_root_receipt_completion(
+                snapshot,
+                obs,
+                node,
+                gate,
+                claim_revision,
+                current_tree,
+                input,
+                &mut new_artifacts,
+                &mut new_run_status,
+                &mut completed_at,
+            )?,
             _ => {}
         }
     }
 
     // Handle pre-task root container completion (e.g., `blueprint_synthesis.review` with `pass: None`).
-    if node.kind == NodeKind::RootGate && gate.pass.is_none() && is_pre_task_root_node(snapshot, node)
-    {
-        if let Some(ref parent_id) = node.parent_id {
-            let sibling_incomplete = snapshot.nodes.iter().any(|n| {
-                n.parent_id.as_deref() == Some(parent_id.as_str())
-                    && n.node_id != node.node_id
-                    && !matches!(n.status, NodeStatus::Completed | NodeStatus::Cancelled)
-            });
-            if !sibling_incomplete {
-                watch_ids.push(parent_id.as_str());
-                let mut parent_patch = NodeStatusPatch::status_only(parent_id, NodeStatus::Completed);
-                parent_patch.accepted_tree = Some(Some(current_tree.clone()));
-                node_patches.push(parent_patch);
-
-                // Check if all pre-task root containers are now completed; if so, activate tasks# blocks & wave-0 tasks.
-                let other_pre_incomplete = snapshot.nodes.iter().any(|n| {
-                    is_pre_task_root_node(snapshot, n)
-                        && n.node_id != node.node_id
-                        && n.node_id != *parent_id
-                        && !matches!(n.status, NodeStatus::Completed | NodeStatus::Cancelled)
-                });
-                if !other_pre_incomplete {
-                    activate_tasks_after_pre_barrier(snapshot, obs, &mut watch_ids, &mut node_patches);
-                }
-            }
-        } else {
-            let other_pre_incomplete = snapshot.nodes.iter().any(|n| {
-                is_pre_task_root_node(snapshot, n)
-                    && n.node_id != node.node_id
-                    && !matches!(n.status, NodeStatus::Completed | NodeStatus::Cancelled)
-            });
-            if !other_pre_incomplete {
-                activate_tasks_after_pre_barrier(snapshot, obs, &mut watch_ids, &mut node_patches);
-            }
-        }
-    }
+    handle_pre_task_root_completion(
+        snapshot,
+        obs,
+        node,
+        gate,
+        current_tree,
+        &mut watch_ids,
+        &mut node_patches,
+    );
 
     let mut preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
     preconditions.required_predecessor_trees = required_predecessor_trees;
@@ -1013,6 +661,428 @@ fn evaluate_pass(
         new_subtasks: Vec::new(),
         significant_transition: true,
     }))
+}
+
+fn verify_pass_trace(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    gate: &MachineGateDef,
+    claim_revision: u32,
+    current_tree: &TreeOid,
+    expected_execution_digest: Option<&String>,
+) -> Result<(), StateError> {
+    let needs_trace = matches!(
+        gate.proof,
+        MachineProofKind::Command | MachineProofKind::Call
+    ) || !gate.checks.is_empty()
+        || gate.command.is_some()
+        || gate.call.is_some();
+    if !needs_trace {
+        return Ok(());
+    }
+
+    let trace = snapshot
+        .traces
+        .iter()
+        .filter(|t| {
+            t.node_id == node.node_id
+                && t.claim_revision == claim_revision
+                && t.status == TraceStatus::Passed
+        })
+        .max_by_key(|t| t.trace_row_id.unwrap_or(0))
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::TaskProofUnobserved,
+                format!(
+                    "missing fresh '{}' verification trace for '{}' at claim_revision {}",
+                    TraceStatus::Passed,
+                    node.node_id,
+                    claim_revision
+                ),
+            )
+        })?;
+
+    if trace.contract_revision != node.contract_revision {
+        return Err(StateError::new(
+            ErrorCode::TaskProofUnobserved,
+            format!(
+                "trace contract_revision {} is stale (current contract_revision: {})",
+                trace.contract_revision, node.contract_revision
+            ),
+        ));
+    }
+
+    if let Some(expected_digest) = expected_execution_digest {
+        if &trace.execution_digest != expected_digest {
+            return Err(StateError::new(
+                ErrorCode::TaskProofUnobserved,
+                format!(
+                    "trace execution_digest '{}' does not match current '{}'",
+                    trace.execution_digest, expected_digest
+                ),
+            ));
+        }
+    }
+
+    let tree_after_ok = trace.candidate_tree_after.as_ref() == Some(current_tree);
+    if &trace.candidate_tree_before != current_tree || !tree_after_ok {
+        return Err(StateError::new(
+            ErrorCode::TaskProofUnobserved,
+            format!(
+                "trace candidate trees ({} -> {:?}) do not match current_tree '{}'",
+                trace.candidate_tree_before, trace.candidate_tree_after, current_tree
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_pass_proof_artifacts(
+    snapshot: &RunGraphSnapshot,
+    profile: &MachineProfileInput,
+    node: &GateNodeRecord,
+    gate: &MachineGateDef,
+    claim_revision: u32,
+    current_tree: &TreeOid,
+    input: &SubmitInput,
+    obs: &ValidatedObservations,
+) -> Result<Vec<GateArtifactRecord>, StateError> {
+    let mut new_artifacts = Vec::new();
+    match &gate.proof {
+        MachineProofKind::Review => {
+            let rev = input.review_evidence.as_ref().ok_or_else(|| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("proof: review on '{}' requires --evidence", node.node_id),
+                )
+            })?;
+            validate_review_evidence(gate, rev, SubmitAction::Pass)?;
+            new_artifacts.push(make_gate_artifact(
+                snapshot,
+                node,
+                claim_revision,
+                ArtifactKind::Proof,
+                rev,
+                input,
+                obs,
+                "review evidence",
+            )?);
+        }
+        MachineProofKind::CustomSchema(schema_name) => {
+            let schema = profile.proof_schemas.get(schema_name).ok_or_else(|| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("proof schema '{schema_name}' is not declared in profile.proofs"),
+                )
+            })?;
+            let val = input.custom_evidence.as_ref().ok_or_else(|| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "proof schema '{schema_name}' on '{}' requires --evidence JSON",
+                        node.node_id
+                    ),
+                )
+            })?;
+            schema.validate_value(val, &format!("proof.{schema_name}"))?;
+            new_artifacts.push(make_gate_artifact(
+                snapshot,
+                node,
+                claim_revision,
+                ArtifactKind::Proof,
+                val,
+                input,
+                obs,
+                "custom proof evidence",
+            )?);
+        }
+        _ => {}
+    }
+
+    let snapshot_payload = json!({
+        "gate_id": gate.id.as_str(),
+        "definition_digest": gate.definition_digest,
+        "accepted_tree": current_tree.as_str(),
+        "contract_revision": node.contract_revision,
+    });
+    new_artifacts.push(make_gate_artifact(
+        snapshot,
+        node,
+        claim_revision,
+        ArtifactKind::AcceptedSnapshot,
+        &snapshot_payload,
+        input,
+        obs,
+        "accepted_snapshot",
+    )?);
+    Ok(new_artifacts)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_gate_artifact<T: serde::Serialize>(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    claim_revision: u32,
+    kind: ArtifactKind,
+    payload: &T,
+    input: &SubmitInput,
+    obs: &ValidatedObservations,
+    label: &str,
+) -> Result<GateArtifactRecord, StateError> {
+    Ok(GateArtifactRecord {
+        run_id: snapshot.run.run_id.clone(),
+        node_id: node.node_id.clone(),
+        claim_revision,
+        kind,
+        payload_json: serde_json::to_string(payload).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to serialize {label}: {err}"),
+            )
+        })?,
+        snapshot_commit: input.snapshot_commit.clone(),
+        created_at: obs.now_utc.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_task_receipt_completion<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    node: &GateNodeRecord,
+    gate: &MachineGateDef,
+    claim_revision: u32,
+    current_tree: &TreeOid,
+    input: &SubmitInput,
+    watch_ids: &mut Vec<&'a str>,
+    node_patches: &mut Vec<NodeStatusPatch>,
+    dependency_patches: &mut Vec<DependencySatisfiedPatch>,
+    new_artifacts: &mut Vec<GateArtifactRecord>,
+) -> Result<(), StateError> {
+    let parent_id = node.parent_id.as_deref().ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("task_gate '{}' has no parent task container", node.node_id),
+        )
+    })?;
+    let parent_task = find_node(snapshot, parent_id)?;
+    let task_ref = parent_task.task_ref.as_ref().ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("task container '{parent_id}' missing task_ref"),
+        )
+    })?;
+    watch_ids.push(parent_task.node_id.as_str());
+
+    for sub in snapshot.subtasks.iter().filter(|s| s.node_id == parent_task.node_id) {
+        if !matches!(sub.status, SubtaskStatus::Completed | SubtaskStatus::Cancelled) {
+            return Err(StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!(
+                    "cannot complete task '{task_ref}': subtask '{}' is '{}' (expected completed or cancelled)",
+                    sub.subtask_ref, sub.status
+                ),
+            ));
+        }
+        if !sub.evidence.as_deref().is_some_and(|e| !e.trim().is_empty()) {
+            return Err(StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!(
+                    "cannot complete task '{task_ref}': subtask '{}' missing non-empty evidence",
+                    sub.subtask_ref
+                ),
+            ));
+        }
+    }
+
+    let mut task_patch = NodeStatusPatch::status_only(&parent_task.node_id, NodeStatus::Completed);
+    task_patch.accepted_tree = Some(Some(current_tree.clone()));
+    let mut inv = parent_task.invariants.clone();
+    for v in &input.verified_invariants {
+        if !inv.verified.contains(v) {
+            inv.verified.push(v.clone());
+        }
+    }
+    task_patch.invariants = Some(inv.clone());
+    node_patches.push(task_patch);
+
+    for sibling in &snapshot.nodes {
+        if sibling.kind == NodeKind::TaskGate
+            && sibling.parent_id.as_deref() == Some(parent_task.node_id.as_str())
+            && sibling.node_id != node.node_id
+            && sibling.status == NodeStatus::Pending
+        {
+            watch_ids.push(sibling.node_id.as_str());
+            node_patches.push(NodeStatusPatch::status_only(
+                &sibling.node_id,
+                NodeStatus::Cancelled,
+            ));
+        }
+    }
+
+    dependency_patches.push(DependencySatisfiedPatch {
+        depends_on_ref: task_ref.clone(),
+        dependent_task_ref: None,
+        satisfied: true,
+    });
+
+    let receipt_payload = json!({
+        "run_id": snapshot.run.run_id.as_str(),
+        "node_cursor": input.node_cursor.to_string(),
+        "gate_id": gate.id.as_str(),
+        "worker_id": input.worker_id.as_str(),
+        "claim_revision": claim_revision,
+        "contract_revision": node.contract_revision,
+        "candidate_tree": current_tree.as_str(),
+        "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
+        "accepted_at": obs.now_utc,
+        "rollup": {
+            "verified_invariants": inv,
+            "review_summary": input.summary,
+        }
+    });
+    new_artifacts.push(make_gate_artifact(
+        snapshot,
+        node,
+        claim_revision,
+        ArtifactKind::Receipt,
+        &receipt_payload,
+        input,
+        obs,
+        "task receipt",
+    )?);
+
+    unblock_newly_ready_tasks(snapshot, task_ref, obs, watch_ids, node_patches);
+
+    let others_done = snapshot.nodes.iter().all(|n| {
+        n.kind != NodeKind::Task
+            || n.node_id == parent_task.node_id
+            || matches!(n.status, NodeStatus::Cancelled | NodeStatus::Completed)
+    });
+    if others_done
+        && (snapshot.run.isolation != IsolationMode::Worktree || obs.unintegrated_tasks.is_empty())
+    {
+        if let Some(first_post) = snapshot
+            .nodes
+            .iter()
+            .filter(|n| is_post_task_root_node(snapshot, n))
+            .min_by_key(|n| n.seq_order)
+        {
+            if first_post.status == NodeStatus::Pending {
+                watch_ids.push(first_post.node_id.as_str());
+                node_patches.push(NodeStatusPatch::status_only(
+                    &first_post.node_id,
+                    NodeStatus::Ready,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_root_receipt_completion(
+    snapshot: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    node: &GateNodeRecord,
+    gate: &MachineGateDef,
+    claim_revision: u32,
+    current_tree: &TreeOid,
+    input: &SubmitInput,
+    new_artifacts: &mut Vec<GateArtifactRecord>,
+    new_run_status: &mut Option<RunStatus>,
+    completed_at: &mut Option<String>,
+) -> Result<(), StateError> {
+    if is_post_task_root_node(snapshot, node) {
+        if !all_non_cancelled_tasks_completed(snapshot) {
+            return Err(StateError::new(
+                ErrorCode::GateVerificationFailed,
+                "cannot close root receipt gate before all non-cancelled tasks complete",
+            ));
+        }
+        check_post_task_integration_barrier(snapshot, obs)?;
+    }
+
+    let receipt_payload = json!({
+        "run_id": snapshot.run.run_id.as_str(),
+        "node_cursor": input.node_cursor.to_string(),
+        "gate_id": gate.id.as_str(),
+        "worker_id": input.worker_id.as_str(),
+        "claim_revision": claim_revision,
+        "contract_revision": node.contract_revision,
+        "candidate_tree": current_tree.as_str(),
+        "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
+        "accepted_at": obs.now_utc,
+        "rollup": {
+            "verified_invariants": {
+                "applicable": input.verified_invariants,
+                "verified": input.verified_invariants,
+            },
+            "review_summary": input.summary,
+        }
+    });
+    new_artifacts.push(make_gate_artifact(
+        snapshot,
+        node,
+        claim_revision,
+        ArtifactKind::Receipt,
+        &receipt_payload,
+        input,
+        obs,
+        "root receipt",
+    )?);
+
+    if gate.pass.is_none() {
+        *new_run_status = Some(RunStatus::Completed);
+        *completed_at = Some(obs.now_utc.clone());
+    }
+    Ok(())
+}
+
+fn handle_pre_task_root_completion<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    node: &'a GateNodeRecord,
+    gate: &MachineGateDef,
+    current_tree: &TreeOid,
+    watch_ids: &mut Vec<&'a str>,
+    node_patches: &mut Vec<NodeStatusPatch>,
+) {
+    if node.kind != NodeKind::RootGate
+        || gate.pass.is_some()
+        || !is_pre_task_root_node(snapshot, node)
+    {
+        return;
+    }
+
+    let completed_parent = if let Some(ref parent_id) = node.parent_id {
+        let sibling_incomplete = snapshot.nodes.iter().any(|n| {
+            n.parent_id.as_deref() == Some(parent_id.as_str())
+                && n.node_id != node.node_id
+                && !matches!(n.status, NodeStatus::Completed | NodeStatus::Cancelled)
+        });
+        if sibling_incomplete {
+            return;
+        }
+        watch_ids.push(parent_id.as_str());
+        let mut parent_patch = NodeStatusPatch::status_only(parent_id, NodeStatus::Completed);
+        parent_patch.accepted_tree = Some(Some(current_tree.clone()));
+        node_patches.push(parent_patch);
+        Some(parent_id.as_str())
+    } else {
+        None
+    };
+
+    let other_pre_incomplete = snapshot.nodes.iter().any(|n| {
+        is_pre_task_root_node(snapshot, n)
+            && n.node_id != node.node_id
+            && Some(n.node_id.as_str()) != completed_parent
+            && !matches!(n.status, NodeStatus::Completed | NodeStatus::Cancelled)
+    });
+    if !other_pre_incomplete {
+        activate_tasks_after_pre_barrier(snapshot, obs, watch_ids, node_patches);
+    }
 }
 
 /// Pure helper to compute blackboard status patches when closing a container at `receipt: true`.
@@ -1146,6 +1216,57 @@ fn resolve_need_targets<'a>(
     }
 }
 
+fn unlock_eligible_pending_tasks<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    task_statuses: &BTreeMap<&TaskRef, NodeStatus>,
+    obs: &ValidatedObservations,
+    watch_ids: &mut Vec<&'a str>,
+    node_patches: &mut Vec<NodeStatusPatch>,
+) {
+    for task_node in &snapshot.nodes {
+        if task_node.kind != NodeKind::Task || task_node.status != NodeStatus::Pending {
+            continue;
+        }
+        let Some(ref tref) = task_node.task_ref else {
+            continue;
+        };
+        let all_deps_ok = snapshot
+            .dependencies
+            .iter()
+            .filter(|d| &d.task_ref == tref)
+            .all(|dep| {
+                crate::machine::schedule::is_dep_satisfied_against_statuses(
+                    &snapshot.run.run_id,
+                    dep,
+                    |ref_id| task_statuses.get(ref_id).copied() == Some(NodeStatus::Completed),
+                    obs,
+                )
+            });
+        if !all_deps_ok {
+            continue;
+        }
+        watch_ids.push(task_node.node_id.as_str());
+        node_patches.push(NodeStatusPatch::status_only(
+            &task_node.node_id,
+            NodeStatus::Ready,
+        ));
+        if let Some(first_gate) = snapshot
+            .nodes
+            .iter()
+            .filter(|n| n.parent_id.as_deref() == Some(task_node.node_id.as_str()))
+            .min_by_key(|n| n.seq_order)
+        {
+            if first_gate.status == NodeStatus::Pending {
+                watch_ids.push(first_gate.node_id.as_str());
+                node_patches.push(NodeStatusPatch::status_only(
+                    &first_gate.node_id,
+                    NodeStatus::Ready,
+                ));
+            }
+        }
+    }
+}
+
 fn unblock_newly_ready_tasks<'a>(
     snapshot: &'a RunGraphSnapshot,
     just_completed: &TaskRef,
@@ -1169,47 +1290,7 @@ fn unblock_newly_ready_tasks<'a>(
         })
         .collect();
 
-    for task_node in &snapshot.nodes {
-        if task_node.kind != NodeKind::Task || task_node.status != NodeStatus::Pending {
-            continue;
-        }
-        let Some(ref tref) = task_node.task_ref else {
-            continue;
-        };
-        let all_deps_ok = snapshot
-            .dependencies
-            .iter()
-            .filter(|d| &d.task_ref == tref)
-            .all(|dep| {
-                crate::machine::schedule::is_dep_satisfied_against_statuses(
-                    &snapshot.run.run_id,
-                    dep,
-                    |ref_id| task_statuses.get(ref_id).copied() == Some(NodeStatus::Completed),
-                    obs,
-                )
-            });
-        if all_deps_ok {
-            watch_ids.push(task_node.node_id.as_str());
-            node_patches.push(NodeStatusPatch::status_only(
-                &task_node.node_id,
-                NodeStatus::Ready,
-            ));
-            if let Some(first_gate) = snapshot
-                .nodes
-                .iter()
-                .filter(|n| n.parent_id.as_deref() == Some(task_node.node_id.as_str()))
-                .min_by_key(|n| n.seq_order)
-            {
-                if first_gate.status == NodeStatus::Pending {
-                    watch_ids.push(first_gate.node_id.as_str());
-                    node_patches.push(NodeStatusPatch::status_only(
-                        &first_gate.node_id,
-                        NodeStatus::Ready,
-                    ));
-                }
-            }
-        }
-    }
+    unlock_eligible_pending_tasks(snapshot, &task_statuses, obs, watch_ids, node_patches);
 }
 
 fn activate_tasks_after_pre_barrier<'a>(
@@ -1238,45 +1319,5 @@ fn activate_tasks_after_pre_barrier<'a>(
         .filter_map(|n| n.task_ref.as_ref().map(|tr| (tr, n.status)))
         .collect();
 
-    for task_node in &snapshot.nodes {
-        if task_node.kind != NodeKind::Task || task_node.status != NodeStatus::Pending {
-            continue;
-        }
-        let Some(ref tref) = task_node.task_ref else {
-            continue;
-        };
-        let deps_ok = snapshot
-            .dependencies
-            .iter()
-            .filter(|d| &d.task_ref == tref)
-            .all(|dep| {
-                crate::machine::schedule::is_dep_satisfied_against_statuses(
-                    &snapshot.run.run_id,
-                    dep,
-                    |ref_id| task_statuses.get(ref_id).copied() == Some(NodeStatus::Completed),
-                    obs,
-                )
-            });
-        if deps_ok {
-            watch_ids.push(task_node.node_id.as_str());
-            node_patches.push(NodeStatusPatch::status_only(
-                &task_node.node_id,
-                NodeStatus::Ready,
-            ));
-            if let Some(first_gate) = snapshot
-                .nodes
-                .iter()
-                .filter(|n| n.parent_id.as_deref() == Some(task_node.node_id.as_str()))
-                .min_by_key(|n| n.seq_order)
-            {
-                if first_gate.status == NodeStatus::Pending {
-                    watch_ids.push(first_gate.node_id.as_str());
-                    node_patches.push(NodeStatusPatch::status_only(
-                        &first_gate.node_id,
-                        NodeStatus::Ready,
-                    ));
-                }
-            }
-        }
-    }
+    unlock_eligible_pending_tasks(snapshot, &task_statuses, obs, watch_ids, node_patches);
 }

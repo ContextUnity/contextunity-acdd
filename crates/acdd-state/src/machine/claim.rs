@@ -16,6 +16,128 @@ use crate::types::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 
+fn admit_reclaim_in_progress(
+    snapshot: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+    input: &ClaimInput,
+    node: &crate::types::GateNodeRecord,
+) -> Result<ClaimDecision, StateError> {
+    let node_id = node.node_id.as_str();
+    let active = active_claim_for_node(snapshot, node_id).ok_or_else(|| {
+        StateError::new(
+            ErrorCode::BackendConflict,
+            format!("node '{node_id}' is in_progress without an active gate_claims row"),
+        )
+    })?;
+
+    if active.worker_id == input.worker_id
+        && active.session_fingerprint == input.session_fingerprint
+        && active.worktree == input.worktree
+    {
+        return Ok(ClaimDecision::Idempotent(active.clone()));
+    }
+
+    if !input.force {
+        return Err(StateError::new(
+            ErrorCode::TaskAlreadyClaimed,
+            format!(
+                "node '{node_id}' is already claimed by worker '{}'",
+                active.worker_id
+            ),
+        )
+        .with_hint(
+            "pass --force only to recover your own session, dead local PID, or with --steal-remote",
+        ));
+    }
+
+    let same_worker = active.worker_id == input.worker_id;
+    let dead_local_pid = input.previous_local_pid_alive == Some(false);
+    if !same_worker && !dead_local_pid && !input.steal_remote {
+        return Err(StateError::new(
+            ErrorCode::TaskAlreadyClaimed,
+            format!(
+                "refusing --force claim on '{node_id}' held by active worker '{}' without dead local PID or --steal-remote",
+                active.worker_id
+            ),
+        ));
+    }
+
+    let new_claim_rev = node.claim_revision + 1;
+    let mut watch_ids = vec![node.node_id.as_str()];
+    if let Some(ref parent_id) = node.parent_id {
+        watch_ids.push(parent_id.as_str());
+    }
+    let preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
+
+    let claim_insert = ClaimInsertInput {
+        node_id: node.node_id.clone(),
+        claim_revision: new_claim_rev,
+        worker_id: input.worker_id.clone(),
+        session_fingerprint: input.session_fingerprint.clone(),
+        worktree: input.worktree.clone(),
+        branch: input.branch.clone(),
+        baseline_commit: input.baseline_commit.clone(),
+        span_id: input.span_id.clone(),
+        claim_tree: input.claim_tree.clone(),
+        claimed_at: obs.now_utc.clone(),
+    };
+
+    let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::InProgress);
+    patch.claim_revision = Some(new_claim_rev);
+    patch.worker_id = Some(Some(input.worker_id.clone()));
+    patch.session_fingerprint = Some(input.session_fingerprint.clone());
+    patch.worktree = Some(Some(input.worktree.clone()));
+    patch.branch = Some(input.branch.clone());
+    patch.baseline_commit = Some(input.baseline_commit.clone());
+    patch.claim_tree = Some(Some(input.claim_tree.clone()));
+    patch.active_span_id = Some(Some(input.span_id.clone()));
+
+    let mut node_patches = vec![patch];
+    if node.kind == NodeKind::TaskGate {
+        if let Some(parent_task) = node
+            .parent_id
+            .as_deref()
+            .and_then(|parent_id| find_node(snapshot, parent_id).ok())
+            .filter(|parent| {
+                parent.worktree.as_deref() != Some(input.worktree.as_str())
+                    || parent.branch != input.branch
+            })
+        {
+            let mut parent_patch =
+                NodeStatusPatch::status_only(&parent_task.node_id, parent_task.status);
+            parent_patch.worktree = Some(Some(input.worktree.clone()));
+            parent_patch.branch = Some(input.branch.clone());
+            node_patches.push(parent_patch);
+        }
+    }
+
+    let transition = TransitionPlan {
+        preconditions,
+        bump_run_generation: true,
+        new_run_status: None,
+        new_root_cycle_count: None,
+        completed_at: None,
+        node_patches,
+        dependency_patches: Vec::new(),
+        claim_patches: vec![ClaimOutcomePatch {
+            node_id: node.node_id.clone(),
+            claim_revision: active.claim_revision,
+            outcome: ClaimOutcome::Superseded,
+            ended_at: obs.now_utc.clone(),
+        }],
+        new_artifacts: Vec::new(),
+        new_blackboard: Vec::new(),
+        blackboard_patches: Vec::new(),
+        new_subtasks: Vec::new(),
+        significant_transition: true,
+    };
+
+    Ok(ClaimDecision::Admit {
+        claim: claim_insert,
+        transition: Box::new(transition),
+    })
+}
+
 /// Evaluate a claim or re-claim request purely against `snapshot` and `obs`.
 pub fn admit_claim(
     snapshot: &RunGraphSnapshot,
@@ -30,118 +152,8 @@ pub fn admit_claim(
     )?;
     let node_id = node.node_id.clone();
 
-    // Active claim path: idempotent re-claim vs TASK_ALREADY_CLAIMED vs --force takeover.
     if node.status == NodeStatus::InProgress {
-        let active = active_claim_for_node(snapshot, &node_id).ok_or_else(|| {
-            StateError::new(
-                ErrorCode::BackendConflict,
-                format!("node '{node_id}' is in_progress without an active gate_claims row"),
-            )
-        })?;
-
-        if active.worker_id == input.worker_id
-            && active.session_fingerprint == input.session_fingerprint
-            && active.worktree == input.worktree
-        {
-            return Ok(ClaimDecision::Idempotent(active.clone()));
-        }
-
-        if !input.force {
-            return Err(StateError::new(
-                ErrorCode::TaskAlreadyClaimed,
-                format!(
-                    "node '{node_id}' is already claimed by worker '{}'",
-                    active.worker_id
-                ),
-            )
-            .with_hint("pass --force only to recover your own session, dead local PID, or with --steal-remote"));
-        }
-
-        let same_worker = active.worker_id == input.worker_id;
-        let dead_local_pid = input.previous_local_pid_alive == Some(false);
-        let authorized_steal = input.steal_remote;
-        if !same_worker && !dead_local_pid && !authorized_steal {
-            return Err(StateError::new(
-                ErrorCode::TaskAlreadyClaimed,
-                format!(
-                    "refusing --force claim on '{node_id}' held by active worker '{}' without dead local PID or --steal-remote",
-                    active.worker_id
-                ),
-            ));
-        }
-
-        let new_claim_rev = node.claim_revision + 1;
-        let mut watch_ids = vec![node.node_id.as_str()];
-        if let Some(ref parent_id) = node.parent_id {
-            watch_ids.push(parent_id.as_str());
-        }
-        let preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
-
-        let claim_insert = ClaimInsertInput {
-            node_id: node.node_id.clone(),
-            claim_revision: new_claim_rev,
-            worker_id: input.worker_id.clone(),
-            session_fingerprint: input.session_fingerprint.clone(),
-            worktree: input.worktree.clone(),
-            branch: input.branch.clone(),
-            baseline_commit: input.baseline_commit.clone(),
-            span_id: input.span_id.clone(),
-            claim_tree: input.claim_tree.clone(),
-            claimed_at: obs.now_utc.clone(),
-        };
-
-        let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::InProgress);
-        patch.claim_revision = Some(new_claim_rev);
-        patch.worker_id = Some(Some(input.worker_id.clone()));
-        patch.session_fingerprint = Some(input.session_fingerprint.clone());
-        patch.worktree = Some(Some(input.worktree.clone()));
-        patch.branch = Some(input.branch.clone());
-        patch.baseline_commit = Some(input.baseline_commit.clone());
-        patch.claim_tree = Some(Some(input.claim_tree.clone()));
-        patch.active_span_id = Some(Some(input.span_id.clone()));
-
-        let mut node_patches = vec![patch];
-        if node.kind == NodeKind::TaskGate {
-            if let Some(ref parent_id) = node.parent_id {
-                if let Ok(parent_task) = find_node(snapshot, parent_id) {
-                    if parent_task.worktree.as_deref() != Some(input.worktree.as_str())
-                        || parent_task.branch != input.branch
-                    {
-                        let mut parent_patch =
-                            NodeStatusPatch::status_only(&parent_task.node_id, parent_task.status);
-                        parent_patch.worktree = Some(Some(input.worktree.clone()));
-                        parent_patch.branch = Some(input.branch.clone());
-                        node_patches.push(parent_patch);
-                    }
-                }
-            }
-        }
-
-        let transition = TransitionPlan {
-            preconditions,
-            bump_run_generation: true,
-            new_run_status: None,
-            new_root_cycle_count: None,
-            completed_at: None,
-            node_patches,
-            dependency_patches: Vec::new(),
-            claim_patches: vec![ClaimOutcomePatch {
-                node_id: node.node_id.clone(),
-                claim_revision: active.claim_revision,
-                outcome: ClaimOutcome::Superseded,
-                ended_at: obs.now_utc.clone(),
-            }],
-            new_artifacts: Vec::new(),
-            new_blackboard: Vec::new(),
-            blackboard_patches: Vec::new(),
-            new_subtasks: Vec::new(),
-            significant_transition: true,
-        };
-
-        return Ok(ClaimDecision::Admit {
-            claim: claim_insert,
-            transition: Box::new(transition),
-        });
+        return admit_reclaim_in_progress(snapshot, obs, input, node);
     }
 
     if node.kind == NodeKind::TaskGate

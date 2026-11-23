@@ -122,7 +122,7 @@ fn deserialize_call_site<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Strict typed-reference ingress, shared with canonical full facts.
-pub fn deserialize_typed_call<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn deserialize_typed_call<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<ValueExpr, D::Error> {
     let value = ValueExpr::deserialize(deserializer)?;
@@ -1437,9 +1437,52 @@ impl PartialEq for FrameworkScopeFacts {
 }
 
 impl Eq for FrameworkScopeFacts {}
+const SCOPE_FACT_KEYS: [&str; 16] = [
+    "bindings",
+    "branch_joins",
+    "immutable_initializers",
+    "fields",
+    "symbol_attachments",
+    "factory_results",
+    "named_bindings",
+    "endpoint_requests",
+    "component_macros",
+    "rule_origins",
+    "component_configurations",
+    "collection_elements",
+    "template_contexts",
+    "type_only_imports",
+    "annotation_references",
+    "vue_slots",
+];
+
+/// Returns the total count of all bounded scope fact arrays.
+pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
+    [
+        facts.bindings.len(),
+        facts.branch_joins.len(),
+        facts.immutable_initializers.len(),
+        facts.fields.len(),
+        facts
+            .framework
+            .as_deref()
+            .map_or(0, |framework| framework.facts.len()),
+    ]
+    .into_iter()
+    .fold(0usize, usize::saturating_add)
+}
+
+/// Counts the same bounded arrays on a persisted value-flow object.
+pub fn encoded_scope_fact_count(encoded: &serde_json::Value) -> usize {
+    SCOPE_FACT_KEYS
+        .into_iter()
+        .map(|key| encoded[key].as_array().map_or(0, Vec::len))
+        .fold(0usize, usize::saturating_add)
+}
+
 impl ValueFlowFacts {
     pub fn valid_for_cache(&self) -> bool {
-        if crate::typed_facts::scope_fact_count(self) > DEFAULT_FACTS_PER_SCOPE {
+        if scope_fact_count(self) > DEFAULT_FACTS_PER_SCOPE {
             return false;
         }
         let values_are_valid = self
@@ -1674,141 +1717,188 @@ impl ValueFlowFacts {
         }
     }
 
-    pub fn reference_keys_from_value<'a>(
-        flow: &'a serde_json::Value,
-        mut visit: impl FnMut(&'a str),
+    fn walk_type_reference_keys<'a>(
+        value: &'a serde_json::Value,
+        visit: &mut impl FnMut(&'a str),
+        depth: usize,
     ) {
-        fn type_key<'a>(value: &'a serde_json::Value, visit: &mut impl FnMut(&'a str)) {
-            fn walk<'a>(
-                value: &'a serde_json::Value,
-                visit: &mut impl FnMut(&'a str),
-                depth: usize,
-            ) {
-                if depth >= 8 {
-                    return;
-                }
-                match value.get("kind").and_then(serde_json::Value::as_str) {
-                    Some("named") => {
-                        if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
-                            visit(name);
-                        }
-                    }
-                    Some("applied") => {
-                        if let Some(base) = value.get("base").and_then(serde_json::Value::as_str) {
-                            visit(base);
-                        }
-                        if let Some(args) = value.get("args").and_then(serde_json::Value::as_array)
-                        {
-                            for argument in args.iter().take(16) {
-                                walk(argument, visit, depth + 1);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            walk(value, visit, 0);
+        if depth >= 8 {
+            return;
         }
-        fn value_keys<'a>(
-            value: &'a serde_json::Value,
-            visit: &mut impl FnMut(&'a str),
-            depth: usize,
-        ) {
-            if depth >= 8 {
-                return;
+        match value.get("kind").and_then(serde_json::Value::as_str) {
+            Some("named") => {
+                if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
+                    visit(name);
+                }
             }
-            if matches!(
-                value.get("kind").and_then(serde_json::Value::as_str),
-                Some("scoped" | "await")
-            ) {
+            Some("applied") => {
+                if let Some(base) = value.get("base").and_then(serde_json::Value::as_str) {
+                    visit(base);
+                }
+                if let Some(args) = value.get("args").and_then(serde_json::Value::as_array) {
+                    for argument in args.iter().take(16) {
+                        Self::walk_type_reference_keys(argument, visit, depth + 1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_value_reference_keys<'a>(
+        value: &'a serde_json::Value,
+        visit: &mut impl FnMut(&'a str),
+        depth: usize,
+    ) {
+        if depth >= 8 {
+            return;
+        }
+        match value.get("kind").and_then(serde_json::Value::as_str) {
+            Some("scoped" | "await") => {
                 if let Some(inner) = value.get("value") {
-                    value_keys(inner, visit, depth + 1);
+                    Self::walk_value_reference_keys(inner, visit, depth + 1);
                 }
                 return;
             }
-            if value.get("kind").and_then(serde_json::Value::as_str) == Some("callback_param") {
+            Some("callback_param") => {
                 if let Some(callee) = value.get("callee") {
-                    value_keys(callee, visit, depth + 1);
+                    Self::walk_value_reference_keys(callee, visit, depth + 1);
                 }
                 return;
             }
-            if value.get("kind").and_then(serde_json::Value::as_str) == Some("branch_join") {
+            Some("branch_join") => {
                 if let Some(alternatives) = value
                     .get("alternatives")
                     .and_then(serde_json::Value::as_array)
                 {
                     for alternative in alternatives {
-                        value_keys(alternative, visit, depth + 1);
+                        Self::walk_value_reference_keys(alternative, visit, depth + 1);
                     }
                 }
                 return;
             }
-            let fields: &[&str] = match value.get("kind").and_then(serde_json::Value::as_str) {
-                Some("annotated") => {
-                    if let Some(ty) = value.get("type_expr") {
-                        type_key(ty, visit);
-                    }
-                    &[]
+            _ => {}
+        }
+        let fields: &[&str] = match value.get("kind").and_then(serde_json::Value::as_str) {
+            Some("annotated") => {
+                if let Some(ty) = value.get("type_expr") {
+                    Self::walk_type_reference_keys(ty, visit, 0);
                 }
-                Some("construct")
-                    if value
-                        .get("callee")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|callee| python_literal_type(callee).is_some()) =>
-                {
-                    &[]
-                }
-                Some("construct" | "call") => &["callee"],
-                Some("alias") => &["name"],
-                Some("loop_element") => &["iterable"],
-                Some("field") => &["receiver", "member"],
-                _ => &[],
-            };
-            for field in fields {
-                if let Some(name) = value.get(field).and_then(serde_json::Value::as_str) {
-                    visit(name);
+                &[]
+            }
+            Some("construct")
+                if value
+                    .get("callee")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|callee| python_literal_type(callee).is_some()) =>
+            {
+                &[]
+            }
+            Some("construct" | "call") => &["callee"],
+            Some("alias") => &["name"],
+            Some("loop_element") => &["iterable"],
+            Some("field") => &["receiver", "member"],
+            _ => &[],
+        };
+        for field in fields {
+            if let Some(name) = value.get(field).and_then(serde_json::Value::as_str) {
+                visit(name);
+            }
+        }
+    }
+
+    fn visit_flow_fact_entry<'a>(
+        fact: &'a serde_json::Value,
+        visit: &mut impl FnMut(&'a str),
+    ) {
+        for operand in [
+            fact.get("source"),
+            fact.get("target"),
+            fact.get("role").and_then(|role| role.get("target")),
+            fact.get("role").and_then(|role| role.get("receiver")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for field in ["id", "expression"] {
+                if let Some(value) = operand.get(field).and_then(serde_json::Value::as_str) {
+                    visit(value);
                 }
             }
         }
+        for field in ["binding", "domain"] {
+            if let Some(value) = fact.get(field).and_then(serde_json::Value::as_str) {
+                visit(value);
+            }
+        }
+        for member in fact
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = member.get("name").and_then(serde_json::Value::as_str) {
+                visit(name);
+            }
+            if let Some(name) = member
+                .get("target")
+                .and_then(|target| target.get("name"))
+                .and_then(serde_json::Value::as_str)
+            {
+                visit(name);
+            }
+        }
+        for field in ["key", "url", "method"] {
+            if let Some(value) = fact
+                .get(field)
+                .filter(|value| value["kind"] == "literal")
+                .and_then(|value| value.get("value"))
+                .and_then(serde_json::Value::as_str)
+            {
+                visit(value);
+            }
+        }
+    }
+
+    pub fn reference_keys_from_value<'a>(
+        flow: &'a serde_json::Value,
+        mut visit: impl FnMut(&'a str),
+    ) {
         for key in [NodeDetailKey::RETURN_TYPE, "async_return_type", "alias_type"] {
             if let Some(ty) = flow.get(key) {
-                type_key(ty, &mut visit);
+                Self::walk_type_reference_keys(ty, &mut visit, 0);
             }
         }
         if let Some(sig) = flow.get("callable_signature") {
-            if let Some(ty) = sig.get("return_type") { type_key(ty, &mut visit); }
-            for param in sig.get("params").and_then(serde_json::Value::as_array).into_iter().flatten() {
-                for ty in param.get("type_expr").into_iter().chain(param.get("callback_params").and_then(serde_json::Value::as_array).into_iter().flatten()) {
-                    type_key(ty, &mut visit);
-                }
-            }
+            Self::visit_callable_signature_keys(sig, &mut visit);
         }
-        if let Some(facts) = flow
-            .get("collection_elements")
-            .and_then(serde_json::Value::as_array)
-        {
-            for fact in facts {
-                if let Some(ty) = fact.get("element_type") {
-                    type_key(ty, &mut visit);
-                }
-            }
-        }
-        if let Some(facts) = flow.get("vue_slots").and_then(serde_json::Value::as_array) {
-            for fact in facts {
-                if let Some(ty) = fact.get("type_expr") {
-                    type_key(ty, &mut visit);
+        for (array_key, field_key) in [
+            ("collection_elements", "element_type"),
+            ("vue_slots", "type_expr"),
+        ] {
+            for fact in flow
+                .get(array_key)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(ty) = fact.get(field_key) {
+                    Self::walk_type_reference_keys(ty, &mut visit, 0);
                 }
             }
         }
         if let Some(value) = flow.get("return_value") {
-            value_keys(value, &mut visit, 0);
+            Self::walk_value_reference_keys(value, &mut visit, 0);
         }
         for key in ["bindings", "branch_joins", "fields"] {
-            if let Some(facts) = flow.get(key).and_then(serde_json::Value::as_array) {
-                for fact in facts {
-                    if let Some(value) = fact.get("value") {
-                        value_keys(value, &mut visit, 0);
-                    }
+            for fact in flow
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(value) = fact.get("value") {
+                    Self::walk_value_reference_keys(value, &mut visit, 0);
                 }
             }
         }
@@ -1824,54 +1914,32 @@ impl ValueFlowFacts {
                 .into_iter()
                 .flatten()
             {
-                for operand in [
-                    fact.get("source"),
-                    fact.get("target"),
-                    fact.get("role").and_then(|role| role.get("target")),
-                    fact.get("role").and_then(|role| role.get("receiver")),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    for field in ["id", "expression"] {
-                        if let Some(value) = operand.get(field).and_then(serde_json::Value::as_str)
-                        {
-                            visit(value);
-                        }
-                    }
-                }
-                for field in ["binding", "domain"] {
-                    if let Some(value) = fact.get(field).and_then(serde_json::Value::as_str) {
-                        visit(value);
-                    }
-                }
-                for member in fact
-                    .get("members")
+                Self::visit_flow_fact_entry(fact, &mut visit);
+            }
+        }
+    }
+
+    fn visit_callable_signature_keys<'a>(
+        sig: &'a serde_json::Value,
+        visit: &mut impl FnMut(&'a str),
+    ) {
+        if let Some(ty) = sig.get("return_type") {
+            Self::walk_type_reference_keys(ty, visit, 0);
+        }
+        for param in sig
+            .get("params")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for ty in param.get("type_expr").into_iter().chain(
+                param
+                    .get("callback_params")
                     .and_then(serde_json::Value::as_array)
                     .into_iter()
-                    .flatten()
-                {
-                    if let Some(name) = member.get("name").and_then(serde_json::Value::as_str) {
-                        visit(name);
-                    }
-                    if let Some(name) = member
-                        .get("target")
-                        .and_then(|target| target.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        visit(name);
-                    }
-                }
-                for field in ["key", "url", "method"] {
-                    if let Some(value) = fact
-                        .get(field)
-                        .filter(|value| value["kind"] == "literal")
-                        .and_then(|value| value.get("value"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        visit(value);
-                    }
-                }
+                    .flatten(),
+            ) {
+                Self::walk_type_reference_keys(ty, visit, 0);
             }
         }
     }
@@ -1969,31 +2037,4 @@ pub struct ExportBinding {
     #[serde(default)]
     /// Whether star applies.
     pub star: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-/// TypeScript / CommonJS import and require binding fact.
-pub struct TypeScriptBinding {
-    /// Alias bound in the current scope.
-    pub alias: String,
-    /// Required or imported module specifier.
-    pub module: String,
-    /// Source position where declaration starts.
-    pub declaration: SourcePosition,
-    /// Source position where declaration completes.
-    pub completed: SourcePosition,
-    /// Whether the binding is invalidated by subsequent reassignments.
-    #[serde(default)]
-    pub invalidated: bool,
-    /// Whether capture was proven safe without mutations.
-    #[serde(default)]
-    pub captured_safe: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-/// Module-level TypeScript / CommonJS bindings catalog.
-pub struct TypeScriptBindings {
-    /// List of require and import bindings.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bindings: Vec<TypeScriptBinding>,
 }

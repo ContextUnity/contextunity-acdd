@@ -207,9 +207,16 @@ fn symbol_boundaries_preserve_source_across_direct_and_mcp_callers() {
             max_body_lines: 35,
             offset: 0,
         };
-        let snippet =
-            acdd_index::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
-                .unwrap();
+        let snippet = acdd_index::db::symbols::snippet_paged_with_response_budget(
+            &conn,
+            w.root(),
+            id,
+            None,
+            &source,
+            &page,
+            ResponsePolicy::default().max_output_bytes,
+        )
+        .unwrap();
         assert_eq!(snippet["source"], expected, "{path}: {snippet}");
         let mut m = harness.expect("MCP initialize");
         for tool in ["code_map_inspect", "code_map_explain", "acdd_read"] {

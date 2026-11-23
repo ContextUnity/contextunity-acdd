@@ -17,9 +17,7 @@ pub fn unix_epoch_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-/// Formats `unix_ms` (milliseconds since `UNIX_EPOCH`) as UTC ISO-8601 (`%Y-%m-%dT%H:%M:%S.fffZ`)
-/// using Howard Hinnant's proleptic Gregorian `civil_from_days` algorithm.
-pub fn format_unix_ms_utc_iso(unix_ms: u128) -> String {
+fn format_unix_ms_utc_iso(unix_ms: u128) -> String {
     let total_secs = (unix_ms / 1000) as i64;
     let millis = (unix_ms % 1000) as u32;
     let days = total_secs.div_euclid(86_400);

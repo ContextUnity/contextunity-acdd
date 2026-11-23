@@ -380,6 +380,191 @@ fn find_enclosing_symbol(
     Ok(None)
 }
 
+fn read_snippet_value(
+    root: &Path,
+    adapter: &Adapter,
+    request: &ReadRequest,
+    page: &QueryOptions,
+    source: &SourceOptions,
+    conn: Option<&Connection>,
+) -> Result<Value> {
+    let conn = conn.context("snippet requires the code index")?;
+    let selector = request
+        .selector
+        .as_deref()
+        .or(request.path.as_deref())
+        .context("snippet requires selector")?;
+    // Resolve metadata first; enforce policy before the snippet owner reads source.
+    let inspection = acdd_index::db::reader::inspect_paged_with_path(
+        conn,
+        selector,
+        request
+            .path
+            .as_deref()
+            .filter(|_| request.selector.is_some()),
+        false,
+        page,
+    )?;
+    let path = inspection["node"]["path"]
+        .as_str()
+        .context("selected symbol has no path")?;
+    admitted_file(root, adapter, path)?;
+    let mut value = acdd_index::db::symbols::snippet_paged_with_response_budget(
+        conn,
+        root,
+        selector,
+        request
+            .path
+            .as_deref()
+            .filter(|_| request.selector.is_some()),
+        source,
+        page,
+        adapter.response.max_output_bytes,
+    )?;
+    if let (Some(start), Some(end)) = (
+        value["source_preview"]["start_line"].as_u64(),
+        value["source_preview"]["end_line"].as_u64(),
+    ) {
+        value["header"] = json!(format!(
+            "{} {} in {path}:{start}-{end}",
+            value["node"]["kind"].as_str().unwrap_or("symbol"),
+            value["node"]["qualname"]
+                .as_str()
+                .or(value["node"]["name"].as_str())
+                .unwrap_or(selector)
+        ));
+    }
+    Ok(value)
+}
+
+fn read_outline_content(
+    adapter: &Adapter,
+    file: &Path,
+    path: &str,
+    markdown: bool,
+) -> Result<(String, bool)> {
+    let parent = file.parent().context("outline file needs a parent")?;
+    let name = file.file_name().context("outline file needs a file name")?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    let handle = acdd_core::fs::open_confined(parent, Path::new(name), &mut opts)?;
+    let metadata = handle.metadata()?;
+    ensure!(metadata.is_file(), "reader path must name a regular file");
+    ensure!(
+        metadata.len() <= adapter.limits.max_file_bytes,
+        "outline file exceeds max_file_bytes"
+    );
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
+    handle
+        .take(adapter.limits.max_file_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= adapter.limits.max_file_bytes,
+        "outline file exceeds max_file_bytes"
+    );
+    let text = String::from_utf8(bytes).context("outline file is not valid UTF-8")?;
+    if markdown {
+        return Ok((
+            acdd_index::docs::render_outline(path, &text, &adapter.spec_paths())?,
+            false,
+        ));
+    }
+    let profile = acdd_index::languages::for_path(file)
+        .context("no compiled language profile for outline")?;
+    let facts = acdd_index::ast::extract(path, profile.id(), &text)?;
+    let content = facts
+        .nodes
+        .iter()
+        .filter(|n| n.kind != "module")
+        .map(|n| {
+            format!(
+                "{}:{} {} {}",
+                n.line,
+                n.end_line,
+                n.kind,
+                n.details["signature"].as_str().unwrap_or(&n.qualname)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok((content, false))
+}
+
+fn read_non_snippet_value(
+    root: &Path,
+    adapter: &Adapter,
+    request: &ReadRequest,
+    mode: ReadMode,
+    markdown: bool,
+    node_ctx: Option<&ActiveNodeContext>,
+) -> Result<(Value, bool)> {
+    let path = request
+        .path
+        .as_deref()
+        .or((mode == ReadMode::Search).then_some("."))
+        .context("reader mode requires path")?;
+    let bounds = ReadBounds {
+        start_line: request.start_line,
+        line_count: request.line_count,
+    };
+    let export_dest = request
+        .output_file
+        .as_deref()
+        .map(|output| -> Result<std::path::PathBuf> {
+            sensitive(adapter, root, output)?;
+            Ok(acdd_core::fs::checked_child(root, Path::new(output))?)
+        })
+        .transpose()?;
+    let (content, truncated, single_file) =
+        if mode == ReadMode::Search && is_directory_or_glob_search(root, adapter, path)? {
+            let (content, truncated) = search_directory_or_glob(
+                root,
+                adapter,
+                path,
+                &bounds,
+                request,
+                export_dest.as_deref(),
+            )?;
+            (content, truncated, false)
+        } else {
+            let file = admitted_file(root, adapter, path)?;
+            let (content, truncated) = match mode {
+                ReadMode::Delta => (
+                    compute_file_delta(root, &file, request.baseline.as_deref(), node_ctx)?,
+                    false,
+                ),
+                ReadMode::Outline => read_outline_content(adapter, &file, path, markdown)?,
+                _ => extract_file_slice(&file, mode, &bounds, request)?,
+            };
+            (content, truncated, true)
+        };
+    let mut val = serde_json::to_value(ReadResult {
+        path: path.into(),
+        mode,
+        content,
+        truncated,
+    })?;
+    if mode == ReadMode::Delta {
+        if let Some(ctx) = node_ctx {
+            if let Some(ref baseline) = ctx.baseline_commit {
+                val["baseline_commit"] = json!(baseline);
+            }
+            if let Some(ref claim_tree) = ctx.claim_tree {
+                val["claim_tree"] = json!(claim_tree);
+            }
+        }
+    }
+    if !single_file {
+        if let (Some(output), Some(destination)) = (&request.output_file, export_dest) {
+            let content = exportable_content(&val).context("read has no exportable content")?;
+            acdd_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
+            val["output_file"] = json!(output);
+        }
+        return Ok((val, true));
+    }
+    Ok((val, false))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn acdd_read_single(
     root: &Path,
@@ -399,168 +584,10 @@ fn acdd_read_single(
         .is_some_and(|p| p.ends_with(".md") || p.ends_with(".markdown"));
     request.requires_index(adapter)?;
     let mut value = if mode == ReadMode::Snippet {
-        let conn = conn.context("snippet requires the code index")?;
-        let selector = request
-            .selector
-            .as_deref()
-            .or(request.path.as_deref())
-            .context("snippet requires selector")?;
-        // Resolve metadata first; enforce policy before the snippet owner reads source.
-        let inspection = acdd_index::db::reader::inspect_paged_with_path(
-            conn,
-            selector,
-            request
-                .path
-                .as_deref()
-                .filter(|_| request.selector.is_some()),
-            false,
-            page,
-        )?;
-        let selected = &inspection["node"];
-        let path = selected["path"]
-            .as_str()
-            .context("selected symbol has no path")?;
-        admitted_file(root, adapter, path)?;
-        let mut value = acdd_index::db::symbols::snippet_paged_with_response_budget(
-            conn,
-            root,
-            selector,
-            request
-                .path
-                .as_deref()
-                .filter(|_| request.selector.is_some()),
-            source,
-            page,
-            adapter.response.max_output_bytes,
-        )?;
-        if let (Some(start), Some(end)) = (
-            value["source_preview"]["start_line"].as_u64(),
-            value["source_preview"]["end_line"].as_u64(),
-        ) {
-            value["header"] = json!(format!(
-                "{} {} in {path}:{start}-{end}",
-                value["node"]["kind"].as_str().unwrap_or("symbol"),
-                value["node"]["qualname"]
-                    .as_str()
-                    .or(value["node"]["name"].as_str())
-                    .unwrap_or(selector)
-            ));
-        }
-        value
+        read_snippet_value(root, adapter, request, page, source, conn)?
     } else {
-        let path = request
-            .path
-            .as_deref()
-            .or((mode == ReadMode::Search).then_some("."))
-            .context("reader mode requires path")?;
-        let bounds = ReadBounds {
-            start_line: request.start_line,
-            line_count: request.line_count,
-        };
-        let export_dest = request
-            .output_file
-            .as_deref()
-            .map(|output| -> Result<std::path::PathBuf> {
-                sensitive(adapter, root, output)?;
-                Ok(acdd_core::fs::checked_child(root, Path::new(output))?)
-            })
-            .transpose()?;
-        let (content, truncated, single_file) = if mode == ReadMode::Search
-            && is_directory_or_glob_search(root, adapter, path)?
-        {
-            let (content, truncated) = search_directory_or_glob(
-                root,
-                adapter,
-                path,
-                &bounds,
-                request,
-                export_dest.as_deref(),
-            )?;
-            (content, truncated, false)
-        } else {
-            let file = admitted_file(root, adapter, path)?;
-            let (content, truncated) = match mode {
-                ReadMode::Delta => (
-                    compute_file_delta(root, &file, request.baseline.as_deref(), node_ctx)?,
-                    false,
-                ),
-                ReadMode::Outline => {
-                    let parent = file.parent().context("outline file needs a parent")?;
-                    let name = file.file_name().context("outline file needs a file name")?;
-                    let mut opts = std::fs::OpenOptions::new();
-                    opts.read(true);
-                    let handle = acdd_core::fs::open_confined(parent, Path::new(name), &mut opts)?;
-                    let metadata = handle.metadata()?;
-                    ensure!(metadata.is_file(), "reader path must name a regular file");
-                    ensure!(
-                        metadata.len() <= adapter.limits.max_file_bytes,
-                        "outline file exceeds max_file_bytes"
-                    );
-                    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
-                    handle
-                        .take(adapter.limits.max_file_bytes.saturating_add(1))
-                        .read_to_end(&mut bytes)?;
-                    ensure!(
-                        bytes.len() as u64 <= adapter.limits.max_file_bytes,
-                        "outline file exceeds max_file_bytes"
-                    );
-                    let text =
-                        String::from_utf8(bytes).context("outline file is not valid UTF-8")?;
-                    if markdown {
-                        (
-                            acdd_index::docs::render_outline(path, &text, &adapter.spec_paths())?,
-                            false,
-                        )
-                    } else {
-                        let profile = acdd_index::languages::for_path(&file)
-                            .context("no compiled language profile for outline")?;
-                        let facts = acdd_index::ast::extract(path, profile.id(), &text)?;
-                        (
-                            facts
-                                .nodes
-                                .iter()
-                                .filter(|n| n.kind != "module")
-                                .map(|n| {
-                                    format!(
-                                        "{}:{} {} {}",
-                                        n.line,
-                                        n.end_line,
-                                        n.kind,
-                                        n.details["signature"].as_str().unwrap_or(&n.qualname)
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                            false,
-                        )
-                    }
-                }
-                _ => extract_file_slice(&file, mode, &bounds, request)?,
-            };
-            (content, truncated, true)
-        };
-        let mut val = serde_json::to_value(ReadResult {
-            path: path.into(),
-            mode,
-            content,
-            truncated,
-        })?;
-        if mode == ReadMode::Delta {
-            if let Some(ctx) = node_ctx {
-                if let Some(ref baseline) = ctx.baseline_commit {
-                    val["baseline_commit"] = json!(baseline);
-                }
-                if let Some(ref claim_tree) = ctx.claim_tree {
-                    val["claim_tree"] = json!(claim_tree);
-                }
-            }
-        }
-        if !single_file {
-            if let (Some(output), Some(destination)) = (&request.output_file, export_dest) {
-                let content = exportable_content(&val).context("read has no exportable content")?;
-                acdd_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
-                val["output_file"] = json!(output);
-            }
+        let (val, returned) = read_non_snippet_value(root, adapter, request, mode, markdown, node_ctx)?;
+        if returned {
             return Ok(val);
         }
         val
@@ -938,6 +965,42 @@ fn search_directory_or_glob(
     Ok((output, truncated))
 }
 
+fn push_formatted_match_line(
+    output: &mut String,
+    path_prefix: Option<&str>,
+    number: usize,
+    text: &str,
+) {
+    if let Some(p) = path_prefix {
+        output.push_str(&format!("{p}:{number}: {text}"));
+    } else {
+        output.push_str(&format!("{number}: {text}"));
+    }
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+}
+
+fn flush_prior_context(
+    prior: &std::collections::VecDeque<(usize, String)>,
+    last: &mut usize,
+    kept: &mut usize,
+    (count, max_bytes, prefix_len): (usize, usize, usize),
+    path_prefix: Option<&str>,
+    output: &mut String,
+) {
+    for (n, text) in prior {
+        if *n > *last
+            && *kept < count
+            && output.len() + prefix_len + text.len() + 32 <= max_bytes
+        {
+            push_formatted_match_line(output, path_prefix, *n, text);
+            *kept += 1;
+            *last = *n;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan_matching_lines(
     file: &Path,
@@ -968,14 +1031,13 @@ fn scan_matching_lines(
         if bytes == 0 {
             return Ok(false);
         }
-        if path_prefix.is_some() {
-            if bytes > 1024 * 1024 {
+        if bytes > 1024 * 1024 {
+            if path_prefix.is_some() {
                 output.truncate(saved_len);
                 *kept = saved_kept;
                 return Ok(false);
             }
-        } else {
-            ensure!(bytes <= 1024 * 1024, "line exceeds reader byte limit");
+            anyhow::bail!("line exceeds reader byte limit");
         }
         let line = match std::str::from_utf8(&raw_line) {
             Ok(s) => s.to_owned(),
@@ -996,43 +1058,26 @@ fn scan_matching_lines(
         if matched {
             after = context + 1;
         }
-        let include = after > 0;
-        if include {
+        if after > 0 {
             if matched {
-                for (n, text) in &prior {
-                    if *n > last
-                        && *kept < count
-                        && output.len() + prefix_len + text.len() + 32 <= max_bytes
-                    {
-                        if let Some(p) = path_prefix {
-                            output.push_str(&format!("{p}:{n}: {text}"));
-                        } else {
-                            output.push_str(&format!("{n}: {text}"));
-                        }
-                        if !output.ends_with('\n') {
-                            output.push('\n');
-                        }
-                        *kept += 1;
-                        last = *n;
-                    }
-                }
+                flush_prior_context(
+                    &prior,
+                    &mut last,
+                    kept,
+                    (count, max_bytes, prefix_len),
+                    path_prefix,
+                    output,
+                );
             }
             if *kept >= count || output.len() + prefix_len + line.len() + 32 > max_bytes {
                 return Ok(true);
             }
-            if let Some(p) = path_prefix {
-                output.push_str(&format!("{p}:{number}: {line}"));
-            } else {
-                output.push_str(&format!("{number}: {line}"));
-            }
-            if !output.ends_with('\n') {
-                output.push('\n');
-            }
+            push_formatted_match_line(output, path_prefix, number, &line);
             *kept += 1;
             last = number;
         }
         after = after.saturating_sub(1);
-        prior.push_back((number, line.clone()));
+        prior.push_back((number, line));
         while prior.len() > context {
             prior.pop_front();
         }
@@ -1040,7 +1085,7 @@ fn scan_matching_lines(
 }
 
 /// Read bounded text windows or matching lines without loading the complete file.
-pub fn extract_file_slice(
+fn extract_file_slice(
     file: &Path,
     mode: ReadMode,
     bounds: &ReadBounds,
@@ -1104,7 +1149,7 @@ pub fn extract_file_slice(
 }
 
 /// Compute a path-confined unified diff against HEAD or the active node baseline/claim_tree.
-pub fn compute_file_delta(
+fn compute_file_delta(
     _root: &Path,
     file: &Path,
     baseline: Option<&str>,
@@ -1182,7 +1227,7 @@ fn graph_signals(
 }
 
 /// Produce at most three lines of copy-ready calls, only for confirmed signals.
-pub fn render_read_hints(
+fn render_read_hints(
     root: &Path,
     conn: Option<&Connection>,
     adapter: &Adapter,

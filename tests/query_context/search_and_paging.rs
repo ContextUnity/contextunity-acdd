@@ -99,10 +99,10 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     let plan = serde_json::to_string(&plan).unwrap();
     assert!(plan.contains("node_search"), "{plan}");
     assert!(!plan.contains("SCAN n "), "{plan}");
-    let default: contextunity_acdd::mcp::tools::SearchSymbols =
+    let default: contextunity_acdd::mcp::tools::inputs::SearchSymbols =
         serde_json::from_value(serde_json::json!({"pattern":"admit"})).unwrap();
     assert!(!default.exact);
-    let enabled: contextunity_acdd::mcp::tools::SearchSymbols =
+    let enabled: contextunity_acdd::mcp::tools::inputs::SearchSymbols =
         serde_json::from_value(serde_json::json!({"pattern":"admit", "exact":true})).unwrap();
     assert!(enabled.exact);
 }
@@ -329,7 +329,7 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
         names,
         (0..73).map(|i| format!("leaf_{i:03}")).collect::<Vec<_>>()
     );
-    let expected = traversal::traverse_with_path_options(
+    let expected = traversal::impact::traverse_with_path_options(
         &conn,
         "entry",
         None,
@@ -351,7 +351,7 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
     let mut query = options(9);
     let mut actual = Vec::new();
     loop {
-        let value = traversal::traverse_with_path_options(
+        let value = traversal::impact::traverse_with_path_options(
             &conn,
             "entry",
             None,
@@ -395,7 +395,7 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
     workspace.write("graph.py", &source);
     workspace.build();
     let conn = workspace.open();
-    let error = traversal::traverse_with_path_options(
+    let error = traversal::impact::traverse_with_path_options(
         &conn,
         "entry",
         None,
@@ -412,7 +412,7 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
     assert!(error.contains("1001 immediate graph links"), "{error}");
     assert!(error.contains("depth=1"), "{error}");
     assert!(error.contains("Reducing limit alone"), "{error}");
-    let direct = traversal::traverse_with_path_options(
+    let direct = traversal::impact::traverse_with_path_options(
         &conn,
         "entry",
         None,

@@ -1,15 +1,15 @@
-use super::cycles::kosaraju_cycle_sccs;
 use super::docs_lint::{evaluate_doc_integrity_rule, DocIntegrityFinding};
 use super::rules::{
     edge_matches_rule, rule_invariant_id, selector_has_internal_criteria, selector_matches_file,
     selector_matches_node, LoadedRule,
 };
-use super::{
+use super::types::{
     is_archived_path, is_type_declaration, ExternalOccurrence, IndexedEdge, IndexedNode,
     LintIndexData, LintViolation,
 };
 use crate::ast::search::PreparedAstMatcher;
-use crate::db::symbols::VerifiedSourceCache;
+use crate::db::cycles::kosaraju_cycle_sccs;
+use crate::db::source::VerifiedSourceCache;
 use acdd_core::lint::{
     external_symbol_matches_prefix, ArchRuleKind, ArchRuleSpec, ArchitectureConfig, LintCategory,
     ZoneSelector,
@@ -415,16 +415,19 @@ fn eval_forbid_cycles(
     let spec = &loaded.spec;
     let zone_list: Vec<String> = if !spec.zones.is_empty() {
         spec.zones.clone()
-    } else if spec.depth.is_none() && !arch.zones.is_empty() {
+    } else if spec.depth.is_none() && spec.from.is_none() && !arch.zones.is_empty() {
         arch.zones.keys().cloned().collect()
     } else {
         Vec::new()
     };
     let use_zones = !zone_list.is_empty();
+    let file_level = !use_zones && spec.depth.is_none();
     let depth = spec.depth.unwrap_or(2);
     let bucket_of = |path: &str| -> Option<String> {
         if use_zones {
             zone_bucket(path, &zone_list, &arch.zones)
+        } else if file_level {
+            Some(path.to_owned())
         } else {
             Some(dir_bucket(path, depth))
         }

@@ -1,9 +1,14 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support;
+use super::types::{CallForm, DeclarationRole, ImportPath, SyntaxContext, SyntaxGrammarSpec};
+use crate::ast::syntax::{symbol_name, text};
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 
 /// Language profile for CSS stylesheets.
-pub struct Css;
+struct Css;
 /// Shared CSS language profile.
-pub static CSS: Css = Css;
+static CSS: Css = Css;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -99,7 +104,7 @@ impl LanguageProfile for Css {
                 named_child(node, "keyframes_name").map(|n| text(n, source).trim())
             }
             "declaration" => named_child(node, "property_name").map(|n| text(n, source).trim()),
-            _ => ast::symbol_name(node, source),
+            _ => symbol_name(node, source),
         }
     }
 
@@ -124,8 +129,6 @@ impl LanguageProfile for Css {
         }
         support::relative_file_import(owner, trimmed)
     }
-
-    support::delegate_extract_file!();
 
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() != "import_statement" {
@@ -165,4 +168,4 @@ impl LanguageProfile for Css {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&CSS];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&CSS];

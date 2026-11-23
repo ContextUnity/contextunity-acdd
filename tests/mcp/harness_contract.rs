@@ -459,10 +459,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     };
     use contextunity_acdd::{
         mcp::server::Server,
-        state_bridge::{
-            resolve_worktree_span_context, CodeDomainProvider, DocsDomainProvider,
-            InvocationSettings,
-        },
+        state_bridge::{build_domain_providers, resolve_worktree_span_context, InvocationSettings},
     };
     use rmcp::{
         model::{CallToolRequestParams, CallToolResponse, NumberOrString},
@@ -561,13 +558,20 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         workspace_root: workspace.root().to_path_buf(), worktree: canon_wt.clone(), admitted_scope: vec!["src/lib.rs".into()],
         changed_paths: vec![], test_target: Some("src/lib.rs::covers_target".into()), path_policy: Default::default(), baseline_ref: None,
     };
-    let custom_code = CodeDomainProvider::with_code_db(workspace.root().to_path_buf(), adapter.clone(), Some(custom_code_db.clone()));
-    let default_code = CodeDomainProvider::new(workspace.root().to_path_buf(), adapter.clone());
-    let FreshnessObservation::Passed { execution_digest_salt: Some(custom_salt), .. } = custom_code.observe_freshness("seam", &json!({}), &check_req).unwrap() else { panic!("expected custom salt"); };
-    let FreshnessObservation::Passed { execution_digest_salt: Some(default_salt), .. } = default_code.observe_freshness("seam", &json!({}), &check_req).unwrap() else { panic!("expected default salt"); };
+    let custom_providers = build_domain_providers(
+        workspace.root(),
+        &adapter,
+        Some(custom_code_db.as_path()),
+        Vec::new(),
+    )
+    .unwrap();
+    let default_providers =
+        build_domain_providers(workspace.root(), &adapter, None, Vec::new()).unwrap();
+    let FreshnessObservation::Passed { execution_digest_salt: Some(custom_salt), .. } = custom_providers.observe_freshness("code.seam", &json!({}), &check_req).unwrap() else { panic!("expected custom salt"); };
+    let FreshnessObservation::Passed { execution_digest_salt: Some(default_salt), .. } = default_providers.observe_freshness("code.seam", &json!({}), &check_req).unwrap() else { panic!("expected default salt"); };
     assert!(!custom_salt.contains("index_generation=no-index") && default_salt.contains("index_generation=no-index"));
-    let adrs = DocsDomainProvider::with_code_db(workspace.root().to_path_buf(), adapter, Some(custom_code_db))
-        .provide_context("adrs", &DomainContextReq {
+    let adrs = custom_providers
+        .provide_context("docs.adrs", &DomainContextReq {
             run_id: "custom-db-check".parse().unwrap(), node_cursor: "execute".parse().unwrap(), gate_id: "execute".parse().unwrap(),
             workspace_root: workspace.root().to_path_buf(), worktree: canon_wt, admitted_scope: vec!["src/lib.rs".into()],
             target: None, max_bytes: 16_384, path_policy: Default::default(), baseline_ref: None,

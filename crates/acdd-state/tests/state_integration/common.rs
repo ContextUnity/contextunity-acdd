@@ -13,7 +13,7 @@ use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::context::ClaimResp;
 use acdd_state::git_ops::commit::current_head_commit;
 use acdd_state::profile::{resolve_optional_profile_ref_with_dirs, CommandDef};
-use acdd_state::spec::materialize_ephemeral_goal_spec;
+use acdd_state::spec::materialize_ephemeral_goal_spec_with_options;
 use acdd_state::types::{
     GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
     RunRecord, RunStatus, RunTombstoneRecord, StoragePreconditions, SubmitAction, SubtaskRecord,
@@ -102,6 +102,7 @@ pub struct MockHttpProvider {
     unsalted_check: AtomicBool,
     fail_check: AtomicBool,
     index_gen: AtomicUsize,
+    assert_repo_lock_free: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl MockHttpProvider {
@@ -113,7 +114,12 @@ impl MockHttpProvider {
             unsalted_check: AtomicBool::new(false),
             fail_check: AtomicBool::new(false),
             index_gen: AtomicUsize::new(0),
+            assert_repo_lock_free: std::sync::Mutex::new(None),
         }
+    }
+
+    pub fn set_assert_repo_lock_free(&self, lock_path: PathBuf) {
+        *self.assert_repo_lock_free.lock().unwrap() = Some(lock_path);
     }
 
     pub fn set_unsalted_check(&self, v: bool) { self.unsalted_check.store(v, Ordering::SeqCst); }
@@ -182,6 +188,14 @@ impl DomainProvider for MockHttpProvider {
 
     fn lookup_action_result(&self, action: &str, idempotency_key: &str) -> Result<Option<DomainActionResult>> {
         self.lookup_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(lock_path) = self.assert_repo_lock_free.lock().unwrap().as_ref() {
+            let guard = acdd_core::lock::try_acquire_exclusive(lock_path)?;
+            assert!(
+                guard.is_some(),
+                "repo.lock '{}' must be released before lookup_action_result",
+                lock_path.display()
+            );
+        }
         if action == "dispatch" {
             Ok(Some(DomainActionResult {
                 summary: format!("recovered {action}"),
@@ -468,13 +482,14 @@ pub fn build_rich_graph(root: &Path, run_id_str: &str, isolation: IsolationMode)
     let t1 = TaskRef::new("t1").unwrap();
     let t2 = TaskRef::new("t2").unwrap();
     let spec_rel = "docs/milestones/AC-001-sample.md";
-    let spec_content = materialize_ephemeral_goal_spec(
+    let spec_content = materialize_ephemeral_goal_spec_with_options(
         &run_id,
         &run_name,
         "Sample goal",
         &profile.profile_id,
         &["src/**".to_owned()],
         &[],
+        true,
     )
     .expect("render spec");
     let _ = fs::create_dir_all(root.join("docs/milestones"));

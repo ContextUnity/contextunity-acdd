@@ -1,5 +1,21 @@
-use super::*;
-use crate::ast::{relations, routes};
+use crate::ast::{
+    relations,
+    scope_analysis::ScopeAnalysis,
+    syntax::{self, field, text, ScopeBindings, Syntax},
+};
+use crate::languages::context::{
+    execute_call_rules, CallRulesInput, CallRulesResolvers, FileContext, LanguageContext,
+};
+use crate::languages::profile::LanguageProfile;
+use crate::languages::routes::{self, RouteContext};
+use crate::languages::sql;
+use crate::languages::types::{
+    call, module_stem, AstSearchCapabilities, ImportPath, LanguageFamily, LanguageFileState,
+    PythonFileState, SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::models::{Facts, Node};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Only summary-dependent, necessary candidates from the existing main walk.
 pub(crate) struct DeferredEvent<'tree> {
@@ -17,7 +33,7 @@ pub(crate) fn prepare_deferred_event<'tree>(
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
     rules: &LanguageContext,
-    rule_ir: &manifests::RuleIRHandle,
+    rule_ir: &crate::languages::RuleIRHandle,
 ) -> Option<DeferredEvent<'tree>> {
     let kind = ctx.node.kind();
     if matches!(kind, "assignment" | "annotated_assignment") {
@@ -82,7 +98,7 @@ pub(crate) fn finish_deferred_event(
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
     rules: &LanguageContext,
-    rule_ir: &manifests::RuleIRHandle,
+    rule_ir: &crate::languages::RuleIRHandle,
     lexical: &routes::RouteContext,
     projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
 ) {
@@ -114,9 +130,11 @@ pub(crate) fn finish_deferred_event(
         );
     }
 }
+pub(crate) mod common;
 mod computed_receivers;
 mod decorated_registration;
 mod lazy_exports;
+pub(crate) mod lexical;
 mod logging_factories;
 mod module_exports;
 mod projections;
@@ -131,21 +149,11 @@ pub(crate) fn logging_factories(
     logging_factories::collect(root, source, offset)
 }
 pub(crate) mod dependencies;
-pub(crate) mod linker;
 pub(crate) mod value_flow;
-/// Performs language.
-pub fn language() -> tree_sitter::Language {
-    tree_sitter_python::language()
-}
-/// Performs kind.
-pub fn kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        "function_definition" | "lambda" => Some("function"),
-        "class_definition" => Some("class"),
-        "type_alias_statement" => Some("type"),
-        _ => None,
-    }
-}
+
+use common::{direct_module_assignment, module_scope, type_alias};
+pub(crate) use common::{kind, language};
+pub(crate) use lexical::lexical_binding_owner;
 
 fn class_method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
     let mut parent = node.parent()?;
@@ -191,175 +199,6 @@ fn is_static_decorator(decorator: &str) -> bool {
         == Some("staticmethod")
 }
 
-pub(crate) use template_loaders::{BindingWriteCollector, BindingWrites};
-
-pub(crate) fn lexical_type_parameters(scope: Syntax<'_>, source: &str) -> Vec<String> {
-    template_loaders::type_parameter_names(scope, source)
-}
-
-pub(crate) fn lexical_binding_owner<'tree>(
-    node: Syntax<'tree>,
-    source: &str,
-    name: &str,
-) -> Option<Syntax<'tree>> {
-    lexical_binding_owner_with(node, |scope| {
-        template_loaders::type_parameter_names(scope, source)
-            .iter()
-            .any(|bound| bound == name)
-            || ast::scope_bindings(scope, source)
-                .all
-                .iter()
-                .any(|bound| bound == name)
-            || scope
-                .child_by_field_name("body")
-                .is_some_and(|body| template_loaders::binding_count(body, source, name) != 0)
-    })
-}
-
-/// Applies Python lexical boundaries to a caller-owned, completed binding proof.
-pub(crate) fn lexical_binding_owner_with<'tree>(
-    node: Syntax<'tree>,
-    mut binds: impl FnMut(Syntax<'tree>) -> bool,
-) -> Option<Syntax<'tree>> {
-    let mut parent = node.parent();
-    while let Some(scope) = parent {
-        match scope.kind() {
-            "function_definition" => {
-                if binds(scope) {
-                    return Some(scope);
-                }
-                scope.child_by_field_name("body")?;
-            }
-            "class_definition"
-            | "lambda"
-            | "list_comprehension"
-            | "set_comprehension"
-            | "dictionary_comprehension"
-            | "generator_expression" => return None,
-            "module" => return Some(scope),
-            _ => {}
-        }
-        parent = scope.parent();
-    }
-    None
-}
-
-fn module_scope(node: Syntax<'_>) -> bool {
-    let mut parent = node.parent();
-    while let Some(ancestor) = parent {
-        match ancestor.kind() {
-            "function_definition" | "lambda" | "class_definition" => return false,
-            "module" => return true,
-            _ => parent = ancestor.parent(),
-        }
-    }
-    false
-}
-
-fn direct_module_assignment(node: Syntax<'_>) -> bool {
-    node.kind() == "assignment"
-        && node
-            .child_by_field_name("left")
-            .is_some_and(|left| left.kind() == "identifier")
-        && node
-            .parent()
-            .filter(|parent| parent.kind() == "expression_statement")
-            .and_then(|parent| parent.parent())
-            .is_some_and(|parent| parent.kind() == "module")
-}
-
-fn typing_name(value: &str) -> &str {
-    value
-        .strip_prefix("typing.")
-        .or_else(|| value.strip_prefix("typing_extensions."))
-        .unwrap_or(value)
-}
-
-fn is_type_alias_rhs(node: Syntax<'_>, source: &str) -> bool {
-    match node.kind() {
-        "subscript" => true,
-        "binary_operator" => field(node, source, "operator").is_some_and(|op| op == "|"),
-        "identifier" => {
-            let name = text(node, source);
-            matches!(
-                name,
-                "int"
-                    | "str"
-                    | "float"
-                    | "bool"
-                    | "bytes"
-                    | "dict"
-                    | "list"
-                    | "set"
-                    | "tuple"
-                    | "object"
-                    | "None"
-                    | "Any"
-            ) || name.ends_with("Type")
-                || name.ends_with("Dict")
-                || name.ends_with("Value")
-                || name.ends_with("Primitive")
-                || name.ends_with("Mapping")
-                || name.ends_with("Payload")
-        }
-        "attribute" => {
-            let name = field(node, source, "attribute").unwrap_or_default();
-            matches!(name, "Any" | "Type" | "None")
-                || name.ends_with("Type")
-                || name.ends_with("Dict")
-                || name.ends_with("Value")
-                || name.ends_with("Primitive")
-                || name.ends_with("Mapping")
-                || name.ends_with("Payload")
-        }
-        _ => false,
-    }
-}
-
-fn type_alias(node: Syntax<'_>, source: &str) -> bool {
-    if !matches!(node.kind(), "assignment" | "type_alias_statement") {
-        return false;
-    }
-    if node.kind() == "type_alias_statement" {
-        return module_scope(node);
-    }
-    if !node
-        .child_by_field_name("left")
-        .is_some_and(|left| left.kind() == "identifier")
-    {
-        return false;
-    }
-    if field(node, source, "type")
-        .is_some_and(|annotation| matches!(typing_name(annotation), "TypeAlias" | "TypeAliasType"))
-    {
-        return module_scope(node);
-    }
-    if node
-        .child_by_field_name("right")
-        .filter(|right| right.kind() == "call")
-        .and_then(|call| field(call, source, "function"))
-        .is_some_and(|callee| {
-            matches!(typing_name(callee), "TypeVar" | "NewType" | "TypeAliasType")
-        })
-        && module_scope(node)
-    {
-        return true;
-    }
-    if !module_scope(node) {
-        return false;
-    }
-    let Some(left) = node.child_by_field_name("left") else {
-        return false;
-    };
-    let left_name = text(left, source);
-    if !left_name.starts_with(|c: char| c.is_ascii_uppercase()) {
-        return false;
-    }
-    let Some(right) = node.child_by_field_name("right") else {
-        return false;
-    };
-    is_type_alias_rhs(right, source)
-}
 
 fn is_inside_type_checking(
     mut curr: Syntax<'_>,
@@ -452,141 +291,9 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
 }
 
 /// Represents python data.
-pub struct Python;
+struct Python;
 /// Shared python language profile.
-pub static PYTHON: Python = Python;
-/// Collect main-guard calls during the shared syntax walk, then apply only
-/// declarations whose module binding remains unambiguous.
-#[derive(Default)]
-pub(crate) struct MainGuardTracker {
-    calls: HashMap<String, (usize, usize)>,
-    declarations: HashMap<String, (usize, usize, bool)>,
-    callable_assignments: HashSet<String>,
-}
-
-impl MainGuardTracker {
-    pub(crate) fn observe(&mut self, node: Syntax<'_>, source: &str) {
-        if node.kind() == "assignment"
-            && module_scope(node)
-            && node
-                .child_by_field_name("right")
-                .is_some_and(|right| right.kind() == "lambda")
-        {
-            if let Some(left) = node
-                .child_by_field_name("left")
-                .filter(|left| left.kind() == "identifier")
-            {
-                self.callable_assignments
-                    .insert(text(left, source).to_owned());
-            }
-        }
-        if node.kind() == "function_definition" && module_scope(node) {
-            if let Some(name) = field(node, source, "name") {
-                let direct = node.parent().is_some_and(|parent| {
-                    parent.kind() == "module"
-                        || (parent.kind() == "decorated_definition"
-                            && parent
-                                .parent()
-                                .is_some_and(|outer| outer.kind() == "module"))
-                });
-                let entry = self.declarations.entry(name.to_owned()).or_insert((
-                    0,
-                    node.start_byte(),
-                    direct,
-                ));
-                entry.0 += 1;
-            }
-            return;
-        }
-        if node.kind() != "expression_statement" {
-            return;
-        }
-        let Some(body) = node.parent().filter(|n| n.kind() == "block") else {
-            return;
-        };
-        let Some(guard) = body.parent().filter(|n| n.kind() == "if_statement") else {
-            return;
-        };
-        if !guard.parent().is_some_and(|n| n.kind() == "module")
-            || guard.child_by_field_name("consequence") != Some(body)
-        {
-            return;
-        }
-        let Some(condition) = guard.child_by_field_name("condition") else {
-            return;
-        };
-        let mut cursor = condition.walk();
-        let mut operands = condition.named_children(&mut cursor);
-        let (Some(left), Some(right), None) = (operands.next(), operands.next(), operands.next())
-        else {
-            return;
-        };
-        let lhs = text(left, source).trim();
-        let rhs = text(right, source).trim();
-        let is_main = |s: &str| s == "'__main__'" || s == "\"__main__\"";
-        if condition.kind() != "comparison_operator"
-            || !((lhs == "__name__" && is_main(rhs)) || (rhs == "__name__" && is_main(lhs)))
-            || !text(condition, source).contains("==")
-        {
-            return;
-        }
-        let Some(call) = node.named_child(0).filter(|n| n.kind() == "call") else {
-            return;
-        };
-        let Some(function) = call
-            .child_by_field_name("function")
-            .filter(|n| n.kind() == "identifier")
-        else {
-            return;
-        };
-        let entry = self
-            .calls
-            .entry(text(function, source).to_owned())
-            .or_insert((0, guard.start_byte()));
-        entry.0 += 1;
-    }
-
-    pub(crate) fn finish(self, module: &str, bindings: &ast::ScopeBindings, facts: &mut Facts) {
-        let rebound: HashSet<&str> = bindings.rebindings.iter().map(String::as_str).collect();
-        let imported: HashSet<&str> = facts
-            .references
-            .iter()
-            .filter(|r| r.kind == "imports" && r.source.starts_with("module:"))
-            .filter_map(|r| r.alias.as_deref())
-            .collect();
-        for node in &mut facts.nodes {
-            if node.kind != "function"
-                || node
-                    .qualname
-                    .strip_prefix(module)
-                    .and_then(|s| s.strip_prefix('.'))
-                    != Some(node.name.as_str())
-            {
-                continue;
-            }
-            let Some(definitions) = self.declarations.get(&node.name) else {
-                continue;
-            };
-            if definitions.0 == 1 && definitions.2 {
-                node.details["entrypoint_direct_module"] = serde_json::json!(true);
-            }
-            if node.details.get("entrypoint_base").is_some()
-                || !definitions.2
-                || rebound.contains(node.name.as_str())
-                || imported.contains(node.name.as_str())
-                || self.callable_assignments.contains(node.name.as_str())
-            {
-                continue;
-            }
-            let Some(calls) = self.calls.get(&node.name) else {
-                continue;
-            };
-            if calls.0 == 1 && definitions.0 == 1 && definitions.1 < calls.1 {
-                node.details["entrypoint_base"] = serde_json::json!("main");
-            }
-        }
-    }
-}
+static PYTHON: Python = Python;
 static PYTHON_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[
         ("function_definition", "function"),
@@ -612,19 +319,19 @@ impl LanguageProfile for Python {
         Some(&PYTHON_SPEC)
     }
     fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &linker::PYTHON_LINKER
+        &crate::linker::python::profile_linker::PYTHON_LINKER
     }
     fn scope_analysis<'source, 'tree>(
         &self,
         node: Syntax<'tree>,
         source: &'source str,
         _file: &FileContext,
-    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
-        Some(ast::ScopeAnalysis::python(node, source))
+    ) -> Option<ScopeAnalysis<'source, 'tree>> {
+        Some(ScopeAnalysis::python(node, source))
     }
 
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
-        ast::visitor::python_bindings(node, source)
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
+        crate::ast::syntax::bindings(node, source)
     }
     fn builtin_member(&self, receiver: &str, member: &str) -> bool {
         builtin_member(receiver, member)
@@ -687,17 +394,7 @@ impl LanguageProfile for Python {
         }
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
-        if node.kind() == "assignment" {
-            return field(node, source, "left");
-        }
-        if node.kind() == "type_alias_statement" {
-            let mut name = node.named_child(0)?;
-            while matches!(name.kind(), "type" | "generic_type") {
-                name = name.named_child(0)?;
-            }
-            return (name.kind() == "identifier").then(|| text(name, source));
-        }
-        ast::symbol_name(node, source)
+        common::symbol_name(node, source)
     }
     fn node_prefix(&self, kind: &str) -> &'static str {
         match kind {
@@ -711,7 +408,6 @@ impl LanguageProfile for Python {
             .trim_end_matches("/__init__")
             .replace('/', ".")
     }
-    support::delegate_extract_file!();
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         projections::clear();
         let mut type_checking_aliases = HashMap::new();
@@ -794,10 +490,12 @@ impl LanguageProfile for Python {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        super::sql::extract_literal(ctx, facts);
+        sql::extract_literal(ctx, facts);
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
-            template_loaders::extract(ctx, facts);
+            template_loaders::extract(ctx, facts, |alias, visit| {
+                syntax_operations::for_each_loader_rule(alias, visit)
+            });
             syntax_operations::extract_reverse_route(
                 ctx.node, ctx.source, ctx.owner, ctx.offset, facts,
             );
@@ -1002,21 +700,7 @@ impl LanguageProfile for Python {
     }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
-        if module.starts_with('.') {
-            let count = module.bytes().take_while(|b| *b == b'.').count();
-            let path = format!(
-                "{}{}",
-                "../".repeat(count - 1),
-                module[count..].replace('.', "/")
-            );
-            Some(ImportPath {
-                namespace: relative_namespace(owner, &path)?,
-                relative: true,
-                symbol_path: false,
-            })
-        } else {
-            Some(ImportPath::absolute(module.into()))
-        }
+        common::normalize_python_import(owner, module)
     }
     fn doc_comment(&self, node: Syntax<'_>, source: &str) -> String {
         if let Some(first) = node
@@ -1029,7 +713,7 @@ impl LanguageProfile for Python {
                 return text(first, source).into();
             }
         }
-        ast::doc_comment(node, source)
+        syntax::doc_comment(node, source)
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
         matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
@@ -1224,7 +908,13 @@ impl LanguageProfile for Python {
                 relations::type_references_at(facts, ctx.owner, ret, ctx.source, ctx.offset);
             }
         }
-        relations::decorator_references(ctx, facts);
+        let span = relations::RelationSpan {
+            node: ctx.node,
+            source: ctx.source,
+            owner: ctx.owner,
+            offset: ctx.offset,
+        };
+        relations::decorator_references(span, facts);
         decorated_registration::decorator_candidates(ctx, facts);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
@@ -1234,14 +924,20 @@ impl LanguageProfile for Python {
         ) {
             return;
         }
+        let span = relations::RelationSpan {
+            node: ctx.node,
+            source: ctx.source,
+            owner: ctx.owner,
+            offset: ctx.offset,
+        };
         relations::mutation(
-            ctx,
+            span,
             facts,
             &[],
             &["assignment", "augmented_assignment"],
             &["attribute"],
         );
-        relations::member_access(ctx, facts, &["attribute"]);
+        relations::member_access(span, facts, &["attribute"]);
     }
     fn extract_routes(
         &self,
@@ -1297,9 +993,9 @@ impl LanguageProfile for Python {
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::ast::routes::RouteContext,
+        rules: &LanguageContext,
+        rule_ir: &crate::languages::RuleIRHandle,
+        route_context: &RouteContext,
         projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
     ) {
         if ctx.node.kind() == "class_definition" && !route_context.defer_python_orm() {
@@ -1371,10 +1067,7 @@ impl LanguageProfile for Python {
     }
 }
 
-pub(crate) fn finish_class_method_registrations(
-    facts: &mut Facts,
-    lexical: &crate::ast::routes::RouteContext,
-) {
+pub(crate) fn finish_class_method_registrations(facts: &mut Facts, lexical: &RouteContext) {
     syntax_operations::extract_class_method_registrations(facts, lexical);
 }
 
@@ -1406,15 +1099,15 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
         return;
     };
     let alias = text(callee, ctx.source);
-    super::manifests::semantic::execute_call_rules(
-        super::manifests::semantic::CallRulesInput {
+    execute_call_rules(
+        CallRulesInput {
             ctx,
             rules,
             indices,
             language: "python",
             alias,
         },
-        &super::manifests::semantic::CallRulesResolvers {
+        &CallRulesResolvers {
             candidate: &|module| projections::imported_module_candidate(alias, module),
             argument_value: &|index| {
                 let arguments = ctx.node.child_by_field_name("arguments")?;
@@ -1938,4 +1631,4 @@ fn is_python_stdlib(pkg: &str) -> bool {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&PYTHON];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&PYTHON];

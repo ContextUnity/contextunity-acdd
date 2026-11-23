@@ -1,5 +1,5 @@
 use acdd_core::response::{QueryOptions, ResponsePolicy, SourceOptions};
-use acdd_index::{ast, db::{reader, symbols}, scanner};
+use acdd_index::{ast, db::symbols, scanner};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 
@@ -45,12 +45,21 @@ fn persisted_config_key_identity() {
         }
         let actual_workers: usize = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='namespace' AND n.name='workers'", [path], |row| row.get(0)).unwrap();
         assert_eq!(actual_workers, workers, "{case_id}");
-        let node = reader::select(&conn, selector).unwrap();
+        let node = crate::common::select_node(&conn, selector).unwrap();
         assert_eq!(node["name"], "port", "{case_id}");
         let policy = ResponsePolicy::default();
         let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
         let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
-        let result = symbols::snippet_paged(&conn, w.root(), selector, &source, &options).unwrap();
+        let result = symbols::snippet_paged_with_response_budget(
+            &conn,
+            w.root(),
+            selector,
+            None,
+            &source,
+            &options,
+            policy.max_output_bytes,
+        )
+        .unwrap();
         assert!(
             result["source"].as_str().unwrap().contains(snippet),
             "{case_id}: {result}"

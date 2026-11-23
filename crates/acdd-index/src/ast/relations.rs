@@ -1,5 +1,13 @@
-use super::{text, Syntax};
+use super::syntax::{text, Syntax};
 use crate::models::{Edge, Facts, Node, Reference};
+
+#[derive(Clone, Copy)]
+pub(crate) struct RelationSpan<'a, 'tree> {
+    pub node: Syntax<'tree>,
+    pub source: &'a str,
+    pub owner: &'a str,
+    pub offset: usize,
+}
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
     if expression.is_empty() || expression == "_" {
@@ -158,11 +166,8 @@ fn is_declaring_type_parameter(node: Syntax<'_>, source: &str, name: &str) -> bo
     false
 }
 
-pub(crate) fn decorator_references(
-    ctx: &crate::languages::SyntaxContext<'_, '_>,
-    facts: &mut Facts,
-) {
-    let (node, source, id, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
+pub(crate) fn decorator_references(span: RelationSpan<'_, '_>, facts: &mut Facts) {
+    let (node, source, id, offset) = (span.node, span.source, span.owner, span.offset);
     for decorator in decorators(node) {
         if let Some(expr) = decorator.named_child(0) {
             let name = expr.child_by_field_name("function").unwrap_or(expr);
@@ -254,19 +259,19 @@ fn add_field(
 }
 
 pub(crate) fn mutation(
-    ctx: &crate::languages::SyntaxContext<'_, '_>,
+    span: RelationSpan<'_, '_>,
     facts: &mut Facts,
     field_kinds: &[&str],
     assignment_kinds: &[&str],
     member_kinds: &[&str],
 ) {
-    let node = ctx.node;
+    let node = span.node;
     let is_field = field_kinds.contains(&node.kind());
     let is_assign = assignment_kinds.contains(&node.kind());
     if !is_field && !is_assign {
         return;
     }
-    let (source, owner, offset) = (ctx.source, ctx.owner, ctx.offset);
+    let (source, owner, offset) = (span.source, span.owner, span.offset);
     let line = node.start_position().row + offset + 1;
     let Some(p_idx) = facts.nodes.iter().rposition(|n| n.id == owner) else {
         return;
@@ -365,15 +370,15 @@ pub(crate) fn mutation(
 }
 
 pub(crate) fn member_access(
-    ctx: &crate::languages::SyntaxContext<'_, '_>,
+    span: RelationSpan<'_, '_>,
     facts: &mut Facts,
     member_kinds: &[&str],
 ) {
-    let node = ctx.node;
+    let node = span.node;
     if !member_kinds.contains(&node.kind()) {
         return;
     }
-    let expr = text(node, ctx.source);
+    let expr = text(node, span.source);
     if !expr.starts_with("self.")
         && !expr.starts_with("this.")
         && !expr.starts_with("cls.")
@@ -414,8 +419,8 @@ pub(crate) fn member_access(
             return;
         }
     }
-    let line = node.start_position().row + ctx.offset + 1;
-    reference(facts, ctx.owner, expr, "references", line);
+    let line = node.start_position().row + span.offset + 1;
+    reference(facts, span.owner, expr, "references", line);
 }
 
 pub(crate) fn implicit_fields(facts: &mut Facts) {

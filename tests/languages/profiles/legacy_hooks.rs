@@ -4,8 +4,8 @@ use acdd_index::{
     semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
 use acdd_index::{
-    ast::ScopeBindings,
-    languages::{self, FileContext, ImportPath, LanguageProfile, SymbolMetadata},
+    ast::syntax::ScopeBindings,
+    languages::{self, context::FileContext, ImportPath, LanguageProfile, SymbolMetadata},
 };
 use serde_json::json;
 use std::sync::Mutex;
@@ -155,7 +155,7 @@ impl LanguageProfile for DefaultHooks {
         module: &str,
         facts: &mut Facts,
     ) -> anyhow::Result<()> {
-        languages::parse_file(self, path, source, module, facts)
+        acdd_index::ast::parse::parse_file(self, path, source, module, facts)
     }
 }
 
@@ -220,7 +220,7 @@ impl LanguageProfile for CombinedHooks {
         module: &str,
         facts: &mut Facts,
     ) -> anyhow::Result<()> {
-        languages::parse_file(self, path, source, module, facts)
+        acdd_index::ast::parse::parse_file(self, path, source, module, facts)
     }
 }
 
@@ -253,7 +253,7 @@ fn extract((combined, flow_return, prepared): Case) -> (Facts, Vec<&'static str>
     let module = facts.nodes.iter_mut().find(|n| n.kind == "module").unwrap();
     module.details["bindings"] = json!(["existing_binding"]);
     module.details["rebindings"] = json!(["existing_rebound"]);
-    languages::parse_file(profile, PATH, SOURCE, "legacy", &mut facts).unwrap();
+    acdd_index::ast::parse::parse_file(profile, PATH, SOURCE, "legacy", &mut facts).unwrap();
     let calls = trace.lock().unwrap().clone();
     (facts, calls)
 }

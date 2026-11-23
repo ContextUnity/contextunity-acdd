@@ -1,17 +1,20 @@
-use super::*;
-use tree_sitter::Language;
+use super::profile::LanguageProfile;
+use super::types::{relative_namespace, ImportPath, LanguageFamily, SyntaxContext};
+use crate::ast::syntax::{field, text};
+use crate::models::{Facts, Reference};
+use tree_sitter::{Language, Node as Syntax};
 
 extern "C" {
     fn tree_sitter_proto() -> Language;
 }
 
 /// Performs language.
-pub fn language() -> Language {
+fn language() -> Language {
     unsafe { tree_sitter_proto() }
 }
 
 /// Performs kind.
-pub fn kind(kind: &str) -> Option<&'static str> {
+fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "message" => Some("class"),
         "service" => Some("service"),
@@ -22,23 +25,7 @@ pub fn kind(kind: &str) -> Option<&'static str> {
 }
 
 fn parse_proto_package(source: &str) -> Option<&str> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed
-            .strip_prefix("package")
-            .filter(|rest| rest.starts_with(char::is_whitespace))
-        {
-            let rest = rest.split_once("//").map_or(rest, |(before, _)| before);
-            let pkg = rest.trim().trim_end_matches(';').trim();
-            if !pkg.is_empty() {
-                return Some(pkg);
-            }
-        }
-    }
-    None
+    super::types::parse_package_declaration(source, false)
 }
 
 fn is_proto_primitive(name: &str) -> bool {
@@ -63,9 +50,9 @@ fn is_proto_primitive(name: &str) -> bool {
 }
 
 /// Represents proto data.
-pub struct Proto;
+struct Proto;
 /// Shared proto language profile.
-pub static PROTO: Proto = Proto;
+static PROTO: Proto = Proto;
 impl LanguageProfile for Proto {
     fn id(&self) -> &'static str {
         "proto"
@@ -101,7 +88,6 @@ impl LanguageProfile for Proto {
         let dir_b = path_b.rsplit_once('/').map_or("", |(d, _)| d);
         dir_a == dir_b
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);
@@ -266,4 +252,4 @@ impl LanguageProfile for Proto {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&PROTO];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&PROTO];

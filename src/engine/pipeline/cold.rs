@@ -1,179 +1,57 @@
-use super::*;
-
-/// Extracts one scanned file and rejects changes to its source snapshot.
-pub fn extract(root: &Path, file: &FileEntry, adapter: &Adapter) -> Result<Facts> {
-    let dependencies = DependencyRegistry::try_collect_with_scan_config(root, Some(adapter))?;
-    Ok(extract_typed(root, file, adapter, &dependencies)?.into_public())
-}
-
-pub(super) fn extract_typed(
-    root: &Path,
-    file: &FileEntry,
-    adapter: &Adapter,
-    dependencies: &DependencyRegistry,
-) -> Result<TypedFacts> {
-    let path = resolve_file_path(root, adapter, &file.path)?;
-    let source = fs::read_to_string(&path)?;
-    let zones = adapter.architecture.zone_names();
-    let source_digest = commitments::hash(source.as_bytes());
-    extract_typed_source_with_digest(
-        file,
-        &source,
-        &source_digest,
-        dependencies,
-        &adapter.spec_paths(),
-        Some(&zones),
-    )
-}
-
-pub(super) fn extract_typed_source_with_digest(
-    file: &FileEntry,
-    source: &str,
-    source_digest: &str,
-    dependencies: &DependencyRegistry,
-    spec_paths: &[String],
-    known_zones: Option<&BTreeSet<String>>,
-) -> Result<TypedFacts> {
-    if source_digest != file.digest {
-        return Err(SourceSnapshotMismatch(format!(
-            "source changed during extraction: {}",
-            file.path
-        ))
-        .into());
-    }
-    let mut typed = if file.is_doc {
-        let parsed = docs::extract_with_details_with_zones(
-            &file.path,
-            source,
-            file.mtime_ns as f64 / 1e9,
-            spec_paths,
-            known_zones,
-        )?;
-        let sections = parsed
-            .iter()
-            .map(|(doc, _)| doc.clone())
-            .collect::<Vec<_>>();
-        let mut nodes = Vec::new();
-        let mut errors = Vec::new();
-        if let Some(err_msg) = parsed
-            .first()
-            .and_then(|(_, metadata)| metadata.get("frontmatter_error"))
-            .and_then(Value::as_str)
-        {
-            errors.push(acdd_index::models::Diagnostic {
-                path: file.path.clone(),
-                line: 1,
-                message: format!("invalid frontmatter: {err_msg}"),
-            });
-        }
-        for (doc, metadata) in &parsed {
-            let line = metadata["line"].as_u64().unwrap_or(1) as usize;
-            let end_line = metadata["end_line"].as_u64().unwrap_or(line as u64) as usize;
-            if let Some(rule_errors) = metadata
-                .get("arch_rule_errors")
-                .and_then(Value::as_array)
-            {
-                for err in rule_errors {
-                    let err_line = err["line"].as_u64().unwrap_or(line as u64) as usize;
-                    if let Some(msg) = err["message"].as_str() {
-                        errors.push(acdd_index::models::Diagnostic {
-                            path: file.path.clone(),
-                            line: err_line,
-                            message: msg.to_owned(),
-                        });
-                    }
-                }
-            }
-            let mut details = json!({
-                "doc_type":doc.doc_type,
-                "is_invariant":doc.is_invariant,
-                "status":metadata["status"],
-                "citations":metadata["citations"],
-                "symbol_claims":metadata["symbol_claims"],
-                "declared_invariants":metadata["declared_invariants"],
-            });
-            if metadata["status"].is_null() {
-                details.as_object_mut().unwrap().remove("status");
-            }
-            if let Some(rules) = metadata
-                .get(acdd_index::models::details::NodeDetailKey::ARCH_RULES)
-                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
-            {
-                details.as_object_mut().unwrap().insert(
-                    acdd_index::models::details::NodeDetailKey::ARCH_RULES.to_owned(),
-                    rules.clone(),
-                );
-            }
-            nodes.push(Node {
-                native_semantic: None,
-                id: doc.doc_id.clone(),
-                kind: "document".into(),
-                name: doc.section_title.clone(),
-                qualname: doc.doc_id.clone(),
-                path: doc.path.clone(),
-                line,
-                end_line,
-                is_test: false,
-                language: "markdown".into(),
-                generated: false,
-                details,
-            });
-            if let Some(invariants) = metadata["declared_invariants"].as_array() {
-                for invariant in invariants {
-                    let Some(name) = invariant["id"].as_str() else {
-                        continue;
-                    };
-                    let invariant_line = invariant["line"].as_u64().unwrap_or(line as u64) as usize;
-                    nodes.push(Node {
-                        native_semantic: None,
-                        id: format!("invariant:{}:{invariant_line}:{name}", doc.path),
-                        kind: "invariant".into(),
-                        name: name.to_owned(),
-                        qualname: format!("{}::{name}", doc.doc_id),
-                        path: doc.path.clone(),
-                        line: invariant_line,
-                        end_line: invariant_line,
-                        is_test: false,
-                        language: "markdown".into(),
-                        generated: false,
-                        details: json!({
-                            "document_id":doc.doc_id,
-                            "rule":invariant["rule"],
-                            "status":metadata["status"],
-                        }),
-                    });
-                }
-            }
-        }
-        TypedFacts::from_public(Facts {
-            docs: sections,
-            nodes,
-            errors,
-            ..Facts::default()
-        })
-    } else {
-        ast::extract_typed_with_registry(&file.path, &file.language, source, dependencies)?
-    };
-    sanitize_extracted_facts(&mut typed);
-    Ok(typed)
-}
-
-pub(super) fn sanitize_extracted_facts(facts: &mut TypedFacts) {
-    for node in &mut facts.facts.nodes {
-        if node.details.get("classic_global") == Some(&serde_json::Value::Bool(true)) {
-            if let Some(details) = node.details.as_object_mut() {
-                details.remove("value_flow");
-            }
-        }
-    }
-}
+use super::budget::ByteBudget;
+use super::hooks::PipelineTestHooks;
+use super::hydration::{extraction_cache_key_and_limit, touch_cached_facts};
+use super::runtime::{
+    ColdPipelineInputs, ExtractionWorkerContext, PipelineConsumerOutput, PipelineControl,
+    PipelineCounters, PipelineItem, PipelineMetrics, PipelineWork,
+};
+use super::shared::{
+    assign_file_component, components, extract_typed_source_with_digest, hash_source_bytes,
+    manage_publication_sidecars, open_and_read_verified_source,
+    BuildMode, SidecarDisposition, SourceSnapshotMismatch, EXTRACTION_MEMORY_MULTIPLIER, NONCE,
+};
+use super::staging::consume_pipeline_results;
+use acdd_core::{
+    config::{
+        self, load_adapter, resolve_code_db_path, resolve_memory_budget_bytes,
+        resolve_state_db_path, Adapter,
+    },
+    errors::{ErrorCode, StateError},
+    fs::canonical_root,
+};
+use acdd_index::{
+    ast,
+    db::{
+        cache, reader as db_reader,
+        writer::{
+            self as db_writer,
+            cache::{self as extraction_cache, ExtractionCache},
+        },
+    },
+    languages::dependency_registry::DependencyRegistry,
+    linker,
+    models::FileEntry,
+    scanner::{self, BuildCandidate},
+    typed_facts::{SymbolCatalog, TypedFacts},
+};
+use anyhow::{bail, Context, Result};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{json, Value};
+use std::{
+    fs::{self, OpenOptions},
+    panic::{catch_unwind, AssertUnwindSafe},
+    path::{Path, PathBuf},
+    sync::{atomic::Ordering, mpsc, Arc, Mutex},
+    thread,
+    time::Instant,
+};
 
 type CandidateExtraction = (
     FileEntry,
     TypedFacts,
     bool,
     Option<Vec<u8>>,
-    Option<Vec<Edge>>,
+    Option<Vec<acdd_index::models::Edge>>,
     String,
 );
 
@@ -186,15 +64,14 @@ pub(super) fn extract_candidate(
     effective_ruleset_hash: &str,
     source: &mut String,
 ) -> Result<CandidateExtraction> {
-    let path = resolve_file_path(root, adapter, &candidate.path)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut source_file = options.open(&path)?;
+    let source_file = open_and_read_verified_source(
+        root,
+        adapter,
+        &candidate.path,
+        candidate.bytes,
+        Some(candidate.bytes),
+        source,
+    )?;
     if !candidate.matches_metadata(&source_file.metadata()?) {
         return Err(SourceSnapshotMismatch(format!(
             "source changed during extraction: {}",
@@ -202,32 +79,9 @@ pub(super) fn extract_candidate(
         ))
         .into());
     }
-    let source_capacity =
-        usize::try_from(candidate.bytes).context("source size exceeds addressable memory")?;
-    source.clear();
-    source.try_reserve_exact(source_capacity)?;
-    source_file
-        .by_ref()
-        .take(adapter.limits.max_file_bytes.saturating_add(1))
-        .read_to_string(source)?;
-    if source.len() as u64 > adapter.limits.max_file_bytes || source.len() as u64 != candidate.bytes
-    {
-        return Err(SourceSnapshotMismatch(format!(
-            "source changed during extraction: {}",
-            candidate.path
-        ))
-        .into());
-    }
-    if !candidate.matches_metadata(&source_file.metadata()?) {
-        return Err(SourceSnapshotMismatch(format!(
-            "source changed during extraction: {}",
-            candidate.path
-        ))
-        .into());
-    }
-    let source_digest = commitments::hash(source.as_bytes());
+    let source_digest = hash_source_bytes(source);
     let file = candidate.into_entry(source_digest);
-    let (key, cache_limit) = hydration::extraction_cache_key_and_limit(
+    let (key, cache_limit) = extraction_cache_key_and_limit(
         &file.digest,
         &file.path,
         &file.language,
@@ -238,7 +92,7 @@ pub(super) fn extract_candidate(
     if let Some((mut facts, encoded, components)) =
         extraction_cache.load_for_build(&key, cache_limit)
     {
-        hydration::touch_cached_facts(&mut facts, file.mtime_ns);
+        touch_cached_facts(&mut facts, file.mtime_ns);
         return Ok((file, facts, true, encoded, components, key));
     }
     let spec_paths = adapter.spec_paths();
@@ -540,7 +394,7 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
             };
             let local_facts_leaf = db_writer::local_facts_leaf(&file, &encoded_facts)?;
             let mut catalog = SymbolCatalog::default();
-            catalog.insert_typed(file.path.clone(), facts, false);
+            catalog.insert_typed(file.path.clone(), facts);
             Ok((
                 file,
                 catalog,
@@ -600,6 +454,7 @@ fn atomic_build(
     scan: scanner::BuildStreamReport,
     scan_ms: f64,
     test_hooks: Option<Arc<PipelineTestHooks>>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
     validate_code_map_target(root, output)?;
     let output = if output.is_absolute() {
@@ -794,8 +649,11 @@ fn atomic_build(
         let _generation_lock = cache::exclusive_lock(&output)?;
         let _idle_readers_guard = cache::release_idle_readers(&output)?;
         validate_code_map_target(root, &output)?;
-        if ensure_no_publication_sidecars(&output, false).is_err() {
-            ensure_no_publication_sidecars(&output, true)?;
+        if let Some(guard) = before_publish {
+            guard()?;
+        }
+        if manage_publication_sidecars(&output, SidecarDisposition::Reject).is_err() {
+            manage_publication_sidecars(&output, SidecarDisposition::Allow)?;
             if output.exists() {
                 let open_path = acdd_core::fs::confined_database_open_path(&output)?;
                 let connection = Connection::open_with_flags(
@@ -806,28 +664,9 @@ fn atomic_build(
                 let _ = connection.query_row("PRAGMA journal_mode=DELETE;", [], |_| Ok(()));
                 connection.close().map_err(|(_, err)| err)?;
             }
-            for suffix in ["-wal", "-shm", "-journal"] {
-                let mut name = output.as_os_str().to_owned();
-                name.push(suffix);
-                let sidecar = PathBuf::from(name);
-                match fs::symlink_metadata(&sidecar) {
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => {
-                        return Err(err)
-                            .with_context(|| format!("inspect sidecar {}", sidecar.display()));
-                    }
-                    Ok(metadata) if metadata.is_file() => {
-                        fs::remove_file(&sidecar)
-                            .with_context(|| format!("remove sidecar {}", sidecar.display()))?;
-                    }
-                    Ok(_) => bail!(
-                        "cannot replace database with existing sidecar {}",
-                        sidecar.display()
-                    ),
-                }
-            }
+            manage_publication_sidecars(&output, SidecarDisposition::Remove)?;
         }
-        ensure_no_publication_sidecars(&output, false)?;
+        manage_publication_sidecars(&output, SidecarDisposition::Reject)?;
         fs::rename(&temporary, &output)?;
         let receipt = cache::publish_verified(
             &output,
@@ -904,17 +743,19 @@ fn atomic_build(
 
 /// Builds and publishes a sealed index for the workspace.
 pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<Value> {
-    execute_with_mode(BuildMode::Cold, root, output, None, adapter_path, None)
+    build_inner(root, output, adapter_path, None, None, None)
 }
 
-/// Builds index with test synchronization and fault-injection hooks.
-pub fn build_with_test_hooks(
+/// Builds index with optional adapter selection, cache dir, test hooks, and pre-publication guard.
+pub fn build_with_selection_and_guard(
     root: &Path,
     output: &Path,
     adapter_path: Option<&Path>,
-    test_hooks: Arc<PipelineTestHooks>,
+    cache_dir: Option<&Path>,
+    test_hooks: Option<Arc<PipelineTestHooks>>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
-    build_inner(root, output, adapter_path, None, Some(test_hooks))
+    build_inner(root, output, adapter_path, cache_dir, test_hooks, before_publish)
 }
 
 pub(super) fn build_inner(
@@ -923,6 +764,7 @@ pub(super) fn build_inner(
     adapter_path: Option<&Path>,
     cache_dir: Option<&Path>,
     test_hooks: Option<Arc<PipelineTestHooks>>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
     let cache_dir_opt = cache_dir.map(Path::to_path_buf).or_else(|| {
         test_hooks
@@ -939,6 +781,7 @@ pub(super) fn build_inner(
         adapter_path,
         Arc::new(ExtractionCache::new(cache_dir_opt)),
         test_hooks,
+        before_publish,
     )
 }
 
@@ -949,14 +792,7 @@ pub fn build_with_cache_dir(
     adapter_path: Option<&Path>,
     cache_dir: &Path,
 ) -> Result<Value> {
-    execute_with_mode(
-        BuildMode::Cold,
-        root,
-        output,
-        None,
-        adapter_path,
-        Some(cache_dir),
-    )
+    build_inner(root, output, adapter_path, Some(cache_dir), None, None)
 }
 
 fn build_inner_with_cache(
@@ -965,6 +801,7 @@ fn build_inner_with_cache(
     adapter_path: Option<&Path>,
     extraction_cache: Arc<ExtractionCache>,
     test_hooks: Option<Arc<PipelineTestHooks>>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
     let resolved_output = if output.as_os_str().is_empty() {
         resolve_code_db_path(root, None)
@@ -972,7 +809,7 @@ fn build_inner_with_cache(
         output.to_path_buf()
     };
     let output = resolved_output.as_path();
-    ensure_no_publication_sidecars(output, true)?;
+    manage_publication_sidecars(output, SidecarDisposition::Allow)?;
     validate_code_map_target(root, output)?;
     let started = Instant::now();
     let root = canonical_root(root)?;
@@ -1026,8 +863,192 @@ fn build_inner_with_cache(
         scan,
         scan_ms,
         test_hooks,
+        before_publish,
     )?;
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
     report["output"] = json!(output);
     Ok(report)
+}
+
+fn check_legacy_tasks_db_collision(
+    candidate_root: &Path,
+    base: &Path,
+    output: &Path,
+    output_abs: &Path,
+) -> Result<()> {
+    let cfg_path = candidate_root.join("acdd.yaml");
+    if !cfg_path.is_file() {
+        return Ok(());
+    }
+    let Ok(raw) = fs::read_to_string(&cfg_path) else {
+        return Ok(());
+    };
+    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) else {
+        return Ok(());
+    };
+    let Some(legacy_tasks_db) = yaml.get("tasks_db").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let task_db_path = if Path::new(legacy_tasks_db).is_absolute() {
+        PathBuf::from(legacy_tasks_db)
+    } else {
+        base.join(legacy_tasks_db)
+    };
+    if acdd_core::fs::same_filesystem_path(output_abs, &task_db_path) {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+fn check_configured_state_db_collision(
+    root: &Path,
+    base: &Path,
+    output: &Path,
+    output_abs: &Path,
+) -> Result<()> {
+    let state_adapter = if root.join("acdd.yaml").exists() {
+        Some(load_adapter(root, None))
+    } else if base != root && base.join("acdd.yaml").exists() {
+        Some(load_adapter(base, None))
+    } else {
+        None
+    };
+    let state_db_path = match state_adapter {
+        Some(Ok(adapter)) => resolve_state_db_path(base, &adapter),
+        Some(Err(error)) => {
+            bail!(
+                "TASK_DATABASE_COLLISION: Cannot validate configured state_db because acdd.yaml is invalid ({error}). Refusing code map output '{}'.",
+                output.display()
+            );
+        }
+        None => resolve_state_db_path(base, &Adapter::default()),
+    };
+    if acdd_core::fs::same_filesystem_path(output_abs, &state_db_path)
+        || (base != root
+            && !Path::new(&state_db_path).is_absolute()
+            && acdd_core::fs::same_filesystem_path(output_abs, &root.join(&state_db_path)))
+    {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use configured state database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+fn check_existing_code_map_target(output: &Path, output_abs: &Path) -> Result<()> {
+    let meta = match fs::symlink_metadata(output_abs) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => bail!("cannot access code map target '{}': {err}", output.display()),
+    };
+    if !meta.is_file() {
+        bail!(
+            "code map target must be a regular file: '{}'",
+            output.display()
+        );
+    }
+    if meta.len() == 0 {
+        return Ok(());
+    }
+    let header = db_reader::validate_database_header(output_abs);
+    if let Err(error) = &header {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() != std::io::ErrorKind::UnexpectedEof)
+        {
+            bail!(
+                "TASK_DATABASE_COLLISION: Cannot read database at '{}' ({error}). Refusing to overwrite potentially active task database.",
+                output.display()
+            );
+        }
+        return Ok(());
+    }
+    let conn = db_reader::open_raw_confined_readonly(output_abs).map_err(|err| {
+        anyhow::anyhow!(
+            "TASK_DATABASE_COLLISION: Cannot inspect SQLite database schema at '{}' ({}). Refusing to overwrite potentially active task database.",
+            output.display(),
+            err
+        )
+    })?;
+    let is_task_db = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_schema
+                WHERE type='table' AND name IN (
+                    'tasks', 'task_gates', 'task_claims', 'task_subtasks',
+                    'task_blackboard', 'task_findings', 'task_submissions',
+                    'task_revisions', 'task_store_metadata',
+                    'runs', 'gate_nodes', 'task_dependencies', 'subtasks',
+                    'gate_claims', 'gate_traces', 'gate_artifacts',
+                    'blackboard', 'run_tombstones'
+                )
+            )",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "TASK_DATABASE_COLLISION: Cannot inspect SQLite database schema at '{}' ({}). Refusing to overwrite potentially active task database.",
+                output.display(),
+                err
+            )
+        })?;
+    if is_task_db {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to overwrite task database at '{}' with code map index. The target database contains active task tracking tables. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            output.display()
+        );
+    }
+    Ok(())
+}
+
+/// Validates that a code map database output target does not point to or overwrite
+/// a task tracking database.
+pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
+    let output_abs = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .join(output)
+    };
+    let norm_output = acdd_core::fs::normalize_path(&output_abs);
+    let file_name_lower = norm_output
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if is_reserved_state_or_task_filename(&file_name_lower) {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use task/state database path '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            output.display()
+        );
+    }
+
+    let base = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    for candidate_root in [root, base.as_path()] {
+        check_legacy_tasks_db_collision(candidate_root, &base, output, &output_abs)?;
+    }
+    check_configured_state_db_collision(root, &base, output, &output_abs)?;
+    check_existing_code_map_target(output, &output_abs)?;
+    Ok(())
+}
+
+fn is_reserved_state_or_task_filename(file_name_lower: &str) -> bool {
+    matches!(
+        file_name_lower,
+        "tasks.sqlite"
+            | "tasks.db"
+            | "tasks.sqlite3"
+            | "state.sqlite"
+            | "state.db"
+            | "state.sqlite3"
+    ) || file_name_lower.starts_with("tasks.sqlite")
+        || file_name_lower.ends_with(".tasks.sqlite")
+        || file_name_lower.starts_with("state.sqlite")
+        || file_name_lower.ends_with(".state.sqlite")
 }

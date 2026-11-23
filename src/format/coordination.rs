@@ -1,4 +1,4 @@
-use super::{
+use super::core::{
     append_fenced_block, escape_label, escape_text, inline_code, is_freshness_envelope,
     page_items, render_field, render_markdown, render_markdown_fields, text_field, u64_field,
 };

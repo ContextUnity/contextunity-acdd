@@ -1,12 +1,24 @@
-use super::*;
+use super::super::context::*;
+use super::super::input::ResolutionInput;
+use crate::languages::{self, LanguageProfile};
+use crate::linker::{
+    html, javascript, python,
+    traits::{LanguageLinker, GENERIC_LINKER},
+    types::{NodeBindingIndex, PackageExports},
+    typescript,
+};
 use crate::models::{
+    compact_graph::CompactGraph as Graph,
     details::NodeDetailKey,
     tags::{EdgeKind, LanguageId, NodeKind},
+    Facts, Node, Reference,
 };
+use crate::typed_facts::FlowState;
+use hashbrown::{HashMap, HashSet};
 
 pub(super) fn has_node_binding(
     interner: &crate::interner::LinkerInterner<'_>,
-    bindings: &super::super::NodeBindingIndex,
+    bindings: &NodeBindingIndex,
     owner: &str,
     name: &str,
 ) -> bool {
@@ -80,13 +92,12 @@ where
         let flows = input.flows;
         let by_id = input.by_id;
         let profile = input.profiles.get(path).copied();
-        let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| {
-            profile.linker()
-        });
+        let language_linker =
+            profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| profile.linker());
         let value_queries = collect_value_queries(facts, flows, interner);
         #[cfg(feature = "lang-typescript")]
         let returned_object_field_writes =
-            super::super::javascript::resolution::returned_object_field_writes(
+            javascript::resolution::returned_object_field_writes(
                 profile, references, by_id, interner,
             );
         let component_module = facts
@@ -135,11 +146,11 @@ where
             file_module,
         );
         #[cfg(feature = "lang-typescript")]
-        let lexical_this_calls = super::super::typescript::resolution::lexical_this_calls(
+        let lexical_this_calls = typescript::resolution::lexical_this_calls(
             facts,
             references,
             |node| {
-                super::super::typescript::resolution::object_ownership(
+                typescript::resolution::object_ownership(
                     node,
                     flows,
                     interner,
@@ -250,7 +261,7 @@ where
         &self,
         node: &Node,
     ) -> Option<&'a crate::semantic::ObjectOwnershipFact> {
-        super::super::typescript::resolution::object_ownership(
+        typescript::resolution::object_ownership(
             node,
             self.input.flows,
             self.input.interner,
@@ -325,7 +336,7 @@ where
                                     member,
                                 )
                         }))
-                || super::super::typescript::resolution::builtin_property_chain(
+                || typescript::resolution::builtin_property_chain(
                     expression,
                     profile,
                     self.path,

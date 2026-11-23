@@ -1,7 +1,7 @@
 #[cfg(feature = "lang-vue")]
 #[test]
 fn persisted_nuxt_vue_pinia_contract() {
-    use acdd_index::db::{commitments, reader};
+    use acdd_index::db::commitments;
     use rusqlite::params;
     use serde_json::Value;
 
@@ -337,7 +337,7 @@ fn persisted_nuxt_vue_pinia_contract() {
                             .query_map([project_path("store.ts")], |row| row.get::<_, Vec<u8>>(0))
                             .unwrap()
                         {
-                            let file = reader::decode_local_facts(&row.unwrap()).unwrap();
+                            let file = crate::common::decode_local_facts(&row.unwrap()).unwrap();
                             let projected = crate::common::assertions::projected_facts(&file);
                             for node in projected["nodes"].as_array().into_iter().flatten() {
                                 if let Some(facts) =

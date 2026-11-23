@@ -1,4 +1,4 @@
-use super::*;
+use super::context::FileResolver;
 use crate::models::tags::{EdgeKind, ReferenceKind};
 
 mod candidates;

@@ -83,6 +83,9 @@ gates_patch:
             - arch
             - syntax
             - docs
+            - duplicates
+            - dead_tails
+            - cycles
     guidance: [task.code, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: tasks.review
     guidance: [task.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
@@ -97,6 +100,9 @@ gates_patch:
             - arch
             - syntax
             - docs
+            - duplicates
+            - dead_tails
+            - cycles
   - id: integration_review
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: handoff

@@ -1,5 +1,4 @@
-use acdd_index::models::compact_graph::{CompactEdge, CompactGraph};
-use acdd_index::models::{EdgeConfidence, EdgeKind, Facts, Node};
+use acdd_index::models::{Facts, Node};
 use acdd_index::semantic::{
     CallableParameter, CallableSignature, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
 };
@@ -79,20 +78,6 @@ fn callback_param_callable_signature_and_compact_graph_contracts() {
     let reopened = decode_facts(&blob).unwrap();
     let reopened_flow = reopened.flows.get(&reopened.nodes[0]).unwrap();
     assert_eq!(reopened_flow.callable_signature.as_ref(), Some(&sig));
-
-    let mut graph = CompactGraph::default();
-    graph.push_edge(
-        "src/lib.rs",
-        "fn:a",
-        "fn:b",
-        EdgeKind::Calls,
-        2,
-        "b()",
-        EdgeConfidence::Inferred,
-    );
-    let edges: Vec<CompactEdge> = graph.edges.clone();
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].dst.as_ref(), "fn:b");
 }
 
 #[test]

@@ -1,4 +1,8 @@
-use super::*;
+use super::common::{for_each_tag_attribute, source_node, Map, NodeFields};
+use crate::ast::syntax::{self as ast, bounded_expression, text, Syntax};
+use crate::languages::manifests;
+use crate::models::Facts;
+use serde_json::{json, Value};
 
 struct RequestAttribute<'a> {
     value: &'a str,
@@ -33,7 +37,7 @@ pub(super) fn extract_request_attributes(
         rule: rule.id.clone(),
     };
     let mut values = std::collections::BTreeMap::new();
-    let _ = super::for_each_tag_attribute(tag, |attribute| {
+    let _ = for_each_tag_attribute(tag, |attribute| {
         let Some(name) = attribute.named_child(0).map(|node| text(node, source)) else {
             return Ok(std::ops::ControlFlow::Continue(()));
         };
@@ -130,13 +134,13 @@ pub(super) fn extract_request_attributes(
             json!(request_url_status(attribute.value, namespace)),
         );
         facts.pending_flow_nodes.push(facts.nodes.len());
-        facts.nodes.push(super::source_node(
+        facts.nodes.push(source_node(
             path,
             "html",
-            super::NodeFields {
+            NodeFields {
                 id: id.clone(),
                 kind: request_node.clone(),
-                name: format!("{} {}", verb, ast::bounded_expression(attribute.value)),
+                name: format!("{} {}", verb, bounded_expression(attribute.value)),
                 qualname: format!("{module}.{namespace}.{}.{method}", tag.start_byte()),
                 line: attribute.line,
                 end_line: attribute.end_line,
@@ -157,10 +161,10 @@ pub(super) fn extract_request_attributes(
         let id = format!("{namespace}:{path}:{}:context", tag.start_byte());
         let line = tag.start_position().row + 1;
         facts.pending_flow_nodes.push(facts.nodes.len());
-        facts.nodes.push(super::source_node(
+        facts.nodes.push(source_node(
             path,
             "html",
-            super::NodeFields {
+            NodeFields {
                 id: id.clone(),
                 kind: context_node.clone(),
                 name: context_label.clone(),

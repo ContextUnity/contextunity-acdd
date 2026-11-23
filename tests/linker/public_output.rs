@@ -1,5 +1,4 @@
 use acdd_index::models::{Edge, Facts};
-use acdd_index::linker;
 use std::collections::BTreeMap;
 
 #[test]
@@ -25,7 +24,7 @@ fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
         },
     )]);
 
-    let linked = linker::link(&facts);
+    let linked = crate::common::link_facts(&facts);
     assert_eq!(linked.edges.len(), 2);
     assert_eq!(linked.edges[0].path, earlier.path);
     assert_eq!(linked.edges[1].path, unusual.path);
@@ -121,8 +120,8 @@ fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
             "SymbolId for {sym} must remain deterministic across repeated runs"
         );
     }
-    let run_one = linker::link(&catalog_one);
-    let run_two = linker::link(&catalog_two);
+    let run_one = crate::common::link_facts(&catalog_one);
+    let run_two = crate::common::link_facts(&catalog_two);
     assert_eq!(
         serde_json::to_vec(&run_one.edges).unwrap(),
         serde_json::to_vec(&run_two.edges).unwrap()

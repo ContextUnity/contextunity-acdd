@@ -1,10 +1,17 @@
 use crate::interner::LinkerInterner;
-use crate::languages::{self, dependency_registry::DependencyRegistry, LanguageFamily, LanguageProfile};
+use crate::languages::{
+    dependency_registry::DependencyRegistry,
+    profile::LanguageProfile,
+    python::common::normalize_python_import,
+    types::{self as languages, ImportPath, LanguageFamily},
+};
+use crate::linker::rust::forwarding::RustForwarding;
 use crate::linker::traits::{
-    insert_package_export, package_export, resolve_default_import, FileRelationContext,
+    insert_package_export, package_export, resolve_default_import, BuiltinPropertyLookup,
     ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
 };
-use crate::linker::value_flow::TypeTarget;
+use crate::linker::types::{qualified, NodeBindingIndex};
+use crate::linker::value_flow::types::TypeTarget;
 use crate::models::{
     tags::{EdgeKind, LanguageId, NodeKind},
     Facts, Node, Reference,
@@ -46,7 +53,7 @@ impl LanguageLinker for PythonLinker {
         _path: &str,
         receiver_name: &str,
         field: &str,
-        _semantic_context: &crate::linker::semantic_context::Context<'a>,
+        _semantic_context: &dyn BuiltinPropertyLookup,
     ) -> Option<TypeTarget<'a>> {
         (receiver_name.starts_with("pathlib.") && field == "parent")
             .then(|| TypeTarget::Builtin(receiver_name.to_owned()))
@@ -72,7 +79,10 @@ impl LanguageLinker for PythonLinker {
         }
     }
 
-    fn compose_file_relations<'a>(&self, ctx: &mut FileRelationContext<'_, 'a>) {
+    fn compose_file_relations<'a>(
+        &self,
+        ctx: &mut crate::linker::traits::FileRelationContext<'_, 'a>,
+    ) {
         crate::linker::python::semantic_relations::compose_symbol_relations(
             ctx.path,
             ctx.facts,
@@ -205,8 +215,8 @@ impl LanguageLinker for PythonLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &'a dyn crate::FactsLookup,
+        node_rebindings: &NodeBindingIndex,
+        all: &'a dyn crate::models::FactsLookup,
         modules_by_namespace: &crate::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
@@ -224,7 +234,7 @@ impl LanguageLinker for PythonLinker {
 
     fn required_full_facts(
         &self,
-        facts: &dyn crate::FactsLookup,
+        facts: &dyn crate::models::FactsLookup,
         affected: &BTreeSet<String>,
         catalog: &[(&str, &str)],
     ) -> BTreeSet<String> {
@@ -328,13 +338,10 @@ pub(super) fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -
 }
 
 pub(super) fn required_full_facts(
-    facts: &dyn crate::FactsLookup,
+    facts: &dyn crate::models::FactsLookup,
     affected: &BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> BTreeSet<String> {
-    let Some(profile) = languages::by_id("python") else {
-        return BTreeSet::new();
-    };
     let mut requested = HashMap::<&str, HashSet<String>>::new();
     let mut cross_workspace = HashSet::<String>::new();
     for (path, file) in facts.iter_facts() {
@@ -353,7 +360,7 @@ pub(super) fn required_full_facts(
             if let Some(import) = reference
                 .module
                 .as_deref()
-                .and_then(|name| profile.normalize_import(path, name))
+                .and_then(|name| normalize_python_import(path, name))
             {
                 let names = requested.entry(workspace).or_default();
                 if reference.expression != "*"
@@ -379,7 +386,7 @@ pub(super) fn required_full_facts(
             .flatten()
         {
             if let Some(import) = lazy_import_path(module, export)
-                .and_then(|name| profile.normalize_import(path, &name))
+                .and_then(|name| normalize_python_import(path, &name))
             {
                 if !import.relative
                     && export["relative_to_module"].as_bool() != Some(true)
@@ -405,15 +412,16 @@ pub(super) fn required_full_facts(
             let matches = |name: &str| {
                 names.is_some_and(|names| names.contains(name)) || cross_workspace.contains(name)
             };
-            let full_name = profile.module_name(path);
-            let local_name = profile.module_name(local_path);
+            let module_name = |p: &str| languages::module_stem(p).replace('/', ".");
+            let full_name = module_name(path);
+            let local_name = module_name(local_path);
             let src_name = local_path
                 .split_once("/src/")
-                .map(|(_, path)| profile.module_name(path))
+                .map(|(_, path)| module_name(path))
                 .or_else(|| {
                     local_path
                         .strip_prefix("src/")
-                        .map(|path| profile.module_name(path))
+                        .map(module_name)
                 });
             (matches(&full_name)
                 || matches(&local_name)
@@ -436,7 +444,7 @@ fn node_rebound(
     module: &Node,
     name: &str,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::linker::NodeBindingIndex,
+    node_rebindings: &NodeBindingIndex,
 ) -> bool {
     module.rebinding_names().any(|candidate| candidate == name)
         || interner
@@ -459,7 +467,7 @@ fn nodes_by_qualname<'index, 'node>(
 fn scope_has_binding(
     by_qual: &HashMap<&str, Vec<&Node>>,
     interner: &LinkerInterner<'_>,
-    index: &crate::linker::NodeBindingIndex,
+    index: &NodeBindingIndex,
     path: &str,
     scope: &str,
     head_id: crate::interner::SymbolId,
@@ -475,25 +483,11 @@ fn scope_has_binding(
     })
 }
 
-/// Builds Python class-hierarchy receiver lookups using indexed imports and workspace bindings.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_python_receivers<'index, 'a>(
+fn collect_python_inheritance_imports<'a>(
     all: &'a (dyn crate::FactsLookup + Sync),
     interner: &LinkerInterner<'a>,
-    by_id: &'index HashMap<crate::interner::SymbolId, &'a Node>,
-    by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
-    node_bindings: &'index crate::linker::NodeBindingIndex,
-    node_rebindings: &'index crate::linker::NodeBindingIndex,
-    by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
-    profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
-    normalized_imports: &'index HashMap<(&'a str, &'a str), Option<crate::languages::ImportPath>>,
-    modules_by_namespace: &'index ModulesByNamespace<'a>,
-    #[cfg(feature = "lang-rust")] rust_forwarding: &'index crate::languages::rust::linker::RustForwarding<'a>,
-    package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
-    dependency_registry: &'a DependencyRegistry,
-) -> crate::linker::python::receivers::PythonReceivers<'a> {
-    use crate::linker::python::receivers::{Base, PythonReceivers};
-
+    by_id: &HashMap<crate::interner::SymbolId, &'a Node>,
+) -> HashMap<(&'a str, &'a str, &'a str), Vec<&'a Reference>> {
     let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
     for (path, facts) in all.iter_facts() {
         if !facts.nodes.iter().any(|node| {
@@ -517,158 +511,237 @@ pub(crate) fn build_python_receivers<'index, 'a>(
             }
         }
     }
+    inheritance_imports
+}
+
+struct PythonBaseLookupCtx<'index, 'a> {
+    interner: &'index LinkerInterner<'a>,
+    by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
+    node_bindings: &'index NodeBindingIndex,
+    node_rebindings: &'index NodeBindingIndex,
+    by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
+    profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
+    normalized_imports: &'index HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    modules_by_namespace: &'index ModulesByNamespace<'a>,
+    #[cfg(feature = "lang-rust")]
+    rust_forwarding: &'index RustForwarding<'a>,
+    package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
+    dependency_registry: &'a DependencyRegistry,
+    inheritance_imports: &'index HashMap<(&'a str, &'a str, &'a str), Vec<&'a Reference>>,
+}
+
+fn resolve_python_imported_base<'a>(
+    ctx: &PythonBaseLookupCtx<'_, 'a>,
+    class: &Node,
+    import: &'a Reference,
+    tail: &str,
+    key: &mut String,
+) -> crate::linker::python::receivers::Base<'a> {
+    use crate::linker::python::receivers::Base;
+    let Some(_profile) = ctx.profiles.get(class.path.as_str()).copied() else {
+        return Base::Unknown;
+    };
+    let normalized = ctx
+        .normalized_imports
+        .get(&(
+            class.path.as_str(),
+            import.module.as_deref().unwrap_or(&import.expression),
+        ))
+        .and_then(Option::as_ref);
+    let Some(normalized) = normalized else {
+        return Base::Unknown;
+    };
+    let mut modules: Vec<_> = ctx
+        .modules_by_namespace
+        .get(&LanguageFamily("python"))
+        .and_then(|all_namespaces| all_namespaces.get(&normalized.namespace))
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
+    let workspace = languages::workspace_path(&class.path).0;
+    if modules
+        .iter()
+        .any(|module| languages::workspace_path(&module.path).0 == workspace)
+    {
+        modules.retain(|module| languages::workspace_path(&module.path).0 == workspace);
+    } else if normalized.relative {
+        modules.clear();
+    }
+    let mut targets = Vec::new();
+    PYTHON_LINKER.resolve_import(&mut ImportContext {
+        path: &class.path,
+        interner: ctx.interner,
+        dependencies: ctx.dependency_registry,
+        reference: import,
+        #[cfg(feature = "lang-rust")]
+        rust_forwarding: Some(ctx.rust_forwarding),
+        normalized: Some(normalized),
+        selected_namespace: &normalized.namespace,
+        family: LanguageFamily("python"),
+        modules: &mut modules,
+        candidates: &mut targets,
+        modules_by_namespace: ctx.modules_by_namespace,
+        by_module: ctx.by_module,
+        by_qual: ctx.by_qual,
+        package_exports: &ctx.package_exports["python"],
+        lookup_key: key,
+    });
+    if !tail.is_empty() {
+        targets = targets
+            .iter()
+            .flat_map(|target| {
+                nodes_by_qualname(ctx.by_qual, &format!("{}.{}", target.qualname, tail))
+                    .filter(move |node| node.path == target.path)
+            })
+            .collect();
+    }
+    targets.retain(|target| target.kind == NodeKind::Class.as_str());
+    targets.sort_by_key(|target| &target.id);
+    targets.dedup_by_key(|target| &target.id);
+    if targets.len() == 1 {
+        return Base::Local(&targets[0].id);
+    }
+    if targets.is_empty() && modules.is_empty() && !normalized.relative {
+        let module = import.module.as_deref().unwrap_or(&import.expression);
+        let mut canonical = module.to_owned();
+        if import.expression != module {
+            canonical.push('.');
+            canonical.push_str(&import.expression);
+        }
+        if !tail.is_empty() {
+            canonical.push('.');
+            canonical.push_str(tail);
+        }
+        return Base::External(canonical, module, import.line);
+    }
+    Base::Unknown
+}
+
+fn resolve_python_base<'a>(
+    ctx: &PythonBaseLookupCtx<'_, 'a>,
+    class: &Node,
+    reference: &Reference,
+) -> crate::linker::python::receivers::Base<'a> {
+    use crate::linker::python::receivers::Base;
+    let expression = reference.expression.as_str();
+    let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
+    let Some(head_id) = ctx.interner.lookup_symbol(head) else {
+        return Base::Unknown;
+    };
+    let mut scope = class
+        .qualname
+        .rsplit_once('.')
+        .map_or("", |(parent, _)| parent);
+    let mut key = String::new();
+    while !scope.is_empty() {
+        let imports = ctx
+            .inheritance_imports
+            .get(&(class.path.as_str(), scope, head))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if scope_has_binding(
+            ctx.by_qual,
+            ctx.interner,
+            ctx.node_rebindings,
+            &class.path,
+            scope,
+            head_id,
+        ) {
+            return Base::Unknown;
+        }
+        let local: Vec<_> = nodes_by_qualname(ctx.by_qual, qualified(&mut key, scope, expression))
+            .filter(|node| node.path == class.path && node.kind == NodeKind::Class.as_str())
+            .collect();
+        if local.len() == 1 {
+            if imports
+                .iter()
+                .any(|import| import.line > local[0].line && import.line <= class.line)
+            {
+                return Base::Unknown;
+            }
+            return Base::Local(&local[0].id);
+        }
+        if local.len() > 1 {
+            return Base::Unknown;
+        }
+        if !imports.is_empty() {
+            if imports.len() != 1 {
+                return Base::Unknown;
+            }
+            let import = imports[0];
+            if import.line > class.line
+                || scope_has_binding(
+                    ctx.by_qual,
+                    ctx.interner,
+                    ctx.node_rebindings,
+                    &class.path,
+                    scope,
+                    head_id,
+                )
+            {
+                return Base::Unknown;
+            }
+            return resolve_python_imported_base(ctx, class, import, tail, &mut key);
+        }
+        if scope_has_binding(
+            ctx.by_qual,
+            ctx.interner,
+            ctx.node_bindings,
+            &class.path,
+            scope,
+            head_id,
+        ) {
+            return Base::Unknown;
+        }
+        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    if expression == "object" {
+        Base::External("builtins.object".into(), "builtins", 0)
+    } else {
+        Base::Unknown
+    }
+}
+
+/// Builds Python class-hierarchy receiver lookups using indexed imports and workspace bindings.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_python_receivers<'index, 'a>(
+    all: &'a (dyn crate::FactsLookup + Sync),
+    interner: &LinkerInterner<'a>,
+    by_id: &'index HashMap<crate::interner::SymbolId, &'a Node>,
+    by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
+    node_bindings: &'index NodeBindingIndex,
+    node_rebindings: &'index NodeBindingIndex,
+    by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
+    profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
+    normalized_imports: &'index HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    modules_by_namespace: &'index ModulesByNamespace<'a>,
+    #[cfg(feature = "lang-rust")] rust_forwarding: &'index RustForwarding<'a>,
+    package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
+    dependency_registry: &'a DependencyRegistry,
+) -> crate::linker::python::receivers::PythonReceivers<'a> {
+    use crate::linker::python::receivers::PythonReceivers;
+
+    let inheritance_imports = collect_python_inheritance_imports(all, interner, by_id);
+    let lookup_ctx = PythonBaseLookupCtx {
+        interner,
+        by_qual,
+        node_bindings,
+        node_rebindings,
+        by_module,
+        profiles,
+        normalized_imports,
+        modules_by_namespace,
+        #[cfg(feature = "lang-rust")]
+        rust_forwarding,
+        package_exports,
+        dependency_registry,
+        inheritance_imports: &inheritance_imports,
+    };
 
     PythonReceivers::build(
         all,
-        |class, reference| {
-            let expression = reference.expression.as_str();
-            let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
-            let Some(head_id) = interner.lookup_symbol(head) else {
-                return Base::Unknown;
-            };
-            let mut scope = class
-                .qualname
-                .rsplit_once('.')
-                .map_or("", |(parent, _)| parent);
-            let mut key = String::new();
-            while !scope.is_empty() {
-                let imports = inheritance_imports
-                    .get(&(class.path.as_str(), scope, head))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                if scope_has_binding(by_qual, interner, node_rebindings, &class.path, scope, head_id)
-                {
-                    return Base::Unknown;
-                }
-                let local: Vec<_> = nodes_by_qualname(
-                    by_qual,
-                    crate::linker::qualified(&mut key, scope, expression),
-                )
-                .filter(|node| node.path == class.path && node.kind == NodeKind::Class.as_str())
-                .collect();
-                if local.len() == 1 {
-                    if imports
-                        .iter()
-                        .any(|import| import.line > local[0].line && import.line <= class.line)
-                    {
-                        return Base::Unknown;
-                    }
-                    return Base::Local(&local[0].id);
-                }
-                if local.len() > 1 {
-                    return Base::Unknown;
-                }
-                if !imports.is_empty() {
-                    if imports.len() != 1 {
-                        return Base::Unknown;
-                    }
-                    let import = imports[0];
-                    if import.line > class.line
-                        || scope_has_binding(
-                            by_qual,
-                            interner,
-                            node_rebindings,
-                            &class.path,
-                            scope,
-                            head_id,
-                        )
-                    {
-                        return Base::Unknown;
-                    }
-                    let Some(profile) = profiles.get(class.path.as_str()).copied() else {
-                        return Base::Unknown;
-                    };
-                    let normalized = normalized_imports
-                        .get(&(
-                            class.path.as_str(),
-                            import.module.as_deref().unwrap_or(&import.expression),
-                        ))
-                        .and_then(Option::as_ref);
-                    let Some(normalized) = normalized else {
-                        return Base::Unknown;
-                    };
-                    let mut modules: Vec<_> = modules_by_namespace
-                        .get(&profile.family())
-                        .and_then(|all_namespaces| all_namespaces.get(&normalized.namespace))
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .collect();
-                    let workspace = languages::workspace_path(&class.path).0;
-                    if modules
-                        .iter()
-                        .any(|module| languages::workspace_path(&module.path).0 == workspace)
-                    {
-                        modules.retain(|module| {
-                            languages::workspace_path(&module.path).0 == workspace
-                        });
-                    } else if normalized.relative {
-                        modules.clear();
-                    }
-                    let mut targets = Vec::new();
-                    profile.linker().resolve_import(&mut ImportContext {
-                        path: &class.path,
-                        interner,
-                        dependencies: dependency_registry,
-                        reference: import,
-                        #[cfg(feature = "lang-rust")]
-                        rust_forwarding: Some(rust_forwarding),
-                        normalized: Some(normalized),
-                        selected_namespace: &normalized.namespace,
-                        family: profile.family(),
-                        modules: &mut modules,
-                        candidates: &mut targets,
-                        modules_by_namespace,
-                        by_module,
-                        by_qual,
-                        package_exports: &package_exports[profile.id()],
-                        lookup_key: &mut key,
-                    });
-                    if !tail.is_empty() {
-                        targets = targets
-                            .iter()
-                            .flat_map(|target| {
-                                nodes_by_qualname(
-                                    by_qual,
-                                    &format!("{}.{}", target.qualname, tail),
-                                )
-                                .filter(move |node| node.path == target.path)
-                            })
-                            .collect();
-                    }
-                    targets.retain(|target| target.kind == NodeKind::Class.as_str());
-                    targets.sort_by_key(|target| &target.id);
-                    targets.dedup_by_key(|target| &target.id);
-                    if targets.len() == 1 {
-                        return Base::Local(&targets[0].id);
-                    }
-                    if targets.is_empty() && modules.is_empty() && !normalized.relative {
-                        let module = import.module.as_deref().unwrap_or(&import.expression);
-                        let mut canonical = module.to_owned();
-                        if import.expression != module {
-                            canonical.push('.');
-                            canonical.push_str(&import.expression);
-                        }
-                        if !tail.is_empty() {
-                            canonical.push('.');
-                            canonical.push_str(tail);
-                        }
-                        return Base::External(canonical, module, import.line);
-                    }
-                    return Base::Unknown;
-                }
-                if scope_has_binding(by_qual, interner, node_bindings, &class.path, scope, head_id)
-                {
-                    return Base::Unknown;
-                }
-                scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-            }
-            if expression == "object" {
-                Base::External("builtins.object".into(), "builtins", 0)
-            } else {
-                Base::Unknown
-            }
-        },
+        |class, reference| resolve_python_base(&lookup_ctx, class, reference),
         |path, base| {
             let (pack, rule) =
                 dependency_registry.class_hierarchy_authority_for_path(path, base, None)?;
@@ -701,9 +774,9 @@ fn export_provider<'a>(
     modules: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
     root: Option<&Path>,
 ) -> Option<&'a Node> {
-    let profile = languages::by_id("python")?;
-    let import = profile.normalize_import_with_root(root, path, module_path)?;
-    let providers = modules.get(&profile.family())?.get(&import.namespace)?;
+    let _ = root;
+    let import = normalize_python_import(path, module_path)?;
+    let providers = modules.get(&LanguageFamily("python"))?.get(&import.namespace)?;
     let workspace = languages::workspace_path(path).0;
     let mut selected: Vec<_> = providers
         .iter()
@@ -725,7 +798,7 @@ fn export_provider<'a>(
     }
 }
 
-struct ExportBinding<'a> {
+struct PythonExportBinding<'a> {
     owner: &'a str,
     name: &'a str,
     provider: Option<&'a Node>,
@@ -737,10 +810,10 @@ fn register_export<'a>(
     interner: &mut LinkerInterner<'a>,
     pending: &mut Vec<(&'a str, &'a str, &'a Node, &'a str)>,
     seen: &mut HashSet<(&'a str, &'a str)>,
-    binding: ExportBinding<'a>,
+    binding: PythonExportBinding<'a>,
     by_module: &HashMap<&str, Vec<&'a Node>>,
 ) {
-    let ExportBinding {
+    let PythonExportBinding {
         owner,
         name,
         provider,
@@ -795,7 +868,7 @@ fn register_export<'a>(
 
 pub(super) fn package_exports<'a>(
     interner: &mut LinkerInterner<'a>,
-    node_rebindings: &crate::linker::NodeBindingIndex,
+    node_rebindings: &NodeBindingIndex,
     all: impl IntoIterator<Item = &'a Facts>,
     modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
     by_module: &HashMap<&str, Vec<&'a Node>>,
@@ -861,7 +934,7 @@ pub(super) fn package_exports<'a>(
                 interner,
                 &mut pending,
                 &mut seen,
-                ExportBinding {
+                PythonExportBinding {
                     owner: path,
                     name: alias,
                     provider,
@@ -889,7 +962,7 @@ pub(super) fn package_exports<'a>(
                 interner,
                 &mut pending,
                 &mut seen,
-                ExportBinding {
+                PythonExportBinding {
                     owner: path,
                     name,
                     provider,
@@ -927,7 +1000,7 @@ pub(super) fn package_exports<'a>(
                 interner,
                 &mut pending,
                 &mut seen,
-                ExportBinding {
+                PythonExportBinding {
                     owner: path,
                     name,
                     provider,

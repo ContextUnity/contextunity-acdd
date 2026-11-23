@@ -1,4 +1,4 @@
-use super::*;
+use super::helpers::*;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::NodeCursor;
 use acdd_state::types::{
@@ -382,16 +382,19 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     );
 
     // Reopen review, pass review, then deliver (testing subtask missing evidence failure first!).
-    let reopen_rev = plan_reopen(
+    let TransitionOutcome::Plan(reopen_rev) = evaluate_transition(
         &snap,
+        &profile,
         &obs_a,
-        &ReopenInput {
+        &TransitionInput::Reopen(ReopenInput {
             node_cursor: NodeCursor::task(t("T1"), vec![g("review")]),
             cascade: false,
             reason: None,
-        },
+        }),
     )
-    .unwrap();
+    .unwrap() else {
+        panic!("expected transition plan");
+    };
     apply_plan_in_memory(&mut snap, &reopen_rev);
     let c_r = admit_claim(
         &snap,

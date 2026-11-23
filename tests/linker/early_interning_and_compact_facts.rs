@@ -63,7 +63,7 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         assert_eq!(compact.as_str(), tag);
         assert_eq!(String::from(compact), tag);
     }
-    use acdd_index::models::{
+    use acdd_index::models::tags::{
         CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
     };
     macro_rules! check_wire {
@@ -89,28 +89,6 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
     check_wire!(NodeKind, "function", "class", "interface");
     check_wire!(ReferenceKind, "call", "import", "semantic_key");
     check_wire!(LanguageId, "rust", "python", "typescript", "javascript");
-    let mut typed_graph = CompactGraph::default();
-    typed_graph.push_edge(
-        "a.rs",
-        "a",
-        "b",
-        EdgeKind::Calls,
-        1,
-        "call",
-        EdgeConfidence::Exact,
-    );
-    typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
-    let mut wire_graph = CompactGraph::default();
-    wire_graph.push_edge("a.rs", "a", "b", "calls", 1, "call", "exact");
-    wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
-    assert_eq!(
-        serde_json::to_value(&typed_graph.edges).unwrap(),
-        serde_json::to_value(&wire_graph.edges).unwrap()
-    );
-    assert_eq!(
-        serde_json::to_value(&typed_graph.coverage).unwrap(),
-        serde_json::to_value(&wire_graph.coverage).unwrap()
-    );
     let dynamic = CompactTag::from("custom_unknown_tag");
     assert!(matches!(dynamic, CompactTag::Owned(_)));
     assert_eq!(dynamic.as_str(), "custom_unknown_tag");
@@ -267,11 +245,12 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         );
     }
     let path = "guide.md";
-    let sections = acdd_index::docs::extract_with_details(
+    let sections = acdd_index::docs::extract_with_details_with_zones(
         path,
         "# Guide\n\n`file0::function_0_0`\n",
         0.0,
         &[],
+        None,
     )
     .unwrap();
     let (mut doc, _) = sections.into_iter().next().unwrap();
@@ -312,12 +291,11 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         }),
     );
     assert!(
-        large.values().map(|facts| facts.nodes.len()).sum::<usize>()
-            >= linker::PARALLEL_LINKER_PREP_MIN_NODES
+        large.values().map(|facts| facts.nodes.len()).sum::<usize>() >= 2048
     );
-    let mut catalog = acdd_index::semantic::SymbolCatalog::default();
+    let mut catalog = acdd_index::typed_facts::SymbolCatalog::default();
     for (path, facts) in &large {
-        catalog.insert_typed(path.clone(), facts.clone(), false);
+        catalog.insert_typed(path.clone(), facts.clone());
     }
     workspace.write(
         "source/guide.md",

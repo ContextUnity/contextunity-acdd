@@ -4,7 +4,7 @@ use super::schema::{
     CommandDef, DetailedCommandDef, GateDef, GateGuidanceRef, ProofDef, ProofKind,
     ResolvedGateProfile, ResourceLimits, TestFilterConfig,
 };
-use super::shell_template::validate_shell_template_placeholders;
+use super::shell_template::{glob_specificity, validate_shell_template_placeholders};
 use super::when::WhenExpr;
 use crate::types::SaveAction;
 use acdd_core::subsystems::SubsystemRegistry;
@@ -485,6 +485,50 @@ fn validate_gate_container(
     Ok(())
 }
 
+fn validate_gate_transitions(
+    gate: &GateDef,
+    ctx: &str,
+    sibling_ids: &BTreeSet<String>,
+) -> Result<(), StateError> {
+    if let Some(pass_target) = &gate.pass {
+        if pass_target.as_str() == gate.id {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("{ctx}: 'pass:' cannot point to itself"),
+            ));
+        }
+        if !sibling_ids.contains(pass_target.as_str()) {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("{ctx}: 'pass:' references unknown sibling gate '{pass_target}'"),
+            ));
+        }
+    }
+    for (label, target_opt) in [("fail", &gate.fail), ("fail_drift", &gate.fail_drift)] {
+        if let Some(fail_target) = target_opt {
+            if fail_target.as_str() == gate.id {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("{ctx}: '{label}:' cannot point to itself"),
+                ));
+            }
+            if !sibling_ids.contains(fail_target.as_str()) {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("{ctx}: '{label}:' references unknown sibling gate '{fail_target}'"),
+                ));
+            }
+        }
+        if gate.pass.is_some() && gate.pass.as_ref() == target_opt.as_ref() {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("{ctx}: 'pass:' and '{label}:' cannot target the same gate"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_single_gate(
     profile: &ResolvedGateProfile,
@@ -522,42 +566,7 @@ fn validate_single_gate(
         validate_report_path_template(&ctx, tpl, &profile.protected_paths)?;
     }
 
-    if let Some(pass_target) = &gate.pass {
-        if pass_target.as_str() == gate.id {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: 'pass:' cannot point to itself"),
-            ));
-        }
-        if !sibling_ids.contains(pass_target.as_str()) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: 'pass:' references unknown sibling gate '{pass_target}'"),
-            ));
-        }
-    }
-    for (label, target_opt) in [("fail", &gate.fail), ("fail_drift", &gate.fail_drift)] {
-        if let Some(fail_target) = target_opt {
-            if fail_target.as_str() == gate.id {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: '{label}:' cannot point to itself"),
-                ));
-            }
-            if !sibling_ids.contains(fail_target.as_str()) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: '{label}:' references unknown sibling gate '{fail_target}'"),
-                ));
-            }
-        }
-        if gate.pass.is_some() && gate.pass.as_ref() == target_opt.as_ref() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: 'pass:' and '{label}:' cannot target the same gate"),
-            ));
-        }
-    }
+    validate_gate_transitions(gate, &ctx, sibling_ids)?;
 
     if gate.receipt && gate.need.is_empty() {
         return Err(StateError::new(
@@ -1019,31 +1028,6 @@ pub fn resolve_command_for_scope(
             Ok(out)
         }
     }
-}
-
-/// Glob specificity ordering: `(literal_segments, single_wildcard_segments, !globstar_count, literal_len)`.
-pub fn glob_specificity(pattern: &str) -> (usize, usize, usize, usize) {
-    let norm = pattern.trim().replace('\\', "/");
-    let mut literal_segs = 0usize;
-    let mut single_wild_segs = 0usize;
-    let mut globstar_segs = 0usize;
-    let mut literal_chars = 0usize;
-    for seg in norm.split('/').filter(|s| !s.is_empty() && *s != ".") {
-        if seg == "**" {
-            globstar_segs += 1;
-        } else if seg.contains('*') || seg.contains('?') {
-            single_wild_segs += 1;
-        } else {
-            literal_segs += 1;
-            literal_chars += seg.len();
-        }
-    }
-    (
-        literal_segs,
-        single_wild_segs,
-        usize::MAX - globstar_segs,
-        literal_chars,
-    )
 }
 
 /// Resolve all `guidance` items on a `GateDef` against `profile.guidance`, enforcing the mandatory budget cap.

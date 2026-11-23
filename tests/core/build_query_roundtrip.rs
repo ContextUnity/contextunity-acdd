@@ -98,14 +98,22 @@ See `ServiceClient`.
         ("ram", Some(256 * 1024 * 1024)),
     ] {
         let output = ws.path(format!(".acdd/{label}.sqlite"));
-        let mut hooks = writer::PipelineTestHooks::before_cleanup(|_| {});
+        let mut hooks = writer::hooks::PipelineTestHooks::before_cleanup(|_| {});
         std::sync::Arc::get_mut(&mut hooks)
             .unwrap()
             .memory_budget_override = budget;
         std::sync::Arc::get_mut(&mut hooks)
             .unwrap()
             .cache_dir_override = Some(ws.path(".acdd/cache"));
-        let report = writer::build_with_test_hooks(ws.root(), &output, None, hooks).unwrap();
+        let report = writer::build_with_selection_and_guard(
+            ws.root(),
+            &output,
+            None,
+            None,
+            Some(hooks),
+            None,
+        )
+        .unwrap();
         if label == "spill" {
             assert!(report["staged_disk_bytes"].as_u64().unwrap() > 0);
         } else if label == "ram" {
@@ -185,19 +193,21 @@ See `ServiceClient`.
     drop(connection);
     let original = std::fs::read_to_string(ws.path("src/main.py")).unwrap();
     ws.write("src/main.py", "def changed():\n    return 9\n");
-    writer::delta_with_cache_dir(
+    writer::delta_with_selection(
         ws.root(),
         &refreshed_path,
         &["src/main.py".into()],
-        &ws.path(".acdd/cache"),
+        None,
+        Some(&ws.path(".acdd/cache")),
     )
     .unwrap();
     ws.write("src/main.py", &original);
-    let delta = writer::delta_with_cache_dir(
+    let delta = writer::delta_with_selection(
         ws.root(),
         &refreshed_path,
         &["src/main.py".into()],
-        &ws.path(".acdd/cache"),
+        None,
+        Some(&ws.path(".acdd/cache")),
     )
     .unwrap();
     let cold_path = ws.path(".acdd/delta-comparison.sqlite");
@@ -215,7 +225,7 @@ See `ServiceClient`.
     drop(corrupt);
     assert!(reader::open(&corrupt_path, ws.root()).is_err());
     let rejected = ws.path(".acdd/rejected.sqlite");
-    let mut hook = writer::PipelineTestHooks::before_cleanup(|_| {});
+    let mut hook = writer::hooks::PipelineTestHooks::before_cleanup(|_| {});
     std::sync::Arc::get_mut(&mut hook)
         .unwrap()
         .before_candidate_verify = Some(Box::new(|path| {
@@ -232,7 +242,15 @@ See `ServiceClient`.
         file.seek(SeekFrom::Start(100)).unwrap();
         file.write_all(&[0xff]).unwrap();
     }));
-    let error = writer::build_with_test_hooks(ws.root(), &rejected, None, hook).unwrap_err();
+    let error = writer::build_with_selection_and_guard(
+        ws.root(),
+        &rejected,
+        None,
+        None,
+        Some(hook),
+        None,
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()

@@ -26,7 +26,7 @@ fn same_request_adapter(left: &scanner::Adapter, right: &scanner::Adapter) -> bo
 }
 
 /// Represents cached connection data.
-pub struct CachedConnection {
+pub(crate) struct CachedConnection {
     identity: Identity,
     connection: Option<rusqlite::Connection>,
     adapter_digest: String,
@@ -41,7 +41,7 @@ pub struct CachedConnection {
 }
 
 /// Names the connection slot type.
-pub type ConnectionSlot = Option<CachedConnection>;
+pub(crate) type ConnectionSlot = Option<CachedConnection>;
 
 thread_local! {
     static ADMITTING_SLOT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -159,7 +159,7 @@ pub struct Server {
     /// The db value.
     pub db: PathBuf,
     /// The connection value.
-    pub connection: Arc<Mutex<ConnectionSlot>>,
+    pub(crate) connection: Arc<Mutex<ConnectionSlot>>,
     reader_evictor: Arc<cache::IdleReader>,
     request_adapter: Option<RequestAdapter>,
     request_workspace_root: Option<PathBuf>,
@@ -167,7 +167,40 @@ pub struct Server {
     pub(crate) invocation: Option<Arc<crate::state_bridge::InvocationSettings>>,
     pub(crate) session_fingerprint: Option<String>,
     extra_domain_providers: Vec<Arc<dyn acdd_core::ports::DomainProvider>>,
+    startup_executable: std::result::Result<acdd_core::fs::ExecutableIdentity, String>,
+    reload_signal: Option<Arc<ReloadSignal>>,
 }
+
+struct ReloadSignal {
+    pending: std::sync::atomic::AtomicBool,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl ReloadSignal {
+    fn new() -> Self {
+        Self {
+            pending: std::sync::atomic::AtomicBool::new(false),
+            armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn mark_pending(&self) {
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn arm_pending(&self) {
+        if self
+            .pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.armed.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 impl Server {
     /// Returns this server slot's active registry entry count.
     #[doc(hidden)]
@@ -191,6 +224,59 @@ impl Server {
                 acdd_state::usecases::lifecycle::current_session_fingerprint(),
             ),
             extra_domain_providers: Vec::new(),
+            startup_executable: acdd_core::fs::ExecutableIdentity::current()
+                .map_err(|err| err.to_string()),
+            reload_signal: None,
+        }
+    }
+
+    fn startup_executable_path(&self) -> Option<&std::path::Path> {
+        self.startup_executable
+            .as_ref()
+            .ok()
+            .map(|identity| identity.path.as_path())
+    }
+
+    fn with_reload_signal(mut self, signal: Arc<ReloadSignal>) -> Self {
+        self.reload_signal = Some(signal);
+        self
+    }
+
+    pub(super) fn arm_pending_reload(&self) {
+        if let Some(signal) = &self.reload_signal {
+            signal.arm_pending();
+        }
+    }
+
+    fn ensure_current_binary_before_rebuild(&self) -> Result<()> {
+        let startup = match &self.startup_executable {
+            Ok(identity) => identity,
+            Err(error) => {
+                anyhow::bail!(
+                    "BINARY_DRIFT_UNAVAILABLE: cannot verify server executable identity ({error}); refusing stale-binary write to '{}'",
+                    self.db.display()
+                );
+            }
+        };
+        match startup.check_current(None)? {
+            acdd_core::fs::ExecutableDrift::Current => Ok(()),
+            acdd_core::fs::ExecutableDrift::Replaced { live_path } => {
+                if let Some(signal) = &self.reload_signal {
+                    signal.mark_pending();
+                }
+                anyhow::bail!(
+                    "BINARY_DRIFT_RELOAD: server executable changed at '{}' (reloading without rebuilding '{}')",
+                    live_path.display(),
+                    self.db.display()
+                );
+            }
+            acdd_core::fs::ExecutableDrift::Missing { live_path } => {
+                anyhow::bail!(
+                    "BINARY_DRIFT_UNAVAILABLE: server executable missing at '{}' (refusing stale-binary rebuild of '{}')",
+                    live_path.display(),
+                    self.db.display()
+                );
+            }
         }
     }
 
@@ -280,21 +366,27 @@ impl Server {
         root: &std::path::Path,
         adapter: Option<&std::path::Path>,
     ) -> Result<serde_json::Value> {
+        self.ensure_current_binary_before_rebuild()?;
+        let guard = || self.ensure_current_binary_before_rebuild();
         let selected = self
             .invocation
             .as_ref()
             .and_then(|settings| settings.config.as_deref());
         let adapter = selected.or(adapter);
-        match self.extraction_cache_dir.as_deref() {
-            Some(cache_dir) => {
-                crate::engine::pipeline::build_with_cache_dir(root, &self.db, adapter, cache_dir)
-            }
-            None => crate::engine::pipeline::build(root, &self.db, adapter),
-        }
+        crate::engine::pipeline::build_with_selection_and_guard(
+            root,
+            &self.db,
+            adapter,
+            self.extraction_cache_dir.as_deref(),
+            None,
+            Some(&guard),
+        )
     }
 
     fn delta(&self, root: &std::path::Path, modified: &[PathBuf]) -> Result<serde_json::Value> {
-        crate::engine::pipeline::delta_with_selection(
+        self.ensure_current_binary_before_rebuild()?;
+        let guard = || self.ensure_current_binary_before_rebuild();
+        crate::engine::pipeline::delta_with_selection_and_guard(
             root,
             &self.db,
             modified,
@@ -302,6 +394,7 @@ impl Server {
                 .as_ref()
                 .and_then(|settings| settings.config.as_deref()),
             self.extraction_cache_dir.as_deref(),
+            Some(&guard),
         )
     }
 
@@ -329,6 +422,8 @@ impl Server {
             invocation,
             session_fingerprint: self.session_fingerprint.clone(),
             extra_domain_providers: self.extra_domain_providers.clone(),
+            startup_executable: self.startup_executable.clone(),
+            reload_signal: self.reload_signal.clone(),
         }
     }
 
@@ -499,6 +594,9 @@ impl Server {
                         .ok()
                         .filter(|identity| *identity == cached.identity)
                 });
+            if admitted_identity.is_none() {
+                self.ensure_current_binary_before_rebuild()?;
+            }
             if admitted_identity.is_none() && self.check_rebuild_needed(adapter)? {
                 *slot = None;
                 self.rebuild(&root, None)?;
@@ -1144,20 +1242,6 @@ async fn parent_exited(initial_parent_pid: u32) {
     }
 }
 
-/// Performs serve.
-pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
-    serve_with_cache_dir(root, db, None).await
-}
-
-/// Serves stdio with an optional explicit extraction-cache directory.
-pub async fn serve_with_cache_dir(
-    root: PathBuf,
-    db: PathBuf,
-    cache_dir: Option<PathBuf>,
-) -> Result<()> {
-    serve_with_state_config(root, db, cache_dir, None).await
-}
-
 /// Serves stdio retaining explicit 0.6.0 [`crate::state_bridge::InvocationSettings`] across requests.
 pub async fn serve_with_state_config(
     root: PathBuf,
@@ -1197,7 +1281,13 @@ async fn serve_session(
     settings: Option<crate::state_bridge::InvocationSettings>,
     #[cfg(unix)] initial_parent_pid: u32,
 ) -> Result<()> {
-    let mut server = Server::new(root, db);
+    let reload_signal = Arc::new(ReloadSignal::new());
+    let reload_armed = Arc::clone(&reload_signal.armed);
+    let reload_notify = Arc::clone(&reload_signal.notify);
+    let mut server = Server::new(root, db).with_reload_signal(reload_signal);
+    let startup_exe = server
+        .startup_executable_path()
+        .map(std::path::Path::to_path_buf);
     if let Some(settings) = &settings {
         server = server.with_invocation_settings(settings.clone());
     }
@@ -1205,9 +1295,18 @@ async fn serve_session(
         server = server.with_cache_dir(cache_dir.clone());
     }
     let service = if let Some(params) = resumed_initialize_params(&server) {
-        rmcp::service::serve_directly(server, super::response::stdio(), Some(params))
+        rmcp::service::serve_directly(
+            server,
+            super::response::stdio_with_flush_reload(reload_armed, Arc::clone(&reload_notify)),
+            Some(params),
+        )
     } else {
-        server.serve(super::response::stdio()).await?
+        server
+            .serve(super::response::stdio_with_flush_reload(
+                reload_armed,
+                Arc::clone(&reload_notify),
+            ))
+            .await?
     };
     #[cfg(unix)]
     {
@@ -1216,6 +1315,43 @@ async fn serve_session(
         let preserved = preserved_session(&service);
         let waiting = service.waiting();
         tokio::pin!(waiting);
+        let try_reexec = || -> std::io::Result<()> {
+            let exe = startup_exe.clone().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "cannot re-exec without verified startup executable launch binding",
+                )
+            })?;
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            let mut command = std::process::Command::new(exe);
+            command
+                .args(args)
+                .env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());
+            match &preserved {
+                Some(json) => {
+                    command.env(MCP_SESSION_ENV, json);
+                }
+                None => {
+                    command.env_remove(MCP_SESSION_ENV);
+                }
+            }
+            if let Some(settings) = &settings {
+                if let Some(config) = &settings.config {
+                    command.env("ACDD_CONFIG", config);
+                }
+                if let Some(profile) = &settings.profile {
+                    command.env("ACDD_PROFILE", profile);
+                }
+                if let Some(state_db) = &settings.state_db {
+                    command.env("ACDD_STATE_DB", state_db);
+                }
+                command.env("ACDD_DB", &settings.code_db);
+            }
+            if let Some(cache_dir) = cache_dir.as_ref() {
+                command.env("ACDD_EXTRACTION_CACHE_DIR", cache_dir);
+            }
+            Err(command.exec())
+        };
         loop {
             tokio::select! {
                 result = &mut waiting => {
@@ -1223,51 +1359,23 @@ async fn serve_session(
                     break;
                 }
                 Some(()) = hangup.recv() => {
-                    let result = (|| -> std::io::Result<()> {
-                        let exe = std::env::current_exe()?;
-                        #[cfg(target_os = "linux")]
-                        let exe = {
-                            use std::os::unix::ffi::{OsStrExt, OsStringExt};
-                            match exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                                Some(path) => std::path::PathBuf::from(
-                                    std::ffi::OsString::from_vec(path.to_vec()),
-                                ),
-                                None => exe,
-                            }
-                        };
-                        let args: Vec<_> = std::env::args_os().skip(1).collect();
-                        let mut command = std::process::Command::new(exe);
-                        command.args(args).env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());
-                        match &preserved {
-                            Some(json) => { command.env(MCP_SESSION_ENV, json); }
-                            None => { command.env_remove(MCP_SESSION_ENV); }
-                        }
-                        if let Some(settings) = &settings {
-                            if let Some(config) = &settings.config {
-                                command.env("ACDD_CONFIG", config);
-                            }
-                            if let Some(profile) = &settings.profile {
-                                command.env("ACDD_PROFILE", profile);
-                            }
-                            if let Some(state_db) = &settings.state_db {
-                                command.env("ACDD_STATE_DB", state_db);
-                            }
-                            command.env("ACDD_DB", &settings.code_db);
-                        }
-                        if let Some(cache_dir) = cache_dir.as_ref() {
-                            command.env("ACDD_EXTRACTION_CACHE_DIR", cache_dir);
-                        }
-                        Err(command.exec())
-                    })();
-                    if let Err(error) = result {
+                    if let Err(error) = try_reexec() {
                         eprintln!("SIGHUP reload failed: {error}");
+                    }
+                }
+                _ = reload_notify.notified() => {
+                    if let Err(error) = try_reexec() {
+                        eprintln!("binary-drift reload failed: {error}");
                     }
                 }
             }
         }
     }
     #[cfg(not(unix))]
-    service.waiting().await?;
+    {
+        let _ = (reload_armed, reload_notify);
+        service.waiting().await?;
+    }
     Ok(())
 }
 

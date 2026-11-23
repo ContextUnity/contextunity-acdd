@@ -53,8 +53,8 @@ impl VirtualWorkspace {
         &self,
         registry: &DependencyRegistry,
     ) -> anyhow::Result<Connection> {
-        use contextunity_acdd::acdd_core::config::Adapter;
-        use contextunity_acdd::acdd_index::models::FileEntry;
+        use acdd_core::config::Adapter;
+        use acdd_index::models::FileEntry;
         let mut entries = Vec::new();
         let mut facts = BTreeMap::new();
         for (path, source) in &self.files {
@@ -79,7 +79,7 @@ impl VirtualWorkspace {
             );
         }
         ast::route_includes::compose_route_includes(&mut facts);
-        contextunity_acdd::engine::pipeline::components(&mut facts);
+        contextunity_acdd::engine::pipeline::shared::components(&mut facts);
         let graph = linker::link_compact_with_typed_registry(&facts, None, None, registry);
         let mut conn = Connection::open_in_memory()?;
         let root = std::path::Path::new("/__acdd_virtual_workspace__");

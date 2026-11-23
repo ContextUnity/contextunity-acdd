@@ -6,13 +6,19 @@ impl NodeDetailKey {
     pub const SIGNATURE: &'static str = "signature";
     pub const DOC: &'static str = "doc";
     pub const DOCSTRING: &'static str = "docstring";
-    pub const VISIBILITY: &'static str = "visibility";
-    pub const PARAMS: &'static str = "params";
-    pub const RETURNS: &'static str = "returns";
+    #[cfg(test)]
+    pub(crate) const VISIBILITY: &'static str = "visibility";
+    #[cfg(test)]
+    pub(crate) const PARAMS: &'static str = "params";
+    #[cfg(test)]
+    pub(crate) const RETURNS: &'static str = "returns";
     pub const ASYNC: &'static str = "async";
-    pub const EXPORT: &'static str = "export";
-    pub const STATIC: &'static str = "static";
-    pub const CATEGORY: &'static str = "category";
+    #[cfg(test)]
+    pub(crate) const EXPORT: &'static str = "export";
+    #[cfg(test)]
+    pub(crate) const STATIC: &'static str = "static";
+    #[cfg(test)]
+    pub(crate) const CATEGORY: &'static str = "category";
     pub const DEFAULT_EXPORT: &'static str = "default_export";
     pub const RETURN_TYPE: &'static str = "return_type";
     pub const RULE: &'static str = "rule";
@@ -20,10 +26,10 @@ impl NodeDetailKey {
     pub const ENTRYPOINT_BASE: &'static str = "entrypoint_base";
     pub const ENTRYPOINT_ORIGINAL_JSON: &'static str = "entrypoint_original_json";
     pub const IMPL_TRAIT: &'static str = "impl_trait";
-    pub const TRAIT_DEFAULT: &'static str = "trait_default";
+    pub(crate) const TRAIT_DEFAULT: &'static str = "trait_default";
     pub const DECORATORS: &'static str = "decorators";
-    pub const IS_STUB: &'static str = "is_stub";
-    pub const IS_OVERLOAD: &'static str = "is_overload";
+    pub(crate) const IS_STUB: &'static str = "is_stub";
+    pub(crate) const IS_OVERLOAD: &'static str = "is_overload";
     pub const INCLUDED_FROM: &'static str = "included_from";
     pub const SOURCE_PATH: &'static str = "source_path";
     pub const ARCH_RULES: &'static str = "arch_rules";
@@ -43,6 +49,43 @@ pub struct NodeDetailFlags {
     pub is_stub: bool,
     pub is_overload: bool,
 }
+fn is_cfg_test_attribute(dec: &str) -> bool {
+    let Some((_, rest)) = dec.split_once("cfg(") else {
+        return false;
+    };
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut ident = String::new();
+    for ch in rest.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_quotes {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_quotes = true;
+            ident.clear();
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            ident.push(ch);
+        } else {
+            if ident == "test" {
+                return true;
+            }
+            ident.clear();
+        }
+    }
+    ident == "test"
+}
+
 impl NodeDetailFlags {
     pub fn from_value(value: &Value) -> Self {
         let present = |key| value.get(key).is_some_and(|v| !v.is_null());
@@ -65,7 +108,7 @@ impl NodeDetailFlags {
             .and_then(Value::as_array)
         {
             for dec in decorators.iter().filter_map(Value::as_str) {
-                flags.has_cfg_test |= dec.contains("cfg(test)");
+                flags.has_cfg_test |= is_cfg_test_attribute(dec);
                 flags.has_tool |= dec.starts_with("#[tool") || dec.starts_with("#[rmcp::tool");
             }
         }

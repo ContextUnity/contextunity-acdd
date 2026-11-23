@@ -4,7 +4,7 @@ use acdd_core::{
     format::stable_hash64,
     response::{Detail, QueryOptions, ResponsePolicy},
 };
-use acdd_index::db::{traversal, SCHEMA_DDL};
+use acdd_index::db::{schema::SCHEMA_DDL, traversal};
 use rusqlite::{params, Connection};
 fn database(workspace: &Workspace) -> Result<Connection> {
     let conn = Connection::open(workspace.path("graph.sqlite"))?;
@@ -44,7 +44,7 @@ fn options(limit: usize, offset: usize, detail: Detail) -> Result<QueryOptions> 
 fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Result<()> {
     let workspace = Workspace::new();
     let conn = database(&workspace)?;
-    let first = traversal::traverse_with_path_options(
+    let first = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -81,7 +81,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         "depth-grouped paths retain their relation without invented edge coordinates: {markdown}"
     );
 
-    let second = traversal::traverse_with_path_options(
+    let second = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -108,7 +108,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(items[2]["via"]["kind"], "decorates");
     assert_eq!(second["nodes"]["has_more"], false);
 
-    let full = traversal::traverse_with_path_options(
+    let full = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -122,7 +122,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     )?;
     assert_eq!(full["nodes"]["items"][4]["via"], items[2]["via"]);
     assert_eq!(full["nodes"]["items"][4]["is_seed"], false);
-    let beyond = traversal::traverse_with_path_options(
+    let beyond = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -140,7 +140,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         .expect("page items")
         .is_empty());
 
-    let zero = traversal::traverse_with_path_options(
+    let zero = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -154,7 +154,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     )?;
     assert_eq!(zero["nodes"]["total"], 1);
     assert_eq!(zero["nodes"]["items"][0]["is_seed"], true);
-    let inbound = traversal::traverse_with_path_options(
+    let inbound = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -173,7 +173,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["direction"], "inbound");
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["path"], "fixture.py");
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["line"], 1);
-    let shallow_reverse = traversal::traverse_with_path_options(
+    let shallow_reverse = traversal::impact::traverse_with_path_options(
         &conn,
         "b",
         None,
@@ -198,7 +198,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(decorator["edge"]["path"], "fixture.py");
     assert_eq!(decorator["edge"]["line"], 1);
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?1,'calls',1,1,3,2,1)",[stable_hash64("a")])?;
-    let shallow_self = traversal::traverse_with_path_options(
+    let shallow_self = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -221,7 +221,7 @@ fn structural_dependency_uses_the_same_edge_kind_for_reachability_and_explanatio
     let conn = database(&workspace)?;
     conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('module','module','module','module',2,1,1,0,'python',0,'{}',?1,2)", [stable_hash64("module")])?;
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?2,'imports',1,1,1,2,1)",params![stable_hash64("a"),stable_hash64("module")])?;
-    let page = traversal::traverse_with_path_options(
+    let page = traversal::impact::traverse_with_path_options(
         &conn,
         "a",
         None,
@@ -254,7 +254,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     let clean = traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(clean["assessment"]["verdict"], "no_indexed_blockers");
     assert_eq!(clean["safe_to_remove"], true);
-    let isolated = traversal::traverse_with_path_options(
+    let isolated = traversal::impact::traverse_with_path_options(
         &conn,
         "orphan",
         None,
@@ -350,7 +350,7 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
         |row| row.get(0),
     )?;
 
-    let impact = traversal::traverse_with_path_options(
+    let impact = traversal::impact::traverse_with_path_options(
         &conn,
         &target_id,
         None,
@@ -734,11 +734,17 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
         }
     }
 
-    let conflict = traversal::dead_tails_paged(
+    let conflict = traversal::query_with_path_options(
         &conn,
+        "dead_tails",
         Some("crates/a"),
         Some("crates/b"),
-        &options(10, 0, Detail::Compact)?,
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: Default::default(),
+            page: &options(10, 0, Detail::Compact)?,
+        },
     );
     assert!(conflict.is_err(), "conflicting target vs path must fail");
 

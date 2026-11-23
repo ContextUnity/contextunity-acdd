@@ -1,7 +1,7 @@
 use super::rules::{rule_invariant_id, selector_matches_file, LoadedRule};
-use super::{is_archived_path, LintIndexData, LintScope, LintViolation};
+use super::types::{is_archived_path, LintIndexData, LintScope, LintViolation};
 use crate::db::commitments::{read_metadata_optional, MetadataKey};
-use crate::db::{paging, reader, symbols};
+use crate::db::{paging, reader::sql as reader, source};
 use crate::models::{
     stable_hash64,
     tags::{EdgeKind, NodeKind},
@@ -129,210 +129,262 @@ fn match_symbol_claim<'a>(
     (matched, suggestion)
 }
 
-fn collect_doc_findings(
+fn collect_broken_doc_links(
     conn: &Connection,
     single_doc_path: Option<&str>,
     scope: Option<&LintScope>,
-    enforced_invariants: &BTreeSet<String>,
-    workspace_root: Option<&Path>,
-    include_broken_links: bool,
-    generation: Option<&str>,
-) -> Result<Vec<DocIntegrityFinding>> {
-    let _budget = reader::QueryBudget::new(conn);
-    let mut findings = Vec::new();
-
-    if include_broken_links {
-        let doc_kind = NodeKind::Document.as_str();
-        let path_filter = single_doc_path.unwrap_or("");
-        let mut stmt = conn.prepare(&format!(
-            "SELECT 'broken_doc_link' AS kind, p.path,
-                    CAST(json_extract(c.value,'$.line') AS INTEGER) AS line,
-                    json_extract(c.value,'$.target') AS target
-             FROM nodes n
-             JOIN path_dictionary p ON p.path_id = n.path_id
-             JOIN json_each(n.details,'$.citations') c
-             WHERE n.kind = '{doc_kind}'
-               AND (?1 = '' OR p.path = ?1)
-               AND p.path NOT LIKE 'archive/%'
-               AND p.path NOT LIKE '%/archive/%'
-               AND NOT EXISTS (
-                   SELECT 1 FROM edges e
-                   JOIN coverage_evidence v ON v.evidence_id = e.evidence_id
-                   WHERE e.kind = 'cites_doc'
-                     AND e.src_hash = n.node_hash
-                     AND e.line = CAST(json_extract(c.value,'$.line') AS INTEGER)
-                     AND v.evidence = json_extract(c.value,'$.target')
-               )
-             ORDER BY p.path, line, target",
-        ))?;
-        let mut rows = stmt.query([path_filter])?;
-        while let Some(row) = rows.next()? {
-            let path: String = row.get(1)?;
-            let line: i64 = row.get(2)?;
-            let target: Option<String> = row.get(3)?;
-            let Some(target) = target else {
-                continue;
-            };
-            if !is_document_link_target(&target) {
-                continue;
-            }
-            if scope.is_some_and(|s| !s.in_scope(&path)) {
-                continue;
-            }
-            let mut f = DocIntegrityFinding::new(
-                "broken_doc_link",
-                "docs.broken_doc_link",
-                LintSeverity::Error,
-                path.clone(),
-                line.max(1) as usize,
-                format!("broken documentation link target '{target}'"),
-            );
-            f.target = Some(target.clone());
-            f.raw_diagnostic = Some(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
-            findings.push(f);
+    findings: &mut Vec<DocIntegrityFinding>,
+) -> Result<()> {
+    let doc_kind = NodeKind::Document.as_str();
+    let path_filter = single_doc_path.unwrap_or("");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT 'broken_doc_link' AS kind, p.path,
+                CAST(json_extract(c.value,'$.line') AS INTEGER) AS line,
+                json_extract(c.value,'$.target') AS target
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         JOIN json_each(n.details,'$.citations') c
+         WHERE n.kind = '{doc_kind}'
+           AND (?1 = '' OR p.path = ?1)
+           AND p.path NOT LIKE 'archive/%'
+           AND p.path NOT LIKE '%/archive/%'
+           AND NOT EXISTS (
+               SELECT 1 FROM edges e
+               JOIN coverage_evidence v ON v.evidence_id = e.evidence_id
+               WHERE e.kind = 'cites_doc'
+                 AND e.src_hash = n.node_hash
+                 AND e.line = CAST(json_extract(c.value,'$.line') AS INTEGER)
+                 AND v.evidence = json_extract(c.value,'$.target')
+           )
+         ORDER BY p.path, line, target",
+    ))?;
+    let mut rows = stmt.query([path_filter])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(1)?;
+        let line: i64 = row.get(2)?;
+        let Some(target) = row.get::<_, Option<String>>(3)? else {
+            continue;
+        };
+        if !is_document_link_target(&target) || scope.is_some_and(|s| !s.in_scope(&path)) {
+            continue;
         }
+        let mut f = DocIntegrityFinding::new(
+            "broken_doc_link",
+            "docs.broken_doc_link",
+            LintSeverity::Error,
+            path.clone(),
+            line.max(1) as usize,
+            format!("broken documentation link target '{target}'"),
+        );
+        f.target = Some(target.clone());
+        f.raw_diagnostic =
+            Some(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
+        findings.push(f);
     }
+    Ok(())
+}
 
+fn collect_claim_refs_from_details(
+    path: &str,
+    section_line: i64,
+    details: &Value,
+    symbol_claims: &mut Vec<SymbolClaimRef>,
+) {
+    let Some(claims) = details.get("symbol_claims").and_then(Value::as_array) else {
+        return;
+    };
+    for claim in claims {
+        if claim
+            .get("label_count")
+            .and_then(Value::as_u64)
+            .is_some_and(|c| c != 1)
+        {
+            continue;
+        }
+        if !claim
+            .get("explicit_path")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let (Some(name), Some(target_path)) = (
+            claim.get("name").and_then(Value::as_str),
+            claim.get("target_path").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if target_path.split('/').any(|part| part == "..") {
+            continue;
+        }
+        // Plain document links (`[`AGENTS.md`](AGENTS.md)`) and filename links
+        // (`[`fs.rs`](.../fs.rs)`) are file navigation links, not symbol claims.
+        if is_document_link_target(target_path)
+            || Path::new(target_path)
+                .file_name()
+                .and_then(|file| file.to_str())
+                == Some(name)
+        {
+            continue;
+        }
+        let line = claim
+            .get("line")
+            .and_then(Value::as_u64)
+            .unwrap_or(section_line.max(1) as u64) as usize;
+        symbol_claims.push(SymbolClaimRef {
+            doc_path: path.to_owned(),
+            line,
+            name: name.to_owned(),
+            target_path: target_path.to_owned(),
+            start_line: claim
+                .get("start_line")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+            end_line: claim
+                .get("end_line")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+        });
+    }
+}
+
+fn collect_declared_invariants_from_details(
+    path: &str,
+    section_line: i64,
+    details: &Value,
+    declared_invariants: &mut Vec<DeclaredInvariantRef>,
+    non_contract_by_id: &mut BTreeMap<String, Vec<DeclaredInvariantRef>>,
+) {
+    let Some(invs) = details.get("declared_invariants").and_then(Value::as_array) else {
+        return;
+    };
+    for inv in invs {
+        let Some(id) = inv.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let inv_line = inv
+            .get("line")
+            .and_then(Value::as_u64)
+            .unwrap_or(section_line.max(1) as u64) as usize;
+        let item = DeclaredInvariantRef {
+            id: id.to_owned(),
+            doc_path: path.to_owned(),
+            line: inv_line,
+            node_id: format!("invariant:{path}:{inv_line}:{id}"),
+        };
+        non_contract_by_id
+            .entry(id.to_owned())
+            .or_default()
+            .push(item.clone());
+        declared_invariants.push(item);
+    }
+}
+
+struct ScannedDocClaims {
+    symbol_claims: Vec<SymbolClaimRef>,
+    declared_invariants: Vec<DeclaredInvariantRef>,
+    non_contract_by_id: BTreeMap<String, Vec<DeclaredInvariantRef>>,
+}
+
+struct SymbolClaimTargets {
+    candidates_by_path: HashMap<String, Vec<TargetCandidateNode>>,
+    indexed_code_paths: HashSet<String>,
+}
+
+fn scan_doc_metadata_claims(
+    conn: &Connection,
+    single_doc_path: Option<&str>,
+) -> Result<ScannedDocClaims> {
     let doc_kind = NodeKind::Document.as_str();
     let mut symbol_claims = Vec::new();
     let mut declared_invariants = Vec::new();
     let mut non_contract_by_id: BTreeMap<String, Vec<DeclaredInvariantRef>> = BTreeMap::new();
     let path_filter = single_doc_path.unwrap_or("");
-    {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT p.path, n.line, n.details
-             FROM nodes n
-             JOIN path_dictionary p ON p.path_id = n.path_id
-             WHERE n.kind = '{doc_kind}'
-               AND (?1 = '' OR p.path = ?1)
-               AND p.path NOT LIKE 'archive/%'
-               AND p.path NOT LIKE '%/archive/%'
-             ORDER BY p.path, n.line, n.id",
-        ))?;
-        let mut rows = stmt.query([path_filter])?;
-        while let Some(row) = rows.next()? {
-            let path: String = row.get(0)?;
-            if is_archived_path(&path) {
-                continue;
-            }
-            let section_line: i64 = row.get(1)?;
-            let details_raw: String = row.get(2)?;
-            let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
-                continue;
-            };
-            let doc_type = details
-                .get("doc_type")
-                .and_then(Value::as_str)
-                .unwrap_or("guide");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.path, n.line, n.details
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         WHERE n.kind = '{doc_kind}'
+           AND (?1 = '' OR p.path = ?1)
+           AND p.path NOT LIKE 'archive/%'
+           AND p.path NOT LIKE '%/archive/%'
+         ORDER BY p.path, n.line, n.id",
+    ))?;
+    let mut rows = stmt.query([path_filter])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        if is_archived_path(&path) {
+            continue;
+        }
+        let section_line: i64 = row.get(1)?;
+        let details_raw: String = row.get(2)?;
+        let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
+            continue;
+        };
+        let doc_type = details
+            .get("doc_type")
+            .and_then(Value::as_str)
+            .unwrap_or("guide");
 
-            if single_doc_path.is_some() || doc_type != "contract" {
-                if let Some(claims) = details.get("symbol_claims").and_then(Value::as_array) {
-                for claim in claims {
-                    if claim
-                        .get("label_count")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|c| c != 1)
-                    {
-                        continue;
-                    }
-                    let explicit_path = claim
-                        .get("explicit_path")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    if !explicit_path {
-                        continue;
-                    }
-                    let (Some(name), Some(target_path)) = (
-                        claim.get("name").and_then(Value::as_str),
-                        claim.get("target_path").and_then(Value::as_str),
-                    ) else {
-                        continue;
-                    };
-                    if target_path.split('/').any(|part| part == "..") {
-                        continue;
-                    }
-                    // Plain document links (`[`AGENTS.md`](AGENTS.md)`) and filename links
-                    // (`[`fs.rs`](.../fs.rs)`) are file navigation links, not symbol claims.
-                    if is_document_link_target(target_path)
-                        || Path::new(target_path)
-                            .file_name()
-                            .and_then(|file| file.to_str())
-                            == Some(name)
-                    {
-                        continue;
-                    }
-                    let line = claim.get("line").and_then(Value::as_u64).unwrap_or(section_line.max(1) as u64) as usize;
-                    symbol_claims.push(SymbolClaimRef {
-                        doc_path: path.clone(),
-                        line,
-                        name: name.to_owned(),
-                        target_path: target_path.to_owned(),
-                        start_line: claim.get("start_line").and_then(Value::as_u64).map(|v| v as usize),
-                        end_line: claim.get("end_line").and_then(Value::as_u64).map(|v| v as usize),
-                    });
-                }
-                }
-            }
-
-            if single_doc_path.is_none() && doc_type != "contract" {
-                if let Some(invs) = details.get("declared_invariants").and_then(Value::as_array) {
-                    for inv in invs {
-                        let Some(id) = inv.get("id").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let inv_line = inv
-                            .get("line")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(section_line.max(1) as u64)
-                            as usize;
-                        let item = DeclaredInvariantRef {
-                            id: id.to_owned(),
-                            doc_path: path.clone(),
-                            line: inv_line,
-                            node_id: format!("invariant:{path}:{inv_line}:{id}"),
-                        };
-                        non_contract_by_id
-                            .entry(id.to_owned())
-                            .or_default()
-                            .push(item.clone());
-                        declared_invariants.push(item);
-                    }
-                }
-            }
+        if single_doc_path.is_some() || doc_type != "contract" {
+            collect_claim_refs_from_details(&path, section_line, &details, &mut symbol_claims);
+        }
+        if single_doc_path.is_none() && doc_type != "contract" {
+            collect_declared_invariants_from_details(
+                &path,
+                section_line,
+                &details,
+                &mut declared_invariants,
+                &mut non_contract_by_id,
+            );
         }
     }
+    Ok(ScannedDocClaims {
+        symbol_claims,
+        declared_invariants,
+        non_contract_by_id,
+    })
+}
 
-    // Stored doc errors (frontmatter errors, acdd-rule YAML/schema/zone errors)
-    if single_doc_path.is_none() {
-        let mut stmt = conn.prepare(
-            "SELECT e.path, e.line, e.message
-             FROM errors e
-             JOIN files f ON f.path = e.path
-             WHERE (f.language = 'markdown' OR e.path LIKE '%.md' OR e.path LIKE '%.mdx')
-               AND e.path NOT LIKE 'archive/%'
-               AND e.path NOT LIKE '%/archive/%'
-             ORDER BY e.path, e.line, e.message",
-        )?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let path: String = row.get(0)?;
-            let line: i64 = row.get(1)?;
-            let message: String = row.get(2)?;
-            if scope.is_some_and(|s| !s.in_scope(&path)) {
-                continue;
-            }
-            findings.push(DocIntegrityFinding::new(
-                "stored_doc_error",
-                "docs.stored_error",
-                LintSeverity::Error,
-                path,
-                line.max(1) as usize,
-                message,
-            ));
+fn collect_stored_doc_errors(
+    conn: &Connection,
+    scope: Option<&LintScope>,
+    findings: &mut Vec<DocIntegrityFinding>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT e.path, e.line, e.message
+         FROM errors e
+         JOIN files f ON f.path = e.path
+         WHERE (f.language = 'markdown' OR e.path LIKE '%.md' OR e.path LIKE '%.mdx')
+           AND e.path NOT LIKE 'archive/%'
+           AND e.path NOT LIKE '%/archive/%'
+         ORDER BY e.path, e.line, e.message",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let line: i64 = row.get(1)?;
+        let message: String = row.get(2)?;
+        if scope.is_some_and(|s| !s.in_scope(&path)) {
+            continue;
         }
+        findings.push(DocIntegrityFinding::new(
+            "stored_doc_error",
+            "docs.stored_error",
+            LintSeverity::Error,
+            path,
+            line.max(1) as usize,
+            message,
+        ));
     }
+    Ok(())
+}
 
-    // Batch-load target symbol candidates for all referenced explicit paths
+fn load_symbol_claim_targets(
+    conn: &Connection,
+    scope: Option<&LintScope>,
+    symbol_claims: &[SymbolClaimRef],
+) -> Result<SymbolClaimTargets> {
     let target_paths: BTreeSet<&str> = symbol_claims
         .iter()
         .filter(|c| scope.is_none_or(|s| s.in_scope(&c.doc_path)))
@@ -340,54 +392,68 @@ fn collect_doc_findings(
         .collect();
     let mut candidates_by_path: HashMap<String, Vec<TargetCandidateNode>> = HashMap::new();
     let mut indexed_code_paths: HashSet<String> = HashSet::new();
-    if !target_paths.is_empty() {
-        let paths_json = serde_json::to_string(&target_paths)?;
-        {
-            let mut stmt = conn.prepare(
-                "SELECT path FROM files
-                 WHERE path IN (SELECT value FROM json_each(?1))
-                   AND COALESCE(language, '') != 'markdown'",
-            )?;
-            let mut rows = stmt.query([&paths_json])?;
-            while let Some(row) = rows.next()? {
-                indexed_code_paths.insert(row.get(0)?);
-            }
-        }
-        let inv_kind = NodeKind::Invariant.as_str();
-        let mod_kind = NodeKind::Module.as_str();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT p.path, n.id, n.name, n.qualname, n.line, n.end_line
-             FROM nodes n
-             JOIN path_dictionary p ON p.path_id = n.path_id
-             WHERE p.path IN (SELECT value FROM json_each(?1))
-               AND n.kind NOT IN ('{doc_kind}','{inv_kind}','{mod_kind}','file','impl')
-             ORDER BY p.path, n.line, n.id"
-        ))?;
+    if target_paths.is_empty() {
+        return Ok(SymbolClaimTargets {
+            candidates_by_path,
+            indexed_code_paths,
+        });
+    }
+    let paths_json = serde_json::to_string(&target_paths)?;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT path FROM files
+             WHERE path IN (SELECT value FROM json_each(?1))
+               AND COALESCE(language, '') != 'markdown'",
+        )?;
         let mut rows = stmt.query([&paths_json])?;
         while let Some(row) = rows.next()? {
-            let p: String = row.get(0)?;
-            candidates_by_path
-                .entry(p)
-                .or_default()
-                .push(TargetCandidateNode {
-                    id: row.get(1)?,
-                    name: row.get(2)?,
-                    qualname: row.get(3)?,
-                    line: row.get::<_, i64>(4)?.max(1) as usize,
-                    end_line: row.get::<_, i64>(5)?.max(1) as usize,
-                });
+            indexed_code_paths.insert(row.get(0)?);
         }
     }
+    let doc_kind = NodeKind::Document.as_str();
+    let inv_kind = NodeKind::Invariant.as_str();
+    let mod_kind = NodeKind::Module.as_str();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.path, n.id, n.name, n.qualname, n.line, n.end_line
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         WHERE p.path IN (SELECT value FROM json_each(?1))
+           AND n.kind NOT IN ('{doc_kind}','{inv_kind}','{mod_kind}','file','impl')
+         ORDER BY p.path, n.line, n.id"
+    ))?;
+    let mut rows = stmt.query([&paths_json])?;
+    while let Some(row) = rows.next()? {
+        let p: String = row.get(0)?;
+        candidates_by_path
+            .entry(p)
+            .or_default()
+            .push(TargetCandidateNode {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                qualname: row.get(3)?,
+                line: row.get::<_, i64>(4)?.max(1) as usize,
+                end_line: row.get::<_, i64>(5)?.max(1) as usize,
+            });
+    }
+    Ok(SymbolClaimTargets {
+        candidates_by_path,
+        indexed_code_paths,
+    })
+}
 
-    let resolved_root: Option<PathBuf> = workspace_root.map(Path::to_path_buf).or_else(|| {
-        read_metadata_optional(conn, MetadataKey::WorkspaceRoot)
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
-    });
-    let mut source_loader = symbols::VerifiedSourceCache::new();
+#[allow(clippy::too_many_arguments)]
+fn check_symbol_claims(
+    conn: &Connection,
+    scope: Option<&LintScope>,
+    symbol_claims: &[SymbolClaimRef],
+    candidates_by_path: &HashMap<String, Vec<TargetCandidateNode>>,
+    indexed_code_paths: &HashSet<String>,
+    resolved_root: Option<&Path>,
+    generation: Option<&str>,
+    findings: &mut Vec<DocIntegrityFinding>,
+) {
+    let mut source_loader = source::VerifiedSourceCache::new();
     let mut line_count_cache: HashMap<String, Option<usize>> = HashMap::new();
-
     let claim_json = |c: &SymbolClaimRef| {
         json!({"name": c.name, "target_path": c.target_path, "start_line": c.start_line, "end_line": c.end_line})
     };
@@ -405,7 +471,7 @@ fn collect_doc_findings(
         findings.push(f);
     };
 
-    for claim in &symbol_claims {
+    for claim in symbol_claims {
         if scope.is_some_and(|s| !s.in_scope(&claim.doc_path)) {
             continue;
         }
@@ -419,7 +485,7 @@ fn collect_doc_findings(
             // nodes in `code-map.sqlite`; skip them while still failing closed on missing targets.
             if !indexed_code_paths.contains(&claim.target_path)
                 && !claim.target_path.starts_with('[')
-                && resolved_root.as_deref().is_some_and(|root| {
+                && resolved_root.is_some_and(|root| {
                     acdd_core::fs::checked_child(root, Path::new(&claim.target_path))
                         .is_ok_and(|path| path.is_file())
                 })
@@ -436,8 +502,19 @@ fn collect_doc_findings(
                 raw["suggested_symbol"] =
                     json!({"name": sug.name, "path": claim.target_path, "line": sug.line});
             }
-            let msg = format!("broken symbol claim '{}' against '{}'", claim.name, claim.target_path);
-            push_claim(&mut findings, "dead_doc_symbol", "docs.broken_symbol_claim", LintSeverity::Error, claim, msg, raw);
+            let msg = format!(
+                "broken symbol claim '{}' against '{}'",
+                claim.name, claim.target_path
+            );
+            push_claim(
+                findings,
+                "dead_doc_symbol",
+                "docs.broken_symbol_claim",
+                LintSeverity::Error,
+                claim,
+                msg,
+                raw,
+            );
             continue;
         }
         if matched.len() > 1 {
@@ -447,7 +524,7 @@ fn collect_doc_findings(
         let (Some(start), Some(end)) = (claim.start_line, claim.end_line) else {
             continue;
         };
-        let Some(root) = resolved_root.as_deref() else {
+        let Some(root) = resolved_root else {
             continue;
         };
         let source_lines = *line_count_cache
@@ -478,71 +555,151 @@ fn collect_doc_findings(
                 "stale symbol line range #L{start}-L{end} for '{}' in '{}' (indexed at L{}-L{})",
                 claim.name, claim.target_path, target.line, target.end_line
             );
-            push_claim(&mut findings, "stale_doc_sections", "docs.stale_symbol_range", LintSeverity::Warn, claim, msg, raw);
+            push_claim(
+                findings,
+                "stale_doc_sections",
+                "docs.stale_symbol_range",
+                LintSeverity::Warn,
+                claim,
+                msg,
+                raw,
+            );
+        }
+    }
+}
+
+fn check_duplicate_and_orphan_invariants(
+    conn: &Connection,
+    scope: Option<&LintScope>,
+    enforced_invariants: &BTreeSet<String>,
+    declared_invariants: &[DeclaredInvariantRef],
+    non_contract_by_id: &BTreeMap<String, Vec<DeclaredInvariantRef>>,
+    findings: &mut Vec<DocIntegrityFinding>,
+) -> Result<()> {
+    for (inv_id, refs) in non_contract_by_id {
+        if refs.len() <= 1 {
+            continue;
+        }
+        let first = &refs[0];
+        for dup in refs {
+            if scope.is_some_and(|s| !s.in_scope(&dup.doc_path)) {
+                continue;
+            }
+            let mut f = DocIntegrityFinding::new(
+                "duplicate_invariant",
+                "docs.duplicate_invariant",
+                LintSeverity::Error,
+                dup.doc_path.clone(),
+                dup.line,
+                format!(
+                    "duplicate non-contract invariant '{inv_id}' (declared {} times; first at {}:{})",
+                    refs.len(),
+                    first.doc_path,
+                    first.line
+                ),
+            );
+            f.invariant = Some(inv_id.clone());
+            findings.push(f);
         }
     }
 
-    if single_doc_path.is_none() {
-        // Duplicate non-contract INV-* declarations
-        for (inv_id, refs) in &non_contract_by_id {
-            if refs.len() <= 1 {
-                continue;
-            }
-            let first = &refs[0];
-            for dup in refs {
-                if scope.is_some_and(|s| !s.in_scope(&dup.doc_path)) {
-                    continue;
-                }
-                let mut f = DocIntegrityFinding::new(
-                    "duplicate_invariant",
-                    "docs.duplicate_invariant",
-                    LintSeverity::Error,
-                    dup.doc_path.clone(),
-                    dup.line,
-                    format!(
-                        "duplicate non-contract invariant '{inv_id}' (declared {} times; first at {}:{})",
-                        refs.len(), first.doc_path, first.line
-                    ),
-                );
-                f.invariant = Some(inv_id.clone());
-                findings.push(f);
-            }
+    if declared_invariants.is_empty() {
+        return Ok(());
+    }
+    let mut governed_hashes = HashSet::new();
+    let governs = EdgeKind::Governs.as_str();
+    let inv_kind = NodeKind::Invariant.as_str();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT e.src_hash
+         FROM edges e
+         JOIN nodes n ON n.node_hash = e.src_hash
+         WHERE e.kind = '{governs}' AND n.kind = '{inv_kind}'"
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        governed_hashes.insert(row.get::<_, i64>(0)?);
+    }
+    for inv in declared_invariants {
+        if scope.is_some_and(|s| !s.in_scope(&inv.doc_path)) {
+            continue;
         }
+        let node_hash = stable_hash64(&inv.node_id);
+        if !governed_hashes.contains(&node_hash) && !enforced_invariants.contains(&inv.id) {
+            let mut f = DocIntegrityFinding::new(
+                "orphan_invariant",
+                "docs.orphan_invariant",
+                LintSeverity::Warn,
+                inv.doc_path.clone(),
+                inv.line,
+                format!(
+                    "orphan invariant '{}' has no verified governs symbol link or acdd-rule",
+                    inv.id
+                ),
+            );
+            f.invariant = Some(inv.id.clone());
+            findings.push(f);
+        }
+    }
+    Ok(())
+}
 
-        // Orphan INV-* declarations: neither governs edge nor enforced arch_rule
-        if !declared_invariants.is_empty() {
-            let mut governed_hashes = HashSet::new();
-            let governs = EdgeKind::Governs.as_str();
-            let inv_kind = NodeKind::Invariant.as_str();
-            let mut stmt = conn.prepare(&format!(
-                "SELECT DISTINCT e.src_hash
-                 FROM edges e
-                 JOIN nodes n ON n.node_hash = e.src_hash
-                 WHERE e.kind = '{governs}' AND n.kind = '{inv_kind}'"
-            ))?;
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                governed_hashes.insert(row.get::<_, i64>(0)?);
-            }
-            for inv in &declared_invariants {
-                if scope.is_some_and(|s| !s.in_scope(&inv.doc_path)) {
-                    continue;
-                }
-                let node_hash = stable_hash64(&inv.node_id);
-                if !governed_hashes.contains(&node_hash) && !enforced_invariants.contains(&inv.id) {
-                    let mut f = DocIntegrityFinding::new(
-                        "orphan_invariant",
-                        "docs.orphan_invariant",
-                        LintSeverity::Warn,
-                        inv.doc_path.clone(),
-                        inv.line,
-                        format!("orphan invariant '{}' has no verified governs symbol link or acdd-rule", inv.id),
-                    );
-                    f.invariant = Some(inv.id.clone());
-                    findings.push(f);
-                }
-            }
-        }
+fn collect_doc_findings(
+    conn: &Connection,
+    single_doc_path: Option<&str>,
+    scope: Option<&LintScope>,
+    enforced_invariants: &BTreeSet<String>,
+    workspace_root: Option<&Path>,
+    include_broken_links: bool,
+    generation: Option<&str>,
+) -> Result<Vec<DocIntegrityFinding>> {
+    let _budget = reader::QueryBudget::new(conn);
+    let mut findings = Vec::new();
+
+    if include_broken_links {
+        collect_broken_doc_links(conn, single_doc_path, scope, &mut findings)?;
+    }
+
+    let ScannedDocClaims {
+        symbol_claims,
+        declared_invariants,
+        non_contract_by_id,
+    } = scan_doc_metadata_claims(conn, single_doc_path)?;
+
+    if single_doc_path.is_none() {
+        collect_stored_doc_errors(conn, scope, &mut findings)?;
+    }
+
+    let SymbolClaimTargets {
+        candidates_by_path,
+        indexed_code_paths,
+    } = load_symbol_claim_targets(conn, scope, &symbol_claims)?;
+
+    let resolved_root: Option<PathBuf> = workspace_root.map(Path::to_path_buf).or_else(|| {
+        read_metadata_optional(conn, MetadataKey::WorkspaceRoot)
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+    });
+    check_symbol_claims(
+        conn,
+        scope,
+        &symbol_claims,
+        &candidates_by_path,
+        &indexed_code_paths,
+        resolved_root.as_deref(),
+        generation,
+        &mut findings,
+    );
+
+    if single_doc_path.is_none() {
+        check_duplicate_and_orphan_invariants(
+            conn,
+            scope,
+            enforced_invariants,
+            &declared_invariants,
+            &non_contract_by_id,
+            &mut findings,
+        )?;
     }
 
     Ok(findings)

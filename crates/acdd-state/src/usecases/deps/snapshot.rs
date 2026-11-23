@@ -1,6 +1,6 @@
 //! Single-pass dependency snapshot preloading and workspace/archive spec scanning.
 
-use crate::git_ops::snapshot::{list_git_tree_entries_multi, resolve_git_tree_oid};
+use crate::git_ops::snapshot::{list_git_tree_entries_multi, resolve_git_tree_oid, GitTreeEntry};
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::traits::StateReader;
 use crate::types::{NodeStatus, RunRecord, RunTombstoneRecord, TerminalStatus};
@@ -390,6 +390,108 @@ fn is_admitted_git_collection_root(
     }
 }
 
+fn list_collection_git_entries(
+    ws_path: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    disk_only: bool,
+    head_oid: Option<&str>,
+) -> Result<Option<Vec<GitTreeEntry>>, StateError> {
+    let in_git = !disk_only && (head_oid.is_some() || is_git_repo(ws_path));
+    if !in_git {
+        return Ok(None);
+    }
+    let tree_oid = match head_oid {
+        Some(oid) => oid.to_owned(),
+        None => resolve_git_tree_oid(ws_path, "HEAD")?,
+    };
+    let mut prefixes = Vec::new();
+    for col in collections.values() {
+        for pat in col.patterns() {
+            let is_literal = !pat.contains(['*', '?', '{', '[']);
+            let tree_prefix = if is_literal {
+                pat.to_owned()
+            } else {
+                literal_git_prefix(pat)
+            };
+            if !prefixes.contains(&tree_prefix) {
+                prefixes.push(tree_prefix);
+            }
+        }
+    }
+    let prefix_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    Ok(Some(list_git_tree_entries_multi(ws_path, &tree_oid, &prefix_refs)?))
+}
+
+fn validate_and_collect_git_archive_entry(
+    col_name: &str,
+    col: &SpecCollectionConfig,
+    entry: &GitTreeEntry,
+    seen_paths: &mut BTreeSet<String>,
+    git_entries: &mut Vec<(String, String, String)>,
+) -> Result<(), StateError> {
+    let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
+        return Ok(());
+    };
+    let (parent_bytes, file_bytes) = (&entry.raw_path[..slash_pos], &entry.raw_path[slash_pos + 1..]);
+    if file_bytes == b"archive" {
+        if is_admitted_git_collection_root(col, parent_bytes)? && entry.mode == "120000" {
+            let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("archive directory '{raw_lossy}' in Git tree must not be a symlink"),
+            ));
+        }
+        return Ok(());
+    }
+    if !parent_bytes.ends_with(b"/archive") {
+        return Ok(());
+    }
+    let root_bytes = &parent_bytes[..parent_bytes.len() - b"/archive".len()];
+    if !is_admitted_git_collection_root(col, root_bytes)? {
+        return Ok(());
+    }
+    let Ok(file_str) = std::str::from_utf8(file_bytes) else {
+        if file_bytes.ends_with(b".md") || entry.mode == "120000" {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!(
+                    "committed Git archive entry '{}' is not valid UTF-8",
+                    String::from_utf8_lossy(&entry.raw_path)
+                ),
+            ));
+        }
+        return Ok(());
+    };
+    let raw_str = std::str::from_utf8(&entry.raw_path).map_err(|_| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "committed Git archive entry '{}' is not valid UTF-8",
+                String::from_utf8_lossy(&entry.raw_path)
+            ),
+        )
+    })?;
+    if entry.mode == "120000"
+        && (file_str.trim_end().ends_with(".md")
+            || (file_str.contains('\\') && file_str.ends_with(".md")))
+    {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("archive entry '{raw_str}' in Git tree must not be a symlink"),
+        ));
+    }
+    if file_str.contains('\\') && file_str.ends_with(".md") {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"),
+        ));
+    }
+    if col.is_direct_archive_file(raw_str) && seen_paths.insert(raw_str.to_owned()) {
+        git_entries.push((col_name.to_owned(), raw_str.to_owned(), entry.oid.clone()));
+    }
+    Ok(())
+}
+
 pub(super) fn visit_archived_specs<T>(
     ws_path: &Path,
     collections: &BTreeMap<String, SpecCollectionConfig>,
@@ -398,112 +500,20 @@ pub(super) fn visit_archived_specs<T>(
     warnings: &mut Vec<String>,
     mut visitor: impl FnMut(&str, String, &str) -> Option<T>,
 ) -> Result<Option<T>, StateError> {
-    let in_git = !disk_only && (head_oid.is_some() || is_git_repo(ws_path));
-    let all_git_entries = if in_git {
-        let tree_oid = match head_oid {
-            Some(oid) => oid.to_owned(),
-            None => resolve_git_tree_oid(ws_path, "HEAD")?,
-        };
-        let mut prefixes = Vec::new();
-        for col in collections.values() {
-            for pat in col.patterns() {
-                let is_literal = !pat.contains(['*', '?', '{', '[']);
-                let tree_prefix = if is_literal {
-                    pat.to_owned()
-                } else {
-                    literal_git_prefix(pat)
-                };
-                if !prefixes.contains(&tree_prefix) {
-                    prefixes.push(tree_prefix);
-                }
-            }
-        }
-        let prefix_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
-        Some(list_git_tree_entries_multi(ws_path, &tree_oid, &prefix_refs)?)
-    } else {
-        None
-    };
+    let all_git_entries = list_collection_git_entries(ws_path, collections, disk_only, head_oid)?;
     let mut seen_paths = BTreeSet::new();
     let mut git_entries = Vec::new();
     for (col_name, col) in collections {
         let disk_entries = probe_disk_archive_dirs(ws_path, col, warnings)?;
         if let Some(tree_entries) = all_git_entries.as_deref() {
             for entry in tree_entries {
-                let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
-                    continue;
-                };
-                let (parent_bytes, file_bytes) = (
-                    &entry.raw_path[..slash_pos],
-                    &entry.raw_path[slash_pos + 1..],
-                );
-                if file_bytes == b"archive" {
-                    if is_admitted_git_collection_root(col, parent_bytes)?
-                        && entry.mode == "120000"
-                    {
-                        let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
-                        return Err(StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!(
-                                "archive directory '{raw_lossy}' in Git tree must not be a symlink"
-                            ),
-                        ));
-                    }
-                    continue;
-                }
-                if !parent_bytes.ends_with(b"/archive") {
-                    continue;
-                }
-                let root_bytes = &parent_bytes[..parent_bytes.len() - b"/archive".len()];
-                if !is_admitted_git_collection_root(col, root_bytes)? {
-                    continue;
-                }
-                let Ok(file_str) = std::str::from_utf8(file_bytes) else {
-                    if file_bytes.ends_with(b".md") || entry.mode == "120000" {
-                        return Err(StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!(
-                                "committed Git archive entry '{}' is not valid UTF-8",
-                                String::from_utf8_lossy(&entry.raw_path)
-                            ),
-                        ));
-                    }
-                    continue;
-                };
-                let raw_str = std::str::from_utf8(&entry.raw_path).map_err(|_| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "committed Git archive entry '{}' is not valid UTF-8",
-                            String::from_utf8_lossy(&entry.raw_path)
-                        ),
-                    )
-                })?;
-                if entry.mode == "120000"
-                    && (file_str.trim_end().ends_with(".md")
-                        || (file_str.contains('\\') && file_str.ends_with(".md")))
-                {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "archive entry '{raw_str}' in Git tree must not be a symlink"
-                        ),
-                    ));
-                }
-                if file_str.contains('\\') && file_str.ends_with(".md") {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"
-                        ),
-                    ));
-                }
-                if !col.is_direct_archive_file(raw_str) {
-                    continue;
-                }
-                if !seen_paths.insert(raw_str.to_owned()) {
-                    continue;
-                }
-                git_entries.push((col_name.clone(), raw_str.to_owned(), entry.oid.clone()));
+                validate_and_collect_git_archive_entry(
+                    col_name,
+                    col,
+                    entry,
+                    &mut seen_paths,
+                    &mut git_entries,
+                )?;
             }
             continue;
         }

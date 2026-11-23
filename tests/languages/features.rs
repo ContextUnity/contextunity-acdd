@@ -190,7 +190,7 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
     );
     for fixture in FIXTURES {
         assert_eq!(
-            scanner::language(fixture.path.as_ref()),
+            acdd_index::languages::for_path(fixture.path.as_ref()).map(|p| (p.id(), false)),
             fixture.enabled.then_some((fixture.id, false)),
             "{}",
             fixture.id
@@ -221,7 +221,8 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(error.contains("disabled"), "{error}");
             assert!(error.contains(fixture.feature), "{error}");
             assert!(error.contains("compiled languages:"), "{error}");
-            let error = acdd_index::ast::parser(fixture.id, fixture.path)
+            let error = acdd_index::languages::require(fixture.id)
+                .and_then(|profile| profile.create_parser(fixture.path))
                 .map(|_| ())
                 .map_err(|error| error.to_string())
                 .unwrap_err();
@@ -509,7 +510,7 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         .unwrap(),
     };
     let impact =
-        acdd_index::db::traversal::traverse_with_path_options(&conn, &view_node_id, None, &options)
+        acdd_index::db::traversal::impact::traverse_with_path_options(&conn, &view_node_id, None, &options)
             .unwrap();
     let impacted_items = impact["nodes"]["items"].as_array().expect("impact items");
     let impacted_paths: Vec<&str> = impacted_items

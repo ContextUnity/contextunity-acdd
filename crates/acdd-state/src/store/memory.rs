@@ -28,7 +28,8 @@ impl MemoryStateBackend {
     }
 
     /// Return all non-internal SQLite table names currently present in the schema.
-    pub fn table_names(&self) -> Result<Vec<String>, StateError> {
+    #[cfg(test)]
+    pub(crate) fn table_names(&self) -> Result<Vec<String>, StateError> {
         self.inner.table_names()
     }
 

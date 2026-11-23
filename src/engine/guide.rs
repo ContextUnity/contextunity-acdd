@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 /// Canonical `0.6.0` `acdd.yaml` template.
-pub const TEMPLATE: &str = "\
+const TEMPLATE: &str = "\
 roots:
   - .
 ignore:
@@ -33,7 +33,7 @@ retain_traces: 20
 ";
 
 /// Canonical `.gitignore` block ensuring `.acdd/profile.yaml`, `profiles/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
-pub const CANONICAL_GITIGNORE_BLOCK: &str = "\
+const CANONICAL_GITIGNORE_BLOCK: &str = "\
 /.worktrees/
 !/.acdd/
 !/.acdd/profile.yaml
@@ -217,7 +217,7 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
 }
 
 /// Insert or replace the canonical `.acdd/` `.gitignore` block idempotently.
-pub fn upsert_canonical_gitignore(existing: &str) -> String {
+fn upsert_canonical_gitignore(existing: &str) -> String {
     let block_lines: Vec<&str> = CANONICAL_GITIGNORE_BLOCK.lines().collect();
     let legacy_or_managed = |line: &str| {
         let trimmed = line.trim();
@@ -266,8 +266,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "STALE_CLAIM_REVISION": "Re-claim or fetch the current `claim_revision` via `acdd status` / `acdd show`, then re-run `acdd verify`.",
                 "TASK_PROOF_UNOBSERVED": "Run `acdd verify <cursor> --test <target>` under the active claim and current tree before submitting.",
                 "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim tree or predecessor `need:` tree. Inspect drift, restore via Git or `acdd reopen <node>`, then re-verify.",
-                "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Integrate completed task branches into the run worktree (or run `acdd run`) before post-task root gates.",
-                "CONFIG_MIGRATION_REQUIRED": "Legacy 0.5.x keys found in acdd.yaml. Follow docs/runbooks/migration-0.6.md."
+                "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Integrate completed task branches into the run worktree (or run `acdd run`) before post-task root gates."
             },
             "example": {
                 "mcp": { "name": "acdd_state", "arguments": { "action": "next" } },

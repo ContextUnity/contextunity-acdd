@@ -113,10 +113,14 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                             let namespace = module.qualname.clone();
                             let mut legacy = acdd_index::models::Facts::default();
                             legacy.nodes.push(module);
-                            languages::require("vue")
-                                .unwrap()
-                                .extract_file(path, original, &namespace, &mut legacy)
-                                .unwrap();
+                            acdd_index::ast::parse::parse_file(
+                                languages::require("vue").unwrap(),
+                                path,
+                                original,
+                                &namespace,
+                                &mut legacy,
+                            )
+                            .unwrap();
                             let projected_legacy =
                                 crate::common::assertions::projected_facts(&legacy);
                             let definitions = named_bindings_for_domain(&projected_legacy, "store");
@@ -349,7 +353,7 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                             )
                             .unwrap();
                         let facts =
-                            serde_json::to_value(reader::decode_local_facts(&blob).unwrap())
+                            serde_json::to_value(crate::common::decode_local_facts(&blob).unwrap())
                                 .unwrap();
                         assert_eq!(
                             facts["nodes"]

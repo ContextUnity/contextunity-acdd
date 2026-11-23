@@ -24,7 +24,7 @@ use crate::usecases::lifecycle::{
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, resolve_commands};
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;

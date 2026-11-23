@@ -1,11 +1,17 @@
-use super::*;
-use crate::semantic::{SourcePosition, StaticString, ValueExpr, ValueFlowFacts};
-use crate::typed_facts::FlowStore;
-use manifests::projections::{Api, Slot};
-
-use manifests::semantic::{
+use super::setup_summaries::{clear_setup_summaries, has_setup_summaries, take_setup_summary};
+use super::value_flow;
+use crate::ast::syntax::{text, Syntax};
+use crate::languages::context::{FileContext, LanguageContext};
+use crate::languages::manifests;
+use crate::languages::manifests::projections::{Api, Slot};
+use crate::languages::manifests::semantic::{
     api_proven, lexical_scopes, unique_initializer, unshadowed, ProjectionPayload,
 };
+use crate::languages::types::SyntaxContext;
+use crate::models::Facts;
+use crate::semantic::{SourcePosition, StaticString, ValueExpr, ValueFlowFacts};
+use crate::typed_facts::FlowStore;
+use std::collections::HashMap;
 
 struct ProjectionCandidate {
     owner: String,
@@ -18,97 +24,6 @@ struct ProjectionCandidate {
 
 thread_local! {
     static PROJECTIONS: std::cell::RefCell<Vec<ProjectionCandidate>> = const { std::cell::RefCell::new(Vec::new()) };
-    static SETUP_SUMMARIES: std::cell::RefCell<HashMap<usize, Vec<crate::semantic::ObjectMember>>> = std::cell::RefCell::new(HashMap::new());
-}
-
-/// Transfer only the completed direct callback summary, before its enclosing call exits.
-pub(super) fn complete_setup(
-    function: Syntax<'_>,
-    returned: Syntax<'_>,
-    source: &str,
-    definitions: &hashbrown::HashMap<&str, Syntax<'_>>,
-) {
-    use crate::semantic::{ObjectMember, ObjectMemberTarget};
-    if function
-        .parent()
-        .is_none_or(|parent| parent.kind() != "arguments")
-        || returned.kind() != "object"
-        || returned.named_child_count() > 128
-    {
-        return;
-    }
-    let mut members = Vec::new();
-    let mut names = HashSet::new();
-    for item in returned.named_children(&mut returned.walk()) {
-        if item.kind() == "comment" {
-            continue;
-        }
-        let (name, value) = match item.kind() {
-            "shorthand_property_identifier" => (text(item, source), item),
-            "pair" => {
-                let (Some(key), Some(value)) = (
-                    item.child_by_field_name("key"),
-                    item.child_by_field_name("value"),
-                ) else {
-                    return;
-                };
-                if !matches!(key.kind(), "identifier" | "property_identifier") {
-                    return;
-                }
-                (text(key, source), value)
-            }
-            _ => return,
-        };
-        if !names.insert(name) {
-            return;
-        }
-        let declaration = if matches!(value.kind(), "identifier" | "shorthand_property_identifier")
-        {
-            definitions.get(text(value, source)).copied()
-        } else if matches!(value.kind(), "arrow_function" | "function_expression") {
-            Some(value)
-        } else {
-            None
-        };
-        let Some(declaration) = declaration.filter(|node| {
-            matches!(
-                node.kind(),
-                "function_declaration" | "arrow_function" | "function_expression"
-            )
-        }) else {
-            continue;
-        };
-        let declared = declaration
-            .child_by_field_name("name")
-            .map(|node| text(node, source))
-            .or_else(|| {
-                declaration
-                    .parent()
-                    .filter(|node| node.kind() == "variable_declarator")
-                    .and_then(|node| node.child_by_field_name("name"))
-                    .map(|node| text(node, source))
-            })
-            .unwrap_or(name);
-        members.push(ObjectMember {
-            name: name.to_owned(),
-            position: SourcePosition {
-                line: declaration.start_position().row + 1,
-                column: declaration.start_position().column,
-            },
-            target: if declared == name {
-                ObjectMemberTarget::SameName
-            } else {
-                ObjectMemberTarget::Alias {
-                    name: declared.to_owned(),
-                }
-            },
-        });
-    }
-    if !members.is_empty() {
-        SETUP_SUMMARIES.with(|summaries| {
-            summaries.borrow_mut().insert(function.id(), members);
-        });
-    }
 }
 
 fn static_path(node: Syntax<'_>, source: &str) -> Option<String> {
@@ -289,6 +204,52 @@ pub(super) fn configured_projection_object(
     }) && supported_object(object).is_some()
 }
 
+fn matches_projected_member_call(
+    object: Syntax<'_>,
+    call: Syntax<'_>,
+    callee: &str,
+    source: &str,
+    rules: &[manifests::syntax::SyntaxRule],
+) -> bool {
+    rules.iter().any(|rule| {
+        manifests::semantic::projection_object_matches(
+            rule,
+            |api| api_shape(api, callee),
+            |_| false,
+            |index, state_member, actions_member| {
+                let Some(options) = argument(call, &Slot::Argument { index }) else {
+                    return false;
+                };
+                if object.parent().is_some_and(|pair| {
+                    pair.kind() == "pair"
+                        && pair.parent() == Some(options)
+                        && pair
+                            .child_by_field_name("key")
+                            .is_some_and(|key| text(key, source) == actions_member)
+                }) {
+                    return true;
+                }
+                let Some(state) = direct_member(options, source, state_member) else {
+                    return false;
+                };
+                let function = if state.kind() == "method_definition" {
+                    Some(state)
+                } else {
+                    state.child_by_field_name("value")
+                };
+                let mut ancestor = object.parent();
+                for _ in 0..4 {
+                    if ancestor == function {
+                        return returned_object(object).is_some();
+                    }
+                    ancestor = ancestor.and_then(|n| n.parent());
+                }
+                false
+            },
+        )
+    })
+}
+
 pub(super) fn projected_members_object(
     object: Syntax<'_>,
     source: &str,
@@ -313,43 +274,7 @@ pub(super) fn projected_members_object(
             else {
                 return false;
             };
-            return rules.iter().any(|rule| {
-                manifests::semantic::projection_object_matches(
-                    rule,
-                    |api| api_shape(api, &callee),
-                    |_| false,
-                    |index, state_member, actions_member| {
-                        let Some(options) = argument(call, &Slot::Argument { index }) else {
-                            return false;
-                        };
-                        if object.parent().is_some_and(|pair| {
-                            pair.kind() == "pair"
-                                && pair.parent() == Some(options)
-                                && pair
-                                    .child_by_field_name("key")
-                                    .is_some_and(|key| text(key, source) == actions_member)
-                        }) {
-                            return true;
-                        }
-                        let Some(state) = direct_member(options, source, state_member) else {
-                            return false;
-                        };
-                        let function = if state.kind() == "method_definition" {
-                            Some(state)
-                        } else {
-                            state.child_by_field_name("value")
-                        };
-                        let mut ancestor = object.parent();
-                        for _ in 0..4 {
-                            if ancestor == function {
-                                return returned_object(object).is_some();
-                            }
-                            ancestor = ancestor.and_then(|n| n.parent());
-                        }
-                        false
-                    },
-                )
-            });
+            return matches_projected_member_call(object, call, &callee, source, rules);
         }
         if matches!(
             node.kind(),
@@ -389,21 +314,14 @@ pub(super) fn extract_projections(ctx: &SyntaxContext<'_, '_>, rules: &LanguageC
         })
         .as_deref()
     };
-    let setup = if kind == "call_expression"
-        && SETUP_SUMMARIES.with(|summaries| !summaries.borrow().is_empty())
-    {
+    let setup = if kind == "call_expression" && has_setup_summaries() {
         ctx.node
             .child_by_field_name("arguments")
             .map(|arguments| {
                 arguments
                     .named_children(&mut arguments.walk())
                     .filter_map(|node| {
-                        SETUP_SUMMARIES.with(|summaries| {
-                            summaries
-                                .borrow_mut()
-                                .remove(&node.id())
-                                .map(|members| (node.id(), members))
-                        })
+                        take_setup_summary(node.id()).map(|members| (node.id(), members))
                     })
                     .collect::<HashMap<_, _>>()
             })
@@ -507,7 +425,7 @@ pub(super) fn finalize_projections(
     flows: Option<&mut FlowStore>,
     file: &FileContext,
 ) {
-    SETUP_SUMMARIES.with(|summaries| summaries.borrow_mut().clear());
+    clear_setup_summaries();
     let pending = PROJECTIONS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     if pending.is_empty() {
         return;

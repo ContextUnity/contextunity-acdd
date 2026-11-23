@@ -1,6 +1,6 @@
 //! Canonical Markdown prompt rendering for `ClaimResp` across CLI, MCP, and role runners.
 
-use super::ClaimResp;
+use super::types::ClaimResp;
 use serde_json::{Map, Value};
 
 /// Render `ClaimResp` into Markdown for `RoleDef.runner` `stdin` delivery using optional `prompt_template`.
@@ -136,11 +136,7 @@ fn format_cursor_value(val: &Value) -> String {
     val.to_string()
 }
 
-fn render_contract_markdown(out: &mut String, contract: &Value) {
-    let Some(obj) = contract.as_object() else {
-        out.push_str(&format!("{contract}\n"));
-        return;
-    };
+fn render_contract_scalars(out: &mut String, obj: &serde_json::Map<String, Value>) {
     for (key, label) in [
         ("gate_id", "Gate"),
         ("proof", "Proof"),
@@ -174,6 +170,14 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
             out.push_str(&format!("- **{label}**: {joined}\n"));
         }
     }
+}
+
+fn render_contract_markdown(out: &mut String, contract: &Value) {
+    let Some(obj) = contract.as_object() else {
+        out.push_str(&format!("{contract}\n"));
+        return;
+    };
+    render_contract_scalars(out, obj);
     if let Some(arr) = obj.get("checks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
         let joined = arr
             .iter()
@@ -404,202 +408,167 @@ fn render_predecessor_proofs_markdown(out: &mut String, preds: &Map<String, Valu
     }
 }
 
+fn join_json_str_list(arr: Option<&Value>) -> String {
+    arr.and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+fn render_instructions_lens(out: &mut String, val: &Value) {
+    out.push_str("\n## Repository Instructions - MANDATORY\n\n");
+    let directive = val
+        .get("directive")
+        .and_then(Value::as_str)
+        .unwrap_or("MANDATORY: read repository rules for respective scope.");
+    out.push_str(directive);
+    out.push_str("\n\n");
+    for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+        let headings = join_json_str_list(item.get("headings"));
+        if headings.is_empty() {
+            out.push_str(&format!("- `{path}`\n"));
+        } else {
+            out.push_str(&format!("- `{path}` — headings: {headings}\n"));
+        }
+    }
+}
+
+fn render_workspace_config_lens(out: &mut String, val: &Value) {
+    out.push_str("\n## Workspace Configuration\n\n");
+    for key in ["docs_roots", "profiles_dirs", "available_profiles"] {
+        if let Some(arr) = val.get(key) {
+            out.push_str(&format!("- {key}: [{}]\n", join_json_str_list(Some(arr))));
+        }
+    }
+    if let Some(max_meta) = val.pointer("/limits/max_metadata_bytes").and_then(Value::as_u64) {
+        out.push_str(&format!("- limits.max_metadata_bytes: {max_meta}\n"));
+    }
+    if let Some(zones) = val.get("architecture_zones").and_then(Value::as_object) {
+        for (zone, globs) in zones {
+            out.push_str(&format!(
+                "- zone `{zone}`: [{}]\n",
+                join_json_str_list(Some(globs))
+            ));
+        }
+    }
+    for (name, spec) in val.get("specs").and_then(Value::as_object).into_iter().flatten() {
+        let next_ids = spec
+            .get("next_ids")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| format!("{k}={s}")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let location = spec
+            .get("default_draft_dir")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                let pats = join_json_str_list(spec.get("patterns"));
+                (!pats.is_empty()).then_some(pats)
+            })
+            .or_else(|| {
+                spec.get("path")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        let prefixes = join_json_str_list(spec.get("prefixes"));
+        let mut meta = Vec::new();
+        if !prefixes.is_empty() {
+            meta.push(format!("prefixes: [{prefixes}]"));
+        }
+        if let Some(d) = spec.get("digits").and_then(Value::as_u64) {
+            meta.push(format!("digits: {d}"));
+        }
+        if let Some(p) = spec.get("profile").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            meta.push(format!("profile: `{p}`"));
+        }
+        if !next_ids.is_empty() {
+            meta.push(format!("next: {next_ids}"));
+        }
+        if meta.is_empty() {
+            out.push_str(&format!("- spec `{name}`: `{location}`\n"));
+        } else {
+            out.push_str(&format!("- spec `{name}`: `{location}` ({})\n", meta.join(", ")));
+        }
+    }
+}
+
+fn render_docs_invariants_lens(out: &mut String, val: &Value) {
+    out.push_str("\n## Governing Invariants\n\n");
+    for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+        let loc = if line > 0 { format!("{path}:{line}") } else { path.to_owned() };
+        let enforced = if item.get("enforced").and_then(Value::as_bool) == Some(true) {
+            " [ENFORCED]"
+        } else {
+            ""
+        };
+        let rule = item.get("rule").and_then(Value::as_str).unwrap_or_default();
+        if rule.is_empty() {
+            out.push_str(&format!("- `{id}`{enforced} (`{loc}`)\n"));
+        } else {
+            out.push_str(&format!("- `{id}`{enforced} (`{loc}`): {rule}\n"));
+        }
+    }
+}
+
 fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>) {
     for (key, val) in lenses {
         match key.as_str() {
-            "docs.instructions" => {
-                out.push_str("\n## Repository Instructions - MANDATORY\n\n");
-                let directive = val
-                    .get("directive")
-                    .and_then(Value::as_str)
-                    .unwrap_or("MANDATORY: read repository rules for respective scope.");
-                out.push_str(directive);
-                out.push_str("\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                        let headings = item
-                            .get("headings")
-                            .and_then(Value::as_array)
-                            .map(|h| {
-                                h.iter()
-                                    .filter_map(Value::as_str)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            })
-                            .unwrap_or_default();
-                        if headings.is_empty() {
-                            out.push_str(&format!("- `{path}`\n"));
-                        } else {
-                            out.push_str(&format!("- `{path}` — headings: {headings}\n"));
-                        }
-                    }
-                }
-            }
+            "docs.instructions" => render_instructions_lens(out, val),
             "docs.adrs" => {
                 out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let title = item.get("title").and_then(Value::as_str).unwrap_or_default();
-                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                        out.push_str(&format!("- {title}: `{path}`\n"));
-                    }
+                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+                    let title = item.get("title").and_then(Value::as_str).unwrap_or_default();
+                    let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                    out.push_str(&format!("- {title}: `{path}`\n"));
                 }
             }
-            "docs.workspace_config" => {
-                out.push_str("\n## Workspace Configuration\n\n");
-                let join_str_list = |arr: Option<&Value>| -> String {
-                    arr.and_then(Value::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default()
-                };
-                for key in ["docs_roots", "profiles_dirs", "available_profiles"] {
-                    if let Some(arr) = val.get(key) {
-                        out.push_str(&format!("- {key}: [{}]\n", join_str_list(Some(arr))));
-                    }
-                }
-                if let Some(max_meta) = val
-                    .pointer("/limits/max_metadata_bytes")
-                    .and_then(Value::as_u64)
-                {
-                    out.push_str(&format!("- limits.max_metadata_bytes: {max_meta}\n"));
-                }
-                if let Some(zones) = val.get("architecture_zones").and_then(Value::as_object) {
-                    for (zone, globs) in zones {
-                        out.push_str(&format!(
-                            "- zone `{zone}`: [{}]\n",
-                            join_str_list(Some(globs))
-                        ));
-                    }
-                }
-                if let Some(specs) = val.get("specs").and_then(Value::as_object) {
-                    for (name, spec) in specs {
-                        let next_ids = spec
-                            .get("next_ids")
-                            .and_then(Value::as_object)
-                            .map(|m| {
-                                m.iter()
-                                    .filter_map(|(k, v)| v.as_str().map(|s| format!("{k}={s}")))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            })
-                            .unwrap_or_default();
-                        let location = spec
-                            .get("default_draft_dir")
-                            .and_then(Value::as_str)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_owned)
-                            .or_else(|| {
-                                let pats = join_str_list(spec.get("patterns"));
-                                (!pats.is_empty()).then_some(pats)
-                            })
-                            .or_else(|| {
-                                spec.get("path")
-                                    .and_then(Value::as_str)
-                                    .filter(|s| !s.is_empty())
-                                    .map(str::to_owned)
-                            })
-                            .unwrap_or_default();
-                        let prefixes = join_str_list(spec.get("prefixes"));
-                        let digits = spec.get("digits").and_then(Value::as_u64);
-                        let profile = spec
-                            .get("profile")
-                            .and_then(Value::as_str)
-                            .filter(|s| !s.is_empty());
-                        let mut meta = Vec::new();
-                        if !prefixes.is_empty() {
-                            meta.push(format!("prefixes: [{prefixes}]"));
-                        }
-                        if let Some(d) = digits {
-                            meta.push(format!("digits: {d}"));
-                        }
-                        if let Some(p) = profile {
-                            meta.push(format!("profile: `{p}`"));
-                        }
-                        if !next_ids.is_empty() {
-                            meta.push(format!("next: {next_ids}"));
-                        }
-                        if meta.is_empty() {
-                            out.push_str(&format!("- spec `{name}`: `{location}`\n"));
-                        } else {
-                            out.push_str(&format!(
-                                "- spec `{name}`: `{location}` ({})\n",
-                                meta.join(", ")
-                            ));
-                        }
-                    }
-                }
-            }
-            "docs.invariants" => {
-                out.push_str("\n## Governing Invariants\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
-                        let loc = if line > 0 {
-                            format!("{path}:{line}")
-                        } else {
-                            path.to_owned()
-                        };
-                        let enforced = if item.get("enforced").and_then(Value::as_bool) == Some(true) {
-                            " [ENFORCED]"
-                        } else {
-                            ""
-                        };
-                        let rule = item.get("rule").and_then(Value::as_str).unwrap_or_default();
-                        if rule.is_empty() {
-                            out.push_str(&format!("- `{id}`{enforced} (`{loc}`)\n"));
-                        } else {
-                            out.push_str(&format!("- `{id}`{enforced} (`{loc}`): {rule}\n"));
-                        }
-                    }
-                }
-            }
+            "docs.workspace_config" => render_workspace_config_lens(out, val),
+            "docs.invariants" => render_docs_invariants_lens(out, val),
             "code.symbols" => {
                 out.push_str("\n## Scoped Symbols\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
-                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
-                        let end = item.get("end_line").and_then(Value::as_u64).unwrap_or(line);
-                        let sig = item.get("signature").and_then(Value::as_str).unwrap_or_default();
-                        out.push_str(&format!("- `{qn}` : {line}:{end} : `{sig}`\n"));
-                    }
+                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+                    let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                    let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                    let end = item.get("end_line").and_then(Value::as_u64).unwrap_or(line);
+                    let sig = item.get("signature").and_then(Value::as_str).unwrap_or_default();
+                    out.push_str(&format!("- `{qn}` : {line}:{end} : `{sig}`\n"));
                 }
             }
             "code.tests" => {
                 out.push_str("\n## Scoped Tests\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
-                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
-                        out.push_str(&format!("- `{qn}` (`{path}:{line}`)\n"));
-                    }
+                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+                    let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                    let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                    let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                    out.push_str(&format!("- `{qn}` (`{path}:{line}`)\n"));
                 }
             }
             "code.external_callers" => {
                 out.push_str("\n## External Callers\n\n");
-                if let Some(items) = val.get("items").and_then(Value::as_array) {
-                    for item in items {
-                        let sym = item.get("symbol").and_then(Value::as_str).unwrap_or_default();
-                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                        let sig_chg = item.get("signature_changed").and_then(Value::as_bool).unwrap_or(false);
-                        let callers = item
-                            .get("external_callers")
-                            .and_then(Value::as_array)
-                            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
-                            .unwrap_or_default();
-                        let flag = if sig_chg { " [SIG CHANGED]" } else { "" };
-                        out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
-                    }
+                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+                    let sym = item.get("symbol").and_then(Value::as_str).unwrap_or_default();
+                    let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                    let sig_chg = item.get("signature_changed").and_then(Value::as_bool).unwrap_or(false);
+                    let callers = join_json_str_list(item.get("external_callers"));
+                    let flag = if sig_chg { " [SIG CHANGED]" } else { "" };
+                    out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
                 }
             }
             other => {

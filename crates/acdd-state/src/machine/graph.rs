@@ -12,7 +12,7 @@ use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, TaskRef};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use crate::profile::when::WhenExpr;
+pub(crate) use crate::profile::when::WhenExpr;
 
 /// Normalize a task's tags (`["default"]` when empty) and validate every tag against `profile.tags`.
 pub fn effective_task_tags(
@@ -524,7 +524,7 @@ pub(crate) fn append_task_nodes(
 }
 
 /// Validate task list uniqueness, tags, and acyclicity of intra-run `depends_on` edges.
-pub fn validate_tasks_spec(
+pub(crate) fn validate_tasks_spec(
     tasks: &[MachineTaskSpec],
     run_id: &acdd_core::ids::RunId,
     allowed_tags: &BTreeSet<String>,
@@ -738,7 +738,7 @@ pub fn container_scope(snapshot: &RunGraphSnapshot, node: &GateNodeRecord) -> Ve
 }
 
 /// Return the minimum `seq_order` of any `tasks#<idx>` container block, if present.
-pub fn first_tasks_block_seq(snapshot: &RunGraphSnapshot) -> Option<u32> {
+pub(crate) fn first_tasks_block_seq(snapshot: &RunGraphSnapshot) -> Option<u32> {
     snapshot
         .nodes
         .iter()
@@ -748,7 +748,7 @@ pub fn first_tasks_block_seq(snapshot: &RunGraphSnapshot) -> Option<u32> {
 }
 
 /// Return the maximum `seq_order` of any `tasks#<idx>` container or task/task_gate node.
-pub fn last_tasks_region_seq(snapshot: &RunGraphSnapshot) -> Option<u32> {
+pub(crate) fn last_tasks_region_seq(snapshot: &RunGraphSnapshot) -> Option<u32> {
     snapshot
         .nodes
         .iter()

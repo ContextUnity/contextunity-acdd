@@ -1,5 +1,7 @@
-use super::super::open_code_db_readonly;
-use super::{
+use super::super::common::{
+    combine_file_hashes, open_code_db_readonly, CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT,
+};
+use super::common::{
     collect_scoped_worktree_files, contains_identifier, is_callable_kind, load_live_facts,
     node_matches_symbol, CodeDomainProvider,
 };
@@ -164,7 +166,7 @@ impl CodeDomainProvider {
             );
         }
 
-        let live_digest = super::super::combine_file_hashes(&file_hashes);
+        let live_digest = combine_file_hashes(&file_hashes);
         Ok(PreparedSeamState {
             conn,
             index_gen,
@@ -319,214 +321,257 @@ impl CodeDomainProvider {
             live_nodes.iter().map(|n| (n.id.clone(), *n)).collect();
 
         // 4. BFS up to MAX_SEAM_HOPS (8) from test start nodes over live linked graph + read-only code_db.
-        #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
-        struct BfsKey {
-            path: String,
-            qualname: String,
+        bfs_seam_reachability(
+            req,
+            conn.as_ref(),
+            &live_graph,
+            &live_nodes_by_id,
+            &live_facts,
+            &file_hashes,
+            &test_starts,
+            target_symbol.as_deref(),
+            &salt,
+            &index_gen,
+        )
+    }
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct BfsKey {
+    path: String,
+    qualname: String,
+}
+
+struct BfsItem {
+    key: BfsKey,
+    node_id: String,
+    depth: usize,
+    trace: Vec<String>,
+}
+
+fn enqueue_seam_node(
+    dst_path: &str,
+    dst_qualname: &str,
+    next_node_id: String,
+    depth: usize,
+    trace: &[String],
+    visited: &mut BTreeSet<BfsKey>,
+    queue: &mut VecDeque<BfsItem>,
+) {
+    let next_key = BfsKey {
+        path: dst_path.to_owned(),
+        qualname: dst_qualname.to_owned(),
+    };
+    if visited.insert(next_key.clone()) {
+        let mut next_trace = trace.to_vec();
+        next_trace.push(format!("{dst_path}::{dst_qualname}"));
+        queue.push_back(BfsItem {
+            key: next_key,
+            node_id: next_node_id,
+            depth: depth + 1,
+            trace: next_trace,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_db_seam_edges(
+    req: &DomainCheckReq,
+    conn: Option<&Connection>,
+    cur_key: &BfsKey,
+    depth: usize,
+    trace: &[String],
+    live_facts: &BTreeMap<String, Facts>,
+    file_hashes: &BTreeMap<String, String>,
+    target_symbol: Option<&str>,
+    salt: &str,
+    db_matches_cache: &mut BTreeMap<String, bool>,
+    discovered_edges: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<BfsKey>,
+    queue: &mut VecDeque<BfsItem>,
+) -> Result<Option<DomainCheckOutcome>> {
+    let Some(conn) = conn else {
+        return Ok(None);
+    };
+    if !path_matches_code_db(&req.worktree, conn, &cur_key.path, file_hashes, db_matches_cache)
+        || !checked_child(&req.worktree, Path::new(&cur_key.path)).is_ok_and(|p| p.is_file())
+    {
+        return Ok(None);
+    }
+    for db_edge in query_db_seam_edges(conn, &cur_key.path, Some(&cur_key.qualname))? {
+        if !checked_child(&req.worktree, Path::new(&db_edge.dst_path)).is_ok_and(|p| p.is_file()) {
+            continue;
         }
-        struct BfsItem {
-            key: BfsKey,
-            node_id: String,
-            depth: usize,
-            trace: Vec<String>,
-        }
-
-        let mut queue: VecDeque<BfsItem> = VecDeque::new();
-        let mut visited: BTreeSet<BfsKey> = BTreeSet::new();
-        let mut discovered_edges: BTreeSet<String> = BTreeSet::new();
-        let mut db_matches_cache: BTreeMap<String, bool> = BTreeMap::new();
-
-        for start in &test_starts {
-            let key = BfsKey {
-                path: start.path.clone(),
-                qualname: start.qualname.clone(),
-            };
-            if visited.insert(key.clone()) {
-                let label = format!("{}::{}", start.path, start.qualname);
-                queue.push_back(BfsItem {
-                    key,
-                    node_id: start.id.clone(),
-                    depth: 0,
-                    trace: vec![label],
-                });
-            }
-        }
-
-        while let Some(BfsItem {
-            key: cur_key,
-            node_id: cur_id,
-            depth,
-            trace,
-        }) = queue.pop_front()
-        {
-            if depth >= MAX_SEAM_HOPS {
-                continue;
-            }
-
-            // (a) Follow live linked graph edges from current node.
-            for edge in live_graph
-                .edges
-                .iter()
-                .filter(|e| e.src == cur_id && SEAM_EDGE_KINDS.iter().any(|k| k.as_str() == e.kind))
-            {
-                let Some(dst) = live_nodes_by_id.get(&edge.dst) else {
+        let next_node_id = match live_facts.get(&db_edge.dst_path) {
+            Some(dst_live) => {
+                let Some(n) = dst_live
+                    .nodes
+                    .iter()
+                    .find(|n| n.qualname == db_edge.dst_qualname && n.kind == db_edge.dst_kind)
+                    .or_else(|| dst_live.nodes.iter().find(|n| n.qualname == db_edge.dst_qualname))
+                else {
                     continue;
                 };
-                let edge_desc = format!(
-                    "{}::{} -{}-> {}::{}",
-                    cur_key.path, cur_key.qualname, edge.kind, dst.path, dst.qualname
-                );
-                discovered_edges.insert(edge_desc);
-
-                let bare_module_import = edge.kind == EdgeKind::Imports.as_str()
-                    && dst.kind == NodeKind::Module.as_str()
-                    && target_symbol.is_none();
-                if !dst.is_test
-                    && !bare_module_import
-                    && policy.is_scope_admitted(&dst.path, &req.admitted_scope)
-                    && target_symbol
-                        .as_deref()
-                        .is_none_or(|sym| node_matches_symbol(dst, sym))
-                {
-                    return Ok(passed_seam_hop(
-                        &dst.path,
-                        &dst.qualname,
-                        depth,
-                        &trace,
-                        &salt,
-                    ));
-                }
-
-                let next_key = BfsKey {
-                    path: dst.path.clone(),
-                    qualname: dst.qualname.clone(),
-                };
-                if visited.insert(next_key.clone()) {
-                    let mut next_trace = trace.clone();
-                    next_trace.push(format!("{}::{}", dst.path, dst.qualname));
-                    queue.push_back(BfsItem {
-                        key: next_key,
-                        node_id: dst.id.clone(),
-                        depth: depth + 1,
-                        trace: next_trace,
-                    });
-                }
+                n.id.clone()
             }
-
-            // (b) Traverse read-only `code_db` edges only for files whose on-disk digest matches `code_db`.
-            if let Some(ref conn) = conn {
-                if path_matches_code_db(
-                    &req.worktree,
-                    conn,
-                    &cur_key.path,
-                    &file_hashes,
-                    &mut db_matches_cache,
-                ) && checked_child(&req.worktree, Path::new(&cur_key.path))
-                    .is_ok_and(|p| p.is_file())
-                {
-                    for db_edge in
-                        query_db_seam_edges(conn, &cur_key.path, Some(&cur_key.qualname))?
-                    {
-                        if !checked_child(&req.worktree, Path::new(&db_edge.dst_path))
-                            .is_ok_and(|p| p.is_file())
-                        {
-                            continue;
-                        }
-                        let next_node_id = match live_facts.get(&db_edge.dst_path) {
-                            Some(dst_live) => match dst_live
-                                .nodes
-                                .iter()
-                                .find(|n| {
-                                    n.qualname == db_edge.dst_qualname
-                                        && n.kind == db_edge.dst_kind
-                                })
-                                .or_else(|| {
-                                    dst_live
-                                        .nodes
-                                        .iter()
-                                        .find(|n| n.qualname == db_edge.dst_qualname)
-                                }) {
-                                Some(n) => n.id.clone(),
-                                None => continue,
-                            },
-                            None => db_edge.dst_id,
-                        };
-
-                        discovered_edges.insert(format!(
-                            "{}::{} -{}-> {}::{}",
-                            cur_key.path,
-                            cur_key.qualname,
-                            db_edge.kind,
-                            db_edge.dst_path,
-                            db_edge.dst_qualname
-                        ));
-
-                        let bare_module_import = db_edge.kind == EdgeKind::Imports.as_str()
-                            && db_edge.dst_kind == NodeKind::Module.as_str()
-                            && target_symbol.is_none();
-                        if !db_edge.dst_is_test
-                            && !bare_module_import
-                            && policy.is_scope_admitted(&db_edge.dst_path, &req.admitted_scope)
-                            && target_symbol.as_deref().is_none_or(|sym| {
-                                let normalized = sym.replace("::", ".");
-                                db_edge.dst_name == sym
-                                    || db_edge.dst_qualname == normalized
-                                    || db_edge.dst_qualname.ends_with(&format!(".{normalized}"))
-                            })
-                        {
-                            return Ok(passed_seam_hop(
-                                &db_edge.dst_path,
-                                &db_edge.dst_qualname,
-                                depth,
-                                &trace,
-                                &salt,
-                            ));
-                        }
-
-                        let next_key = BfsKey {
-                            path: db_edge.dst_path.clone(),
-                            qualname: db_edge.dst_qualname.clone(),
-                        };
-                        if visited.insert(next_key.clone()) {
-                            let mut next_trace = trace.clone();
-                            next_trace
-                                .push(format!("{}::{}", db_edge.dst_path, db_edge.dst_qualname));
-                            queue.push_back(BfsItem {
-                                key: next_key,
-                                node_id: next_node_id,
-                                depth: depth + 1,
-                                trace: next_trace,
-                            });
-                        }
-                    }
-                }
-            }
+            None => db_edge.dst_id,
+        };
+        discovered_edges.insert(format!(
+            "{}::{} -{}-> {}::{}",
+            cur_key.path, cur_key.qualname, db_edge.kind, db_edge.dst_path, db_edge.dst_qualname
+        ));
+        let bare_module_import = db_edge.kind == EdgeKind::Imports.as_str()
+            && db_edge.dst_kind == NodeKind::Module.as_str()
+            && target_symbol.is_none();
+        if !db_edge.dst_is_test
+            && !bare_module_import
+            && req.path_policy.is_scope_admitted(&db_edge.dst_path, &req.admitted_scope)
+            && target_symbol.is_none_or(|sym| {
+                let normalized = sym.replace("::", ".");
+                db_edge.dst_name == sym
+                    || db_edge.dst_qualname == normalized
+                    || db_edge.dst_qualname.ends_with(&format!(".{normalized}"))
+            })
+        {
+            return Ok(Some(passed_seam_hop(
+                &db_edge.dst_path,
+                &db_edge.dst_qualname,
+                depth,
+                trace,
+                salt,
+            )));
         }
-
-        let mut diagnostics = vec![
-            format!("admitted_scope: {:?}", req.admitted_scope),
-            format!("test_target: {:?}", req.test_target),
-            format!("max_hops: {MAX_SEAM_HOPS}"),
-            format!("index_generation: {index_gen}"),
-        ];
-        if !discovered_edges.is_empty() {
-            diagnostics.push(format!(
-                "discovered_edges: {}",
-                discovered_edges
-                    .into_iter()
-                    .take(super::super::CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ));
-        }
-
-        Ok(DomainCheckOutcome::Failed {
-            summary: format!(
-                "code.seam found no call/import path (<= {MAX_SEAM_HOPS} hops) from test target to admitted_scope"
-            ),
-            diagnostics,
-        })
+        enqueue_seam_node(
+            &db_edge.dst_path,
+            &db_edge.dst_qualname,
+            next_node_id,
+            depth,
+            trace,
+            visited,
+            queue,
+        );
     }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bfs_seam_reachability(
+    req: &DomainCheckReq,
+    conn: Option<&Connection>,
+    live_graph: &acdd_index::models::Graph,
+    live_nodes_by_id: &BTreeMap<String, &Node>,
+    live_facts: &BTreeMap<String, Facts>,
+    file_hashes: &BTreeMap<String, String>,
+    test_starts: &[Node],
+    target_symbol: Option<&str>,
+    salt: &str,
+    index_gen: &str,
+) -> Result<DomainCheckOutcome> {
+    let mut queue: VecDeque<BfsItem> = VecDeque::new();
+    let mut visited: BTreeSet<BfsKey> = BTreeSet::new();
+    let mut discovered_edges: BTreeSet<String> = BTreeSet::new();
+    let mut db_matches_cache: BTreeMap<String, bool> = BTreeMap::new();
+
+    for start in test_starts {
+        let key = BfsKey {
+            path: start.path.clone(),
+            qualname: start.qualname.clone(),
+        };
+        if visited.insert(key.clone()) {
+            let label = format!("{}::{}", start.path, start.qualname);
+            queue.push_back(BfsItem {
+                key,
+                node_id: start.id.clone(),
+                depth: 0,
+                trace: vec![label],
+            });
+        }
+    }
+
+    while let Some(BfsItem {
+        key: cur_key,
+        node_id: cur_id,
+        depth,
+        trace,
+    }) = queue.pop_front()
+    {
+        if depth >= MAX_SEAM_HOPS {
+            continue;
+        }
+        for edge in live_graph
+            .edges
+            .iter()
+            .filter(|e| e.src == cur_id && SEAM_EDGE_KINDS.iter().any(|k| k.as_str() == e.kind))
+        {
+            let Some(dst) = live_nodes_by_id.get(&edge.dst) else {
+                continue;
+            };
+            discovered_edges.insert(format!(
+                "{}::{} -{}-> {}::{}",
+                cur_key.path, cur_key.qualname, edge.kind, dst.path, dst.qualname
+            ));
+            let bare_module_import = edge.kind == EdgeKind::Imports.as_str()
+                && dst.kind == NodeKind::Module.as_str()
+                && target_symbol.is_none();
+            if !dst.is_test
+                && !bare_module_import
+                && req.path_policy.is_scope_admitted(&dst.path, &req.admitted_scope)
+                && target_symbol.is_none_or(|sym| node_matches_symbol(dst, sym))
+            {
+                return Ok(passed_seam_hop(&dst.path, &dst.qualname, depth, &trace, salt));
+            }
+            enqueue_seam_node(
+                &dst.path,
+                &dst.qualname,
+                dst.id.clone(),
+                depth,
+                &trace,
+                &mut visited,
+                &mut queue,
+            );
+        }
+        if let Some(outcome) = expand_db_seam_edges(
+            req,
+            conn,
+            &cur_key,
+            depth,
+            &trace,
+            live_facts,
+            file_hashes,
+            target_symbol,
+            salt,
+            &mut db_matches_cache,
+            &mut discovered_edges,
+            &mut visited,
+            &mut queue,
+        )? {
+            return Ok(outcome);
+        }
+    }
+
+    let mut diagnostics = vec![
+        format!("admitted_scope: {:?}", req.admitted_scope),
+        format!("test_target: {:?}", req.test_target),
+        format!("max_hops: {MAX_SEAM_HOPS}"),
+        format!("index_generation: {index_gen}"),
+    ];
+    if !discovered_edges.is_empty() {
+        diagnostics.push(format!(
+            "discovered_edges: {}",
+            discovered_edges
+                .into_iter()
+                .take(CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+
+    Ok(DomainCheckOutcome::Failed {
+        summary: format!(
+            "code.seam found no call/import path (<= {MAX_SEAM_HOPS} hops) from test target to admitted_scope"
+        ),
+        diagnostics,
+    })
 }
 
 struct DbSeamEdge {
@@ -842,6 +887,41 @@ fn resolve_test_start_nodes(
     Ok(matched)
 }
 
+fn append_db_test_starts_for_file(
+    worktree: &Path,
+    conn: &Connection,
+    rel: &str,
+    page: &QueryOptions,
+    live_facts: &mut BTreeMap<String, Facts>,
+    file_hashes: &mut BTreeMap<String, String>,
+    starts: &mut Vec<Node>,
+) {
+    let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", page) else {
+        return;
+    };
+    let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) else {
+        return;
+    };
+    for item in arr {
+        let (Some(p), Some(q)) = (item["path"].as_str(), item["qualname"].as_str()) else {
+            continue;
+        };
+        if !checked_child(worktree, Path::new(p)).is_ok_and(|abs| abs.is_file()) {
+            continue;
+        }
+        load_live_facts(worktree, p, live_facts, file_hashes);
+        if let Some(facts) = live_facts.get(p) {
+            starts.extend(
+                facts
+                    .nodes
+                    .iter()
+                    .filter(|n| n.is_test && n.qualname == q)
+                    .cloned(),
+            );
+        }
+    }
+}
+
 fn discover_fallback_test_starts(
     worktree: &Path,
     scoped_files: &[String],
@@ -849,49 +929,34 @@ fn discover_fallback_test_starts(
     live_facts: &mut BTreeMap<String, Facts>,
     file_hashes: &mut BTreeMap<String, String>,
 ) -> Vec<Node> {
-    let mut starts = Vec::new();
-    for facts in live_facts.values() {
-        for n in &facts.nodes {
-            if n.is_test && is_callable_kind(&n.kind) {
-                starts.push(n.clone());
-            }
-        }
-    }
+    let mut starts: Vec<Node> = live_facts
+        .values()
+        .flat_map(|facts| facts.nodes.iter())
+        .filter(|n| n.is_test && is_callable_kind(&n.kind))
+        .cloned()
+        .collect();
     if !starts.is_empty() {
         return starts;
     }
-
-    if let Some(conn) = conn {
-        let page = QueryOptions {
-            limit: 100,
-            offset: 0,
-            detail: Detail::Compact,
-            generation: None,
-        };
-        for rel in scoped_files {
-            if let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", &page) {
-                if let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) {
-                    for item in arr {
-                        if let (Some(p), Some(q)) =
-                            (item["path"].as_str(), item["qualname"].as_str())
-                        {
-                            if !checked_child(worktree, Path::new(p)).is_ok_and(|abs| abs.is_file())
-                            {
-                                continue;
-                            }
-                            load_live_facts(worktree, p, live_facts, file_hashes);
-                            if let Some(facts) = live_facts.get(p) {
-                                for n in &facts.nodes {
-                                    if n.is_test && n.qualname == q {
-                                        starts.push(n.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    let Some(conn) = conn else {
+        return starts;
+    };
+    let page = QueryOptions {
+        limit: 100,
+        offset: 0,
+        detail: Detail::Compact,
+        generation: None,
+    };
+    for rel in scoped_files {
+        append_db_test_starts_for_file(
+            worktree,
+            conn,
+            rel,
+            &page,
+            live_facts,
+            file_hashes,
+            &mut starts,
+        );
     }
     starts
 }

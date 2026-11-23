@@ -1,11 +1,16 @@
 //! Finite Python projections from existing syntax events and completed lexical proof.
-use super::*;
+use crate::ast::relations;
+use crate::ast::syntax::{field, text, Syntax};
+use crate::languages::context::{LanguageContext, PreparedRules};
+use crate::languages::manifests;
+use crate::languages::manifests::projections::{Api, NamedBindingForm, Slot};
+use crate::languages::manifests::syntax::SyntaxOperation;
+use crate::languages::routes::RouteContext;
+use crate::languages::types::SyntaxContext;
+use crate::models::Facts;
 use crate::semantic::{NamedBindingFact, SourcePosition, StaticString, SymbolOperand};
-use crate::ast::routes::RouteContext;
-use manifests::projections::{Api, NamedBindingForm, Slot};
-use manifests::semantic::PreparedRules;
-use manifests::syntax::SyntaxOperation;
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 struct Constructor {

@@ -1,6 +1,6 @@
 //! Topological wave layering, Tarjan SCC cycle extraction, unblocks counting, and scope-overlap analysis.
 
-use super::{SpecInfo, SpecWavesOutput};
+use super::types::{SpecInfo, SpecWavesOutput};
 use crate::usecases::dto::{RoadmapSpecEntry, RoadmapTaskEntry};
 use acdd_core::path_policy::scopes_overlap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

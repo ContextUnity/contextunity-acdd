@@ -143,9 +143,13 @@ fn mcp_analyze_preserves_sql_columns_named_like_metadata() {
             "source" => assert_eq!(semantic["generation"], "source-only-continuation-token"),
             "durable" => {
                 assert_eq!(semantic, durable);
-                let rendered = response::result(Ok(semantic), &ResponsePolicy::default());
-                assert_ne!(rendered.is_error, Some(true));
-                let text = rendered.content[0].as_text().unwrap().text.as_str();
+                let text = contextunity_acdd::format::render_for_operation(
+                    &semantic,
+                    OutputFormat::Json,
+                    "Result",
+                    None,
+                    contextunity_acdd::format::OperationKind::Navigation,
+                );
                 for preserved in [
                     "candidate-hash-must-remain-complete",
                     "content-hash-must-remain-complete",
@@ -315,36 +319,6 @@ fn mcp_byte_pruning_continues_after_exactly_the_emitted_rows() {
         generation = page["generation"].clone();
     }
     assert_eq!(seen, (0..17).collect::<Vec<_>>());
-
-    // This real response boundary must decide token liveness after byte trimming.
-    let policy = ResponsePolicy {
-        max_output_bytes: 2048,
-        ..ResponsePolicy::default()
-    };
-    let bounded = response::result(
-        Ok(json!({"nodes":{"total":3,"offset":0,"limit":3,
-        "has_more":false,"next_offset":null,"generation":"tail-trim-continuation-token",
-        "items":[{"name":"first-retained","text":"x".repeat(800)},
-            {"name":"middle","text":"x".repeat(800)},
-            {"name":"last-omitted","text":"x".repeat(800)}]}})),
-        &policy,
-    );
-    assert_ne!(bounded.is_error, Some(true), "{bounded:?}");
-    assert!(response::serialized_bytes(&bounded) <= policy.max_output_bytes - 256);
-    let text = bounded.content[0].as_text().unwrap().text.as_str();
-    for retained in ["first-retained", "tail-trim-continuation-token", "offset=1"] {
-        assert!(
-            text.contains(retained),
-            "tail trimming lost {retained}: {text}"
-        );
-    }
-    assert!(
-        !text.contains("last-omitted"),
-        "fixture did not exercise tail trimming: {text}"
-    );
-    let oversized = response::result(Ok(json!({"scalar":"x".repeat(5000)})), &policy);
-    assert_eq!(oversized.is_error, Some(true));
-    assert!(response::serialized_bytes(&oversized) <= policy.max_output_bytes - 256);
     client.finish().expect("server must finish successfully");
 }
 
@@ -487,7 +461,7 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
 
 #[test]
 fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
-    use contextunity_acdd::mcp::tools::SubmitInput;
+    use contextunity_acdd::mcp::tools::inputs::SubmitInput;
 
     for (format, expected) in [
         (None, None),

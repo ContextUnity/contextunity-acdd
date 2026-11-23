@@ -132,14 +132,16 @@ pub fn try_acquire_exclusive(path: &Path) -> Result<Option<FileLockGuard>> {
 }
 
 /// Acquires a blocking shared lock on `path` using `std::fs::File::lock_shared`.
-pub fn acquire_shared(path: &Path) -> Result<FileLockGuard> {
+#[cfg(test)]
+fn acquire_shared(path: &Path) -> Result<FileLockGuard> {
     let file = open_confined_lock_file(path)?;
     file.lock_shared()?;
     Ok(FileLockGuard { file })
 }
 
 /// Attempts to acquire a shared lock on `path` without blocking.
-pub fn try_acquire_shared(path: &Path) -> Result<Option<FileLockGuard>> {
+#[cfg(test)]
+fn try_acquire_shared(path: &Path) -> Result<Option<FileLockGuard>> {
     let file = open_confined_lock_file(path)?;
     match file.try_lock_shared() {
         Ok(()) => Ok(Some(FileLockGuard { file })),

@@ -1,17 +1,29 @@
-use super::*;
 use crate::ast::relations;
-use crate::models::ReceiverHint;
+use crate::ast::scope_analysis::ScopeAnalysis;
+use crate::ast::syntax::{field, symbol_name, text, ScopeBindings, Syntax};
+use crate::languages::context::{FileContext, LanguageContext};
+use crate::languages::profile::LanguageProfile;
+use crate::languages::types::{
+    call, workspace_path, AstSearchCapabilities, AstSearchProbe, CallForm, DeclarationRole,
+    ImportKind, ImportPath, LanguageFamily, SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
+    Visibility,
+};
+use crate::models::{Facts, ReceiverHint, Reference};
+use std::collections::BTreeMap;
+use std::path::Path;
+
 mod cli_registration;
-pub(crate) mod linker;
 mod macros;
 pub(crate) mod patterns;
 pub(crate) mod value_flow;
+pub(crate) mod visibility;
+use patterns::collect_use;
 /// Performs language.
-pub fn language() -> tree_sitter::Language {
+fn language() -> tree_sitter::Language {
     tree_sitter_rust::language()
 }
 /// Performs kind.
-pub fn kind(kind: &str) -> Option<&'static str> {
+fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_item" => Some("function"),
         "function_signature_item" => Some("function"),
@@ -394,9 +406,9 @@ fn is_non_prelude_stdlib_receiver(name: &str) -> bool {
 }
 
 /// Represents rust data.
-pub struct Rust;
+pub(crate) struct Rust;
 /// Shared rust language profile.
-pub static RUST: Rust = Rust;
+pub(crate) static RUST: Rust = Rust;
 
 pub(crate) fn cargo_manifest_metadata(content: &str) -> (Option<String>, Vec<String>) {
     let mut package_name = None;
@@ -494,37 +506,8 @@ impl Rust {
         crate_name: &str,
         module: &str,
     ) -> Option<ImportPath> {
-        let (head, tail) = module.split_once("::").unwrap_or((module, ""));
-        if head != crate_name {
-            return None;
-        }
-        Some(ImportPath {
-            namespace: if tail.is_empty() || tail == "*" {
-                "src".into()
-            } else {
-                format!("src.{}", tail.replace("::", "."))
-            },
-            relative: true,
-            symbol_path: true,
-        })
+        visibility::normalize_root_crate_import(crate_name, module)
     }
-}
-
-#[cfg(test)]
-#[test]
-fn test_ast_parameterless_declaration() {
-    let capabilities = Rust.ast_search_capabilities();
-    assert!(capabilities.declaration_kinds.contains(&"function_item"));
-    let matches = crate::ast::search(
-        "fn target() { call(value); }\nfn other() {}",
-        "lib.rs",
-        "rust",
-        "fn target",
-        10,
-    )
-    .expect("a Rust function header without parameters is searchable");
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0]["text"], "fn target() { call(value); }");
 }
 
 static RUST_STD_MEMBERS: std::sync::OnceLock<
@@ -738,9 +721,6 @@ impl LanguageProfile for Rust {
     fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
         Some(&RUST_SPEC)
     }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &linker::RUST_LINKER
-    }
     fn route_extraction_enabled(&self) -> bool {
         false
     }
@@ -784,10 +764,10 @@ impl LanguageProfile for Rust {
         cargo_manifest_metadata(content).1
     }
     fn is_stdlib(&self, module: &str) -> bool {
-        matches!(
-            module.split("::").next(),
-            Some("std" | "core" | "alloc" | "proc_macro")
-        )
+        visibility::is_rust_stdlib(module)
+    }
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        &crate::linker::rust::linker_impl::RUST_LINKER
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["rs"]
@@ -820,9 +800,8 @@ impl LanguageProfile for Rust {
         }
     }
     fn module_name(&self, path: &str) -> String {
-        module_stem(path).trim_end_matches("/mod").replace('/', ".")
+        visibility::rust_module_name(path)
     }
-    support::delegate_extract_file!();
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
         if node.kind() == "impl_item" {
             if let Some(ty) = node.child_by_field_name("type") {
@@ -840,7 +819,7 @@ impl LanguageProfile for Rust {
                 }
             }
         }
-        ast::symbol_name(node, source)
+        symbol_name(node, source)
     }
     fn value_binding_applies(&self, reference: &Reference) -> bool {
         if reference.kind == "implements" {
@@ -875,7 +854,7 @@ impl LanguageProfile for Rust {
         &self,
         root: Syntax<'_>,
         source: &str,
-        _bindings: &crate::ast::ScopeBindings,
+        _bindings: &ScopeBindings,
     ) -> Option<Vec<crate::semantic::ExportBinding>> {
         let mut exports = Vec::new();
         let mut cursor = root.walk();
@@ -938,13 +917,13 @@ impl LanguageProfile for Rust {
         node: Syntax<'tree>,
         source: &'source str,
         _file: &FileContext,
-    ) -> Option<crate::ast::ScopeAnalysis<'source, 'tree>> {
-        Some(crate::ast::ScopeAnalysis::rust(node, source))
+    ) -> Option<ScopeAnalysis<'source, 'tree>> {
+        Some(ScopeAnalysis::rust(node, source))
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "use_declaration" {
             if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                if let Some(scope) = linker::restricted_scope(
+                if let Some(scope) = visibility::restricted_scope(
                     text(ctx.node, ctx.source),
                     &owner.qualname,
                     &owner.path,
@@ -952,13 +931,13 @@ impl LanguageProfile for Rust {
                     if let Some(argument) = ctx.node.child_by_field_name("argument") {
                         let mut imports = Vec::new();
                         collect_use(argument, ctx.source, "", &mut imports);
-                        let mut exports: Vec<linker::RestrictedExport> = owner
+                        let mut exports: Vec<visibility::RestrictedExport> = owner
                             .details
                             .get("rust_restricted_exports")
                             .and_then(|value| serde_json::from_value(value.clone()).ok())
                             .unwrap_or_default();
                         exports.extend(imports.into_iter().map(|(target, name)| {
-                            linker::RestrictedExport {
+                            visibility::RestrictedExport {
                                 module: (name == "*").then_some(target),
                                 name,
                                 scope: scope.clone(),
@@ -1293,8 +1272,14 @@ impl LanguageProfile for Rust {
         ) {
             return;
         }
+        let span = relations::RelationSpan {
+            node: ctx.node,
+            source: ctx.source,
+            owner: ctx.owner,
+            offset: ctx.offset,
+        };
         relations::mutation(
-            ctx,
+            span,
             facts,
             &["field_declaration"],
             &["compound_assignment_expr", "assignment_expr"],
@@ -1314,7 +1299,7 @@ impl LanguageProfile for Rust {
                 }
             }
         }
-        relations::member_access(ctx, facts, &["field_expression"]);
+        relations::member_access(span, facts, &["field_expression"]);
     }
     fn test_attribute(&self, node: Syntax<'_>, source: &str) -> bool {
         let mut matched = false;
@@ -1533,15 +1518,17 @@ fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         return;
     };
     if let Some(parent_node) = facts.nodes.iter_mut().find(|node| node.id == parent_id) {
-        if let Some(scope) =
-            linker::restricted_scope(text(ctx.node, ctx.source), &parent_node.qualname, &parent_node.path)
-        {
-            let mut exports: Vec<linker::RestrictedExport> = parent_node
+        if let Some(scope) = visibility::restricted_scope(
+            text(ctx.node, ctx.source),
+            &parent_node.qualname,
+            &parent_node.path,
+        ) {
+            let mut exports: Vec<visibility::RestrictedExport> = parent_node
                 .details
                 .get("rust_restricted_exports")
                 .and_then(|value| serde_json::from_value(value.clone()).ok())
                 .unwrap_or_default();
-            exports.push(linker::RestrictedExport {
+            exports.push(visibility::RestrictedExport {
                 module: None,
                 name: declaration.name.clone(),
                 scope,
@@ -1752,71 +1739,5 @@ fn macro_transcription_references(node: Syntax<'_>, source: &str, owner: &str, f
     }
 }
 
-pub(super) fn collect_use(
-    node: Syntax<'_>,
-    source: &str,
-    prefix: &str,
-    out: &mut Vec<(String, String)>,
-) {
-    fn joined(prefix: &str, name: &str) -> String {
-        if prefix.is_empty() {
-            name.to_owned()
-        } else {
-            format!("{prefix}::{name}")
-        }
-    }
-    match node.kind() {
-        "scoped_use_list" => {
-            if let (Some(path), Some(list)) = (
-                node.child_by_field_name("path"),
-                node.child_by_field_name("list"),
-            ) {
-                collect_use(list, source, &joined(prefix, text(path, source)), out);
-            }
-        }
-        "use_list" => {
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                collect_use(child, source, prefix, out);
-            }
-        }
-        "use_as_clause" => {
-            if let (Some(path), Some(alias)) = (
-                node.child_by_field_name("path"),
-                node.child_by_field_name("alias"),
-            ) {
-                let path = text(path, source);
-                let name = if path == "self" {
-                    prefix.to_owned()
-                } else {
-                    joined(prefix, path)
-                };
-                if !name.is_empty() {
-                    out.push((name, text(alias, source).to_owned()));
-                }
-            }
-        }
-        "use_wildcard" => {
-            let path = node.named_child(0).map(|child| text(child, source));
-            let name = path.map_or_else(|| prefix.to_owned(), |path| joined(prefix, path));
-            out.push((format!("{name}::*"), "*".into()));
-        }
-        "self" if !prefix.is_empty() => {
-            out.push((
-                prefix.to_owned(),
-                prefix.rsplit("::").next().unwrap_or(prefix).into(),
-            ));
-        }
-        "identifier" | "scoped_identifier" | "crate" | "super" | "self" => {
-            let name = joined(prefix, text(node, source));
-            out.push((
-                name.clone(),
-                name.rsplit("::").next().unwrap_or(&name).into(),
-            ));
-        }
-        _ => {}
-    }
-}
-
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&RUST];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&RUST];

@@ -339,7 +339,7 @@ pub struct ArchiveRenderInput {
 }
 
 /// Compute lowercase hex SHA-256 digest of raw specification bytes.
-pub fn compute_spec_digest(raw: &str) -> String {
+pub(crate) fn compute_spec_digest(raw: &str) -> String {
     acdd_core::format::sha256_hex(raw.as_bytes())
 }
 
@@ -511,26 +511,6 @@ pub fn parse_spec(raw: &str) -> Result<SpecDocument, StateError> {
         body: body.to_owned(),
         digest,
     })
-}
-
-/// Materialize an ephemeral `--goal` specification document (`spec.md`) for `.acdd/run/<run_id>/spec.md`.
-pub fn materialize_ephemeral_goal_spec(
-    run_id: &RunId,
-    run_name: &RunName,
-    goal: &str,
-    profile_id: &str,
-    scope: &[String],
-    tags: &[String],
-) -> Result<String, StateError> {
-    materialize_ephemeral_goal_spec_with_options(
-        run_id,
-        run_name,
-        goal,
-        profile_id,
-        scope,
-        tags,
-        true,
-    )
 }
 
 /// Materialize an ephemeral `--goal` specification document with optional `### task: goal` emission.
@@ -774,9 +754,58 @@ struct LocatedTaskBlock<'a> {
     yaml_byte_end: usize,
 }
 
+fn scan_task_yaml_block(
+    lines: &[(usize, &str)],
+    idx: &mut usize,
+    task_ref: &TaskRef,
+) -> Result<(usize, usize), StateError> {
+    let mut found_yaml: Option<(usize, usize)> = None;
+    let mut fence_open_byte: Option<usize> = None;
+
+    while *idx < lines.len() {
+        let (sub_start, sub_line) = lines[*idx];
+        let sub_trimmed = sub_line.trim_end_matches(&['\r', '\n'][..]).trim();
+        if fence_open_byte.is_none() && sub_trimmed.starts_with("### task:") {
+            break;
+        }
+        if let Some(yaml_start) = fence_open_byte {
+            if sub_trimmed == "```" {
+                found_yaml = Some((yaml_start, sub_start));
+                *idx += 1;
+                break;
+            }
+        } else if sub_trimmed == "```yaml" || sub_trimmed == "```yml" {
+            fence_open_byte = Some(sub_start + sub_line.len());
+        } else if sub_trimmed.starts_with("```") {
+            *idx += 1;
+            while *idx < lines.len() {
+                let (_, inner) = lines[*idx];
+                *idx += 1;
+                if inner.trim().starts_with("```") {
+                    break;
+                }
+            }
+            continue;
+        }
+        *idx += 1;
+    }
+
+    if fence_open_byte.is_some() && found_yaml.is_none() {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("unclosed ```yaml block under '### task: {task_ref}'"),
+        ));
+    }
+    found_yaml.ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("task '### task: {task_ref}' is missing fenced ```yaml block"),
+        )
+    })
+}
+
 fn locate_task_blocks(body: &str) -> Result<Vec<LocatedTaskBlock<'_>>, StateError> {
     let mut blocks = Vec::new();
-    let mut pos = 0usize;
     let mut in_outer_fence = false;
 
     let lines: Vec<(usize, &str)> = body
@@ -790,81 +819,36 @@ fn locate_task_blocks(body: &str) -> Result<Vec<LocatedTaskBlock<'_>>, StateErro
 
     let mut idx = 0usize;
     while idx < lines.len() {
-        let (line_start, line) = lines[idx];
+        let (_, line) = lines[idx];
         let trimmed = line.trim_end_matches(&['\r', '\n'][..]).trim();
         if trimmed.starts_with("```") {
             in_outer_fence = !in_outer_fence;
             idx += 1;
             continue;
         }
-        if !in_outer_fence {
-            if let Some(raw_ref) = trimmed.strip_prefix("### task:") {
-                let ref_str = raw_ref.trim();
-                let task_ref = TaskRef::new(ref_str).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("invalid task heading '### task: {ref_str}': {err}"),
-                    )
-                })?;
-
-                // Scan forward until the next `### task:` heading or EOF to find ```yaml ... ```
-                idx += 1;
-                let mut found_yaml: Option<(usize, usize)> = None;
-                let mut fence_open_byte: Option<usize> = None;
-
-                while idx < lines.len() {
-                    let (sub_start, sub_line) = lines[idx];
-                    let sub_trimmed = sub_line.trim_end_matches(&['\r', '\n'][..]).trim();
-                    if fence_open_byte.is_none() && sub_trimmed.starts_with("### task:") {
-                        break;
-                    }
-                    if let Some(yaml_start) = fence_open_byte {
-                        if sub_trimmed == "```" {
-                            found_yaml = Some((yaml_start, sub_start));
-                            idx += 1;
-                            break;
-                        }
-                    } else if sub_trimmed == "```yaml" || sub_trimmed == "```yml" {
-                        fence_open_byte = Some(sub_start + sub_line.len());
-                    } else if sub_trimmed.starts_with("```") {
-                        // Skip non-yaml fenced block before yaml block if any, or close it
-                        idx += 1;
-                        while idx < lines.len() {
-                            let (_, inner) = lines[idx];
-                            idx += 1;
-                            if inner.trim().starts_with("```") {
-                                break;
-                            }
-                        }
-                        continue;
-                    }
-                    idx += 1;
-                }
-
-                if fence_open_byte.is_some() && found_yaml.is_none() {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("unclosed ```yaml block under '### task: {task_ref}'"),
-                    ));
-                }
-                let Some((yaml_start, yaml_end)) = found_yaml else {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("task '### task: {task_ref}' is missing fenced ```yaml block"),
-                    ));
-                };
-                blocks.push(LocatedTaskBlock {
-                    heading_ref: task_ref,
-                    yaml_slice: &body[yaml_start..yaml_end],
-                    yaml_byte_start: yaml_start,
-                    yaml_byte_end: yaml_end,
-                });
-                pos = yaml_end;
-                continue;
-            }
+        if in_outer_fence {
+            idx += 1;
+            continue;
         }
-        let _ = (line_start, pos);
+        let Some(raw_ref) = trimmed.strip_prefix("### task:") else {
+            idx += 1;
+            continue;
+        };
+        let ref_str = raw_ref.trim();
+        let task_ref = TaskRef::new(ref_str).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("invalid task heading '### task: {ref_str}': {err}"),
+            )
+        })?;
         idx += 1;
+        let (yaml_start, yaml_end) = scan_task_yaml_block(&lines, &mut idx, &task_ref)?;
+        blocks.push(LocatedTaskBlock {
+            heading_ref: task_ref,
+            yaml_slice: &body[yaml_start..yaml_end],
+            yaml_byte_start: yaml_start,
+            yaml_byte_end: yaml_end,
+        });
     }
 
     Ok(blocks)
@@ -1004,13 +988,14 @@ status: planned
     fn ephemeral_goal_and_archive_renderer_roundtrip() {
         let run_id = RunId::new("run-001").unwrap();
         let run_name = RunName::new("fix-auth").unwrap();
-        let ephemeral = materialize_ephemeral_goal_spec(
+        let ephemeral = materialize_ephemeral_goal_spec_with_options(
             &run_id,
             &run_name,
             "Fix token expiry bug",
             "code",
             &["src/auth.rs".to_owned()],
             &[],
+            true,
         )
         .unwrap();
 

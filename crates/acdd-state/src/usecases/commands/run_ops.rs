@@ -16,15 +16,16 @@ use crate::types::{
 use crate::usecases::dto::{
     ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, SyncResp,
 };
+use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
-    cleanup_tombstone, collect_external_satisfied_deps, effective_spec_collections,
+    cleanup_tombstone, effective_spec_collections,
     ensure_state_enabled, is_managed_run_branch, load_active_run_graph, next_spec_id_for_prefix,
     primary_workspace_root, read_confined_utf8, resolve_active_run, resolve_source_checkout,
     to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
 };
-use crate::usecases::queries::read_spec_readonly;
-use crate::usecases::StateEngineConfig;
+use crate::context::slices::read_spec_readonly;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{Adapter, ACDD_DIR};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::errors::{ErrorCode, StateError};
@@ -32,7 +33,7 @@ use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
 use std::path::Path;
 
-use super::{build_machine_spec_input, sanitize_slug};
+use super::common::{build_machine_spec_input, sanitize_slug};
 
 pub(crate) fn handle_draft_dyn(
     config: &StateEngineConfig,

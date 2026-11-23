@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // --- Exit 2: Usage / Config / Schema ---
-    /// Legacy `0.5.x` configuration keys require migration (see `docs/runbooks/migration-0.6.md`).
+    /// State database schema is uninitialized or incompatible and requires migration or recreation.
     ConfigMigrationRequired,
     /// Profile YAML, schema definition, or typed payload failed validation.
     #[serde(rename = "ACDD_PROFILE_SCHEMA_INVALID")]

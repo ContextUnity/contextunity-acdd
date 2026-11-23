@@ -1,9 +1,14 @@
-use super::super::manifests::{
-    named_kind, ActivationCondition, ActivationMatch, FrameworkManifest, RuleCoverageCode,
-    RuleCoverageDiagnostic, RuleDomain, RuleIRHandle, RuleIdentity,
+use super::registry::{
+    package_identity, read_confined_manifest_string, DependencyRegistry, LanguageContextKey,
+    ManifestSnapshots,
 };
-use super::super::{profiles, LanguageFamily};
-use super::{package_identity, DependencyRegistry, LanguageContextKey, ManifestSnapshots};
+use crate::languages::context::{LanguageContext, RuleIRHandle};
+use crate::languages::manifests::{
+    ActivationCondition, ActivationMatch, FrameworkManifest, RuleIdentity,
+};
+use crate::languages::types::{
+    compiled_language_families, family_for_language, workspace_path, LanguageFamily,
+};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,11 +22,11 @@ use std::{
 struct DirectoryContextEntry {
     registry_digest: String,
     dir: String,
-    context: Arc<super::super::LanguageContext>,
+    context: Arc<LanguageContext>,
 }
 
 thread_local! {
-    static LEGACY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<(String, LanguageContextKey), Arc<super::super::LanguageContext>>> =
+    static LEGACY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<(String, LanguageContextKey), Arc<LanguageContext>>> =
         RefCell::new(HashMap::new());
     static DIRECTORY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<u64, DirectoryContextEntry>> =
         RefCell::new(HashMap::new());
@@ -179,7 +184,7 @@ pub(super) fn load_framework_manifests(
                 root.display()
             )
         })?;
-        let content = super::read_confined_manifest_string(root, relative_path)
+        let content = read_confined_manifest_string(root, relative_path)
             .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         record_framework_manifest(
             workspace,
@@ -237,7 +242,7 @@ impl DependencyRegistry {
     }
 
     /// Reuses merged extraction rules for files with the same workspace and package scope.
-    pub fn language_context_for_path(&self, path: &str) -> Arc<super::super::LanguageContext> {
+    pub fn language_context_for_path(&self, path: &str) -> Arc<LanguageContext> {
         let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&(self.digest.as_str(), dir), &mut hasher);
@@ -262,10 +267,7 @@ impl DependencyRegistry {
                 context
             } else {
                 let mut context = self.build_language_context(path);
-                if !self
-                    .rule_ir
-                    .contains_key(super::super::workspace_path(path).0)
-                {
+                if !self.rule_ir.contains_key(workspace_path(path).0) {
                     context.rule_ir = RuleIRHandle::prepare(&context);
                 }
                 let context = Arc::new(context);
@@ -298,8 +300,8 @@ impl DependencyRegistry {
     }
 
     fn language_context_key(&self, path: &str) -> LanguageContextKey {
-        let (workspace, _) = super::super::workspace_path(path);
-        let families: BTreeSet<_> = profiles().map(|profile| profile.family().0).collect();
+        let (workspace, _) = workspace_path(path);
+        let families: BTreeSet<_> = compiled_language_families().collect();
         let scopes = families
             .into_iter()
             .map(|family| {
@@ -312,11 +314,11 @@ impl DependencyRegistry {
         (workspace.to_owned(), scopes)
     }
 
-    fn build_language_context(&self, path: &str) -> super::super::LanguageContext {
-        let (workspace, _) = super::super::workspace_path(path);
+    fn build_language_context(&self, path: &str) -> LanguageContext {
+        let (workspace, _) = workspace_path(path);
         let names = self.effective_manifest_names(workspace);
 
-        let mut context = super::super::LanguageContext::default();
+        let mut context = LanguageContext::default();
         for name in names {
             let Some(manifest) = self.effective_framework_manifest(path, name) else {
                 continue;
@@ -382,7 +384,7 @@ impl DependencyRegistry {
             }
 
             for rule in &manifest.semantic_rules {
-                let family = super::super::by_id(rule.language()).map(|profile| profile.family());
+                let family = family_for_language(rule.language());
                 let scope = family
                     .and_then(|family| self.nearest_manifest_scope_for_path(family, path))
                     .unwrap_or(workspace);
@@ -403,7 +405,7 @@ impl DependencyRegistry {
                 );
                 context
                     .semantic_rules
-                    .push(super::super::semantic::EffectiveSemanticRule {
+                    .push(crate::languages::semantic::EffectiveSemanticRule {
                         pack: manifest.name.clone(),
                         rule: rule.clone(),
                         scope: scope.to_owned(),
@@ -454,125 +456,13 @@ impl DependencyRegistry {
         }
     }
 
-    /// Reports removed eligible bundled identities for the complete current file inventory.
-    pub fn framework_rule_diagnostics<'a>(
-        &self,
-        inventory: impl IntoIterator<Item = (&'a str, &'a str)>,
-    ) -> Vec<RuleCoverageDiagnostic> {
-        let mut removed_by_group =
-            BTreeMap::<(String, String, String, RuleDomain), BTreeSet<RuleIdentity>>::new();
-        for (path, language) in inventory {
-            let Some(profile) = super::super::by_id(language) else {
-                continue;
-            };
-            if !profile.has_grammar() {
-                continue;
-            }
-            let grammar = profile.grammar(path);
-            let (workspace, _) = super::super::workspace_path(path);
-            let call = ["call", "call_expression"]
-                .into_iter()
-                .any(|name| named_kind(&grammar, name).is_some());
-            let has_type_decl = [
-                "class_definition",
-                "class_declaration",
-                "struct_item",
-                "enum_item",
-                "trait_item",
-                "interface_declaration",
-                "type_spec",
-            ]
-            .into_iter()
-            .any(|name| named_kind(&grammar, name).is_some());
-            let routes = profile.route_extraction_enabled();
-            for ((scope, framework), effective) in &self.framework_manifests {
-                if scope != workspace {
-                    continue;
-                }
-                let Some(bundled) = self.standard_framework_manifests.get(framework) else {
-                    continue;
-                };
-                for (domain, eligible) in [
-                    (RuleDomain::ClassHierarchyReceivers, has_type_decl),
-                    (RuleDomain::DiCalls, call),
-                    (RuleDomain::RouteCalls, routes && call),
-                    (
-                        RuleDomain::RouteDecorators,
-                        routes && call && named_kind(&grammar, "decorator").is_some(),
-                    ),
-                    (
-                        RuleDomain::SemanticRules,
-                        call && bundled
-                            .semantic_rules
-                            .iter()
-                            .any(|rule| rule.language() == language),
-                    ),
-                ] {
-                    if !eligible {
-                        continue;
-                    }
-                    let baseline = bundled.rule_identities(domain);
-                    let current = effective.rule_identities(domain);
-                    let removed = baseline.difference(&current).filter(|identity| {
-                        if let RuleIdentity::Semantic { id } = identity {
-                            bundled.semantic_rules.iter().any(|rule| {
-                                &rule.id == id
-                                    && rule.language() == language
-                                    && ActivationCondition::matches_workspace_slice(
-                                        &rule.activation,
-                                        |name| {
-                                            super::super::by_id(rule.language()).is_some_and(
-                                                |profile| {
-                                                    self.declares_for_path(
-                                                        profile.family(),
-                                                        path,
-                                                        name,
-                                                    )
-                                                },
-                                            )
-                                        },
-                                    ) != ActivationMatch::Inactive
-                            })
-                        } else {
-                            true
-                        }
-                    });
-                    for identity in removed {
-                        removed_by_group
-                            .entry((
-                                framework.clone(),
-                                workspace.to_owned(),
-                                language.to_owned(),
-                                domain,
-                            ))
-                            .or_default()
-                            .insert(identity.clone());
-                    }
-                }
-            }
-        }
-        removed_by_group
-            .into_iter()
-            .map(|((framework, workspace, language, rule_domain), removed)| {
-                RuleCoverageDiagnostic {
-                    framework,
-                    workspace,
-                    language,
-                    rule_domain,
-                    code: RuleCoverageCode::EligibleRuleIdentityRemoved,
-                    removed_eligible_rule_identities: removed.into_iter().collect(),
-                }
-            })
-            .collect()
-    }
-
     /// Selects one surviving finite hierarchy identity, optionally within its originating pack.
     pub(crate) fn class_hierarchy_authority_for_path(
         &self,
         path: &str,
         base: &str,
         pack: Option<&str>,
-    ) -> Option<(&str, &super::super::manifests::ClassHierarchyReceiverRule)> {
+    ) -> Option<(&str, &crate::languages::manifests::ClassHierarchyReceiverRule)> {
         let mut candidates = self.hierarchy_rows_for_path(path).filter(|(name, rule)| {
             pack.is_none_or(|pack| pack == *name)
                 && rule.bases.iter().any(|candidate| candidate == base)
@@ -586,10 +476,10 @@ impl DependencyRegistry {
         self.hierarchy_rows_for_path(path)
             .flat_map(|(pack, row)| {
                 row.returns.values().filter_map(move |policy| match policy {
-                    super::super::manifests::ReturnPolicy::Receiver { base } => {
+                    crate::languages::manifests::ReturnPolicy::Receiver { base } => {
                         Some((pack, base.as_str()))
                     }
-                    super::super::manifests::ReturnPolicy::SelfReceiver => None,
+                    crate::languages::manifests::ReturnPolicy::SelfReceiver => None,
                 })
             })
             .collect()
@@ -601,13 +491,13 @@ impl DependencyRegistry {
     ) -> impl Iterator<
         Item = (
             &'s str,
-            &'s super::super::manifests::ClassHierarchyReceiverRule,
+            &'s crate::languages::manifests::ClassHierarchyReceiverRule,
         ),
     > + 'p
     where
         's: 'p,
     {
-        let (workspace, _) = super::super::workspace_path(path);
+        let (workspace, _) = workspace_path(path);
         let names = self.effective_manifest_names(workspace);
         names
             .into_iter()
@@ -657,7 +547,7 @@ impl DependencyRegistry {
             }
             let mut receiver_type_limits = BTreeMap::<&str, (usize, usize)>::new();
             for rule in &context.syntax_rules {
-                let super::super::manifests::syntax::SyntaxOperation::ReceiverType { receiver } =
+                let crate::languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } =
                     &rule.operation
                 else {
                     continue;
@@ -683,7 +573,7 @@ impl DependencyRegistry {
     }
 
     pub(super) fn prepare_scoped_policies(&mut self) -> Result<()> {
-        use super::super::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        use crate::languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
         for manifest in self
             .framework_manifests
             .values()
@@ -730,7 +620,7 @@ impl DependencyRegistry {
                         for path in context.request_owners.iter().chain(&context.route_owners) {
                             anyhow::ensure!(
                                 self.workspaces
-                                    .contains(super::super::workspace_path(path).0),
+                                    .contains(workspace_path(path).0),
                                 "unknown or disabled HTTP context workspace: {path}"
                             );
                         }
@@ -745,16 +635,16 @@ impl DependencyRegistry {
     /// Resolves only explicit, already collected project/package identities.
     pub(crate) fn named_provider_scope(
         &self,
-        provider: &super::super::manifests::projections::NamedProviderScope,
+        provider: &crate::languages::manifests::projections::NamedProviderScope,
     ) -> Option<&str> {
         self.named_provider_scopes.get(provider).map(String::as_str)
     }
 
     /// Existing scoped policy relation used by both linking and selective hydration.
     pub fn named_scope_admits(&self, consumer: &str, provider: &str, domain: &str) -> bool {
-        use super::super::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
-        let provider_scope = crate::linker::named_binding_scope(provider, self);
-        if crate::linker::named_binding_scope(consumer, self) == provider_scope {
+        use crate::languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        let provider_scope = named_binding_scope(provider, self);
+        if named_binding_scope(consumer, self) == provider_scope {
             return true;
         }
         self.language_context_for_path(consumer)
@@ -802,7 +692,7 @@ impl DependencyRegistry {
         path: &str,
         pack: &str,
     ) -> Option<&FrameworkManifest> {
-        let workspace = super::super::workspace_path(path).0;
+        let workspace = workspace_path(path).0;
         self.framework_manifests
             .get(&(workspace.to_owned(), pack.to_owned()))
             .or_else(|| self.standard_framework_manifests.get(pack))
@@ -818,7 +708,7 @@ impl DependencyRegistry {
         framework: &str,
         package: &str,
     ) -> Option<&FrameworkManifest> {
-        let (workspace, _) = super::super::workspace_path(path);
+        let (workspace, _) = workspace_path(path);
         if self
             .framework_manifests
             .contains_key(&(workspace.to_owned(), framework.to_owned()))
@@ -829,4 +719,66 @@ impl DependencyRegistry {
             None
         }
     }
+}
+
+pub(crate) fn named_binding_project<'a>(
+    path: &'a str,
+    dependencies: &'a DependencyRegistry,
+) -> &'a str {
+    [LanguageFamily("python"), LanguageFamily("javascript")]
+        .into_iter()
+        .filter_map(|family| dependencies.nearest_manifest_scope_for_path(family, path))
+        .max_by_key(|scope| scope.len())
+        .unwrap_or(workspace_path(path).0)
+}
+
+/// Computes named binding scope for a file path.
+pub fn named_binding_scope(path: &str, dependencies: &DependencyRegistry) -> String {
+    named_binding_project(path, dependencies).to_owned()
+}
+
+pub(crate) fn component_environment_config_path(
+    rule: &crate::languages::manifests::syntax::SyntaxRule,
+    path: &str,
+    scope: &str,
+    package: &str,
+    config_file: &str,
+    dependencies: &DependencyRegistry,
+) -> Option<String> {
+    rule.activation_family()
+        .is_some_and(|family| dependencies.declares_for_path(family, path, package))
+        .then(|| crate::languages::manifests::semantic::scoped_relative_path(scope, config_file))
+}
+
+pub(crate) fn component_export_matches_provider(
+    provider_path: &str,
+    scope: &str,
+    directory: &str,
+    extension: &str,
+    dependencies: &DependencyRegistry,
+) -> bool {
+    dependencies.nearest_manifest_scope_for_path(LanguageFamily("javascript"), provider_path)
+        == Some(scope)
+        && crate::languages::manifests::semantic::relative_under_directory(
+            provider_path,
+            scope,
+            directory,
+        )
+        .is_some_and(|tail| !tail.contains('/') && tail.ends_with(extension))
+}
+
+pub(crate) fn active_component_module_additions<'a>(
+    configuration: &'a crate::languages::manifests::semantic::ComponentConfigurationFact,
+    modules: &'a BTreeMap<String, crate::languages::manifests::syntax::ComponentModule>,
+    rule: &'a crate::languages::manifests::syntax::SyntaxRule,
+    path: &'a str,
+    dependencies: &'a DependencyRegistry,
+) -> impl Iterator<Item = (&'a str, &'a crate::languages::manifests::syntax::ComponentModule)> {
+    configuration.modules.iter().filter_map(move |name| {
+        let addition = modules.get(name).filter(|addition| {
+            rule.activation_family()
+                .is_some_and(|family| dependencies.declares_for_path(family, path, &addition.package))
+        })?;
+        Some((name.as_str(), addition))
+    })
 }

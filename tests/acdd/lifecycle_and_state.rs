@@ -5,7 +5,7 @@ use acdd_core::ids::WorkerId;
 use acdd_state::harness::RunHarness;
 use acdd_state::types::SubmitAction;
 use acdd_state::usecases::dto::{ClaimReq, DraftReq, StartReq, SubmitReq, SyncReq};
-use acdd_state::usecases::{execute_on, StateCommand, StateCommandOutput};
+use acdd_state::usecases::{StateCommand, StateCommandOutput};
 use std::fs;
 
 const TWO_GATE_PROFILE: &str = r#"version: 2
@@ -185,23 +185,21 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
 
 #[test]
 fn cli_snapshot_round_trip() {
-    use clap::Parser;
-    use contextunity_acdd::cli::Cli;
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");
     ws.write("acdd.yaml", "profile: full\nmodules: {state: true}\n");
     ws.write(".acdd/profile.yaml", "version: 2\ngit: {isolation: in_place, worktrees: manual}\nroles: {worker: {mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - {id: build, role: worker, proof: none}\n");
     ws.write("docs/milestones/010-snapshot.md", "---\nid: m-snapshot\ntitle: Snapshot\ndoc_type: milestone\nstatus: active\n---\n# Snapshot\n\n### task: snap-task\n```yaml\ntask_ref: snap-task\ntarget: Snapshot\nscope: [src/lib.rs]\n```\n");
-    let runtime = tokio::runtime::Runtime::new().unwrap();
     let r1 = "pub fn base() -> i32 { 1 }\n";
     let r2 = "pub fn base() -> i32 { 2 }\n";
     let refs = || git_cmd(ws.root(), &["for-each-ref", "refs/acdd/snapshots"]);
     let run = |args: &[&str]| -> Result<String, String> {
-        let root = ws.root().to_str().unwrap();
-        let cli = Cli::try_parse_from(["acdd", "--root", root].into_iter().chain(args.iter().copied())).unwrap();
-        let mut output = Vec::new();
-        runtime.block_on(cli.run_with_writer(&mut output)).map_err(|err| err.to_string())?;
-        Ok(String::from_utf8(output).unwrap())
+        let out = crate::common::cli::run_cli(&ws, args);
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
     };
     run(&[
         "start",
@@ -212,14 +210,16 @@ fn cli_snapshot_round_trip() {
     ])
     .expect("start");
     ws.write("src/lib.rs", r1);
-    // One direct dispatch stays in this test so code.seam can reach the CLI owner.
-    let root = ws.root().to_str().unwrap();
-    let saved = Cli::try_parse_from([
-        "acdd", "--root", root, "snapshot", "save", "snap-task", "--rev", "1", "--run", "snapshot-run",
-    ]).unwrap();
-    let mut saved_out = Vec::new();
-    runtime.block_on(Cli::run_with_writer(saved, &mut saved_out)).expect("save r1");
-    let saved_r1 = String::from_utf8(saved_out).unwrap();
+    let saved_r1 = run(&[
+        "snapshot",
+        "save",
+        "snap-task",
+        "--rev",
+        "1",
+        "--run",
+        "snapshot-run",
+    ])
+    .expect("save r1");
     assert!(saved_r1.contains("/snap-task/r1"), "{saved_r1}");
     ws.write("src/lib.rs", r2);
     let saved_r2 = run(&["snapshot", "save", "snap-task", "--rev", "2", "--run", "snapshot-run"]).expect("save r2");
@@ -265,10 +265,14 @@ fn cli_snapshot_round_trip() {
     bare.write("src/lib.rs", "pub fn base() -> i32 { 9 }\n");
     let bare_root = bare.root().to_str().unwrap();
     let run_at = |root: &str, args: &[&str]| -> Result<String, String> {
-        let cli = Cli::try_parse_from(["acdd", "--root", root].into_iter().chain(args.iter().copied())).unwrap();
-        let mut output = Vec::new();
-        runtime.block_on(cli.run_with_writer(&mut output)).map_err(|err| err.to_string())?;
-        Ok(String::from_utf8(output).unwrap())
+        let mut argv = vec![std::ffi::OsString::from("--root"), std::ffi::OsString::from(root)];
+        argv.extend(args.iter().map(std::ffi::OsString::from));
+        let out = crate::common::cli::run_cli_args(&argv);
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
     };
     let saved = run_at(bare_root, &["snapshot", "save", "note", "--rev", "1", "--worktree", bare_root]).expect("adhoc save");
     assert!(saved.contains("_adhoc/note/r1"), "{saved}");
@@ -341,7 +345,7 @@ fn cli_snapshot_round_trip() {
     assert!(run_at(bare_root, &["snapshot", "--delete", "--older-than", "1д", "--worktree", bare_root]).is_err());
     assert!(run_at(bare_root, &["snapshot", "--delete", "--older-than", "9999999999w", "--worktree", bare_root]).is_err());
     let parsed:
- contextunity_acdd::mcp::tools::StateInput = serde_json::from_value(serde_json::json!({
+ contextunity_acdd::mcp::tools::inputs::StateInput = serde_json::from_value(serde_json::json!({
         "action": "snapshot", "delete": true, "name": "note", "older_than": "2d", "snapshot_action": "list",
         "worktree": bare_root
     })).unwrap();
@@ -372,9 +376,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     let harness = RunHarness::in_memory().unwrap();
 
     // 1. Draft numbering scans existing active/archive files + DB tombstones.
-    let StateCommandOutput::Draft(drafted) = execute_on(
+    let StateCommandOutput::Draft(drafted) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Draft(DraftReq {
             collection: "milestones".to_owned(),
@@ -394,9 +397,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     super::support::git_cmd(ws.root(), &["commit", "-m", "commit drafted spec"]);
 
     // 2. Start from migrated branching_deps.md fixture + pre_task root gate progression.
-    let StateCommandOutput::Start(started) = execute_on(
+    let StateCommandOutput::Start(started) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/001-branching.md".to_owned()),
@@ -414,9 +416,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     let w1 = WorkerId::new("worker-1").unwrap();
 
     // Attempting to claim a task gate while pre-task root gate `pre_gate` is pending emits next-gate hint.
-    let pre_err = execute_on(
+    let pre_err = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Claim(ClaimReq {
             run: Some(rid.clone()),
@@ -437,9 +438,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     assert_eq!(pre_err.hint.as_deref(), Some("claim 'pre_gate' next"));
 
     // Claim & pass pre_gate -> unlocks task `first`.
-    execute_on(
+    harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Claim(ClaimReq {
             run: Some(rid.clone()),
@@ -452,9 +452,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
         }),
     )
     .unwrap();
-    let StateCommandOutput::Submit(pre_sub) = execute_on(
+    let StateCommandOutput::Submit(pre_sub) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Submit(Box::new(SubmitReq {
             run: Some(rid.clone()),
@@ -484,9 +483,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
         "{orig_spec}\n### task: extra\n```yaml\ntask_ref: extra\ntarget: Extra\nscope: [src/extra.rs]\n```\n"
     );
     ws.write("docs/milestones/001-branching.md", &added_task_spec);
-    let sync_stale = execute_on(
+    let sync_stale = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Sync(SyncReq {
             run: Some(rid.clone()),
@@ -498,9 +496,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
 
     // 4. `spec_planning` `--goal` run without explicit scope derives `docs/**` + specs + profiles scope
     //    (excluding `src/**`) and injects `docs.workspace_config` on `synthesize` claim.
-    execute_on(
+    harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Clear(acdd_state::usecases::ClearReq {
             run: Some(rid),
@@ -514,9 +511,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     );
     ws.write("ARCHITECTURE.md", "# Architecture\n");
     ws.write("ROADMAP.md", "# Roadmap\n");
-    let StateCommandOutput::Start(sp_started) = execute_on(
+    let StateCommandOutput::Start(sp_started) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Start(StartReq {
             goal: Some("Plan new milestone".to_owned()),
@@ -529,9 +525,8 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     else {
         panic!("expected StartResp");
     };
-    let StateCommandOutput::Claim(sp_claim) = execute_on(
+    let StateCommandOutput::Claim(sp_claim) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Claim(ClaimReq {
             run: Some(sp_started.run.run_id.to_string()),

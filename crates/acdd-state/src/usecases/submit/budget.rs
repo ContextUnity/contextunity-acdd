@@ -8,7 +8,7 @@ use crate::types::{
     GateNodeRecord,
     RunGraphSnapshot,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TreeOid;
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -38,7 +38,7 @@ pub(super) fn enforce_blueprint_max_net_loc(
         return Ok(());
     };
     let Some(max_net_loc) =
-        crate::usecases::queries::extract_pre_task_slice(snapshot, task_ref.as_str())
+        crate::context::slices::extract_pre_task_slice(snapshot, task_ref.as_str())
             .and_then(|slice| slice.get("max_net_loc").and_then(serde_json::Value::as_i64))
     else {
         return Ok(());

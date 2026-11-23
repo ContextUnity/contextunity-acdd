@@ -1,11 +1,15 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support;
+use super::types::ImportPath;
+use crate::ast::syntax::{text, ScopeBindings};
+use tree_sitter::Node as Syntax;
 
 /// Represents toml data.
-pub struct Toml;
+struct Toml;
 /// Shared toml language profile.
-pub static TOML: Toml = Toml;
+static TOML: Toml = Toml;
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&TOML];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&TOML];
 
 impl LanguageProfile for Toml {
     fn id(&self) -> &'static str {
@@ -45,8 +49,7 @@ impl LanguageProfile for Toml {
     fn pattern_wrapper(&self, kind: &str) -> bool {
         kind == "document"
     }
-    fn bindings(&self, _node: Syntax<'_>, _source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, _node: Syntax<'_>, _source: &str) -> ScopeBindings {
         support::empty_bindings()
     }
-    support::delegate_extract_file!();
 }

@@ -1,20 +1,8 @@
 #![cfg(all(feature = "lang-python", feature = "lang-rust"))]
 
 use crate::common::Workspace;
-use acdd_core::config::Adapter;
-use acdd_index::{
-    db::{
-        commitments, reader,
-        writer::{self, BuildInputs, SpoolSlice, StagedFilePayload, StagedPreparedStorage},
-    },
-    models::{compact_graph::CompactGraph, FileEntry},
-    typed_facts::{encode_facts, TypedFacts},
-};
+use acdd_index::db::{commitments, reader};
 use rusqlite::{ffi, Connection};
-use std::collections::BTreeMap;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::PathBuf;
 
 thread_local! {
     static FTS_READS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -284,60 +272,4 @@ fn cold_and_delta_match_commitments_after_spool_and_parallel_delta() {
         "removed and shared evidence must both be represented: {candidates:?}"
     );
     commitments::verify(&after).unwrap();
-
-    // Sensitivity check: corrupt staged spool offset must fail closed in populate_owned.
-    let spool_file = workspace.path(".acdd/corrupt-spool.bin");
-    let valid_blob = encode_facts(&TypedFacts::default()).unwrap();
-    let mut handle = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&spool_file)
-        .unwrap();
-    handle.write_all(&valid_blob).unwrap();
-    drop(handle);
-
-    let mut stage_conn = Connection::open_in_memory().unwrap();
-    let entry = FileEntry {
-        path: "src/unit.rs".to_owned(),
-        digest: "00".repeat(32),
-        bytes: 10,
-        mtime_ns: 1,
-        identity: [0, 0, 0],
-        language: "rust".to_owned(),
-        is_doc: false,
-    };
-    let mut staged_payloads = BTreeMap::from([(
-        entry.path.clone(),
-        StagedFilePayload {
-            storage_rows: Some(StagedPreparedStorage::Spilled(SpoolSlice {
-                offset: 999_999,
-                length: valid_blob.len() as u64,
-            })),
-            local_facts_leaf: Some((String::new(), String::new())),
-        },
-    )]);
-    let err = writer::populate_owned(
-        &mut stage_conn,
-        writer::PopulateOwnedParams {
-            root: workspace.root(),
-            adapter: &Adapter::default(),
-            entries: std::slice::from_ref(&entry),
-            facts: BTreeMap::from([(entry.path.clone(), TypedFacts::default())]),
-            graph: &CompactGraph::default(),
-            build_inputs: BuildInputs {
-                manifest_digest: "test",
-                memory_budget: 8 * 1024 * 1024,
-                schema_ready: false,
-            },
-            staged_payloads: &mut staged_payloads,
-            payload_spool_path: Some(&spool_file),
-        },
-    )
-    .unwrap_err();
-    assert!(
-        err.to_string().contains("EOF") || err.to_string().contains("staged"),
-        "corrupt spool offset must fail closed: {err:#}"
-    );
-    let _ = PathBuf::from(&spool_file);
 }

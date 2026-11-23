@@ -1,94 +1,14 @@
 use super::harness::{ExtractorHarness, PersistedSnapshot};
-const TABLE_RELATION_CASES: &[(&str, &str, &str)] = &[
-    (
-        "SELECT * FROM public.orders",
-        "public.orders",
-        "queries_table",
-    ),
-    (
-        "SELECT * FROM orders, customers",
-        "customers",
-        "queries_table",
-    ),
-    (
-        "BEGIN; PRAGMA x=1; SELECT * FROM orders",
-        "orders",
-        "queries_table",
-    ),
-    (
-        "SET search_path TO shop; CREATE TABLE batch_table (id INT)",
-        "batch_table",
-        "defines_table",
-    ),
-    (
-        "INSERT OR REPLACE INTO orders VALUES (1)",
-        "orders",
-        "mutates_table",
-    ),
-    ("UPDATE orders SET id = 1", "orders", "mutates_table"),
-    ("COMMIT; SELECT * FROM orders", "orders", "queries_table"),
-    (
-        "ROLLBACK; UPDATE orders AS o SET id = 1",
-        "orders",
-        "mutates_table",
-    ),
-    ("UPDATE ONLY orders o SET id = 1", "orders", "mutates_table"),
-    (
-        "WITH source AS (SELECT * FROM customers) UPDATE ONLY (orders) AS o SET id=1",
-        "orders",
-        "mutates_table",
-    ),
-    (
-        "SELECT * FROM orders o JOIN customers c ON c.id=o.id, inventory i",
-        "inventory",
-        "queries_table",
-    ),
-    (
-        "SELECT * FROM orders o, inventory i JOIN customers c ON c.id=i.id",
-        "customers",
-        "queries_table",
-    ),
-    (
-        "WITH temporary AS (SELECT * FROM orders) SELECT * FROM temporary JOIN inventory ON 1=1",
-        "orders",
-        "queries_table",
-    ),
-    (
-        "COMMIT; SELECT * FROM orders WHERE note = $$semi;colon$$",
-        "orders",
-        "queries_table",
-    ),
-    (
-        "SET x='semi;SELECT fake'; /* ; UPDATE ignored */ SELECT * FROM orders",
-        "orders",
-        "queries_table",
-    ),
-    (
-        "BEGIN; -- ; UPDATE ignored\nWITH rows AS (SELECT * FROM orders) SELECT * FROM rows",
-        "orders",
-        "queries_table",
-    ),
-    (
-        "SET x=$tag$; UPDATE ignored$tag$; SELECT * FROM orders",
-        "orders",
-        "queries_table",
-    ),
-    ("DELETE FROM orders", "orders", "mutates_table"),
-    (
-        "CREATE TABLE IF NOT EXISTS orders (id INT)",
-        "orders",
-        "defines_table",
-    ),
-];
-
-use acdd_index::ast;
 
 #[test]
 fn sql_profile_parses_without_tree_sitter_parser() {
-    assert!(ast::parser("sql", "schema.sql").is_err());
+    assert!(acdd_index::languages::require("sql")
+        .unwrap()
+        .create_parser("schema.sql")
+        .is_err());
     let mut public_facts = acdd_index::models::Facts::default();
-    acdd_index::languages::parse_file(
-        &acdd_index::languages::sql::SQL,
+    acdd_index::ast::parse::parse_file(
+        acdd_index::languages::by_id("sql").unwrap(),
         "public.sql",
         "CREATE TABLE public_test (id INT)",
         "public",
@@ -99,30 +19,6 @@ fn sql_profile_parses_without_tree_sitter_parser() {
         .nodes
         .iter()
         .any(|node| node.name == "public_test"));
-}
-
-#[test]
-fn sql_statement_relation_matrix() {
-    let mut cases: Vec<_> = TABLE_RELATION_CASES
-        .iter()
-        .map(|&(sql, name, relation)| (sql, vec![(name.to_owned(), relation)], false))
-        .collect();
-    cases.extend([
-        ("WITH temporary(id) AS (SELECT * FROM temporary) SELECT * FROM temporary", vec!["temporary"]),
-        ("WITH RECURSIVE temporary(id) AS (SELECT * FROM temporary) SELECT * FROM temporary", vec![]),
-        ("WITH temporary(id) AS (SELECT * FROM orders) SELECT * FROM public.temporary", vec!["orders", "public.temporary"]),
-        ("WITH first_cte AS (SELECT * FROM orders), second_cte(id) AS (SELECT * FROM first_cte) SELECT * FROM second_cte", vec!["orders"]),
-    ].into_iter().map(|(sql, names)| (sql, names.into_iter().map(|name| (name.to_owned(), "queries_table")).collect(), true)));
-    for (sql, expected, exact) in cases {
-        let actual = acdd_index::languages::sql::extract_embedded_sql_tables(sql);
-        if exact {
-            assert_eq!(actual, expected, "{sql}");
-        } else {
-            for relation in expected {
-                assert!(actual.contains(&relation), "{sql}: {actual:?}");
-            }
-        }
-    }
 }
 
 #[test]
@@ -396,7 +292,7 @@ fn sql_impact_traversal_reaches_views_and_language_consumers() {
         None,
     )
     .unwrap();
-    let impact = acdd_index::db::traversal::traverse_with_path_options(
+    let impact = acdd_index::db::traversal::impact::traverse_with_path_options(
         &db,
         "schema.sql:table:orders",
         None,

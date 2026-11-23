@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use acdd_index::models::Graph;
-use acdd_index::{ast, linker};
+use acdd_index::ast;
 use std::collections::BTreeMap;
 
 fn linked(
@@ -19,7 +19,7 @@ fn linked(
             )
         })
         .collect();
-    let graph = linker::link(&facts);
+    let graph = crate::common::link_facts(&facts);
     (facts, graph)
 }
 

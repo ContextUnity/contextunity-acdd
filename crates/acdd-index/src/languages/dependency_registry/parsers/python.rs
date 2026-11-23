@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedEntrypoint, ParsedManifest};
 
 /// Parser for Python manifests (`pyproject.toml`, `requirements*.txt`, `setup.cfg`, `Pipfile`).
-pub struct PythonParser;
+pub(crate) struct PythonParser;
 
 /// Shared Python manifest parser instance.
-pub static PYTHON_PARSER: PythonParser = PythonParser;
+pub(crate) static PYTHON_PARSER: PythonParser = PythonParser;
 
 impl ManifestParser for PythonParser {
     fn ecosystem(&self) -> Ecosystem {

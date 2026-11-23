@@ -22,9 +22,6 @@ macro_rules! wire_tags {
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.as_str()) }
         }
-        impl From<$name> for super::compact_graph::CompactTag {
-            fn from(value: $name) -> Self { Self::Static(value.as_str()) }
-        }
     };
 }
 

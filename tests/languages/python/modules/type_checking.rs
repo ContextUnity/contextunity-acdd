@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence() {
-    use acdd_index::typed_facts::{NodeView, TypedFacts};
+    use acdd_index::typed_facts::TypedFacts;
 
     let model = "class Client:\n    pass\n";
     let mut small = String::from(
@@ -24,14 +24,16 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
             [],
         );
         let facts = TypedFacts::from_public(
-            acdd_index::db::reader::decode_local_facts(&blob).unwrap(),
+            crate::common::decode_local_facts(&blob).unwrap(),
         );
-        let module = facts
-            .nodes
+        let nodes = serde_json::to_value(facts.nodes_view()).unwrap();
+        let module = nodes
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|node| node.kind == "module")
-            .unwrap();
-        let module = serde_json::to_value(NodeView::new(module, &facts.flows, None)).unwrap();
+            .find(|node| node["kind"] == "module")
+            .unwrap()
+            .clone();
         let flow = &module["details"]["value_flow"];
         assert_ne!(flow["fact_limit_exceeded"], true);
         assert_eq!(flow["type_only_imports"][0]["alias"], "Client");
@@ -70,15 +72,17 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
             ((*path).to_owned(), parsed)
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let graph = acdd_index::linker::link(&facts);
+    let graph = crate::common::link_facts(&facts);
     let catalog = crate::languages::harness::LinkedCatalog { facts, graph };
     let facts = TypedFacts::from_public(catalog.facts["src/consumer.py"].clone());
-    let module = facts
-        .nodes
+    let nodes = serde_json::to_value(facts.nodes_view()).unwrap();
+    let module = nodes
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|node| node.kind == "module")
-        .unwrap();
-    let module = serde_json::to_value(NodeView::new(module, &facts.flows, None)).unwrap();
+        .find(|node| node["kind"] == "module")
+        .unwrap()
+        .clone();
     let flow = &module["details"]["value_flow"];
     assert_eq!(flow["fact_limit_exceeded"], true);
     assert!(flow.get("type_only_imports").is_none());

@@ -306,10 +306,6 @@ pub fn matches_with_reason(
     Ok(())
 }
 
-/// Performs matches.
-pub fn matches(path: &Path, root: &Path, seal: &str, identity: &Identity) -> bool {
-    matches_with_reason(path, root, seal, identity).is_ok()
-}
 /// Performs publish verified.
 pub fn publish_verified(path: &Path, root: &Path, seal: &str) -> Result<bool> {
     let before = identity(path)?;
@@ -350,7 +346,7 @@ pub fn publish_verified_identity(
     Ok(true)
 }
 /// Performs invalidate.
-pub fn invalidate(path: &Path) {
+fn invalidate(path: &Path) {
     if let Err(error) = invalidate_checked(path) {
         eprintln!(
             "verified receipt invalidation failed for {}: {error:#}",

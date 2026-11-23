@@ -1,5 +1,66 @@
-use crate::ast::{field, text};
+use crate::ast::syntax::{field, text};
 use tree_sitter::Node as Syntax;
+
+fn is_safe_logging_identifier(node: Syntax<'_>, source: &str, setters: &[&str], name: &str) -> bool {
+    let mut value = node;
+    let mut factory_changed = setters.contains(&name);
+    while let Some(parent) = value.parent().filter(|parent| {
+        (parent.kind() == "attribute" && parent.child_by_field_name("object") == Some(value))
+            || parent.kind() == "parenthesized_expression"
+    }) {
+        factory_changed |= field(parent, source, "attribute") == Some("setLoggerClass");
+        value = parent;
+    }
+    let level_constant = value.kind() == "attribute"
+        && matches!(
+            field(value, source, "attribute"),
+            Some("CRITICAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG" | "NOTSET")
+        )
+        && value.parent().is_some_and(|parent| {
+            matches!(parent.kind(), "argument_list" | "keyword_argument")
+        });
+    let type_annotation = value.kind() == "attribute"
+        && matches!(field(value, source, "attribute"), Some("Logger" | "LoggerAdapter"))
+        && is_in_type_annotation(value);
+    level_constant
+        || type_annotation
+        || value.parent().is_some_and(|parent| {
+            matches!(
+                parent.kind(),
+                "dotted_name" | "aliased_import" | "import_statement" | "import_from_statement"
+            ) || (parent.kind() == "call"
+                && parent.child_by_field_name("function") == Some(value)
+                && !factory_changed)
+        })
+}
+
+fn is_in_type_annotation(value: Syntax<'_>) -> bool {
+    let mut anc = value.parent();
+    while let Some(parent) = anc {
+        if parent.kind() == "type" {
+            return true;
+        }
+        if matches!(
+            parent.kind(),
+            "function_definition"
+                | "class_definition"
+                | "lambda"
+                | "block"
+                | "module"
+                | "expression_statement"
+                | "assignment"
+                | "augmented_assignment"
+                | "default_parameter"
+                | "typed_default_parameter"
+                | "typed_parameter"
+                | "return_statement"
+        ) {
+            return false;
+        }
+        anc = parent.parent();
+    }
+    false
+}
 
 /// Sparse eligibility for finite logging factory contracts. Nested same-named
 /// shadows conservatively block inference when their namespace escapes.
@@ -47,95 +108,16 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
         }
         if node.kind() == "identifier" {
             let name = text(node, source);
-            if imports.iter().any(|(alias, _, _)| *alias == name) || setters.contains(&name) {
-                let mut value = node;
-                let mut factory_changed = setters.contains(&name);
-                while let Some(parent) = value.parent().filter(|parent| {
-                    (parent.kind() == "attribute"
-                        && parent.child_by_field_name("object") == Some(value))
-                        || parent.kind() == "parenthesized_expression"
-                }) {
-                    factory_changed |= field(parent, source, "attribute") == Some("setLoggerClass");
-                    value = parent;
-                }
-                let level_constant = value.kind() == "attribute"
-                    && matches!(
-                        field(value, source, "attribute"),
-                        Some("CRITICAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG" | "NOTSET")
-                    )
-                    && value.parent().is_some_and(|parent| {
-                        matches!(parent.kind(), "argument_list" | "keyword_argument")
-                    });
-                let type_annotation = value.kind() == "attribute"
-                    && matches!(
-                        field(value, source, "attribute"),
-                        Some("Logger" | "LoggerAdapter")
-                    )
-                    && {
-                        let mut anc = value.parent();
-                        let mut in_type = false;
-                        while let Some(parent) = anc {
-                            if parent.kind() == "type" {
-                                in_type = true;
-                                break;
-                            }
-                            if matches!(
-                                parent.kind(),
-                                "function_definition"
-                                    | "class_definition"
-                                    | "lambda"
-                                    | "block"
-                                    | "module"
-                                    | "expression_statement"
-                                    | "assignment"
-                                    | "augmented_assignment"
-                                    | "default_parameter"
-                                    | "typed_default_parameter"
-                                    | "typed_parameter"
-                                    | "return_statement"
-                            ) {
-                                break;
-                            }
-                            anc = parent.parent();
-                        }
-                        in_type
-                    };
-                let escaped = !level_constant
-                    && !type_annotation
-                    && !value.parent().is_some_and(|parent| {
-                        matches!(
-                            parent.kind(),
-                            "dotted_name"
-                                | "aliased_import"
-                                | "import_statement"
-                                | "import_from_statement"
-                        ) || (parent.kind() == "call"
-                            && parent.child_by_field_name("function") == Some(value)
-                            && !factory_changed)
-                    });
-                if escaped {
-                    for (_, _, safe) in &mut imports {
-                        *safe = false;
-                    }
+            if (imports.iter().any(|(alias, _, _)| *alias == name) || setters.contains(&name))
+                && !is_safe_logging_identifier(node, source, &setters, name)
+            {
+                for (_, _, safe) in &mut imports {
+                    *safe = false;
                 }
             }
         }
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return serde_json::json!(imports
-                    .into_iter()
-                    .map(|(alias, position, safe)| {
-                        serde_json::json!({"alias": alias, "line": position.row + offset + 1,
-                        "column": position.column, "safe": safe})
-                    })
-                    .collect::<Vec<_>>());
-            }
+        if !crate::ast::syntax::advance_cursor(&mut cursor, true) {
+            break;
         }
     }
     serde_json::json!(imports

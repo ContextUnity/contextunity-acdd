@@ -10,9 +10,10 @@ use std::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use acdd_core::config::Adapter;
 use acdd_core::response::QueryOptions;
 
-use super::{dependency_manifests_for_build, Adapter};
+use super::walk::dependency_manifests_for_build;
 
 struct ManifestLocation {
     workspace: String,

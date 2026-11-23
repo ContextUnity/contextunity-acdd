@@ -1,7 +1,8 @@
 use super::super::semantic_context::{Context, Imported};
-use super::super::value_flow::{
-    resolve_type, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
-    MAX_CANDIDATE_BRANCH_JOINS,
+use super::super::types::NodeBindingIndex;
+use super::super::value_flow::types::{
+    collect_candidate_join, resolve_type, SemanticLimits, SemanticResolver, Symbol, SymbolRole,
+    TypeTarget,
 };
 use crate::models::{Facts, Node, Reference};
 use crate::semantic::{SourcePosition, TypeExpr};
@@ -10,7 +11,6 @@ use crate::languages::{
 };
 use crate::interner::LinkerInterner;
 use crate::linker::traits::ModulesByNamespace;
-use std::collections::BTreeMap;
 
 pub(in crate::linker) fn canonical_pathlib_class(class: &str) -> Option<&'static str> {
     match class {
@@ -40,6 +40,73 @@ pub(in crate::linker) fn is_external_generic_base(
         && profile.is_some_and(|profile| profile.builtin_generic(clean_base))
 }
 
+fn external_stdlib_factory<'a>(
+    context: &Context<'a>,
+    owner: &'a Node,
+    callee: &str,
+    at: SourcePosition,
+    (imported_module, import_line, reference_expr, member): (&str, usize, &str, &str),
+) -> Option<TypeTarget<'a>> {
+    let canonical = match (imported_module, reference_expr, member) {
+        ("logging", "logging", "getLogger") | ("logging", "getLogger", "") => "logging.Logger",
+        ("logging", "logging", "LoggerAdapter") | ("logging", "LoggerAdapter", "") => {
+            "logging.LoggerAdapter"
+        }
+        ("sqlite3", "sqlite3", "connect") | ("sqlite3", "connect", "") => "sqlite3.Connection",
+        ("pathlib", "pathlib", cls) | ("pathlib", cls, "") => canonical_pathlib_class(cls)?,
+        _ => return None,
+    };
+    let Symbol::Type(TypeTarget::External {
+        module,
+        import_line: resolved_line,
+    }) = context.resolve_symbol(owner, callee, at, SymbolRole::Callable)
+    else {
+        return None;
+    };
+    if (!matches!(module.as_str(), "logging" | "sqlite3" | "pathlib")
+        && !module.starts_with("pathlib."))
+        || import_line != resolved_line
+    {
+        return None;
+    }
+    Some(TypeTarget::Builtin(canonical.to_owned()))
+}
+
+fn external_configured_factory<'a>(
+    context: &Context<'a>,
+    owner: &'a Node,
+    callee: &str,
+    imported_module: &str,
+    import_line: usize,
+    exported: &str,
+) -> Option<TypeTarget<'a>> {
+    let mut receivers = context.receiver_types_for_path(&owner.path)?;
+    let receiver = receivers.find(|receiver| {
+        receiver.module.as_deref() == Some(imported_module)
+            && receiver.export.as_deref() == Some(exported)
+            && receiver
+                .callback_callees
+                .iter()
+                .any(|allowed| allowed == callee || allowed.rsplit('.').next() == Some(exported))
+    })?;
+    let (pack, authority) = context.hierarchy_authority_for_base(&owner.path, &receiver.name)?;
+    Some(TypeTarget::ConfiguredReceiver {
+        authority,
+        origin: Box::new(TypeTarget::External {
+            module: imported_module.to_owned(),
+            import_line,
+        }),
+        fallback: None,
+        evidence: format!(
+            "{}:{}:{}:{}",
+            context.dependencies_digest(),
+            owner.path,
+            pack,
+            receiver.name
+        ),
+    })
+}
+
 pub(in crate::linker) fn external_factory_result<'a>(
     context: &Context<'a>,
     owner: &'a Node,
@@ -60,36 +127,16 @@ pub(in crate::linker) fn external_factory_result<'a>(
                 if *position > at {
                     return None;
                 }
-                let stdlib_safe =
-                    imported_module == "pathlib" || (*safe && matches!(imported_module.as_str(), "logging" | "sqlite3"));
+                let stdlib_safe = imported_module == "pathlib"
+                    || (*safe && matches!(imported_module.as_str(), "logging" | "sqlite3"));
                 if stdlib_safe {
-                    let canonical = match (imported_module.as_str(), reference.expression.as_str(), member) {
-                        ("logging", "logging", "getLogger") | ("logging", "getLogger", "") => {
-                            "logging.Logger"
-                        }
-                        ("logging", "logging", "LoggerAdapter")
-                        | ("logging", "LoggerAdapter", "") => "logging.LoggerAdapter",
-                        ("sqlite3", "sqlite3", "connect") | ("sqlite3", "connect", "") => {
-                            "sqlite3.Connection"
-                        }
-                        ("pathlib", "pathlib", cls) => canonical_pathlib_class(cls)?,
-                        ("pathlib", cls, "") => canonical_pathlib_class(cls)?,
-                        _ => return None,
-                    };
-                    let Symbol::Type(TypeTarget::External {
-                        module,
-                        import_line,
-                    }) = context.resolve_symbol(owner, callee, at, SymbolRole::Callable)
-                    else {
-                        return None;
-                    };
-                    if (!matches!(module.as_str(), "logging" | "sqlite3" | "pathlib")
-                        && !module.starts_with("pathlib."))
-                        || position.line != import_line
-                    {
-                        return None;
-                    }
-                    return Some(TypeTarget::Builtin(canonical.to_owned()));
+                    return external_stdlib_factory(
+                        context,
+                        owner,
+                        callee,
+                        at,
+                        (imported_module, position.line, &reference.expression, member),
+                    );
                 }
                 let exported = if reference.expression == *imported_module {
                     member
@@ -98,34 +145,14 @@ pub(in crate::linker) fn external_factory_result<'a>(
                 } else {
                     return None;
                 };
-                if let Some(mut receivers) = context.receiver_types_for_path(&owner.path) {
-                    if let Some(receiver) = receivers.find(|receiver| {
-                        receiver.module.as_deref() == Some(imported_module.as_str())
-                            && receiver.export.as_deref() == Some(exported)
-                            && receiver.callback_callees.iter().any(|allowed| {
-                                allowed == callee || allowed.rsplit('.').next() == Some(exported)
-                            })
-                    }) {
-                        let (pack, authority) =
-                            context.hierarchy_authority_for_base(&owner.path, &receiver.name)?;
-                        return Some(TypeTarget::ConfiguredReceiver {
-                            authority,
-                            origin: Box::new(TypeTarget::External {
-                                module: imported_module.clone(),
-                                import_line: position.line,
-                            }),
-                            fallback: None,
-                            evidence: format!(
-                                "{}:{}:{}:{}",
-                                context.dependencies_digest(),
-                                owner.path,
-                                pack,
-                                receiver.name
-                            ),
-                        });
-                    }
-                }
-                return None;
+                return external_configured_factory(
+                    context,
+                    owner,
+                    callee,
+                    imported_module,
+                    position.line,
+                    exported,
+                );
             }
         }
         scope = scope.rsplit_once('.')?.0;
@@ -304,57 +331,6 @@ pub(in crate::linker) fn collect_union_members<'a>(
     }
 }
 
-pub(in crate::linker) fn collect_candidate_join<'a>(
-    targets_iter: impl IntoIterator<Item = TypeTarget<'a>>,
-) -> TypeTarget<'a> {
-    let mut targets = BTreeMap::<String, &'a Node>::new();
-    let mut complete = true;
-    let mut exhausted = false;
-    for target in targets_iter {
-        match target {
-            TypeTarget::Local(node)
-                if matches!(
-                    node.kind.as_str(),
-                    "class" | "struct" | "interface" | "enum"
-                ) =>
-            {
-                targets.insert(node.id.clone(), node);
-            }
-            TypeTarget::Candidates {
-                targets: nested,
-                complete: nested_complete,
-                exhausted: nested_exhausted,
-            } => {
-                complete &= nested_complete;
-                exhausted |= nested_exhausted;
-                for node in nested {
-                    targets.insert(node.id.clone(), node);
-                }
-            }
-            _ => complete = false,
-        }
-        if targets.len() > MAX_CANDIDATE_BRANCH_JOINS {
-            exhausted = true;
-            complete = false;
-            targets.clear();
-            break;
-        }
-    }
-    if exhausted {
-        TypeTarget::Candidates {
-            targets: Vec::new(),
-            complete: false,
-            exhausted: true,
-        }
-    } else {
-        TypeTarget::Candidates {
-            targets: targets.into_values().collect(),
-            complete,
-            exhausted: false,
-        }
-    }
-}
-
 pub(in crate::linker) fn resolve_applied<'a>(
     context: &Context<'a>,
     owner: &'a Node,
@@ -456,7 +432,7 @@ pub(in crate::linker) fn has_proven_type_checking(
     dependencies: &DependencyRegistry,
     family: LanguageFamily,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::linker::NodeBindingIndex,
+    node_rebindings: &NodeBindingIndex,
 ) -> bool {
     let rebound = facts
         .nodes
@@ -515,7 +491,7 @@ pub(in crate::linker) fn type_only_import_is_unproven(
     modules_by_namespace: &ModulesByNamespace<'_>,
     dependencies: &DependencyRegistry,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::linker::NodeBindingIndex,
+    node_rebindings: &NodeBindingIndex,
 ) -> bool {
     profile.id() == "python"
         && !has_proven_type_checking(

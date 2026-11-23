@@ -313,8 +313,8 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     workspace.write("index.html", source);
     workspace.write("other.htm", "<p>Other</p>");
     assert_eq!(
-        scanner::language(std::path::Path::new("index.html")),
-        Some(("html", false))
+        acdd_index::languages::for_path(std::path::Path::new("index.html")).map(|p| p.id()),
+        Some("html")
     );
     workspace.build();
     let conn = workspace.open();
@@ -326,8 +326,16 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
         max_body_lines: 100,
         offset: 0,
     };
-    let snippet =
-        symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
+    let snippet = symbols::snippet_paged_with_response_budget(
+        &conn,
+        workspace.root(),
+        "index.html",
+        None,
+        &preview,
+        &options,
+        ResponsePolicy::default().max_output_bytes,
+    )
+    .unwrap();
     assert_eq!(snippet["node"]["language"], "html");
     assert_eq!(snippet["source"], source);
     assert_eq!(
@@ -343,8 +351,16 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     workspace.write("index.html", updated);
     workspace.delta(&["index.html"]);
     let conn = workspace.open();
-    let snippet =
-        symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
+    let snippet = symbols::snippet_paged_with_response_budget(
+        &conn,
+        workspace.root(),
+        "index.html",
+        None,
+        &preview,
+        &options,
+        ResponsePolicy::default().max_output_bytes,
+    )
+    .unwrap();
     assert_eq!(snippet["source"], updated);
     let rebuilt = crate::languages::support::fresh_cold(&workspace);
     let graph = |conn: &rusqlite::Connection| {

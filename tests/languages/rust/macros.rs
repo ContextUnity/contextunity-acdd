@@ -370,7 +370,7 @@ fn declarative_macro_item_projection_and_opaque_fail_closed() {
             .any(|n| n.qualname.ends_with(".NodeId.default")),
         "NodeId did not derive Default and must not synthesize NodeId::default: {facts:#?}"
     );
-    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+    let graph = crate::common::link_facts(&std::collections::BTreeMap::from([(
         "src/macros_proj.rs".to_owned(),
         facts,
     )]));

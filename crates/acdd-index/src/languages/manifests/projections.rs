@@ -118,7 +118,7 @@ pub(crate) fn confined_path(value: &str, allow_root: bool) -> bool {
     if value.len() > 512 || value.contains('\\') || value.chars().any(char::is_control) {
         return false;
     }
-    let (workspace, path) = crate::languages::workspace_path(value);
+    let (workspace, path) = crate::languages::types::workspace_path(value);
     if !workspace.is_empty()
         && (!workspace.starts_with('[')
             || !workspace.ends_with(']')

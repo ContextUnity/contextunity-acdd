@@ -1,4 +1,5 @@
-use super::{paths, Command};
+use super::args::Command;
+use super::paths;
 use crate::{
     format::{self, OutputFormat},
     state_bridge::{

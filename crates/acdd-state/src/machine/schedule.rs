@@ -7,7 +7,7 @@ use crate::types::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TaskRef;
-pub use acdd_core::path_policy::{patterns_overlap, scopes_overlap};
+pub use acdd_core::path_policy::scopes_overlap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,7 +44,7 @@ pub fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateN
 }
 
 /// Return `true` if any node in the run is currently `InProgress`.
-pub fn has_any_in_progress_node(snapshot: &RunGraphSnapshot) -> bool {
+pub(crate) fn has_any_in_progress_node(snapshot: &RunGraphSnapshot) -> bool {
     snapshot
         .nodes
         .iter()

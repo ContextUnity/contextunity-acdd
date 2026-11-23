@@ -16,8 +16,8 @@ use crate::types::{
 use crate::usecases::archive_notes::{build_archive_render_input, build_provisional_receipt};
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout};
-use crate::usecases::queries::extract_predecessor_gate_proofs;
-use crate::usecases::StateEngineConfig;
+use crate::context::slices::extract_predecessor_gate_proofs;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, is_normalized_relative};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, SubtaskRef, TreeOid};
@@ -595,7 +595,7 @@ mod tests {
     use crate::store::memory::MemoryStateBackend;
     use crate::store::traits::exec_tx_with;
     use crate::types::StoragePreconditions;
-    use crate::usecases::StateEngineConfig;
+    use crate::usecases::config::StateEngineConfig;
     use acdd_core::ids::{GateId, SubtaskRef};
     use acdd_core::response::ResponsePolicy;
     use acdd_core::subsystems::SubsystemRegistry;

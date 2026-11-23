@@ -1,4 +1,3 @@
-use contextunity_acdd::format::file_uri_for_path;
 use acdd_index::db::reader;
 use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
@@ -44,12 +43,28 @@ pub fn canonical_file_uri(root: &Path, relative: impl AsRef<Path>, line: Option<
         )
     });
     let path = canonical_root.join(relative);
-    file_uri_for_path(&path, line).unwrap_or_else(|| {
-        panic!(
-            "could not encode fixture path as a file URI: {}",
-            path.display()
-        )
-    })
+    let raw = path.to_str().unwrap_or_else(|| {
+        panic!("could not encode fixture path as a file URI: {}", path.display())
+    });
+    let normalized = raw.replace('\\', "/");
+    assert!(
+        normalized.starts_with('/'),
+        "could not encode fixture path as a file URI: {}",
+        path.display()
+    );
+    let mut uri = String::from("file://");
+    for b in normalized.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                uri.push(char::from(b))
+            }
+            _ => uri.push_str(&format!("%{b:02X}")),
+        }
+    }
+    if let Some(l) = line {
+        uri.push_str(&format!("#L{l}"));
+    }
+    uri
 }
 
 fn assert_relative(relative: &Path) {
@@ -192,11 +207,12 @@ impl Workspace {
             .iter()
             .map(|path| path.as_ref().to_path_buf())
             .collect::<Vec<_>>();
-        pipeline::delta_with_cache_dir(
+        pipeline::delta_with_selection(
             self.root(),
             &self.db(),
             &modified,
-            &self.path(".acdd/extraction-cache"),
+            None,
+            Some(&self.path(".acdd/extraction-cache")),
         )
         .unwrap_or_else(|error| panic!("could not update test workspace index: {error:#}"))
     }

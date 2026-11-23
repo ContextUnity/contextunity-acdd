@@ -1,4 +1,6 @@
-use super::*;
+use super::super::input::ResolutionInput;
+use crate::linker::python;
+use crate::models::{compact_graph::CompactGraph as Graph, Node};
 
 pub(super) fn emit_inherited_method_edges(
     input: &ResolutionInput<'_>,

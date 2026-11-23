@@ -1,5 +1,7 @@
-use super::{direct_module_assignment, lazy_exports, Syntax};
-use crate::ast::{field, text, ScopeBindings};
+use super::common::direct_module_assignment;
+use super::lazy_exports;
+use crate::ast::syntax::{field, text, ScopeBindings, Syntax};
+use crate::languages::types::LazyExport;
 use std::collections::{HashMap, HashSet};
 
 fn mark_write(node: Syntax<'_>, source: &str, writes: &mut HashSet<String>) {
@@ -86,7 +88,7 @@ pub(super) fn prepare(
     }
 }
 
-pub(super) struct Collector<'tree> {
+pub(super) struct ModuleExportCollector<'tree> {
     root: Syntax<'tree>,
     nested_scope_depth: usize,
     conditional_imports: HashSet<String>,
@@ -94,7 +96,7 @@ pub(super) struct Collector<'tree> {
     lazy_rebound_events: Vec<Syntax<'tree>>,
 }
 
-impl<'tree> Collector<'tree> {
+impl<'tree> ModuleExportCollector<'tree> {
     pub(super) fn new(root: Syntax<'tree>) -> Self {
         Self {
             root,
@@ -311,10 +313,7 @@ impl<'tree> Collector<'tree> {
         &self,
         source: &str,
         bindings: &ScopeBindings,
-    ) -> (
-        Vec<crate::semantic::ExportBinding>,
-        Vec<super::LazyExport>,
-    ) {
+    ) -> (Vec<crate::semantic::ExportBinding>, Vec<LazyExport>) {
         (
             self.collect(source, bindings),
             lazy_exports::extract(

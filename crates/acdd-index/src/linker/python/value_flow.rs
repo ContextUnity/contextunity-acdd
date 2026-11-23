@@ -1,8 +1,7 @@
-use super::super::value_flow::{
-    node_position, resolve_type, symbol_type, ReadTrace, SemanticLimits, SemanticResolver, Symbol,
-    SymbolRole, TypeTarget, ValueFlowIndex,
+use super::super::value_flow::types::{
+    node_position, resolve_type, symbol_type, ConfiguredReceiverAuthority, ReadTrace,
+    SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowLookup,
 };
-use crate::ast::strip_outer_parentheses;
 use crate::models::Node;
 use crate::semantic::{SourcePosition, TypeExpr};
 
@@ -25,7 +24,7 @@ pub(in crate::linker) fn constructor_result<'a>(
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
 ) -> Option<TypeTarget<'a>> {
     if owner.language != "python" {
         return None;
@@ -42,18 +41,18 @@ pub(in crate::linker) fn constructor_symbol<'a>(
     owner: &'a Node,
     expression: &str,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
 ) -> Option<Symbol<'a>> {
     (owner.language == "python")
         .then(|| resolver.resolve_symbol(owner, expression, at, SymbolRole::Constructor))
 }
 
 pub(in crate::linker) fn dotted_member_result<'a>(
-    index: &ValueFlowIndex<'a>,
+    index: &impl ValueFlowLookup<'a>,
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
     if owner.language != "python" {
@@ -82,7 +81,7 @@ pub(in crate::linker) fn dotted_member_result<'a>(
 pub(in crate::linker) fn collection_return_element<'a>(
     owner: &'a Node,
     expression: &TypeExpr,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
     limits: SemanticLimits,
 ) -> Option<TypeTarget<'a>> {
     let TypeExpr::Applied { base, args } = expression else {
@@ -95,104 +94,6 @@ pub(in crate::linker) fn collection_return_element<'a>(
     (!matches!(element, TypeTarget::Unknown | TypeTarget::Ambiguous)).then_some(element)
 }
 
-pub(in crate::linker) fn typed_dict_class<'a>(
-    node: &'a Node,
-    resolver: &impl SemanticResolver<'a>,
-) -> bool {
-    let Some(bases) = node.details["bases"]
-        .as_str()
-        .and_then(|bases| bases.strip_prefix('('))
-        .and_then(|bases| bases.strip_suffix(')'))
-    else {
-        return false;
-    };
-    let (base, options) = bases
-        .split_once(',')
-        .map_or((bases, ""), |(base, options)| (base, options));
-    if !options.is_empty()
-        && !options.split_once('=').is_some_and(|(key, value)| {
-            key.trim() == "total" && matches!(value.trim(), "False" | "True")
-        })
-    {
-        return false;
-    }
-    let base = base.trim();
-    if !matches!(
-        base,
-        "TypedDict" | "typing.TypedDict" | "typing_extensions.TypedDict"
-    ) {
-        return false;
-    }
-    matches!(
-        resolver.resolve_symbol(node, base, node_position(node), SymbolRole::Type),
-        Symbol::Type(TypeTarget::External { module, .. })
-            if matches!(module.as_str(), "typing" | "typing_extensions")
-    )
-}
-
-pub(in crate::linker) fn stored_type_expr(annotation: &str) -> Option<TypeExpr> {
-    let annotation = strip_outer_parentheses(annotation.trim());
-    #[cfg(feature = "lang-python")]
-    let pipe_parts = crate::languages::python::value_flow::split_python_pipe_types(annotation);
-    #[cfg(not(feature = "lang-python"))]
-    let pipe_parts: Option<Vec<&str>> = None;
-    if let Some(parts) = pipe_parts {
-        if parts.len() >= 2 {
-            let args = parts.into_iter().map(stored_type_argument).collect();
-            return Some(TypeExpr::Applied {
-                base: "Union".to_owned(),
-                args,
-            });
-        }
-    }
-    let (base, rest) = annotation.split_once('[')?;
-    let base = base.trim();
-    let arguments = rest.strip_suffix(']')?;
-    if base.is_empty() {
-        return Some(TypeExpr::Unknown);
-    }
-    let mut depth = 0_usize;
-    let mut start = 0_usize;
-    let mut args = Vec::new();
-    for (index, character) in arguments.char_indices() {
-        match character {
-            '[' => depth = depth.checked_add(1)?,
-            ']' => depth = depth.checked_sub(1)?,
-            ',' if depth == 0 => {
-                let argument = arguments[start..index].trim();
-                if argument.is_empty() {
-                    return None;
-                }
-                args.push(stored_type_argument(argument));
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 {
-        return None;
-    }
-    let argument = arguments[start..].trim();
-    if argument.is_empty() {
-        return None;
-    }
-    args.push(stored_type_argument(argument));
-    Some(TypeExpr::Applied {
-        base: base.to_owned(),
-        args,
-    })
-}
-
-fn stored_type_argument(annotation: &str) -> TypeExpr {
-    let unparenthesized = strip_outer_parentheses(annotation.trim());
-    if unparenthesized.is_empty() {
-        return TypeExpr::Unknown;
-    }
-    stored_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
-        name: unparenthesized.to_owned(),
-    })
-}
-
 fn is_pathlib_target(target: &TypeTarget<'_>) -> bool {
     match target {
         TypeTarget::Builtin(name) | TypeTarget::External { module: name, .. } => {
@@ -203,11 +104,11 @@ fn is_pathlib_target(target: &TypeTarget<'_>) -> bool {
 }
 
 pub(in crate::linker) fn callable_target_return<'s, 'a>(
-    index: &'s ValueFlowIndex<'a>,
+    index: &'s impl ValueFlowLookup<'a>,
     target: &'s TypeTarget<'a>,
     owner: &'a Node,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<&'s TypeTarget<'a>> {
     match target {
@@ -242,7 +143,7 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
         evidence,
     } = receiver
     {
-        if let super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy { pack, rule } =
+        if let ConfiguredReceiverAuthority::Hierarchy { pack, rule } =
             authority.as_ref()
         {
             let prefix = format!("{member}.");
@@ -265,7 +166,7 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
                 };
                 return Some(TypeTarget::ConfiguredReceiver {
                     authority: std::sync::Arc::new(
-                        super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                        ConfiguredReceiverAuthority::Hierarchy {
                             pack: pack.clone(),
                             rule: std::sync::Arc::new(sub_rule),
                         },
@@ -281,12 +182,12 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
 }
 
 pub(in crate::linker) fn synthetic_member_result<'a>(
-    index: &ValueFlowIndex<'a>,
+    index: &impl ValueFlowLookup<'a>,
     owner: &'a Node,
     receiver: &TypeTarget<'a>,
     callee: &str,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
     if owner.language != "python" {

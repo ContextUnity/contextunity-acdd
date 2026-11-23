@@ -475,12 +475,14 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(tail["nodes"]["has_more"], false);
 
     // Preserve reader JSON and render the ranked search through actual MCP Markdown.
-    use contextunity_acdd::format::{self, OutputFormat};
+    use contextunity_acdd::format::{self, OperationKind, OutputFormat};
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&format::render(
+        serde_json::from_str::<serde_json::Value>(&format::render_for_operation(
             &exact,
             OutputFormat::Json,
-            "code_map_search"
+            "code_map_search",
+            None,
+            OperationKind::Navigation
         ))
         .unwrap(),
         exact

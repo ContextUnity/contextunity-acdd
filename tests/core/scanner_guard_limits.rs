@@ -70,7 +70,7 @@ limits:
     }
 
     let large = "x = 1\n".repeat(50);
-    let boundary = "x".repeat(scanner::DEFAULT_MAX_FILE_BYTES as usize);
+    let boundary = "x".repeat(acdd_core::config::constants::DEFAULT_MAX_FILE_BYTES as usize);
     let oversized = format!("{boundary}x");
     let byte_files = [
         ("src/large.py", large.as_str()),
@@ -118,7 +118,9 @@ limits:
             workspace.write(file_path, content);
         }
 
-        match (scanner::scan(workspace.root(), None), expected) {
+        let canonical = scanner::canonical_root(workspace.root()).unwrap();
+        let adapter = scanner::load_adapter(&canonical, None).unwrap();
+        match (scanner::scan_with_adapter(&canonical, &adapter), expected) {
             (Err(err), Expected::Error(expected_msg)) => {
                 assert!(
                     err.to_string().contains(expected_msg),
@@ -144,8 +146,8 @@ limits:
     let source = workspace.root().join("src");
     fs::create_dir_all(&source).unwrap();
     let mut created_paths = 0;
-    for group_start in (0..=scanner::DEFAULT_MAX_FILES).step_by(100) {
-        let group_end = (group_start + 100).min(scanner::DEFAULT_MAX_FILES + 1);
+    for group_start in (0..=acdd_core::config::constants::DEFAULT_MAX_FILES).step_by(100) {
+        let group_end = (group_start + 100).min(acdd_core::config::constants::DEFAULT_MAX_FILES + 1);
         let seed = workspace
             .root()
             .join(format!(".file-limit-seed-{group_start}.data"));
@@ -170,10 +172,12 @@ limits:
         fs::remove_file(seed).unwrap();
     }
 
-    assert_eq!(scanner::DEFAULT_MAX_FILES, 100_000);
+    assert_eq!(acdd_core::config::constants::DEFAULT_MAX_FILES, 100_000);
     assert_eq!(created_paths, 100_001);
-    assert_eq!(created_paths, scanner::DEFAULT_MAX_FILES + 1);
-    let error = scanner::scan(workspace.root(), None)
+    assert_eq!(created_paths, acdd_core::config::constants::DEFAULT_MAX_FILES + 1);
+    let canonical = scanner::canonical_root(workspace.root()).unwrap();
+    let default_adapter = scanner::load_adapter(&canonical, None).unwrap();
+    let error = scanner::scan_with_adapter(&canonical, &default_adapter)
         .map(|report| report.files)
         .expect_err("one path beyond the default limit must be rejected");
     let msg = error.to_string();
@@ -206,8 +210,9 @@ limits:
         workspace.write(format!("{directory}/generated.py"), "def source(): pass\n");
     }
 
-    let report = scanner::scan(workspace.root(), None).unwrap();
-    let adapter = scanner::load_adapter(workspace.root(), None).unwrap();
+    let canonical = scanner::canonical_root(workspace.root()).unwrap();
+    let adapter = scanner::load_adapter(&canonical, None).unwrap();
+    let report = scanner::scan_with_adapter(&canonical, &adapter).unwrap();
     let scanner::ColdScanResult {
         candidates: mut collected,
         dependency_manifests: manifests,
@@ -256,23 +261,8 @@ limits:
         .map(|entry| entry.path.as_str())
         .collect();
     assert_eq!(paths, ["src/build_helpers.py", "src/main.py"]);
-    let core_available: fn() -> u64 = acdd_core::sys::available_memory_bytes;
-    let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
-    assert!(
-        std::ptr::fn_addr_eq(scanner_available, core_available),
-        "scanner must re-export the canonical core memory helper"
-    );
 
-    let core_budget: fn() -> u64 = acdd_core::sys::memory_budget_bytes;
-    let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
-    assert!(
-        std::ptr::fn_addr_eq(scanner_budget, core_budget),
-        "scanner must re-export the canonical core budget helper"
-    );
-
-    let available = scanner_available();
-    assert!(available > 0, "available memory must be positive");
-    let budget = scanner_budget();
+    let budget = acdd_core::sys::memory_budget_bytes();
     assert!(
         (64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&budget),
         "budget must retain its 64 MiB floor and 16 GiB cap"
@@ -336,10 +326,12 @@ fn scanner_delta_policy_matrix() {
         }
         drop(conn);
         workspace.write("repo-a/src/a.py", "x = 3\n");
-        let result = writer::delta(
+        let result = writer::delta_with_selection(
             workspace.root(),
             &database,
             &[PathBuf::from("repo-a/src/a.py")],
+            None,
+            None,
         );
         if let Some(message) = expected_error {
             let error = result.unwrap_err();

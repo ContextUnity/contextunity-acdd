@@ -532,7 +532,8 @@ fn decode_entry_for_build(
     ))
 }
 
-pub use crate::typed_facts::binary::{decode_references, encode_references};
+#[cfg(test)]
+pub(crate) use crate::typed_facts::binary::encode_references;
 
 #[cfg(test)]
 mod tests;

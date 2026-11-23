@@ -1,5 +1,5 @@
 use crate::interner::{LinkerInterner, SymbolId};
-use super::super::resolution::ResolutionInput;
+use super::super::resolution::input::ResolutionInput;
 use super::super::semantic_context::{Context, LanguageMemberLookup, Member};
 use super::super::value_flow::{self, Symbol, SymbolRole, TypeTarget};
 use crate::models::compact_graph::CompactGraph;
@@ -51,7 +51,7 @@ pub(in crate::linker) fn admits_static_receiver_candidate(
     candidate: &Node,
     expression: &str,
 ) -> bool {
-    if !super::super::receiver_language_requires_static(candidate)
+    if !crate::linker::types::receiver_language_requires_static(candidate)
         || candidate.kind != "method"
         || candidate.details["is_static"] == true
     {
@@ -276,7 +276,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
     };
     let mut fields = input
         .by_qual
-        .get(super::super::qualified(
+        .get(crate::linker::types::qualified(
             lookup_key,
             &class.qualname,
             member_name,
@@ -350,7 +350,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
 
 pub(in crate::linker) fn has_indexed_name(
     interner: &LinkerInterner<'_>,
-    index: &super::super::NodeBindingIndex,
+    index: &crate::linker::types::NodeBindingIndex,
     node: &Node,
     name: &str,
 ) -> bool {
@@ -361,7 +361,7 @@ pub(in crate::linker) fn has_indexed_name(
 
 pub(in crate::linker) fn has_indexed_symbol(
     interner: &LinkerInterner<'_>,
-    index: &super::super::NodeBindingIndex,
+    index: &crate::linker::types::NodeBindingIndex,
     node: &Node,
     name: SymbolId,
 ) -> bool {
@@ -371,7 +371,7 @@ pub(in crate::linker) fn has_indexed_symbol(
 }
 
 pub(in crate::linker) fn has_indexed_symbol_id(
-    index: &super::super::NodeBindingIndex,
+    index: &crate::linker::types::NodeBindingIndex,
     node: SymbolId,
     name: SymbolId,
 ) -> bool {

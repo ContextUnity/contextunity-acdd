@@ -1,7 +1,5 @@
 #[test]
 fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
-    use acdd_index::db::reader;
-
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
@@ -251,7 +249,7 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
             |row| row.get(0),
         )
         .unwrap();
-    let facts = serde_json::to_value(reader::decode_local_facts(&blob).unwrap()).unwrap();
+    let facts = serde_json::to_value(crate::common::decode_local_facts(&blob).unwrap()).unwrap();
     let references: Vec<&serde_json::Value> = facts["references"]
         .as_array()
         .unwrap()

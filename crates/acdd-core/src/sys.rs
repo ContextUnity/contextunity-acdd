@@ -5,7 +5,7 @@ use std::{
 };
 
 /// Available memory after accounting for Linux cgroup constraints.
-pub fn available_memory_bytes() -> u64 {
+fn available_memory_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
         let host_available = fs::read_to_string("/proc/meminfo")
@@ -34,7 +34,7 @@ pub fn available_memory_bytes() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-pub fn available_memory_from_sources(
+fn available_memory_from_sources(
     host_available: u64,
     proc_cgroup: Option<&str>,
     cgroup_root: &Path,
@@ -175,7 +175,7 @@ fn cgroup_v2_headroom_at(directory: &Path) -> Option<Option<u64>> {
     Some(Some(limit.checked_sub(usage)?))
 }
 
-pub fn memory_budget_from_available(available: u64) -> u64 {
+fn memory_budget_from_available(available: u64) -> u64 {
     (available / 3).clamp(64 * 1024 * 1024, 16 * 1024 * 1024 * 1024)
 }
 
@@ -280,6 +280,181 @@ mod tests {
         {
             let start = read_process_start_time(std::process::id());
             assert!(start.is_some());
+        }
+    }
+
+    #[test]
+    fn memory_budget_uses_a_64_mib_floor_and_16_gib_cap() {
+        assert_eq!(memory_budget_from_available(0), 64 * 1024 * 1024);
+        assert_eq!(
+            memory_budget_from_available(768 * 1024 * 1024),
+            256 * 1024 * 1024
+        );
+        assert_eq!(
+            memory_budget_from_available(64 * 1024 * 1024 * 1024),
+            16 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    struct CgroupFixture(crate::fs::ScopedTempDir);
+
+    #[cfg(target_os = "linux")]
+    impl CgroupFixture {
+        fn new() -> Self {
+            Self(crate::fs::ScopedTempDir::create("acdd_cgroup_memory").unwrap())
+        }
+
+        fn write(&self, path: &str, content: &str) {
+            let path = self.root().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+
+        fn root(&self) -> std::path::PathBuf {
+            self.0.path().join("cgroup")
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_available_memory() {
+        struct Case {
+            case_id: &'static str,
+            host: u64,
+            membership: Option<&'static str>,
+            files: &'static [(&'static str, &'static str)],
+            expected: u64,
+        }
+        let nested = &[
+            ("pod/memory.max", "400\n"),
+            ("pod/memory.current", "200\n"),
+            ("pod/container/memory.max", "max\n"),
+        ];
+        let root_limit = &[("memory.max", "500\n"), ("memory.current", "200\n")];
+        let fixture = CgroupFixture::new();
+        for case in [
+            Case {
+                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::nested",
+                host: 500,
+                membership: Some("0::/pod/container\n"),
+                files: nested,
+                expected: 200,
+            },
+            Case {
+                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::host",
+                host: 100,
+                membership: Some("0::/pod/container\n"),
+                files: nested,
+                expected: 100,
+            },
+            Case {
+                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::absent",
+                host: 600,
+                membership: None,
+                files: root_limit,
+                expected: 300,
+            },
+            Case {
+                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::unresolved",
+                host: 600,
+                membership: Some("0::/namespace/path/not-mounted\n"),
+                files: root_limit,
+                expected: 300,
+            },
+            Case {
+                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::unlimited",
+                host: 321,
+                membership: Some("0::/pod/container\n"),
+                files: &[
+                    ("memory.max", "max\n"),
+                    ("pod/memory.max", "max\n"),
+                    ("pod/container/memory.max", "max\n"),
+                ],
+                expected: 321,
+            },
+            Case {
+                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::over_limit",
+                host: 321,
+                membership: Some("0::/pod/container\n"),
+                files: &[
+                    ("memory.max", "200\n"),
+                    ("memory.current", "100\n"),
+                    ("pod/memory.max", "100\n"),
+                    ("pod/memory.current", "101\n"),
+                    ("pod/container/memory.max", "max\n"),
+                ],
+                expected: 321,
+            },
+            Case {
+                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::malformed",
+                host: 321,
+                membership: Some("0::/bad\n"),
+                files: &[("bad/memory.max", "not-a-limit\n")],
+                expected: 321,
+            },
+            Case {
+                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::traversal",
+                host: 321,
+                membership: Some("0::/../host\n"),
+                files: &[("memory.max", "max\n")],
+                expected: 321,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::available",
+                host: 321,
+                membership: Some("5:cpu,memory:/\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "40\n"),
+                ],
+                expected: 60,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::hybrid",
+                host: 321,
+                membership: Some("0::/nested\n7:memory:/nested\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "40\n"),
+                    ("memory/nested/memory.limit_in_bytes", "100\n"),
+                    ("memory/nested/memory.usage_in_bytes", "40\n"),
+                ],
+                expected: 60,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::over_limit",
+                host: 321,
+                membership: Some("5:cpu,memory:/\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "101\n"),
+                ],
+                expected: 321,
+            },
+        ] {
+            if fixture.root().exists() {
+                fs::remove_dir_all(fixture.root()).unwrap();
+            }
+            for (path, content) in case.files {
+                fixture.write(path, content);
+            }
+            if case.membership == Some("0::/../host\n") {
+                fs::write(fixture.0.path().join("memory.max"), "max\n").unwrap();
+                let escaped = fixture.0.path().join("host");
+                fs::create_dir_all(&escaped).unwrap();
+                fs::write(escaped.join("memory.max"), "100\n").unwrap();
+                fs::write(escaped.join("memory.current"), "90\n").unwrap();
+            }
+            if case.membership == Some("0::/nested\n7:memory:/nested\n") {
+                fs::create_dir_all(fixture.root().join("nested")).unwrap();
+            }
+            assert_eq!(
+                available_memory_from_sources(case.host, case.membership, &fixture.root()),
+                case.expected,
+                "{}",
+                case.case_id,
+            );
         }
     }
 }

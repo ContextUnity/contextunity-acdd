@@ -1,6 +1,27 @@
-use super::{Coverage, Edge, Graph};
+use crate::models::compact_graph::{
+    CompactCoverage as Coverage, CompactEdge as Edge, CompactGraph as Graph,
+};
 use hashbrown::HashSet;
 use std::sync::Arc;
+
+pub(super) fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {
+    (&a.path, a.line, &a.src, &a.dst, &a.kind).cmp(&(&b.path, b.line, &b.src, &b.dst, &b.kind))
+}
+
+pub(super) fn compare_coverage(a: &Coverage, b: &Coverage) -> std::cmp::Ordering {
+    (&a.path, a.line, &a.expression, &a.status, &a.evidence).cmp(&(
+        &b.path,
+        b.line,
+        &b.expression,
+        &b.status,
+        &b.evidence,
+    ))
+}
+
+pub(super) fn sort_graph(graph: &mut Graph) {
+    graph.edges.sort_by(compare_edges);
+    graph.coverage.sort_by(compare_coverage);
+}
 
 thread_local! {
     static LOCAL_GRAPH_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -229,7 +250,9 @@ fn read_str<'a>(bytes: &mut &'a [u8]) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::GraphPart;
+    use crate::models::compact_graph::CompactGraph as Graph;
+    use std::sync::Arc;
 
     #[test]
     fn packed_graph_part_roundtrips_and_interns_shared_strings() {

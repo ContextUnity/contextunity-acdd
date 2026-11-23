@@ -22,15 +22,16 @@ use crate::types::{
 };
 use crate::usecases::commands::{handle_claim_dyn, is_context_reset_required};
 use crate::usecases::dto::{ClaimReq, RunReq, RunResp, SubmitReq, VerifyReq};
+use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::lifecycle::{
-    collect_external_satisfied_deps, collect_integration_inputs, ensure_state_enabled,
+    collect_integration_inputs, ensure_state_enabled,
     parse_profile_from_run, primary_workspace_root, resolve_active_run,
     with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def_ref;
 use crate::usecases::submit::handle_submit_dyn;
 use crate::usecases::verify::handle_verify_with_failure_return;
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId, TaskRef, WorkerId};
@@ -38,6 +39,64 @@ use acdd_core::ports::CompositeDomainProvider;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[allow(clippy::too_many_arguments)]
+fn execute_ready_wave_tasks(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    profile: &ResolvedGateProfile,
+    snapshot: &RunGraphSnapshot,
+    wave_tasks: &[TaskRef],
+    jobs: usize,
+    allow_main: bool,
+    session_cache: &Mutex<BTreeMap<(RunId, String, String), String>>,
+) -> Result<Vec<StepOutcome>, StateError> {
+    if jobs > 1 && wave_tasks.len() > 1 {
+        return std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(wave_tasks.len());
+            for tref in wave_tasks {
+                handles.push(scope.spawn(move || {
+                    execute_task_to_completion(
+                        config,
+                        backend,
+                        provider,
+                        profile,
+                        snapshot,
+                        tref,
+                        allow_main,
+                        session_cache,
+                    )
+                }));
+            }
+            let mut results = Vec::with_capacity(handles.len());
+            for handle in handles {
+                let joined = handle.join().map_err(|_| {
+                    StateError::new(
+                        ErrorCode::BackendConflict,
+                        "wave worker thread panicked during acdd run",
+                    )
+                })??;
+                results.push(joined);
+            }
+            Ok(results)
+        });
+    }
+    let mut results = Vec::with_capacity(wave_tasks.len());
+    for tref in wave_tasks {
+        results.push(execute_task_to_completion(
+            config,
+            backend,
+            provider,
+            profile,
+            snapshot,
+            tref,
+            allow_main,
+            session_cache,
+        )?);
+    }
+    Ok(results)
+}
 
 pub(crate) fn handle_run_dyn(
     config: &StateEngineConfig,
@@ -133,54 +192,17 @@ pub(crate) fn handle_run_dyn(
                 .collect();
 
             if !wave_tasks.is_empty() {
-                let task_outcomes = if jobs > 1 && wave_tasks.len() > 1 {
-                    std::thread::scope(|scope| {
-                        let mut handles = Vec::with_capacity(wave_tasks.len());
-                        for tref in &wave_tasks {
-                            let snap_ref = &snapshot;
-                            let prof_ref = &profile;
-                            let cache_ref = &session_cache;
-                            handles.push(scope.spawn(move || {
-                                execute_task_to_completion(
-                                    config,
-                                    backend,
-                                    provider,
-                                    prof_ref,
-                                    snap_ref,
-                                    tref,
-                                    req.allow_main,
-                                    cache_ref,
-                                )
-                            }));
-                        }
-                        let mut results = Vec::with_capacity(handles.len());
-                        for handle in handles {
-                            let joined = handle.join().map_err(|_| {
-                                StateError::new(
-                                    ErrorCode::BackendConflict,
-                                    "wave worker thread panicked during acdd run",
-                                )
-                            })??;
-                            results.push(joined);
-                        }
-                        Ok::<Vec<StepOutcome>, StateError>(results)
-                    })?
-                } else {
-                    let mut results = Vec::with_capacity(wave_tasks.len());
-                    for tref in &wave_tasks {
-                        results.push(execute_task_to_completion(
-                            config,
-                            backend,
-                            provider,
-                            &profile,
-                            &snapshot,
-                            tref,
-                            req.allow_main,
-                            &session_cache,
-                        )?);
-                    }
-                    results
-                };
+                let task_outcomes = execute_ready_wave_tasks(
+                    config,
+                    backend,
+                    provider,
+                    &profile,
+                    &snapshot,
+                    &wave_tasks,
+                    jobs,
+                    req.allow_main,
+                    &session_cache,
+                )?;
 
                 waves_executed += 1;
                 for out in &task_outcomes {

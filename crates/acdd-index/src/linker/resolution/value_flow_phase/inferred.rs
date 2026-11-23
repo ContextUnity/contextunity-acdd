@@ -1,7 +1,17 @@
+use super::super::context::*;
 use super::context::PhaseContext;
 use super::members;
-use super::*;
-use crate::models::tags::{CoverageStatus, EdgeKind, LanguageId, NodeKind};
+use crate::languages::LanguageProfile;
+use crate::linker::{
+    javascript, python::{self, receivers}, rust, semantic_context,
+    types::{qualified, receiver_language_requires_static, ReceiverType},
+    typescript, value_flow, vue,
+};
+use crate::models::{
+    compact_graph::CompactGraph as Graph,
+    tags::{CoverageStatus, EdgeKind, LanguageId, NodeKind},
+    Node, Reference,
+};
 
 pub(super) struct RefQuery<'a, 'q> {
     pub(super) r: &'q Reference,
@@ -24,7 +34,7 @@ pub(super) struct ReferenceState<'res> {
     pub(super) known_receiver: bool,
     pub(super) imported: Option<&'res Vec<&'res Node>>,
     pub(super) definition_scope: bool,
-    pub(super) receiver_member: Option<receivers::Member<'res>>,
+    pub(super) receiver_member: Option<receivers::PythonReceiverMember<'res>>,
     pub(super) rust_explicit_address: bool,
     pub(super) scope: &'res str,
 }
@@ -100,6 +110,96 @@ fn emit_resolved_member<'a, 'file, 'res>(
     }
     emit_inferred(graph, ctx.path, q.r, result, q.builtin_origin);
     true
+}
+
+fn resolve_empty_tail_inferred_callable<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    graph: &mut Graph,
+    q: &RefQuery<'a, '_>,
+    owner: &'a Node,
+    receiver: &'res value_flow::TypeTarget<'a>,
+) -> bool
+where
+    'a: 'file,
+    'file: 'res,
+{
+    if owner.language == LanguageId::Rust.as_str()
+        && q.r.kind == EdgeKind::Calls.as_str()
+        && matches!(receiver, value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
+    {
+        graph.reference_coverage(
+            ctx.path,
+            q.r,
+            CoverageStatus::Resolved.as_str(),
+            "invocation of a lexically proven Rust closure".into(),
+        );
+        return true;
+    }
+    if let value_flow::TypeTarget::Callable(callable) = receiver {
+        if callable.kind == NodeKind::Constant.as_str() {
+            return false;
+        }
+        emit_inferred(
+            graph,
+            ctx.path,
+            q.r,
+            semantic_context::Member::Local(callable),
+            q.builtin_origin,
+        );
+        return true;
+    }
+    if owner.language == LanguageId::Python.as_str() && q.r.kind == EdgeKind::Calls.as_str() {
+        match receiver {
+            value_flow::TypeTarget::CallableReturn(_) => {
+                graph.reference_coverage(
+                    ctx.path,
+                    q.r,
+                    CoverageStatus::Resolved.as_str(),
+                    "invocation of a typed Python Callable binding".into(),
+                );
+                return true;
+            }
+            value_flow::TypeTarget::ClassType(inner) => {
+                let result = match inner.as_ref() {
+                    value_flow::TypeTarget::Local(class) => {
+                        match ctx.input.semantic_context.lookup_member_mode(
+                            inner.as_ref(),
+                            "__init__",
+                            owner,
+                            false,
+                        ) {
+                            semantic_context::Member::Unknown => {
+                                semantic_context::Member::Local(class)
+                            }
+                            init => init,
+                        }
+                    }
+                    value_flow::TypeTarget::External {
+                        module,
+                        import_line,
+                    } => semantic_context::Member::External(module, *import_line, None),
+                    value_flow::TypeTarget::Builtin(_) => semantic_context::Member::Builtin,
+                    _ => semantic_context::Member::Unknown,
+                };
+                if emit_resolved_member(graph, ctx, q, result) {
+                    return true;
+                }
+            }
+            value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class.as_str() => {
+                let result = ctx.input.semantic_context.lookup_member_mode(
+                    receiver,
+                    "__call__",
+                    owner,
+                    false,
+                );
+                if emit_resolved_member(graph, ctx, q, result) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(super) fn resolve_inferred_receiver_member<'a, 'file, 'res>(
@@ -212,83 +312,7 @@ where
         return false;
     };
     if q.tail.is_empty() {
-        if owner.language == LanguageId::Rust.as_str()
-            && q.r.kind == EdgeKind::Calls.as_str()
-            && matches!(receiver, value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
-        {
-            graph.reference_coverage(
-                ctx.path,
-                q.r,
-                CoverageStatus::Resolved.as_str(),
-                "invocation of a lexically proven Rust closure".into(),
-            );
-            return true;
-        }
-        if let value_flow::TypeTarget::Callable(callable) = receiver {
-            if callable.kind == NodeKind::Constant.as_str() {
-                return false;
-            }
-            emit_inferred(
-                graph,
-                ctx.path,
-                q.r,
-                semantic_context::Member::Local(callable),
-                q.builtin_origin,
-            );
-            return true;
-        }
-        if owner.language == LanguageId::Python.as_str() && q.r.kind == EdgeKind::Calls.as_str() {
-            match receiver {
-                value_flow::TypeTarget::CallableReturn(_) => {
-                    graph.reference_coverage(
-                        ctx.path,
-                        q.r,
-                        CoverageStatus::Resolved.as_str(),
-                        "invocation of a typed Python Callable binding".into(),
-                    );
-                    return true;
-                }
-                value_flow::TypeTarget::ClassType(inner) => {
-                    let result = match inner.as_ref() {
-                        value_flow::TypeTarget::Local(class) => {
-                            match ctx.input.semantic_context.lookup_member_mode(
-                                inner.as_ref(),
-                                "__init__",
-                                owner,
-                                false,
-                            ) {
-                                semantic_context::Member::Unknown => {
-                                    semantic_context::Member::Local(class)
-                                }
-                                init => init,
-                            }
-                        }
-                        value_flow::TypeTarget::External {
-                            module,
-                            import_line,
-                        } => semantic_context::Member::External(module, *import_line, None),
-                        value_flow::TypeTarget::Builtin(_) => semantic_context::Member::Builtin,
-                        _ => semantic_context::Member::Unknown,
-                    };
-                    if emit_resolved_member(graph, ctx, q, result) {
-                        return true;
-                    }
-                }
-                value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class.as_str() => {
-                    let result = ctx.input.semantic_context.lookup_member_mode(
-                        receiver,
-                        "__call__",
-                        owner,
-                        false,
-                    );
-                    if emit_resolved_member(graph, ctx, q, result) {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        return false;
+        return resolve_empty_tail_inferred_callable(ctx, graph, q, owner, receiver);
     }
     let (fields, member) = q.tail.rsplit_once('.').unwrap_or(("", q.tail));
     let Some(nested_receiver) = chained_member_receiver(
@@ -344,7 +368,7 @@ where
     };
     let result = match result {
         semantic_context::Member::Local(node)
-            if !super::super::typescript::semantic_context::prototype_visible_at(
+            if !typescript::semantic_context::prototype_visible_at(
                 node, ctx.path, q.r.line, q.r.column,
             ) =>
         {
@@ -400,16 +424,16 @@ where
                 .filter(|candidate| candidate.path == receiver.path),
         );
     }
-    if let Some(receivers::Member::Local(method)) = state.receiver_member {
+    if let Some(receivers::PythonReceiverMember::Local(method)) = state.receiver_member {
         candidates.clear();
         candidates.push(method);
     }
     if matches!(
         state.receiver_member,
         Some(
-            receivers::Member::Unknown
-                | receivers::Member::Ambiguous
-                | receivers::Member::External(..)
+            receivers::PythonReceiverMember::Unknown
+                | receivers::PythonReceiverMember::Ambiguous
+                | receivers::PythonReceiverMember::External(..)
         )
     ) {
         candidates.clear();
@@ -443,6 +467,61 @@ where
     false
 }
 
+fn resolve_imported_static_type_member<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    graph: &mut Graph,
+    q: &RefQuery<'a, '_>,
+    imported: &[&'res Node],
+) -> bool
+where
+    'a: 'file,
+    'file: 'res,
+{
+    let (Some(owner), [receiver]) = (q.owner, imported) else {
+        return false;
+    };
+    if !matches!(
+        receiver.language.as_str(),
+        l if l == LanguageId::Rust.as_str()
+            || l == LanguageId::Typescript.as_str()
+            || l == LanguageId::Javascript.as_str()
+            || l == LanguageId::Vue.as_str()
+    ) || !matches!(
+        receiver.kind.as_str(),
+        k if k == NodeKind::Class.as_str()
+            || k == NodeKind::Struct.as_str()
+            || k == NodeKind::Enum.as_str()
+            || k == NodeKind::Interface.as_str()
+    ) {
+        return false;
+    }
+    let receiver_target = value_flow::TypeTarget::Local(receiver);
+    let member = ctx
+        .input
+        .semantic_context
+        .lookup_member_mode(&receiver_target, q.tail, owner, true);
+    let member = match (q.r.kind.as_str(), &member) {
+        (k, semantic_context::Member::Local(node))
+            if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field.as_str() =>
+        {
+            semantic_context::Member::Unknown
+        }
+        (k, semantic_context::Member::Local(node))
+            if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method.as_str() =>
+        {
+            semantic_context::Member::Unknown
+        }
+        _ => member,
+    };
+    if !matches!(member, semantic_context::Member::Unknown)
+        || receiver_language_requires_static(imported[0])
+    {
+        emit_inferred(graph, ctx.path, q.r, member, q.builtin_origin);
+        return true;
+    }
+    false
+}
+
 fn resolve_from_imported<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
     graph: &mut Graph,
@@ -459,7 +538,7 @@ where
         return false;
     };
     if q.tail.is_empty() {
-        let commonjs_default = super::super::javascript::resolution::commonjs_default_callable(
+        let commonjs_default = javascript::resolution::commonjs_default_callable(
             q.r,
             q.active_profile,
             q.first,
@@ -481,77 +560,60 @@ where
         }
         return false;
     }
-    if let (Some(owner), [receiver]) = (q.owner, imported.as_slice()) {
-        if matches!(
-            receiver.language.as_str(),
-            l if l == LanguageId::Rust.as_str()
-                || l == LanguageId::Typescript.as_str()
-                || l == LanguageId::Javascript.as_str()
-                || l == LanguageId::Vue.as_str()
-        ) && matches!(
-            receiver.kind.as_str(),
-            k if k == NodeKind::Class.as_str()
-                || k == NodeKind::Struct.as_str()
-                || k == NodeKind::Enum.as_str()
-                || k == NodeKind::Interface.as_str()
-        ) {
-            let receiver_target = value_flow::TypeTarget::Local(receiver);
-            let member =
-                ctx.input
-                    .semantic_context
-                    .lookup_member_mode(&receiver_target, q.tail, owner, true);
-            let member = match (q.r.kind.as_str(), &member) {
-                (k, semantic_context::Member::Local(node))
-                    if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field.as_str() =>
-                {
-                    semantic_context::Member::Unknown
-                }
-                (k, semantic_context::Member::Local(node))
-                    if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method.as_str() =>
-                {
-                    semantic_context::Member::Unknown
-                }
-                _ => member,
-            };
-            if !matches!(member, semantic_context::Member::Unknown)
-                || receiver_language_requires_static(imported[0])
-            {
-                emit_inferred(graph, ctx.path, q.r, member, q.builtin_origin);
-                return true;
-            }
-        }
+    if resolve_imported_static_type_member(ctx, graph, q, imported) {
+        return true;
     }
-    if matches!(
+fn resolve_imported_python_module_call<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    graph: &mut Graph,
+    q: &RefQuery<'a, '_>,
+    state: &ReferenceState<'res>,
+    imported: &[&'res Node],
+    lookup_key: &mut String,
+) -> bool
+where
+    'a: 'file,
+    'file: 'res,
+{
+    if !(matches!(
         q.r.kind.as_str(),
         k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
     ) && ctx
         .alias_import_positions
         .get(&(state.scope, q.first))
-        .is_some_and(|position| *position <= q.r.position())
+        .is_some_and(|position| *position <= q.r.position()))
     {
-        if let [module] = imported.as_slice() {
-            if let Some(receivers::Member::External(origin, line, provider, _)) =
-                super::super::python::resolution::imported_module_member(
-                    ctx.profile,
-                    module,
-                    q.tail,
-                    ctx.input.node_rebindings,
-                    ctx.input.interner,
-                    ctx.input.by_qual,
-                    lookup_key,
-                    &ctx.linker.member_lookup,
-                )
-            {
-                emit_inferred(
-                    graph,
-                    ctx.path,
-                    q.r,
-                    semantic_context::Member::External(origin, line, provider),
-                    q.builtin_origin,
-                );
-                return true;
-            }
-        }
+        return false;
+    }
+    let [module] = imported else {
+        return false;
+    };
+    let Some(receivers::PythonReceiverMember::External(origin, line, provider, _)) =
+        python::resolution::imported_module_member(
+            ctx.profile,
+            module,
+            q.tail,
+            ctx.input.node_rebindings,
+            ctx.input.interner,
+            ctx.input.by_qual,
+            lookup_key,
+            &ctx.linker.member_lookup,
+        )
+    else {
+        return false;
+    };
+    emit_inferred(
+        graph,
+        ctx.path,
+        q.r,
+        semantic_context::Member::External(origin, line, provider),
+        q.builtin_origin,
+    );
+    true
+}
+
+    if resolve_imported_python_module_call(ctx, graph, q, state, imported, lookup_key) {
+        return true;
     }
     for n in imported {
         if n.kind == NodeKind::Module.as_str()
@@ -755,7 +817,7 @@ where
         if let Some(target) = rust_module_target {
             candidates.extend_from_slice(ctx.lookup(target.namespace.as_str()));
             if candidates.is_empty() {
-                candidates.extend(super::super::rust::resolution::explicit_reexport_targets(
+                candidates.extend(rust::resolution::explicit_reexport_targets(
                     ctx.input,
                     ctx.file_module,
                     target,
@@ -785,7 +847,7 @@ where
                     }),
             );
             if candidates.is_empty() {
-                candidates.extend(super::super::rust::resolution::explicit_reexport_targets(
+                candidates.extend(rust::resolution::explicit_reexport_targets(
                     ctx.input,
                     ctx.file_module,
                     target,

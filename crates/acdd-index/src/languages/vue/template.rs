@@ -3,10 +3,18 @@
 //! HTML owns element boundaries; the JavaScript parser owns expression syntax.
 //! Source offsets are retained rather than recovering identifiers from tokens.
 
-use super::*;
-use crate::models::{is_test, Diagnostic, Edge};
-use crate::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
+use super::common::Position;
+use super::setup_facts;
+use crate::ast::syntax::{parse_island, text, walk_reversed, Syntax};
+use crate::languages::profile::LanguageProfile;
 use crate::languages::template::TemplateMasker;
+use crate::languages::types::{LanguageFileState, SyntaxContext};
+use crate::languages::typescript;
+use crate::models::{is_test, Diagnostic, Edge, Facts, Node, ReceiverHint, Reference};
+use crate::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
+use anyhow::{Context, Result};
+use std::collections::BTreeMap;
+use tree_sitter::Parser;
 
 struct Document<'a, 'p> {
     path: &'a str,
@@ -243,6 +251,64 @@ impl Document<'_, '_> {
         true
     }
 
+    fn collect_v_for_bindings(
+        &mut self,
+        parent: &str,
+        value: Syntax<'_>,
+        expression: &str,
+        bindings: &mut Vec<String>,
+        typed_bindings: &mut Vec<(String, crate::semantic::TypeExpr, SourcePosition)>,
+    ) {
+        let Some((left, right)) = split_v_for(expression) else {
+            return;
+        };
+        let (loop_bindings, first_binding) = loop_bindings(left, self.parser);
+        let right_trimmed = right.trim();
+        if let Some(element) = self
+            .typed_iterables
+            .get(right_trimmed)
+            .filter(|_| !self.template_binding_shadows(parent, right_trimmed))
+        {
+            if let Some(first) = first_binding.filter(|first| loop_bindings.contains(first)) {
+                let end = value.end_position();
+                typed_bindings.push((
+                    first,
+                    element.clone(),
+                    SourcePosition {
+                        line: end.row + 1,
+                        column: end.column,
+                    },
+                ));
+            }
+        }
+        bindings.extend(loop_bindings);
+        let relative = expression.len() - right.len();
+        self.expression_facts(right, value.start_byte() + relative, parent, false);
+    }
+
+    fn slot_provider_for_attr(
+        &self,
+        name: &str,
+        tag: Option<&str>,
+        parent_component: Option<&str>,
+        slot_directives: usize,
+    ) -> Option<(String, String)> {
+        let slot = if name == "v-slot" {
+            "default"
+        } else if let Some(slot) = name.strip_prefix("v-slot:") {
+            slot
+        } else {
+            &name[1..]
+        };
+        let component = if tag == Some("template") {
+            parent_component
+        } else {
+            tag.and_then(|tag| self.components.get(tag).map(String::as_str))
+        }?;
+        (slot_directives == 1 && !slot.is_empty() && slot.len() <= 48 && component.len() <= 48)
+            .then(|| (component.to_owned(), slot.to_owned()))
+    }
+
     fn visit_element(&mut self, node: Syntax<'_>, parent: &str, parent_component: Option<&str>) {
         let source = self.source;
         let Some(start) = (if node.kind() == "self_closing_tag" {
@@ -262,56 +328,13 @@ impl Document<'_, '_> {
             let name = text(*name, source);
             let expression = text(*value, source);
             if name == "v-for" {
-                if let Some((left, right)) = split_v_for(expression) {
-                    let (loop_bindings, first_binding) = loop_bindings(left, self.parser);
-                    let right_trimmed = right.trim();
-                    if let Some(element) = self
-                        .typed_iterables
-                        .get(right_trimmed)
-                        .filter(|_| !self.template_binding_shadows(parent, right_trimmed))
-                    {
-                        if let Some(first) =
-                            first_binding.filter(|first| loop_bindings.contains(first))
-                        {
-                            let end = value.end_position();
-                            typed_bindings.push((
-                                first,
-                                element.clone(),
-                                SourcePosition {
-                                    line: end.row + 1,
-                                    column: end.column,
-                                },
-                            ));
-                        }
-                    }
-                    bindings.extend(loop_bindings);
-                    let relative = expression.len() - right.len();
-                    self.expression_facts(right, value.start_byte() + relative, parent, false);
-                }
+                self.collect_v_for_bindings(parent, *value, expression, &mut bindings, &mut typed_bindings);
             } else if name == "v-slot" || name.starts_with("v-slot:") || name.starts_with('#') {
                 bindings.extend(binding_names(expression, self.parser));
                 slot_directives += 1;
-                let slot = if name == "v-slot" {
-                    "default"
-                } else if let Some(slot) = name.strip_prefix("v-slot:") {
-                    slot
-                } else {
-                    &name[1..]
-                };
-                let component = if tag == Some("template") {
-                    parent_component
-                } else {
-                    tag.and_then(|tag| self.components.get(tag).map(String::as_str))
-                };
-                if let Some(component) = component {
-                    if !slot.is_empty()
-                        && slot.len() <= 48
-                        && component.len() <= 48
-                        && slot_directives == 1
-                    {
-                        slot_provider = Some((component.to_owned(), slot.to_owned()));
-                    }
-                }
+                slot_provider = self
+                    .slot_provider_for_attr(name, tag, parent_component, slot_directives)
+                    .or(slot_provider);
             }
         }
         bindings.sort();
@@ -428,7 +451,7 @@ impl Document<'_, '_> {
             return;
         }
         let point = self.point(offset);
-        let Some(tree) = ast::parse_island(self.parser, expression, offset, point) else {
+        let Some(tree) = parse_island(self.parser, expression, offset, point) else {
             return;
         };
         let row = point.row;
@@ -450,7 +473,7 @@ impl Document<'_, '_> {
             });
         let mut scope_owners = vec![owner.to_owned()];
         let mut owner_stack = vec![0usize];
-        ast::visitor::walk_reversed(root, &mut |node, entering| {
+        walk_reversed(root, &mut |node, entering| {
             if !entering {
                 owner_stack.pop();
                 return;

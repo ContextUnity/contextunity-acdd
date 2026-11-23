@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedEntrypoint, ParsedManifest};
 
 /// Parser for JavaScript/TypeScript manifests and lockfiles.
-pub struct NpmParser;
+pub(crate) struct NpmParser;
 
 /// Shared npm/JS/TS manifest parser instance.
-pub static NPM_PARSER: NpmParser = NpmParser;
+pub(crate) static NPM_PARSER: NpmParser = NpmParser;
 
 impl ManifestParser for NpmParser {
     fn ecosystem(&self) -> Ecosystem {

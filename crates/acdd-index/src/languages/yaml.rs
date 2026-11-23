@@ -1,11 +1,15 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support;
+use super::types::ImportPath;
+use crate::ast::syntax::{text, ScopeBindings};
+use tree_sitter::Node as Syntax;
 
 /// Represents yaml data.
-pub struct Yaml;
+struct Yaml;
 /// Shared yaml language profile.
-pub static YAML: Yaml = Yaml;
+static YAML: Yaml = Yaml;
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&YAML];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&YAML];
 
 impl LanguageProfile for Yaml {
     fn id(&self) -> &'static str {
@@ -35,8 +39,7 @@ impl LanguageProfile for Yaml {
     fn normalize_import(&self, _owner: &str, _module: &str) -> Option<ImportPath> {
         None
     }
-    fn bindings(&self, _node: Syntax<'_>, _source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, _node: Syntax<'_>, _source: &str) -> ScopeBindings {
         support::empty_bindings()
     }
-    support::delegate_extract_file!();
 }

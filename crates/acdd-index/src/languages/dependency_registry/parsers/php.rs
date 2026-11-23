@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ModulePrefix, ParsedManifest};
 
 /// Parser for PHP `composer.json` manifests (dependencies and PSR-4 autoload prefixes).
-pub struct PhpParser;
+pub(crate) struct PhpParser;
 
 /// Shared PHP manifest parser instance.
-pub static PHP_PARSER: PhpParser = PhpParser;
+pub(crate) static PHP_PARSER: PhpParser = PhpParser;
 
 impl ManifestParser for PhpParser {
     fn ecosystem(&self) -> Ecosystem {

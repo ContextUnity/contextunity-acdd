@@ -1,4 +1,8 @@
-use super::*;
+use super::super::profile::LanguageProfile;
+use super::super::types::{module_stem, relative_namespace, ImportPath, SyntaxContext};
+use crate::ast::syntax::{self as ast, field, text};
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 
 pub(in crate::languages) fn symbol_kind(kind: &str) -> Option<&'static str> {
     match kind {

@@ -1,5 +1,5 @@
 use super::super::commitments::{read_metadata, MetadataKey};
-use super::super::{cycles, paging, symbols};
+use super::super::{cycles, paging, source};
 use super::selectors::path_bounds;
 use super::sql::rows;
 use crate::models::tags::{CoverageStatus, EdgeKind};
@@ -149,7 +149,7 @@ pub fn analyze_paged(
         let external_sql = format!("SELECT {},e.evidence AS __evidence FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status='{external}' AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.evidence_id", paging::coverage("c", options.detail));
         let mut external_imports = paging::query(conn, &external_sql, &[&path], options)?;
         let workspace_root = read_metadata(conn, MetadataKey::WorkspaceRoot)?;
-        let source = symbols::verified_source(conn, Path::new(&workspace_root), path)?;
+        let source = source::verified_source(conn, Path::new(&workspace_root), path)?;
         annotate_diagnostic_page(&mut resolution, &source);
         annotate_diagnostic_page(&mut external_imports, &source);
         result["resolution"] = resolution;

@@ -1,9 +1,24 @@
+use super::super::context::*;
 use super::candidates;
 use super::context::{has_node_binding, PhaseContext};
 use super::inferred::{self, RefQuery, ReferenceState};
 use super::members;
-use super::*;
-use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind};
+use crate::languages;
+use crate::linker::{
+    html, javascript, python::{self, receivers}, rust, semantic_context, typescript,
+    types::{
+        qualified,
+        ReceiverType,
+    },
+    value_flow, vue,
+};
+use std::borrow::Cow;
+use crate::models::{
+    compact_graph::CompactGraph as Graph,
+    tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind},
+    Node, ReceiverHint, Reference,
+};
+use hashbrown::HashMap;
 
 pub(super) fn resolve_reference<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -18,7 +33,7 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
 {
     let owner = ctx.input.interner.lookup_node(ctx.input.by_id, r.source.as_str());
     let active_profile = ctx.reference_profile(r);
-    if let Some((result, emit)) = super::super::typescript::resolution::property_reference(
+    if let Some((result, emit)) = typescript::resolution::property_reference(
         ctx.input,
         r,
         &ctx.ordinary_member_receivers,
@@ -33,7 +48,7 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
         return;
     }
     #[cfg(feature = "lang-rust")]
-    if super::super::rust::resolution::trait_object_call(
+    if rust::resolution::trait_object_call(
         active_profile,
         r,
         owner,
@@ -95,7 +110,7 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
     #[cfg(not(feature = "lang-rust"))]
     let rust_keyword_explicit = false;
     #[cfg(feature = "lang-rust")]
-    let rust_module_target = super::super::rust::resolution::rust_explicit_module_target(
+    let rust_module_target = rust::resolution::rust_explicit_module_target(
         ctx.input,
         ctx.profile,
         ctx.path,
@@ -443,7 +458,7 @@ fn resolve_dynamic_reference<'a, 'file, 'res>(
     {
         return;
     }
-    let mut computed = receivers::Member::Unknown;
+    let mut computed = receivers::PythonReceiverMember::Unknown;
     let mut literal_builtin = false;
     if ctx
         .profile
@@ -460,7 +475,7 @@ fn resolve_dynamic_reference<'a, 'file, 'res>(
         );
     }
     let (status, evidence): (&str, Cow<'static, str>) = match computed {
-        receivers::Member::Local(method)
+        receivers::PythonReceiverMember::Local(method)
             if matches!(
                 method.kind.as_str(),
                 k if k == NodeKind::Method.as_str() || k == NodeKind::Function.as_str()
@@ -482,7 +497,7 @@ fn resolve_dynamic_reference<'a, 'file, 'res>(
                 .into(),
             )
         }
-        receivers::Member::External(module, line, Some(provider), _) => {
+        receivers::PythonReceiverMember::External(module, line, Some(provider), _) => {
             let diagnostic_marker = if ctx.profile.is_some_and(|profile| {
                 profile.id() == LanguageId::Python.as_str() && !profile.is_stdlib(module)
             }) {
@@ -495,7 +510,7 @@ fn resolve_dynamic_reference<'a, 'file, 'res>(
                 format!("finite Python framework member of {provider}: {} via external import {module} at line {line}{diagnostic_marker}", r.expression).into(),
             )
         }
-        receivers::Member::External(module, _, None, _) => (
+        receivers::PythonReceiverMember::External(module, _, None, _) => (
             CoverageStatus::External.as_str(),
             format!("call through external import {module}; callable target unverified").into(),
         ),
@@ -517,7 +532,7 @@ fn resolve_early_language_specials<'a>(
     q: &RefQuery<'a, '_>,
 ) -> bool {
     #[cfg(feature = "lang-typescript")]
-    if super::super::javascript::resolution::has_returned_object_builtin_this_member(
+    if javascript::resolution::has_returned_object_builtin_this_member(
         ctx.input,
         ctx.path,
         q.r,
@@ -535,7 +550,7 @@ fn resolve_early_language_specials<'a>(
         return true;
     }
     #[cfg(feature = "lang-typescript")]
-    if super::super::javascript::resolution::object_factory_this_member(
+    if javascript::resolution::object_factory_this_member(
         ctx.input,
         ctx.path,
         q.r,
@@ -549,7 +564,7 @@ fn resolve_early_language_specials<'a>(
         return true;
     }
     #[cfg(feature = "lang-typescript")]
-    if super::super::typescript::resolution::lexical_this_member(
+    if typescript::resolution::lexical_this_member(
         ctx.input,
         ctx.path,
         q.r,

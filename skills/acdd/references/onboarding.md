@@ -47,11 +47,7 @@ Record only facts needed for setup:
 Read [adapter defaults](adapters.md) and adapt the
 [canonical adapter example](acdd.yaml.example) into `acdd.yaml`.
 `acdd init` can create a starter when no adapter exists;
-do not use `--force` over a tailored adapter. If an existing repository still
-uses `0.5.x` keys (`milestones`, `plans`, `tasks_db`, `task_repository`,
-`task_project`, `acdd_profile`), convert `acdd.yaml`, `.gitignore`,
-`.acdd/profile.yaml` (`version: 2`), and open specs first per the `0.6.x`
-migration guide.
+do not use `--force` over a tailored adapter.
 
 - Set `roots` to real repository-relative source roots, or `.` when appropriate.
   Include all relevant workspace source trees, such as both `src` and `crates`

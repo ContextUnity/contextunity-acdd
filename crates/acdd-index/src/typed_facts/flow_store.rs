@@ -1,6 +1,23 @@
-use crate::{models::Node, semantic::ValueFlowFacts};
+use crate::{
+    models::types::Node,
+    semantic::{
+        builtins::DEFAULT_FACTS_PER_SCOPE,
+        types::{encoded_scope_fact_count, scope_fact_count, ValueFlowFacts},
+    },
+};
 use serde_json::Value;
 use std::collections::HashMap;
+
+pub(crate) fn remap_identifier(
+    value: &mut String,
+    ids: &HashMap<String, String>,
+) -> bool {
+    let Some(replacement) = ids.get(value) else {
+        return false;
+    };
+    value.clone_from(replacement);
+    true
+}
 
 #[derive(Clone, Debug)]
 pub enum FlowState {
@@ -16,34 +33,9 @@ pub enum FlowState {
 pub struct FlowStore {
     entries: std::collections::BTreeMap<String, FlowState>,
     uncertainties:
-        std::collections::BTreeMap<String, Vec<crate::semantic::NamedDefinitionUncertainty>>,
+        std::collections::BTreeMap<String, Vec<crate::semantic::types::NamedDefinitionUncertainty>>,
     uncertainty_faults: std::collections::BTreeSet<String>,
     invalid_uncertainty_carriers: std::collections::BTreeSet<String>,
-}
-
-const SCOPE_FACT_KEYS: [&str; 16] = [
-    "bindings",
-    "branch_joins",
-    "immutable_initializers",
-    "fields",
-    "symbol_attachments",
-    "factory_results",
-    "named_bindings",
-    "endpoint_requests",
-    "component_macros",
-    "rule_origins",
-    "component_configurations",
-    "collection_elements",
-    "template_contexts",
-    "type_only_imports",
-    "annotation_references",
-    "vue_slots",
-];
-
-macro_rules! saturating_total {
-    ($first:expr $(, $rest:expr)* $(,)?) => {
-        [$first $(, $rest)*].into_iter().fold(0usize, usize::saturating_add)
-    };
 }
 
 macro_rules! append_fields {
@@ -58,28 +50,6 @@ macro_rules! merge_optional_fields {
             &mut $target.$field, $incoming.$field,
         );)+
     };
-}
-
-/// Returns the total count of all bounded scope fact arrays.
-pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
-    saturating_total!(
-        facts.bindings.len(),
-        facts.branch_joins.len(),
-        facts.immutable_initializers.len(),
-        facts.fields.len(),
-        facts
-            .framework
-            .as_deref()
-            .map_or(0, |framework| framework.facts.len())
-    )
-}
-
-/// Counts the same bounded arrays on a persisted value-flow object.
-pub fn encoded_scope_fact_count(encoded: &Value) -> usize {
-    SCOPE_FACT_KEYS
-        .into_iter()
-        .map(|key| encoded[key].as_array().map_or(0, Vec::len))
-        .fold(0usize, usize::saturating_add)
 }
 
 fn merge_optional<T: PartialEq>(previous: &mut Option<T>, incoming: Option<T>) -> bool {
@@ -103,7 +73,7 @@ impl FlowStore {
         &mut self,
         owner: String,
         state: Option<FlowState>,
-        uncertainties: Vec<crate::semantic::NamedDefinitionUncertainty>,
+        uncertainties: Vec<crate::semantic::types::NamedDefinitionUncertainty>,
         uncertainty_fault: bool,
     ) {
         if let Some(state) = state {
@@ -119,12 +89,12 @@ impl FlowStore {
     pub fn named_uncertainties(
         &self,
         owner: &str,
-    ) -> &[crate::semantic::NamedDefinitionUncertainty] {
+    ) -> &[crate::semantic::types::NamedDefinitionUncertainty] {
         self.uncertainties.get(owner).map_or(&[], Vec::as_slice)
     }
     pub fn named_uncertainty_entries(
         &self,
-    ) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::NamedDefinitionUncertainty])> {
+    ) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::types::NamedDefinitionUncertainty])> {
         self.uncertainties
             .iter()
             .map(|(id, values)| (id.as_str(), values.as_slice()))
@@ -141,7 +111,7 @@ impl FlowStore {
     #[allow(clippy::result_unit_err)]
     pub fn read_named_uncertainties(
         node: &Node,
-    ) -> Result<Vec<crate::semantic::NamedDefinitionUncertainty>, ()> {
+    ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
         let markers = Self::read_named_uncertainty_carrier(node)?;
         if node.details["named_definition_uncertainty_fault"] == true {
             Err(())
@@ -151,7 +121,7 @@ impl FlowStore {
     }
     fn read_named_uncertainty_carrier(
         node: &Node,
-    ) -> Result<Vec<crate::semantic::NamedDefinitionUncertainty>, ()> {
+    ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
         let fault = node.details.get("named_definition_uncertainty_fault");
         if fault.is_some_and(|value| !value.is_boolean()) {
             return Err(());
@@ -163,11 +133,11 @@ impl FlowStore {
         if values.len() > 128 * 128 {
             return Err(());
         }
-        let markers: Vec<crate::semantic::NamedDefinitionUncertainty> =
+        let markers: Vec<crate::semantic::types::NamedDefinitionUncertainty> =
             serde_json::from_value(raw.clone()).map_err(|_| ())?;
         let mut grouped: std::collections::BTreeMap<
             (&str, &str, &str),
-            Vec<&crate::semantic::StaticString>,
+            Vec<&crate::semantic::types::StaticString>,
         > = std::collections::BTreeMap::new();
         for marker in &markers {
             if !marker.valid() {
@@ -181,7 +151,7 @@ impl FlowStore {
             }
             keys.push(&marker.key);
             if keys.len() > 128
-                || (keys.len() > 1 && keys.contains(&&crate::semantic::StaticString::Unknown))
+                || (keys.len() > 1 && keys.contains(&&crate::semantic::types::StaticString::Unknown))
             {
                 return Err(());
             }
@@ -194,9 +164,9 @@ impl FlowStore {
     fn merge_uncertainties(
         &mut self,
         id: &str,
-        incoming: impl IntoIterator<Item = crate::semantic::NamedDefinitionUncertainty>,
+        incoming: impl IntoIterator<Item = crate::semantic::types::NamedDefinitionUncertainty>,
     ) {
-        use crate::semantic::{NamedDefinitionUncertainty, StaticString};
+        use crate::semantic::types::{NamedDefinitionUncertainty, StaticString};
         let mut groups: std::collections::BTreeMap<(String, String, String), Vec<StaticString>> =
             std::collections::BTreeMap::new();
         let previous = self.uncertainties.remove(id).unwrap_or_default();
@@ -228,7 +198,7 @@ impl FlowStore {
                 keys.into_iter().map(move |key| NamedDefinitionUncertainty {
                     domain: domain.clone(),
                     key,
-                    origin: crate::semantic::ExtractionRuleOrigin {
+                    origin: crate::semantic::types::ExtractionRuleOrigin {
                         pack: pack.clone(),
                         rule: rule.clone(),
                     },
@@ -245,11 +215,11 @@ impl FlowStore {
             .filter(|fact| {
                 matches!(
                     fact.role,
-                    crate::semantic::NamedBindingRole::Definition { .. }
-                        | crate::semantic::NamedBindingRole::RegistryDefinition { .. }
+                    crate::semantic::types::NamedBindingRole::Definition { .. }
+                        | crate::semantic::types::NamedBindingRole::RegistryDefinition { .. }
                 )
             })
-            .map(|fact| crate::semantic::NamedDefinitionUncertainty {
+            .map(|fact| crate::semantic::types::NamedDefinitionUncertainty {
                 domain: fact.domain.clone(),
                 key: fact.key.clone(),
                 origin: fact.origin.clone(),
@@ -297,7 +267,7 @@ impl FlowStore {
     }
 
     fn exceeds_fact_limit(facts: &ValueFlowFacts) -> bool {
-        scope_fact_count(facts) > crate::semantic::DEFAULT_FACTS_PER_SCOPE
+        scope_fact_count(facts) > DEFAULT_FACTS_PER_SCOPE
             || facts.symbol_attachments().count() > 128
             || facts.factory_results().count() > 128
             || facts.named_bindings().count() > 128
@@ -381,7 +351,7 @@ impl FlowStore {
         if original.is_null() {
             return;
         }
-        if encoded_scope_fact_count(&original) > crate::semantic::DEFAULT_FACTS_PER_SCOPE
+        if encoded_scope_fact_count(&original) > DEFAULT_FACTS_PER_SCOPE
             || original["fact_limit_exceeded"] == true
         {
             self.entries
@@ -422,10 +392,10 @@ impl FlowStore {
 
     /// Rewrite only explicit canonical operands after an embedded island is named.
     pub fn remap_nodes(&mut self, ids: &HashMap<String, String>) {
-        use crate::semantic::{NamedBindingRole, SymbolOperand};
+        use crate::semantic::types::{NamedBindingRole, SymbolOperand};
         let remap = |operand: &mut SymbolOperand| {
             if let SymbolOperand::Node { id } = operand {
-                super::remap_identifier(id, ids);
+                remap_identifier(id, ids);
             }
         };
         for state in self.entries.values_mut() {
@@ -456,6 +426,22 @@ impl FlowStore {
         }
     }
 
+    fn merge_uncertainty_state(
+        &mut self,
+        id: &str,
+        invalid_carrier: bool,
+        markers: Vec<crate::semantic::types::NamedDefinitionUncertainty>,
+        fault: bool,
+    ) {
+        if invalid_carrier {
+            self.invalid_uncertainty_carriers.insert(id.to_owned());
+        }
+        self.merge_uncertainties(id, markers);
+        if fault {
+            self.uncertainty_faults.insert(id.to_owned());
+        }
+    }
+
     /// Move a complete classic fragment, retaining invalid raw evidence and bounds.
     pub fn merge_classic(&mut self, id: &str, other: &mut Self) {
         let incoming_invalid_carrier = other.invalid_uncertainty_carriers.remove(id);
@@ -464,13 +450,7 @@ impl FlowStore {
         let incoming_markers = other.uncertainties.remove(id).unwrap_or_default();
         let incoming_fault = other.uncertainty_faults.remove(id);
         let Some(incoming) = other.entries.remove(id) else {
-            if invalid_carrier {
-                self.invalid_uncertainty_carriers.insert(id.to_owned());
-            }
-            self.merge_uncertainties(id, incoming_markers);
-            if incoming_fault {
-                self.uncertainty_faults.insert(id.to_owned());
-            }
+            self.merge_uncertainty_state(id, invalid_carrier, incoming_markers, incoming_fault);
             return;
         };
         let Some(previous) = self.entries.remove(id) else {
@@ -483,13 +463,12 @@ impl FlowStore {
                 }
             }
             self.merge_uncertainties(id, previous_markers);
-            self.merge_uncertainties(id, incoming_markers);
-            if incoming_fault || previous_fault {
-                self.uncertainty_faults.insert(id.to_owned());
-            }
-            if invalid_carrier {
-                self.invalid_uncertainty_carriers.insert(id.to_owned());
-            }
+            self.merge_uncertainty_state(
+                id,
+                invalid_carrier,
+                incoming_markers,
+                incoming_fault || previous_fault,
+            );
             return;
         };
         if matches!(&previous, FlowState::Invalid(_)) || matches!(&incoming, FlowState::Invalid(_))
@@ -603,8 +582,7 @@ impl FlowStore {
                 framework.callable_signature = None;
                 framework
                     .facts
-                    .retain(|fact| matches!(fact, crate::semantic::FrameworkFact::TemplateContext(_)));
-                framework.facts.shrink_to_fit();
+                    .retain(|fact| matches!(fact, crate::semantic::types::FrameworkFact::TemplateContext(_)));
                 if framework.async_return_type.is_none() && framework.facts.is_empty() {
                     facts.framework = None;
                 }

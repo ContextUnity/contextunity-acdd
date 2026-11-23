@@ -9,6 +9,5 @@ mod dependency_discovery;
 mod fastapi;
 mod finite_operations;
 mod manifest_deltas;
-mod source_ingestion;
 
 mod components;

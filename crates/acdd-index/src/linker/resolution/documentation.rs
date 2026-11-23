@@ -1,4 +1,112 @@
-use super::*;
+use super::context::*;
+use crate::models::Node;
+use hashbrown::HashMap;
+use std::borrow::Cow;
+
+fn emit_doc_citations(
+    all: &dyn crate::FactsLookup,
+    path: &str,
+    doc_id: &str,
+    document_node: Option<&Node>,
+    document_details: Option<&serde_json::Value>,
+    graph: &mut crate::models::compact_graph::CompactGraph,
+) {
+    let Some(citations) = document_details
+        .and_then(|details| details.get("citations"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    for citation in citations {
+        let Some(target) = citation["target"].as_str() else {
+            continue;
+        };
+        let line = citation["line"]
+            .as_u64()
+            .unwrap_or(document_node.map_or(1, |node| node.line as u64))
+            as usize;
+        let Some((target_path, anchor)) = resolve_document_target(path, target) else {
+            continue;
+        };
+        let Some(target_facts) = all.get_facts(target_path.as_ref()) else {
+            continue;
+        };
+        let matching_sections = target_facts
+            .docs
+            .iter()
+            .filter(|section| anchor.is_empty() || markdown_slug(&section.section_title) == anchor)
+            .collect::<Vec<_>>();
+        if let [target_doc] = matching_sections.as_slice() {
+            for (src, dst, kind) in [
+                (doc_id, target_doc.doc_id.as_str(), "cites_doc"),
+                (target_doc.doc_id.as_str(), doc_id, "cited_by_doc"),
+            ] {
+                graph.push_edge(path, src, dst, kind, line, target, "exact");
+            }
+        }
+    }
+}
+
+fn emit_doc_invariant_claims(
+    path: &str,
+    facts: &crate::models::Facts,
+    document_details: Option<&serde_json::Value>,
+    by_qual: &HashMap<&str, Vec<&Node>>,
+    by_name: &HashMap<&str, Vec<&Node>>,
+    by_suffix: &HashMap<&str, Vec<&Node>>,
+    graph: &mut crate::models::compact_graph::CompactGraph,
+) {
+    let Some(claims) = document_details
+        .and_then(|details| details.get("symbol_claims"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    for claim in claims {
+        let Some(name) = claim["name"].as_str() else {
+            continue;
+        };
+        let explicit_path = claim["explicit_path"].as_bool().unwrap_or(false);
+        let path_filter = explicit_path
+            .then(|| claim["target_path"].as_str())
+            .flatten();
+        if explicit_path && path_filter.is_none()
+            || path_filter.is_some_and(|path| path.split('/').any(|part| part == ".."))
+        {
+            continue;
+        }
+        let normalized = name.replace("::", ".");
+        let Some(candidates) =
+            document_symbol_candidates(&normalized, name, path, path_filter, by_qual, by_name, by_suffix)
+        else {
+            continue;
+        };
+        let [target_node] = candidates.as_slice() else {
+            continue;
+        };
+        let claim_line = claim["line"].as_u64().unwrap_or(1) as usize;
+        for invariant in facts.nodes.iter().filter(|node| {
+            node.kind == "invariant"
+                && claim_line >= node.line
+                && claim_line <= node.end_line.max(node.line)
+        }) {
+            for (src, dst, kind) in [
+                (&invariant.id, &target_node.id, "governs"),
+                (&target_node.id, &invariant.id, "governed_by"),
+            ] {
+                graph.push_edge(
+                    path,
+                    src.clone(),
+                    dst.clone(),
+                    kind,
+                    claim_line,
+                    name,
+                    "exact",
+                );
+            }
+        }
+    }
+}
 
 pub(super) fn phase_documentation<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
@@ -22,50 +130,7 @@ where
     for doc in &facts.docs {
         let document_node = doc_nodes_by_id.get(doc.doc_id.as_str()).copied();
         let document_details = document_node.map(|node| &node.details);
-        if let Some(citations) = document_details
-            .and_then(|details| details.get("citations"))
-            .and_then(serde_json::Value::as_array)
-        {
-            for citation in citations {
-                let Some(target) = citation["target"].as_str() else {
-                    continue;
-                };
-                let line = citation["line"]
-                    .as_u64()
-                    .unwrap_or(document_node.map_or(1, |node| node.line as u64))
-                    as usize;
-                let Some((target_path, anchor)) = resolve_document_target(path, target) else {
-                    continue;
-                };
-                let Some(target_facts) = all.get_facts(target_path.as_ref())
-                else {
-                    continue;
-                };
-                let matching_sections = target_facts
-                    .docs
-                    .iter()
-                    .filter(|section| {
-                        anchor.is_empty() || markdown_slug(&section.section_title) == anchor
-                    })
-                    .collect::<Vec<_>>();
-                if let [target_doc] = matching_sections.as_slice() {
-                    for (src, dst, kind) in [
-                        (&doc.doc_id, &target_doc.doc_id, "cites_doc"),
-                        (&target_doc.doc_id, &doc.doc_id, "cited_by_doc"),
-                    ] {
-                        graph.push_edge(
-                            path,
-                            src.clone(),
-                            dst.clone(),
-                            kind,
-                            line,
-                            target,
-                            "exact",
-                        );
-                    }
-                }
-            }
-        }
+        emit_doc_citations(all, path, &doc.doc_id, document_node, document_details, graph);
         if path.starts_with("archive/") || path.contains("/archive/") {
             continue;
         }
@@ -133,68 +198,7 @@ where
                 }
             }
         }
-        if let Some(claims) = document_details
-            .and_then(|details| details.get("symbol_claims"))
-            .and_then(serde_json::Value::as_array)
-        {
-            for claim in claims {
-                let Some(name) = claim["name"].as_str() else {
-                    continue;
-                };
-                let explicit_path = claim["explicit_path"].as_bool().unwrap_or(false);
-                let path_filter = if explicit_path {
-                    claim["target_path"].as_str()
-                } else {
-                    None
-                };
-                if explicit_path && path_filter.is_none()
-                    || path_filter.is_some_and(|path| path.split('/').any(|part| part == ".."))
-                {
-                    continue;
-                }
-                let normalized = name.replace("::", ".");
-                let Some(candidates) = document_symbol_candidates(
-                    &normalized,
-                    name,
-                    path,
-                    path_filter,
-                    by_qual,
-                    by_name,
-                    by_suffix,
-                ) else {
-                    continue;
-                };
-                let [target_node] = candidates.as_slice() else {
-                    continue;
-                };
-                let claim_line = claim["line"].as_u64().unwrap_or(1) as usize;
-                let invariant_nodes = facts
-                    .nodes
-                    .iter()
-                    .filter(|node| {
-                        node.kind == "invariant"
-                            && claim_line >= node.line
-                            && claim_line <= node.end_line.max(node.line)
-                    })
-                    .collect::<Vec<_>>();
-                for invariant in invariant_nodes {
-                    for (src, dst, kind) in [
-                        (&invariant.id, &target_node.id, "governs"),
-                        (&target_node.id, &invariant.id, "governed_by"),
-                    ] {
-                        graph.push_edge(
-                            path,
-                            src.clone(),
-                            dst.clone(),
-                            kind,
-                            claim_line,
-                            name,
-                            "exact",
-                        );
-                    }
-                }
-            }
-        }
+        emit_doc_invariant_claims(path, facts, document_details, by_qual, by_name, by_suffix, graph);
     }
 }
 

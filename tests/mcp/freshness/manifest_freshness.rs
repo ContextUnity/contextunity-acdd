@@ -343,11 +343,12 @@ fn manifest_changes_trigger_deterministic_rebuild_in_both_admit_and_delta() {
 
     // 2. Change manifest on disk and verify delta performs rebuild
     ws.write("requirements.txt", "requests>=2.2\n");
-    let delta_res = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
+    let delta_res = contextunity_acdd::engine::pipeline::delta_with_selection(
         ws.root(),
         &db,
         &[PathBuf::from("src/app.py")],
-        &ws.path(".acdd/extraction-cache"),
+        None,
+        Some(&ws.path(".acdd/extraction-cache")),
     )
     .unwrap();
     assert!(delta_res.is_object());

@@ -1,5 +1,6 @@
-use super::super::workspace_path;
-use super::{javascript_namespace, joined_scope, match_mapping, ImportPath};
+use crate::languages::types::{
+    javascript_namespace, joined_scope, match_mapping, workspace_path, ImportPath,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]

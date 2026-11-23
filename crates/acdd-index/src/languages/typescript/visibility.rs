@@ -1,7 +1,6 @@
-use super::Syntax;
+use crate::ast::syntax::{text, Syntax};
 use crate::models::Facts;
 use crate::semantic::ExportBinding;
-use crate::ast::text;
 use std::collections::HashSet;
 
 fn source_key(node: Syntax<'_>, line_offset: usize) -> (usize, usize) {

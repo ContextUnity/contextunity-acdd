@@ -1,9 +1,160 @@
-use super::routes::prefixed_path;
-use crate::languages;
+use crate::languages::{routes::prefixed_path, types::workspace_path};
 use crate::models::{Edge, Node};
 use crate::typed_facts::TypedFacts;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+fn materialize_composed_route(
+    all: &BTreeMap<String, TypedFacts>,
+    owner_path: &str,
+    include: &Node,
+    child: &Node,
+    route_path: &str,
+    id: &str,
+    ancestors: Option<&HashSet<String>>,
+) -> Node {
+    let method = child.details["method"].as_str().unwrap_or("ANY");
+    let name = format!("{method} {route_path}");
+    let mut route = child.clone();
+    let source_path = child.details["source_path"]
+        .as_str()
+        .unwrap_or(child.path.as_str())
+        .to_owned();
+    let source_line = child.details["source_line"]
+        .as_u64()
+        .unwrap_or(child.line as u64);
+    let source_id = child.details["source_id"]
+        .as_str()
+        .unwrap_or(child.id.as_str())
+        .to_owned();
+    let origin = all
+        .get(&source_path)
+        .filter(|_| workspace_path(&source_path).0 == workspace_path(owner_path).0)
+        .and_then(|source_facts| {
+            source_facts.facts.nodes.iter().find(|node| {
+                node.id == source_id && node.kind == "route" && node.path == source_path
+            })
+        });
+    let source_qualname = origin.map(|node| node.qualname.clone());
+    route.id = id.to_owned();
+    route.name = name.clone();
+    route.path = owner_path.to_owned();
+    route.line = include.line;
+    route.end_line = include.end_line;
+    let parent_module = all
+        .get(owner_path)
+        .and_then(|typed| typed.facts.nodes.iter().find(|node| node.kind == "module"))
+        .map_or(owner_path, |module| module.qualname.as_str());
+    route.qualname = format!("{parent_module}.{name}");
+    route.details["route_path"] = json!(route_path);
+    route.details["name"] = json!(name);
+    route.details["source_path"] = json!(source_path);
+    route.details["source_line"] = json!(source_line);
+    route.details["source_id"] = json!(source_id);
+    route.details["source_qualname"] =
+        source_qualname.map_or(serde_json::Value::Null, |qualname| json!(qualname));
+    route.details["included_from"] = json!(include.id);
+    route.details["include_depth"] = json!(
+        include.details["include_depth"]
+            .as_u64()
+            .unwrap_or(0)
+            .max(child.details["include_depth"].as_u64().unwrap_or(0))
+            + 1
+    );
+    let mut namespaces = Vec::new();
+    for candidate in [
+        include.details["route_namespace"].as_str(),
+        include.details["include_namespace"].as_str(),
+        child.details["route_namespace"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        namespaces.extend(candidate.split(':').filter(|part| !part.is_empty()));
+    }
+    route.details["route_namespace"] = if namespaces.is_empty() {
+        serde_json::Value::Null
+    } else {
+        json!(namespaces.join(":"))
+    };
+    let _ = ancestors;
+    route
+}
+
+fn apply_composed_route_addition(
+    all: &mut BTreeMap<String, TypedFacts>,
+    changed_paths: &mut BTreeSet<String>,
+    owner_path: String,
+    route: Node,
+    include: Node,
+    child: Node,
+) {
+    let source_path = route.details["source_path"]
+        .as_str()
+        .unwrap_or(child.path.as_str())
+        .to_owned();
+    let source_id = route.details["source_id"]
+        .as_str()
+        .unwrap_or(child.id.as_str())
+        .to_owned();
+    let child_edges = all
+        .get(&child.path)
+        .map(|source_facts| {
+            source_facts
+                .facts
+                .edges
+                .iter()
+                .filter(|edge| edge.src == child.id && edge.kind != "contains")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let source_references = all
+        .get(&source_path)
+        .filter(|_| workspace_path(&source_path).0 == workspace_path(&owner_path).0)
+        .filter(|source_facts| {
+            source_facts.facts.nodes.iter().any(|node| {
+                node.id == source_id && node.kind == "route" && node.path == source_path
+            })
+        })
+        .map(|source_facts| {
+            source_facts
+                .facts
+                .references
+                .iter()
+                .filter(|reference| reference.source == source_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let Some(owner) = all.get_mut(&owner_path) else {
+        return;
+    };
+    owner.facts.nodes.push(route.clone());
+    owner.facts.edges.push(Edge {
+        src: format!("module:{owner_path}"),
+        dst: route.id.clone(),
+        kind: "contains".into(),
+        path: owner_path.clone(),
+        line: include.line,
+        evidence: "composed configured route include".into(),
+        confidence: "exact".into(),
+    });
+    for mut edge in child_edges {
+        edge.src = route.id.clone();
+        edge.path = owner_path.clone();
+        edge.line = include.line;
+        owner.facts.edges.push(edge);
+    }
+    changed_paths.insert(owner_path);
+    if let Some(origin) = all.get_mut(&source_path) {
+        for mut reference in source_references {
+            reference.source = route.id.clone();
+            origin.facts.references.push(reference);
+        }
+        changed_paths.insert(source_path);
+    }
+}
 
 /// Materializes configured include prefixes from extracted route facts without rereading source.
 pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> {
@@ -58,7 +209,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
     let module_paths: HashMap<(String, String), String> = all
         .iter()
         .flat_map(|(path, typed)| {
-            let workspace = languages::workspace_path(path).0.to_owned();
+            let workspace = workspace_path(path).0.to_owned();
             typed
                 .facts
                 .nodes
@@ -93,7 +244,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
             let Some(module) = include.details["include_module"].as_str() else {
                 continue;
             };
-            let workspace = languages::workspace_path(&owner_path).0.to_owned();
+            let workspace = workspace_path(&owner_path).0.to_owned();
             let Some(child_path) = module_paths.get(&(workspace, module.to_owned())) else {
                 continue;
             };
@@ -125,9 +276,6 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 let Some(child_path_value) = child.details["route_path"].as_str() else {
                     continue;
                 };
-                let route_path = prefixed_path(Some(include_path), child_path_value);
-                let method = child.details["method"].as_str().unwrap_or("ANY");
-                let name = format!("{method} {route_path}");
                 let id = format!("route:{owner_path}:included:{}:{}", include.id, child.id);
                 if all
                     .get(&owner_path)
@@ -135,74 +283,19 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 {
                     continue;
                 }
+                let route_path = prefixed_path(Some(include_path), child_path_value);
+                let route = materialize_composed_route(
+                    all,
+                    &owner_path,
+                    &include,
+                    &child,
+                    &route_path,
+                    &id,
+                    ancestors,
+                );
                 let mut ancestry = ancestors.cloned().unwrap_or_default();
                 ancestry.insert(include.id.clone());
-                route_ancestry.insert(id.clone(), ancestry);
-                let mut route = child.clone();
-                let source_path = child.details["source_path"]
-                    .as_str()
-                    .unwrap_or(child.path.as_str())
-                    .to_owned();
-                let source_line = child.details["source_line"]
-                    .as_u64()
-                    .unwrap_or(child.line as u64);
-                let source_id = child.details["source_id"]
-                    .as_str()
-                    .unwrap_or(child.id.as_str())
-                    .to_owned();
-                let origin = all
-                    .get(&source_path)
-                    .filter(|_| {
-                        languages::workspace_path(&source_path).0
-                            == languages::workspace_path(&owner_path).0
-                    })
-                    .and_then(|source_facts| {
-                        source_facts.facts.nodes.iter().find(|node| {
-                            node.id == source_id && node.kind == "route" && node.path == source_path
-                        })
-                    });
-                let source_qualname = origin.map(|node| node.qualname.clone());
-                route.id = id.clone();
-                route.name = name.clone();
-                route.path = owner_path.clone();
-                route.line = include.line;
-                route.end_line = include.end_line;
-                let parent_module = all
-                    .get(&owner_path)
-                    .and_then(|typed| typed.facts.nodes.iter().find(|node| node.kind == "module"))
-                    .map_or(owner_path.as_str(), |module| module.qualname.as_str());
-                route.qualname = format!("{parent_module}.{name}");
-                route.details["route_path"] = json!(route_path);
-                route.details["name"] = json!(name);
-                route.details["source_path"] = json!(source_path);
-                route.details["source_line"] = json!(source_line);
-                route.details["source_id"] = json!(source_id);
-                route.details["source_qualname"] =
-                    source_qualname.map_or(serde_json::Value::Null, |qualname| json!(qualname));
-                route.details["included_from"] = json!(include.id);
-                route.details["include_depth"] = json!(
-                    include.details["include_depth"]
-                        .as_u64()
-                        .unwrap_or(0)
-                        .max(child.details["include_depth"].as_u64().unwrap_or(0))
-                        + 1
-                );
-                let mut namespaces = Vec::new();
-                for candidate in [
-                    include.details["route_namespace"].as_str(),
-                    include.details["include_namespace"].as_str(),
-                    child.details["route_namespace"].as_str(),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    namespaces.extend(candidate.split(':').filter(|part| !part.is_empty()));
-                }
-                route.details["route_namespace"] = if namespaces.is_empty() {
-                    serde_json::Value::Null
-                } else {
-                    json!(namespaces.join(":"))
-                };
+                route_ancestry.insert(id, ancestry);
                 additions.push((owner_path.clone(), route, include.clone(), child));
                 composed_count += 1;
             }
@@ -211,75 +304,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
             break;
         }
         for (owner_path, route, include, child) in additions {
-            let source_path = route.details["source_path"]
-                .as_str()
-                .unwrap_or(child.path.as_str())
-                .to_owned();
-            let source_id = route.details["source_id"]
-                .as_str()
-                .unwrap_or(child.id.as_str())
-                .to_owned();
-            let child_edges = all
-                .get(&child.path)
-                .map(|source_facts| {
-                    let edges = source_facts
-                        .facts
-                        .edges
-                        .iter()
-                        .filter(|edge| edge.src == child.id && edge.kind != "contains")
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    edges
-                })
-                .unwrap_or_default();
-            let source_references = all
-                .get(&source_path)
-                .filter(|_| {
-                    languages::workspace_path(&source_path).0
-                        == languages::workspace_path(&owner_path).0
-                })
-                .filter(|source_facts| {
-                    source_facts.facts.nodes.iter().any(|node| {
-                        node.id == source_id && node.kind == "route" && node.path == source_path
-                    })
-                })
-                .map(|source_facts| {
-                    source_facts
-                        .facts
-                        .references
-                        .iter()
-                        .filter(|reference| reference.source == source_id)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let Some(owner) = all.get_mut(&owner_path) else {
-                continue;
-            };
-            owner.facts.nodes.push(route.clone());
-            owner.facts.edges.push(Edge {
-                src: format!("module:{owner_path}"),
-                dst: route.id.clone(),
-                kind: "contains".into(),
-                path: owner_path.clone(),
-                line: include.line,
-                evidence: "composed configured route include".into(),
-                confidence: "exact".into(),
-            });
-            for mut edge in child_edges {
-                edge.src = route.id.clone();
-                edge.path = owner_path.clone();
-                edge.line = include.line;
-                owner.facts.edges.push(edge);
-            }
-            changed_paths.insert(owner_path);
-            if let Some(origin) = all.get_mut(&source_path) {
-                for mut reference in source_references {
-                    reference.source = route.id.clone();
-                    origin.facts.references.push(reference);
-                }
-                changed_paths.insert(source_path);
-            }
+            apply_composed_route_addition(all, &mut changed_paths, owner_path, route, include, child);
         }
     }
     changed_paths

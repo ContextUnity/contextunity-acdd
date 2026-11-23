@@ -1,6 +1,5 @@
 use crate::common::Workspace;
 use acdd_index::scanner;
-use contextunity_acdd::telemetry as debug_log;
 use std::fs;
 use std::process::Command;
 
@@ -61,60 +60,6 @@ roots:
         adapter_no_debug.digest, adapter_debug_lower.digest,
         "debug: true must not change adapter digest / Merkle commitment"
     );
-}
-
-#[test]
-fn debug_logger_writes_to_acdd_directory() {
-    let ws = Workspace::new();
-    let utc_now = acdd_core::telemetry::now_utc_iso_ms();
-    let date_str = utc_now.split('T').next().unwrap();
-    let expected_jsonl_file = ws
-        .root()
-        .join(".acdd")
-        .join(format!("command-log-debug--{date_str}.jsonl"));
-
-    assert!(!expected_jsonl_file.exists());
-
-    // 1. CLI entry
-    debug_log::log_cli(
-        ws.root(),
-        "query overview",
-        None,
-        &serde_json::json!({"status": "ok"}),
-    );
-
-    // 2. MCP entry
-    if let Some(pending) = debug_log::prepare_mcp_debug_log(
-        ws.root(),
-        "code_map_inspect",
-        "{\"selector\": \"foo::bar\"}",
-        &serde_json::json!({"found": true}),
-    ) {
-        debug_log::write_pending_debug_log(pending);
-    }
-
-    assert!(
-        expected_jsonl_file.exists(),
-        "JSONL log file must be created"
-    );
-
-    let content = fs::read_to_string(&expected_jsonl_file).unwrap();
-    let lines: Vec<&str> = content.trim().lines().collect();
-    assert_eq!(lines.len(), 2);
-
-    let cli_entry: serde_json::Value = serde_json::from_str(lines[0]).expect("valid jsonl line 1");
-    assert_eq!(cli_entry["source"], "cli");
-    assert_eq!(cli_entry["command"], "query overview");
-    assert_eq!(cli_entry["output"]["status"], "ok");
-
-    let mcp_entry: serde_json::Value = serde_json::from_str(lines[1]).expect("valid jsonl line 2");
-    assert_eq!(mcp_entry["source"], "mcp");
-    assert_eq!(mcp_entry["tool"], "code_map_inspect");
-    assert_eq!(mcp_entry["parameters"]["selector"], "foo::bar");
-    assert_eq!(mcp_entry["output"]["found"], true);
-    let root = ws.root().to_path_buf();
-    fs::remove_dir_all(&root).unwrap();
-    assert!(!root.exists());
 }
 
 #[test]

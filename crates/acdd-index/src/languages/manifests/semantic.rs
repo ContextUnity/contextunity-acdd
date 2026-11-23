@@ -1,8 +1,11 @@
+pub use super::activation::{
+    ActivationCondition, ActivationMatch, FileActivationSignals, SyntaxActivationKeys,
+};
+use super::activation::parse_language;
 use super::projections::{Api, AttachmentSource, EndpointAttachment, Slot};
 use crate::models::tags::LanguageId;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// Semantic rule definition loaded from a framework manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,253 +30,6 @@ pub struct SemanticRule {
 pub enum SemanticScope {
     /// Project-wide scope.
     Project,
-}
-
-/// Typed activation conditions for framework manifest rules.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActivationCondition {
-    /// Activates when the nearest ecosystem manifest declares `name`.
-    Package { name: String },
-    /// Activates when an indexed file observes exact syntax attribute `name`.
-    SyntaxAttribute { name: String },
-    /// Activates when an indexed file observes a syntax attribute starting with `prefix`.
-    SyntaxAttributePrefix { prefix: String },
-    /// Activates when the file extension (without leading dot) equals `extension`.
-    FileExtension { extension: String },
-    /// Activates when any nested condition matches (bounded nesting depth <= 4).
-    Any { conditions: Vec<ActivationCondition> },
-}
-
-/// Two-tier evaluation state for workspace-time vs file-syntax-time activation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActivationMatch {
-    /// Condition is satisfied at workspace scope.
-    Active,
-    /// Condition is false at workspace scope and has no file-level conditions.
-    Inactive,
-    /// Condition depends on per-file extension or syntax activation signals.
-    Deferred,
-}
-
-/// Manifest-declared syntax attribute names and prefixes for O(1) extractor signal collection.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SyntaxActivationKeys {
-    /// Exact attribute names (for example `x-data`).
-    pub exact_attributes: BTreeSet<String>,
-    /// Attribute prefixes (for example `x-on:`).
-    pub attribute_prefixes: BTreeSet<String>,
-}
-
-impl SyntaxActivationKeys {
-    /// Reports whether no syntax activation keys are registered.
-    pub fn is_empty(&self) -> bool {
-        self.exact_attributes.is_empty() && self.attribute_prefixes.is_empty()
-    }
-
-    /// Reports whether `attribute` matches any registered exact key or prefix.
-    pub fn matches_attribute(&self, attribute: &str) -> bool {
-        self.exact_attributes.contains(attribute)
-            || self
-                .attribute_prefixes
-                .iter()
-                .any(|prefix| attribute.starts_with(prefix.as_str()))
-    }
-}
-
-/// Per-file syntax activation signals observed during single-pass extraction.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileActivationSignals {
-    /// Distinct manifest-declared syntax attributes or matched prefix hits observed in the file.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub syntax_attributes: BTreeSet<String>,
-}
-
-impl FileActivationSignals {
-    /// Reports whether no syntax activation signals were observed for the file.
-    pub fn is_empty(&self) -> bool {
-        self.syntax_attributes.is_empty()
-    }
-}
-
-impl ActivationCondition {
-    const MAX_ANY_DEPTH: usize = 4;
-
-    /// Validates one condition, enforcing non-empty values and bounded `Any` nesting.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_depth(0)
-    }
-
-    /// Validates a slice of conditions.
-    pub fn validate_slice(conditions: &[Self]) -> Result<()> {
-        for condition in conditions {
-            condition.validate()?;
-        }
-        Ok(())
-    }
-
-    fn validate_depth(&self, depth: usize) -> Result<()> {
-        match self {
-            Self::Package { name } => {
-                ensure!(
-                    !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control),
-                    "activation.name must be nonempty"
-                );
-            }
-            Self::SyntaxAttribute { name } => {
-                ensure!(
-                    !name.trim().is_empty()
-                        && name.len() <= 128
-                        && !name.chars().any(|ch| ch.is_whitespace() || ch.is_control()),
-                    "activation.syntax_attribute name must be nonempty without whitespace"
-                );
-            }
-            Self::SyntaxAttributePrefix { prefix } => {
-                ensure!(
-                    !prefix.trim().is_empty()
-                        && prefix.len() <= 128
-                        && !prefix
-                            .chars()
-                            .any(|ch| ch.is_whitespace() || ch.is_control()),
-                    "activation.syntax_attribute_prefix must be nonempty without whitespace"
-                );
-            }
-            Self::FileExtension { extension } => {
-                ensure!(
-                    !extension.is_empty()
-                        && extension.len() <= 32
-                        && !extension.starts_with('.')
-                        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric()),
-                    "activation.file_extension must be nonempty alphanumeric without leading dot"
-                );
-            }
-            Self::Any { conditions } => {
-                ensure!(
-                    depth < Self::MAX_ANY_DEPTH,
-                    "activation.any nesting exceeds maximum depth {}",
-                    Self::MAX_ANY_DEPTH
-                );
-                ensure!(
-                    !conditions.is_empty() && conditions.len() <= 32,
-                    "activation.any conditions must contain 1..=32 entries"
-                );
-                for condition in conditions {
-                    condition.validate_depth(depth + 1)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Reports whether this condition depends on per-file extension or syntax signals.
-    pub fn is_file_scoped(&self) -> bool {
-        match self {
-            Self::Package { .. } => false,
-            Self::SyntaxAttribute { .. }
-            | Self::SyntaxAttributePrefix { .. }
-            | Self::FileExtension { .. } => true,
-            Self::Any { conditions } => conditions.iter().any(Self::is_file_scoped),
-        }
-    }
-
-    /// Collects syntax attribute keys and prefixes referenced by this condition.
-    pub fn collect_syntax_keys(&self, keys: &mut SyntaxActivationKeys) {
-        match self {
-            Self::SyntaxAttribute { name } => {
-                keys.exact_attributes.insert(name.clone());
-            }
-            Self::SyntaxAttributePrefix { prefix } => {
-                keys.attribute_prefixes.insert(prefix.clone());
-            }
-            Self::Any { conditions } => {
-                for condition in conditions {
-                    condition.collect_syntax_keys(keys);
-                }
-            }
-            Self::Package { .. } | Self::FileExtension { .. } => {}
-        }
-    }
-
-    /// Evaluates the workspace-level tier (resolving `Package` and deferring file-scoped conditions).
-    pub fn matches_workspace(&self, has_package: &dyn Fn(&str) -> bool) -> ActivationMatch {
-        match self {
-            Self::Package { name } => {
-                if has_package(name) {
-                    ActivationMatch::Active
-                } else {
-                    ActivationMatch::Inactive
-                }
-            }
-            Self::SyntaxAttribute { .. }
-            | Self::SyntaxAttributePrefix { .. }
-            | Self::FileExtension { .. } => ActivationMatch::Deferred,
-            Self::Any { conditions } => Self::matches_workspace_slice_dyn(conditions, has_package),
-        }
-    }
-
-    /// Evaluates a slice of top-level conditions (OR semantics; empty is active).
-    pub fn matches_workspace_slice(
-        conditions: &[Self],
-        has_package: impl Fn(&str) -> bool,
-    ) -> ActivationMatch {
-        Self::matches_workspace_slice_dyn(conditions, &has_package)
-    }
-
-    fn matches_workspace_slice_dyn(
-        conditions: &[Self],
-        has_package: &dyn Fn(&str) -> bool,
-    ) -> ActivationMatch {
-        if conditions.is_empty() {
-            return ActivationMatch::Active;
-        }
-        let mut deferred = false;
-        for condition in conditions {
-            match condition.matches_workspace(has_package) {
-                ActivationMatch::Active => return ActivationMatch::Active,
-                ActivationMatch::Deferred => deferred = true,
-                ActivationMatch::Inactive => {}
-            }
-        }
-        if deferred {
-            ActivationMatch::Deferred
-        } else {
-            ActivationMatch::Inactive
-        }
-    }
-
-    /// Evaluates file-level extension and syntax signals (when workspace `Package` checks were false).
-    pub fn matches_file(&self, path: &str, signals: &FileActivationSignals) -> bool {
-        match self {
-            Self::Package { .. } => false,
-            Self::SyntaxAttribute { name } => signals.syntax_attributes.contains(name.as_str()),
-            Self::SyntaxAttributePrefix { prefix } => signals
-                .syntax_attributes
-                .iter()
-                .any(|attribute| attribute.starts_with(prefix.as_str())),
-            Self::FileExtension { extension } => std::path::Path::new(path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value == extension),
-            Self::Any { conditions } => Self::matches_file_slice(conditions, path, signals),
-        }
-    }
-
-    /// Evaluates a slice of conditions at file time (OR semantics; empty is active).
-    pub fn matches_file_slice(
-        conditions: &[Self],
-        path: &str,
-        signals: &FileActivationSignals,
-    ) -> bool {
-        conditions.is_empty()
-            || conditions
-                .iter()
-                .any(|condition| condition.matches_file(path, signals))
-    }
-}
-
-pub(crate) fn parse_language(value: &str) -> Result<LanguageId> {
-    LanguageId::parse(value).with_context(|| format!("unsupported manifest language {value}"))
 }
 
 /// Callee specification for semantic rules.
@@ -803,13 +559,58 @@ mod tests {
     }
 }
 
-use crate::semantic::{
+pub(crate) use crate::semantic::{
     AttachmentRelation, ComponentConfigurationFact, EndpointRequestFact, ExtractionRuleOrigin,
     FactoryResultFact, NamedBindingFact, NamedBindingRole, NamedTargetKind, ObjectMember,
     SourcePosition, StaticString, SymbolAttachmentFact, SymbolOperand, TemplateContextFact,
     ValueFlowFacts,
 };
-use crate::languages::{semantic::EffectiveSemanticRule, SyntaxContext};
+/// Active semantic rule compiled for extraction.
+#[derive(Clone, Debug)]
+pub struct EffectiveSemanticRule {
+    /// Framework pack name.
+    pub pack: String,
+    /// Semantic rule definition.
+    pub rule: SemanticRule,
+    /// Rule scope.
+    pub scope: String,
+    /// Whether the rule is actively enabled.
+    pub active: bool,
+}
+
+impl EffectiveSemanticRule {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fact(
+        &self,
+        owner: &str,
+        line: usize,
+        column: usize,
+        path: String,
+        expression: String,
+        target: &SemanticTarget,
+        role: crate::semantic::SemanticFactRole,
+    ) -> crate::semantic::SemanticFact {
+        crate::semantic::SemanticFact {
+            pack: self.pack.clone(),
+            rule: self.rule.id.clone(),
+            identity: crate::semantic::SemanticIdentity {
+                scope: self.scope.clone(),
+                namespace: self.rule.namespace.clone(),
+                target: target.clone(),
+                path,
+            },
+            occurrence: crate::semantic::SemanticOccurrence {
+                owner_id: owner.to_owned(),
+                line,
+                column,
+            },
+            expression,
+            role,
+        }
+    }
+}
+
+use crate::languages::types::SyntaxContext;
 
 pub(crate) struct SemanticRuleInput<'rules, 'a, 'tree> {
     pub(crate) effective: &'rules EffectiveSemanticRule,
@@ -1562,110 +1363,6 @@ pub(crate) fn projection_object_matches(
     }
 }
 
-pub(crate) struct CallRulesInput<'a, 'source, 'tree> {
-    pub(crate) ctx: &'a crate::languages::SyntaxContext<'source, 'tree>,
-    pub(crate) rules: &'a crate::languages::LanguageContext,
-    pub(crate) indices: &'a [usize],
-    pub(crate) language: &'a str,
-    pub(crate) alias: &'a str,
-}
-
-pub(crate) struct CallRulesResolvers<'a, 'source> {
-    pub(crate) candidate: &'a dyn Fn(&str) -> bool,
-    pub(crate) argument_value: &'a dyn Fn(usize) -> Option<&'source str>,
-    pub(crate) imported: &'a dyn Fn(&str, &str) -> bool,
-}
-
-pub(crate) fn execute_call_rules<'source>(
-    input: CallRulesInput<'_, 'source, '_>,
-    resolvers: &CallRulesResolvers<'_, 'source>,
-    facts: &mut crate::models::Facts,
-) {
-    let ctx = input.ctx;
-    let Some(module_owner) = facts
-        .nodes
-        .iter()
-        .find(|node| node.kind == "module")
-        .map(|node| node.id.clone())
-    else {
-        return;
-    };
-    let position = ctx.node.start_position();
-    let call_line = position.row + ctx.offset + 1;
-    let mut visible_local_import_owners = None;
-    for &index in input.indices {
-        let effective = &input.rules.semantic_rules[index];
-        let (SemanticOperation::CallToFile {
-            language: expected,
-            callee,
-            argument,
-            target,
-            relation,
-        }
-        | SemanticOperation::CallToSymbol {
-            language: expected,
-            callee,
-            argument,
-            target,
-            relation,
-        }) = &effective.rule.operation
-        else {
-            continue;
-        };
-        let SemanticCallee::Imported { module, export } = callee;
-        if expected != input.language || !(resolvers.candidate)(module) {
-            continue;
-        }
-        let Some(literal) =
-            (resolvers.argument_value)(*argument).filter(|literal| normal_relative_path(literal))
-        else {
-            continue;
-        };
-        let Some(import_owner) = facts
-            .references
-            .iter()
-            .find(|reference| {
-                reference.kind == "imports"
-                    && reference.alias.as_deref().unwrap_or(&reference.expression) == input.alias
-                    && reference.module.as_deref() == Some(module)
-                    && reference.expression == *export
-                    && import_scope_visible_from_call(
-                        &reference.source,
-                        &module_owner,
-                        ctx.owner,
-                        call_line,
-                        &mut visible_local_import_owners,
-                        facts,
-                    )
-            })
-            .map(|reference| reference.source.clone())
-        else {
-            continue;
-        };
-        if !(resolvers.imported)(module, export) {
-            continue;
-        }
-        crate::languages::semantic::push(
-            facts,
-            effective.fact(
-                ctx.owner,
-                position.row + ctx.offset + 1,
-                position.column,
-                literal.to_owned(),
-                crate::languages::text(ctx.node, ctx.source).to_owned(),
-                target,
-                crate::languages::semantic::SemanticFactRole::CallToFile {
-                    import_owner,
-                    alias: input.alias.to_owned(),
-                    module: module.clone(),
-                    export: export.clone(),
-                    relation: *relation,
-                },
-            ),
-        );
-    }
-}
-
 pub(crate) fn semantic_rule_apis(rule: &SemanticRule) -> [Option<&Api>; 2] {
     match &rule.operation {
         SemanticOperation::SymbolAttachment { callee, .. } => [Some(callee), None],
@@ -1674,156 +1371,6 @@ pub(crate) fn semantic_rule_apis(rule: &SemanticRule) -> [Option<&Api>; 2] {
         } => [Some(callee), Some(&attachment.callee)],
         _ => [None, None],
     }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct PreparedRules {
-    pub(crate) render_rules: Vec<usize>,
-    pub(crate) loader_rules: Vec<usize>,
-    pub(crate) named_route_rules: Vec<usize>,
-    pub(crate) named_route_members: hashbrown::HashMap<String, Vec<usize>>,
-    pub(crate) decorated_registration_rules: Vec<usize>,
-    pub(crate) class_attributes: hashbrown::HashMap<String, Vec<usize>>,
-    pub(crate) class_defaults: Vec<usize>,
-    pub(crate) macro_tables: hashbrown::HashMap<String, Vec<usize>>,
-    pub(crate) function_semantic: Vec<usize>,
-    pub(crate) call_semantic: Vec<usize>,
-    pub(crate) call_to_file: Vec<usize>,
-    pub(crate) named_references: Vec<usize>,
-    pub(crate) registry_definitions: Vec<usize>,
-    pub(crate) semantic_constructors: Vec<usize>,
-    pub(crate) syntax_constructors: Vec<usize>,
-}
-
-pub(crate) fn prepare_projection_rules(
-    rules: &crate::languages::LanguageContext,
-) -> std::collections::HashMap<String, PreparedRules> {
-    use super::{projections::NamedBindingForm, syntax::SyntaxOperation};
-    let mut compiled = std::collections::HashMap::<String, PreparedRules>::new();
-    for (index, effective) in rules
-        .semantic_rules
-        .iter()
-        .enumerate()
-        .filter(|(_, rule)| rule.active)
-    {
-        match &effective.rule.operation {
-            SemanticOperation::ClassAttributeToFile {
-                language,
-                attribute,
-                ..
-            }
-            | SemanticOperation::ClassAttributeToSymbol {
-                language,
-                attribute,
-                ..
-            }
-            | SemanticOperation::ClassAttributeToTable {
-                language,
-                attribute,
-                ..
-            } => {
-                compiled
-                    .entry(language.clone())
-                    .or_default()
-                    .class_attributes
-                    .entry(attribute.clone())
-                    .or_default()
-                    .push(index);
-            }
-            SemanticOperation::CallToFile { language, .. }
-            | SemanticOperation::CallToSymbol { language, .. } => {
-                compiled
-                    .entry(language.clone())
-                    .or_default()
-                    .call_to_file
-                    .push(index);
-            }
-            SemanticOperation::ClassDefaultTable { language, .. } => {
-                compiled
-                    .entry(language.clone())
-                    .or_default()
-                    .class_defaults
-                    .push(index);
-            }
-            SemanticOperation::MacroTypeToTable {
-                language,
-                macro_path,
-            } => {
-                compiled
-                    .entry(language.clone())
-                    .or_default()
-                    .macro_tables
-                    .entry(macro_path.clone())
-                    .or_default()
-                    .push(index);
-            }
-            SemanticOperation::SymbolAttachment {
-                language,
-                callee,
-                source,
-                ..
-            } => {
-                let prepared = compiled.entry(language.clone()).or_default();
-                match source {
-                    AttachmentSource::DecoratedCallable => prepared.function_semantic.push(index),
-                    AttachmentSource::Argument { .. } => prepared.call_semantic.push(index),
-                }
-                if matches!(callee, Api::ConstructedMember { .. }) {
-                    prepared.semantic_constructors.push(index);
-                }
-            }
-            SemanticOperation::EndpointProjection {
-                language,
-                callee,
-                attachment,
-                ..
-            } => {
-                let prepared = compiled.entry(language.clone()).or_default();
-                prepared.call_semantic.push(index);
-                if [callee, &attachment.callee]
-                    .iter()
-                    .any(|api| matches!(api, Api::ConstructedMember { .. }))
-                {
-                    prepared.semantic_constructors.push(index);
-                }
-            }
-        }
-    }
-    for (index, rule) in rules.syntax_rules.iter().enumerate() {
-        let prepared = compiled.entry(rule.language.clone()).or_default();
-        match &rule.operation {
-            SyntaxOperation::RenderContext { .. } => prepared.render_rules.push(index),
-            SyntaxOperation::TemplateLoader { .. } => prepared.loader_rules.push(index),
-            SyntaxOperation::NamedRouteCall { export, .. } => {
-                prepared.named_route_rules.push(index);
-                prepared
-                    .named_route_members
-                    .entry(export.clone())
-                    .or_default()
-                    .push(index);
-            }
-            SyntaxOperation::DecoratedRegistration { .. } => {
-                prepared.decorated_registration_rules.push(index)
-            }
-            SyntaxOperation::NamedBinding {
-                binding: NamedBindingForm::CallReference { callee, .. },
-                ..
-            } => {
-                prepared.named_references.push(index);
-                if matches!(callee, Api::ConstructedMember { .. }) {
-                    prepared.syntax_constructors.push(index);
-                }
-            }
-            SyntaxOperation::NamedBinding {
-                binding: NamedBindingForm::AssignmentDefinition { .. },
-                ..
-            } => {
-                prepared.registry_definitions.push(index);
-            }
-            _ => {}
-        }
-    }
-    compiled
 }
 
 pub(crate) fn imported_rule_candidates(
@@ -1892,52 +1439,6 @@ pub(crate) fn lexical_scopes<'a>(owner: &'a Node, facts: &'a Facts) -> Vec<&'a N
         .collect();
     scopes.sort_unstable_by_key(|node| std::cmp::Reverse(node.qualname.len()));
     scopes
-}
-
-fn import_scope_visible_from_call(
-    source: &str,
-    module_owner: &str,
-    call_owner: &str,
-    call_line: usize,
-    visible_local_import_owners: &mut Option<Vec<String>>,
-    facts: &Facts,
-) -> bool {
-    if source == module_owner || source == call_owner {
-        return true;
-    }
-    if source.starts_with("module:") {
-        return false;
-    }
-    visible_local_import_owners
-        .get_or_insert_with(|| visible_local_import_owners_for_call(call_owner, call_line, facts))
-        .iter()
-        .any(|owner| owner.as_str() == source)
-}
-
-fn visible_local_import_owners_for_call(
-    call_owner: &str,
-    call_line: usize,
-    facts: &Facts,
-) -> Vec<String> {
-    let Some(call_scope) = facts.nodes.iter().find(|node| node.id == call_owner) else {
-        return Vec::new();
-    };
-    let call_qualname = call_scope.qualname.as_str();
-    facts
-        .nodes
-        .iter()
-        .filter(|scope| {
-            scope.id != call_owner
-                && matches!(scope.kind.as_str(), "function" | "method")
-                && scope.line <= call_line
-                && call_line <= scope.end_line
-                && scope.has_binding_names()
-                && call_qualname
-                    .strip_prefix(&scope.qualname)
-                    .is_some_and(|suffix| suffix.starts_with('.'))
-        })
-        .map(|scope| scope.id.clone())
-        .collect()
 }
 
 fn import_binds(reference: &crate::models::Reference, scope: &Node, name: &str) -> bool {
@@ -2103,19 +1604,6 @@ pub(crate) fn relative_under_directory<'a>(
     }
 }
 
-pub(crate) fn component_environment_config_path(
-    rule: &super::syntax::SyntaxRule,
-    path: &str,
-    scope: &str,
-    package: &str,
-    config_file: &str,
-    dependencies: &crate::languages::dependency_registry::DependencyRegistry,
-) -> Option<String> {
-    rule.activation_family()
-        .is_some_and(|family| dependencies.declares_for_path(family, path, package))
-        .then(|| scoped_relative_path(scope, config_file))
-}
-
 pub(crate) fn matching_component_configurations<'a>(
     configurations: impl IntoIterator<Item = &'a ComponentConfigurationFact>,
     rule: &'a super::syntax::SyntaxRule,
@@ -2123,35 +1611,4 @@ pub(crate) fn matching_component_configurations<'a>(
     configurations
         .into_iter()
         .filter(move |fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
-}
-
-pub(crate) fn component_export_matches_provider(
-    provider_path: &str,
-    scope: &str,
-    directory: &str,
-    extension: &str,
-    dependencies: &crate::languages::dependency_registry::DependencyRegistry,
-) -> bool {
-    dependencies.nearest_manifest_scope_for_path(
-        crate::languages::LanguageFamily("javascript"),
-        provider_path,
-    ) == Some(scope)
-        && relative_under_directory(provider_path, scope, directory)
-            .is_some_and(|tail| !tail.contains('/') && tail.ends_with(extension))
-}
-
-pub(crate) fn active_component_module_additions<'a>(
-    configuration: &'a ComponentConfigurationFact,
-    modules: &'a std::collections::BTreeMap<String, super::syntax::ComponentModule>,
-    rule: &'a super::syntax::SyntaxRule,
-    path: &'a str,
-    dependencies: &'a crate::languages::dependency_registry::DependencyRegistry,
-) -> impl Iterator<Item = (&'a str, &'a super::syntax::ComponentModule)> {
-    configuration.modules.iter().filter_map(move |name| {
-        let addition = modules.get(name).filter(|addition| {
-            rule.activation_family()
-                .is_some_and(|family| dependencies.declares_for_path(family, path, &addition.package))
-        })?;
-        Some((name.as_str(), addition))
-    })
 }

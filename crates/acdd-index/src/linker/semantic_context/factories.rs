@@ -1,4 +1,4 @@
-use super::*;
+use super::context::*;
 
 impl<'a> Context<'a> {
     pub(super) fn prepare_factory_bindings(&mut self, all: &'a dyn crate::FactsLookup) {

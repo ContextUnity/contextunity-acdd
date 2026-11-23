@@ -6,9 +6,10 @@ mod paths;
 /// Sends a reload signal to running MCP servers.
 pub mod reload;
 /// Fail-fast ACDD profile and spec validation.
-pub mod validate;
+mod validate;
 
-pub use args::{AstCommand, Cli, CliOutputFormat, Command, DocsCommand, QueryCommand};
+pub(crate) use args::{Command, DocsCommand, QueryCommand};
+use args::Cli;
 
 use crate::{
     engine::{guide, pipeline as writer},
@@ -21,11 +22,6 @@ use anyhow::{bail, Result};
 use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
-
-/// Default code-map SQLite path under `root`.
-pub fn default_db(root: &Path) -> PathBuf {
-    acdd_core::config::resolve_code_db_path(root, None)
-}
 
 fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
     match command {
@@ -144,77 +140,6 @@ fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<Path
         .unwrap_or(std::env::current_dir()?.canonicalize()?))
 }
 
-fn check_explicit_config_migration(
-    root: &Path,
-    config_path: &Path,
-) -> std::result::Result<(), StateError> {
-    use std::io::Read;
-    let mut open_opts = std::fs::OpenOptions::new();
-    open_opts.read(true);
-    let opened = if let Ok(rel) = config_path.strip_prefix(root) {
-        acdd_core::fs::open_confined(root, rel, &mut open_opts)
-    } else if let (Some(parent), Some(name)) = (config_path.parent(), config_path.file_name()) {
-        acdd_core::fs::open_confined(parent, Path::new(name), &mut open_opts)
-    } else {
-        return Ok(());
-    };
-    let mut file = match opened {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!(
-                    "cannot inspect confined config '{}': {err}",
-                    config_path.display()
-                ),
-            ));
-        }
-    };
-    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
-        return Ok(());
-    }
-    let mut raw = String::new();
-    if file.read_to_string(&mut raw).is_err() {
-        return Ok(());
-    }
-    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) else {
-        return Ok(());
-    };
-    if let Some(map) = yaml.as_mapping() {
-        for legacy_key in acdd_core::config::LEGACY_05_KEYS {
-            if map.contains_key(serde_yaml::Value::String((*legacy_key).to_owned())) {
-                return Err(StateError::new(
-                    ErrorCode::ConfigMigrationRequired,
-                    format!(
-                        "legacy 0.5.x key '{legacy_key}' found in '{}'",
-                        config_path.display()
-                    ),
-                )
-                .with_hint(
-                    "Follow docs/runbooks/migration-0.6.md to update 0.5.x configuration keys",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_migrated_preflight(root: &Path, explicit_config: Option<&Path>) -> Result<()> {
-    check_explicit_config_migration(root, &root.join(acdd_core::ACDD_CONFIG_FILE))?;
-    if let Some(cfg) = explicit_config {
-        let resolved = if cfg.is_absolute() {
-            cfg.to_path_buf()
-        } else {
-            root.join(cfg)
-        };
-        if resolved != root.join(acdd_core::ACDD_CONFIG_FILE) {
-            check_explicit_config_migration(root, &resolved)?;
-        }
-    }
-    Ok(())
-}
-
 fn cli_command_line() -> String {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -242,8 +167,8 @@ pub async fn run_from_env() -> Result<()> {
 
 impl Cli {
     /// Run the parsed CLI command and terminate with canonical `StateError` exit codes (`2`/`3`/`4`).
-    pub async fn run(self) -> Result<()> {
-        match self.run_with_writer(&mut io::stdout()).await {
+    async fn run(self) -> Result<()> {
+        match self.run_inner(&mut io::stdout(), None).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 if let Some(state_err) = StateError::from_anyhow(&error) {
@@ -256,17 +181,9 @@ impl Cli {
     }
 
     /// Runs CLI dispatch and formatting with a caller-provided output writer.
-    pub async fn run_with_writer<W: io::Write>(self, output: &mut W) -> Result<()> {
+    #[cfg(test)]
+    async fn run_with_writer<W: io::Write>(self, output: &mut W) -> Result<()> {
         self.run_inner(output, None).await
-    }
-
-    /// Runs CLI dispatch with explicit output and extraction-cache locations.
-    pub async fn run_with_writer_and_cache_dir<W: io::Write>(
-        self,
-        output: &mut W,
-        cache_dir: &Path,
-    ) -> Result<()> {
-        self.run_inner(output, Some(cache_dir)).await
     }
 
     async fn run_inner(
@@ -306,9 +223,6 @@ impl Cli {
                 return Err(error);
             }
         };
-
-        // Enforce CONFIG_MIGRATION_REQUIRED preflight on every command.
-        ensure_migrated_preflight(&root, self.config.as_deref())?;
 
         // `init` and `guide init` must work even before `.acdd/profile.yaml` exists.
         if matches!(self.command.as_ref(), Some(Command::Init { .. })) {
@@ -816,20 +730,7 @@ mod tests {
             }
         }
 
-        // 4. `CONFIG_MIGRATION_REQUIRED` preflight blocks legacy 0.5.x config keys
-        let dir = ScopedTempDir::create("acdd-ut-cli-migrate").unwrap();
-        let root = dir.path();
-        fs::write(
-            root.join("acdd.yaml"),
-            "milestones:\n  path: docs/milestones\ntasks_db: .acdd/tasks.sqlite\n",
-        )
-        .unwrap();
-        let err = super::ensure_migrated_preflight(root, None).unwrap_err();
-        let state_err = StateError::from_anyhow(&err).expect("StateError");
-        assert_eq!(state_err.code, ErrorCode::ConfigMigrationRequired);
-        assert_eq!(state_err.exit_code(), 2);
-
-        // 5. `acdd validate` succeeds on valid workspace with bound commands and fails on unbound/broken profile
+        // 4. `acdd validate` succeeds on valid workspace with bound commands and fails on unbound/broken profile
         let vdir = ScopedTempDir::create("acdd-ut-cli-validate").unwrap();
         let vroot = vdir.path();
         fs::create_dir_all(vroot.join(".acdd")).unwrap();
@@ -843,21 +744,21 @@ mod tests {
             "version: 2\ninherit: code\ncommands:\n  test: \"cargo test --lib {test_filter}\"\n  build_check: \"cargo check --lib\"\n  verify_all: \"cargo test --lib\"\n",
         )
         .unwrap();
-        let val = super::validate::run(vroot, None).unwrap();
+        let val = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(val["valid"], serde_json::json!(true), "{val}");
 
         fs::write(vroot.join(".acdd/profile.yaml"), "version: 2\ninherit: code\n").unwrap();
-        let unbound = super::validate::run(vroot, None).unwrap();
+        let unbound = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(unbound["valid"], serde_json::json!(false), "{unbound}");
         assert_eq!(unbound["diagnostics"][1]["code"], "COMMAND_UNBOUND");
 
         fs::write(vroot.join(".acdd/profile.yaml"), "version: 1\nbogus: true\n").unwrap();
-        let bad = super::validate::run(vroot, None).unwrap();
+        let bad = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(bad["valid"], serde_json::json!(false), "{bad}");
 
-        // 6. Default `.acdd/state.sqlite` keeps `state_db_override == None` (enabling `state.bak.sqlite`) even from linked worktrees,
+        // 5. Default `.acdd/state.sqlite` keeps `state_db_override == None` (enabling `state.bak.sqlite`) even from linked worktrees,
         // and `code_db_path` is populated iff `code || docs` is enabled (#25).
-        let cfg_default = crate::state_bridge::AcddConfig::default();
+        let cfg_default = acdd_core::config::Adapter::default();
         let eng_default =
             crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default)
                 .unwrap();
@@ -866,7 +767,7 @@ mod tests {
             eng_default.code_db_path,
             Some(acdd_core::config::resolve_code_db_path(vroot, None))
         );
-        let cfg_minimal = crate::state_bridge::AcddConfig {
+        let cfg_minimal = acdd_core::config::Adapter {
             modules: acdd_core::subsystems::SubsystemRegistry {
                 profile: acdd_core::subsystems::SubsystemPreset::Minimal,
                 ..Default::default()
@@ -941,5 +842,106 @@ mod tests {
             super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), true).unwrap(),
             Some(cfg_a)
         );
+    }
+
+    #[test]
+    fn cli_writer_handles_broken_pipe_and_docs_check_write_panics() {
+        use clap::Parser;
+        use std::io::{self, Write};
+
+        struct FailingWriter(io::ErrorKind);
+        impl Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(self.0, "output unavailable"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = ScopedTempDir::create("acdd-ut-cli-writer").unwrap();
+        let root = dir.path();
+        fs::write(root.join("acdd.yaml"), "profile: minimal\n").unwrap();
+        fs::write(root.join("notes.txt"), "hello\n").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::Other] {
+            let cli = Cli::try_parse_from([
+                "fixture",
+                "--root",
+                root.to_str().unwrap(),
+                "read",
+                "notes.txt",
+            ])
+            .unwrap();
+            let result = rt.block_on(cli.run_with_writer(&mut FailingWriter(kind)));
+            if kind == io::ErrorKind::BrokenPipe {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(
+                    result.unwrap_err().downcast_ref::<io::Error>().unwrap().kind(),
+                    kind
+                );
+            }
+        }
+
+        for case in ["success", "broken-link", "missing-root"] {
+            let ws = ScopedTempDir::create("acdd-ut-docs-writer").unwrap();
+            fs::write(
+                ws.path().join("README.md"),
+                if case == "broken-link" {
+                    "[bad](absent.md)\n"
+                } else {
+                    "# Valid\n"
+                },
+            )
+            .unwrap();
+            let target = if case == "missing-root" {
+                ws.path().join("absent")
+            } else {
+                ws.path().to_path_buf()
+            };
+            let cli = Cli::try_parse_from([
+                "fixture",
+                "--root",
+                target.to_str().unwrap(),
+                "--format",
+                "json",
+                "docs",
+                "check",
+            ])
+            .unwrap();
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.block_on(cli.run_with_writer(&mut FailingWriter(io::ErrorKind::BrokenPipe)))
+            }));
+            let panic = panic.expect_err(case);
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap();
+            assert_eq!(message, "failed printing to stdout: output unavailable", "{case}");
+        }
+
+        // Verify guide CLI examples and core subcommands parse cleanly via Clap.
+        for args in [
+            vec!["start", "--goal", "Test ephemeral run", "--in-place"],
+            vec!["run", "--jobs", "2"],
+            vec!["verify", "t1.build", "--test", "tests/seam.rs::case"],
+            vec![
+                "subtask",
+                "t1",
+                "slice",
+                "--status",
+                "completed",
+                "--evidence",
+                "observed-command",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(std::iter::once("acdd").chain(args)).is_ok());
+        }
     }
 }

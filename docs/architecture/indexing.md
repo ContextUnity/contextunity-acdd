@@ -37,7 +37,7 @@ CLI build / scan / delta             MCP request
 - The linker connects facts using indexed files and configured workspace boundaries. An edge may remain unresolved or external when its target cannot be established statically. During cold builds, the linker operates over a lightweight `SymbolCatalog` (`crates/acdd-index/src/semantic/catalog.rs`, `crates/acdd-index/src/linker/compact.rs`), which decouples reference linking from heavy AST details and avoids workspace-wide fact maps.
 - Unmodified files reuse extracted facts across worktrees via a content-addressed binary `ExtractionCache` (`crates/acdd-index/src/db/writer/cache.rs`), keyed by source digest, grammar ID, semantics version, and effective framework ruleset hash.
 - Cold extraction caches the canonical compressed local-facts payload in V5 entries. Admission checks the checksum and both compressed and expanded size bounds before decoding; V4 entries remain readable. Workers refresh Markdown modification times and regenerate payloads when component assignment changes. Each worker reuses its source buffer and validates length, source metadata and digest for every file.
-- [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) stores admitted bindings, rebindings and parameter types natively. Public node serialization overlays the original JSON fields, preserving parameter order and malformed raw values. [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) allocates its boxed framework/template facts only for scopes that need them; serialization retains the existing flat fields.
+- [`NodeSemanticEntry`](../../crates/acdd-index/src/models/semantic.rs) stores admitted bindings, rebindings and parameter types natively. Public node serialization overlays the original JSON fields, preserving parameter order and malformed raw values. [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) allocates its boxed framework/template facts only for scopes that need them; serialization retains the existing flat fields.
 - `crates/acdd-index/src/db/` stores generations, nodes, edges, documents, and source metadata; `db/reader/` owns connection admission, SQL row budgets, search, and document projections, `db/symbols/` owns symbol inspection, explanation, previews, search, and test discovery, `db/lint/` owns unified `arch`/`duplicates`/`dead_tails`/`cycles`/`syntax`/`docs` linting (`run_lint`), and `db/traversal/` isolates impact/BFS traversal, directory boundary slices, and Git change impact behind typed boundary enums (`ImpactDirection`, `TraversalMode`, `GraphQueryOp`) and `[offset..offset+limit]` paged JSON materialization. Local syntax facts use Zstandard-compressed JSON, reverse dependency lookups use the target index on `dependencies`, and repeated resolution evidence uses a shared dictionary.
 
 ## Documentation references and verification
@@ -53,9 +53,9 @@ that declaration resolves uniquely. Explicit source links confine resolution;
 unscoped claims use the document's workspace. A GitHub alert callout's
 `is_invariant` section flag is a separate discovery signal.
 
-For the current implementation, follow [`collect_documentation_paths`](../../crates/acdd-index/src/scanner/mod.rs),
-[`extract_with_details`](../../crates/acdd-index/src/docs.rs), and
-[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/mod.rs).
+For the current implementation, follow [`collect_documentation_paths`](../../crates/acdd-index/src/scanner/walk.rs),
+[`extract_with_details_with_zones`](../../crates/acdd-index/src/docs.rs), and
+[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/context.rs).
 The incremental parity test
 [`source_delta_relinks_affected_docs_with_bare_suffix_references`](../../tests/incremental/doc_parity.rs#L70-L160)
 checks documentation links, invariant claims, diagnostics, and cold/delta
@@ -83,7 +83,7 @@ Selectors must identify one target. For example, `package/settings.py:load_confi
 
 `DependencyRegistry` loads and validates bundled and workspace-local framework manifests before parallel extraction. It prepares merged typed rules for the effective project scopes and shares an immutable `Arc<LanguageContext>` across files; AST extraction uses `extract_typed_with_registry` in both the cold writer and delta paths. Profiles receive those rules through the existing extraction hooks, together with a per-file `RouteContext` for static router and controller prefixes. Extraction does not reread manifest files for each syntax node.
 
-Grammar-bound syntax classification and route/DI dispatch use numeric kind IDs in tables sized to the actual grammar. [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs) reuses thread-local parsers for ordinary files, Vue script islands and HTML JavaScript fragments, resetting and selecting the actual grammar before parsing. Embedded facts retain their original source offsets.
+Grammar-bound syntax classification and route/DI dispatch use numeric kind IDs in tables sized to the actual grammar. [`with_warm_parser`](../../crates/acdd-index/src/languages/types.rs) reuses thread-local parsers for ordinary files, Vue script islands and HTML JavaScript fragments, resetting and selecting the actual grammar before parsing. Embedded facts retain their original source offsets.
 
 Class-hierarchy rules feed canonical Python receiver lookup through the inheritance index. Import provenance, method shadowing, and unknown external bases still bound resolution. Route and DI rules produce ordinary syntax facts and references. Configured route facts retain include modules, route names, and namespaces; static include-prefix composition runs before persistence, including after incremental fact hydration. Manifest digest changes invalidate the indexed rule snapshot so an update cannot retain extraction from an old rule set.
 

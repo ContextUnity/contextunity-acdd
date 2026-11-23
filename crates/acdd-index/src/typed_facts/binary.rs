@@ -1,7 +1,13 @@
 //! Typed binary encoding for extracted facts and their semantic sidecars.
 
-use super::TypedFacts;
-use crate::models::{Diagnostic, DocSection, Edge, Node, Reference};
+use super::bundle::TypedFacts;
+use super::flow_store::{FlowState, FlowStore};
+use super::semantic_store::{SemanticEntry, SemanticState};
+use crate::models::facts::Facts;
+use crate::models::semantic::NodeSemanticEntry;
+use crate::models::types::{
+    CallableFingerprints, Diagnostic, DocSection, Edge, Node, ReceiverHint, Reference,
+};
 
 pub trait BinaryEncode {
     fn encode(&self, buf: &mut Vec<u8>);
@@ -271,7 +277,6 @@ macro_rules! struct_codecs {
         )+
     };
 }
-pub use struct_codecs;
 
 macro_rules! validated_struct_codec {
     ($ty:ty { $($field:ident),+ $(,)? } => $validate:ident) => {
@@ -288,7 +293,7 @@ macro_rules! validated_struct_codec {
 }
 
 struct_codecs! {
-    crate::typed_facts::NodeSemanticEntry { bindings, rebindings, param_types, admitted };
+    NodeSemanticEntry { bindings, rebindings, param_types, admitted };
     crate::languages::manifests::semantic::FileActivationSignals { syntax_attributes };
     Node { id, kind, name, qualname, path, line, end_line, is_test, language, generated, details, native_semantic };
     Edge { src, dst, kind, path, line, evidence, confidence };
@@ -370,7 +375,7 @@ macro_rules! tagged_state_codec {
 fn identity_codec<T>(value: T) -> Option<T> {
     Some(value)
 }
-enum_codec!(crate::models::ReceiverHint, validate_receiver_hint {
+enum_codec!(ReceiverHint, validate_receiver_hint {
     0 => StringLiteral { member }, 1 => CallResult { callee, member }, 2 => ConstructorResult { callee, member },
     3 => Super { member }, 4 => VueSetupBinding, 5 => VueComponentTag, 6 => VueTypedPropMember { field_id },
     7 => VueSetupMacroCallable, 8 => VueSetupRuntimeCallable, 9 => TypeOnlyImport, 10 => HtmlClassicScriptSource,
@@ -379,37 +384,37 @@ enum_codec!(crate::models::ReceiverHint, validate_receiver_hint {
 });
 
 struct_codecs! {
-    crate::semantic::CallableParameter { name, type_expr, callback_params };
-    crate::semantic::SourcePosition { line, column }; crate::semantic::CallSiteEvidence { position, receiver, arguments };
-    crate::semantic::ObjectMember { name, position, target }; crate::semantic::BindingFact { name, position, value, conditional };
-    crate::semantic::BranchJoinFact { name, position, value, conditional }; crate::semantic::FieldFact { name, position, value, conditional };
-    crate::semantic::CollectionElementFact { name, position, element_type }; crate::semantic::ExtractionRuleOrigin { pack, rule };
-    crate::semantic::ObjectOwnershipFact { origin, guard };
-    crate::semantic::ComponentMacroFact { origin, role, callee, binding, position, annotation };
-    crate::semantic::TemplateContextFact { origin, import_alias, target, target_path, keys, position };
-    crate::semantic::ComponentConfigurationFact { origin, enabled, modules, callable_imports };
-    crate::semantic::CallableImportConfiguration { enabled, scan }; crate::semantic::TypeOnlyImportFact { alias, position, guard_import };
-    crate::semantic::GuardImportFact { alias, position }; crate::semantic::AnnotationReferenceFact { expression, position, value_query };
-    crate::semantic::VueSlotFact { slot, binding, position, type_expr };
-    crate::semantic::SymbolAttachmentFact { origin, position, source, target, relation };
-    crate::semantic::FactoryResultFact { origin, position, binding, configured_module, members };
-    crate::semantic::NamedBindingFact { origin, position, domain, key, role };
-    crate::semantic::EndpointRequestFact { origin, position, url, method }; crate::semantic::SemanticIdentity { scope, namespace, target, path };
-    crate::semantic::SemanticOccurrence { owner_id, line, column }; crate::semantic::SemanticFact { pack, rule, identity, occurrence, expression, role };
-    crate::typed_facts::SemanticEntry { owner, line, qualname, state };
+    crate::semantic::types::CallableParameter { name, type_expr, callback_params };
+    crate::semantic::types::SourcePosition { line, column }; crate::semantic::types::CallSiteEvidence { position, receiver, arguments };
+    crate::semantic::types::ObjectMember { name, position, target }; crate::semantic::types::BindingFact { name, position, value, conditional };
+    crate::semantic::types::BranchJoinFact { name, position, value, conditional }; crate::semantic::types::FieldFact { name, position, value, conditional };
+    crate::semantic::types::CollectionElementFact { name, position, element_type }; crate::semantic::types::ExtractionRuleOrigin { pack, rule };
+    crate::semantic::types::ObjectOwnershipFact { origin, guard };
+    crate::semantic::types::ComponentMacroFact { origin, role, callee, binding, position, annotation };
+    crate::semantic::types::TemplateContextFact { origin, import_alias, target, target_path, keys, position };
+    crate::semantic::types::ComponentConfigurationFact { origin, enabled, modules, callable_imports };
+    crate::semantic::types::CallableImportConfiguration { enabled, scan }; crate::semantic::types::TypeOnlyImportFact { alias, position, guard_import };
+    crate::semantic::types::GuardImportFact { alias, position }; crate::semantic::types::AnnotationReferenceFact { expression, position, value_query };
+    crate::semantic::types::VueSlotFact { slot, binding, position, type_expr };
+    crate::semantic::types::SymbolAttachmentFact { origin, position, source, target, relation };
+    crate::semantic::types::FactoryResultFact { origin, position, binding, configured_module, members };
+    crate::semantic::types::NamedBindingFact { origin, position, domain, key, role };
+    crate::semantic::types::EndpointRequestFact { origin, position, url, method }; crate::semantic::relations::SemanticIdentity { scope, namespace, target, path };
+    crate::semantic::relations::SemanticOccurrence { owner_id, line, column }; crate::semantic::relations::SemanticFact { pack, rule, identity, occurrence, expression, role };
+    SemanticEntry { owner, line, qualname, state };
 }
 
-tuple_enum_codec!(crate::semantic::FrameworkFact {
-    0 => SymbolAttachment(crate::semantic::SymbolAttachmentFact), 1 => FactoryResult(crate::semantic::FactoryResultFact),
-    2 => NamedBinding(crate::semantic::NamedBindingFact), 3 => EndpointRequest(crate::semantic::EndpointRequestFact),
-    4 => ComponentConfiguration(crate::semantic::ComponentConfigurationFact), 5 => RuleOrigin(crate::semantic::ExtractionRuleOrigin),
-    6 => ComponentMacro(crate::semantic::ComponentMacroFact), 7 => CollectionElement(crate::semantic::CollectionElementFact),
-    8 => VueSlot(crate::semantic::VueSlotFact), 9 => TemplateContext(crate::semantic::TemplateContextFact),
-    10 => TypeOnlyImport(crate::semantic::TypeOnlyImportFact), 11 => AnnotationReference(crate::semantic::AnnotationReferenceFact),
+tuple_enum_codec!(crate::semantic::types::FrameworkFact {
+    0 => SymbolAttachment(crate::semantic::types::SymbolAttachmentFact), 1 => FactoryResult(crate::semantic::types::FactoryResultFact),
+    2 => NamedBinding(crate::semantic::types::NamedBindingFact), 3 => EndpointRequest(crate::semantic::types::EndpointRequestFact),
+    4 => ComponentConfiguration(crate::semantic::types::ComponentConfigurationFact), 5 => RuleOrigin(crate::semantic::types::ExtractionRuleOrigin),
+    6 => ComponentMacro(crate::semantic::types::ComponentMacroFact), 7 => CollectionElement(crate::semantic::types::CollectionElementFact),
+    8 => VueSlot(crate::semantic::types::VueSlotFact), 9 => TemplateContext(crate::semantic::types::TemplateContextFact),
+    10 => TypeOnlyImport(crate::semantic::types::TypeOnlyImportFact), 11 => AnnotationReference(crate::semantic::types::AnnotationReferenceFact),
 });
 
 struct_codecs! {
-    crate::semantic::FrameworkScopeFacts {
+    crate::semantic::types::FrameworkScopeFacts {
         object_ownership,
         fact_limit_exceeded,
         async_return_type,
@@ -425,43 +430,43 @@ struct_codecs! {
 validated_struct_codec!(crate::models::StatementFingerprint {
     hash, line, end_line, token_count
 } => validate_statement_fingerprint);
-validated_struct_codec!(crate::semantic::CallableSignature {
+validated_struct_codec!(crate::semantic::types::CallableSignature {
     has_receiver, params, return_type
 } => validate_callable_signature);
 
-enum_codec!(crate::semantic::TypeExpr { 0 => Named { name }, 1 => Applied { base, args }, 2 => Unknown });
-enum_codec!(crate::semantic::StaticArgument { 0 => String { value }, 1 => Unknown });
-enum_codec!(crate::semantic::ValueExpr, validate_value_expr {
+enum_codec!(crate::semantic::types::TypeExpr { 0 => Named { name }, 1 => Applied { base, args }, 2 => Unknown });
+enum_codec!(crate::semantic::types::StaticArgument { 0 => String { value }, 1 => Unknown });
+enum_codec!(crate::semantic::types::ValueExpr, validate_value_expr {
     0 => Annotated { type_expr }, 1 => Construct { callee }, 2 => Alias { name }, 3 => Call { callee, site },
     4 => Await { value }, 5 => LoopElement { iterable, body_end }, 6 => Scoped { value, body_end },
     7 => BranchJoin { alternatives }, 8 => Field { receiver, member }, 9 => Project { value, member },
     10 => Object { members, builtin_guard }, 11 => Unknown,
     12 => CallbackParam { callee, arg_index, param_index },
 });
-enum_codec!(crate::semantic::ObjectMemberTarget { 0 => SameName, 1 => Alias { name } });
-enum_codec!(crate::semantic::ComponentMacroRole { 0 => Props, 1 => Emits, 2 => Slots, 3 => Marker });
-enum_codec!(crate::semantic::StaticString, validate_static_string { 0 => Literal { value }, 1 => Unknown });
-enum_codec!(crate::semantic::SymbolOperand { 0 => Node { id }, 1 => Name { expression }, 2 => Unknown });
-enum_codec!(crate::semantic::AttachmentRelation { 0 => UsesModel, 1 => References });
-enum_codec!(crate::semantic::NamedTargetKind { 0 => Object, 1 => Callable, 2 => ListenerScope });
-enum_codec!(crate::semantic::NamedBindingRole {
+enum_codec!(crate::semantic::types::ObjectMemberTarget { 0 => SameName, 1 => Alias { name } });
+enum_codec!(crate::semantic::types::ComponentMacroRole { 0 => Props, 1 => Emits, 2 => Slots, 3 => Marker });
+enum_codec!(crate::semantic::types::StaticString, validate_static_string { 0 => Literal { value }, 1 => Unknown });
+enum_codec!(crate::semantic::types::SymbolOperand { 0 => Node { id }, 1 => Name { expression }, 2 => Unknown });
+enum_codec!(crate::semantic::types::AttachmentRelation { 0 => UsesModel, 1 => References });
+enum_codec!(crate::semantic::types::NamedTargetKind { 0 => Object, 1 => Callable, 2 => ListenerScope });
+enum_codec!(crate::semantic::types::NamedBindingRole {
     0 => Definition { target, target_kind }, 1 => RegistryDefinition { receiver, target }, 2 => Reference,
 });
-enum_codec!(crate::semantic::SemanticTarget {
+enum_codec!(crate::semantic::relations::SemanticTarget {
     0 => ProjectPathSuffix { prefix, language }, 1 => ImportedSymbol { language }, 2 => PythonSymbol { language },
 });
-enum_codec!(crate::semantic::SemanticRelation { 0 => RendersTemplate, 1 => InjectsDependency, 2 => UsesModel, 3 => References });
-enum_codec!(crate::semantic::SemanticFactRole {
+enum_codec!(crate::semantic::relations::SemanticRelation { 0 => RendersTemplate, 1 => InjectsDependency, 2 => UsesModel, 3 => References });
+enum_codec!(crate::semantic::relations::SemanticFactRole {
     0 => FileProvider { target }, 1 => CallToFile { import_owner, alias, module, export, relation },
     2 => ClassAttributeToFile { attribute, relation }, 3 => ClassAttributeToSymbol { attribute, relation },
 });
-validated_struct_codec!(crate::semantic::NamedDefinitionUncertainty {
+validated_struct_codec!(crate::semantic::types::NamedDefinitionUncertainty {
     domain, key, origin
 } => validate_named_uncertainty);
 
 fn validate_named_uncertainty(
-    value: crate::semantic::NamedDefinitionUncertainty,
-) -> Option<crate::semantic::NamedDefinitionUncertainty> {
+    value: crate::semantic::types::NamedDefinitionUncertainty,
+) -> Option<crate::semantic::types::NamedDefinitionUncertainty> {
     value.valid().then_some(value)
 }
 
@@ -472,19 +477,19 @@ fn validate_statement_fingerprint(
 }
 
 fn validate_callable_signature(
-    value: crate::semantic::CallableSignature,
-) -> Option<crate::semantic::CallableSignature> {
+    value: crate::semantic::types::CallableSignature,
+) -> Option<crate::semantic::types::CallableSignature> {
     value.valid().then_some(value)
 }
 
-fn validate_value_expr(value: crate::semantic::ValueExpr) -> Option<crate::semantic::ValueExpr> {
+fn validate_value_expr(value: crate::semantic::types::ValueExpr) -> Option<crate::semantic::types::ValueExpr> {
     value.valid_call_sites(0).then_some(value)
 }
 fn validate_static_string(
-    value: crate::semantic::StaticString,
-) -> Option<crate::semantic::StaticString> {
+    value: crate::semantic::types::StaticString,
+) -> Option<crate::semantic::types::StaticString> {
     match &value {
-        crate::semantic::StaticString::Literal { value }
+        crate::semantic::types::StaticString::Literal { value }
             if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) =>
         {
             None
@@ -492,56 +497,54 @@ fn validate_static_string(
         _ => Some(value),
     }
 }
-validated_struct_codec!(crate::semantic::ValueFlowFacts {
+validated_struct_codec!(crate::semantic::types::ValueFlowFacts {
     bindings, branch_joins, immutable_initializers, return_type, fields, framework
 } => validate_value_flow_facts);
 
 fn validate_value_flow_facts(
-    value: crate::semantic::ValueFlowFacts,
-) -> Option<crate::semantic::ValueFlowFacts> {
+    value: crate::semantic::types::ValueFlowFacts,
+) -> Option<crate::semantic::types::ValueFlowFacts> {
     value.valid_for_cache().then_some(value)
 }
 
-tagged_state_codec!(crate::typed_facts::FlowState, buf, bytes, cursor {
-    0 => (crate::typed_facts::FlowState::Valid { facts, classic_fields_first, .. }) => {
+tagged_state_codec!(FlowState, buf, bytes, cursor {
+    0 => (FlowState::Valid { facts, classic_fields_first, .. }) => {
         facts.encode(buf);
         classic_fields_first.encode(buf);
     } => {
-        Some(crate::typed_facts::FlowState::Valid {
+        Some(FlowState::Valid {
             facts: Box::decode(bytes, cursor)?,
             original: None,
             classic_fields_first: Option::decode(bytes, cursor)?,
         })
     },
-    1 => (crate::typed_facts::FlowState::Invalid(value)) => { value.encode(buf); } => {
-        Some(crate::typed_facts::FlowState::Invalid(
+    1 => (FlowState::Invalid(value)) => { value.encode(buf); } => {
+        Some(FlowState::Invalid(
             serde_json::Value::decode(bytes, cursor)?,
         ))
     },
 });
 
-tagged_state_codec!(crate::typed_facts::SemanticState, buf, bytes, cursor {
-    0 => (crate::typed_facts::SemanticState::Valid { facts, .. }) => { facts.encode(buf); } => {
-        Some(crate::typed_facts::SemanticState::Valid {
+tagged_state_codec!(SemanticState, buf, bytes, cursor {
+    0 => (SemanticState::Valid { facts, .. }) => { facts.encode(buf); } => {
+        Some(SemanticState::Valid {
             facts: Vec::decode(bytes, cursor)?, original: None,
         })
     },
-    1 => (crate::typed_facts::SemanticState::Invalid { original, error }) => {
+    1 => (SemanticState::Invalid { original, error }) => {
         original.encode(buf);
         error.encode(buf);
     } => {
-        Some(crate::typed_facts::SemanticState::Invalid {
+        Some(SemanticState::Invalid {
             original: serde_json::Value::decode(bytes, cursor)?,
             error: String::decode(bytes, cursor)?,
         })
     },
 });
 
-fn validate_receiver_hint(
-    hint: crate::models::ReceiverHint,
-) -> Option<crate::models::ReceiverHint> {
-    if let crate::models::ReceiverHint::TypedCallResult { value, member } = &hint {
-        if !matches!(value, crate::semantic::ValueExpr::Call { .. })
+fn validate_receiver_hint(hint: ReceiverHint) -> Option<ReceiverHint> {
+    if let ReceiverHint::TypedCallResult { value, member } = &hint {
+        if !matches!(value, crate::semantic::types::ValueExpr::Call { .. })
             || !value.valid_call_sites(0)
             || member.is_empty()
             || member.len() > 4096
@@ -571,7 +574,7 @@ impl BinaryEncode for TypedFacts {
 }
 impl BinaryDecode for TypedFacts {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        let mut facts = crate::models::Facts {
+        let mut facts = Facts {
             nodes: Vec::decode(bytes, cursor)?,
             edges: Vec::decode(bytes, cursor)?,
             references: Vec::decode(bytes, cursor)?,
@@ -584,14 +587,13 @@ impl BinaryDecode for TypedFacts {
             statement_fingerprints: Vec::decode(bytes, cursor)?,
             ..Default::default()
         };
-        let mut flows = crate::typed_facts::FlowStore::default();
-        for (owner, state) in Vec::<(String, crate::typed_facts::FlowState)>::decode(bytes, cursor)?
-        {
+        let mut flows = FlowStore::default();
+        for (owner, state) in Vec::<(String, FlowState)>::decode(bytes, cursor)? {
             flows.restore_cache_entry(owner, Some(state), Vec::new(), false);
         }
         for (owner, uncertainties) in Vec::<(
             String,
-            Vec<crate::semantic::NamedDefinitionUncertainty>,
+            Vec<crate::semantic::types::NamedDefinitionUncertainty>,
         )>::decode(bytes, cursor)?
         {
             flows.restore_cache_entry(owner, None, uncertainties, false);
@@ -599,9 +601,7 @@ impl BinaryDecode for TypedFacts {
         for owner in Vec::<String>::decode(bytes, cursor)? {
             flows.restore_cache_entry(owner, None, Vec::new(), true);
         }
-        for (index, entry) in
-            Vec::<(usize, crate::typed_facts::SemanticEntry)>::decode(bytes, cursor)?
-        {
+        for (index, entry) in Vec::<(usize, SemanticEntry)>::decode(bytes, cursor)? {
             facts.semantic.restore_cache_entry(index, entry);
         }
         facts.semantic.mark_complete();
@@ -609,11 +609,11 @@ impl BinaryDecode for TypedFacts {
     }
 }
 
-pub fn encode_references(references: &[crate::models::Reference], buf: &mut Vec<u8>) {
+pub fn encode_references(references: &[Reference], buf: &mut Vec<u8>) {
     references.encode(buf);
 }
 
-pub fn decode_references(bytes: &[u8]) -> Option<Vec<crate::models::Reference>> {
+pub fn decode_references(bytes: &[u8]) -> Option<Vec<Reference>> {
     let mut cursor = 0;
     let references = Vec::decode(bytes, &mut cursor)?;
     (cursor == bytes.len()).then_some(references)
@@ -906,12 +906,12 @@ impl TypedFacts {
         let fp_count = collection_count(bytes, cursor)?;
         let mut statement_fingerprints = Vec::with_capacity(fp_count);
         for _ in 0..fp_count {
-            statement_fingerprints.push(crate::models::CallableFingerprints {
+            statement_fingerprints.push(CallableFingerprints {
                 node_id: decode_string_from_table(&table, bytes, cursor)?,
                 statements: Vec::decode(bytes, cursor)?,
             });
         }
-        let mut facts = crate::models::Facts {
+        let mut facts = Facts {
             nodes,
             edges,
             references,
@@ -925,11 +925,11 @@ impl TypedFacts {
             ..Default::default()
         };
 
-        let mut flows = crate::typed_facts::FlowStore::default();
+        let mut flows = FlowStore::default();
         let flow_count = collection_count(bytes, cursor)?;
         for _ in 0..flow_count {
             let owner = decode_string_from_table(&table, bytes, cursor)?;
-            let state = crate::typed_facts::FlowState::decode(bytes, cursor)?;
+            let state = FlowState::decode(bytes, cursor)?;
             flows.restore_cache_entry(owner, Some(state), Vec::new(), false);
         }
 
@@ -937,7 +937,7 @@ impl TypedFacts {
         for _ in 0..uncertainty_count {
             let owner = decode_string_from_table(&table, bytes, cursor)?;
             let uncertainties =
-                Vec::<crate::semantic::NamedDefinitionUncertainty>::decode(bytes, cursor)?;
+                Vec::<crate::semantic::types::NamedDefinitionUncertainty>::decode(bytes, cursor)?;
             flows.restore_cache_entry(owner, None, uncertainties, false);
         }
 
@@ -950,11 +950,11 @@ impl TypedFacts {
         let semantic_count = collection_count(bytes, cursor)?;
         for _ in 0..semantic_count {
             let index = usize::decode(bytes, cursor)?;
-            let entry = crate::typed_facts::SemanticEntry {
+            let entry = SemanticEntry {
                 owner: decode_string_from_table(&table, bytes, cursor)?,
                 line: usize::decode(bytes, cursor)?,
                 qualname: decode_string_from_table(&table, bytes, cursor)?,
-                state: crate::typed_facts::SemanticState::decode(bytes, cursor)?,
+                state: SemanticState::decode(bytes, cursor)?,
             };
             facts.semantic.restore_cache_entry(index, entry);
         }
@@ -966,8 +966,9 @@ impl TypedFacts {
 #[cfg(test)]
 mod tests {
     use super::{BinaryDecode, BinaryEncode};
-    use crate::models::Facts;
-    use crate::typed_facts::{decode_facts, encode_facts, TypedFacts};
+    use crate::models::facts::Facts;
+    use crate::typed_facts::bundle::TypedFacts;
+    use crate::typed_facts::{decode_facts, encode_facts};
 
     #[test]
     fn activation_signals_roundtrip_both_tabled_and_untabled_binary_codecs() {

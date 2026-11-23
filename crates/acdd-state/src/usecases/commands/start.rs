@@ -7,11 +7,11 @@ use crate::git_ops::worktree::{
 };
 use crate::machine::{
     build_initial_run_graph, compute_schedule,
-    BuildGraphInput,
+    BuildGraphInput, MachineProfileInput, MachineSpecInput,
 };
 use crate::profile::{resolve_optional_profile_ref_with_dirs, ResolvedGateProfile};
 use crate::spec::{
-    materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus,
+    materialize_ephemeral_goal_spec_with_options, parse_spec, SpecDocument, SpecStatus,
 };
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
@@ -20,15 +20,16 @@ use crate::types::{
 use crate::usecases::dto::{
     StartReq, StartResp,
 };
+use crate::usecases::deps::{collect_external_satisfied_deps, verify_run_level_depends_on};
 use crate::usecases::lifecycle::{
-    append_trace_event, apply_effective_isolation, checkout_config, collect_external_satisfied_deps,
+    append_trace_event, apply_effective_isolation, checkout_config,
     effective_spec_collections, ensure_state_enabled, generate_run_id, match_spec_collection,
     read_confined_utf8, resolve_source_checkout, resume_pending_tombstone_cleanups_dyn,
     to_machine_profile,
-    validate_profile_fail_closed, verify_run_level_depends_on,
+    validate_profile_fail_closed,
     with_repo_lock_and_maintenance_unchecked,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::telemetry::TraceId;
@@ -36,9 +37,9 @@ use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId, RunName, TaskRef};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use super::{
+use super::common::{
     build_machine_spec_input, derive_run_name, ensure_no_managed_worktree_collision,
     normalize_spec_relpath,
 };
@@ -69,6 +70,308 @@ pub(crate) fn handle_start_dyn(
     })
 }
 
+struct PreparedRunInputs {
+    run_id: RunId,
+    run_name: RunName,
+    collection: Option<String>,
+    spec_path_rel: Option<String>,
+    is_ephemeral: bool,
+    spec_doc: SpecDocument,
+    resolved_profile: ResolvedGateProfile,
+    materialized_spec_path: Option<String>,
+    ephemeral_spec_to_write: Option<(PathBuf, String)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_spec_run_inputs(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    checkout: &StateEngineConfig,
+    source: &Path,
+    raw_spec_path: &str,
+    req: &StartReq,
+) -> Result<PreparedRunInputs, StateError> {
+    let collections = effective_spec_collections(checkout);
+    let norm_rel = normalize_spec_relpath(raw_spec_path)?;
+    let raw_content = read_confined_utf8(source, &norm_rel)?;
+    let doc = parse_spec(&raw_content)?;
+    if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("cannot start run from spec '{}' with terminal status '{:?}'", doc.id, doc.status),
+        ));
+    }
+    verify_run_level_depends_on(checkout, backend, &doc)?;
+
+    let col = match_spec_collection(&collections, &norm_rel);
+    let col_profile = col
+        .as_deref()
+        .and_then(|k| collections.get(k))
+        .and_then(|c| c.profile.as_deref());
+    let profile_ref = req
+        .profile
+        .as_deref()
+        .map(|reference| {
+            Path::new(reference)
+                .strip_prefix(source)
+                .ok()
+                .and_then(Path::to_str)
+                .unwrap_or(reference)
+        })
+        .or(doc.profile.as_deref())
+        .or(col_profile);
+
+    let resolved = resolve_optional_profile_ref_with_dirs(
+        profile_ref,
+        Some(source),
+        Some(&config.modules),
+        Some(&checkout.profiles_dirs),
+    )?;
+    validate_profile_fail_closed(config, &resolved, provider, true)?;
+
+    let run_id = generate_run_id(&doc.id)?;
+    let run_name = match req.run_name.clone() {
+        Some(name) => name,
+        None => derive_run_name(&doc.id, run_id.as_str())?,
+    };
+    let sp_display = norm_rel.clone();
+    Ok(PreparedRunInputs {
+        run_id,
+        run_name,
+        collection: col,
+        spec_path_rel: Some(norm_rel),
+        is_ephemeral: false,
+        spec_doc: doc,
+        resolved_profile: resolved,
+        materialized_spec_path: Some(sp_display),
+        ephemeral_spec_to_write: None,
+    })
+}
+
+fn prepare_goal_run_inputs(
+    config: &StateEngineConfig,
+    provider: &CompositeDomainProvider,
+    checkout: &StateEngineConfig,
+    primary: &Path,
+    req: &StartReq,
+    source_override: Option<&Adapter>,
+) -> Result<PreparedRunInputs, StateError> {
+    let goal_text = req.goal.as_deref().unwrap_or("");
+    let mut resolved = resolve_optional_profile_ref_with_dirs(
+        req.profile.as_deref(),
+        Some(primary),
+        Some(&config.modules),
+        Some(&config.profiles_dirs),
+    )?;
+    validate_profile_fail_closed(config, &resolved, provider, true)?;
+
+    let run_id = generate_run_id("goal")?;
+    let run_name = match req.run_name.clone() {
+        Some(name) => name,
+        None => RunName::new(run_id.as_str())?,
+    };
+    let has_tasks_block = resolved.gates.iter().any(|g| g.tasks.is_some());
+    let effective_scope = if !has_tasks_block {
+        for pat in &req.scope {
+            if !acdd_core::path_policy::is_valid_scope_glob(pat) {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("goal run has invalid or non-normalized scope glob '{pat}'"),
+                ));
+            }
+        }
+        if req.scope.is_empty() && resolved.profile_id == "spec_planning" {
+            let docs_roots = source_override
+                .map(|a| a.docs.clone())
+                .unwrap_or_else(|| {
+                    if primary.join(ACDD_CONFIG_FILE).is_file() {
+                        acdd_core::config::load_adapter(primary, None)
+                            .map(|a| a.docs)
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    }
+                });
+            derive_spec_planning_scope(primary, checkout, &docs_roots)
+        } else {
+            req.scope.clone()
+        }
+    } else {
+        req.scope.clone()
+    };
+    if !has_tasks_block && !effective_scope.is_empty() {
+        assign_root_gate_scopes(&mut resolved.gates, &effective_scope);
+    }
+    let rendered_spec = materialize_ephemeral_goal_spec_with_options(
+        &run_id,
+        &run_name,
+        goal_text,
+        &resolved.profile_id,
+        &effective_scope,
+        &[],
+        has_tasks_block,
+    )?;
+    let eph_rel = format!("{ACDD_DIR}/run/{}/spec.md", run_id);
+    let eph_abs = checked_child(primary, Path::new(&eph_rel)).map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid ephemeral spec path '{eph_rel}': {err}"),
+        )
+    })?;
+    let doc = parse_spec(&rendered_spec)?;
+    Ok(PreparedRunInputs {
+        run_id,
+        run_name,
+        collection: None,
+        spec_path_rel: None,
+        is_ephemeral: true,
+        spec_doc: doc,
+        resolved_profile: resolved,
+        materialized_spec_path: Some(eph_rel),
+        ephemeral_spec_to_write: Some((eph_abs, rendered_spec)),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn provision_and_verify_managed_start_worktree(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    primary: &Path,
+    primary_str: &str,
+    spec_source: &Path,
+    source_override: Option<&Adapter>,
+    wt_req: &CreateWorktreeReq,
+    resolved_profile: &ResolvedGateProfile,
+    machine_profile: &MachineProfileInput,
+    machine_spec: &MachineSpecInput,
+    effective_isolation: IsolationMode,
+    effective_worktrees: WorktreeLifecycle,
+    obs: &ValidatedObservations,
+    graph: &mut RunGraphSnapshot,
+) -> Result<(PathBuf, String), StateError> {
+    let created = if spec_source == primary {
+        create_run_worktree(wt_req)?
+    } else {
+        create_managed_worktree(wt_req, Some(spec_source))?
+    };
+    graph.run.worktree = Some(created.worktree.to_string_lossy().into_owned());
+    graph.run.branch = Some(created.branch.clone());
+    let checked = (|| {
+        if !graph.run.is_ephemeral {
+            let destination = checkout_config(config, primary, &created.worktree, source_override)?;
+            let mut dest_profile = resolve_optional_profile_ref_with_dirs(
+                Some(&resolved_profile.profile_id),
+                Some(&created.worktree),
+                Some(&config.modules),
+                Some(&destination.profiles_dirs),
+            )?;
+            apply_effective_isolation(&mut dest_profile, effective_isolation, effective_worktrees);
+            if to_machine_profile(&dest_profile)?.profile_json != machine_profile.profile_json {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    "managed checkout profile differs from source",
+                ));
+            }
+            let dest_doc = parse_spec(&read_confined_utf8(
+                &created.worktree,
+                graph.run.spec_path.as_deref().unwrap_or_default(),
+            )?)?;
+            crate::validate::validate_spec_for_run(
+                &destination,
+                backend,
+                provider,
+                &dest_doc,
+                &dest_profile,
+            )?;
+            let dest_spec =
+                build_machine_spec_input(&dest_doc, primary_str, &graph.run.run_id, &destination)?;
+            if &dest_spec != machine_spec {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    "managed checkout dependency bindings differ from source",
+                ));
+            }
+            let mut observed_deps = graph.dependencies.clone();
+            for dep in &mut observed_deps {
+                dep.satisfied = false;
+            }
+            let mut dest_graph = graph.clone();
+            dest_graph.dependencies = observed_deps;
+            let dest_satisfied = collect_external_satisfied_deps(&destination, &dest_graph)?;
+            if dest_satisfied != obs.external_satisfied_deps {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    "managed checkout dependency satisfaction differs from source",
+                ));
+            }
+        }
+        Ok::<(), StateError>(())
+    })();
+    if let Err(err) = checked {
+        remove_worktree_and_branch(primary, Some(&created.worktree), Some(&created.branch), true)?;
+        return Err(err);
+    }
+    Ok((created.worktree, created.branch))
+}
+
+struct PreparedStartGraph {
+    machine_profile: MachineProfileInput,
+    machine_spec: MachineSpecInput,
+    graph: RunGraphSnapshot,
+    obs: ValidatedObservations,
+    ready_nodes: Vec<String>,
+}
+
+fn prepare_start_graph_and_schedule(
+    checkout: &StateEngineConfig,
+    resolved_profile: &ResolvedGateProfile,
+    spec_doc: &SpecDocument,
+    input: BuildGraphInput,
+) -> Result<PreparedStartGraph, StateError> {
+    let machine_profile = to_machine_profile(resolved_profile)?;
+    let machine_spec = input.spec.clone();
+    let mut graph = build_initial_run_graph(&machine_profile, &input)?;
+    graph.run.spec_id = Some(spec_doc.id.clone());
+
+    let ext_satisfied = collect_external_satisfied_deps(checkout, &graph)?;
+    apply_initial_external_dep_satisfaction(&mut graph, &ext_satisfied);
+    let obs = ValidatedObservations {
+        external_satisfied_deps: ext_satisfied,
+        external_deps_authoritative: true,
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+        ..ValidatedObservations::default()
+    };
+    let schedule = compute_schedule(&graph, &obs)?;
+    let mut ready_nodes = Vec::new();
+    for nid in &schedule.ready_root_nodes {
+        ready_nodes.push(NodeCursor::from_node_id(nid)?.to_string());
+    }
+    for tref in &schedule.ready_tasks {
+        let parent_id = format!("task:{tref}");
+        if let Some(g) = graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.kind == NodeKind::TaskGate
+                    && n.parent_id.as_deref() == Some(parent_id.as_str())
+                    && n.status == NodeStatus::Ready
+            })
+            .min_by_key(|n| n.seq_order)
+        {
+            ready_nodes.push(NodeCursor::from_node_id(&g.node_id)?.to_string());
+        }
+    }
+    Ok(PreparedStartGraph {
+        machine_profile,
+        machine_spec,
+        graph,
+        obs,
+        ready_nodes,
+    })
+}
+
 fn start_holding_repo_lock(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
@@ -95,7 +398,7 @@ fn start_holding_repo_lock(
     let created_at = acdd_core::telemetry::now_utc_iso_ms();
     let trace_id = TraceId::new().to_string();
 
-    let (
+    let PreparedRunInputs {
         run_id,
         run_name,
         collection,
@@ -105,140 +408,10 @@ fn start_holding_repo_lock(
         mut resolved_profile,
         materialized_spec_path,
         ephemeral_spec_to_write,
-    ) = if let Some(ref raw_spec_path) = req.spec_path {
-        let collections = effective_spec_collections(&checkout);
-        let norm_rel = normalize_spec_relpath(raw_spec_path)?;
-        let raw_content = read_confined_utf8(source, &norm_rel)?;
-        let doc = parse_spec(&raw_content)?;
-        if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!(
-                    "cannot start run from spec '{}' with terminal status '{:?}'",
-                    doc.id, doc.status
-                ),
-            ));
-        }
-        verify_run_level_depends_on(&checkout, backend, &doc)?;
-
-        let col = match_spec_collection(&collections, &norm_rel);
-        let col_profile = col
-            .as_deref()
-            .and_then(|k| collections.get(k))
-            .and_then(|c| c.profile.as_deref());
-        let profile_ref = req
-            .profile
-            .as_deref()
-            .map(|reference| {
-                Path::new(reference)
-                    .strip_prefix(source)
-                    .ok()
-                    .and_then(Path::to_str)
-                    .unwrap_or(reference)
-            })
-            .or(doc.profile.as_deref())
-            .or(col_profile);
-
-        let resolved = resolve_optional_profile_ref_with_dirs(
-            profile_ref,
-            Some(source),
-            Some(&config.modules),
-            Some(&checkout.profiles_dirs),
-        )?;
-        validate_profile_fail_closed(config, &resolved, provider, true)?;
-
-        let rid = generate_run_id(&doc.id)?;
-        let rname = match req.run_name.clone() {
-            Some(name) => name,
-            None => derive_run_name(&doc.id, rid.as_str())?,
-        };
-        let sp_display = norm_rel.clone();
-        (
-            rid,
-            rname,
-            col,
-            Some(norm_rel),
-            false,
-            doc,
-            resolved,
-            Some(sp_display),
-            None,
-        )
+    } = if let Some(ref raw_spec_path) = req.spec_path {
+        prepare_spec_run_inputs(config, backend, provider, &checkout, source, raw_spec_path, &req)?
     } else {
-        let goal_text = req.goal.as_deref().unwrap_or("");
-        let mut resolved = resolve_optional_profile_ref_with_dirs(
-            req.profile.as_deref(),
-            Some(primary),
-            Some(&config.modules),
-            Some(&config.profiles_dirs),
-        )?;
-        validate_profile_fail_closed(config, &resolved, provider, true)?;
-
-        let rid = generate_run_id("goal")?;
-        let rname = match req.run_name.clone() {
-            Some(name) => name,
-            None => RunName::new(rid.as_str())?,
-        };
-        let has_tasks_block = resolved.gates.iter().any(|g| g.tasks.is_some());
-        let effective_scope = if !has_tasks_block {
-            for pat in &req.scope {
-                if !acdd_core::path_policy::is_valid_scope_glob(pat) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("goal run has invalid or non-normalized scope glob '{pat}'"),
-                    ));
-                }
-            }
-            if req.scope.is_empty() && resolved.profile_id == "spec_planning" {
-                let docs_roots = source_override
-                    .map(|a| a.docs.clone())
-                    .unwrap_or_else(|| {
-                        if primary.join(ACDD_CONFIG_FILE).is_file() {
-                            acdd_core::config::load_adapter(primary, None)
-                                .map(|a| a.docs)
-                                .unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        }
-                    });
-                derive_spec_planning_scope(primary, &checkout, &docs_roots)
-            } else {
-                req.scope.clone()
-            }
-        } else {
-            req.scope.clone()
-        };
-        if !has_tasks_block && !effective_scope.is_empty() {
-            assign_root_gate_scopes(&mut resolved.gates, &effective_scope);
-        }
-        let rendered_spec = materialize_ephemeral_goal_spec_with_options(
-            &rid,
-            &rname,
-            goal_text,
-            &resolved.profile_id,
-            &effective_scope,
-            &[],
-            has_tasks_block,
-        )?;
-        let eph_rel = format!("{ACDD_DIR}/run/{}/spec.md", rid);
-        let eph_abs = checked_child(primary, Path::new(&eph_rel)).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("invalid ephemeral spec path '{eph_rel}': {err}"),
-            )
-        })?;
-        let doc = parse_spec(&rendered_spec)?;
-        (
-            rid,
-            rname,
-            None,
-            None,
-            true,
-            doc,
-            resolved,
-            Some(eph_rel),
-            Some((eph_abs, rendered_spec)),
-        )
+        prepare_goal_run_inputs(config, provider, &checkout, primary, &req, source_override)?
     };
 
     crate::validate::validate_spec_for_run(
@@ -313,14 +486,20 @@ fn start_holding_repo_lock(
         }
     }
 
-    let machine_profile = to_machine_profile(&resolved_profile)?;
-
     let primary_str = primary.to_string_lossy().into_owned();
-    let machine_spec = build_machine_spec_input(&spec_doc, &primary_str, &run_id, &checkout)?;
-
-    let mut graph = build_initial_run_graph(
-        &machine_profile,
-        &BuildGraphInput {
+    let machine_spec =
+        build_machine_spec_input(&spec_doc, &primary_str, &run_id, &checkout)?;
+    let PreparedStartGraph {
+        machine_profile,
+        machine_spec,
+        mut graph,
+        obs,
+        ready_nodes,
+    } = prepare_start_graph_and_schedule(
+        &checkout,
+        &resolved_profile,
+        &spec_doc,
+        BuildGraphInput {
             run_id: run_id.clone(),
             run_name,
             collection,
@@ -333,89 +512,28 @@ fn start_holding_repo_lock(
             worktree: planned_worktree,
             trace_id,
             created_at,
-            spec: machine_spec.clone(),
+            spec: machine_spec,
         },
     )?;
-    graph.run.spec_id = Some(spec_doc.id.clone());
 
-    // Check external dependencies at start so already-completed external tasks unlock wave-0 tasks immediately.
-    let ext_satisfied = collect_external_satisfied_deps(&checkout, &graph)?;
-    apply_initial_external_dep_satisfaction(&mut graph, &ext_satisfied);
-    let obs = ValidatedObservations {
-        external_satisfied_deps: ext_satisfied,
-        external_deps_authoritative: true,
-        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-        ..ValidatedObservations::default()
-    };
-    let schedule = compute_schedule(&graph, &obs)?;
-    let mut ready_nodes = Vec::new();
-    for nid in &schedule.ready_root_nodes {
-        ready_nodes.push(NodeCursor::from_node_id(nid)?.to_string());
-    }
-    for tref in &schedule.ready_tasks {
-        let parent_id = format!("task:{tref}");
-        if let Some(g) = graph
-            .nodes
-            .iter()
-            .filter(|n| {
-                n.kind == NodeKind::TaskGate
-                    && n.parent_id.as_deref() == Some(parent_id.as_str())
-                    && n.status == NodeStatus::Ready
-            })
-            .min_by_key(|n| n.seq_order)
-        {
-            ready_nodes.push(NodeCursor::from_node_id(&g.node_id)?.to_string());
-        }
-    }
-
-    // Create managed run worktree (if requested) ONLY after all spec/profile/graph validation succeeds,
-    // and roll back worktree/branch/disk artifacts cleanly if SQL persistence fails.
     let created_managed = if let Some(ref wt_req) = managed_wt_req {
-        let created = if spec_source == primary {
-            create_run_worktree(wt_req)?
-        } else {
-            create_managed_worktree(wt_req, Some(spec_source))?
-        };
-        graph.run.worktree = Some(created.worktree.to_string_lossy().into_owned());
-        graph.run.branch = Some(created.branch.clone());
-        let checked = (|| {
-            if !is_ephemeral {
-                let destination = checkout_config(config, primary, &created.worktree, source_override)?;
-                let mut dest_profile = resolve_optional_profile_ref_with_dirs(
-                    Some(&resolved_profile.profile_id), Some(&created.worktree),
-                    Some(&config.modules), Some(&destination.profiles_dirs),
-                )?;
-                apply_effective_isolation(&mut dest_profile, effective_isolation, effective_worktrees);
-                if to_machine_profile(&dest_profile)?.profile_json != machine_profile.profile_json {
-                    return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "managed checkout profile differs from source"));
-                }
-                let dest_doc = parse_spec(&read_confined_utf8(&created.worktree, graph.run.spec_path.as_deref().unwrap_or_default())?)?;
-                crate::validate::validate_spec_for_run(&destination, backend, provider, &dest_doc, &dest_profile)?;
-                let dest_spec = build_machine_spec_input(&dest_doc, &primary_str, &run_id, &destination)?;
-                if dest_spec != machine_spec {
-                    return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "managed checkout dependency bindings differ from source"));
-                }
-                let mut observed_deps = graph.dependencies.clone();
-                for dep in &mut observed_deps {
-                    dep.satisfied = false;
-                }
-                let mut dest_graph = graph.clone();
-                dest_graph.dependencies = observed_deps;
-                let dest_satisfied = collect_external_satisfied_deps(&destination, &dest_graph)?;
-                if dest_satisfied != obs.external_satisfied_deps {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        "managed checkout dependency satisfaction differs from source",
-                    ));
-                }
-            }
-            Ok::<(), StateError>(())
-        })();
-        if let Err(err) = checked {
-            remove_worktree_and_branch(primary, Some(&created.worktree), Some(&created.branch), true)?;
-            return Err(err);
-        }
-        Some((created.worktree, created.branch))
+        Some(provision_and_verify_managed_start_worktree(
+            config,
+            backend,
+            provider,
+            primary,
+            &primary_str,
+            spec_source,
+            source_override,
+            wt_req,
+            &resolved_profile,
+            &machine_profile,
+            &machine_spec,
+            effective_isolation,
+            effective_worktrees,
+            &obs,
+            &mut graph,
+        )?)
     } else {
         None
     };

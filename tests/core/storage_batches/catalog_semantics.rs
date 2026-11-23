@@ -1,23 +1,24 @@
 use crate::common::Workspace;
-use acdd_index::models::{Facts, Node, NodeSemanticMeta};
+use acdd_index::models::Facts;
 use acdd_index::{db::{commitments, reader}, scanner};
-use contextunity_acdd::engine::{pipeline, pipeline as writer};
+use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "lang-python")]
 #[test]
 fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
-    use acdd_index::semantic::SymbolCatalog;
-    use acdd_index::linker;
+    use acdd_index::typed_facts::SymbolCatalog;
     let stored_local_facts = |connection: &Connection, path: &str| -> anyhow::Result<Facts> {
         let blob: Vec<u8> = connection.query_row(
             "SELECT facts_blob FROM local_facts WHERE path=?1",
             [path],
             |row| row.get(0),
         )?;
-        let mut facts = reader::decode_local_facts(&blob)?;
-        facts.nodes.retain(|node| node.kind != "component");
+        let mut facts = crate::common::decode_local_facts(&blob)?;
+        facts
+            .nodes
+            .retain(|node| !matches!(node.kind.as_str(), "component" | "document"));
         facts
             .edges
             .retain(|edge| !edge.src.starts_with("component:"));
@@ -45,10 +46,26 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
         .entries
         .iter()
         .map(|entry| {
-            Ok((
-                entry.path.clone(),
-                writer::extract(workspace.root(), entry, &adapter)?,
-            ))
+            let source = std::fs::read_to_string(workspace.path(&entry.path))?;
+            let facts = if entry.is_doc {
+                let docs = acdd_index::docs::extract_with_details_with_zones(
+                    &entry.path,
+                    &source,
+                    entry.mtime_ns as f64 / 1e9,
+                    &adapter.spec_paths(),
+                    None,
+                )?
+                .into_iter()
+                .map(|(d, _)| d)
+                .collect();
+                Facts {
+                    docs,
+                    ..Facts::default()
+                }
+            } else {
+                acdd_index::ast::extract(&entry.path, &entry.language, &source)?
+            };
+            Ok((entry.path.clone(), facts))
         })
         .collect::<anyhow::Result<_>>()?;
     let extracted = full.clone();
@@ -58,7 +75,7 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
             node.details["occurrence_token_spans"] = serde_json::json!([[0, 10], [11, 20]]);
         }
     }
-    let expected = linker::link(&full);
+    let expected = crate::common::link_facts(&full);
     let expected_call_edges: Vec<(String, String, String)> = expected
         .edges
         .iter()
@@ -66,7 +83,7 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
         .map(|edge| (edge.src.clone(), edge.dst.clone(), edge.kind.clone()))
         .collect();
     let catalog = SymbolCatalog::from_facts(full.clone());
-    let actual = linker::link_catalog(&catalog);
+    let actual = crate::common::link_catalog(&catalog);
 
     let database = workspace.root().join(".acdd/catalog.sqlite");
     let report = pipeline::build_with_cache_dir(
@@ -253,89 +270,6 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyhow::Result<()> {
-    use serde_json::json;
-
-    let meta = NodeSemanticMeta {
-        bindings: vec!["foo".into(), "bar".into()],
-        rebindings: vec!["baz".into()],
-        receiver: Some("(s *Service)".into()),
-        receiver_type: Some("Service".into()),
-        receiver_hint: Some("Service".into()),
-        param_types: std::collections::BTreeMap::from([("arg".into(), "str".into())]),
-    };
-
-    let serialized = serde_json::to_vec(&meta).expect("serialization succeeds");
-    let deserialized: NodeSemanticMeta =
-        serde_json::from_slice(&serialized).expect("deserialization succeeds");
-    assert_eq!(meta, deserialized);
-
-    let mut node = Node {
-        native_semantic: None,
-        id: "func:foo".into(),
-        path: "src/foo.go".into(),
-        language: "go".into(),
-        kind: "method".into(),
-        name: "foo".into(),
-        qualname: "Service.foo".into(),
-        line: 1,
-        end_line: 5,
-        is_test: false,
-        generated: false,
-        details: json!({
-            "receiver": "(s *Service)",
-            "receiver_type": "Service"
-        }),
-    };
-    node.apply_semantic_meta(meta.clone());
-    let extracted_meta = node.semantic_meta();
-    assert_eq!(meta, extracted_meta);
-    assert_eq!(node.details["receiver"], "(s *Service)");
-    assert_eq!(node.details["receiver_type"], "Service");
-
-    // Verify clearing metadata with default
-    node.apply_semantic_meta(NodeSemanticMeta::default());
-    let cleared_meta = node.semantic_meta();
-    assert_eq!(cleared_meta, NodeSemanticMeta::default());
-    assert!(node.details.get("bindings").is_none());
-    assert!(node.details.get("rebindings").is_none());
-    assert!(node.details.get("receiver").is_none());
-    assert!(node.details.get("receiver_type").is_none());
-    assert!(node.details.get("receiver_hint").is_none());
-    assert!(node.details.get("param_types").is_none());
-
-    // Verify hint-only metadata roundtrip without inventing receiver or receiver_type
-    let mut node2 = Node {
-        native_semantic: None,
-        id: "func:bar".into(),
-        path: "src/bar.py".into(),
-        language: "python".into(),
-        kind: "function".into(),
-        name: "bar".into(),
-        qualname: "bar".into(),
-        line: 1,
-        end_line: 5,
-        is_test: false,
-        generated: false,
-        details: serde_json::Value::Null,
-    };
-    let empty_details_node = Node {
-        details: json!({}),
-        ..node2.clone()
-    };
-    assert_eq!(
-        serde_json::to_value(empty_details_node).unwrap()["details"],
-        serde_json::Value::Null
-    );
-    let hint_meta = NodeSemanticMeta {
-        receiver_hint: Some("Service".into()),
-        ..Default::default()
-    };
-    node2.apply_semantic_meta(hint_meta.clone());
-    assert_eq!(node2.semantic_meta(), hint_meta);
-    assert_eq!(node2.details["receiver_hint"], "Service");
-    assert!(node2.details.get("receiver").is_none());
-    assert!(node2.details.get("receiver_type").is_none());
-
     // Exercise real cold build and delta persistence to prove SQLite round-trip
     // and cold-versus-delta equivalence on extracted semantic metadata.
     let node_details = |connection: &Connection, name: &str| -> anyhow::Result<serde_json::Value> {
@@ -366,10 +300,12 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
         "src/models.py",
         "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return f'processed:{result}'\n",
     );
-    pipeline::delta(
+    pipeline::delta_with_selection(
         workspace.root(),
         &cold_db,
         &[std::path::PathBuf::from("src/models.py")],
+        None,
+        None,
     )?;
     let delta_details = node_details(&cold_connection, "execute")?;
 
@@ -384,78 +320,23 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
     let fresh_details = node_details(&fresh_connection, "execute")?;
 
     assert_eq!(cold_details["param_types"]["value"], "int");
+    assert_eq!(cold_details["receiver_type"], "Service");
     assert!(cold_details["bindings"].as_array().is_some());
     assert!(cold_details["rebindings"].as_array().is_some());
 
-    let mut cold_node = Node {
-        native_semantic: None,
-        id: "func:Service.execute".into(),
-        path: "src/models.py".into(),
-        language: "python".into(),
-        kind: "method".into(),
-        name: "execute".into(),
-        qualname: "Service.execute".into(),
-        line: 2,
-        end_line: 3,
-        is_test: false,
-        generated: false,
-        details: cold_details.clone(),
-    };
-    let cold_meta = cold_node.semantic_meta();
-    assert_eq!(cold_meta.receiver_type.as_deref(), Some("Service"));
-
-    // Verify persisted metadata roundtrip through apply_semantic_meta
-    cold_node.apply_semantic_meta(cold_meta.clone());
-    assert_eq!(cold_node.semantic_meta(), cold_meta);
-
     // Modify file and run delta indexing
-    for key in ["bindings", "rebindings", "param_types"] {
+    for key in ["bindings", "rebindings", "param_types", "receiver_type"] {
         assert_eq!(
             delta_details[key], cold_details[key],
             "{key} changed in delta"
         );
     }
-    let delta_node = Node {
-        native_semantic: None,
-        id: "func:Service.execute".into(),
-        path: "src/models.py".into(),
-        language: "python".into(),
-        kind: "method".into(),
-        name: "execute".into(),
-        qualname: "Service.execute".into(),
-        line: 2,
-        end_line: 3,
-        is_test: false,
-        generated: false,
-        details: delta_details,
-    };
-    let delta_meta = delta_node.semantic_meta();
-
-    // Fresh cold build for comparison
-    for key in ["bindings", "rebindings", "param_types"] {
+    for key in ["bindings", "rebindings", "param_types", "receiver_type"] {
         assert_eq!(
-            fresh_details[key], cold_details[key],
-            "{key} changed in cold build"
+            fresh_details[key], delta_details[key],
+            "{key} differs between delta and cold build"
         );
     }
-    let fresh_node = Node {
-        native_semantic: None,
-        id: "func:Service.execute".into(),
-        path: "src/models.py".into(),
-        language: "python".into(),
-        kind: "method".into(),
-        name: "execute".into(),
-        qualname: "Service.execute".into(),
-        line: 2,
-        end_line: 3,
-        is_test: false,
-        generated: false,
-        details: fresh_details,
-    };
-    let fresh_meta = fresh_node.semantic_meta();
-
-    // Exact cold-versus-delta equivalence
-    assert_eq!(delta_meta, fresh_meta);
     Ok(())
 }
 
@@ -506,11 +387,12 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
         ws.path(".acdd/cold.sqlite.verified.json"),
         ws.path(".acdd/delta.sqlite.verified.json"),
     )?;
-    let delta_report = pipeline::delta_with_cache_dir(
+    let delta_report = pipeline::delta_with_selection(
         ws.root(),
         &delta_db,
         &[std::path::PathBuf::from("src/service.py")],
-        &ws.path(".acdd/extraction-cache"),
+        None,
+        Some(&ws.path(".acdd/extraction-cache")),
     )?;
     assert_eq!(cold_report["output_root"], delta_report["output_root"]);
     let dump_rows = |db_path: &std::path::Path| -> anyhow::Result<(Vec<String>, Vec<String>)> {
@@ -545,8 +427,8 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
     {
         let before_bytes = std::fs::read(&delta_db)?;
         let admitted_identity = acdd_index::db::cache::identity(&delta_db)?;
-        let err = acdd_index::db::delta::persist_delta(
-            acdd_index::db::delta::DeltaPersistenceInputs {
+        let err = acdd_index::db::writer::delta::persist_delta(
+            acdd_index::db::writer::delta::DeltaPersistenceInputs {
                 db: &delta_db,
                 root: ws.root(),
                 expected: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -577,14 +459,15 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
         acdd_core::lock::try_acquire_exclusive(&lock_path)?.is_none(),
         "exclusive lock must contend against second exclusive lock"
     );
+    let zero_timeout = std::time::Duration::ZERO;
+    let poll = std::time::Duration::from_millis(1);
     assert!(
-        acdd_core::lock::try_acquire_shared(&lock_path)?.is_none(),
+        acdd_core::lock::acquire_shared_bounded(&lock_path, zero_timeout, poll).is_err(),
         "exclusive lock must contend against shared lock"
     );
     drop(excl);
-    let shared_a = acdd_core::lock::acquire_shared(&lock_path)?;
-    let shared_b = acdd_core::lock::try_acquire_shared(&lock_path)?;
-    assert!(shared_b.is_some(), "shared locks must coexist after release");
+    let shared_a = acdd_core::lock::acquire_shared_bounded(&lock_path, zero_timeout, poll)?;
+    let shared_b = acdd_core::lock::acquire_shared_bounded(&lock_path, zero_timeout, poll)?;
     drop((shared_a, shared_b));
 
     // 3. `open_raw_confined_readonly` reads WAL-header snapshots without `-shm`, including in read-only directories.

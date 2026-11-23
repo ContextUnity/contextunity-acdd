@@ -9,7 +9,7 @@ use acdd_state::types::{
 use acdd_state::usecases::dto::{ClaimReq, StartReq, SubmitReq, VerifyReq};
 use acdd_state::usecases::{StateCommand, StateCommandOutput, StateEngine};
 use contextunity_acdd::format::render_claim_markdown;
-use contextunity_acdd::state_bridge::{build_domain_providers, state_engine_config};
+use contextunity_acdd::state_bridge::build_domain_providers;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,7 +22,24 @@ fn init_lint_repo(ws: &Workspace, branch: &str) {
 fn open_real_engine(ws: &Workspace) -> StateEngine {
     let adapter = acdd_core::config::load_adapter(ws.root(), None).unwrap();
     let providers = build_domain_providers(ws.root(), &adapter, None, Vec::new()).unwrap();
-    let cfg = state_engine_config(ws.root(), ws.root(), None, None, &adapter).unwrap();
+    let cfg = acdd_state::usecases::StateEngineConfig {
+        workspace_root: ws.root().to_path_buf(),
+        worktree: ws.root().to_path_buf(),
+        state_db_override: None,
+        code_db_path: Some(acdd_core::config::resolve_code_db_path(ws.root(), None)),
+        spec_collections: adapter.specs.clone(),
+        profiles_dirs: adapter.profiles_dirs.clone(),
+        linked_workspaces: adapter
+            .linked_workspaces
+            .iter()
+            .map(|lw| (lw.name.clone(), lw.path.clone()))
+            .collect(),
+        modules: adapter.modules.clone(),
+        response_policy: adapter.response.clone(),
+        retain_traces: adapter.retain_traces,
+        max_snapshot_file_bytes: adapter.limits.max_snapshot_file_bytes,
+        allowed_binary_extensions: adapter.limits.normalized_allowed_binary_extensions().unwrap(),
+    };
     StateEngine::open(cfg, providers).unwrap()
 }
 

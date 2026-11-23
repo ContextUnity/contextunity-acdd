@@ -1,8 +1,14 @@
 use super::{
-    change_impact::changed_impact_with_path_options, edge_endpoints, normalize_scope,
-    ImpactDirection, TraversalMode, TraversalOptions,
+    change_impact::changed_impact_with_path_options,
+    types::{
+        decode_edge_descriptor, edge_endpoints, normalize_scope, resolve_traversal_kinds,
+        ImpactDirection, TraversalMode, TraversalOptions, MAX_DEEP_TRAVERSAL_FRONTIER,
+    },
 };
-use crate::db::{paging, reader};
+use crate::db::paging::{
+    self, immediate_links, REVERSE_DEPENDENCIES,
+};
+use crate::db::reader;
 use crate::models::{
     details::NodeDetailKey,
     stable_hash64,
@@ -14,59 +20,9 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 
-// Stored decorates edges point from decorator to target; dependency walks reverse them.
-pub(super) const FORWARD_DEPENDENCIES: &str =
-    "'calls','possible_calls','inherits','implements','overrides','extends','includes','mutates','handles','references','calls_endpoint','defines_table','queries_table','mutates_table','references_table'";
-pub(super) const REVERSE_DEPENDENCIES: &str = "'decorates'";
-const STRUCTURAL_DEPENDENCIES: &str = ",'imports','contains','documents'";
-pub(super) const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;
-
 /// Parses an optional impact direction string into an inbound boolean.
 pub fn impact_inbound(direction: Option<&str>) -> Result<bool> {
     Ok(ImpactDirection::parse_optional(direction)?.is_inbound())
-}
-
-pub(super) fn decode_edge_descriptor(value: Value) -> Result<Value> {
-    match value {
-        Value::String(encoded) => {
-            serde_json::from_str(&encoded).context("invalid persisted impact edge descriptor")
-        }
-        other => Ok(other),
-    }
-}
-
-/// Counts immediate dependency links for a symbol ID in the given direction.
-pub(crate) fn immediate_links(
-    conn: &Connection,
-    id: &str,
-    inbound: bool,
-    structural: bool,
-) -> Result<usize> {
-    let (forward, reverse) = if inbound {
-        ("dst_hash", "src_hash")
-    } else {
-        ("src_hash", "dst_hash")
-    };
-    let extra = if structural {
-        STRUCTURAL_DEPENDENCIES
-    } else {
-        ""
-    };
-    let forward = paging::count(
-        conn,
-        &format!(
-            "SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"
-        ),
-        &[&stable_hash64(id)],
-    )?;
-    let reverse = paging::count(
-        conn,
-        &format!(
-            "SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
-        ),
-        &[&stable_hash64(id)],
-    )?;
-    Ok(forward.saturating_add(reverse))
 }
 
 fn admit_traversal(
@@ -83,60 +39,6 @@ fn admit_traversal(
         bail!("selector {id} has {immediate} immediate graph links; depth {depth} would expand a broad graph before pagination. Retry with depth=1 and page the result, or select a narrower module or symbol. Reducing limit alone does not reduce traversal work");
     }
     Ok(immediate)
-}
-
-pub(super) fn resolve_traversal_kinds(
-    mode: TraversalMode,
-    edge_types: Option<&[String]>,
-    structural: bool,
-) -> (String, String) {
-    if let Some(types) = edge_types {
-        if !types.is_empty() {
-            let mut forward = Vec::new();
-            let mut reverse = Vec::new();
-            for t in types {
-                let lower = t.to_ascii_lowercase();
-                if lower == EdgeKind::Decorates.as_str() {
-                    reverse.push(format!("'{lower}'"));
-                } else {
-                    forward.push(format!("'{lower}'"));
-                }
-            }
-            let f_str = if forward.is_empty() {
-                "'__none__'".into()
-            } else {
-                forward.join(",")
-            };
-            return (f_str, reverse.join(","));
-        }
-    }
-
-    match mode {
-        TraversalMode::DataFlow => (
-            format!(
-                "'{}','{}','{}'",
-                EdgeKind::Mutates.as_str(),
-                EdgeKind::References.as_str(),
-                EdgeKind::Handles.as_str()
-            ),
-            String::new(),
-        ),
-        TraversalMode::All => (
-            format!("{FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}"),
-            REVERSE_DEPENDENCIES.into(),
-        ),
-        TraversalMode::Calls => {
-            let extra = if structural {
-                STRUCTURAL_DEPENDENCIES
-            } else {
-                ""
-            };
-            (
-                format!("{FORWARD_DEPENDENCIES}{extra}"),
-                REVERSE_DEPENDENCIES.into(),
-            )
-        }
-    }
 }
 
 pub(super) fn custom_dependency_steps(

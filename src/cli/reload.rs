@@ -29,8 +29,8 @@ pub fn run() -> Result<Value> {
 fn server_invocation(argv: Vec<std::ffi::OsString>) -> bool {
     use clap::Parser;
     !argv.is_empty()
-        && super::Cli::try_parse_from(argv)
-            .is_ok_and(|cli| matches!(cli.command, None | Some(super::Command::Serve)))
+        && super::args::Cli::try_parse_from(argv)
+            .is_ok_and(|cli| matches!(cli.command, None | Some(super::args::Command::Serve)))
 }
 
 #[cfg(target_os = "linux")]

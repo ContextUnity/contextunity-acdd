@@ -1,9 +1,8 @@
 //! Filesystem confinement, deterministic directory sorting, PID liveness, and trace logging.
 
-use super::runs::list_all_runs;
 use crate::git_ops::worktree::RepoWorktreeLayout;
 use crate::store::traits::StateReader;
-use crate::types::RunStatus;
+use crate::types::{ListRunsReq, RunRecord, RunStatus};
 use acdd_core::config::ACDD_DIR;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{checked_child, open_confined};
@@ -147,6 +146,31 @@ pub(crate) fn combine_check_observations(items: &[String]) -> Option<String> {
     } else {
         Some(items.join("|"))
     }
+}
+
+/// Paginate all runs matching `status` from `reader`.
+pub fn list_all_runs(
+    reader: &dyn StateReader,
+    status: Option<RunStatus>,
+) -> Result<Vec<RunRecord>, StateError> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let page = reader.list_runs(&ListRunsReq {
+            workspace: None,
+            status,
+            include_tombstones: false,
+            limit: 100,
+            offset,
+            generation: None,
+        })?;
+        out.extend(page.runs);
+        if out.len() >= page.total_runs || page.total_runs == 0 {
+            break;
+        }
+        offset = out.len();
+    }
+    Ok(out)
 }
 
 fn dir_size_bytes_no_follow(dir: &Path) -> u64 {

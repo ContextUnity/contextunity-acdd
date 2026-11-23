@@ -1402,7 +1402,6 @@ fn python_pep604_without_union_imports_and_nested_invariants_survive_readback() 
 
 #[test]
 fn rust_linker_core_contract_matrix() {
-    use acdd_index::linker;
     use std::collections::BTreeMap;
 
     // 1. External/stdlib trait impls & unproven_bounds preserve receivers_by_method
@@ -1533,7 +1532,7 @@ fn exercise<'a>(
         "unexpected generic qualname leak: {interner_nodes:#?}"
     );
 
-    let graph = linker::link(&files);
+    let graph = crate::common::link_facts(&files);
 
     // Table-driven coverage status contract rows
     let coverage_cases = [

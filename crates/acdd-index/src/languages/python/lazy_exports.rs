@@ -1,6 +1,6 @@
 use super::template_loaders::literal;
-use crate::ast::{field, text};
-use crate::languages::LazyExport;
+use crate::ast::syntax::{field, text};
+use crate::languages::types::LazyExport;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -307,12 +307,20 @@ fn branch_exports(
     result
 }
 
-pub(super) fn extract<'tree>(
+struct LazyModuleState<'a, 'tree> {
+    getter: Node<'tree>,
+    parameter: &'a str,
+    sets: HashMap<&'a str, Option<Vec<&'a str>>>,
+    module_bindings: HashMap<String, (String, Option<String>)>,
+    importlib_bound: bool,
+    getattr_bound: bool,
+}
+
+fn find_valid_module_getter<'a, 'tree>(
     root: Node<'tree>,
-    source: &str,
+    source: &'a str,
     module_rebindings: &[String],
-    rebound_events: &[Node<'tree>],
-) -> Vec<LazyExport> {
+) -> Option<(Node<'tree>, &'a str)> {
     let mut getter = None;
     let mut getter_count = 0;
     let mut cursor = root.walk();
@@ -325,22 +333,20 @@ pub(super) fn extract<'tree>(
         }
     }
     if getter_count != 1 {
-        return Vec::new();
+        return None;
     }
-    let getter = getter.expect("one matching module getter");
+    let getter = getter?;
     if module_rebindings
         .iter()
         .any(|name| matches!(name.as_str(), "__getattr__" | "frozenset"))
     {
-        return Vec::new();
+        return None;
     }
-    let Some(parameters) = getter.child_by_field_name("parameters") else {
-        return Vec::new();
-    };
+    let parameters = getter.child_by_field_name("parameters")?;
     if parameters.named_child_count() != 1 {
-        return Vec::new();
+        return None;
     }
-    let Some(parameter) = parameters
+    let parameter = parameters
         .named_child(0)
         .and_then(|node| {
             if node.kind() == "identifier" {
@@ -349,18 +355,26 @@ pub(super) fn extract<'tree>(
                 node.named_child(0)
             }
         })
-        .filter(|node| node.kind() == "identifier")
-    else {
-        return Vec::new();
-    };
+        .filter(|node| node.kind() == "identifier")?;
     let parameter = text(parameter, source);
-    if crate::ast::scope_bindings(getter, source)
+    if crate::ast::syntax::scope_bindings(getter, source)
         .rebindings
         .iter()
         .any(|name| name == parameter)
     {
-        return Vec::new();
+        return None;
     }
+    Some((getter, parameter))
+}
+
+fn collect_lazy_module_state<'a, 'tree>(
+    root: Node<'tree>,
+    getter: Node<'tree>,
+    parameter: &'a str,
+    source: &'a str,
+    module_rebindings: &[String],
+    rebound_events: &[Node<'tree>],
+) -> Option<LazyModuleState<'a, 'tree>> {
     let mut sets = HashMap::new();
     let mut set_originals = HashMap::new();
     let mut importlib_bound = false;
@@ -378,25 +392,19 @@ pub(super) fn extract<'tree>(
             if !imported_binding(statement, source, &mut names)
                 || !imported_binding(statement, source, &mut module_bindings)
             {
-                return Vec::new();
+                return None;
             }
             if let Some((module, member)) = names.get("importlib") {
                 importlib_bound = module == "importlib" && member.is_none();
             }
-            if names.contains_key("getattr") {
-                getattr_bound = true;
-            }
-            if names.contains_key("frozenset") {
-                frozenset_shadowed = true;
-            }
-            if names.contains_key("__getattr__") {
-                getter_rebound = true;
-            }
+            getattr_bound |= names.contains_key("getattr");
+            frozenset_shadowed |= names.contains_key("frozenset");
+            getter_rebound |= names.contains_key("__getattr__");
         }
-        let assignment = statement
+        if let Some(assignment) = statement
             .named_child(0)
-            .filter(|node| node.kind() == "assignment");
-        if let Some(assignment) = assignment {
+            .filter(|node| node.kind() == "assignment")
+        {
             if let Some(left) = assignment
                 .child_by_field_name("left")
                 .filter(|node| node.kind() == "identifier")
@@ -409,39 +417,25 @@ pub(super) fn extract<'tree>(
                 if value.is_some() {
                     set_originals.insert(name, assignment.id());
                 }
-                if sets.contains_key(name) {
-                    sets.insert(name, None);
-                } else {
-                    sets.insert(name, value);
-                }
-                if name == "importlib" {
-                    importlib_bound = false;
-                }
-                if name == "getattr" {
-                    getattr_bound = true;
-                }
-                if name == "frozenset" {
-                    frozenset_shadowed = true;
-                }
-                if name == "__getattr__" {
-                    getter_rebound = true;
+                sets.insert(name, if sets.contains_key(name) { None } else { value });
+                match name {
+                    "importlib" => importlib_bound = false,
+                    "getattr" => getattr_bound = true,
+                    "frozenset" => frozenset_shadowed = true,
+                    "__getattr__" => getter_rebound = true,
+                    _ => {}
                 }
             }
         }
         if matches!(statement.kind(), "function_definition" | "class_definition") {
-            if field(statement, source, "name") == Some("importlib") {
-                importlib_bound = false;
-            }
-            if field(statement, source, "name") == Some("getattr") {
-                getattr_bound = true;
-            }
-            if field(statement, source, "name") == Some("frozenset") {
-                frozenset_shadowed = true;
-            }
-            if statement.kind() == "class_definition"
-                && field(statement, source, "name") == Some("__getattr__")
-            {
-                getter_rebound = true;
+            match field(statement, source, "name") {
+                Some("importlib") => importlib_bound = false,
+                Some("getattr") => getattr_bound = true,
+                Some("frozenset") => frozenset_shadowed = true,
+                Some("__getattr__") if statement.kind() == "class_definition" => {
+                    getter_rebound = true;
+                }
+                _ => {}
             }
         }
     }
@@ -451,16 +445,41 @@ pub(super) fn extract<'tree>(
     for name in module_rebindings {
         module_bindings.remove(name);
     }
-    if module_rebindings.iter().any(|name| name == "getattr") {
-        getattr_bound = true;
-    }
+    getattr_bound |= module_rebindings.iter().any(|name| name == "getattr");
     if module_rebindings.iter().any(|name| name == "importlib") {
         importlib_bound = false;
     }
-    if frozenset_shadowed || getter_rebound {
+    (!frozenset_shadowed && !getter_rebound).then_some(LazyModuleState {
+        getter,
+        parameter,
+        sets,
+        module_bindings,
+        importlib_bound,
+        getattr_bound,
+    })
+}
+
+pub(super) fn extract<'tree>(
+    root: Node<'tree>,
+    source: &str,
+    module_rebindings: &[String],
+    rebound_events: &[Node<'tree>],
+) -> Vec<LazyExport> {
+    let Some((getter, parameter)) = find_valid_module_getter(root, source, module_rebindings)
+    else {
         return Vec::new();
-    }
-    let Some(body) = getter.child_by_field_name("body") else {
+    };
+    let Some(state) = collect_lazy_module_state(
+        root,
+        getter,
+        parameter,
+        source,
+        module_rebindings,
+        rebound_events,
+    ) else {
+        return Vec::new();
+    };
+    let Some(body) = state.getter.child_by_field_name("body") else {
         return Vec::new();
     };
     let mut result = Vec::new();
@@ -498,18 +517,18 @@ pub(super) fn extract<'tree>(
         for clause in clauses {
             let Some(names) = clause
                 .child_by_field_name("condition")
-                .and_then(|condition| export_names(condition, parameter, source, &sets))
+                .and_then(|condition| export_names(condition, state.parameter, source, &state.sets))
             else {
                 return Vec::new();
             };
             let Some(exports) = branch_exports(
                 clause,
                 &names,
-                parameter,
+                state.parameter,
                 source,
-                &module_bindings,
-                importlib_bound,
-                getattr_bound,
+                &state.module_bindings,
+                state.importlib_bound,
+                state.getattr_bound,
             ) else {
                 return Vec::new();
             };

@@ -1,3 +1,4 @@
+use acdd_index::ast;
 use acdd_index::models::Facts;
 use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
 
@@ -44,7 +45,7 @@ impl LanguageProfile for Probe {
         module: &str,
         facts: &mut Facts,
     ) -> anyhow::Result<()> {
-        languages::parse_file(self, path, source, module, facts)
+        ast::parse::parse_file(self, path, source, module, facts)
     }
 }
 
@@ -52,7 +53,7 @@ impl LanguageProfile for Probe {
 fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     let source = "def run():\n    pass\n\nclass Thing:\n    pass\n";
     let mut function_facts = Facts::default();
-    languages::parse_file(
+    ast::parse::parse_file(
         &Probe(&FUNCTION_SPEC, "function-probe"),
         "probe.py",
         source,
@@ -66,7 +67,7 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
         .any(|node| node.name == "run" && node.kind == "function"));
 
     let mut class_facts = Facts::default();
-    languages::parse_file(
+    ast::parse::parse_file(
         &Probe(&CLASS_SPEC, "class-probe"),
         "probe.py",
         source,
@@ -79,7 +80,7 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
         .iter()
         .any(|node| node.name == "Thing" && node.kind == "class"));
 
-    let wrong_grammar = languages::parse_file(
+    let wrong_grammar = ast::parse::parse_file(
         &Probe(&FUNCTION_SPEC, "wrong-grammar-probe"),
         "probe.rs",
         "fn run() {}",

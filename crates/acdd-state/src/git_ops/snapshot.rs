@@ -1,6 +1,7 @@
 //! Temporary `GIT_INDEX_FILE` scoped trees, candidate hashing, and diffing.
 
-use super::{run_git_checked, run_git_stdout, ScopedTempDir};
+use super::exec::{collect_included_z_paths, create_scoped_temp_dir, run_git_checked, run_git_stdout};
+use acdd_core::fs::ScopedTempDir;
 use crate::types::IsolationMode;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_replace, checked_child, open_confined};
@@ -38,7 +39,7 @@ impl TemporaryGitIndex {
     }
 
     pub(super) fn create_temp(worktree: &Path) -> Result<(Self, ScopedTempDir), StateError> {
-        let dir = super::create_scoped_temp_dir("acdd-idx")?;
+        let dir = create_scoped_temp_dir("acdd-idx")?;
         let index_path = dir.path().join("index");
         Ok((Self::new(worktree.to_path_buf(), index_path), dir))
     }
@@ -88,13 +89,9 @@ impl TemporaryGitIndex {
         TreeOid::new(oid).map_err(StateError::from)
     }
 
-    pub(super) fn stage_paths(&self, paths: &[String]) -> Result<(), StateError> {
+    fn update_paths(&self, prefix_args: &[&str], paths: &[String]) -> Result<(), StateError> {
         for chunk in paths.chunks(200) {
-            let mut args: Vec<String> = vec![
-                "add".to_owned(),
-                "-f".to_owned(),
-                "--".to_owned(),
-            ];
+            let mut args: Vec<String> = prefix_args.iter().map(|s| (*s).to_owned()).collect();
             for path in chunk {
                 args.push(format!(":(literal){path}"));
             }
@@ -110,28 +107,12 @@ impl TemporaryGitIndex {
         Ok(())
     }
 
+    pub(super) fn stage_paths(&self, paths: &[String]) -> Result<(), StateError> {
+        self.update_paths(&["add", "-f", "--"], paths)
+    }
+
     pub(super) fn remove_paths(&self, paths: &[String]) -> Result<(), StateError> {
-        for chunk in paths.chunks(200) {
-            let mut args: Vec<String> = vec![
-                "rm".to_owned(),
-                "--cached".to_owned(),
-                "--quiet".to_owned(),
-                "--ignore-unmatch".to_owned(),
-                "--".to_owned(),
-            ];
-            for path in chunk {
-                args.push(format!(":(literal){path}"));
-            }
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            run_git_checked(
-                &self.worktree,
-                &arg_refs,
-                Some(&self.index_path),
-                None,
-                ErrorCode::ExternalGitDrift,
-            )?;
-        }
-        Ok(())
+        self.update_paths(&["rm", "--cached", "--quiet", "--ignore-unmatch", "--"], paths)
     }
 }
 
@@ -148,17 +129,12 @@ pub(super) fn list_stage_entries(
     )?;
     let mut entries = BTreeMap::new();
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+        let Some((mode, oid, _stage, raw_path)) = acdd_core::git::parse_ls_tree_z_record(record) else {
             continue;
         };
-        let header = String::from_utf8_lossy(&record[..tab]);
-        let path_raw = String::from_utf8_lossy(&record[tab + 1..]);
-        let mut parts = header.split_whitespace();
-        let (Some(mode), Some(oid), _stage) = (parts.next(), parts.next(), parts.next()) else {
-            continue;
-        };
+        let path_raw = String::from_utf8_lossy(raw_path);
         if let Some(norm) = normalize_rel_path(&path_raw) {
-            entries.insert(norm, (mode.to_owned(), oid.to_owned()));
+            entries.insert(norm, (mode, oid));
         }
     }
     Ok(entries)
@@ -490,14 +466,7 @@ pub fn diff_scope_changed_paths(
                 None,
                 ErrorCode::ExternalGitDrift,
             )?;
-            for raw in diff_out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-                let s = String::from_utf8_lossy(raw);
-                if let Some(norm) = normalize_rel_path(&s) {
-                    if path_policy.is_candidate_included(&norm) {
-                        changed.insert(norm);
-                    }
-                }
-            }
+            collect_included_z_paths(&diff_out.stdout, path_policy, &mut changed);
             for raw in list_untracked_entries(worktree)? {
                 if let Some(norm) = normalize_rel_path(raw.trim_end_matches('/')) {
                     if path_policy.is_candidate_included(&norm) {
@@ -531,14 +500,7 @@ pub fn diff_scope_changed_paths(
                     None,
                     ErrorCode::ExternalGitDrift,
                 )?;
-                for raw in diff_out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-                    let s = String::from_utf8_lossy(raw);
-                    if let Some(norm) = normalize_rel_path(&s) {
-                        if path_policy.is_candidate_included(&norm) {
-                            changed.insert(norm);
-                        }
-                    }
-                }
+                collect_included_z_paths(&diff_out.stdout, path_policy, &mut changed);
             }
         }
     }
@@ -579,16 +541,10 @@ pub fn tree_entry_at(
         ErrorCode::ExternalGitDrift,
     )?;
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
-            continue;
-        };
-        let header = String::from_utf8_lossy(&record[..tab]);
-        let path_raw = String::from_utf8_lossy(&record[tab + 1..]);
-        if normalize_rel_path(&path_raw).as_deref() == Some(norm.as_str()) {
-            let mut parts = header.split_whitespace();
-            let (mode, _kind, oid) = (parts.next(), parts.next(), parts.next());
-            if let (Some(mode), Some(oid)) = (mode, oid) {
-                return Ok(Some((mode.to_owned(), oid.to_owned())));
+        if let Some((mode, _kind, oid, raw_path)) = acdd_core::git::parse_ls_tree_z_record(record) {
+            let path_raw = String::from_utf8_lossy(raw_path);
+            if normalize_rel_path(&path_raw).as_deref() == Some(norm.as_str()) {
+                return Ok(Some((mode, oid)));
             }
         }
     }
@@ -633,15 +589,6 @@ pub fn resolve_git_tree_oid(worktree: &Path, tree_or_commit: &str) -> Result<Str
         ErrorCode::ExternalGitDrift,
     )?;
     Ok(oid.trim().to_owned())
-}
-
-/// List blob entries (`mode`, `path`) under `dir_rel` in `tree_or_commit`.
-pub fn list_git_tree_entries(
-    worktree: &Path,
-    tree_or_commit: &str,
-    dir_rel: &str,
-) -> Result<Vec<GitTreeEntry>, StateError> {
-    list_git_tree_entries_multi(worktree, tree_or_commit, &[dir_rel])
 }
 
 /// List blob entries (`mode`, `path`) under multiple `dir_rels` in `tree_or_commit` in one Git call.

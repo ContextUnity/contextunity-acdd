@@ -33,10 +33,6 @@ impl IndexFixture {
             .unwrap();
     }
 
-    pub fn seal(&self) {
-        acdd_index::db::commitments::seal(&self.0).unwrap();
-    }
-
     pub fn tamper_function_names(&self, name: &str) -> anyhow::Result<()> {
         self.0
             .execute("UPDATE nodes SET name=?1 WHERE kind='function'", [name])?;
@@ -146,7 +142,6 @@ pub fn mark_legacy_index_semantics(database: &Path) -> anyhow::Result<()> {
         "UPDATE metadata SET value='10:compact-storage-v8:legacy' WHERE key='index_semantics_version'",
         [],
     )?;
-    acdd_index::db::commitments::seal(&connection)?;
     Ok(())
 }
 

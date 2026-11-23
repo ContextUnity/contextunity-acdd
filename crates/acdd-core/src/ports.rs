@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Canonical list of the 20 built-in static MCP tools that plugin tools must never collide with.
-pub const BUILTIN_MCP_TOOLS: [&str; 20] = [
+const BUILTIN_MCP_TOOLS: [&str; 20] = [
     // 11 code tools
     "code_map_overview",
     "code_map_search",

@@ -1,4 +1,9 @@
-use super::{Coverage as PublicCoverage, Edge as PublicEdge, Graph as PublicGraph};
+use super::tags::{
+    CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
+};
+use super::types::{
+    Coverage as PublicCoverage, Edge as PublicEdge, Graph as PublicGraph, Reference,
+};
 use serde::{Serialize, Serializer};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -19,9 +24,6 @@ impl CompactTag {
     }
 
     pub fn known(value: &str) -> Option<&'static str> {
-        use super::tags::{
-            CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
-        };
         use std::str::FromStr;
         EdgeKind::from_str(value)
             .ok()
@@ -77,6 +79,27 @@ impl From<String> for CompactTag {
     }
 }
 
+macro_rules! compact_tag_from_wire {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl From<$ty> for CompactTag {
+                fn from(value: $ty) -> Self {
+                    Self::Static(value.as_str())
+                }
+            }
+        )+
+    };
+}
+
+compact_tag_from_wire!(
+    EdgeKind,
+    EdgeConfidence,
+    CoverageStatus,
+    NodeKind,
+    ReferenceKind,
+    LanguageId,
+);
+
 impl Serialize for CompactTag {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -109,7 +132,7 @@ impl PartialEq<&str> for CompactTag {
     }
 }
 
-pub trait SharedStr {
+pub(crate) trait SharedStr {
     fn as_str(&self) -> &str;
     fn into_arc(self) -> Arc<str>;
 }
@@ -221,7 +244,7 @@ impl From<CompactEdge> for PublicEdge {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Coverage {
+pub struct CompactCoverage {
     pub path: Arc<str>,
     pub line: usize,
     pub expression: String,
@@ -229,8 +252,8 @@ pub struct Coverage {
     pub evidence: Arc<str>,
 }
 
-impl From<Coverage> for PublicCoverage {
-    fn from(coverage: Coverage) -> Self {
+impl From<CompactCoverage> for PublicCoverage {
+    fn from(coverage: CompactCoverage) -> Self {
         Self {
             path: coverage.path.as_ref().to_owned(),
             line: coverage.line,
@@ -244,7 +267,7 @@ impl From<Coverage> for PublicCoverage {
 #[derive(Debug, Clone, Default)]
 pub struct CompactGraph {
     pub edges: Vec<CompactEdge>,
-    pub coverage: Vec<Coverage>,
+    pub coverage: Vec<CompactCoverage>,
     pub path_arc: Option<Arc<str>>,
     pub path_pool: hashbrown::HashSet<Arc<str>>,
     pub node_id_pool: hashbrown::HashSet<Arc<str>>,
@@ -322,7 +345,7 @@ impl CompactGraph {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn push_edge<S, D, K, E, C>(
+    pub(crate) fn push_edge<S, D, K, E, C>(
         &mut self,
         path: &str,
         src: S,
@@ -352,7 +375,7 @@ impl CompactGraph {
         });
     }
 
-    pub fn push_coverage<P, S, E>(
+    pub(crate) fn push_coverage<P, S, E>(
         &mut self,
         path: &str,
         line: usize,
@@ -366,7 +389,7 @@ impl CompactGraph {
     {
         let path = self.shared_path(path);
         let evidence = Self::shared_from_pool(&mut self.evidence_pool, evidence);
-        self.coverage.push(Coverage {
+        self.coverage.push(CompactCoverage {
             path,
             line,
             expression: expression.into(),
@@ -375,10 +398,10 @@ impl CompactGraph {
         });
     }
 
-    pub fn reference_edge<D: SharedStr, K: Into<CompactTag>, C: Into<CompactTag>>(
+    pub(crate) fn reference_edge<D: SharedStr, K: Into<CompactTag>, C: Into<CompactTag>>(
         &mut self,
         path: &str,
-        reference: &super::Reference,
+        reference: &Reference,
         target: D,
         kind: K,
         confidence: C,
@@ -397,7 +420,7 @@ impl CompactGraph {
     pub fn reference_coverage<S: Into<CompactTag>>(
         &mut self,
         path: &str,
-        reference: &super::Reference,
+        reference: &Reference,
         status: S,
         evidence: Cow<'static, str>,
     ) {
@@ -417,5 +440,38 @@ impl From<CompactGraph> for PublicGraph {
             edges: graph.edges.into_iter().map(Into::into).collect(),
             coverage: graph.coverage.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_edge_and_push_coverage_preserve_wire_parity() {
+        let mut typed_graph = CompactGraph::default();
+        typed_graph.push_edge(
+            "a.rs",
+            "a",
+            "b",
+            EdgeKind::Calls,
+            1,
+            "call",
+            EdgeConfidence::Exact,
+        );
+        typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
+        let mut wire_graph = CompactGraph::default();
+        wire_graph.push_edge("a.rs", "a", "b", "calls", 1, "call", "exact");
+        wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
+        assert_eq!(typed_graph.edges.len(), 1);
+        assert_eq!(typed_graph.edges[0].dst.as_ref(), "b");
+        assert_eq!(
+            serde_json::to_value(&typed_graph.edges).unwrap(),
+            serde_json::to_value(&wire_graph.edges).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&typed_graph.coverage).unwrap(),
+            serde_json::to_value(&wire_graph.coverage).unwrap()
+        );
     }
 }

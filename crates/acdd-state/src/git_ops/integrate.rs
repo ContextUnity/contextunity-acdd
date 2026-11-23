@@ -2,10 +2,11 @@
 
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
 use super::snapshot::tree_entry_at;
-use super::{
-    commit_has_exact_trailer, ensure_non_empty_git_identity, git_dir_path, run_git_checked,
-    run_git_raw, run_git_stdout, ScopedTempDir,
+use super::exec::{
+    commit_has_exact_trailer, create_scoped_temp_dir, ensure_non_empty_git_identity, failpoint_hit,
+    format_message_with_trailer, git_dir_path, run_git_checked, run_git_raw, run_git_stdout,
 };
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -177,7 +178,7 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
     )?;
     if !rebase_out.status.success() {
         let conflicts = collect_conflicting_paths(rebase_wt);
-        super::failpoint_hit("git_integrate_before_abort");
+        failpoint_hit("git_integrate_before_abort");
         let _ = run_git_raw(rebase_wt, &["rebase", "--abort"], None, &[], None);
         drop(temp_wt_guard);
         return Err(integration_conflict_error(
@@ -196,7 +197,7 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
             None,
             ErrorCode::ExternalGitDrift,
         )?;
-        let amended_msg = append_trailer_if_missing(&existing_msg, &trailer);
+        let amended_msg = format_message_with_trailer(&existing_msg, &trailer);
         let amend_out = run_git_raw(
             rebase_wt,
             &["commit", "--amend", "--no-verify", "-F", "-"],
@@ -425,18 +426,6 @@ fn integration_conflict_error(
     .with_hint("Resolve conflicts manually or rebase the task branch before re-running integration.")
 }
 
-fn append_trailer_if_missing(message: &str, trailer: &str) -> String {
-    let trimmed = message.trim_end();
-    if trimmed.lines().any(|line| line.trim() == trailer) {
-        return format!("{trimmed}\n");
-    }
-    if trimmed.is_empty() {
-        format!("{trailer}\n")
-    } else {
-        format!("{trimmed}\n\n{trailer}\n")
-    }
-}
-
 fn find_branch_worktree(repo_worktree: &Path, branch: &str) -> Option<PathBuf> {
     let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
     let expected_ref = format!("refs/heads/{short}");
@@ -470,7 +459,7 @@ struct TempRebaseWorktree {
 
 impl TempRebaseWorktree {
     fn create(primary_worktree: &Path, branch: &str) -> Result<Self, StateError> {
-        let temp_dir = super::create_scoped_temp_dir("acdd-rebase")?;
+        let temp_dir = create_scoped_temp_dir("acdd-rebase")?;
         let worktree_dir = temp_dir.path().join("wt");
         let wt_str = worktree_dir.to_string_lossy().into_owned();
         run_git_checked(

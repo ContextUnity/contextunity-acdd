@@ -20,18 +20,19 @@ use crate::usecases::lifecycle::{
     acquire_repo_lock, append_trace_event, combine_check_observations,
     ensure_state_enabled, load_active_run_graph, parse_cursor_for_snapshot,
     primary_workspace_root, resolve_node_worktree, resolve_repo_layout_optional,
+    LoadedRunGraph,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{GateId, NodeCursor};
+use acdd_core::ids::{GateId, NodeCursor, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainCheckOutcome, DomainCheckReq,
     FreshnessObservation,
 };
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 struct CapturedVerifyClaim {
     claim_revision: u32,
@@ -118,6 +119,207 @@ pub(crate) fn handle_verify_dyn(
     handle_verify_with_failure_return(config, backend, provider, req, false)
 }
 
+struct PreparedVerifyPhase {
+    loaded: LoadedRunGraph,
+    cursor: NodeCursor,
+    node_id: String,
+    node: GateNodeRecord,
+    captured: CapturedVerifyClaim,
+    gate_def: GateDef,
+    gate_id: GateId,
+    machine_gate: crate::machine::MachineGateDef,
+    target_worktree: PathBuf,
+    policy: WorkspacePathPolicy,
+    admitted_scope: Vec<String>,
+    resolved_commands: Vec<String>,
+    started_at: String,
+    log_relpath: String,
+    candidate_tree_before: TreeOid,
+    pre_changed_paths: Vec<String>,
+    recovery_only: bool,
+    early_failure: Option<Result<VerifyResp, StateError>>,
+}
+
+fn prepare_verify_phase(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    layout: Option<&RepoWorktreeLayout>,
+    primary: &Path,
+    req: &VerifyReq,
+    return_on_failure_transition: bool,
+) -> Result<PreparedVerifyPhase, StateError> {
+    let _pre_lock = acquire_repo_lock(layout)?;
+    let loaded = load_active_run_graph(
+        config,
+        backend,
+        req.run.as_deref(),
+        req.worktree.as_deref(),
+    )?;
+    let run_id = &loaded.snapshot.run.run_id;
+    let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
+    let node_id = cursor.to_node_id()?;
+    let node = verify_active_node_cas(&loaded.snapshot, &node_id, req, None)?;
+    let captured = CapturedVerifyClaim {
+        claim_revision: node.claim_revision,
+        contract_revision: node.contract_revision,
+        worker_id: node.worker_id.clone(),
+        node_version: node.node_version,
+    };
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor)
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("no gate definition found for '{cursor}'"),
+            )
+        })?
+        .clone();
+    let gate_id = GateId::new(&gate_def.id)?;
+    let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?.clone();
+    let target_worktree =
+        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
+    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
+    let admitted_scope = container_scope(&loaded.snapshot, &node);
+    let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
+    let resolved_commands = resolve_commands(
+        &loaded.profile,
+        &gate_def,
+        &admitted_scope,
+        req.test_target.as_deref(),
+    )?;
+    let started_at = acdd_core::telemetry::now_utc_iso_ms();
+    let log_relpath = default_log_relpath(&node_id, node.claim_revision);
+    let candidate_tree_before = current_scope_tree(&target_worktree, None, &policy)?;
+    let pre_changed_paths = diff_scope_changed_paths(
+        &target_worktree,
+        node.isolation,
+        node.baseline_commit.as_ref(),
+        node.claim_tree.as_ref(),
+        &policy,
+    )?;
+    let pre_obs = ValidatedObservations {
+        current_tree: Some(candidate_tree_before.clone()),
+        changed_paths: pre_changed_paths.clone(),
+        path_policy: Some(policy.clone()),
+        now_utc: started_at.clone(),
+        ..ValidatedObservations::default()
+    };
+    let has_running_mutating_trace = if let Some(ref call_ref) = gate_def.call {
+        provider.action_capability(call_ref).is_ok_and(|c| c.mutating)
+            && backend
+                .latest_trace(run_id, &node_id, node.claim_revision)?
+                .is_some_and(|t| {
+                    t.status == TraceStatus::Running && t.action_id.as_deref() == Some(call_ref.as_str())
+                })
+    } else {
+        false
+    };
+    let pre_violations = detect_scope_violations(
+        &loaded.snapshot,
+        &loaded.machine_profile,
+        &pre_obs,
+        &admitted_scope,
+        is_unscoped_root,
+    );
+    let recovery_only = !pre_violations.is_empty();
+    let early_failure = if recovery_only && !has_running_mutating_trace {
+        let res = run_early_scope_failure_verify(
+            backend,
+            layout,
+            primary,
+            &loaded,
+            &cursor,
+            req,
+            &gate_def,
+            &resolved_commands,
+            &log_relpath,
+            &started_at,
+            &candidate_tree_before,
+            &pre_obs,
+            return_on_failure_transition,
+        );
+        drop(_pre_lock);
+        backend.after_commit_maintenance()?;
+        Some(res)
+    } else {
+        None
+    };
+
+    Ok(PreparedVerifyPhase {
+        loaded,
+        cursor,
+        node_id,
+        node,
+        captured,
+        gate_def,
+        gate_id,
+        machine_gate,
+        target_worktree,
+        policy,
+        admitted_scope,
+        resolved_commands,
+        started_at,
+        log_relpath,
+        candidate_tree_before,
+        pre_changed_paths,
+        recovery_only,
+        early_failure,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_early_scope_failure_verify(
+    backend: &dyn StateBackend,
+    layout: Option<&RepoWorktreeLayout>,
+    primary: &Path,
+    loaded: &LoadedRunGraph,
+    cursor: &NodeCursor,
+    req: &VerifyReq,
+    gate_def: &GateDef,
+    resolved_commands: &[String],
+    log_relpath: &str,
+    started_at: &str,
+    candidate_tree_before: &TreeOid,
+    pre_obs: &ValidatedObservations,
+    return_on_failure_transition: bool,
+) -> Result<VerifyResp, StateError> {
+    let verify_input = VerifyInput {
+        node_cursor: cursor.clone(),
+        worker_id: req.worker_id.clone(),
+        claim_revision: req.claim_revision,
+        test_target: req.test_target.clone(),
+        command_id: gate_def.command.clone(),
+        command_line: resolved_commands.first().cloned(),
+        resolved_commands: resolved_commands.to_vec(),
+        action_id: gate_def.call.clone(),
+        index_generation: None,
+        live_files_digest: None,
+        log_relpath: log_relpath.to_owned(),
+        started_at: started_at.to_owned(),
+        exec_obs: VerifyExecutionObservation {
+            timed_out: false,
+            aborted: false,
+            exit_code: None,
+            stderr_tail: String::new(),
+            check_results: Vec::new(),
+            action_outcome: None,
+            candidate_tree_before: candidate_tree_before.clone(),
+            candidate_tree_after: Some(candidate_tree_before.clone()),
+        },
+    };
+    persist_and_finalize_verify(
+        backend,
+        layout,
+        primary,
+        &loaded.snapshot,
+        &loaded.machine_profile,
+        pre_obs,
+        &verify_input,
+        None,
+        return_on_failure_transition,
+    )
+}
+
 pub(crate) fn handle_verify_with_failure_return(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
@@ -129,129 +331,38 @@ pub(crate) fn handle_verify_with_failure_return(
     let primary = primary_workspace_root(config);
     let layout = resolve_repo_layout_optional(&primary)?;
 
-    // Phase 1 (short `repo.lock`): resolve node, verify claim ownership, and run pre-execution scope barrier.
-    let pre_lock = acquire_repo_lock(layout.as_ref())?;
-    let loaded = load_active_run_graph(
+    let PreparedVerifyPhase {
+        loaded,
+        cursor,
+        node_id,
+        node,
+        captured,
+        gate_def,
+        gate_id,
+        machine_gate,
+        target_worktree,
+        policy,
+        admitted_scope,
+        resolved_commands,
+        started_at,
+        log_relpath,
+        candidate_tree_before,
+        pre_changed_paths,
+        recovery_only,
+        early_failure,
+    } = prepare_verify_phase(
         config,
         backend,
-        req.run.as_deref(),
-        req.worktree.as_deref(),
+        provider,
+        layout.as_ref(),
+        &primary,
+        &req,
+        return_on_failure_transition,
     )?;
-    let run_id = &loaded.snapshot.run.run_id;
-    let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
-    let node_id = cursor.to_node_id()?;
-    let node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
-    let captured = CapturedVerifyClaim {
-        claim_revision: node.claim_revision,
-        contract_revision: node.contract_revision,
-        worker_id: node.worker_id.clone(),
-        node_version: node.node_version,
-    };
-
-    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("no gate definition found for '{cursor}'"),
-        )
-    })?;
-    let gate_id = GateId::new(&gate_def.id)?;
-    let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?;
-
-    let target_worktree =
-        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
-    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
-    let admitted_scope = container_scope(&loaded.snapshot, &node);
-    let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
-
-    let resolved_commands = resolve_commands(
-        &loaded.profile,
-        &gate_def,
-        &admitted_scope,
-        req.test_target.as_deref(),
-    )?;
-
-    let started_at = acdd_core::telemetry::now_utc_iso_ms();
-    let log_relpath = default_log_relpath(&node_id, node.claim_revision);
-    let candidate_tree_before = current_scope_tree(&target_worktree, None, &policy)?;
-    let pre_changed_paths = diff_scope_changed_paths(
-        &target_worktree,
-        node.isolation,
-        node.baseline_commit.as_ref(),
-        node.claim_tree.as_ref(),
-        &policy,
-    )?;
-
-    let pre_obs = ValidatedObservations {
-        current_tree: Some(candidate_tree_before.clone()),
-        changed_paths: pre_changed_paths.clone(),
-        path_policy: Some(policy.clone()),
-        now_utc: started_at.clone(),
-        ..ValidatedObservations::default()
-    };
-
-    let has_running_mutating_trace = if let Some(ref call_ref) = gate_def.call {
-        provider.action_capability(call_ref).is_ok_and(|c| c.mutating)
-            && backend
-                .latest_trace(run_id, &node_id, node.claim_revision)?
-                .is_some_and(|t| {
-                    t.status == TraceStatus::Running
-                        && t.action_id.as_deref() == Some(call_ref.as_str())
-                })
-    } else {
-        false
-    };
-
-    let pre_violations = detect_scope_violations(
-        &loaded.snapshot,
-        &loaded.machine_profile,
-        &pre_obs,
-        &admitted_scope,
-        is_unscoped_root,
-    );
-    let recovery_only = !pre_violations.is_empty();
-    if recovery_only && !has_running_mutating_trace {
-        let verify_input = VerifyInput {
-            node_cursor: cursor,
-            worker_id: req.worker_id,
-            claim_revision: req.claim_revision,
-            test_target: req.test_target,
-            command_id: gate_def.command,
-            command_line: resolved_commands.first().cloned(),
-            resolved_commands,
-            action_id: gate_def.call,
-            index_generation: None,
-            live_files_digest: None,
-            log_relpath,
-            started_at,
-            exec_obs: VerifyExecutionObservation {
-                timed_out: false,
-                aborted: false,
-                exit_code: None,
-                stderr_tail: String::new(),
-                check_results: Vec::new(),
-                action_outcome: None,
-                candidate_tree_before: candidate_tree_before.clone(),
-                candidate_tree_after: Some(candidate_tree_before),
-            },
-        };
-        let res = persist_and_finalize_verify(
-            backend,
-            layout.as_ref(),
-            &primary,
-            &loaded.snapshot,
-            &loaded.machine_profile,
-            &pre_obs,
-            &verify_input,
-            None,
-            return_on_failure_transition,
-        );
-        drop(pre_lock);
-        backend.after_commit_maintenance()?;
+    if let Some(res) = early_failure {
         return res;
     }
-
-    // Release `repo.lock` BEFORE running external checks, mutating calls, or test commands.
-    drop(pre_lock);
+    let run_id = &loaded.snapshot.run.run_id;
 
     // Phase 2 (no `repo.lock`): run domain `checks:`, optional `call:`, and optional `command:`.
     let (check_results, index_generation, live_files_digest) = run_gate_checks(
@@ -290,25 +401,27 @@ pub(crate) fn handle_verify_with_failure_return(
 
     let (action_outcome, existing_running_trace_id) = execute_gate_call_if_configured(
         backend,
-        provider,
-        layout.as_ref(),
-        run_id,
-        &node_id,
-        &req,
-        &captured,
-        &cursor,
-        &gate_id,
-        &gate_def,
-        &primary,
-        &target_worktree,
-        &admitted_scope,
-        &execution_digest,
-        &resolved_commands,
-        req.test_target.as_deref(),
-        &candidate_tree_before,
-        &log_relpath,
-        &started_at,
-        recovery_only,
+        &GateCallCtx {
+            provider,
+            layout: layout.as_ref(),
+            run_id,
+            node_id: &node_id,
+            req: &req,
+            captured: &captured,
+            cursor: &cursor,
+            gate_id: &gate_id,
+            gate_def: &gate_def,
+            primary: &primary,
+            target_worktree: &target_worktree,
+            admitted_scope: &admitted_scope,
+            execution_digest: &execution_digest,
+            resolved_commands: &resolved_commands,
+            test_target: req.test_target.as_deref(),
+            candidate_tree_before: &candidate_tree_before,
+            log_relpath: &log_relpath,
+            started_at: &started_at,
+            recovery_only,
+        },
     )?;
 
     let action_failed = matches!(
@@ -692,91 +805,133 @@ fn run_gate_checks(
     Ok((results, combined_index_gen, combined_salt))
 }
 
-#[allow(clippy::too_many_arguments)]
+fn recover_running_mutating_trace(
+    provider: &CompositeDomainProvider,
+    call_ref: &str,
+    cap: &acdd_core::ports::ActionCapability,
+    prev_key: Option<&str>,
+    prev_row_id: i64,
+    idempotency_key: &str,
+) -> (Option<ActionExecutionOutcome>, Option<i64>) {
+    if cap.supports_result_lookup {
+        if let Some(prev_key) = prev_key {
+            if provider
+                .lookup_action_result(call_ref, prev_key)
+                .is_ok_and(|opt| opt.is_some())
+                && prev_key == idempotency_key
+            {
+                return (Some(ActionExecutionOutcome::Succeeded), Some(prev_row_id));
+            }
+        }
+    }
+    (Some(ActionExecutionOutcome::UncertainCrash), Some(prev_row_id))
+}
+
+fn mark_trace_failed_if_contract_error(
+    backend: &dyn StateBackend,
+    layout: Option<&RepoWorktreeLayout>,
+    trace_row_id: i64,
+    candidate_tree_before: &TreeOid,
+    err: &anyhow::Error,
+) -> Result<(), StateError> {
+    let Some(se) = StateError::from_anyhow(err) else {
+        return Ok(());
+    };
+    if !matches!(
+        se.code,
+        ErrorCode::DomainCapabilityUnavailable | ErrorCode::ProfileSchemaInvalid
+    ) {
+        return Ok(());
+    }
+    let fail_lock = acquire_repo_lock(layout)?;
+    let _ = exec_tx_with(backend, |tx| {
+        tx.finish_trace(&TraceFinishInput {
+            trace_row_id,
+            status: TraceStatus::Failed,
+            exit_code: None,
+            passed_tests: Vec::new(),
+            failed_tests: Vec::new(),
+            check_results: Vec::new(),
+            candidate_tree_after: Some(candidate_tree_before.clone()),
+            finished_at: acdd_core::telemetry::now_utc_iso_ms(),
+        })
+    });
+    drop(fail_lock);
+    let _ = backend.after_commit_maintenance();
+    Err(se.clone())
+}
+
+struct GateCallCtx<'a> {
+    provider: &'a CompositeDomainProvider,
+    layout: Option<&'a RepoWorktreeLayout>,
+    run_id: &'a acdd_core::ids::RunId,
+    node_id: &'a str,
+    req: &'a VerifyReq,
+    captured: &'a CapturedVerifyClaim,
+    cursor: &'a NodeCursor,
+    gate_id: &'a GateId,
+    gate_def: &'a GateDef,
+    primary: &'a Path,
+    target_worktree: &'a Path,
+    admitted_scope: &'a [String],
+    execution_digest: &'a str,
+    resolved_commands: &'a [String],
+    test_target: Option<&'a str>,
+    candidate_tree_before: &'a acdd_core::ids::TreeOid,
+    log_relpath: &'a str,
+    started_at: &'a str,
+    recovery_only: bool,
+}
+
 fn execute_gate_call_if_configured(
     backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
-    layout: Option<&RepoWorktreeLayout>,
-    run_id: &acdd_core::ids::RunId,
-    node_id: &str,
-    req: &VerifyReq,
-    captured: &CapturedVerifyClaim,
-    cursor: &NodeCursor,
-    gate_id: &GateId,
-    gate_def: &GateDef,
-    primary: &Path,
-    target_worktree: &Path,
-    admitted_scope: &[String],
-    execution_digest: &str,
-    resolved_commands: &[String],
-    test_target: Option<&str>,
-    candidate_tree_before: &acdd_core::ids::TreeOid,
-    log_relpath: &str,
-    started_at: &str,
-    recovery_only: bool,
+    ctx: &GateCallCtx<'_>,
 ) -> Result<(Option<ActionExecutionOutcome>, Option<i64>), StateError> {
-    let Some(ref call_ref) = gate_def.call else {
+    let Some(ref call_ref) = ctx.gate_def.call else {
         return Ok((None, None));
     };
-
-    let cap = provider.action_capability(call_ref)?;
-    let with_params = gate_def.with.clone().unwrap_or_else(|| json!({}));
-    provider.validate_action_ref(call_ref, &with_params)?;
-
+    let cap = ctx.provider.action_capability(call_ref)?;
+    let with_params = ctx.gate_def.with.clone().unwrap_or_else(|| json!({}));
+    ctx.provider.validate_action_ref(call_ref, &with_params)?;
     let idempotency_key = format!(
         "{}:{}:{}:{}",
-        run_id, node_id, captured.claim_revision, execution_digest
+        ctx.run_id, ctx.node_id, ctx.captured.claim_revision, ctx.execution_digest
     );
 
-    let call_lock = acquire_repo_lock(layout)?;
+    let call_lock = acquire_repo_lock(ctx.layout)?;
     let call_snap = backend
-        .load_run_graph(run_id)?
+        .load_run_graph(ctx.run_id)?
         .ok_or_else(|| StateError::new(ErrorCode::BackendConflict, "run disappeared before call"))?;
-    let node = verify_active_node_cas(&call_snap, node_id, req, Some(captured))?;
-
-    let prev = backend.latest_trace(run_id, node_id, node.claim_revision)?;
-    let mut prev_abort_row: Option<i64> = None;
-    if let Some(prev) = prev {
+    let node = verify_active_node_cas(&call_snap, ctx.node_id, ctx.req, Some(ctx.captured))?;
+    let mut prev_abort_row = None;
+    if let Some(prev) = backend.latest_trace(ctx.run_id, ctx.node_id, node.claim_revision)? {
         if prev.status == TraceStatus::Running {
             let prev_row_id = prev.trace_row_id.ok_or_else(|| {
                 StateError::new(ErrorCode::BackendConflict, "running trace missing trace_row_id")
             })?;
             if cap.mutating && prev.action_id.as_deref() == Some(call_ref.as_str()) {
+                let prev_key = prev.idempotency_key;
+                // Drop `repo.lock` before external provider lookup so I/O or lock-taking providers cannot stall/deadlock.
                 drop(call_lock);
-                if let Some(ref prev_key) = prev.idempotency_key {
-                    if cap.supports_result_lookup {
-                        if let Ok(Some(_recovered)) =
-                            provider.lookup_action_result(call_ref, prev_key)
-                        {
-                            if prev_key == &idempotency_key {
-                                return Ok((
-                                    Some(ActionExecutionOutcome::Succeeded),
-                                    Some(prev_row_id),
-                                ));
-                            }
-                        }
-                    }
-                }
-                return Ok((
-                    Some(ActionExecutionOutcome::UncertainCrash),
-                    Some(prev_row_id),
+                return Ok(recover_running_mutating_trace(
+                    ctx.provider,
+                    call_ref,
+                    cap,
+                    prev_key.as_deref(),
+                    prev_row_id,
+                    &idempotency_key,
                 ));
             }
             prev_abort_row = Some(prev_row_id);
         }
     }
-
-    if recovery_only {
+    if ctx.recovery_only {
         drop(call_lock);
         return Ok((None, None));
     }
 
-    // Record `running` trace BEFORE invoking the external action.
-    let preconditions = crate::machine::graph::build_preconditions(
-        &call_snap,
-        &[node.node_id.as_str()],
-        Some(&node),
-    );
+    let preconditions =
+        crate::machine::graph::build_preconditions(&call_snap, &[node.node_id.as_str()], Some(&node));
     let trace_row = exec_tx_with(backend, |tx| {
         if let Some(prev_row_id) = prev_abort_row {
             tx.finish_trace(&TraceFinishInput {
@@ -786,26 +941,26 @@ fn execute_gate_call_if_configured(
                 passed_tests: Vec::new(),
                 failed_tests: Vec::new(),
                 check_results: Vec::new(),
-                candidate_tree_after: Some(candidate_tree_before.clone()),
+                candidate_tree_after: Some(ctx.candidate_tree_before.clone()),
                 finished_at: acdd_core::telemetry::now_utc_iso_ms(),
             })?;
         }
         tx.start_trace(
             &preconditions,
             &TraceStartInput {
-                run_id: run_id.clone(),
+                run_id: ctx.run_id.clone(),
                 node_id: node.node_id.clone(),
                 claim_revision: node.claim_revision,
                 contract_revision: node.contract_revision,
-                execution_digest: execution_digest.to_owned(),
+                execution_digest: ctx.execution_digest.to_owned(),
                 idempotency_key: Some(idempotency_key.clone()),
-                command_id: gate_def.command.clone(),
-                command_line: resolved_commands.first().cloned(),
+                command_id: ctx.gate_def.command.clone(),
+                command_line: ctx.resolved_commands.first().cloned(),
                 action_id: Some(call_ref.clone()),
-                test_target: test_target.map(str::to_owned),
-                candidate_tree_before: candidate_tree_before.clone(),
-                log_relpath: log_relpath.to_owned(),
-                started_at: started_at.to_owned(),
+                test_target: ctx.test_target.map(str::to_owned),
+                candidate_tree_before: ctx.candidate_tree_before.clone(),
+                log_relpath: ctx.log_relpath.to_owned(),
+                started_at: ctx.started_at.to_owned(),
             },
         )
     })?;
@@ -813,45 +968,30 @@ fn execute_gate_call_if_configured(
         StateError::new(ErrorCode::BackendConflict, "start_trace missing row id")
     })?;
     drop(call_lock);
-
     acdd_core::failpoint::hit("verify_after_start_trace");
 
     let action_req = DomainActionReq {
-        run_id: run_id.clone(),
-        node_cursor: cursor.clone(),
-        gate_id: gate_id.clone(),
+        run_id: ctx.run_id.clone(),
+        node_cursor: ctx.cursor.clone(),
+        gate_id: ctx.gate_id.clone(),
         worker_id: node.worker_id.clone(),
-        workspace_root: primary.to_path_buf(),
-        worktree: target_worktree.to_path_buf(),
-        admitted_scope: admitted_scope.to_vec(),
+        workspace_root: ctx.primary.to_path_buf(),
+        worktree: ctx.target_worktree.to_path_buf(),
+        admitted_scope: ctx.admitted_scope.to_vec(),
     };
-
-    let outcome = match provider.execute_action(call_ref, &with_params, &idempotency_key, &action_req) {
+    let outcome = match ctx
+        .provider
+        .execute_action(call_ref, &with_params, &idempotency_key, &action_req)
+    {
         Ok(_res) => ActionExecutionOutcome::Succeeded,
         Err(err) => {
-            if let Some(se) = StateError::from_anyhow(&err) {
-                if matches!(
-                    se.code,
-                    ErrorCode::DomainCapabilityUnavailable | ErrorCode::ProfileSchemaInvalid
-                ) {
-                    let fail_lock = acquire_repo_lock(layout)?;
-                    let _ = exec_tx_with(backend, |tx| {
-                        tx.finish_trace(&TraceFinishInput {
-                            trace_row_id,
-                            status: TraceStatus::Failed,
-                            exit_code: None,
-                            passed_tests: Vec::new(),
-                            failed_tests: Vec::new(),
-                            check_results: Vec::new(),
-                            candidate_tree_after: Some(candidate_tree_before.clone()),
-                            finished_at: acdd_core::telemetry::now_utc_iso_ms(),
-                        })
-                    });
-                    drop(fail_lock);
-                    let _ = backend.after_commit_maintenance();
-                    return Err(se.clone());
-                }
-            }
+            mark_trace_failed_if_contract_error(
+                backend,
+                ctx.layout,
+                trace_row_id,
+                ctx.candidate_tree_before,
+                &err,
+            )?;
             ActionExecutionOutcome::Failed(err.to_string())
         }
     };

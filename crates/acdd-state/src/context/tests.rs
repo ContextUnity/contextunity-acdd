@@ -5,15 +5,14 @@ use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
     DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
 };
-use acdd_state::context::{
-    build_claim_context, render_claim_prompt_markdown, ClaimContextRequest, CLAIM_DEFAULT_MAX_BYTES,
+use super::*;
+use crate::profile::{
+    resolve_profile_ref_with_dirs,
+    schema::{GateGuidanceRef, GuidanceEntry, InlineGuidance},
+    GateDef, ResolvedGateProfile, RoleDef,
 };
-use acdd_state::profile::{
-    resolve_profile_ref_with_dirs, GateDef, GateGuidanceRef, GuidanceEntry, InlineGuidance,
-    ResolvedGateProfile, RoleDef,
-};
-use acdd_state::spec::{Receipt, SpecDocument, SpecStatus, TaskSpec};
-use acdd_state::types::{
+use crate::spec::{Receipt, SpecDocument, SpecStatus, TaskSpec};
+use crate::types::{
     BlackboardRecord, BlackboardStatus, BlackboardTopic, FindingItem, FindingSeverity,
     GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RejectionFindings,
     RejectionKind, RunRecord, RunStatus,
@@ -80,11 +79,13 @@ fn base_request() -> ClaimContextRequest {
         .roles
         .insert("builder".to_owned(), RoleDef::default());
 
-    let mut gate = GateDef::default();
-    gate.id = "build".to_owned();
-    gate.role = Some("builder".to_owned());
-    gate.guidance = vec![GateGuidanceRef::Slot("g1".to_owned())];
-    gate.context = vec!["code.symbols".to_owned(), "code.tests".to_owned()];
+    let gate = GateDef {
+        id: "build".to_owned(),
+        role: Some("builder".to_owned()),
+        guidance: vec![GateGuidanceRef::Slot("g1".to_owned())],
+        context: vec!["code.symbols".to_owned(), "code.tests".to_owned()],
+        ..Default::default()
+    };
 
     let run = RunRecord {
         run_id: run_id.clone(),

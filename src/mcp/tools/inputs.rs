@@ -216,7 +216,9 @@ impl Inspect {
 #[serde(untagged)]
 /// Line range (e.g. "100-200") or integer count.
 pub enum LinesInput {
+    /// Line count limit as an integer.
     Integer(usize),
+    /// Explicit inclusive line range string (`start-end`).
     String(String),
 }
 

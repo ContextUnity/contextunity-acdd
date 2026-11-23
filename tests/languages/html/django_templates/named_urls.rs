@@ -18,9 +18,9 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
     workspace.write("templates/missing.html", "{% url 'missing' %}\n");
     workspace.write("templates/duplicate.html", "{% url 'duplicate' %}\n");
 
-    let html = &acdd_index::languages::html::HTML;
+    let html = acdd_index::languages::by_id("html").unwrap();
     let mut html_facts = acdd_index::models::Facts::default();
-    acdd_index::languages::LanguageProfile::extract_file(
+    acdd_index::ast::parse::parse_file(
         html,
         "templates/product.html",
         template_source,
@@ -33,9 +33,9 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
             && reference.expression == "django.route_name.product-list"
     }));
 
-    let python = &acdd_index::languages::python::PYTHON;
+    let python = acdd_index::languages::by_id("python").unwrap();
     let mut python_facts = acdd_index::models::Facts::default();
-    acdd_index::languages::LanguageProfile::extract_file(
+    acdd_index::ast::parse::parse_file(
         python,
         "consumer.py",
         consumer_source,

@@ -1,6 +1,6 @@
 //! `claim` command handler, worktree materialization, and context-reset checks.
 
-use super::ensure_no_managed_worktree_collision;
+use super::common::ensure_no_managed_worktree_collision;
 use crate::context::{GateContextAssembler, SnapshotContextInput};
 use crate::git_ops::commit::{current_branch_name, current_head_commit};
 use crate::git_ops::snapshot::current_scope_tree;
@@ -12,7 +12,7 @@ use crate::machine::{
     evaluate_transition, ClaimDecision, ClaimInput, TransitionInput,
     TransitionOutcome,
 };
-use crate::profile::ResolvedGateProfile;
+use crate::profile::{GateDef, ResolvedGateProfile};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     GateNodeRecord, IsolationMode, NodeKind, NodeStatus, NodeStatusPatch, NodeVersionExpectation,
@@ -20,17 +20,19 @@ use crate::types::{
     WorktreeLifecycle,
 };
 use crate::usecases::dto::ClaimReq;
+use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::lifecycle::{
-    append_trace_event, auto_select_ready_cursor, collect_external_satisfied_deps,
+    append_trace_event, auto_select_ready_cursor,
     compute_unintegrated_tasks, current_session_fingerprint, is_local_pid_alive,
     load_active_run_graph, parse_cursor_for_snapshot, resolve_node_worktree, with_repo_lock_and_maintenance,
+    LoadedRunGraph,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::WORKTREES_DIR;
 use acdd_core::telemetry::SpanId;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::TreeOid;
+use acdd_core::ids::{NodeCursor, TreeOid};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -47,14 +49,27 @@ pub(crate) fn handle_claim_dyn(
     })
 }
 
-fn claim_holding_repo_lock(
+struct PreparedClaimTarget {
+    loaded: LoadedRunGraph,
+    sched_obs: ValidatedObservations,
+    cursor: NodeCursor,
+    node: GateNodeRecord,
+    gate_def: GateDef,
+    session_fp: Option<String>,
+    previous_local_pid_alive: Option<bool>,
+    span_id: String,
+    planned_wt: PathBuf,
+    planned_branch: Option<String>,
+    create_wt_req: Option<CreateWorktreeReq>,
+}
+
+fn prepare_claim_target(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
     layout: Option<&RepoWorktreeLayout>,
     primary: &Path,
-    req: ClaimReq,
-) -> Result<crate::context::ClaimResp, StateError> {
+    req: &ClaimReq,
+) -> Result<PreparedClaimTarget, StateError> {
     let loaded = load_active_run_graph(
         config,
         backend,
@@ -67,10 +82,10 @@ fn claim_holding_repo_lock(
     let now_utc = acdd_core::telemetry::now_utc_iso_ms();
 
     let sched_obs = ValidatedObservations {
-        external_satisfied_deps: ext_deps.clone(),
+        external_satisfied_deps: ext_deps,
         external_deps_authoritative: true,
         unintegrated_tasks,
-        now_utc: now_utc.clone(),
+        now_utc,
         ..ValidatedObservations::default()
     };
 
@@ -91,12 +106,14 @@ fn claim_holding_repo_lock(
                 format!("node '{cursor}' does not exist in run '{run_id}'"),
             )
         })?;
-    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("no gate definition found for '{cursor}'"),
-        )
-    })?;
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor)
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("no gate definition found for '{cursor}'"),
+            )
+        })?
+        .clone();
 
     let session_fp = req
         .session_fingerprint
@@ -119,8 +136,6 @@ fn claim_holding_repo_lock(
         req.worktree.as_deref(),
     )?;
 
-    // Run pure `admit_claim` validation BEFORE creating any managed task worktree/branch
-    // so rejected claims never leak Git worktrees or branches.
     if create_wt_req.is_some() {
         let precheck_input = ClaimInput {
             node_cursor: cursor.clone(),
@@ -142,6 +157,46 @@ fn claim_holding_repo_lock(
             &TransitionInput::Claim(precheck_input),
         )?;
     }
+
+    Ok(PreparedClaimTarget {
+        loaded,
+        sched_obs,
+        cursor,
+        node,
+        gate_def,
+        session_fp,
+        previous_local_pid_alive,
+        span_id,
+        planned_wt,
+        planned_branch,
+        create_wt_req,
+    })
+}
+
+fn claim_holding_repo_lock(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    layout: Option<&RepoWorktreeLayout>,
+    primary: &Path,
+    req: ClaimReq,
+) -> Result<crate::context::ClaimResp, StateError> {
+    let PreparedClaimTarget {
+        loaded,
+        sched_obs,
+        cursor,
+        node,
+        gate_def,
+        session_fp,
+        previous_local_pid_alive,
+        span_id,
+        planned_wt,
+        planned_branch,
+        create_wt_req,
+    } = prepare_claim_target(config, backend, layout, primary, &req)?;
+    let gate_def = &gate_def;
+    let run_id = loaded.snapshot.run.run_id.clone();
+    let now_utc = sched_obs.now_utc.clone();
 
     let (target_worktree, target_branch, created_managed) = if let Some(ref wt_req) = create_wt_req
     {
@@ -196,7 +251,7 @@ fn claim_holding_repo_lock(
                         reader: backend,
                         snapshot: &loaded.snapshot,
                         node: &node,
-                        gate: gate_def,
+                        gate: gate_def.clone(),
                         profile: loaded.profile,
                         claim_revision: existing.claim_revision,
                         worker_id: req.worker_id,
@@ -228,7 +283,7 @@ fn claim_holding_repo_lock(
                         reader: backend,
                         snapshot: &loaded.snapshot,
                         node: &candidate_node,
-                        gate: gate_def,
+                        gate: gate_def.clone(),
                         profile: loaded.profile,
                         claim_revision: claim.claim_revision,
                         worker_id: req.worker_id,

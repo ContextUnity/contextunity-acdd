@@ -103,8 +103,13 @@ fn generate_profiles() {
     }
     source.push_str("];\n");
     for (name, path) in &enabled {
+        let vis = if name == "rust" || name == "html" {
+            "pub"
+        } else {
+            "pub(crate)"
+        };
         source.push_str(&format!(
-            "/// {name} language profile and extraction rules.\n#[path = {:?}] pub mod {name};\n",
+            "/// {name} language profile and extraction rules.\n#[path = {:?}] {vis} mod {name};\n",
             path.to_str().expect("UTF-8 profile path")
         ));
     }

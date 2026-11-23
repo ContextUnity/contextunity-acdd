@@ -55,7 +55,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    declaration. Do not invent a qualified name or present an approximate symbol
    as a verified code claim. For example, this claim names a real declaration
    and explicitly selects its source file:
-   [`extract_with_details`](../crates/acdd-index/src/docs.rs).
+   [`extract_with_details_with_zones`](../crates/acdd-index/src/docs.rs).
    Ordinary inline code remains useful for commands, configuration keys, and
    other technical text; a code span alone does not certify that its contents
    match an indexed declaration.
@@ -89,7 +89,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    The declaration must resolve uniquely for ACDD to
    create a verified governance edge. This guide declares the resolver's actual
    priority rule:
-   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/acdd-index/src/linker/resolution/mod.rs).
+   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/acdd-index/src/linker/resolution/context.rs).
    The identifier remains documentation authority; the code link identifies
    the governed declaration. Pair machine-enforceable architectural invariants
    with fenced `acdd-rule` YAML blocks (`arch_rules`) referencing `acdd.yaml`

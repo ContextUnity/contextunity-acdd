@@ -1,9 +1,17 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
 use acdd_index::db::{commitments, reader};
-use contextunity_acdd::engine::pipeline::delta;
+use contextunity_acdd::engine::pipeline::delta_with_selection;
 use rusqlite::Connection;
 use std::fs;
+
+fn delta(
+    root: &std::path::Path,
+    db: &std::path::Path,
+    modified: &[std::path::PathBuf],
+) -> anyhow::Result<serde_json::Value> {
+    delta_with_selection(root, db, modified, None, None)
+}
 
 use crate::common::Workspace;
 
@@ -282,7 +290,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -308,7 +316,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -385,7 +393,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -444,7 +452,7 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -490,7 +498,7 @@ fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -625,7 +633,7 @@ fn python_import_frontier_uses_semicolon_and_continuation_facts() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -662,7 +670,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -683,7 +691,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -721,7 +729,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -744,7 +752,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -787,7 +795,7 @@ fn component_representative_mutations_match_cold_builds() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -807,7 +815,7 @@ fn component_representative_mutations_match_cold_builds() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {
@@ -828,7 +836,7 @@ fn component_representative_mutations_match_cold_builds() {
                     facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                     "{path}: newly written local facts use the typed binary format"
                 );
-                reader::decode_local_facts(&facts_blob).unwrap();
+                crate::common::decode_local_facts(&facts_blob).unwrap();
                 assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
             }
             for (sql, incremental, cold) in parity {
@@ -914,7 +922,7 @@ fn assert_cold_parity_and_local_facts(w: &Workspace) {
             facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
             "{path}: newly written local facts use the typed binary format"
         );
-        reader::decode_local_facts(&facts_blob).unwrap();
+        crate::common::decode_local_facts(&facts_blob).unwrap();
         assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
     }
     for (sql, incremental, cold) in parity {
@@ -1133,7 +1141,7 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
                 facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
                 "{path}: newly written local facts use the typed binary format"
             );
-            reader::decode_local_facts(&facts_blob).unwrap();
+            crate::common::decode_local_facts(&facts_blob).unwrap();
             assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
         for (sql, incremental, cold) in parity {

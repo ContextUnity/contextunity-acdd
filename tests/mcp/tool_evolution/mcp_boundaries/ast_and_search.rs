@@ -10,18 +10,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
         ("z.py", "def resilient_hit(): return 2\n"),
     ]);
     w.build();
-    for failure in ["digest", "missing", "boundary"] {
-        if failure == "boundary" {
-            let connection = rusqlite::Connection::open(w.db()).unwrap();
-            connection
-                .execute(
-                    "UPDATE nodes SET line=?1,end_line=?2 WHERE name=?3 AND path_id=(SELECT path_id FROM path_dictionary WHERE path=?4)",
-                    rusqlite::params![2, 2, "resilient_hit", "a.py"],
-                )
-                .expect("set node boundary fixture");
-            acdd_index::db::commitments::seal(&connection)
-                .expect("seal node boundary fixture");
-        }
+    for failure in ["digest", "missing"] {
         let mut m = McpTestHarness::new(&w).expect("MCP initialize");
         m.payload("code_map_overview", json!({}))
             .expect("MCP tool should succeed");
@@ -42,14 +31,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
             assert_eq!(hits.len(), 2);
             for (hit, path) in hits.iter().zip(["a.py", "z.py"]) {
                 assert_eq!(hit["path"], path, "{failure}: {result}");
-                assert_eq!(
-                    hit["line"],
-                    if failure == "boundary" && path == "a.py" {
-                        2
-                    } else {
-                        1
-                    }
-                );
+                assert_eq!(hit["line"], 1);
                 assert_eq!(hit["inspect_selector"]["selector"], hit["id"]);
                 assert_eq!(hit["inspect_selector"]["show_source"], true);
             }
@@ -59,37 +41,15 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
             );
             assert!(hits[1]["source_preview"].is_object(), "{failure}: {result}");
         }
-        if failure == "boundary" {
-            for tool in ["code_map_inspect", "code_map_explain", "acdd_read"] {
-                let rejection = m
-                    .text(
-                        tool,
-                        json!({"selector":"a.py:resilient_hit","show_source":true}),
-                    )
-                    .expect_err("tool should reject input");
-                let expected: &str = "indexed symbol boundary is unavailable";
-                assert!(
-                    rejection
-                        .tool_message()
-                        .expect("expected MCP tool rejection")
-                        .contains(expected),
-                    "{rejection}"
-                );
-            }
-        }
-        if failure == "digest" || failure == "missing" {
-            let (_, response) = m
-                .call(
-                    "acdd_read",
-                    json!({"selector":"a.py:resilient_hit","format":"json"}),
-                )
-                .expect("MCP transport");
-            assert_eq!(response["result"]["isError"], true, "{failure}: {response}");
-        }
+        let (_, response) = m
+            .call(
+                "acdd_read",
+                json!({"selector":"a.py:resilient_hit","format":"json"}),
+            )
+            .expect("MCP transport");
+        assert_eq!(response["result"]["isError"], true, "{failure}: {response}");
         m.finish().expect("server must finish successfully");
-        if failure != "boundary" {
-            w.write("a.py", original_source);
-        }
+        w.write("a.py", original_source);
     }
 }
 

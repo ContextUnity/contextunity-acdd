@@ -1,7 +1,7 @@
 //! Spec collections, archive relpaths, profile-to-machine conversion, cursor resolution, and archive reconciliation.
 
+use super::cleanup::{build_tombstone_cleanup_manifest, CleanupManifestInput};
 use super::io::{read_confined_utf8, sorted_dir_paths};
-use super::runs::{build_tombstone_cleanup_manifest, CleanupManifestInput};
 use crate::machine::{
     compute_schedule, MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem,
     MachineProfileInput, MachineProofKind, MachineSavePolicy, MachineTasksBlockDef,
@@ -15,7 +15,7 @@ use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunTombstoneRecord,
     SaveAction, TerminalStatus, ValidatedObservations,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
@@ -604,6 +604,36 @@ pub(crate) fn reconcile_restored_runs_with_archives(
     Ok(tombstones)
 }
 
+fn max_spec_num_in_dir(
+    primary: &Path,
+    scan_dir: &Path,
+    prefix: &str,
+    max_num: &mut Option<u32>,
+) {
+    if fs::symlink_metadata(scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return;
+    }
+    for p in sorted_dir_paths(scan_dir) {
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if let Some(num) = extract_spec_number(stem, prefix) {
+                *max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+            }
+        }
+        if let Ok(rel) = p.strip_prefix(primary) {
+            if let Ok(raw) = read_confined_utf8(primary, &rel.to_string_lossy()) {
+                if let Ok(doc) = parse_spec(&raw) {
+                    if let Some(num) = extract_spec_number(&doc.id, prefix) {
+                        *max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Compute the next collision-free sequential spec ID (`<PREFIX>-<NNN>`) across `db_max` and active + `archive/` files.
 pub fn next_spec_id_for_prefix(
     primary: &Path,
@@ -621,28 +651,7 @@ pub fn next_spec_id_for_prefix(
     })?;
     for dir_abs in resolved_dirs {
         for scan_dir in [dir_abs.clone(), dir_abs.join("archive")] {
-            if fs::symlink_metadata(&scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
-                continue;
-            }
-            for p in sorted_dir_paths(&scan_dir) {
-                if p.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    if let Some(num) = extract_spec_number(stem, prefix) {
-                        max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
-                    }
-                }
-                if let Ok(rel) = p.strip_prefix(primary) {
-                    if let Ok(raw) = read_confined_utf8(primary, &rel.to_string_lossy()) {
-                        if let Ok(doc) = parse_spec(&raw) {
-                            if let Some(num) = extract_spec_number(&doc.id, prefix) {
-                                max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
-                            }
-                        }
-                    }
-                }
-            }
+            max_spec_num_in_dir(primary, &scan_dir, prefix, &mut max_num);
         }
     }
     Ok(format_next_spec_id(prefix, col.digits, max_num))

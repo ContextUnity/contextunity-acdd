@@ -1,4 +1,4 @@
-use super::*;
+use super::helpers::*;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{NodeCursor, RunName};
 use acdd_state::machine::verify::ExecutionDigestInput;
@@ -106,7 +106,7 @@ fn schedule_waves_scope_overlap_and_in_place_constraints() {
     ];
     for &(a, b, expected) in overlap_cases {
         assert_eq!(
-            patterns_overlap(a, b),
+            acdd_core::path_policy::patterns_overlap(a, b),
             expected,
             "patterns_overlap({a:?}, {b:?})"
         );

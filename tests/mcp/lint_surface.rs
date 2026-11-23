@@ -1,13 +1,12 @@
 use crate::cli::{run_cli, run_cli_json};
 use crate::common::Workspace;
 use crate::harness::McpTestHarness;
-use acdd_core::ports::{is_builtin_mcp_tool, BUILTIN_MCP_TOOLS};
+use acdd_core::ports::is_builtin_mcp_tool;
 use acdd_core::subsystems::{SubsystemId, SubsystemRegistry};
 use serde_json::{json, Value};
 
 #[test]
 fn mcp_lint_surface_registration_parity_and_budgeting() {
-    assert_eq!(BUILTIN_MCP_TOOLS.len(), 20);
     assert!(is_builtin_mcp_tool("code_map_lint"));
     assert_eq!(
         SubsystemRegistry::subsystem_id_for_tool("code_map_lint"),

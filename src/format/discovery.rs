@@ -1,4 +1,4 @@
-use super::{
+use super::core::{
     append_fenced_block, code_span, escape_text, inline_code, page_items, scalar_text, text_field,
     u64_field,
 };
@@ -19,7 +19,7 @@ pub enum DiscoveryKind {
 }
 
 /// Builds a file URI from a path already resolved by the owning adapter.
-pub fn file_uri_for_path(path: &Path, line: Option<usize>) -> Option<String> {
+pub(super) fn file_uri_for_path(path: &Path, line: Option<usize>) -> Option<String> {
     let path = path.to_str()?.replace('\\', "/");
     if !path.starts_with('/') { return None; }
     let mut uri = String::from("file://");
@@ -78,6 +78,105 @@ fn render_ast_diagnostic(d: &Value, title: &str) -> String {
     out
 }
 
+fn render_overview_counts_and_languages(out: &mut String, value: &Value, compiled: &[String]) {
+    if let Some(counts) = value.get("counts").and_then(Value::as_object) {
+        out.push_str("\n## Indexed counts\n\n");
+        for k in ["files", "nodes", "edges", "doc_sections", "parse_errors"] {
+            if let Some(c) = counts.get(k) {
+                out.push_str(&format!("- {}: {}\n", k.replace('_', " "), scalar_text(c)));
+            }
+        }
+        if let Some(u) = counts.get("unresolved") {
+            out.push_str(&format!("- Unresolved or ambiguous references: {}\n", scalar_text(u)));
+        }
+        if let Some(e) = counts.get("external_imports") {
+            out.push_str(&format!("- External references: {} (excluded from health)\n", scalar_text(e)));
+        }
+    }
+    if let Some(languages) = value.get("languages").and_then(page_items) {
+        out.push_str("\n## Languages\n\n");
+        for lang in languages {
+            let name = text_field(lang, "language").unwrap_or("unknown");
+            out.push_str(&format!(
+                "- `{}`: {} files",
+                escape_text(name),
+                lang.get("files").map(scalar_text).unwrap_or_else(|| "unavailable".into())
+            ));
+            for (f, d) in [
+                ("resolved", "resolved"),
+                ("unresolved", "unresolved"),
+                ("ambiguous", "ambiguous"),
+                ("external_imports", "external references"),
+                ("parse_errors", "parse errors"),
+            ] {
+                if let Some(c) = lang.get(f) {
+                    out.push_str(&format!("; {d}: {}", scalar_text(c)));
+                }
+            }
+            if compiled.iter().any(|p| p == name) {
+                out.push_str("; compiled profile available");
+            }
+            out.push('\n');
+        }
+    }
+}
+
+fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<&str>) {
+    if let Some(m) = container.get("manifest_components").filter(|v| !v.is_null()) {
+        render_manifest_components(out, m, scope);
+    }
+    if let Some(hubs) = container.get("documentation_hubs").filter(|v| !v.is_null()) {
+        out.push_str("\n## Discovery documentation hub\n\n");
+        if hubs.get("available") == Some(&Value::Bool(false)) {
+            out.push_str(&format!(
+                "Documentation hub unavailable: {}\n",
+                text_field(hubs, "cause").unwrap_or("indexed document inventory unavailable")
+            ));
+        } else {
+            for item in page_items(hubs).unwrap_or(&[]) {
+                let (path, sec) = (
+                    text_field(item, "path").unwrap_or("unknown document"),
+                    text_field(item, "section_title").unwrap_or("document"),
+                );
+                let anchor = u64_field(item, "line").map(|l| format!("#L{l}")).unwrap_or_default();
+                match text_field(item, "uri") {
+                    Some(u) => out.push_str(&format!("- [{} — {}{anchor}]({u})\n", escape_text(path), escape_text(sec))),
+                    None => out.push_str(&format!("- `{}` — {}{anchor}\n", escape_text(path), escape_text(sec))),
+                }
+            }
+            render_page_continuation(out, hubs, "documentation hubs", scope);
+        }
+    }
+    if let Some(runs) = container.get("active_runs").filter(|v| !v.is_null()) {
+        out.push_str("\n## Discovery active runs\n\n");
+        if text_field(runs, "availability") == Some("unavailable") {
+            out.push_str(&format!(
+                "Active run inventory unavailable: {}\n",
+                text_field(runs, "cause").unwrap_or("state inventory unavailable")
+            ));
+        } else if page_items(runs).unwrap_or(&[]).is_empty() {
+            out.push_str("No active runs.\n");
+        } else {
+            for item in page_items(runs).unwrap_or(&[]) {
+                let rid = text_field(item, "run_id").unwrap_or("run");
+                let rname = text_field(item, "run_name").unwrap_or(rid);
+                let meta = format!(
+                    "`{}`; status=`{}`; profile=`{}`; isolation=`{}`",
+                    escape_text(rid),
+                    escape_text(text_field(item, "status").unwrap_or("active")),
+                    escape_text(text_field(item, "profile_id").unwrap_or("default")),
+                    escape_text(text_field(item, "isolation").unwrap_or("worktree"))
+                );
+                match (text_field(item, "spec_path"), text_field(item, "uri")) {
+                    (Some(_), Some(u)) => out.push_str(&format!("- [{}]({u}) ({meta})\n", escape_text(rname))),
+                    (Some(s), None) => out.push_str(&format!("- **{}** ({meta}; spec=`{}`)\n", escape_text(rname), escape_text(s))),
+                    (None, _) => out.push_str(&format!("- **{}** ({meta})\n", escape_text(rname))),
+                }
+            }
+        }
+    }
+}
+
 fn render_overview(out: &mut String, value: &Value) {
     out.push_str("## Workspace\n\n");
     let root = text_field(value, "workspace_root").or_else(|| text_field(&value["workspace"], "root")).or_else(|| text_field(&value["metadata"], "workspace_root"));
@@ -90,25 +189,8 @@ fn render_overview(out: &mut String, value: &Value) {
             out.push_str(&format!("- Freshness warning: {} ({})\n", escape_text(st), escape_text(text_field(f, "cause").or_else(|| text_field(f, "refresh")).unwrap_or("freshness evidence unavailable"))));
         }
     }
-    if let Some(counts) = value.get("counts").and_then(Value::as_object) {
-        out.push_str("\n## Indexed counts\n\n");
-        for k in ["files", "nodes", "edges", "doc_sections", "parse_errors"] { if let Some(c) = counts.get(k) { out.push_str(&format!("- {}: {}\n", k.replace('_', " "), scalar_text(c))); } }
-        if let Some(u) = counts.get("unresolved") { out.push_str(&format!("- Unresolved or ambiguous references: {}\n", scalar_text(u))); }
-        if let Some(e) = counts.get("external_imports") { out.push_str(&format!("- External references: {} (excluded from health)\n", scalar_text(e))); }
-    }
     let compiled = strings(&value["compiled_profiles"]);
-    if let Some(languages) = value.get("languages").and_then(page_items) {
-        out.push_str("\n## Languages\n\n");
-        for lang in languages {
-            let name = text_field(lang, "language").unwrap_or("unknown");
-            out.push_str(&format!("- `{}`: {} files", escape_text(name), lang.get("files").map(scalar_text).unwrap_or_else(|| "unavailable".into())));
-            for (f, d) in [("resolved", "resolved"), ("unresolved", "unresolved"), ("ambiguous", "ambiguous"), ("external_imports", "external references"), ("parse_errors", "parse errors")] {
-                if let Some(c) = lang.get(f) { out.push_str(&format!("; {d}: {}", scalar_text(c))); }
-            }
-            if compiled.iter().any(|p| p == name) { out.push_str("; compiled profile available"); }
-            out.push('\n');
-        }
-    }
+    render_overview_counts_and_languages(out, value, &compiled);
     if let Some(comp) = value.get("components") {
         out.push_str("\n## Directory components\n\n");
         let items = page_items(comp).unwrap_or(&[]);
@@ -129,42 +211,7 @@ fn render_overview(out: &mut String, value: &Value) {
         for ws in scopes { out.push_str(&format!("### {}\n\n", escape_text(text_field(ws, "name").unwrap_or("workspace")))); render_resolution_health(out, ws); }
     }
     for c in [value.get("discovery"), Some(value)].into_iter().flatten() {
-        if let Some(m) = c.get("manifest_components").filter(|v| !v.is_null()) { render_manifest_components(out, m, scope.as_deref()); }
-        if let Some(hubs) = c.get("documentation_hubs").filter(|v| !v.is_null()) {
-            out.push_str("\n## Discovery documentation hub\n\n");
-            if hubs.get("available") == Some(&Value::Bool(false)) {
-                out.push_str(&format!("Documentation hub unavailable: {}\n", text_field(hubs, "cause").unwrap_or("indexed document inventory unavailable")));
-            } else {
-                for item in page_items(hubs).unwrap_or(&[]) {
-                    let (path, sec) = (text_field(item, "path").unwrap_or("unknown document"), text_field(item, "section_title").unwrap_or("document"));
-                    let anchor = u64_field(item, "line").map(|l| format!("#L{l}")).unwrap_or_default();
-                    match text_field(item, "uri") {
-                        Some(u) => out.push_str(&format!("- [{} — {}{anchor}]({u})\n", escape_text(path), escape_text(sec))),
-                        None => out.push_str(&format!("- `{}` — {}{anchor}\n", escape_text(path), escape_text(sec))),
-                    }
-                }
-                render_page_continuation(out, hubs, "documentation hubs", scope.as_deref());
-            }
-        }
-        if let Some(runs) = c.get("active_runs").filter(|v| !v.is_null()) {
-            out.push_str("\n## Discovery active runs\n\n");
-            if text_field(runs, "availability") == Some("unavailable") {
-                out.push_str(&format!("Active run inventory unavailable: {}\n", text_field(runs, "cause").unwrap_or("state inventory unavailable")));
-            } else if page_items(runs).unwrap_or(&[]).is_empty() {
-                out.push_str("No active runs.\n");
-            } else {
-                for item in page_items(runs).unwrap_or(&[]) {
-                    let rid = text_field(item, "run_id").unwrap_or("run");
-                    let rname = text_field(item, "run_name").unwrap_or(rid);
-                    let meta = format!("`{}`; status=`{}`; profile=`{}`; isolation=`{}`", escape_text(rid), escape_text(text_field(item, "status").unwrap_or("active")), escape_text(text_field(item, "profile_id").unwrap_or("default")), escape_text(text_field(item, "isolation").unwrap_or("worktree")));
-                    match (text_field(item, "spec_path"), text_field(item, "uri")) {
-                        (Some(_), Some(u)) => out.push_str(&format!("- [{}]({u}) ({meta})\n", escape_text(rname))),
-                        (Some(s), None) => out.push_str(&format!("- **{}** ({meta}; spec=`{}`)\n", escape_text(rname), escape_text(s))),
-                        (None, _) => out.push_str(&format!("- **{}** ({meta})\n", escape_text(rname))),
-                    }
-                }
-            }
-        }
+        render_overview_discovery(out, c, scope.as_deref());
     }
     if let Some(c) = value.get("cycles") { render_json_section(out, "Dependency cycles", c); }
     if let Some(t) = value.get("topology") { render_json_section(out, "Module topology", t); }
@@ -266,6 +313,126 @@ fn render_manifest_components(out: &mut String, page: &Value, scope: Option<&str
     render_page_continuation(out, page, "manifest components", scope);
 }
 
+fn render_inspect_invariants(out: &mut String, inv: &Value) {
+    let direct = inv["direct"].as_array().cloned().unwrap_or_default();
+    if !direct.is_empty() {
+        out.push_str("\n> [!IMPORTANT] Governing Invariants\n> Direct governing invariants\n");
+        for rule in direct {
+            let src = &rule["source"];
+            let link = match (text_field(src, "path"), u64_field(src, "line")) {
+                (Some(p), Some(l)) => format!(" — {}", format_link(p, Some(l), text_field(src, "uri"))),
+                _ => String::new(),
+            };
+            out.push_str(&format!(
+                "\n> - `{}`: {}{link}",
+                escape_text(text_field(&rule, "id").unwrap_or("invariant")),
+                escape_text(text_field(&rule, "rule").unwrap_or(""))
+            ));
+        }
+        out.push('\n');
+    }
+    for (f, lbl) in [
+        ("omitted_direct", "Omitted direct invariants"),
+        ("omitted_transitive", "Omitted one-hop invariant references"),
+    ] {
+        if let Some(c) = inv.get(f).filter(|v| v.as_u64().is_some_and(|n| n > 0)) {
+            out.push_str(&format!("\n- {lbl}: {}\n", scalar_text(c)));
+        }
+    }
+    if let Some(tr) = inv.get("transitive_ids").and_then(Value::as_array).filter(|t| !t.is_empty()) {
+        out.push_str("\n### One-hop or transitive invariant references\n\n");
+        for id in tr.iter().filter_map(Value::as_str) {
+            out.push_str(&format!("- `{}`\n", escape_text(id)));
+        }
+    }
+    if let Some(srcs) = inv.get("omitted_sources").and_then(Value::as_array).filter(|s| !s.is_empty()) {
+        out.push_str("\n### One-hop invariant source references\n\n");
+        for r in srcs {
+            let src = &r["source"];
+            let coord = match (text_field(src, "path"), u64_field(src, "line"), text_field(src, "uri")) {
+                (Some(p), l, u) => format_link(p, l, u),
+                (None, _, Some(u)) => format!("[source]({u})"),
+                _ => "source coordinate unavailable".into(),
+            };
+            out.push_str(&format!("- `{}`: {coord}\n", escape_text(text_field(r, "id").unwrap_or("invariant"))));
+        }
+    }
+}
+
+fn render_inspect_docs_and_source(out: &mut String, value: &Value) {
+    let doc_items = value.get("documents").and_then(page_items).unwrap_or(&[]);
+    let mut seen_docs = HashSet::new();
+    for key in ["documented_in", "analysis_gaps"] {
+        if let Some(items) = value.get(key).and_then(page_items).filter(|i| !i.is_empty()) {
+            out.push_str(&format!("\n### {}\n\n", key.replace('_', " ")));
+            for item in items {
+                let content = (key == "documented_in")
+                    .then(|| text_field(item, "doc_id"))
+                    .flatten()
+                    .filter(|id| seen_docs.insert((*id).to_owned()))
+                    .and_then(|id| {
+                        text_field(item, "content").or_else(|| {
+                            doc_items
+                                .iter()
+                                .find(|d| text_field(d, "doc_id") == Some(id))
+                                .and_then(|d| text_field(d, "content"))
+                        })
+                    });
+                render_evidence_row(out, item, content, key == "documented_in");
+            }
+        }
+    }
+    for key in ["documents", "coverage"] {
+        if let Some(page) = value.get(key) {
+            if key == "coverage" && (page_items(page).is_some_and(|i| !i.is_empty()) || page.get("statuses").is_some()) {
+                render_json_section(out, key, page);
+            }
+            render_page_continuation(out, page, key, operation_scope(value, DiscoveryKind::Inspect).as_deref());
+        }
+    }
+    if let Some(source) = text_field(value, "source") {
+        out.push_str("\n### Source preview\n\n");
+        let preview = &value["source_preview"];
+        if !preview.is_null() {
+            out.push_str(&format!(
+                "Source range: lines {}-{}.\n\n",
+                preview.get("start_line").map(scalar_text).unwrap_or_else(|| "unavailable".into()),
+                preview.get("end_line").map(scalar_text).unwrap_or_else(|| "unavailable".into())
+            ));
+        }
+        append_fenced_block(out, "text", source, 0);
+        if !preview.is_null() {
+            let flags: Vec<String> = [
+                "body_offset",
+                "body_lines",
+                "total_body_lines",
+                "has_more",
+                "truncated_line",
+                "omitted_leading_lines",
+                "omitted_body_lines",
+            ]
+            .into_iter()
+            .filter_map(|f| preview.get(f).map(|v| format!("{f}={}", scalar_text(v))))
+            .collect();
+            if !flags.is_empty() {
+                out.push_str(&format!("\nSource preview state: {}.\n", flags.join(", ")));
+            }
+            if let Some(hint) = text_field(preview, "continuation_hint") {
+                out.push_str(&format!("Source preview note: {}\n", escape_text(hint)));
+            }
+            if preview.get("has_more") == Some(&Value::Bool(true)) && preview.get("truncated_line") != Some(&Value::Bool(true)) {
+                out.push_str(&format!(
+                    "Continue source for {} in {} with source_offset {} and generation {}.\n",
+                    inline_code(text_field(&value["node"], "id").unwrap_or("the same selected symbol")),
+                    inline_code(text_field(&value["node"], "path").unwrap_or("the selected path")),
+                    preview.get("next_source_offset").map(scalar_text).unwrap_or_else(|| "unavailable".into()),
+                    inline_code(text_field(value, "generation").unwrap_or("unavailable"))
+                ));
+            }
+        }
+    }
+}
+
 fn render_inspect(out: &mut String, value: &Value) {
     let (node, summary) = (&value["node"], &value["summary"]);
     out.push_str("## Symbol\n\n");
@@ -299,72 +466,8 @@ fn render_inspect(out: &mut String, value: &Value) {
             }
         }
     }
-    let inv = &value["governing_invariants"];
-    let direct = inv["direct"].as_array().cloned().unwrap_or_default();
-    if !direct.is_empty() {
-        out.push_str("\n> [!IMPORTANT] Governing Invariants\n> Direct governing invariants\n");
-        for rule in direct {
-            let src = &rule["source"];
-            let link = match (text_field(src, "path"), u64_field(src, "line")) { (Some(p), Some(l)) => format!(" — {}", format_link(p, Some(l), text_field(src, "uri"))), _ => String::new() };
-            out.push_str(&format!("\n> - `{}`: {}{link}", escape_text(text_field(&rule, "id").unwrap_or("invariant")), escape_text(text_field(&rule, "rule").unwrap_or(""))));
-        }
-        out.push('\n');
-    }
-    for (f, lbl) in [("omitted_direct", "Omitted direct invariants"), ("omitted_transitive", "Omitted one-hop invariant references")] {
-        if let Some(c) = inv.get(f).filter(|v| v.as_u64().is_some_and(|n| n > 0)) { out.push_str(&format!("\n- {lbl}: {}\n", scalar_text(c))); }
-    }
-    if let Some(tr) = inv.get("transitive_ids").and_then(Value::as_array).filter(|t| !t.is_empty()) {
-        out.push_str("\n### One-hop or transitive invariant references\n\n");
-        for id in tr.iter().filter_map(Value::as_str) { out.push_str(&format!("- `{}`\n", escape_text(id))); }
-    }
-    if let Some(srcs) = inv.get("omitted_sources").and_then(Value::as_array).filter(|s| !s.is_empty()) {
-        out.push_str("\n### One-hop invariant source references\n\n");
-        for r in srcs {
-            let src = &r["source"];
-            let coord = match (text_field(src, "path"), u64_field(src, "line"), text_field(src, "uri")) { (Some(p), l, u) => format_link(p, l, u), (None, _, Some(u)) => format!("[source]({u})"), _ => "source coordinate unavailable".into() };
-            out.push_str(&format!("- `{}`: {coord}\n", escape_text(text_field(r, "id").unwrap_or("invariant"))));
-        }
-    }
-    let doc_items = value.get("documents").and_then(page_items).unwrap_or(&[]);
-    let mut seen_docs = HashSet::new();
-    for key in ["documented_in", "analysis_gaps"] {
-        if let Some(items) = value.get(key).and_then(page_items).filter(|i| !i.is_empty()) {
-            out.push_str(&format!("\n### {}\n\n", key.replace('_', " ")));
-            for item in items {
-                let content = (key == "documented_in").then(|| text_field(item, "doc_id")).flatten().filter(|id| seen_docs.insert((*id).to_owned())).and_then(|id| {
-                    text_field(item, "content").or_else(|| doc_items.iter().find(|d| text_field(d, "doc_id") == Some(id)).and_then(|d| text_field(d, "content")))
-                });
-                render_evidence_row(out, item, content, key == "documented_in");
-            }
-        }
-    }
-    for key in ["documents", "coverage"] {
-        if let Some(page) = value.get(key) {
-            if key == "coverage" && (page_items(page).is_some_and(|i| !i.is_empty()) || page.get("statuses").is_some()) { render_json_section(out, key, page); }
-            render_page_continuation(out, page, key, operation_scope(value, DiscoveryKind::Inspect).as_deref());
-        }
-    }
-    if let Some(source) = text_field(value, "source") {
-        out.push_str("\n### Source preview\n\n");
-        let preview = &value["source_preview"];
-        if !preview.is_null() { out.push_str(&format!("Source range: lines {}-{}.\n\n", preview.get("start_line").map(scalar_text).unwrap_or_else(|| "unavailable".into()), preview.get("end_line").map(scalar_text).unwrap_or_else(|| "unavailable".into()))); }
-        append_fenced_block(out, "text", source, 0);
-        if !preview.is_null() {
-            let flags: Vec<String> = ["body_offset", "body_lines", "total_body_lines", "has_more", "truncated_line", "omitted_leading_lines", "omitted_body_lines"]
-                .into_iter().filter_map(|f| preview.get(f).map(|v| format!("{f}={}", scalar_text(v)))).collect();
-            if !flags.is_empty() { out.push_str(&format!("\nSource preview state: {}.\n", flags.join(", "))); }
-            if let Some(hint) = text_field(preview, "continuation_hint") { out.push_str(&format!("Source preview note: {}\n", escape_text(hint))); }
-            if preview.get("has_more") == Some(&Value::Bool(true)) && preview.get("truncated_line") != Some(&Value::Bool(true)) {
-                out.push_str(&format!(
-                    "Continue source for {} in {} with source_offset {} and generation {}.\n",
-                    inline_code(text_field(&value["node"], "id").unwrap_or("the same selected symbol")),
-                    inline_code(text_field(&value["node"], "path").unwrap_or("the selected path")),
-                    preview.get("next_source_offset").map(scalar_text).unwrap_or_else(|| "unavailable".into()),
-                    inline_code(text_field(value, "generation").unwrap_or("unavailable"))
-                ));
-            }
-        }
-    }
+    render_inspect_invariants(out, &value["governing_invariants"]);
+    render_inspect_docs_and_source(out, value);
 }
 
 fn render_search(out: &mut String, value: &Value) {

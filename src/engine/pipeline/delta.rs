@@ -1,36 +1,41 @@
-use super::*;
+use super::cold::validate_code_map_target;
+use super::hooks::PipelineTestHooks;
+use super::hydration::extract_typed_with_cache;
+use super::invalidation::*;
+use super::shared::{assign_components, BuildMode, SourceSnapshotMismatch};
+use acdd_core::{
+    config::{self, checked_child, load_adapter, Adapter, ENGINE_SCHEMA_VERSION},
+    errors::{ErrorCode, StateError},
+    fs::canonical_root,
+};
+use acdd_index::{
+    ast,
+    db::{
+        cache, commitments as db_commitments, reader as db_reader,
+        writer::{
+            cache::{self as extraction_cache, ExtractionCache},
+            delta_persist,
+        },
+    },
+    languages::{self, dependency_registry::DependencyRegistry, module_name},
+    linker,
+    models::{stable_hash64, FileEntry, Node},
+    scanner,
+    typed_facts::{decode_facts, TypedFacts},
+};
+use anyhow::{bail, Context, Result};
+use rayon::prelude::*;
+use rusqlite::{Connection, OptionalExtension};
+use serde_json::{json, Value};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
     facts.collect_reference_keys(true)
-}
-
-/// Performs incremental delta indexing for modified source files.
-pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
-    execute_with_mode(
-        BuildMode::IncrementalDelta,
-        root,
-        db,
-        Some(modified),
-        None,
-        None,
-    )
-}
-
-/// Applies a delta while preserving an explicit cache directory during rebuilds.
-pub fn delta_with_cache_dir(
-    root: &Path,
-    db: &Path,
-    modified: &[PathBuf],
-    cache_dir: &Path,
-) -> Result<Value> {
-    execute_with_mode(
-        BuildMode::IncrementalDelta,
-        root,
-        db,
-        Some(modified),
-        None,
-        Some(cache_dir),
-    )
 }
 
 /// Applies a delta with an explicit adapter selection, retaining legacy persisted-policy defaults.
@@ -41,25 +46,31 @@ pub fn delta_with_selection(
     adapter: Option<&Path>,
     cache_dir: Option<&Path>,
 ) -> Result<Value> {
-    execute_with_mode(
-        BuildMode::IncrementalDelta,
-        root,
-        db,
-        Some(modified),
-        adapter,
-        cache_dir,
-    )
+    delta_inner(root, db, modified, adapter, cache_dir, None, None)
+}
+
+/// Applies a delta with an explicit adapter selection and pre-publish daemon guard.
+pub(crate) fn delta_with_selection_and_guard(
+    root: &Path,
+    db: &Path,
+    modified: &[PathBuf],
+    adapter: Option<&Path>,
+    cache_dir: Option<&Path>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
+) -> Result<Value> {
+    delta_inner(root, db, modified, adapter, cache_dir, None, before_publish)
 }
 
 /// Applies a delta with test synchronization around a persistence failure.
-pub fn delta_with_test_hooks(
+#[cfg(test)]
+pub(super) fn delta_with_test_hooks(
     root: &Path,
     db: &Path,
     modified: &[PathBuf],
     cache_dir: &Path,
     hooks: &PipelineTestHooks,
 ) -> Result<Value> {
-    delta_inner(root, db, modified, None, Some(cache_dir), Some(hooks))
+    delta_inner(root, db, modified, None, Some(cache_dir), Some(hooks), None)
 }
 
 fn rebuild_with_cache_dir(
@@ -67,11 +78,16 @@ fn rebuild_with_cache_dir(
     db: &Path,
     adapter: Option<&Path>,
     cache_dir: Option<&Path>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
-    match cache_dir {
-        Some(cache_dir) => build_with_cache_dir(root, db, adapter, cache_dir),
-        None => build(root, db, adapter),
-    }
+    super::cold::build_with_selection_and_guard(
+        root,
+        db,
+        adapter,
+        cache_dir,
+        None,
+        before_publish,
+    )
 }
 
 
@@ -1689,18 +1705,31 @@ pub(super) fn delta_inner(
     selected_adapter: Option<&Path>,
     cache_dir: Option<&Path>,
     test_hooks: Option<&PipelineTestHooks>,
+    before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
     validate_code_map_target(root, db)?;
     let started = Instant::now();
 
     let admission = match admit_delta_generation(root, db, modified, selected_adapter, cache_dir)? {
         AdmissionResult::RebuildCold(adapter_path) => {
-            return rebuild_with_cache_dir(root, db, adapter_path.as_deref(), cache_dir);
+            if let Some(guard) = before_publish {
+                guard()?;
+            }
+            return rebuild_with_cache_dir(
+                root,
+                db,
+                adapter_path.as_deref(),
+                cache_dir,
+                before_publish,
+            );
         }
         AdmissionResult::Admitted(admission) => *admission,
     };
 
     let frontiers = compute_delta_frontiers(&admission, cache_dir)?;
     let hydration = hydrate_and_link_delta(&admission, frontiers)?;
+    if let Some(guard) = before_publish {
+        guard()?;
+    }
     persist_and_report_delta(admission, hydration, db, started, test_hooks)
 }

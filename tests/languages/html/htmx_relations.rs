@@ -1,5 +1,4 @@
 use super::*;
-use acdd_index::languages::html::extract_html_file;
 
 #[test]
 fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
@@ -308,7 +307,8 @@ fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
 #[test]
 fn parameterized_htmx_requests_resolve_to_backend_route_endpoints() {
     let mut probe_facts = acdd_index::models::Facts::default();
-    let _ = extract_html_file(
+    let _ = acdd_index::ast::parse::parse_file(
+        acdd_index::languages::require("html").unwrap(),
         "channels/settings.html",
         "<div></div>",
         "channels.settings",

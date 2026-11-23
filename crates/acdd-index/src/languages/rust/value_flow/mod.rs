@@ -1,9 +1,8 @@
-mod collector;
+pub(crate) mod collector;
 mod expr;
 mod macros;
 mod types;
 
-pub(crate) use collector::RustValueFlowCollector;
 pub(crate) use macros::clear_file_macro_facts;
 
 pub(super) use collector::extract;

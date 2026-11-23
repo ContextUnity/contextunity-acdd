@@ -29,7 +29,7 @@ impl SemanticTarget {
     }
 }
 
-pub fn normal_relative_path(path: &str) -> bool {
+fn normal_relative_path(path: &str) -> bool {
     !path.is_empty()
         && !path.starts_with('/')
         && !path.ends_with('/')

@@ -1,6 +1,34 @@
-use super::*;
+use super::types::{
+    collect_candidate_join, node_position, resolve_type, same_target, symbol_type, Definitions,
+    ReadTrace, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
+};
+use crate::models::Node;
+use crate::semantic::{SourcePosition, ValueExpr, ValueFlowFacts};
+use hashbrown::HashMap;
+use std::{borrow::Cow, sync::Arc};
 
 impl<'a> ValueFlowIndex<'a> {
+    /// Resolves value.
+    pub fn resolve_value(
+        &self,
+        owner: &'a Node,
+        value: &ValueExpr,
+        at: SourcePosition,
+        resolver: &impl SemanticResolver<'a>,
+    ) -> TypeTarget<'a> {
+        self.evaluate(owner, value, at, resolver, None)
+    }
+
+    pub(super) fn evaluate(
+        &self,
+        owner: &'a Node,
+        value: &ValueExpr,
+        at: SourcePosition,
+        resolver: &impl SemanticResolver<'a>,
+        definitions: Option<&Definitions<'a>>,
+    ) -> TypeTarget<'a> {
+        self.evaluate_tracked(owner, value, at, resolver, definitions, None)
+    }
     pub(super) fn evaluate_tracked(
         &self,
         owner: &'a Node,
@@ -50,7 +78,7 @@ impl<'a> ValueFlowIndex<'a> {
                 self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
             }
             ValueExpr::BranchJoin { alternatives } => {
-                super::super::python::semantic_context::collect_candidate_join(
+                collect_candidate_join(
                     alternatives.iter().map(|alternative| {
                         self.evaluate_tracked(owner, alternative, at, resolver, definitions, trace)
                     }),

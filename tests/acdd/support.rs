@@ -31,10 +31,16 @@ pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
 }
 
 pub(crate) fn git_cmd(repo: &Path, args: &[&str]) -> String {
-    acdd_core::git::run_git_stdout(repo, args, None, &[], None)
-        .unwrap_or_else(|e| panic!("git {:?} failed in {}: {e}", args, repo.display()))
-        .trim()
-        .to_owned()
+    let out = acdd_core::git::git_command(repo, args)
+        .unwrap_or_else(|e| panic!("git {:?} failed in {}: {e}", args, repo.display()));
+    assert!(
+        out.status.success(),
+        "git {:?} failed in {}: {}",
+        args,
+        repo.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
 pub(crate) fn init_git_repo_on_branch(repo: &Path, branch: &str) {

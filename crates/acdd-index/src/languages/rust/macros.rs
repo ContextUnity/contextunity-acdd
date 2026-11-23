@@ -1,5 +1,5 @@
-use super::text;
-use crate::languages::SyntaxContext;
+use crate::ast::syntax::text;
+use crate::languages::types::SyntaxContext;
 use crate::models::{Edge, Facts, Node};
 use serde_json::json;
 use std::cell::RefCell;

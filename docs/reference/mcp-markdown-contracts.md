@@ -29,7 +29,7 @@ through the same formatter. Compare Markdown content exactly and JSON after
 parsing. Normalize only transport framing, trailing newline, transport-specific
 worker identity, and values that actually changed between requests.
 MCP graph operations may append a top-level server-owned `freshness` envelope
-after the callback in [`read_with_adapter`](../../src/mcp/server.rs#L700-L770).
+after the callback in [`read_with_adapter`](../../src/mcp/server.rs#L798-L868).
 Dedicated discovery Markdown may omit inactive matched freshness display metadata
 while JSON retains the actual envelope under the existing compaction policy.
 Meaningful freshness notices remain visible. Parity checks separately assert the
@@ -386,7 +386,7 @@ and has no fabricated breadcrumb. A node without a verified role has no role bad
 ### Governing rules and edge evidence
 
 This repository example uses the verified rule for
-[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/mod.rs)
+[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/context.rs)
 declared canonically in [docs/AGENTS.md](../AGENTS.md#acdd-mcp-indexing-rules):
 
 ```markdown

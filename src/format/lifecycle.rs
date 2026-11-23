@@ -17,12 +17,12 @@ pub fn render_claim_markdown(claim: &ClaimResp) -> String {
 
 /// Render a [`VerifyResp`] as readable Markdown (`ADR-0006`).
 pub fn render_verify_markdown(verify: &VerifyResp) -> String {
-    super::render_serializable(verify, &format!("Gate Verification: {}", verify.node_cursor))
+    super::core::render_serializable(verify, &format!("Gate Verification: {}", verify.node_cursor))
 }
 
 /// Render a [`SubmitResp`] as readable Markdown (`ADR-0006`).
 pub fn render_submit_markdown(submit: &SubmitResp) -> String {
-    super::render_serializable(submit, &format!("Gate Submission: {}", submit.node_cursor))
+    super::core::render_serializable(submit, &format!("Gate Submission: {}", submit.node_cursor))
 }
 
 /// Render a [`StateCommandOutput`] as readable Markdown (`ADR-0006`).
@@ -69,7 +69,7 @@ pub fn render_state_query_markdown(
         }
         StateQueryOutput::Observability(resp) => match resp.prometheus_text {
             Some(ref prom) => format!("# Observability\n\n```text\n{prom}\n```\n"),
-            None => super::render_serializable(&resp.snapshot, "Observability"),
+            None => super::core::render_serializable(&resp.snapshot, "Observability"),
         },
         StateQueryOutput::Context(claim) => render_claim_markdown(claim),
         StateQueryOutput::Roadmap(resp) => super::roadmap::render_roadmap_markdown(resp, roadmap_detail),
@@ -227,7 +227,7 @@ fn render_status_markdown(resp: &StatusResp) -> String {
                 .claim_tree
                 .as_ref()
                 .or(node.accepted_tree.as_ref())
-                .map(|t| format!("`{}`", super::shorten_hash(t.as_str())))
+                .map(|t| format!("`{}`", super::core::shorten_hash(t.as_str())))
                 .unwrap_or_else(|| "-".to_owned());
             let row = format!(
                 "| `{}` | `{:?}` | `{:?}` | `{}` | {}/{} | {} | {} |\n",
@@ -333,7 +333,7 @@ fn render_show_markdown(resp: &ShowResp) -> String {
             out.push_str(&render_claim_markdown(&claim));
         } else {
             out.push('\n');
-            out.push_str(&super::render_markdown(preview_val, "Context Preview"));
+            out.push_str(&super::core::render_markdown(preview_val, "Context Preview"));
         }
     }
     out
@@ -342,14 +342,14 @@ fn render_show_markdown(resp: &ShowResp) -> String {
 fn render_tagged_enum_markdown<T: Serialize>(value: &T, title: &str) -> String {
     let val = serde_json::to_value(value).unwrap_or(Value::Null);
     let inner = val.as_object().and_then(|map| map.values().next()).unwrap_or(&val);
-    super::render_markdown(inner, title)
+    super::core::render_markdown(inner, title)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use acdd_core::ids::{RunId, RunName};
-    use acdd_state::profile::ModelSpec;
+    use acdd_state::profile::schema::ModelSpec;
     use acdd_state::types::{IsolationMode, RunStatus};
 
     #[test]

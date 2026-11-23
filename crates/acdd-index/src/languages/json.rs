@@ -1,9 +1,14 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support;
+use super::types::{DeclarationRole, ImportPath, SyntaxContext, SyntaxGrammarSpec};
+use crate::ast::syntax::{symbol_name, text};
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 
 /// Language profile for JSON documents and JSON Schema files.
-pub struct Json;
+struct Json;
 /// Shared JSON language profile.
-pub static JSON: Json = Json;
+static JSON: Json = Json;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[("pair", DeclarationRole::Field)],
@@ -73,7 +78,7 @@ impl LanguageProfile for Json {
         if node.kind() == "pair" {
             return pair_key(node, source);
         }
-        ast::symbol_name(node, source)
+        symbol_name(node, source)
     }
 
     fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
@@ -91,8 +96,6 @@ impl LanguageProfile for Json {
         }
         support::relative_file_import(owner, file_part)
     }
-
-    support::delegate_extract_file!();
 
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let Some(target) = json_ref_target(ctx.node, ctx.source) else {
@@ -127,4 +130,4 @@ impl LanguageProfile for Json {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&JSON];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&JSON];

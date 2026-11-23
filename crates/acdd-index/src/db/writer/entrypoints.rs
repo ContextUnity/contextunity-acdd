@@ -1,6 +1,7 @@
 //! Persist effective entrypoint categories after graph resolution.
 
-use super::{CompactGraph, TypedFacts};
+use crate::models::compact_graph::CompactGraph;
+use crate::typed_facts::TypedFacts;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::Value;

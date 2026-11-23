@@ -1,4 +1,4 @@
-use super::{normalize_scope, page_bounds};
+use super::types::{normalize_scope, page_bounds};
 use crate::db::{
     lint::{collect_file_duplicates, collect_symbol_duplicates, format_duplicate_suggestion},
     paging,

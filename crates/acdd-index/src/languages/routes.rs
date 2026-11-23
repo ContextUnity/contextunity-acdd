@@ -1,9 +1,15 @@
-use super::{relations, text, Syntax};
-use crate::languages;
+use super::context::{LanguageContext, RuleIRHandle};
+use super::manifests;
+use super::manifests::framework::RoutePrefixRule;
+use super::types::SyntaxContext;
+use crate::ast::relations;
+use crate::ast::syntax::{
+    binding_scope, binding_scope_kind, text, walk, BindingCollector, ScopeBindings,
+};
 use crate::models::{Edge, Facts, Node, Reference};
-use languages::manifests::framework::RoutePrefixRule;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use tree_sitter::Node as Syntax;
 
 fn literal<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
     if !matches!(node.kind(), "string" | "string_literal") {
@@ -120,7 +126,7 @@ pub struct RouteContext {
     root: usize,
     providers: Vec<(RoutePrefixRule, PrefixBindings)>,
     lexical: LexicalBindings,
-    prepared_bindings: HashMap<usize, super::ScopeBindings>,
+    prepared_bindings: HashMap<usize, ScopeBindings>,
     #[cfg(feature = "lang-python")]
     defer_python_orm: bool,
 }
@@ -132,7 +138,7 @@ struct LexicalBindings {
     python_module: bool,
     scopes: HashMap<usize, HashSet<String>>,
     #[cfg(feature = "lang-python")]
-    python_writes: HashMap<usize, languages::python::BindingWrites>,
+    python_writes: HashMap<usize, super::python::lexical::BindingWrites>,
     #[cfg(feature = "lang-python")]
     python_class_lines: HashMap<usize, usize>,
 }
@@ -143,7 +149,7 @@ impl LexicalBindings {
         if self.scopes.is_empty() {
             return None;
         }
-        languages::python::lexical_binding_owner_with(node, |scope| {
+        super::python::lexical::lexical_binding_owner_with(node, |scope| {
             self.scopes
                 .get(&scope.id())
                 .is_some_and(|names| names.contains(name))
@@ -164,7 +170,7 @@ impl LexicalBindings {
         }
         let mut parent = node.parent();
         while let Some(scope) = parent {
-            if super::visitor::binding_scope(scope)
+            if binding_scope(scope)
                 && self
                     .scopes
                     .get(&scope.id())
@@ -205,8 +211,8 @@ fn receiver_binding(
 }
 
 #[cfg(feature = "lang-python")]
-fn python_summary_candidates(source: &str, rules: &languages::LanguageContext) -> bool {
-    use languages::manifests::{
+fn python_summary_candidates(source: &str, rules: &LanguageContext) -> bool {
+    use super::manifests::{
         projections::{Api, NamedBindingForm},
         syntax::SyntaxOperation,
         SemanticOperation,
@@ -280,7 +286,7 @@ impl RouteContext {
     }
 
     #[cfg(feature = "lang-python")]
-    pub(super) fn set_defer_python_orm(&mut self) {
+    pub(crate) fn set_defer_python_orm(&mut self) {
         self.defer_python_orm = true;
     }
     #[cfg(feature = "lang-python")]
@@ -302,11 +308,11 @@ impl RouteContext {
     pub(crate) fn prepare(
         root: Syntax<'_>,
         source: &str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
     ) -> Self {
         #[cfg(feature = "lang-python")]
         if root.kind() == "module"
-            && *root.language() == languages::python::language()
+            && *root.language() == tree_sitter_python::language()
             && root.parent().is_none()
             && !root.has_error()
         {
@@ -409,7 +415,7 @@ impl RouteContext {
     pub(crate) fn build(
         root: Syntax<'_>,
         source: &str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
     ) -> Self {
         Self::build_with_python_admission(root, source, rules, None)
     }
@@ -417,7 +423,7 @@ impl RouteContext {
     fn build_with_python_admission(
         root: Syntax<'_>,
         source: &str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
         python_admission: Option<bool>,
     ) -> Self {
         let mut builder = match python_admission {
@@ -427,7 +433,7 @@ impl RouteContext {
             }
         };
         if builder.active {
-            super::visitor::walk(root, &mut |node, entering| {
+            walk(root, &mut |node, entering| {
                 let _ = builder.observe(node, entering);
             });
         }
@@ -460,7 +466,7 @@ impl RouteContext {
     }
 
     /// Moves raw Python summaries into the consuming traversal without retaining a copy.
-    pub(super) fn take_python_bindings(&mut self) -> HashMap<usize, super::ScopeBindings> {
+    pub(crate) fn take_python_bindings(&mut self) -> HashMap<usize, ScopeBindings> {
         std::mem::take(&mut self.prepared_bindings)
     }
 
@@ -586,7 +592,7 @@ impl RouteContext {
     }
 }
 
-pub(super) fn prefixed_path(prefix: Option<&str>, path: &str) -> String {
+pub(crate) fn prefixed_path(prefix: Option<&str>, path: &str) -> String {
     let Some(prefix) = prefix.filter(|prefix| !prefix.is_empty()) else {
         return path.to_owned();
     };
@@ -758,8 +764,8 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
 
 #[cfg(feature = "lang-python")]
 pub(crate) fn declaration_candidate(
-    ctx: &languages::SyntaxContext<'_, '_>,
-    rule_ir: &languages::manifests::RuleIRHandle,
+    ctx: &SyntaxContext<'_, '_>,
+    rule_ir: &RuleIRHandle,
 ) -> bool {
     relations::decorators(ctx.node)
         .into_iter()
@@ -788,9 +794,9 @@ pub(crate) fn declaration_candidate(
 }
 
 pub(crate) fn declaration_with_context(
-    ctx: &languages::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    rule_ir: &languages::manifests::RuleIRHandle,
+    rule_ir: &RuleIRHandle,
     route_context: &RouteContext,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
@@ -859,22 +865,22 @@ pub(crate) fn declaration_with_context(
 }
 
 pub(crate) fn registration_with_context(
-    ctx: &languages::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
-    rule_ir: &languages::manifests::RuleIRHandle,
+    rule_ir: &RuleIRHandle,
     route_context: &RouteContext,
 ) {
     registration_with_context_filtered(ctx, facts, symbols, rule_ir, route_context, |_, _| true);
 }
 
 pub(crate) fn registration_with_context_filtered(
-    ctx: &languages::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
-    rule_ir: &languages::manifests::RuleIRHandle,
+    rule_ir: &RuleIRHandle,
     route_context: &RouteContext,
-    admit: impl Fn(&languages::manifests::RouteCallRule, &Facts) -> bool,
+    admit: impl Fn(&manifests::RouteCallRule, &Facts) -> bool,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
     if matches!(node.kind(), "call" | "call_expression") {
@@ -1007,10 +1013,10 @@ pub(crate) fn registration_with_context_filtered(
 }
 
 pub(crate) fn object_registration(
-    ctx: &languages::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
-    rules: &languages::LanguageContext,
+    rules: &LanguageContext,
     language: &str,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
@@ -1018,7 +1024,7 @@ pub(crate) fn object_registration(
         if rule.language != language {
             continue;
         }
-        let languages::manifests::syntax::SyntaxOperation::RouteObject {
+        let manifests::syntax::SyntaxOperation::RouteObject {
             collection,
             path_key,
             handler_key,
@@ -1082,7 +1088,7 @@ pub(crate) fn object_registration(
 fn include_target(
     node: Syntax<'_>,
     source: &str,
-    rule: Option<&languages::manifests::framework::RouteIncludeRule>,
+    rule: Option<&manifests::framework::RouteIncludeRule>,
 ) -> (Option<String>, Option<String>) {
     let Some(rule) = rule else {
         return (None, None);
@@ -1114,8 +1120,8 @@ fn include_target(
 }
 
 pub(crate) fn dependency_injection(
-    ctx: &languages::SyntaxContext<'_, '_>,
-    rule_ir: &languages::manifests::RuleIRHandle,
+    ctx: &SyntaxContext<'_, '_>,
+    rule_ir: &RuleIRHandle,
     facts: &mut Facts,
 ) {
     if !matches!(ctx.node.kind(), "call" | "call_expression") {
@@ -1206,12 +1212,12 @@ fn unwrapped(mut node: Syntax<'_>) -> Syntax<'_> {
 }
 
 pub(crate) fn client_call(
-    ctx: &languages::SyntaxContext<'_, '_>,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    rules: &languages::LanguageContext,
+    rules: &LanguageContext,
     language: &str,
 ) {
-    use languages::manifests::syntax::SyntaxOperation;
+    use manifests::syntax::SyntaxOperation;
     let (node, source) = (ctx.node, ctx.source);
     if !matches!(node.kind(), "call" | "call_expression") {
         return;
@@ -1335,43 +1341,43 @@ pub(crate) struct RouteContextBuilder<'source, 'tree> {
     candidates: Vec<Syntax<'tree>>,
     collectors: Vec<(
         Syntax<'tree>,
-        super::visitor::BindingCollector<'source, 'tree>,
+        BindingCollector<'source, 'tree>,
     )>,
     #[cfg(feature = "lang-python")]
     python_collectors: Vec<(
         Syntax<'tree>,
-        languages::python::BindingWriteCollector<'source, 'tree>,
+        super::python::lexical::BindingWriteCollector<'source, 'tree>,
     )>,
 }
 
 /// Collect only the writes needed by Python class consumers during the main walk.
 #[cfg(feature = "lang-python")]
-pub(super) struct PythonClassBindings<'source, 'tree> {
+pub(crate) struct PythonClassBindings<'source, 'tree> {
     root: Syntax<'tree>,
     source: &'source str,
-    module: languages::python::BindingWriteCollector<'source, 'tree>,
+    module: super::python::lexical::BindingWriteCollector<'source, 'tree>,
     class: Option<(
         Syntax<'tree>,
-        languages::python::BindingWriteCollector<'source, 'tree>,
+        super::python::lexical::BindingWriteCollector<'source, 'tree>,
     )>,
-    classes: HashMap<usize, (usize, languages::python::BindingWrites)>,
+    classes: HashMap<usize, (usize, super::python::lexical::BindingWrites)>,
     collect_classes: bool,
 }
 
 #[cfg(feature = "lang-python")]
 impl<'source, 'tree> PythonClassBindings<'source, 'tree> {
-    pub(super) fn new(root: Syntax<'tree>, source: &'source str, collect_classes: bool) -> Self {
+    pub(crate) fn new(root: Syntax<'tree>, source: &'source str, collect_classes: bool) -> Self {
         Self {
             root,
             source,
-            module: languages::python::BindingWriteCollector::new(root, source),
+            module: super::python::lexical::BindingWriteCollector::new(root, source),
             class: None,
             classes: HashMap::new(),
             collect_classes,
         }
     }
 
-    pub(super) fn observe(&mut self, node: Syntax<'tree>, entering: bool) {
+    pub(crate) fn observe(&mut self, node: Syntax<'tree>, entering: bool) {
         if entering {
             self.module.enter(node, node.kind());
             if let Some((_, collector)) = &mut self.class {
@@ -1385,7 +1391,7 @@ impl<'source, 'tree> PythonClassBindings<'source, 'tree> {
                 })
             {
                 let mut collector =
-                    languages::python::BindingWriteCollector::new(node, self.source);
+                    super::python::lexical::BindingWriteCollector::new(node, self.source);
                 collector.enter(node, node.kind());
                 self.class = Some((node, collector));
             }
@@ -1403,7 +1409,7 @@ impl<'source, 'tree> PythonClassBindings<'source, 'tree> {
         }
     }
 
-    pub(super) fn finish(self) -> RouteContext {
+    pub(crate) fn finish(self) -> RouteContext {
         let mut lexical = LexicalBindings {
             root: self.root.id(),
             python_module: true,
@@ -1443,7 +1449,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
     pub(crate) fn new(
         root: Syntax<'tree>,
         source: &'source str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
     ) -> Self {
         Self::new_with_python_admission(root, source, rules, None)
     }
@@ -1452,7 +1458,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
     pub(crate) fn for_main_walk(
         root: Syntax<'tree>,
         source: &'source str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
     ) -> Self {
         Self::new_with_python_admission(root, source, rules, Some(true))
     }
@@ -1460,7 +1466,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
     fn new_with_python_admission(
         root: Syntax<'tree>,
         source: &'source str,
-        rules: &languages::LanguageContext,
+        rules: &LanguageContext,
         python_admission: Option<bool>,
     ) -> Self {
         let mut tree_root = root;
@@ -1485,9 +1491,9 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
             && root.parent().is_none()
             && !root.has_error()
             && [
-                languages::typescript::language("", "javascript"),
-                languages::typescript::language("", "typescript"),
-                languages::typescript::language(".tsx", "typescript"),
+                tree_sitter_javascript::language(),
+                tree_sitter_typescript::language_typescript(),
+                tree_sitter_typescript::language_tsx(),
             ]
             .iter()
             .any(|language| *root.language() == *language)
@@ -1512,7 +1518,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
         #[cfg(feature = "lang-python")]
         if python_admission.is_none()
             && root.kind() == "module"
-            && *root.language() == languages::python::language()
+            && *root.language() == tree_sitter_python::language()
             && root.parent().is_none()
             && !root.has_error()
             && !python_summary_candidates(source, rules)
@@ -1542,15 +1548,15 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                 rule.active
                     && matches!(
                 rule.rule.operation,
-                languages::manifests::semantic::SemanticOperation::SymbolAttachment { .. }
-                    | languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                manifests::semantic::SemanticOperation::SymbolAttachment { .. }
+                    | manifests::semantic::SemanticOperation::EndpointProjection { .. }
             )
             }) || rules.syntax_rules.iter().any(|rule| {
                 rule.language == "python"
                     && matches!(
                         rule.operation,
-                        languages::manifests::syntax::SyntaxOperation::NamedBinding { .. }
-                            | languages::manifests::syntax::SyntaxOperation::ClassMethodRegistration { .. }
+                        manifests::syntax::SyntaxOperation::NamedBinding { .. }
+                            | manifests::syntax::SyntaxOperation::ClassMethodRegistration { .. }
                     )
             });
         if rules.route_decorators.is_empty() && rules.route_calls.is_empty() && !semantic_bindings {
@@ -1569,7 +1575,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
 
         if entering {
             let kind = node.kind();
-            let scope = node == self.root || super::visitor::binding_scope_kind(kind);
+            let scope = node == self.root || binding_scope_kind(kind);
             if let Some((_, collector)) = self.collectors.last_mut() {
                 collector.enter_with_kind(node, kind);
                 if scope {
@@ -1578,7 +1584,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
             }
             if scope {
                 let mut collector =
-                    super::visitor::BindingCollector::new_with_kind(node, self.source, kind);
+                    BindingCollector::new_with_kind(node, self.source, kind);
                 collector.enter_with_kind(node, kind);
                 self.collectors.push((node, collector));
             }
@@ -1594,7 +1600,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                 }
                 if python_scope {
                     let mut collector =
-                        languages::python::BindingWriteCollector::new(node, self.source);
+                        super::python::lexical::BindingWriteCollector::new(node, self.source);
                     collector.enter(node, kind);
                     self.python_collectors.push((node, collector));
                 }
@@ -1672,7 +1678,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                     if self.python_root {
                         let writes = self.context.lexical.python_writes.get(&scope_node.id());
                         names.extend(
-                            languages::python::lexical_type_parameters(scope_node, self.source)
+                            super::python::lexical::lexical_type_parameters(scope_node, self.source)
                                 .into_iter()
                                 .filter(|name| {
                                     !self.context.lexical.python_module
@@ -1691,7 +1697,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
         false
     }
 
-    pub(crate) fn take_bindings(&mut self, node: Syntax<'_>) -> Option<super::ScopeBindings> {
+    pub(crate) fn take_bindings(&mut self, node: Syntax<'_>) -> Option<ScopeBindings> {
         self.context.prepared_bindings.remove(&node.id())
     }
 

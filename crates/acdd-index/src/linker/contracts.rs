@@ -542,7 +542,7 @@ impl<'a> Contracts<'a> {
             }
             if let Some(nodes) = self.symbols.get(&(
                 owner.path.as_str(),
-                super::qualified(&mut lookup_key, scope, name),
+                crate::linker::types::qualified(&mut lookup_key, scope, name),
             )) {
                 let mut visible = nodes.iter().copied().filter(|node| {
                     node.language == owner.language
@@ -582,7 +582,7 @@ impl<'a> Contracts<'a> {
         loop {
             if self.symbols.contains_key(&(
                 owner.path.as_str(),
-                super::qualified(&mut lookup_key, scope, head),
+                crate::linker::types::qualified(&mut lookup_key, scope, head),
             )) {
                 return false;
             }

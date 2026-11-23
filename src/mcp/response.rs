@@ -5,6 +5,10 @@ use serde_json::{json, Value};
 use std::{
     io,
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 use tokio::io::AsyncWrite;
@@ -13,12 +17,14 @@ use tokio::io::AsyncWrite;
 const ENVELOPE_RESERVE: usize = 256;
 
 /// Performs result.
-pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
+#[cfg(test)]
+pub(crate) fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     result_with_format(value, policy, OutputFormat::default())
 }
 
 /// Formats a public response with an explicit presentation selection.
-pub fn result_with_format(
+#[cfg(test)]
+pub(crate) fn result_with_format(
     value: anyhow::Result<Value>,
     policy: &ResponsePolicy,
     output_format: OutputFormat,
@@ -260,7 +266,7 @@ fn success_text_bytes(text: &str) -> usize {
 }
 
 /// Performs serialized bytes.
-pub fn serialized_bytes(result: &CallToolResult) -> usize {
+pub(crate) fn serialized_bytes(result: &CallToolResult) -> usize {
     let mut counter = acdd_core::format::JsonByteCounter::default();
     serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.0)
 }
@@ -290,7 +296,7 @@ pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResul
 }
 
 /// Performs bounded error.
-pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
+fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     let mut end = acdd_core::format::utf8_floor_boundary(message, budget);
     loop {
         end = acdd_core::format::utf8_floor_boundary(message, end);
@@ -307,19 +313,24 @@ pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     }
 }
 
-/// Performs stdio.
-pub fn stdio() -> (tokio::io::Stdin, BoundedWriter<tokio::io::Stdout>) {
-    (tokio::io::stdin(), BoundedWriter::new(tokio::io::stdout()))
+pub(crate) fn stdio_with_flush_reload(
+    armed: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+) -> (tokio::io::Stdin, BoundedWriter<tokio::io::Stdout>) {
+    let mut writer = BoundedWriter::new(tokio::io::stdout());
+    writer.flush_reload = Some((armed, notify));
+    (tokio::io::stdin(), writer)
 }
 
 /// Buffer a complete JSON-RPC line before publishing any of its bytes.
 /// Oversized protocol errors are replaced before any bytes reach the client.
-pub struct BoundedWriter<W> {
+pub(crate) struct BoundedWriter<W> {
     writer: W,
     line: Vec<u8>,
     pending: Vec<u8>,
     written: usize,
     overflow: bool,
+    flush_reload: Option<(Arc<AtomicBool>, Arc<tokio::sync::Notify>)>,
 }
 
 impl<W> BoundedWriter<W> {
@@ -331,6 +342,7 @@ impl<W> BoundedWriter<W> {
             pending: Vec::new(),
             written: 0,
             overflow: false,
+            flush_reload: None,
         }
     }
 }
@@ -382,7 +394,15 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for BoundedWriter<W> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         std::task::ready!(this.drain(cx))?;
-        Pin::new(&mut this.writer).poll_flush(cx)
+        std::task::ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
+        if this.line.is_empty() && this.pending.is_empty() {
+            if let Some((armed, notify)) = &this.flush_reload {
+                if armed.swap(false, Ordering::AcqRel) {
+                    notify.notify_one();
+                }
+            }
+        }
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -461,5 +481,117 @@ mod tests {
         assert_eq!(payload["error"]["code"], "FEATURE_DISABLED");
         assert_eq!(payload["error"]["message"], "state subsystem disabled");
         assert_eq!(payload["error"]["hint"], "enable modules.state");
+    }
+
+    #[tokio::test]
+    async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
+        use tokio::io::AsyncWriteExt;
+
+        let frame_for = |size: usize| {
+            let prefix = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"text\":\"";
+            let suffix = "\"}}\n";
+            format!(
+                "{prefix}{}{suffix}",
+                "x".repeat(size - prefix.len() - suffix.len())
+            )
+        };
+        for size in [MAX_OUTPUT_BYTES - 1, MAX_OUTPUT_BYTES] {
+            let mut writer = BoundedWriter::new(tokio::io::sink());
+            let frame = frame_for(size);
+            assert_eq!(frame.len(), size);
+            serde_json::from_str::<Value>(frame.trim_end()).unwrap();
+            writer.write_all(frame.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+        }
+        let mut output = Vec::new();
+        let mut writer = BoundedWriter::new(&mut output);
+        let oversized = frame_for(MAX_OUTPUT_BYTES + 1);
+        writer.write_all(oversized.as_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+        assert!(output.len() < MAX_OUTPUT_BYTES);
+        let error: Value = serde_json::from_slice(&output).unwrap();
+        assert!(error.get("error").is_some());
+    }
+
+    #[test]
+    fn serialization_counts_second_escaping_and_bounds_a_single_item() {
+        let policy = ResponsePolicy::default();
+        let res = result_with_format(
+            Ok(
+                json!({"nodes":{"total":2,"offset":0,"limit":30,"items":[{"id":"first","text":"\"\\\n".repeat(6000)},{"id":"second","text":"\"\\\n".repeat(6000)}],"has_more":false,"next_offset":null,"generation":"snapshot"}}),
+            ),
+            &policy,
+            OutputFormat::Json,
+        );
+        assert!(serialized_bytes(&res) <= MAX_OUTPUT_BYTES - 256);
+        assert_ne!(res.is_error, Some(true), "{res:?}");
+        let wire = serde_json::to_value(res).unwrap();
+        let payload: Value =
+            serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["nodes"]["total"], 2);
+        assert_eq!(payload["nodes"]["has_more"], true);
+        assert_eq!(payload["nodes"]["byte_limited"], true);
+        assert_eq!(payload["nodes"]["next_offset"], 1);
+
+        for format in [OutputFormat::Json, OutputFormat::Markdown] {
+            let r = result_with_format(
+                Ok(json!({
+                    "nodes": {
+                        "total": 2, "offset": 0, "limit": 30, "has_more": false, "next_offset": null,
+                        "generation": "snapshot-full-token-123456",
+                        "items": [{"id": "a", "text": "\"\\\n".repeat(6000)}, {"id": "b", "text": "\"\\\n".repeat(6000)}]
+                    }
+                })),
+                &policy,
+                format,
+            );
+            assert_ne!(r.is_error, Some(true), "{format:?}: {r:?}");
+            assert!(serialized_bytes(&r) <= MAX_OUTPUT_BYTES - 256);
+            assert!(r.content[0].as_text().unwrap().text.contains("snapshot-full-token-123456"));
+        }
+
+        let err_res = result_with_format(
+            Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})),
+            &policy,
+            OutputFormat::Json,
+        );
+        assert_eq!(err_res.is_error, Some(true));
+        assert!(serialized_bytes(&err_res) <= MAX_OUTPUT_BYTES - 256);
+
+        let fitting_text = "λ".repeat(36_000);
+        let fitting = result_with_format(
+            Ok(json!({
+                "tasks": [{"task_id":"fit-96kib","target":fitting_text.clone()}],
+                "pagination": {"total": 1, "limit": 1, "offset": 0, "returned": 1, "next_offset": null, "has_more": false, "generation": "task-view-fit", "byte_omitted": 0}
+            })),
+            &policy,
+            OutputFormat::Json,
+        );
+        assert_ne!(fitting.is_error, Some(true), "{fitting:?}");
+        assert!(serialized_bytes(&fitting) <= MAX_OUTPUT_BYTES - 256);
+
+        let low = ResponsePolicy { max_output_bytes: 4_096, ..ResponsePolicy::default() };
+        let low_err = result_with_format(
+            Ok(json!({"items":[{"id":"configured-limit","text":"x".repeat(5_000)}]})),
+            &low,
+            OutputFormat::Json,
+        );
+        assert_eq!(low_err.is_error, Some(true));
+        assert!(serialized_bytes(&low_err) <= 4_096 - 256);
+
+        let trim_policy = ResponsePolicy { max_output_bytes: 2_048, ..ResponsePolicy::default() };
+        let bounded = result(
+            Ok(json!({"nodes":{"total":3,"offset":0,"limit":3,
+                "has_more":false,"next_offset":null,"generation":"tail-trim-continuation-token",
+                "items":[{"name":"first-retained","text":"x".repeat(800)},
+                    {"name":"middle","text":"x".repeat(800)},
+                    {"name":"last-omitted","text":"x".repeat(800)}]}})),
+            &trim_policy,
+        );
+        assert_ne!(bounded.is_error, Some(true), "{bounded:?}");
+        assert!(serialized_bytes(&bounded) <= 2_048 - 256);
+        let text = bounded.content[0].as_text().unwrap().text.as_str();
+        assert!(text.contains("first-retained") && text.contains("tail-trim-continuation-token") && !text.contains("last-omitted"));
     }
 }

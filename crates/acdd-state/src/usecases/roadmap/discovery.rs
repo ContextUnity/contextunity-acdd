@@ -1,6 +1,6 @@
 //! Cross-worktree spec and archive discovery for roadmap synthesis.
 
-use super::{
+use super::types::{
     ActiveRunMap, CheckoutSpecs, CommittedArchives, DiscoveredCopy, DiscoveredWorkspace, SpecInfo,
 };
 use crate::spec::{SpecDocument, SpecStatus};
@@ -163,18 +163,26 @@ fn literal_archive_dirs(collections: &BTreeMap<String, SpecCollectionConfig>) ->
         })
 }
 
-pub(super) fn discover_specs_across_worktrees(
-    current_root: &Path,
+fn collection_patterns_key(cols: &BTreeMap<String, SpecCollectionConfig>) -> Vec<String> {
+    cols.iter()
+        .flat_map(|(name, col)| {
+            col.patterns()
+                .into_iter()
+                .map(move |pat| format!("{name}:{pat}"))
+        })
+        .collect()
+}
+
+type ArchiveFingerprintMap = BTreeMap<String, Vec<Option<String>>>;
+
+fn preload_archive_fingerprints_and_cleanliness(
     primary_canon: &Path,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
-    active_runs_by_spec: &ActiveRunMap,
-    current_only: bool,
-) -> Result<DiscoveredWorkspace, StateError> {
-    let worktree_heads = list_owned_worktrees_with_heads(primary_canon).unwrap_or_default();
-    let owned_worktrees: Vec<_> = worktree_heads.iter().map(|(path, _)| path.clone()).collect();
-    let literal_dirs = literal_archive_dirs(collections);
-    let mut fingerprint_by_head: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
-    if let Some(dirs) = &literal_dirs {
+    worktree_heads: &[(PathBuf, Option<String>)],
+    worktrees: &[(String, PathBuf)],
+    literal_dirs: Option<&Vec<String>>,
+) -> (ArchiveFingerprintMap, BTreeMap<PathBuf, bool>) {
+    let mut fingerprint_by_head: ArchiveFingerprintMap = BTreeMap::new();
+    if let Some(dirs) = literal_dirs {
         let queries: Vec<_> = worktree_heads
             .iter()
             .filter_map(|(_, head)| head.as_deref())
@@ -192,28 +200,8 @@ pub(super) fn discover_specs_across_worktrees(
             }
         }
     }
-    let worktrees =
-        enumerate_worktree_roots(current_root, primary_canon, current_only, &owned_worktrees);
-    let collection_patterns = |cols: &BTreeMap<String, SpecCollectionConfig>| -> Vec<String> {
-        cols.iter()
-            .flat_map(|(name, col)| {
-                col.patterns()
-                    .into_iter()
-                    .map(move |pat| format!("{name}:{pat}"))
-            })
-            .collect()
-    };
-    let effective_patterns = collection_patterns(collections);
     let mut preloaded_clean: BTreeMap<PathBuf, bool> = BTreeMap::new();
-    let archive_key = |head: &str, same_pats: bool| -> ArchiveFingerprint {
-        if same_pats {
-            if let Some(fp) = fingerprint_by_head.get(head) {
-                return fp.clone();
-            }
-        }
-        vec![Some(head.to_owned())]
-    };
-    if let Some(dirs) = literal_dirs.as_ref().filter(|_| worktrees.len() > 1) {
+    if let Some(dirs) = literal_dirs.filter(|_| worktrees.len() > 1) {
         let archive_dir_refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
         let sibling_wts: Vec<PathBuf> = worktrees
             .iter()
@@ -234,143 +222,109 @@ pub(super) fn discover_specs_across_worktrees(
         });
         preloaded_clean.extend(clean_results.into_iter().flatten());
     }
-    let mut copies_by_id: BTreeMap<String, Vec<DiscoveredCopy>> = BTreeMap::new();
-    let mut checkout_specs = BTreeMap::new();
-    let mut warnings = Vec::new();
-    let mut spec_cache = BTreeMap::new();
-    let mut checkout_archives = BTreeMap::new();
-    let mut committed_cache: BTreeMap<(ArchiveFingerprint, Vec<String>), CommittedArchives> =
-        BTreeMap::new();
+    (fingerprint_by_head, preloaded_clean)
+}
 
-    for (wt_label, wt_path) in &worktrees {
-        let worktree_adapter = (wt_path != current_root
-            && wt_path.join(ACDD_CONFIG_FILE).try_exists().map_err(|err| {
-                StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string())
-            })?)
-        .then(|| load_ws_adapter(wt_path))
-        .transpose()?;
-        let collections = worktree_adapter
-            .as_ref()
-            .map_or(collections, |adapter| &adapter.specs);
-        let specs = scan_checkout_specs(wt_path, wt_label, collections, &mut warnings, &mut spec_cache)?;
-        if wt_path == primary_canon || owned_worktrees.contains(wt_path) {
-            checkout_specs.insert(wt_path.clone(), checkout_specs_from(collections, &specs));
-        }
-        let is_primary_or_current = wt_path == primary_canon || wt_path == current_root;
-        for item in specs {
-            let is_active = copy_matches_active_run(&item.doc.id, wt_path, active_runs_by_spec)
-                || item.doc.status == SpecStatus::Active;
-            if !is_primary_or_current && !is_active {
-                continue;
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn collect_worktree_archives(
+    wt_path: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    effective_patterns: &[String],
+    primary_canon: &Path,
+    worktree_heads: &[(PathBuf, Option<String>)],
+    fingerprint_by_head: &BTreeMap<String, Vec<Option<String>>>,
+    preloaded_clean: &BTreeMap<PathBuf, bool>,
+    committed_cache: &mut BTreeMap<(ArchiveFingerprint, Vec<String>), CommittedArchives>,
+) -> Result<
+    (
+        CommittedArchives,
+        Vec<String>,
+        CommittedArchives,
+    ),
+    StateError,
+> {
+    let disk_only = *wt_path != *primary_canon;
+    let head_entry = worktree_heads.iter().find(|(path, _)| path == wt_path);
+    let unborn_git_head = head_entry.is_some_and(|(_, head)| head.is_none());
+    let head = head_entry.and_then(|(_, head)| head.as_ref());
+    let wt_patterns = collection_patterns_key(collections);
+    let same_patterns = wt_patterns == effective_patterns;
+    let disk_matches_head = disk_only
+        && head.is_some()
+        && preloaded_clean
+            .get(wt_path)
+            .copied()
+            .filter(|_| same_patterns)
+            .unwrap_or_else(|| {
+                literal_archive_dirs(collections).is_some_and(|dirs| {
+                    let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+                    git_paths_clean_against_head(wt_path, &refs).unwrap_or(false)
+                })
+            });
+    let head_key = head.map(|h| {
+        if same_patterns {
+            if let Some(fp) = fingerprint_by_head.get(h) {
+                return fp.clone();
             }
-            let collection_name = resolve_collection_name(collections, &item.rel_path);
-            copies_by_id
-                .entry(item.doc.id.clone())
-                .or_default()
-                .push(DiscoveredCopy {
-                    wt_label: wt_label.clone(),
-                    wt_path: wt_path.clone(),
-                    collection: collection_name,
-                    rel_path: item.rel_path,
-                    doc: item.doc,
-                    is_archived: false,
-                });
         }
-
-        let disk_only = *wt_path != *primary_canon;
-        let head_entry = worktree_heads.iter().find(|(path, _)| path == wt_path);
-        let unborn_git_head = head_entry.is_some_and(|(_, head)| head.is_none());
-        let head = head_entry.and_then(|(_, head)| head.as_ref());
-        let wt_patterns = collection_patterns(collections);
-        let same_patterns = wt_patterns == effective_patterns;
-        let disk_matches_head = disk_only
-            && head.is_some()
-            && preloaded_clean
-                .get(wt_path)
-                .copied()
-                .filter(|_| same_patterns)
-                .unwrap_or_else(|| {
-                    literal_archive_dirs(collections).is_some_and(|dirs| {
-                        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
-                        git_paths_clean_against_head(wt_path, &refs).unwrap_or(false)
-                    })
-                });
-        let head_key = head.map(|h| archive_key(h, same_patterns));
-        let cached_committed = head_key
-            .as_ref()
-            .and_then(|k| committed_cache.get(&(k.clone(), wt_patterns.clone())).cloned());
-        let (arch, arch_warnings, committed) = if disk_matches_head {
-            if let Some(archived) = cached_committed {
-                (archived.clone(), Vec::new(), archived)
-            } else {
-                let (archived, warn) =
-                    collect_archived_specs(wt_path, collections, false, head.map(String::as_str))?;
-                if let Some(k) = head_key {
-                    committed_cache.insert((k, wt_patterns), archived.clone());
-                }
-                (archived.clone(), warn, archived)
-            }
-        } else {
-            let (arch, arch_warnings) = if unborn_git_head && !disk_only {
-                (Vec::new(), Vec::new())
-            } else {
-                collect_archived_specs(
-                    wt_path,
-                    collections,
-                    disk_only,
-                    head.map(String::as_str),
-                )?
-            };
-            let committed = if unborn_git_head {
-                Vec::new()
-            } else if let Some(archived) = cached_committed {
-                archived
-            } else {
-                let archived = if disk_only {
-                    collect_archived_specs(
-                        wt_path,
-                        collections,
-                        false,
-                        head.map(String::as_str),
-                    )?
-                    .0
-                } else {
-                    arch.clone()
-                };
-                if let Some(k) = head_key {
-                    committed_cache.insert((k, wt_patterns), archived.clone());
-                }
-                archived
-            };
-            (arch, arch_warnings, committed)
-        };
-        let mut checkout_archive = BTreeMap::new();
-        for (_, path, doc) in committed {
-            checkout_archive.entry(doc.id.clone()).or_insert((path, doc));
+        vec![Some(h.to_owned())]
+    });
+    let cached_committed = head_key
+        .as_ref()
+        .and_then(|k| committed_cache.get(&(k.clone(), wt_patterns.clone())).cloned());
+    if disk_matches_head {
+        if let Some(archived) = cached_committed {
+            return Ok((archived.clone(), Vec::new(), archived));
         }
-        checkout_archives.insert(wt_path.clone(), checkout_archive);
-        for w in arch_warnings {
-            warnings.push(format!("{wt_label}: {w}"));
+        let (archived, warn) =
+            collect_archived_specs(wt_path, collections, false, head.map(String::as_str))?;
+        if let Some(k) = head_key {
+            committed_cache.insert((k, wt_patterns), archived.clone());
         }
-        for (col_name, rel_path, doc) in arch {
-            copies_by_id
-                .entry(doc.id.clone())
-                .or_default()
-                .push(DiscoveredCopy {
-                    wt_label: wt_label.clone(),
-                    wt_path: wt_path.clone(),
-                    collection: col_name,
-                    rel_path,
-                    doc,
-                    is_archived: true,
-                });
-        }
+        return Ok((archived.clone(), warn, archived));
     }
+    let (arch, arch_warnings) = if unborn_git_head && !disk_only {
+        (Vec::new(), Vec::new())
+    } else {
+        collect_archived_specs(
+            wt_path,
+            collections,
+            disk_only,
+            head.map(String::as_str),
+        )?
+    };
+    let committed = if unborn_git_head {
+        Vec::new()
+    } else if let Some(archived) = cached_committed {
+        archived
+    } else {
+        let archived = if disk_only {
+            collect_archived_specs(wt_path, collections, false, head.map(String::as_str))?.0
+        } else {
+            arch.clone()
+        };
+        if let Some(k) = head_key {
+            committed_cache.insert((k, wt_patterns), archived.clone());
+        }
+        archived
+    };
+    Ok((arch, arch_warnings, committed))
+}
 
+fn resolve_spec_copies_and_divergence(
+    copies_by_id: BTreeMap<String, Vec<DiscoveredCopy>>,
+    current_root: &Path,
+    primary_canon: &Path,
+    active_runs_by_spec: &ActiveRunMap,
+    warnings: &mut Vec<String>,
+) -> (
+    BTreeMap<String, SpecInfo>,
+    BTreeMap<String, SpecInfo>,
+    BTreeMap<acdd_core::ids::RunId, SpecInfo>,
+) {
     let mut specs_by_id = BTreeMap::new();
     let mut archived_by_id = BTreeMap::new();
     let mut specs_by_run = BTreeMap::new();
-
     for (spec_id, mut copies) in copies_by_id {
         if copies.is_empty() {
             continue;
@@ -381,7 +335,6 @@ pub(super) fn discover_specs_across_worktrees(
         let all_identical = copies
             .iter()
             .all(|c| c.doc.digest == first_digest && c.is_archived == first_archived);
-
         let best_idx = copies
             .iter()
             .enumerate()
@@ -390,34 +343,35 @@ pub(super) fn discover_specs_across_worktrees(
             })
             .map(|(i, _)| i)
             .unwrap_or(0);
-
-        let mut divergence = Vec::new();
-        if !all_identical {
+        let divergence = if all_identical {
+            Vec::new()
+        } else {
             let canonical_wt = &copies[best_idx].wt_path;
             let mut seen_wt = BTreeSet::new();
             let mut parts = Vec::new();
+            let mut div = Vec::new();
             for c in &copies {
                 if !seen_wt.insert(c.wt_path.clone()) {
                     continue;
                 }
                 let st = copy_status_label(c, active_runs_by_spec);
                 parts.push(format!("{}: {st}", c.wt_label));
-                divergence.push(RoadmapWorktreeCopy {
+                div.push(RoadmapWorktreeCopy {
                     worktree: c.wt_label.clone(),
                     status: st,
                     canonical: &c.wt_path == canonical_wt,
                 });
             }
-            if divergence.len() > 1 {
+            if div.len() > 1 {
                 warnings.push(format!(
                     "spec '{spec_id}' diverges across worktrees: {}",
                     parts.join(", ")
                 ));
+                div
             } else {
-                divergence.clear();
+                Vec::new()
             }
-        }
-
+        };
         let to_info = |chosen: DiscoveredCopy, source_worktree| SpecInfo {
             spec_id: spec_id.clone(),
             collection: chosen.collection,
@@ -454,7 +408,112 @@ pub(super) fn discover_specs_across_worktrees(
             specs_by_id.insert(spec_id, info);
         }
     }
+    (specs_by_id, archived_by_id, specs_by_run)
+}
 
+pub(super) fn discover_specs_across_worktrees(
+    current_root: &Path,
+    primary_canon: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    active_runs_by_spec: &ActiveRunMap,
+    current_only: bool,
+) -> Result<DiscoveredWorkspace, StateError> {
+    let worktree_heads = list_owned_worktrees_with_heads(primary_canon).unwrap_or_default();
+    let owned_worktrees: Vec<_> = worktree_heads.iter().map(|(path, _)| path.clone()).collect();
+    let literal_dirs = literal_archive_dirs(collections);
+    let worktrees =
+        enumerate_worktree_roots(current_root, primary_canon, current_only, &owned_worktrees);
+    let effective_patterns = collection_patterns_key(collections);
+    let (fingerprint_by_head, preloaded_clean) = preload_archive_fingerprints_and_cleanliness(
+        primary_canon,
+        &worktree_heads,
+        &worktrees,
+        literal_dirs.as_ref(),
+    );
+    let mut copies_by_id: BTreeMap<String, Vec<DiscoveredCopy>> = BTreeMap::new();
+    let mut checkout_specs = BTreeMap::new();
+    let mut warnings = Vec::new();
+    let mut spec_cache = BTreeMap::new();
+    let mut checkout_archives = BTreeMap::new();
+    let mut committed_cache: BTreeMap<(ArchiveFingerprint, Vec<String>), CommittedArchives> =
+        BTreeMap::new();
+
+    for (wt_label, wt_path) in &worktrees {
+        let worktree_adapter = (wt_path != current_root
+            && wt_path.join(ACDD_CONFIG_FILE).try_exists().map_err(|err| {
+                StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string())
+            })?)
+        .then(|| load_ws_adapter(wt_path))
+        .transpose()?;
+        let collections = worktree_adapter
+            .as_ref()
+            .map_or(collections, |adapter| &adapter.specs);
+        let specs =
+            scan_checkout_specs(wt_path, wt_label, collections, &mut warnings, &mut spec_cache)?;
+        if wt_path == primary_canon || owned_worktrees.contains(wt_path) {
+            checkout_specs.insert(wt_path.clone(), checkout_specs_from(collections, &specs));
+        }
+        let is_primary_or_current = wt_path == primary_canon || wt_path == current_root;
+        for item in specs {
+            let is_active = copy_matches_active_run(&item.doc.id, wt_path, active_runs_by_spec)
+                || item.doc.status == SpecStatus::Active;
+            if !is_primary_or_current && !is_active {
+                continue;
+            }
+            let collection_name = resolve_collection_name(collections, &item.rel_path);
+            copies_by_id
+                .entry(item.doc.id.clone())
+                .or_default()
+                .push(DiscoveredCopy {
+                    wt_label: wt_label.clone(),
+                    wt_path: wt_path.clone(),
+                    collection: collection_name,
+                    rel_path: item.rel_path,
+                    doc: item.doc,
+                    is_archived: false,
+                });
+        }
+
+        let (arch, arch_warnings, committed) = collect_worktree_archives(
+            wt_path,
+            collections,
+            &effective_patterns,
+            primary_canon,
+            &worktree_heads,
+            &fingerprint_by_head,
+            &preloaded_clean,
+            &mut committed_cache,
+        )?;
+        let mut checkout_archive = BTreeMap::new();
+        for (_, path, doc) in committed {
+            checkout_archive.entry(doc.id.clone()).or_insert((path, doc));
+        }
+        checkout_archives.insert(wt_path.clone(), checkout_archive);
+        for w in arch_warnings {
+            warnings.push(format!("{wt_label}: {w}"));
+        }
+        for (col_name, rel_path, doc) in arch {
+            copies_by_id
+                .entry(doc.id.clone())
+                .or_default()
+                .push(DiscoveredCopy {
+                    wt_label: wt_label.clone(),
+                    wt_path: wt_path.clone(),
+                    collection: col_name,
+                    rel_path,
+                    doc,
+                    is_archived: true,
+                });
+        }
+    }
+
+    let (specs_by_id, archived_by_id, specs_by_run) = resolve_spec_copies_and_divergence(
+        copies_by_id,
+        current_root,
+        primary_canon,
+        active_runs_by_spec,
+        &mut warnings,
+    );
     let mut sibling_candidates: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for (checkout, scoped) in &checkout_specs {
         let archives = checkout_archives.get(checkout).into_iter().flat_map(|docs| docs.keys());

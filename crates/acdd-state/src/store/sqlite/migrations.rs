@@ -162,8 +162,7 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
             return Err(StateError::new(
                 ErrorCode::ConfigMigrationRequired,
                 "state database contains existing tables without _sqlite_meta; migrate or recreate state.sqlite",
-            )
-            .with_hint("Follow docs/runbooks/migration-0.6.md if upgrading from 0.5.x"));
+            ));
         }
     }
 
@@ -274,8 +273,7 @@ pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, Sta
             return Err(StateError::new(
                 ErrorCode::ConfigMigrationRequired,
                 "state database contains existing tables without _sqlite_meta; migrate or recreate state.sqlite",
-            )
-            .with_hint("Follow docs/runbooks/migration-0.6.md if upgrading from 0.5.x"));
+            ));
         }
         return Err(StateError::new(
             ErrorCode::ConfigMigrationRequired,

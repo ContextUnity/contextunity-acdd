@@ -404,7 +404,7 @@ pub(super) async fn code_map_explain(server: &Server, p: Explain) -> CallToolRes
                     &server.root,
                     &p.selector,
                     p.path.as_deref(),
-                    &symbols::ExplainOptions {
+                    &symbols::SymbolExplainOptions {
                         explain: reader::ExplainOptions {
                             direction,
                             show_doc: p.show_doc,

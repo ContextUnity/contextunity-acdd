@@ -1,13 +1,21 @@
 use super::Workspace;
-use clap::Parser;
-use contextunity_acdd::cli::Cli;
-use std::{ffi::OsString, process::Output};
+use std::{
+    ffi::OsString,
+    process::{Command, Output},
+};
 
-/// Executes the real Clap parser, CLI dispatcher, and formatter in process.
+/// Executes the compiled `acdd` binary against `workspace`.
 pub fn run_cli(workspace: &Workspace, args: &[&str]) -> Output {
-    let mut argv = vec![OsString::from("--root"), workspace.root().into()];
-    argv.extend(args.iter().map(OsString::from));
-    run_cli_args(&argv)
+    Command::new(env!("CARGO_BIN_EXE_acdd"))
+        .arg("--root")
+        .arg(workspace.root())
+        .env(
+            "ACDD_EXTRACTION_CACHE_DIR",
+            workspace.path(".acdd/extraction-cache"),
+        )
+        .args(args)
+        .output()
+        .expect("could not run acdd")
 }
 
 pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
@@ -17,62 +25,8 @@ pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
 }
 
 pub fn run_cli_args(args: &[OsString]) -> Output {
-    let argv = std::iter::once(OsString::from("acdd")).chain(args.iter().cloned());
-    let cli = match Cli::try_parse_from(argv) {
-        Ok(cli) => cli,
-        Err(error) => {
-            let mut output = Output {
-                status: exit_status(error.exit_code()),
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            };
-            let message = error.to_string().into_bytes();
-            if error.use_stderr() {
-                output.stderr = message;
-            } else {
-                output.stdout = message;
-            }
-            return output;
-        }
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let mut stdout = Vec::new();
-    let positional_root = match &cli.command {
-        Some(
-            contextunity_acdd::cli::Command::Build { workspace_root, .. }
-            | contextunity_acdd::cli::Command::Scan { workspace_root, .. }
-            | contextunity_acdd::cli::Command::Delta { workspace_root, .. },
-        ) => workspace_root.clone(),
-        _ => None,
-    };
-    let cache_root = cli
-        .root
-        .clone()
-        .or(positional_root)
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
-    let result = runtime.block_on(
-        cli.run_with_writer_and_cache_dir(&mut stdout, &cache_root.join(".acdd/extraction-cache")),
-    );
-    Output {
-        status: exit_status(i32::from(result.is_err())),
-        stdout,
-        stderr: result
-            .err()
-            .map_or_else(Vec::new, |error| format!("{error:#}\n").into_bytes()),
-    }
-}
-
-#[cfg(unix)]
-fn exit_status(code: i32) -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(code << 8)
-}
-
-#[cfg(windows)]
-fn exit_status(code: i32) -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(code as u32)
+    Command::new(env!("CARGO_BIN_EXE_acdd"))
+        .args(args)
+        .output()
+        .expect("could not run acdd")
 }

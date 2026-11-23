@@ -1,6 +1,11 @@
 //! Host `DocsDomainProvider` (`domain_id = "docs"`) implementation.
 
-use super::{budget_items, combine_file_hashes, open_code_db_readonly};
+use super::common::{
+    budget_items, build_composite_providers, combine_file_hashes, open_code_db_readonly,
+    resolve_worktree_adapter, truncate_single_line, unsupported_domain_action,
+    DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INSTRUCTION_MAX_HEADINGS, DOCS_INVARIANT_FALLBACK_ITEM_LIMIT,
+    DOCS_INVARIANT_MAX_RULE_CHARS,
+};
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::{estimate_json_bytes, sha256_hex};
@@ -120,14 +125,24 @@ impl DocsDomainProvider {
     }
 
     fn run_specs_check(&self, req: &DomainCheckReq) -> Result<DomainCheckOutcome> {
-        let worktree_adapter =
-            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let worktree_adapter = resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
         let live_digest = compute_specs_digest(&req.worktree, &worktree_adapter);
-        let providers = super::build_domain_providers(
-            &req.worktree,
+        let code_db_owned =
+            acdd_core::config::resolve_custom_db_path(&req.worktree, self.code_db.as_deref());
+        let providers = build_composite_providers(
             &worktree_adapter,
-            self.code_db.as_deref(),
-            Vec::new(),
+            vec![
+                std::sync::Arc::new(super::code_domain::CodeDomainProvider::with_code_db(
+                    req.worktree.clone(),
+                    worktree_adapter.clone(),
+                    code_db_owned.clone(),
+                )),
+                std::sync::Arc::new(Self::with_code_db(
+                    req.worktree.clone(),
+                    worktree_adapter.clone(),
+                    code_db_owned,
+                )),
+            ],
         )?;
         let resp =
             acdd_state::validate::validate_workspace(&req.worktree, None, None, &providers)?;
@@ -163,49 +178,23 @@ impl DocsDomainProvider {
         // Always scan live worktree `docs/adr` so unindexed/edited ADRs appear immediately
         // and stale `code_db` rows for existing files cannot override live frontmatter/doc_type.
         let adr_dir = req.worktree.join("docs/adr");
-        if adr_dir.is_dir() {
-            for entry in WalkDir::new(&adr_dir)
-                .max_depth(2)
-                .into_iter()
-                .filter_entry(|entry| {
-                    entry.depth() == 0
-                        || !entry.file_type().is_dir()
-                        || entry.file_name().to_str() != Some("archive")
-                })
-                .filter_map(Result::ok)
-            {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let path = entry.path();
-                if !is_doc_path(&path.to_string_lossy()) {
-                    continue;
-                }
-                let rel = path
-                    .strip_prefix(&req.worktree)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if rel.starts_with("archive/")
-                    || rel.contains("/archive/")
-                    || rel == "docs/adr/README.md"
-                {
-                    continue;
-                }
-                seen_paths.insert(rel.clone());
-                let Ok(text) = fs::read_to_string(path) else {
-                    continue;
-                };
-                let doc_type = frontmatter_field(&text, "doc_type")
-                    .unwrap_or_else(|| "adr".to_owned());
-                if doc_type == "contract" {
-                    continue;
-                }
-                let title = frontmatter_field(&text, "title")
-                    .or_else(|| first_markdown_heading(&text))
-                    .unwrap_or_else(|| rel.clone());
-                items.push((rel, title, doc_type));
+        for (path, rel) in collect_walk_rel_doc_paths(&adr_dir, &req.worktree, 2, true) {
+            if rel == "docs/adr/README.md" {
+                continue;
             }
+            seen_paths.insert(rel.clone());
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let doc_type = frontmatter_field(&text, "doc_type")
+                .unwrap_or_else(|| "adr".to_owned());
+            if doc_type == "contract" {
+                continue;
+            }
+            let title = frontmatter_field(&text, "title")
+                .or_else(|| first_markdown_heading(&text))
+                .unwrap_or_else(|| rel.clone());
+            items.push((rel, title, doc_type));
         }
 
         if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
@@ -247,54 +236,7 @@ impl DocsDomainProvider {
             if let Some(conn) =
                 open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref())
             {
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT p_src.path, p_dst.path
-                     FROM edges e
-                     JOIN nodes n_src ON n_src.node_hash = e.src_hash
-                     JOIN path_dictionary p_src ON p_src.path_id = n_src.path_id
-                     JOIN nodes n_dst ON n_dst.node_hash = e.dst_hash
-                     JOIN path_dictionary p_dst ON p_dst.path_id = n_dst.path_id
-                     WHERE e.kind IN ('documents','references_doc','cites_doc','governed_by','governs')
-                       AND (p_src.path LIKE 'docs/adr/%' OR p_dst.path LIKE 'docs/adr/%')",
-                )?;
-                let mut workspace_has_adr_links = false;
-                let mut relevant_adrs = BTreeSet::new();
-                let link_rows = stmt.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                for (src_path, dst_path) in link_rows.flatten() {
-                    let (adr_path, code_path) = if src_path.starts_with("docs/adr/") {
-                        (src_path, dst_path)
-                    } else {
-                        (dst_path, src_path)
-                    };
-                    if !code_path.starts_with("docs/") {
-                        workspace_has_adr_links = true;
-                        if req.path_policy.is_scope_admitted(&code_path, &req.admitted_scope) {
-                            relevant_adrs.insert(adr_path);
-                        }
-                    }
-                }
-                if let Some(target_text) = req.target.as_deref() {
-                    for (adr_path, title, _) in &items {
-                        let stem = Path::new(adr_path)
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_default();
-                        let num_prefix = stem.split('-').next().unwrap_or_default();
-                        if (!stem.is_empty() && target_text.contains(stem))
-                            || (num_prefix.len() >= 4
-                                && num_prefix.bytes().all(|b| b.is_ascii_digit())
-                                && target_text.contains(num_prefix))
-                            || target_text.contains(title.as_str())
-                        {
-                            relevant_adrs.insert(adr_path.clone());
-                        }
-                    }
-                }
-                if workspace_has_adr_links {
-                    items.retain(|(path, _, _)| relevant_adrs.contains(path));
-                }
+                filter_adr_records_by_scope(&conn, req, &mut items)?;
             }
         }
 
@@ -342,7 +284,7 @@ impl DocsDomainProvider {
             let Ok(text) = fs::read_to_string(&abs) else {
                 continue;
             };
-            let headings = extract_markdown_headings(&text, super::DOCS_INSTRUCTION_MAX_HEADINGS);
+            let headings = extract_markdown_headings(&text, DOCS_INSTRUCTION_MAX_HEADINGS);
             let mut item = json!({ "path": rel });
             if !headings.is_empty() {
                 item["headings"] = json!(headings);
@@ -350,7 +292,7 @@ impl DocsDomainProvider {
             items.push(item);
         }
 
-        let directive = super::DOCS_INSTRUCTIONS_DIRECTIVE;
+        let directive = DOCS_INSTRUCTIONS_DIRECTIVE;
         let directive_bytes = ",\"directive\":".len() + estimate_json_bytes(&directive);
         let item_budget = req.max_bytes.saturating_sub(directive_bytes);
         let mut budgeted = budget_items("instructions", items, item_budget);
@@ -371,8 +313,7 @@ impl DocsDomainProvider {
     fn provide_invariants(&self, req: &DomainContextReq) -> Result<Value> {
         let mut items: Vec<Value> = Vec::new();
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-        let worktree_adapter =
-            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let worktree_adapter = resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
         let mut enforced_ids: BTreeSet<String> = BTreeSet::new();
 
         if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
@@ -382,162 +323,36 @@ impl DocsDomainProvider {
             )
             .unwrap_or_default();
             if !req.admitted_scope.is_empty() {
-                if let Ok(scoped) =
-                    reader::governing_invariants_for_scope(&conn, &req.admitted_scope)
-                {
-                    for bucket in ["direct", "omitted_sources"] {
-                        if let Some(arr) = scoped.get(bucket).and_then(Value::as_array) {
-                            for entry in arr {
-                                let id = entry["id"].as_str().unwrap_or_default().to_owned();
-                                let path = entry["source"]["path"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_owned();
-                                if id.is_empty()
-                                    || path.is_empty()
-                                    || is_contract_path_or_doc(&conn, &path, &worktree_adapter)
-                                {
-                                    continue;
-                                }
-                                let raw_rule = strip_invariant_prefix(
-                                    entry["rule"].as_str().unwrap_or_default(),
-                                    &id,
-                                );
-                                let rule = super::truncate_single_line(
-                                    raw_rule,
-                                    super::DOCS_INVARIANT_MAX_RULE_CHARS,
-                                );
-                                if seen.insert((path.clone(), id.clone())) {
-                                    let enforced = enforced_ids.contains(&id);
-                                    items.push(build_invariant_item(
-                                        id,
-                                        path,
-                                        Some(entry["source"]["line"].clone()),
-                                        rule,
-                                        Some(true),
-                                        enforced,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+                collect_scoped_db_invariants(
+                    &conn,
+                    &req.admitted_scope,
+                    &worktree_adapter,
+                    &enforced_ids,
+                    &mut seen,
+                    &mut items,
+                );
             }
-
             if req.admitted_scope.is_empty() || items.is_empty() {
-                let mut stmt = conn.prepare(
-                    "SELECT path, section_title, invariants
-                     FROM doc_sections
-                     WHERE is_invariant = 1 AND doc_type != 'contract'
-                     ORDER BY CASE WHEN path LIKE 'docs/adr/%' OR path LIKE 'docs/architecture/%' THEN 0 ELSE 1 END,
-                              path,
-                              section_title
-                     LIMIT 64",
+                collect_fallback_db_invariants(
+                    &conn,
+                    &worktree_adapter,
+                    &enforced_ids,
+                    &mut seen,
+                    &mut items,
                 )?;
-                let rows = stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?;
-                for row in rows.flatten() {
-                    if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
-                        break;
-                    }
-                    let (path, section_title, inv_raw) = row;
-                    if path.contains("/archive/") || is_contract_spec_path(&path, &worktree_adapter) {
-                        continue;
-                    }
-                    let parsed_entries = parse_doc_section_invariants(
-                        inv_raw.as_deref(),
-                        &section_title,
-                        super::DOCS_INVARIANT_MAX_RULE_CHARS,
-                    );
-                    for (id, rule) in parsed_entries {
-                        if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
-                            break;
-                        }
-                        if seen.insert((path.clone(), id.clone())) {
-                            let enforced = enforced_ids.contains(&id);
-                            items.push(build_invariant_item(
-                                id,
-                                path.clone(),
-                                None,
-                                rule,
-                                Some(false),
-                                enforced,
-                            ));
-                        }
-                    }
-                }
             }
         } else {
-            for spec in &worktree_adapter.architecture.rules {
-                if let Some(inv) = spec
-                    .invariant
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| spec.id.starts_with("INV-").then_some(spec.id.as_str()))
-                {
-                    enforced_ids.insert(inv.to_owned());
-                }
-            }
+            collect_configured_enforced_ids(&worktree_adapter, &mut enforced_ids);
         }
 
         if items.is_empty() {
-            let docs_dir = req.worktree.join("docs");
-            if docs_dir.is_dir() {
-                'walk: for entry in WalkDir::new(&docs_dir)
-                    .max_depth(4)
-                    .into_iter()
-                    .filter_map(Result::ok)
-                {
-                    if !entry.file_type().is_file() {
-                        continue;
-                    }
-                    let path = entry.path();
-                    if !is_doc_path(&path.to_string_lossy()) {
-                        continue;
-                    }
-                    let rel = path
-                        .strip_prefix(&req.worktree)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    if rel.contains("/archive/") || is_contract_spec_path(&rel, &worktree_adapter) {
-                        continue;
-                    }
-                    let Ok(text) = fs::read_to_string(path) else {
-                        continue;
-                    };
-                    if frontmatter_field(&text, "doc_type").as_deref() == Some("contract") {
-                        continue;
-                    }
-                    for (idx, line) in text.lines().enumerate() {
-                        if let Some(inv_id) = extract_invariant_id(line) {
-                            if seen.insert((rel.clone(), inv_id.clone())) {
-                                let enforced = enforced_ids.contains(&inv_id);
-                                items.push(build_invariant_item(
-                                    inv_id,
-                                    rel.clone(),
-                                    Some(json!(idx + 1)),
-                                    super::truncate_single_line(
-                                        line.trim(),
-                                        super::DOCS_INVARIANT_MAX_RULE_CHARS,
-                                    ),
-                                    None,
-                                    enforced,
-                                ));
-                                if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
-                                    break 'walk;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            collect_filesystem_invariants(
+                &req.worktree,
+                &worktree_adapter,
+                &enforced_ids,
+                &mut seen,
+                &mut items,
+            );
         }
 
         Ok(budget_items("invariants", items, req.max_bytes))
@@ -548,8 +363,7 @@ impl DocsDomainProvider {
         use acdd_state::store::traits::StateReader;
         use acdd_state::usecases::lifecycle::next_spec_id_for_prefix;
 
-        let worktree_adapter =
-            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let worktree_adapter = resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
         let state_db_path =
             acdd_state::usecases::deps::try_resolve_effective_state_db(&req.worktree, None)
                 .ok()
@@ -656,7 +470,7 @@ impl DomainProvider for DocsDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        super::unsupported_domain_action(SubsystemId::Docs.as_str(), action)
+        unsupported_domain_action(SubsystemId::Docs.as_str(), action)
     }
 
     fn run_check(
@@ -689,7 +503,7 @@ impl DomainProvider for DocsDomainProvider {
             }
             "specs" => {
                 let worktree_adapter =
-                    super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+                    resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
                 let digest = compute_specs_digest(&req.worktree, &worktree_adapter);
                 Ok(FreshnessObservation::Passed {
                     index_generation: None,
@@ -711,6 +525,161 @@ impl DomainProvider for DocsDomainProvider {
                 format!("unknown docs context lens 'docs.{lens}'"),
             )
             .into()),
+        }
+    }
+}
+
+fn collect_scoped_db_invariants(
+    conn: &Connection,
+    admitted_scope: &[String],
+    worktree_adapter: &Adapter,
+    enforced_ids: &BTreeSet<String>,
+    seen: &mut BTreeSet<(String, String)>,
+    items: &mut Vec<Value>,
+) {
+    let Ok(scoped) = reader::governing_invariants_for_scope(conn, admitted_scope) else {
+        return;
+    };
+    for bucket in ["direct", "omitted_sources"] {
+        let Some(arr) = scoped.get(bucket).and_then(Value::as_array) else {
+            continue;
+        };
+        for entry in arr {
+            let id = entry["id"].as_str().unwrap_or_default().to_owned();
+            let path = entry["source"]["path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if id.is_empty()
+                || path.is_empty()
+                || is_contract_path_or_doc(conn, &path, worktree_adapter)
+            {
+                continue;
+            }
+            let raw_rule = strip_invariant_prefix(entry["rule"].as_str().unwrap_or_default(), &id);
+            let rule = truncate_single_line(raw_rule, DOCS_INVARIANT_MAX_RULE_CHARS);
+            if seen.insert((path.clone(), id.clone())) {
+                let enforced = enforced_ids.contains(&id);
+                items.push(build_invariant_item(
+                    id,
+                    path,
+                    Some(entry["source"]["line"].clone()),
+                    rule,
+                    Some(true),
+                    enforced,
+                ));
+            }
+        }
+    }
+}
+
+fn collect_fallback_db_invariants(
+    conn: &Connection,
+    worktree_adapter: &Adapter,
+    enforced_ids: &BTreeSet<String>,
+    seen: &mut BTreeSet<(String, String)>,
+    items: &mut Vec<Value>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT path, section_title, invariants
+         FROM doc_sections
+         WHERE is_invariant = 1 AND doc_type != 'contract'
+         ORDER BY CASE WHEN path LIKE 'docs/adr/%' OR path LIKE 'docs/architecture/%' THEN 0 ELSE 1 END,
+                  path,
+                  section_title
+         LIMIT 64",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows.flatten() {
+        if items.len() >= DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+            break;
+        }
+        let (path, section_title, inv_raw) = row;
+        if path.contains("/archive/") || is_contract_spec_path(&path, worktree_adapter) {
+            continue;
+        }
+        let parsed_entries = parse_doc_section_invariants(
+            inv_raw.as_deref(),
+            &section_title,
+            DOCS_INVARIANT_MAX_RULE_CHARS,
+        );
+        for (id, rule) in parsed_entries {
+            if items.len() >= DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+                break;
+            }
+            if seen.insert((path.clone(), id.clone())) {
+                let enforced = enforced_ids.contains(&id);
+                items.push(build_invariant_item(
+                    id,
+                    path.clone(),
+                    None,
+                    rule,
+                    Some(false),
+                    enforced,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_configured_enforced_ids(worktree_adapter: &Adapter, enforced_ids: &mut BTreeSet<String>) {
+    for spec in &worktree_adapter.architecture.rules {
+        if let Some(inv) = spec
+            .invariant
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| spec.id.starts_with("INV-").then_some(spec.id.as_str()))
+        {
+            enforced_ids.insert(inv.to_owned());
+        }
+    }
+}
+
+fn collect_filesystem_invariants(
+    worktree: &Path,
+    worktree_adapter: &Adapter,
+    enforced_ids: &BTreeSet<String>,
+    seen: &mut BTreeSet<(String, String)>,
+    items: &mut Vec<Value>,
+) {
+    let docs_dir = worktree.join("docs");
+    for (path, rel) in collect_walk_rel_doc_paths(&docs_dir, worktree, 4, false) {
+        if rel.contains("/archive/") || is_contract_spec_path(&rel, worktree_adapter) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if frontmatter_field(&text, "doc_type").as_deref() == Some("contract") {
+            continue;
+        }
+        for (idx, line) in text.lines().enumerate() {
+            let Some(inv_id) = extract_invariant_id(line) else {
+                continue;
+            };
+            if !seen.insert((rel.clone(), inv_id.clone())) {
+                continue;
+            }
+            let enforced = enforced_ids.contains(&inv_id);
+            items.push(build_invariant_item(
+                inv_id,
+                rel.clone(),
+                Some(json!(idx + 1)),
+                truncate_single_line(line.trim(), DOCS_INVARIANT_MAX_RULE_CHARS),
+                None,
+                enforced,
+            ));
+            if items.len() >= DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+                return;
+            }
         }
     }
 }
@@ -899,6 +868,157 @@ fn first_markdown_heading(markdown: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn filter_adr_records_by_scope(
+    conn: &Connection,
+    req: &DomainContextReq,
+    items: &mut Vec<(String, String, String)>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT p_src.path, p_dst.path
+         FROM edges e
+         JOIN nodes n_src ON n_src.node_hash = e.src_hash
+         JOIN path_dictionary p_src ON p_src.path_id = n_src.path_id
+         JOIN nodes n_dst ON n_dst.node_hash = e.dst_hash
+         JOIN path_dictionary p_dst ON p_dst.path_id = n_dst.path_id
+         WHERE e.kind IN ('documents','references_doc','cites_doc','governed_by','governs')
+           AND (p_src.path LIKE 'docs/adr/%' OR p_dst.path LIKE 'docs/adr/%')",
+    )?;
+    let mut workspace_has_adr_links = false;
+    let mut relevant_adrs = BTreeSet::new();
+    let link_rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for (src_path, dst_path) in link_rows.flatten() {
+        let (adr_path, code_path) = if src_path.starts_with("docs/adr/") {
+            (src_path, dst_path)
+        } else {
+            (dst_path, src_path)
+        };
+        if !code_path.starts_with("docs/") {
+            workspace_has_adr_links = true;
+            if req.path_policy.is_scope_admitted(&code_path, &req.admitted_scope) {
+                relevant_adrs.insert(adr_path);
+            }
+        }
+    }
+    if let Some(target_text) = req.target.as_deref() {
+        for (adr_path, title, _) in items.iter() {
+            let stem = Path::new(adr_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let num_prefix = stem.split('-').next().unwrap_or_default();
+            if (!stem.is_empty() && target_text.contains(stem))
+                || (num_prefix.len() >= 4
+                    && num_prefix.bytes().all(|b| b.is_ascii_digit())
+                    && target_text.contains(num_prefix))
+                || target_text.contains(title.as_str())
+            {
+                relevant_adrs.insert(adr_path.clone());
+            }
+        }
+    }
+    if workspace_has_adr_links {
+        items.retain(|(path, _, _)| relevant_adrs.contains(path));
+    }
+    Ok(())
+}
+
+fn collect_pattern_agent_dirs(
+    worktree: &Path,
+    pattern: &str,
+    found: &mut BTreeMap<String, bool>,
+    walk_roots: &mut BTreeSet<PathBuf>,
+) {
+    for variant in expand_glob_braces(pattern) {
+        let trimmed = variant.trim().trim_start_matches("./");
+        if trimmed.is_empty() {
+            continue;
+        }
+        let replaced = trimmed.replace('\\', "/");
+        let mut literal_segs: Vec<&str> = Vec::new();
+        let mut has_wildcard = false;
+        for seg in replaced.split('/') {
+            if seg.is_empty() || seg == "." {
+                continue;
+            }
+            if seg == ".." {
+                literal_segs.clear();
+                has_wildcard = false;
+                break;
+            }
+            if seg.contains('*') || seg.contains('?') || seg.contains('[') {
+                has_wildcard = true;
+                break;
+            }
+            literal_segs.push(seg);
+        }
+        let mut prefix = String::new();
+        for seg in &literal_segs {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(seg);
+            let cand = format!("{prefix}/AGENTS.md");
+            if checked_child(worktree, Path::new(&cand)).is_ok_and(|p| p.is_file()) {
+                found.insert(cand, true);
+            }
+        }
+        if has_wildcard && prefix.is_empty() {
+            walk_roots.insert(worktree.to_path_buf());
+        } else if !prefix.is_empty() {
+            if let Ok(abs) = checked_child(worktree, Path::new(&prefix)) {
+                if abs.is_dir() {
+                    walk_roots.insert(abs);
+                }
+            }
+        }
+    }
+}
+
+fn walk_agents_md_root(
+    worktree: &Path,
+    root_dir: &Path,
+    admitted_scope: &[String],
+    policy: &WorkspacePathPolicy,
+    found: &mut BTreeMap<String, bool>,
+) {
+    for entry in WalkDir::new(root_dir)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !e.file_type().is_dir()
+                || !matches!(
+                    e.file_name().to_str(),
+                    Some(".git" | ".worktrees" | "target" | "node_modules" | ".venv" | ".acdd")
+                )
+        })
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() || entry.file_name() != "AGENTS.md" {
+            continue;
+        }
+        let Ok(rel_raw) = entry.path().strip_prefix(worktree) else {
+            continue;
+        };
+        let Some(rel) = normalize_rel_path(&rel_raw.to_string_lossy()) else {
+            continue;
+        };
+        if rel == "AGENTS.md" {
+            continue;
+        }
+        let Some(dir_rel) = rel.rsplit_once('/').map(|(d, _)| d.to_owned()) else {
+            continue;
+        };
+        if (scopes_overlap(admitted_scope, &[dir_rel])
+            || policy.is_scope_admitted(&rel, admitted_scope))
+            && checked_child(worktree, Path::new(&rel)).is_ok_and(|p| p.is_file())
+        {
+            found.entry(rel).or_insert(false);
+        }
+    }
+}
+
 fn collect_scoped_agents_md(
     worktree: &Path,
     admitted_scope: &[String],
@@ -911,98 +1031,54 @@ fn collect_scoped_agents_md(
 
     let mut walk_roots: BTreeSet<PathBuf> = BTreeSet::new();
     for pattern in admitted_scope {
-        for variant in expand_glob_braces(pattern) {
-            let trimmed = variant.trim().trim_start_matches("./");
-            if trimmed.is_empty() {
-                continue;
-            }
-            let replaced = trimmed.replace('\\', "/");
-            let mut literal_segs: Vec<&str> = Vec::new();
-            let mut has_wildcard = false;
-            for seg in replaced.split('/') {
-                if seg.is_empty() || seg == "." {
-                    continue;
-                }
-                if seg == ".." {
-                    literal_segs.clear();
-                    has_wildcard = false;
-                    break;
-                }
-                if seg.contains('*') || seg.contains('?') || seg.contains('[') {
-                    has_wildcard = true;
-                    break;
-                }
-                literal_segs.push(seg);
-            }
-
-            let mut prefix = String::new();
-            for seg in &literal_segs {
-                if !prefix.is_empty() {
-                    prefix.push('/');
-                }
-                prefix.push_str(seg);
-                let cand = format!("{prefix}/AGENTS.md");
-                if checked_child(worktree, Path::new(&cand)).is_ok_and(|p| p.is_file()) {
-                    found.insert(cand, true);
-                }
-            }
-
-            if has_wildcard {
-                if prefix.is_empty() {
-                    walk_roots.insert(worktree.to_path_buf());
-                } else if let Ok(abs) = checked_child(worktree, Path::new(&prefix)) {
-                    if abs.is_dir() {
-                        walk_roots.insert(abs);
-                    }
-                }
-            } else if !prefix.is_empty() {
-                if let Ok(abs) = checked_child(worktree, Path::new(&prefix)) {
-                    if abs.is_dir() {
-                        walk_roots.insert(abs);
-                    }
-                }
-            }
-        }
+        collect_pattern_agent_dirs(worktree, pattern, &mut found, &mut walk_roots);
     }
-
     for root_dir in walk_roots {
-        for entry in WalkDir::new(&root_dir)
-            .into_iter()
-            .filter_entry(|e| {
-                e.depth() == 0
-                    || !e.file_type().is_dir()
-                    || !matches!(
-                        e.file_name().to_str(),
-                        Some(".git" | ".worktrees" | "target" | "node_modules" | ".venv" | ".acdd")
-                    )
-            })
-            .filter_map(Result::ok)
-        {
-            if !entry.file_type().is_file() || entry.file_name() != "AGENTS.md" {
-                continue;
-            }
-            let Ok(rel_raw) = entry.path().strip_prefix(worktree) else {
-                continue;
-            };
-            let Some(rel) = normalize_rel_path(&rel_raw.to_string_lossy()) else {
-                continue;
-            };
-            if rel == "AGENTS.md" {
-                continue;
-            }
-            let Some(dir_rel) = rel.rsplit_once('/').map(|(d, _)| d.to_owned()) else {
-                continue;
-            };
-            if (scopes_overlap(admitted_scope, &[dir_rel])
-                || policy.is_scope_admitted(&rel, admitted_scope))
-                && checked_child(worktree, Path::new(&rel)).is_ok_and(|p| p.is_file())
-            {
-                found.entry(rel).or_insert(false);
-            }
-        }
+        walk_agents_md_root(worktree, &root_dir, admitted_scope, policy, &mut found);
     }
 
     found
+}
+
+fn collect_walk_rel_doc_paths(
+    dir: &Path,
+    worktree: &Path,
+    max_depth: usize,
+    skip_archive_dir: bool,
+) -> Vec<(PathBuf, String)> {
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for entry in WalkDir::new(dir)
+        .max_depth(max_depth)
+        .into_iter()
+        .filter_entry(|entry| {
+            !skip_archive_dir
+                || entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || entry.file_name().to_str() != Some("archive")
+        })
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !is_doc_path(&path.to_string_lossy()) {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(worktree)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if skip_archive_dir && (rel.starts_with("archive/") || rel.contains("/archive/")) {
+            continue;
+        }
+        out.push((path.to_path_buf(), rel));
+    }
+    out
 }
 
 fn extract_markdown_headings(markdown: &str, max_headings: usize) -> Vec<String> {
@@ -1086,7 +1162,7 @@ fn parse_doc_section_invariants(
                 let after_id = &cursor[idx + id.len()..];
                 let next_inv = after_id.find("INV-").unwrap_or(after_id.len());
                 let raw_rule = strip_invariant_prefix(&after_id[..next_inv], &id);
-                let rule = super::truncate_single_line(raw_rule, max_rule_chars);
+                let rule = truncate_single_line(raw_rule, max_rule_chars);
                 out.push((id, rule));
                 found_id = true;
                 cursor = &after_id[next_inv..];
@@ -1104,7 +1180,7 @@ fn parse_doc_section_invariants(
             } else {
                 section_title.trim().to_owned()
             };
-            out.push((id, super::truncate_single_line(clean, max_rule_chars)));
+            out.push((id, truncate_single_line(clean, max_rule_chars)));
         }
     }
     out
@@ -1240,7 +1316,7 @@ mod tests {
             worktree: root.to_path_buf(),
             admitted_scope: vec!["docs/**".into()],
             target: None,
-            max_bytes: crate::state_bridge::TEST_DEFAULT_CONTEXT_MAX_BYTES,
+            max_bytes: crate::state_bridge::common::TEST_DEFAULT_CONTEXT_MAX_BYTES,
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
         };
@@ -1305,7 +1381,7 @@ mod tests {
             .provide_context(
                 "instructions",
                 &DomainContextReq {
-                    max_bytes: crate::state_bridge::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES,
+                    max_bytes: crate::state_bridge::common::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES,
                     ..tests_ctx
                 },
             )
@@ -1313,7 +1389,7 @@ mod tests {
         assert_eq!(tight_inst["truncated"], true);
         assert!(
             acdd_core::format::estimate_json_bytes(&tight_inst)
-                <= crate::state_bridge::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES
+                <= crate::state_bridge::common::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES
         );
 
         let adrs = provider.provide_context("adrs", &ctx_req).unwrap();

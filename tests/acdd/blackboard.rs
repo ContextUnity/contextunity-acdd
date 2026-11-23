@@ -6,7 +6,7 @@ use acdd_state::types::{BlackboardTopic, SubmitAction};
 use acdd_state::usecases::dto::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, StartReq, SubmitReq,
 };
-use acdd_state::usecases::{execute_on, queries, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput};
+use acdd_state::usecases::{queries, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput};
 
 #[test]
 fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
@@ -27,9 +27,8 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     let providers = TestProvider::full_composite();
     let harness = RunHarness::in_memory().unwrap();
 
-    let StateCommandOutput::Start(started) = execute_on(
+    let StateCommandOutput::Start(started) = harness.execute(
         &cfg,
-        &harness,
         &providers,
         StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/001-linear.md".to_owned()),
@@ -55,9 +54,8 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     .into_iter()
     .enumerate()
     {
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &providers,
             StateCommand::BlackboardPost(BlackboardPostReq {
                 run: Some(rid.clone()),
@@ -125,9 +123,8 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     // Completing task `first` closes temporary `notes`/`draft` on task and promotes `deferred` to run level.
     let worker = acdd_core::ids::WorkerId::new("w1").unwrap();
     for gate in ["first.work", "first.finish"] {
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &providers,
             StateCommand::Claim(ClaimReq {
                 run: Some(rid.clone()),
@@ -140,9 +137,8 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
             }),
         )
         .unwrap();
-        execute_on(
+        harness.execute(
             &cfg,
-            &harness,
             &providers,
             StateCommand::Submit(Box::new(SubmitReq {
                 run: Some(rid.clone()),

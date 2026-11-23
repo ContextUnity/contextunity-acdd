@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedManifest, RustManifestInfo};
 
 /// Parser for `Cargo.toml` manifests.
-pub struct CargoParser;
+pub(crate) struct CargoParser;
 
 /// Shared `Cargo.toml` manifest parser instance.
-pub static CARGO_PARSER: CargoParser = CargoParser;
+pub(crate) static CARGO_PARSER: CargoParser = CargoParser;
 
 impl ManifestParser for CargoParser {
     fn ecosystem(&self) -> Ecosystem {

@@ -386,7 +386,7 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
     let mut scope_prof: ResolvedGateProfile = serde_json::from_str(&loc_start.run.profile_json).unwrap();
     scope_prof.commands.insert(
         "scoped".to_owned(),
-        CommandDef::Detailed(Box::new(crate::profile::DetailedCommandDef {
+        CommandDef::Detailed(Box::new(crate::profile::schema::DetailedCommandDef {
             command: "cargo check {scope_target}".to_owned(),
             description: None,
             timeout_seconds: None,

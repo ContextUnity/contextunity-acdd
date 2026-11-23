@@ -1,8 +1,13 @@
 use super::context::PhaseContext;
 use super::inferred::{RefQuery, ReferenceState};
 use super::relation_edges;
-use super::*;
-use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind};
+use crate::linker::{html, javascript, python::receivers, python, rust, types::ReceiverType, typescript};
+use std::borrow::Cow;
+use crate::models::{
+    compact_graph::CompactGraph as Graph,
+    tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind},
+    Node, Reference,
+};
 
 pub(super) fn finalize_and_emit<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -31,7 +36,7 @@ fn filter_candidates<'a, 'file, 'res>(
 {
     if state.imported.is_none()
         && state.typed_receiver.is_none()
-        && !matches!(state.receiver_member, Some(receivers::Member::Local(_)))
+        && !matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Local(_)))
     {
         candidates.retain(|n| {
             n.path == *ctx.path
@@ -180,7 +185,7 @@ fn disambiguate_candidates<'a, 'file, 'res>(
         candidates.retain(|n| ctx.input.semantic_context.is_rust_inherent_member(n));
     }
     #[cfg(feature = "lang-rust")]
-    super::super::rust::resolution::macro_analysis_gap(
+    rust::resolution::macro_analysis_gap(
         ctx.profile,
         r,
         candidates,
@@ -189,6 +194,150 @@ fn disambiguate_candidates<'a, 'file, 'res>(
     );
     #[cfg(not(feature = "lang-rust"))]
     let _ = (ctx, graph, r);
+}
+
+struct BuiltinResolutionFlags<'a> {
+    is_builtin: bool,
+    rust_stdlib_builtin: bool,
+    python_stdlib_builtin: bool,
+    html_template_builtin: bool,
+    html_builtin_origin: &'a str,
+    component_builtin_origin: Option<&'a str>,
+    js_builtin_origin: Option<&'a str>,
+    rust_external_import: bool,
+    base_status: &'static str,
+    source_present: bool,
+    source_heuristic: bool,
+}
+
+fn determine_external_origin_and_evidence<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    q: &RefQuery<'a, '_>,
+    state: &ReferenceState<'res>,
+    candidates: &[&'res Node],
+    flags: &BuiltinResolutionFlags<'_>,
+) -> (&'static str, Cow<'static, str>) {
+    let r = q.r;
+    let base_status = flags.base_status;
+    let source_present = flags.source_present;
+    let source_heuristic = flags.source_heuristic;
+    let external_origin = if let Some(receivers::PythonReceiverMember::External(
+        module,
+        import_line,
+        _,
+        _,
+    )) = state.receiver_member
+    {
+        Some((module, import_line))
+    } else if let Some(ReceiverType::External(module, import_line)) = state.typed_receiver {
+        (import_line <= r.line).then_some((module, import_line))
+    } else if flags.rust_stdlib_builtin {
+        Some(("Rust standard library", 0))
+    } else if flags.python_stdlib_builtin {
+        Some(("Python standard library", 0))
+    } else if flags.html_template_builtin {
+        Some((flags.html_builtin_origin, 0))
+    } else if let Some(origin) = flags.component_builtin_origin {
+        Some((origin, 0))
+    } else if let Some(origin) = flags.js_builtin_origin {
+        Some((origin, 0))
+    } else if base_status == CoverageStatus::Unresolved.as_str()
+        && !state.shadowed
+        && candidates.is_empty()
+        && (state.imported.is_some_and(|targets| targets.is_empty())
+            || flags.rust_external_import
+            || ctx.external_call_for(q.first, q.owner, r.position()).is_some())
+    {
+        if let Some(target) = ctx
+            .external_call_for(q.first, q.owner, r.position())
+            .filter(|(_, import_line)| *import_line <= r.line)
+        {
+            Some((target.0.as_str(), target.1))
+        } else if flags.rust_external_import {
+            Some((q.first, 0))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let framework_provider = match state.receiver_member {
+        Some(receivers::PythonReceiverMember::External(_, _, provider, _)) => provider,
+        _ => None,
+    };
+    let status = if external_origin.is_some() {
+        CoverageStatus::External.as_str()
+    } else {
+        base_status
+    };
+    let stub_target = match candidates {
+        [candidate] if ctx.language_linker.is_declaration_only(&candidate.path) => {
+            Some(candidate.path.as_str())
+        }
+        _ => None,
+    };
+    let evidence: Cow<'static, str> = if let Some(stub_path) = stub_target {
+        format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed").into()
+    } else if flags.rust_stdlib_builtin {
+        format!("Rust standard library prelude: {}", q.expression).into()
+    } else if flags.python_stdlib_builtin {
+        format!("Python standard library built-in: {}", q.expression).into()
+    } else if flags.html_template_builtin {
+        format!("{} {}", flags.html_builtin_origin, q.expression).into()
+    } else if let Some(origin) = flags.component_builtin_origin {
+        format!("{origin} built-in: {}", q.expression).into()
+    } else if let Some(origin) = flags.js_builtin_origin {
+        format!("{origin} built-in: {}", q.expression).into()
+    } else if let Some((module, import_line)) = external_origin {
+        if let Some(provider) = framework_provider {
+            let diagnostic_marker = if ctx.profile.is_some_and(|profile| {
+                profile.id() == LanguageId::Python.as_str() && !profile.is_stdlib(module)
+            }) {
+                "; diagnostic_reason=framework_magic"
+            } else {
+                ""
+            };
+            format!("finite Python framework member {provider}.{} via external import {module} at line {import_line}{diagnostic_marker}", q.tail).into()
+        } else if ctx.profile.is_some_and(|profile| {
+            matches!(
+                profile.id(),
+                p if p == LanguageId::Javascript.as_str() || p == LanguageId::Typescript.as_str()
+            ) && profile.is_stdlib(module)
+        }) {
+            format!("builtin:node import {module}: {}", q.expression).into()
+        } else {
+            match (
+                r.kind == EdgeKind::Calls.as_str(),
+                ctx.profile
+                    .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
+                    && import_line > 0,
+            ) {
+                (true, true) => format!("call through external import {module} at line {import_line}; callable target unverified").into(),
+                (true, false) => format!("call through external import {module}; callable target unverified").into(),
+                (false, true) => format!("reference through external import {module} at line {import_line}; target unverified").into(),
+                (false, false) => format!("reference through external import {module}; target unverified").into(),
+            }
+        }
+    } else if let Some(ReceiverType::Local(receiver)) = state.typed_receiver {
+        format!(
+            "parameter receiver type {}; {} statically inferred candidates",
+            receiver.qualname,
+            candidates.len()
+        )
+        .into()
+    } else if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous)) {
+        "parameter receiver type has ambiguous declarations".into()
+    } else if flags.is_builtin {
+        format!("standard library or built-in callee: {}", q.expression).into()
+    } else {
+        format!(
+            "{} lexically justified candidates; implementor resolved={}, heuristic={source_heuristic}",
+            candidates.len(),
+            source_present
+        )
+        .into()
+    };
+    (status, evidence)
 }
 
 fn emit_resolution_outcome<'a, 'file, 'res>(
@@ -282,9 +431,8 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
                     .to_owned()
             })
         });
-    let component_builtin_origin = component_builtin_origin.as_deref();
-    let status = if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous))
-        || matches!(state.receiver_member, Some(receivers::Member::Ambiguous))
+    let base_status = if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous))
+        || matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Ambiguous))
     {
         CoverageStatus::Ambiguous.as_str()
     } else if (candidates.len() == 1 || is_builtin) && source.is_some() && !source_heuristic {
@@ -295,7 +443,7 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         CoverageStatus::Ambiguous.as_str()
     };
     #[cfg(feature = "lang-rust")]
-    let rust_external_import = super::super::rust::semantic_context::external_annotation_type(
+    let rust_external_import = rust::semantic_context::external_annotation_type(
         ctx.profile,
         q.first,
         q.first,
@@ -305,124 +453,31 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
     .is_some();
     #[cfg(not(feature = "lang-rust"))]
     let rust_external_import = false;
-    let external_origin =
-        if let Some(receivers::Member::External(module, import_line, _, _)) = state.receiver_member
-        {
-            Some((module, import_line))
-        } else if let Some(ReceiverType::External(module, import_line)) = state.typed_receiver {
-            (import_line <= r.line).then_some((module, import_line))
-        } else if rust_stdlib_builtin {
-            Some(("Rust standard library", 0))
-        } else if python_stdlib_builtin {
-            Some(("Python standard library", 0))
-        } else if html_template_builtin {
-            Some((html_builtin_origin, 0))
-        } else if let Some(origin) = component_builtin_origin {
-            Some((origin, 0))
-        } else if let Some(origin) = js_builtin_origin {
-            Some((origin, 0))
-        } else if status == CoverageStatus::Unresolved.as_str()
-            && !state.shadowed
-            && candidates.is_empty()
-            && (state.imported.is_some_and(|targets| targets.is_empty())
-                || rust_external_import
-                || ctx.external_call_for(q.first, q.owner, r.position()).is_some())
-        {
-            if let Some(target) = ctx
-                .external_call_for(q.first, q.owner, r.position())
-                .filter(|(_, import_line)| *import_line <= r.line)
-            {
-                Some((target.0.as_str(), target.1))
-            } else if rust_external_import {
-                Some((q.first, 0))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-    let framework_provider = match state.receiver_member {
-        Some(receivers::Member::External(_, _, provider, _)) => provider,
-        _ => None,
-    };
-    let status = if external_origin.is_some() {
-        CoverageStatus::External.as_str()
-    } else {
-        status
-    };
-    let stub_target = match candidates {
-        [candidate] if ctx.language_linker.is_declaration_only(&candidate.path) => {
-            Some(candidate.path.as_str())
-        }
-        _ => None,
-    };
-    let evidence: Cow<'static, str> = if let Some(stub_path) = stub_target {
-        format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed").into()
-    } else if rust_stdlib_builtin {
-        format!("Rust standard library prelude: {}", q.expression).into()
-    } else if python_stdlib_builtin {
-        format!("Python standard library built-in: {}", q.expression).into()
-    } else if html_template_builtin {
-        format!("{html_builtin_origin} {}", q.expression).into()
-    } else if let Some(origin) = component_builtin_origin {
-        format!("{origin} built-in: {}", q.expression).into()
-    } else if let Some(origin) = js_builtin_origin {
-        format!("{origin} built-in: {}", q.expression).into()
-    } else if let Some((module, import_line)) = external_origin {
-        if let Some(provider) = framework_provider {
-            let diagnostic_marker = if ctx.profile.is_some_and(|profile| {
-                profile.id() == LanguageId::Python.as_str() && !profile.is_stdlib(module)
-            }) {
-                "; diagnostic_reason=framework_magic"
-            } else {
-                ""
-            };
-            format!("finite Python framework member {provider}.{} via external import {module} at line {import_line}{diagnostic_marker}", q.tail).into()
-        } else if ctx.profile.is_some_and(|profile| {
-            matches!(
-                profile.id(),
-                p if p == LanguageId::Javascript.as_str() || p == LanguageId::Typescript.as_str()
-            ) && profile.is_stdlib(module)
-        }) {
-            format!("builtin:node import {module}: {}", q.expression).into()
-        } else {
-            match (
-                r.kind == EdgeKind::Calls.as_str(),
-                ctx.profile
-                    .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
-                    && import_line > 0,
-            ) {
-                (true, true) => format!("call through external import {module} at line {import_line}; callable target unverified").into(),
-                (true, false) => format!("call through external import {module}; callable target unverified").into(),
-                (false, true) => format!("reference through external import {module} at line {import_line}; target unverified").into(),
-                (false, false) => format!("reference through external import {module}; target unverified").into(),
-            }
-        }
-    } else if let Some(ReceiverType::Local(receiver)) = state.typed_receiver {
-        format!(
-            "parameter receiver type {}; {} statically inferred candidates",
-            receiver.qualname,
-            candidates.len()
-        )
-        .into()
-    } else if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous)) {
-        "parameter receiver type has ambiguous declarations".into()
-    } else if is_builtin {
-        format!("standard library or built-in callee: {}", q.expression).into()
-    } else {
-        format!(
-            "{} lexically justified candidates; implementor resolved={}, heuristic={source_heuristic}",
-            candidates.len(),
-            source.is_some()
-        )
-        .into()
-    };
+    let (status, evidence) = determine_external_origin_and_evidence(
+        ctx,
+        q,
+        state,
+        candidates,
+        &BuiltinResolutionFlags {
+            is_builtin,
+            rust_stdlib_builtin,
+            python_stdlib_builtin,
+            html_template_builtin,
+            html_builtin_origin,
+            component_builtin_origin: component_builtin_origin.as_deref(),
+            js_builtin_origin,
+            rust_external_import,
+            base_status,
+            source_present: source.is_some(),
+            source_heuristic,
+        },
+    );
     graph.reference_coverage(ctx.path, r, status, evidence);
     if let (Some(source), [candidate]) = (source, candidates) {
         let exact_same_class_member_reference = r.kind == EdgeKind::References.as_str()
             && matches!(
                 &state.receiver_member,
-                Some(receivers::Member::Local(member))
+                Some(receivers::PythonReceiverMember::Local(member))
                     if matches!(
                         member.kind.as_str(),
                         k if k == NodeKind::Field.as_str() || k == NodeKind::Class.as_str()

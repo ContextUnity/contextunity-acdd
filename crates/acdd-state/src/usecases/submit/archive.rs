@@ -20,7 +20,7 @@ use crate::usecases::lifecycle::{
     build_tombstone_cleanup_manifest_from_snapshot, compute_archive_relpath, read_confined_utf8,
     resume_pending_tombstone_cleanups_dyn,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;

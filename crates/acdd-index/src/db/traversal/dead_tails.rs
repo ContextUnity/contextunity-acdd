@@ -1,4 +1,4 @@
-use super::{normalize_scope, page_bounds};
+use super::types::{normalize_scope, page_bounds};
 use crate::db::{
     lint::{collect_dead_tails, DeadTailsNode},
     paging,

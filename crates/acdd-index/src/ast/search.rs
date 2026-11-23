@@ -1,4 +1,4 @@
-use super::text;
+use super::syntax::text;
 use crate::languages::{self, AstSearchCapabilities, LanguageProfile};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -321,34 +321,6 @@ impl SearchPage {
     }
 }
 
-/// Performs search page.
-pub fn search_page(
-    source: &str,
-    path: &str,
-    language: &str,
-    pattern: &str,
-    offset: usize,
-    limit: usize,
-    deadline: std::time::Instant,
-) -> Result<SearchPage> {
-    anyhow::ensure!(
-        limit > 0
-            && offset
-                .checked_add(limit)
-                .is_some_and(|end| end <= SEARCH_MATCH_HORIZON),
-        "AST search offset + limit must be 1..=10000; narrow path or pattern"
-    );
-    search_range(
-        source,
-        path,
-        language,
-        pattern,
-        offset,
-        limit,
-        SearchBudget::bounded(deadline),
-    )
-}
-
 fn normalize_search_pattern(pattern: &str) -> NormalizedPattern {
     let mut normalized = NormalizedPattern {
         source: String::new(),
@@ -531,23 +503,17 @@ fn strip_trailing_wildcard_body(pattern: &str) -> Option<&str> {
     Some(prefix.trim_end())
 }
 
-fn parse_declaration_completion(
+fn complete_declaration_candidate(
     parser: &mut Parser,
     profile: &dyn LanguageProfile,
-    normalized: &NormalizedPattern,
+    normalized_source: &str,
+    suffixes: &[&str],
+    track_prefix_end: bool,
     budget: &mut SearchBudget,
 ) -> Result<Option<PreparedPattern>> {
     let capabilities = profile.ast_search_capabilities();
-    if capabilities.declaration_kinds.is_empty() {
-        return Ok(None);
-    }
-    for suffix in capabilities
-        .declaration_completions
-        .iter()
-        .copied()
-        .chain(std::iter::once(";"))
-    {
-        let candidate_source = format!("{}{suffix}", normalized.source);
+    for suffix in suffixes {
+        let candidate_source = format!("{normalized_source}{suffix}");
         let Some(candidate_tree) = parse_pattern_candidate(parser, &candidate_source, budget)?
         else {
             return Ok(None);
@@ -560,10 +526,13 @@ fn parse_declaration_completion(
         };
         if capabilities.declaration_kinds.contains(&node.kind()) {
             // Parameters supplied only by completion must not constrain the signature.
-            let declaration_prefix_end = node
-                .child_by_field_name("parameters")
-                .filter(|parameters| parameters.start_byte() >= normalized.source.len())
-                .map(|_| normalized.source.len());
+            let declaration_prefix_end = track_prefix_end
+                .then(|| {
+                    node.child_by_field_name("parameters")
+                        .filter(|parameters| parameters.start_byte() >= normalized_source.len())
+                        .map(|_| normalized_source.len())
+                })
+                .flatten();
             return Ok(Some(PreparedPattern {
                 source: candidate_source,
                 tree: candidate_tree,
@@ -574,6 +543,21 @@ fn parse_declaration_completion(
         }
     }
     Ok(None)
+}
+
+fn parse_declaration_completion(
+    parser: &mut Parser,
+    profile: &dyn LanguageProfile,
+    normalized: &NormalizedPattern,
+    budget: &mut SearchBudget,
+) -> Result<Option<PreparedPattern>> {
+    let capabilities = profile.ast_search_capabilities();
+    if capabilities.declaration_kinds.is_empty() {
+        return Ok(None);
+    }
+    let mut suffixes = capabilities.declaration_completions.to_vec();
+    suffixes.push(";");
+    complete_declaration_candidate(parser, profile, &normalized.source, &suffixes, true, budget)
 }
 
 fn prepare_search_pattern(
@@ -598,32 +582,15 @@ fn prepare_search_pattern(
             })
             .is_some()
         {
-            for suffix in capabilities.declaration_completions {
-                let candidate_source = format!("{}{suffix}", normalized.source);
-                let Some(candidate_tree) =
-                    parse_pattern_candidate(parser, &candidate_source, budget)?
-                else {
-                    return Ok(None);
-                };
-                if candidate_tree.root_node().has_error() {
-                    continue;
-                }
-                let Some(candidate_root) = unwrap_pattern_node(candidate_tree.root_node(), profile)
-                else {
-                    continue;
-                };
-                if capabilities
-                    .declaration_kinds
-                    .contains(&candidate_root.kind())
-                {
-                    return Ok(Some(PreparedPattern {
-                        source: candidate_source,
-                        tree: candidate_tree,
-                        mode: PatternMode::Declaration,
-                        fragment_range: None,
-                        declaration_prefix_end: None,
-                    }));
-                }
+            if let Some(completed) = complete_declaration_candidate(
+                parser,
+                profile,
+                &normalized.source,
+                capabilities.declaration_completions,
+                false,
+                budget,
+            )? {
+                return Ok(Some(completed));
             }
         }
         let mode = root.map_or(PatternMode::Complete, |node| {

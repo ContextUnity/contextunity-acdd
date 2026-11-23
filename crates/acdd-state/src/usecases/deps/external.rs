@@ -12,12 +12,12 @@ use super::syntax::{
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
-use crate::types::{NodeStatus, RunGraphSnapshot, TerminalStatus};
+use crate::types::{NodeStatus, RunGraphSnapshot, RunTombstoneRecord, TerminalStatus};
 use crate::usecases::lifecycle::{
     effective_spec_collections, list_all_runs, list_all_tombstones, primary_workspace_root,
     read_confined_utf8,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::canonical_root;
@@ -256,6 +256,122 @@ fn archived_task_outcome(
     }
 }
 
+fn resolve_active_run_dep(
+    reader: &dyn StateReader,
+    run_sel: &str,
+    task_sel: Option<&str>,
+    run_checkout: Option<&Path>,
+    preloaded: Option<&PreloadedDepContext<'_>>,
+) -> Result<Option<DepTargetResolution>, StateError> {
+    let owned_runs;
+    let runs = if let Some(ctx) = preloaded {
+        ctx.runs
+    } else {
+        owned_runs = list_all_runs(reader, None)?;
+        &owned_runs
+    };
+    let Some(run) = runs.iter().find(|r| {
+        run_checkout.is_none_or(|checkout| run_in_checkout(r, checkout))
+            && run_matches_selector(r, run_sel)
+    }) else {
+        return Ok(None);
+    };
+    let (task_exists, task_completed) = match task_sel {
+        Some(t_ref) => {
+            if let Some(ctx) = preloaded {
+                ctx.task_statuses
+                    .get(&(run.run_id.clone(), format!("task:{t_ref}")))
+                    .map_or((false, false), |completed| (true, *completed))
+            } else {
+                match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
+                    Some(node) => (true, node.status == NodeStatus::Completed),
+                    None => (false, false),
+                }
+            }
+        }
+        None => (true, false),
+    };
+    Ok(Some(DepTargetResolution::ActiveRun {
+        run_id: run.run_id.clone(),
+        spec_id: run.spec_id.clone(),
+        task_exists,
+        task_completed,
+    }))
+}
+
+fn resolve_tombstone_dep(
+    ws_path: &Path,
+    reader: &dyn StateReader,
+    run_sel: &str,
+    task_sel: Option<&str>,
+    dep_label: &str,
+    preloaded: Option<&PreloadedDepContext<'_>>,
+) -> Result<Option<DepTargetResolution>, StateError> {
+    let owned_tombs;
+    let tombs = if let Some(ctx) = preloaded {
+        ctx.tombstones
+    } else {
+        owned_tombs = list_all_tombstones(reader)?;
+        &owned_tombs
+    };
+    let Some(latest) = find_latest_matching_tombstone(tombs, run_sel) else {
+        return Ok(None);
+    };
+    let cleared = latest.terminal_status != TerminalStatus::Completed
+        || tombstone_superseded_by_cleared(tombs, latest);
+    let task_outcome = if cleared {
+        Ok(())
+    } else if let Some(t_ref) = task_sel {
+        if let Some(ref arch_rel) = latest.archive_path {
+            resolve_archived_tombstone_task(ws_path, latest, arch_rel, t_ref, dep_label, preloaded)
+        } else if latest.is_ephemeral && t_ref == "goal" {
+            Ok(())
+        } else {
+            Err(StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!("dependency '{dep_label}' has no archive to verify task '{t_ref}'"),
+            ))
+        }
+    } else {
+        Ok(())
+    };
+    Ok(Some(DepTargetResolution::Tombstone {
+        cleared,
+        task_outcome,
+    }))
+}
+
+fn resolve_archived_tombstone_task(
+    ws_path: &Path,
+    latest: &RunTombstoneRecord,
+    arch_rel: &str,
+    t_ref: &str,
+    dep_label: &str,
+    preloaded: Option<&PreloadedDepContext<'_>>,
+) -> Result<(), StateError> {
+    if let Some(ctx) = preloaded {
+        let checkout_doc = latest.closed_commit.is_none().then(|| {
+            ctx.archived_specs
+                .values()
+                .find(|(rel, _)| rel == arch_rel)
+                .map(|(_, doc)| doc)
+        }).flatten();
+        if let Some(doc) = checkout_doc {
+            return archived_task_outcome(doc, arch_rel, t_ref, dep_label);
+        }
+        let preloaded_entry = (ws_path == ctx.workspace || latest.closed_commit.is_some())
+            .then(|| ctx.tombstone_archives.get(&latest.run_id))
+            .flatten();
+        if let Some(entry) = preloaded_entry {
+            return match entry {
+                Ok(doc) => archived_task_outcome(doc, arch_rel, t_ref, dep_label),
+                Err(err) => Err(err.to_state_error(dep_label)),
+            };
+        }
+    }
+    verify_archived_task_completed(ws_path, arch_rel, latest.closed_commit.as_ref(), t_ref, dep_label)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_dep_target(
     ws_path: &Path,
@@ -269,39 +385,10 @@ pub(crate) fn resolve_dep_target(
     preloaded: Option<&PreloadedDepContext<'_>>,
 ) -> Result<DepTargetResolution, StateError> {
     if let Some(reader) = reader_opt {
-        let owned_runs;
-        let runs = if let Some(ctx) = preloaded {
-            ctx.runs
-        } else {
-            owned_runs = list_all_runs(reader, None)?;
-            &owned_runs
-        };
-        let run = runs.iter().find(|r| {
-            run_checkout.is_none_or(|checkout| run_in_checkout(r, checkout))
-                && run_matches_selector(r, run_sel)
-        });
-        if let Some(run) = run {
-            let (task_exists, task_completed) = match task_sel {
-                Some(t_ref) => {
-                    if let Some(ctx) = preloaded {
-                        ctx.task_statuses
-                            .get(&(run.run_id.clone(), format!("task:{t_ref}")))
-                            .map_or((false, false), |completed| (true, *completed))
-                    } else {
-                        match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
-                            Some(node) => (true, node.status == NodeStatus::Completed),
-                            None => (false, false),
-                        }
-                    }
-                }
-                None => (true, false),
-            };
-            return Ok(DepTargetResolution::ActiveRun {
-                run_id: run.run_id.clone(),
-                spec_id: run.spec_id.clone(),
-                task_exists,
-                task_completed,
-            });
+        if let Some(res) =
+            resolve_active_run_dep(reader, run_sel, task_sel, run_checkout, preloaded)?
+        {
+            return Ok(res);
         }
     }
 
@@ -321,73 +408,10 @@ pub(crate) fn resolve_dep_target(
     }
 
     if let Some(reader) = reader_opt {
-        let owned_tombs;
-        let tombs = if let Some(ctx) = preloaded {
-            ctx.tombstones
-        } else {
-            owned_tombs = list_all_tombstones(reader)?;
-            &owned_tombs
-        };
-        if let Some(latest) = find_latest_matching_tombstone(tombs, run_sel) {
-            let cleared = latest.terminal_status != TerminalStatus::Completed
-                || tombstone_superseded_by_cleared(tombs, latest);
-            let task_outcome = if cleared {
-                Ok(())
-            } else if let Some(t_ref) = task_sel {
-                if let Some(ref arch_rel) = latest.archive_path {
-                    if let Some(ctx) = preloaded {
-                        let checkout_doc = latest.closed_commit.is_none().then(|| {
-                            ctx.archived_specs
-                                .values()
-                                .find(|(rel, _)| rel == arch_rel)
-                                .map(|(_, doc)| doc)
-                        }).flatten();
-                        let preloaded_entry = (ws_path == ctx.workspace
-                            || latest.closed_commit.is_some())
-                            .then(|| ctx.tombstone_archives.get(&latest.run_id))
-                            .flatten();
-                        if let Some(doc) = checkout_doc {
-                            archived_task_outcome(doc, arch_rel, t_ref, dep_label)
-                        } else if let Some(entry) = preloaded_entry {
-                            match entry {
-                                Ok(doc) => archived_task_outcome(doc, arch_rel, t_ref, dep_label),
-                                Err(err) => Err(err.to_state_error(dep_label)),
-                            }
-                        } else {
-                            verify_archived_task_completed(
-                                ws_path,
-                                arch_rel,
-                                latest.closed_commit.as_ref(),
-                                t_ref,
-                                dep_label,
-                            )
-                        }
-                    } else {
-                        verify_archived_task_completed(
-                            ws_path,
-                            arch_rel,
-                            latest.closed_commit.as_ref(),
-                            t_ref,
-                            dep_label,
-                        )
-                    }
-                } else if latest.is_ephemeral && t_ref == "goal" {
-                    Ok(())
-                } else {
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!(
-                            "dependency '{dep_label}' has no archive to verify task '{t_ref}'"
-                        ),
-                    ))
-                }
-            } else {
-                Ok(())
-            };
-            return Ok(DepTargetResolution::Tombstone {
-                cleared,
-                task_outcome,
-            });
+        if let Some(res) =
+            resolve_tombstone_dep(ws_path, reader, run_sel, task_sel, dep_label, preloaded)?
+        {
+            return Ok(res);
         }
     }
 

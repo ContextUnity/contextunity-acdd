@@ -1,8 +1,18 @@
-use super::*;
+use super::context::FileContext;
+use super::profile::LanguageProfile;
+use super::support;
+use super::support as syntax;
+use super::types::{
+    module_stem, relative_namespace, CallForm, DeclarationRole, ImportPath, LanguageFamily,
+    SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::ast::syntax::{text, ScopeBindings};
+use crate::models::{Facts, Node};
+use tree_sitter::Node as Syntax;
 /// Language profile for php source files.
-pub struct Php;
+struct Php;
 /// Shared php language profile.
-pub static PHP: Php = Php;
+static PHP: Php = Php;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -179,7 +189,7 @@ impl LanguageProfile for Php {
             ..Default::default()
         }
     }
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
         syntax::bindings(
             self,
             node,
@@ -192,7 +202,6 @@ impl LanguageProfile for Php {
             &["assignment_expression"],
         )
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(
             ctx.node.kind(),
@@ -309,4 +318,4 @@ impl LanguageProfile for Php {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&PHP];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&PHP];

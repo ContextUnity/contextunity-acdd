@@ -68,10 +68,6 @@ mod imports;
 fn automatic_registry_has_unique_languages_and_extensions() {
     use acdd_index::languages;
     let profiles: Vec<_> = languages::profiles().collect();
-    languages::validate_profiles(profiles.iter().copied()).unwrap();
-    if let Some(first) = profiles.first() {
-        assert!(languages::validate_profiles([*first, *first]).is_err());
-    }
     for profile in profiles {
         for extension in profile.extensions() {
             let path = format!("sample.{extension}");

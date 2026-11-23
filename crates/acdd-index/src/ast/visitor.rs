@@ -1,686 +1,94 @@
-use super::*;
+use super::scope_analysis::ScopeAnalysis;
+use super::syntax::{
+    binding_scope, binding_scope_kind, qualified, text, walk_in_order, BindingCollector,
+    ScopeBindings,
+};
+use crate::languages::{
+    context::{FileContext, LanguageContext, RuleIRHandle},
+    profile::LanguageProfile,
+    routes,
+    types::{CompiledSyntaxGrammar, CompiledSyntaxKind, SyntaxContext},
+};
+use crate::models::{
+    details::NodeDetailKey,
+    *,
+};
+use crate::typed_facts::FlowStore;
+use serde::Deserialize;
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use tree_sitter::Node as Syntax;
 
-/// Incremental language body analysis driven exclusively by shared traversal events.
-pub struct ScopeAnalysis<'source, 'tree> {
-    state: Option<LanguageAnalysis<'source, 'tree>>,
-    marker: std::marker::PhantomData<(&'source str, Syntax<'tree>)>,
-}
-enum LanguageAnalysis<'source, 'tree> {
-    #[cfg(feature = "lang-python")]
-    Python(Box<languages::python::value_flow::Collector<'source, 'tree>>),
-    #[cfg(feature = "lang-rust")]
-    Rust(Box<languages::rust::value_flow::RustValueFlowCollector<'source, 'tree>>),
-    #[cfg(feature = "lang-typescript")]
-    TypeScript(Box<languages::typescript::value_flow::Collector<'source, 'tree>>),
-    Generic(Box<languages::support::value_flow_core::GenericScopeAnalysis<'source, 'tree>>),
-    #[cfg(all(test, feature = "lang-python"))]
-    Traced(Box<TracedAnalysis<'source, 'tree>>),
-    // Lifetime ownership remains explicit in document-only feature builds.
-    Marker(std::marker::PhantomData<(&'source str, Syntax<'tree>)>),
-}
-#[cfg(all(test, feature = "lang-python"))]
-struct TracedAnalysis<'source, 'tree> {
-    inner: ScopeAnalysis<'source, 'tree>,
-    trace: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    name: String,
-}
-impl Default for ScopeAnalysis<'_, '_> {
-    fn default() -> Self {
-        Self {
-            state: Some(LanguageAnalysis::Marker(std::marker::PhantomData)),
-            marker: std::marker::PhantomData,
-        }
-    }
-}
-impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
-    #[cfg(feature = "lang-python")]
-    pub(crate) fn python(root: Syntax<'tree>, source: &'source str) -> Self {
-        Self {
-            state: Some(LanguageAnalysis::Python(Box::new(
-                languages::python::value_flow::Collector::new(
-                    root,
-                    source,
-                    root.kind() == "module",
-                ),
-            ))),
-            marker: std::marker::PhantomData,
-        }
-    }
-    #[cfg(feature = "lang-rust")]
-    pub(crate) fn rust(root: Syntax<'tree>, source: &'source str) -> Self {
-        Self {
-            state: Some(LanguageAnalysis::Rust(Box::new(
-                languages::rust::value_flow::RustValueFlowCollector::new(root, source),
-            ))),
-            marker: std::marker::PhantomData,
-        }
-    }
-    #[cfg(feature = "lang-typescript")]
-    pub(crate) fn typescript(root: Syntax<'tree>, source: &'source str) -> Self {
-        Self {
-            state: Some(LanguageAnalysis::TypeScript(Box::new(
-                languages::typescript::value_flow::Collector::new(root, source),
-            ))),
-            marker: std::marker::PhantomData,
-        }
-    }
-    pub(crate) fn generic(
-        root: Syntax<'tree>,
-        source: &'source str,
-        compiled: std::sync::Arc<languages::CompiledSyntaxGrammar>,
-    ) -> Self {
-        Self {
-            state: Some(LanguageAnalysis::Generic(Box::new(
-                languages::support::value_flow_core::GenericScopeAnalysis::new(
-                    root, source, compiled,
-                ),
-            ))),
-            marker: std::marker::PhantomData,
-        }
-    }
-    fn enter(&mut self, node: Syntax<'tree>) {
-        match self.state.as_mut() {
-            #[cfg(feature = "lang-python")]
-            Some(LanguageAnalysis::Python(state)) => state.enter(node),
-            #[cfg(feature = "lang-rust")]
-            Some(LanguageAnalysis::Rust(state)) => state.enter(node),
-            #[cfg(feature = "lang-typescript")]
-            Some(LanguageAnalysis::TypeScript(state)) => state.enter(node),
-            Some(LanguageAnalysis::Generic(state)) => state.enter(node),
-            #[cfg(all(test, feature = "lang-python"))]
-            Some(LanguageAnalysis::Traced(state)) => state.inner.enter(node),
-            _ => {}
-        }
-    }
-    fn observe_module_event(&mut self, node: Syntax<'tree>, entering: bool) {
-        match self.state.as_mut() {
-            #[cfg(feature = "lang-python")]
-            Some(LanguageAnalysis::Python(state)) => state.observe_module_event(node, entering),
-            #[cfg(all(test, feature = "lang-python"))]
-            Some(LanguageAnalysis::Traced(state)) => {
-                state.inner.observe_module_event(node, entering)
-            }
-            _ => {}
-        }
-    }
-    fn module_exports(
-        &self,
-        bindings: &ScopeBindings,
-    ) -> Option<(Vec<crate::semantic::ExportBinding>, serde_json::Value)> {
-        match self.state.as_ref() {
-            #[cfg(feature = "lang-python")]
-            Some(LanguageAnalysis::Python(state)) => state
-                .module_exports(bindings)
-                .map(|(exports, lazy)| (exports, json!(lazy))),
-            #[cfg(all(test, feature = "lang-python"))]
-            Some(LanguageAnalysis::Traced(state)) => state.inner.module_exports(bindings),
-            _ => None,
-        }
-    }
-    fn exit(&mut self, node: Syntax<'tree>) {
-        match self.state.as_mut() {
-            #[cfg(feature = "lang-python")]
-            Some(LanguageAnalysis::Python(state)) => state.exit(node),
-            #[cfg(feature = "lang-rust")]
-            Some(LanguageAnalysis::Rust(state)) => state.exit(node),
-            #[cfg(feature = "lang-typescript")]
-            Some(LanguageAnalysis::TypeScript(state)) => state.exit(node),
-            Some(LanguageAnalysis::Generic(state)) => state.exit(node),
-            #[cfg(all(test, feature = "lang-python"))]
-            Some(LanguageAnalysis::Traced(state)) => state.inner.exit(node),
-            _ => {
-                let _ = node;
-            }
-        }
-    }
-    fn enter_suspended(&mut self, node: Syntax<'tree>) {
-        match self.state.as_mut() {
-            #[cfg(feature = "lang-rust")]
-            Some(LanguageAnalysis::Rust(state)) => state.enter(node),
-            #[cfg(feature = "lang-typescript")]
-            Some(LanguageAnalysis::TypeScript(state)) => state.enter_suspended(node),
-            _ => {
-                let _ = node;
-            }
-        }
-    }
-    fn exit_suspended(&mut self, node: Syntax<'tree>) {
-        match self.state.as_mut() {
-            #[cfg(feature = "lang-rust")]
-            Some(LanguageAnalysis::Rust(state)) => state.exit(node),
-            _ => {
-                let _ = node;
-            }
-        }
-    }
-    fn finish(
-        self,
-        collect_module_aliases: bool,
-    ) -> (crate::semantic::ValueFlowFacts, Option<HashSet<String>>) {
-        match self.state {
-            #[cfg(feature = "lang-python")]
-            Some(LanguageAnalysis::Python(state)) => {
-                let aliases = collect_module_aliases.then(|| state.module_aliases());
-                ((*state).finish(), aliases)
-            }
-            #[cfg(feature = "lang-rust")]
-            Some(LanguageAnalysis::Rust(state)) => ((*state).finish(), None),
-            #[cfg(feature = "lang-typescript")]
-            Some(LanguageAnalysis::TypeScript(state)) => ((*state).finish(), None),
-            Some(LanguageAnalysis::Generic(state)) => ((*state).finish(), None),
-            #[cfg(all(test, feature = "lang-python"))]
-            Some(LanguageAnalysis::Traced(state)) => {
-                let result = state.inner.finish(collect_module_aliases);
-                state
-                    .trace
-                    .lock()
-                    .unwrap()
-                    .push(format!("flow:{}", state.name));
-                result
-            }
-            _ => (Default::default(), None),
-        }
-    }
+#[cfg(feature = "lang-typescript")]
+fn commonjs_default_callable(node: Syntax<'_>, source: &str) -> bool {
+    crate::languages::typescript::commonjs_default_callable(node, source)
 }
 
-/// Delivers balanced enter/exit events in source order for standalone profile hooks.
-pub(crate) fn walk<'tree>(root: Syntax<'tree>, visitor: &mut impl FnMut(Syntax<'tree>, bool)) {
-    walk_in_order(root, false, visitor);
+#[cfg(not(feature = "lang-typescript"))]
+fn commonjs_default_callable(_node: Syntax<'_>, _source: &str) -> bool {
+    false
 }
 
-#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
-pub(crate) trait SyntaxCollector<'tree> {
-    type Output;
-    fn enter(&mut self, node: Syntax<'tree>);
-    fn exit(&mut self, node: Syntax<'tree>);
-    fn finish(self) -> Self::Output;
-}
-
-#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
-pub(crate) fn collect<'tree, C: SyntaxCollector<'tree>>(
-    root: Syntax<'tree>,
-    mut collector: C,
-) -> C::Output {
-    walk(root, &mut |node, entering| {
-        if entering {
-            collector.enter(node);
-        } else {
-            collector.exit(node);
-        }
+fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
+    let mut c = node.walk();
+    let body_node = node.child_by_field_name("body").or_else(|| {
+        node.named_children(&mut c)
+            .find(|ch| matches!(ch.kind(), "message_body" | "enum_body"))
     });
-    collector.finish()
+    let end = body_node.map_or(node.end_byte(), |b| b.start_byte());
+    source[node.start_byte()..end]
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .chars()
+        .take(512)
+        .collect()
 }
 
-#[cfg(feature = "lang-vue")]
-pub(crate) fn walk_reversed<'tree>(
-    root: Syntax<'tree>,
-    visitor: &mut impl FnMut(Syntax<'tree>, bool),
-) {
-    walk_in_order(root, true, visitor);
-}
-
-fn walk_in_order<'tree>(
-    root: Syntax<'tree>,
-    reversed: bool,
-    visitor: &mut impl FnMut(Syntax<'tree>, bool),
-) {
-    fn first_named_child(cursor: &mut tree_sitter::TreeCursor<'_>, reversed: bool) -> bool {
-        if !cursor.goto_first_child() {
-            return false;
-        }
-        if reversed {
-            while cursor.goto_next_sibling() {}
-            loop {
-                if cursor.node().is_named() {
-                    return true;
-                }
-                if !cursor.goto_previous_sibling() {
-                    cursor.goto_parent();
-                    return false;
-                }
-            }
-        }
-        loop {
-            if cursor.node().is_named() {
-                return true;
-            }
-            if !cursor.goto_next_sibling() {
-                cursor.goto_parent();
-                return false;
-            }
-        }
+fn declaration_signature_is_informative(node: Syntax<'_>, source: &str) -> bool {
+    if node.named_children(&mut node.walk()).any(|child| {
+        child.kind() == "visibility_modifier" && text(child, source).starts_with("pub(")
+    }) {
+        return true;
     }
-
-    fn next_named_sibling(cursor: &mut tree_sitter::TreeCursor<'_>, reversed: bool) -> bool {
-        let mut moved = if reversed {
-            cursor.goto_previous_sibling()
-        } else {
-            cursor.goto_next_sibling()
-        };
-        while moved && !cursor.node().is_named() {
-            moved = if reversed {
-                cursor.goto_previous_sibling()
-            } else {
-                cursor.goto_next_sibling()
-            };
-        }
-        moved
-    }
-
-    let mut cursor = root.walk();
-    visitor(root, true);
-    if !first_named_child(&mut cursor, reversed) {
-        visitor(root, false);
-        return;
-    }
-
-    loop {
-        let node = cursor.node();
-        visitor(node, true);
-        if first_named_child(&mut cursor, reversed) {
-            continue;
-        }
-
-        visitor(node, false);
-        loop {
-            if next_named_sibling(&mut cursor, reversed) {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return;
-            }
-            let parent = cursor.node();
-            visitor(parent, false);
-            if parent.id() == root.id() {
-                return;
-            }
-        }
-    }
-}
-
-#[cfg(feature = "lang-python")]
-pub(crate) fn python_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
-    let mut bindings = BindingCollector::new(node, source);
-    let mut aliases = languages::python::value_flow::AliasWrites::new();
-    walk(node, &mut |node, entering| {
-        if entering {
-            bindings.enter(node);
-            aliases.enter(node, source);
-        } else {
-            bindings.exit();
-            aliases.exit();
-        }
-    });
-    let aliases = aliases.aliases();
-    let mut bindings = bindings.finish();
-    if node.kind() == "module" {
-        bindings.rebindings.retain(|name| !aliases.contains(name));
-    }
-    bindings
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct BitStack {
-    words: [u64; 4],
-    depth: u16,
-}
-
-impl BitStack {
-    #[inline(always)]
-    pub(crate) fn new() -> Self {
-        Self {
-            words: [0; 4],
-            depth: 0,
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn push(&mut self, bit: bool) {
-        let d = self.depth as usize;
-        if d < 256 {
-            let idx = d / 64;
-            let offset = d % 64;
-            if bit {
-                self.words[idx] |= 1 << offset;
-            } else {
-                self.words[idx] &= !(1 << offset);
-            }
-        }
-        self.depth += 1;
-    }
-
-    #[inline(always)]
-    pub(crate) fn pop(&mut self) {
-        if self.depth > 0 {
-            self.depth -= 1;
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn last(&self) -> Option<bool> {
-        if self.depth == 0 {
-            None
-        } else {
-            let d = (self.depth - 1) as usize;
-            if d < 256 {
-                let idx = d / 64;
-                let offset = d % 64;
-                Some((self.words[idx] & (1 << offset)) != 0)
-            } else {
-                Some(false)
-            }
-        }
-    }
-}
-
-pub(super) struct BindingCollector<'source, 'tree> {
-    source: &'source str,
-    body: Option<Syntax<'tree>>,
-    states: BitStack,
-    params: HashSet<&'source str>,
-    names: HashSet<&'source str>,
-}
-fn binding_names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a str>) {
-    match node.kind() {
-        #[cfg(feature = "lang-rust")]
-        "tuple_struct_pattern" | "struct_pattern" | "ref_pattern" | "captured_pattern" => {
-            languages::rust::patterns::bindings(node, |binding| {
-                out.insert(text(binding, source));
-            });
-        }
-        "identifier" | "shorthand_property_identifier_pattern" | "simple_identifier" | "variable_name" => {
-            out.insert(text(node, source));
-        }
-        "default_parameter"
-        | "typed_default_parameter"
-        | "required_parameter"
-        | "optional_parameter"
-        | "parameter"
-        | "formal_parameter"
-        | "spread_parameter"
-        | "catch_formal_parameter"
-        | "class_parameter"
-        | "simple_parameter"
-        | "variadic_parameter"
-        | "property_promotion_parameter"
-        | "keyword_parameter"
-        | "splat_parameter"
-        | "hash_splat_parameter"
-        | "block_parameter"
-        | "parameter_declaration"
-        | "optional_parameter_declaration"
-        | "variadic_parameter_declaration" => {
-            let mut found = false;
-            for field in ["name", "pattern", "declarator"] {
-                let mut c = node.walk();
-                for child in node.children_by_field_name(field, &mut c) {
-                    found = true;
-                    binding_names(child, source, out);
-                }
-            }
-            if !found {
-                let mut c = node.walk();
-                for child in node.named_children(&mut c) {
-                    if matches!(
-                        child.kind(),
-                        "identifier" | "simple_identifier" | "variable_name"
-                    ) {
-                        out.insert(text(child, source));
-                        break;
-                    }
-                }
-            }
-        }
-        "pointer_declarator"
-        | "reference_declarator"
-        | "array_declarator"
-        | "function_declarator"
-        | "init_declarator" => {
-            if let Some(inner) = node.child_by_field_name("declarator") {
-                binding_names(inner, source, out);
-            }
-        }
-        "parenthesized_declarator" => {
-            if let Some(inner) = node.named_child(0) {
-                binding_names(inner, source, out);
-            }
-        }
-        "assignment_pattern" | "object_assignment_pattern" => {
-            if let Some(n) = node.child_by_field_name("left") {
-                binding_names(n, source, out);
-            }
-        }
-        "pair_pattern" => {
-            if let Some(n) = node.child_by_field_name("value") {
-                binding_names(n, source, out);
-            }
-        }
-        "typed_parameter" => {
-            if let Some(n) = node.named_child(0) {
-                if Some(n) != node.child_by_field_name("type") {
-                    binding_names(n, source, out);
-                }
-            }
-        }
-        "parameters"
-        | "method_parameters"
-        | "block_parameters"
-        | "function_value_parameters"
-        | "lambda_parameters"
-        | "as_pattern_target"
-        | "formal_parameters"
-        | "parameter_list"
-        | "tuple_pattern"
-        | "list_pattern"
-        | "pattern_list"
-        | "expression_list"
-        | "array_pattern"
-        | "object_pattern"
-        | "rest_pattern"
-        | "list_splat_pattern"
-        | "dictionary_splat_pattern"
-        | "slice_pattern"
-        | "reference_pattern"
-        | "mut_pattern" => {
-            let mut c = node.walk();
-            for child in node.named_children(&mut c) {
-                binding_names(child, source, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-impl<'source, 'tree> BindingCollector<'source, 'tree> {
-    pub(super) fn new(node: Syntax<'tree>, source: &'source str) -> Self {
-        Self::new_with_kind(node, source, node.kind())
-    }
-    pub(super) fn new_with_kind(node: Syntax<'tree>, source: &'source str, kind: &str) -> Self {
-        let is_callable = callable_scope_kind(kind);
-        let is_module = matches!(
-            kind,
-            "module" | "program" | "source_file" | "class_definition" | "document" | "stylesheet"
-        );
-        if !is_callable && !is_module {
-            return Self {
-                source,
-                body: None,
-                states: BitStack::new(),
-                params: Default::default(),
-                names: Default::default(),
-            };
-        }
-        let mut param_names = HashSet::new();
-        if is_callable {
-            for field in ["parameters", "parameter"] {
-                if let Some(parameters) = node.child_by_field_name(field) {
-                    binding_names(parameters, source, &mut param_names);
-                }
-            }
-            if let Some(mut decl) = node.child_by_field_name("declarator") {
-                loop {
-                    if let Some(parameters) = decl.child_by_field_name("parameters") {
-                        binding_names(parameters, source, &mut param_names);
-                        break;
-                    }
-                    let Some(inner) = decl.child_by_field_name("declarator") else {
-                        break;
-                    };
-                    decl = inner;
-                }
-            }
-            if kind == "function_declaration" {
-                let mut c = node.walk();
-                for child in node
-                    .named_children(&mut c)
-                    .filter(|n| n.kind() == "function_value_parameters")
-                {
-                    binding_names(child, source, &mut param_names);
-                }
-            }
-        }
-        let body = node
-            .child_by_field_name("body")
-            .or_else(|| is_module.then_some(node));
-        Self {
-            source,
-            body,
-            states: BitStack::new(),
-            params: param_names,
-            names: Default::default(),
-        }
-    }
-    pub(super) fn enter(&mut self, n: Syntax<'tree>) {
-        self.enter_with_kind(n, n.kind());
-    }
-    pub(super) fn enter_with_kind(&mut self, n: Syntax<'tree>, kind: &str) {
-        let source = self.source;
-        let active = self.body == Some(n)
-            || (self.states.last().unwrap_or(false) && !binding_scope_kind(kind));
-        self.states.push(active);
-        if !active {
-            return;
-        }
-        let lhs = match kind {
-            "assignment"
-            | "augmented_assignment"
-            | "assignment_expression"
-            | "augmented_assignment_expression"
-            | "assignment_statement"
-            | "for_statement"
-            | "for_in_statement"
-            | "for_in_clause"
-            | "short_var_declaration" => n.child_by_field_name("left"),
-            "as_pattern" => n.child_by_field_name("alias"),
-            "variable_declarator" | "let_declaration" | "named_expression" | "init_declarator" => n
-                .child_by_field_name("name")
-                .or_else(|| n.child_by_field_name("pattern"))
-                .or_else(|| n.child_by_field_name("declarator"))
-                .or_else(|| {
-                    if kind != "variable_declarator" {
-                        return None;
-                    }
-                    let mut c = n.walk();
-                    let found = n.named_children(&mut c).find(|child| {
-                        matches!(
-                            child.kind(),
-                            "identifier" | "simple_identifier" | "variable_name"
-                        )
-                    });
-                    found
-                }),
-            "variable_declaration" => {
-                let mut c = n.walk();
-                let found = n
-                    .named_children(&mut c)
-                    .find(|child| matches!(child.kind(), "simple_identifier" | "identifier"));
-                found
-            }
-            _ => None,
-        };
-        if let Some(lhs) = lhs {
-            let callable = n
-                .child_by_field_name("value")
-                .or_else(|| n.child_by_field_name("right"))
-                .is_some_and(|n| {
-                    matches!(
-                        n.kind(),
-                        "arrow_function" | "function_expression" | "lambda"
-                    )
-                });
-            if !callable {
-                binding_names(lhs, source, &mut self.names);
-            }
-        }
-        if kind == "delete_statement" {
-            let mut c = n.walk();
-            for child in n.named_children(&mut c) {
-                binding_names(child, source, &mut self.names);
-            }
-        }
-    }
-    pub(super) fn exit(&mut self) {
-        self.states.pop();
-    }
-    pub(super) fn finish(self) -> ScopeBindings {
-        let rebindings: std::collections::BTreeSet<_> =
-            self.names.into_iter().map(str::to_owned).collect();
-        let all: std::collections::BTreeSet<_> = self
-            .params
+    let parameters = node
+        .child_by_field_name("parameters")
+        .or_else(|| node.child_by_field_name("formal_parameters"));
+    let has_parameters = parameters.is_none_or(|parameters| parameters.named_child_count() > 0);
+    if has_parameters
+        || ["return_type", "type", "type_parameters", "type_arguments"]
             .into_iter()
-            .map(str::to_owned)
-            .chain(rebindings.iter().cloned())
-            .collect();
-        ScopeBindings {
-            all: all.into_iter().collect(),
-            rebindings: rebindings.into_iter().collect(),
-        }
+            .any(|field| node.child_by_field_name(field).is_some())
+    {
+        return true;
     }
-}
-pub(super) fn binding_scope(n: Syntax<'_>) -> bool {
-    binding_scope_kind(n.kind())
-}
-fn callable_scope_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "function_definition"
-            | "lambda"
-            | "function_declaration"
-            | "function_item"
-            | "function_signature_item"
-            | "arrow_function"
-            | "function_expression"
-            | "method_definition"
-            | "method_declaration"
-            | "method"
-            | "singleton_method"
-            | "constructor_declaration"
-            | "local_function_statement"
-            | "closure_expression"
-            | "func_literal"
-    )
-}
-pub(super) fn binding_scope_kind(kind: &str) -> bool {
-    kind == "class_definition" || callable_scope_kind(kind)
-}
-pub(super) fn bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
-    let mut collector = BindingCollector::new(node, source);
-    walk(node, &mut |node, entering| {
-        if entering {
-            collector.enter(node);
-        } else {
-            collector.exit();
-        }
+    let Some(body) = node.child_by_field_name("body") else {
+        return true;
+    };
+    if !matches!(
+        body.kind(),
+        "block" | "statement_block" | "function_body" | "compound_statement"
+    ) {
+        return true;
+    }
+    let mut cursor = body.walk();
+    let informative = body.named_children(&mut cursor).any(|child| {
+        !child.kind().contains("comment")
+            && !matches!(child.kind(), "pass_statement" | "empty_statement")
     });
-    collector.finish()
+    informative
+}
+
+fn declaration_signature_if_informative(node: Syntax<'_>, source: &str) -> Option<String> {
+    declaration_signature_is_informative(node, source).then(|| declaration_signature(node, source))
 }
 
 pub(super) struct SinglePassExtractor<'a> {
     pub(super) source: &'a str,
     pub(super) path: &'a str,
     pub(super) profile: &'a dyn LanguageProfile,
-    pub(super) language_context: &'a languages::LanguageContext,
-    pub(super) rule_ir: languages::manifests::RuleIRHandle,
+    pub(super) language_context: &'a LanguageContext,
+    pub(super) rule_ir: RuleIRHandle,
     pub(super) route_context: routes::RouteContext,
     pub(super) file: FileContext,
     pub(super) module: &'a str,
@@ -696,11 +104,11 @@ struct VisitContext<'a> {
     profile: &'a dyn LanguageProfile,
     language: &'static str,
     route_extraction_enabled: bool,
-    language_context: &'a languages::LanguageContext,
-    rule_ir: &'a languages::manifests::RuleIRHandle,
+    language_context: &'a LanguageContext,
+    rule_ir: &'a RuleIRHandle,
     route_context: &'a routes::RouteContext,
     deferred_python: bool,
-    syntax: Option<std::sync::Arc<languages::CompiledSyntaxGrammar>>,
+    syntax: Option<std::sync::Arc<CompiledSyntaxGrammar>>,
     file: &'a FileContext,
     module: &'a str,
     offset: usize,
@@ -714,11 +122,11 @@ struct VisitState<'a, 'flow> {
     prepared_scope_bindings: HashMap<usize, ScopeBindings>,
     projections: HashMap<String, crate::semantic::ValueFlowFacts>,
 }
-struct ScopeTraversal<'scope, 'source, 'tree> {
-    frames: Vec<ScopeFrame<'source, 'tree>>,
+struct ScopeTraversal<'scope, 'a> {
+    frames: Vec<ScopeFrame<'a>>,
     scopes: &'scope mut Vec<String>,
     #[cfg(feature = "lang-python")]
-    deferred: Vec<PythonAction<'tree>>,
+    deferred: Vec<PythonAction<'a>>,
 }
 impl SinglePassExtractor<'_> {
     pub(super) fn visit(
@@ -735,8 +143,8 @@ impl SinglePassExtractor<'_> {
         #[cfg(feature = "lang-python")]
         let mut class_bindings = {
             let has_class = self.profile.id() == "python" && self.source.contains("class");
-            let registration = has_class && languages::python::has_class_registration_import();
-            let orm = has_class && self.language_context.semantic_rules.iter().any(|rule| rule.active && matches!(&rule.rule.operation, languages::manifests::SemanticOperation::ClassDefaultTable { language, .. } if language == "python"));
+            let registration = has_class && crate::languages::python::has_class_registration_import();
+            let orm = has_class && self.language_context.semantic_rules.iter().any(|rule| rule.active && matches!(&rule.rule.operation, crate::languages::manifests::SemanticOperation::ClassDefaultTable { language, .. } if language == "python"));
             if has_class
                 && node.kind() == "module"
                 && !node.has_error()
@@ -799,8 +207,8 @@ impl SinglePassExtractor<'_> {
             deferred: Vec::new(),
         };
         #[cfg(feature = "lang-python")]
-        let mut main_guards =
-            (context.language == "python").then(languages::python::MainGuardTracker::default);
+        let mut main_guards = (context.language == "python")
+            .then(crate::languages::python::lexical::MainGuardTracker::default);
         walk_in_order(node, false, &mut |node, entering| {
             #[cfg(feature = "lang-python")]
             if entering {
@@ -840,7 +248,7 @@ impl SinglePassExtractor<'_> {
                 scope_traversal.deferred,
                 &lexical,
             );
-            languages::python::finish_class_method_registrations(facts, &lexical);
+            crate::languages::python::finish_class_method_registrations(facts, &lexical);
         } else if let Some(builder) = class_bindings {
             let lexical = builder.finish();
             finish_python_actions(
@@ -850,9 +258,12 @@ impl SinglePassExtractor<'_> {
                 scope_traversal.deferred,
                 &lexical,
             );
-            languages::python::finish_class_method_registrations(facts, &lexical);
+            crate::languages::python::finish_class_method_registrations(facts, &lexical);
         } else if context.language == "python" {
-            languages::python::finish_class_method_registrations(facts, context.route_context);
+            crate::languages::python::finish_class_method_registrations(
+                facts,
+                context.route_context,
+            );
         }
         #[cfg(feature = "lang-python")]
         if let (Some(tracker), Some(bindings)) = (main_guards, state.root_summary.as_ref()) {
@@ -860,7 +271,7 @@ impl SinglePassExtractor<'_> {
         }
         #[cfg(feature = "lang-typescript")]
         if matches!(context.language, "typescript" | "javascript") {
-            languages::typescript::finalize_configured_projections(
+            crate::languages::typescript::finalize_configured_projections(
                 facts,
                 state.flows.as_deref_mut(),
                 context.file,
@@ -872,130 +283,254 @@ impl SinglePassExtractor<'_> {
         })
     }
 
-    fn visit_event<'source, 'tree>(
-        context: &VisitContext<'source>,
+    fn visit_exit_event<'a>(
+        context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'tree>,
-        traversal: &mut ScopeTraversal<'_, 'source, 'tree>,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
         owner: &str,
         facts: &mut Facts,
-        entering: bool,
     ) {
-        if !entering {
-            if context.language == "python"
-                && traversal
-                    .frames
-                    .first()
-                    .is_some_and(|root| root.suspended_at == Some(node.id()))
-                && module_export_exit_event(node)
-            {
-                if let Some(root) = traversal.frames.first_mut() {
-                    root.observe_module_event(node, false);
-                }
-            }
-            if route_candidate(context.route_extraction_enabled, context.language, node) {
-                let node_owner = traversal
-                    .frames
-                    .last()
-                    .map_or(owner, |frame| frame.owner.as_ref());
-                let ctx = SyntaxContext {
-                    node,
-                    source: context.source,
-                    owner: node_owner,
-                    offset: context.offset,
-                    file_state: &context.file.state,
-                };
-                #[cfg(feature = "lang-python")]
-                if context.deferred_python {
-                    if let Some(event) = languages::python::prepare_deferred_event(
-                        &ctx,
-                        facts,
-                        state.symbols,
-                        context.language_context,
-                        context.rule_ir,
-                    ) {
-                        traversal.deferred.push(PythonAction::Candidate(event));
-                    }
-                } else {
-                    #[cfg(feature = "lang-python")]
-                    if context.language == "python"
-                        && context.route_context.defer_python_orm()
-                        && node.kind() == "class_definition"
-                        && node.child_by_field_name("superclasses").is_some()
-                    {
-                        traversal.deferred.push(PythonAction::Orm {
-                            node,
-                            owner: std::sync::Arc::from(node_owner),
-                            frontiers: (
-                                facts.nodes.len(),
-                                facts.edges.len(),
-                                facts.references.len(),
-                            ),
-                        });
-                    }
-                    context.profile.extract_routes_with_typed_projections(
-                        &ctx,
-                        facts,
-                        state.symbols,
-                        context.language_context,
-                        context.rule_ir,
-                        context.route_context,
-                        &mut state.projections,
-                    );
-                }
-                #[cfg(not(feature = "lang-python"))]
-                context.profile.extract_routes_with_typed_projections(
-                    &ctx,
-                    facts,
-                    state.symbols,
-                    context.language_context,
-                    context.rule_ir,
-                    context.route_context,
-                    &mut state.projections,
-                );
-            }
-            if context.language == "python" {
-                let mut first_effective_frame = traversal.frames.len();
-                for (index, frame) in traversal.frames.iter().enumerate().rev() {
-                    if frame
-                        .suspended_at
-                        .is_some_and(|suspended_at| suspended_at != node.id())
-                    {
-                        break;
-                    }
-                    first_effective_frame = index;
-                }
-                for frame in traversal.frames.iter_mut().skip(first_effective_frame) {
-                    frame.exit(node);
-                }
-            } else {
-                for frame in traversal.frames.iter_mut() {
-                    frame.exit(node);
-                }
-            }
-            if let Some(frame) = traversal
+        if context.language == "python"
+            && traversal
                 .frames
-                .pop_if(|frame| frame.root.id() == node.id())
-            {
-                let named_scope = frame.name.is_some();
-                #[cfg(feature = "lang-python")]
-                if context.deferred_python {
-                    traversal.deferred.push(PythonAction::Publication(
-                        frame.prepare_publication(context, state),
-                    ));
-                } else {
-                    frame.publish(context, state, facts);
-                }
-                #[cfg(not(feature = "lang-python"))]
+                .first()
+                .is_some_and(|root| root.suspended_at == Some(node.id()))
+            && module_export_exit_event(node)
+        {
+            if let Some(root) = traversal.frames.first_mut() {
+                root.observe_module_event(node, false);
+            }
+        }
+        if route_candidate(context.route_extraction_enabled, context.language, node) {
+            Self::extract_exit_routes(context, state, node, traversal, owner, facts);
+        }
+        Self::exit_traversal_frames(context.language, node, traversal);
+        if let Some(frame) = traversal
+            .frames
+            .pop_if(|frame| frame.root.id() == node.id())
+        {
+            let named_scope = frame.name.is_some();
+            #[cfg(feature = "lang-python")]
+            if context.deferred_python {
+                traversal.deferred.push(PythonAction::Publication(
+                    frame.prepare_publication(context, state),
+                ));
+            } else {
                 frame.publish(context, state, facts);
-                if named_scope {
-                    traversal.scopes.pop();
-                }
-            } else if let Some(last) = traversal.frames.last_mut() {
-                last.exit_metrics(node);
+            }
+            #[cfg(not(feature = "lang-python"))]
+            frame.publish(context, state, facts);
+            if named_scope {
+                traversal.scopes.pop();
+            }
+        } else if let Some(last) = traversal.frames.last_mut() {
+            last.exit_metrics(node);
+        }
+    }
+
+    fn extract_exit_routes<'a>(
+        context: &VisitContext<'a>,
+        state: &mut VisitState<'_, '_>,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
+        owner: &str,
+        facts: &mut Facts,
+    ) {
+        let node_owner = traversal
+            .frames
+            .last()
+            .map_or(owner, |frame| frame.owner.as_ref());
+        let ctx = SyntaxContext {
+            node,
+            source: context.source,
+            owner: node_owner,
+            offset: context.offset,
+            file_state: &context.file.state,
+        };
+        #[cfg(feature = "lang-python")]
+        if context.deferred_python {
+            if let Some(event) = crate::languages::python::prepare_deferred_event(
+                &ctx,
+                facts,
+                state.symbols,
+                context.language_context,
+                context.rule_ir,
+            ) {
+                traversal.deferred.push(PythonAction::Candidate(event));
             }
             return;
         }
+        #[cfg(feature = "lang-python")]
+        if context.language == "python"
+            && context.route_context.defer_python_orm()
+            && node.kind() == "class_definition"
+            && node.child_by_field_name("superclasses").is_some()
+        {
+            traversal.deferred.push(PythonAction::Orm {
+                node,
+                owner: std::sync::Arc::from(node_owner),
+                frontiers: (
+                    facts.nodes.len(),
+                    facts.edges.len(),
+                    facts.references.len(),
+                ),
+            });
+        }
+        context.profile.extract_routes_with_typed_projections(
+            &ctx,
+            facts,
+            state.symbols,
+            context.language_context,
+            context.rule_ir,
+            context.route_context,
+            &mut state.projections,
+        );
+    }
+
+    fn exit_traversal_frames<'a>(
+        language: &str,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
+    ) {
+        if language == "python" {
+            let mut first_effective_frame = traversal.frames.len();
+            for (index, frame) in traversal.frames.iter().enumerate().rev() {
+                if frame
+                    .suspended_at
+                    .is_some_and(|suspended_at| suspended_at != node.id())
+                {
+                    break;
+                }
+                first_effective_frame = index;
+            }
+            for frame in traversal.frames.iter_mut().skip(first_effective_frame) {
+                frame.exit(node);
+            }
+        } else {
+            for frame in traversal.frames.iter_mut() {
+                frame.exit(node);
+            }
+        }
+    }
+
+    fn enter_module_root_frame<'a>(
+        context: &VisitContext<'a>,
+        state: &mut VisitState<'_, '_>,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
+        owner: &str,
+        facts: &mut Facts,
+        is_boundary: bool,
+    ) {
+        let prepared_bindings = state
+            .prepared_scope_bindings
+            .remove(&node.id())
+            .filter(|_| state.prepared_root_bindings.is_none());
+        let mut frame = ScopeFrame::new(
+            node,
+            std::sync::Arc::from(owner),
+            None,
+            state.prepared_root_bindings.is_none(),
+            false,
+            context,
+            prepared_bindings,
+        );
+        frame.enter(node, node.kind(), is_boundary);
+        traversal.frames.push(frame);
+        let Some(module_index) = facts.nodes.iter().position(|n| n.id == owner) else {
+            return;
+        };
+        traversal
+            .frames
+            .last_mut()
+            .expect("module frame entered")
+            .node_index = Some(module_index);
+        let module = &mut facts.nodes[module_index];
+        #[cfg(feature = "lang-python")]
+        if context.language == "python" {
+            let factories = crate::languages::python::logging_factories(
+                node,
+                context.source,
+                context.offset,
+            );
+            if factories
+                .as_array()
+                .is_some_and(|entries| !entries.is_empty())
+            {
+                module.details["python_logging_factories"] = factories;
+            }
+        }
+        #[cfg(feature = "lang-typescript")]
+        if matches!(context.language, "javascript" | "typescript" | "vue") {
+            let empty_shadows = HashSet::new();
+            let shadowed = context
+                .file
+                .state
+                .typescript()
+                .map_or(&empty_shadows, |state| &*state.shadowed_require_scopes);
+            module.details["commonjs_bindings"] =
+                json!(crate::languages::typescript::commonjs_bindings(
+                    node,
+                    context.source,
+                    context.offset,
+                    shadowed,
+                ));
+        }
+        if context.language == "python" {
+            module.details["lazy_exports"] = serde_json::Value::Null;
+        }
+        module.details["exports"] = serde_json::Value::Null;
+        let details = module
+            .details
+            .as_object_mut()
+            .expect("module details object");
+        let frame = traversal.frames.last_mut().expect("module frame entered");
+        frame.reserved_flow_slot = !details.contains_key("value_flow");
+        details
+            .entry("value_flow")
+            .or_insert(serde_json::Value::Null);
+        details.entry("bindings").or_insert_with(|| json!([]));
+        details.entry("rebindings").or_insert_with(|| json!([]));
+    }
+
+    fn record_syntax_diagnostic<'a>(
+        context: &VisitContext<'a>,
+        node: Syntax<'a>,
+        facts: &mut Facts,
+    ) {
+        let is_ts_grammar_gap = context.language == "typescript" && {
+            let line_text = context
+                .source
+                .lines()
+                .nth(node.start_position().row)
+                .unwrap_or("");
+            line_text.contains("import(")
+                || line_text.contains("readonly [")
+                || line_text.contains("readonly (")
+        };
+        if !is_ts_grammar_gap {
+            facts.errors.push(Diagnostic {
+                path: context.path.into(),
+                line: node.start_position().row + context.offset + 1,
+                message: format!(
+                    "syntax {} at column {}",
+                    node.kind(),
+                    node.start_position().column + 1
+                ),
+            });
+        }
+    }
+
+    fn enter_declaration_node<'a>(
+        context: &VisitContext<'a>,
+        state: &mut VisitState<'_, '_>,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
+        facts: &mut Facts,
+        kind: &str,
+        (parent_owner, is_boundary): (&str, bool),
+    ) {
         let (source, path, language, module, offset) = (
             context.source,
             context.path,
@@ -1003,367 +538,223 @@ impl SinglePassExtractor<'_> {
             context.module,
             context.offset,
         );
-        let node_kind = node.kind();
-        let is_boundary = scope_boundary_kind(language, node_kind);
-        let syntax_kind = context
-            .syntax
-            .as_ref()
-            .and_then(|syntax| syntax.classify(node.kind_id()));
-        for frame in traversal.frames.iter_mut() {
-            if frame.suspended_at.is_some() {
-                frame.enter_suspended(node);
-            } else {
-                frame.enter(node, node_kind, is_boundary);
-            }
+        let kind = crate::models::compact_graph::CompactTag::known(kind).unwrap_or(kind);
+        let language =
+            crate::models::compact_graph::CompactTag::known(language).unwrap_or(language);
+        let line = node.start_position().row + offset + 1;
+        let name = context
+            .profile
+            .symbol_name(node, source)
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!("anonymous@{}:{}", line, node.start_position().column + 1)
+            });
+        let prefix = context.profile.node_prefix(kind);
+        let mut id = format!("{prefix}:{path}:{line}:{name}");
+        if !state.ids.insert(id.clone()) {
+            use std::fmt::Write;
+            let _ = write!(id, ":{}", node.start_position().column);
+            state.ids.insert(id.clone());
         }
-        if language == "python"
-            && traversal
-                .frames
-                .first()
-                .is_some_and(|root| root.suspended_at.is_none())
-            && module_export_enter_kind(node_kind)
-        {
-            if let Some(root) = traversal.frames.first_mut() {
-                root.observe_module_event(node, true);
-            }
-        }
-        let module_root = node.id() == context.root_id;
-        if module_root {
-            let prepared_bindings = state
-                .prepared_scope_bindings
-                .remove(&node.id())
-                .filter(|_| state.prepared_root_bindings.is_none());
-            let mut frame = ScopeFrame::new(
-                node,
-                std::sync::Arc::from(owner),
-                None,
-                state.prepared_root_bindings.is_none(),
-                false,
-                context,
-                prepared_bindings,
-            );
-            frame.enter(node, node_kind, is_boundary);
-            traversal.frames.push(frame);
-        }
-        if module_root {
-            if let Some(module_index) = facts.nodes.iter().position(|n| n.id == owner) {
-                traversal
-                    .frames
-                    .last_mut()
-                    .expect("module frame entered")
-                    .node_index = Some(module_index);
-                let module = &mut facts.nodes[module_index];
-                #[cfg(feature = "lang-python")]
-                if language == "python" {
-                    let factories =
-                        crate::languages::python::logging_factories(node, source, offset);
-                    if factories
-                        .as_array()
-                        .is_some_and(|entries| !entries.is_empty())
-                    {
-                        module.details["python_logging_factories"] = factories;
-                    }
-                }
-                #[cfg(feature = "lang-typescript")]
-                if matches!(language, "javascript" | "typescript" | "vue") {
-                    let empty_shadows = HashSet::new();
-                    let shadowed = context
-                        .file
-                        .state
-                        .typescript()
-                        .map_or(&empty_shadows, |state| &*state.shadowed_require_scopes);
-                    module.details["commonjs_bindings"] =
-                        json!(crate::languages::typescript::commonjs_bindings(
-                            node,
-                            source,
-                            offset,
-                            shadowed,
-                        ));
-                }
-                if language == "python" {
-                    // The Python module collector finalizes this slot after the
-                    // shared traversal, in the same position used by prepared data.
-                    module.details["lazy_exports"] = serde_json::Value::Null;
-                }
-                // Preserve the original root-detail slot order when a profile
-                // finalizes exports from bindings collected by this traversal.
-                module.details["exports"] = serde_json::Value::Null;
-                let details = module
-                    .details
-                    .as_object_mut()
-                    .expect("module details object");
-                let frame = traversal.frames.last_mut().expect("module frame entered");
-                frame.reserved_flow_slot = !details.contains_key("value_flow");
-                details
-                    .entry("value_flow")
-                    .or_insert(serde_json::Value::Null);
-                details.entry("bindings").or_insert_with(|| json!([]));
-                details.entry("rebindings").or_insert_with(|| json!([]));
-            }
-        }
-        if node.is_error() || node.is_missing() {
-            let is_ts_grammar_gap = if language == "typescript" {
-                let line_text = source.lines().nth(node.start_position().row).unwrap_or("");
-                line_text.contains("import(")
-                    || line_text.contains("readonly [")
-                    || line_text.contains("readonly (")
-            } else {
-                false
-            };
-            if !is_ts_grammar_gap {
-                facts.errors.push(Diagnostic {
-                    path: path.into(),
-                    line: node.start_position().row + offset + 1,
-                    message: format!(
-                        "syntax {} at column {}",
-                        node.kind(),
-                        node.start_position().column + 1
-                    ),
-                });
-            }
-        }
-        let parent_owner = traversal
-            .frames
-            .last()
-            .map_or(owner, |frame| frame.owner.as_ref());
-        let kind = match context.syntax.as_ref() {
-            Some(_) => syntax_kind
-                .and_then(languages::CompiledSyntaxKind::declaration)
-                .and_then(|decl| {
-                    if context.profile.symbol_kind(node_kind).is_some() {
-                        context
-                            .profile
-                            .symbol_with_context(node, source, context.file)
-                    } else {
-                        Some(decl)
-                    }
-                }),
-            None => context
-                .profile
-                .symbol_with_context(node, source, context.file),
-        };
-        if let Some(kind) = kind {
-            let kind = crate::models::compact_graph::CompactTag::known(kind).unwrap_or(kind);
-            let language =
-                crate::models::compact_graph::CompactTag::known(language).unwrap_or(language);
-            let name = context
-                .profile
-                .symbol_name(node, source)
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!(
-                        "anonymous@{}:{}",
-                        node.start_position().row + offset + 1,
-                        node.start_position().column + 1
-                    )
-                });
-            let prefix = context.profile.node_prefix(kind);
-            let line = node.start_position().row + offset + 1;
-            let mut id = format!("{prefix}:{path}:{line}:{name}");
-            if !state.ids.insert(id.clone()) {
-                use std::fmt::Write;
-                let _ = write!(id, ":{}", node.start_position().column);
-                state.ids.insert(id.clone());
-            }
-            state.symbols.insert(node.id(), id.clone());
-            let shared_id: std::sync::Arc<str> = std::sync::Arc::from(id.as_str());
-            let shared_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
-            let prepared_bindings = state.prepared_scope_bindings.remove(&node.id());
-            let is_callable = matches!(kind, "function" | "method" | "constructor");
-            let mut frame = ScopeFrame::new(
-                node,
-                std::sync::Arc::clone(&shared_id),
-                Some(shared_name),
-                true,
-                is_callable,
-                context,
-                prepared_bindings,
-            );
-            let mut metadata = if frame.analysis.is_some() {
-                context.profile.metadata(node, source, &name, context.file)
-            } else {
-                let (metadata, flow) =
-                    context
-                        .profile
-                        .declaration(node, source, &name, context.file);
-                frame.legacy_flow = Some(flow);
-                metadata
-            };
-            let test_role = context.profile.test_role(node, source, path, context.file);
-            let prototype_owner = (language == "javascript"
-                && matches!(node.kind(), "function_expression" | "arrow_function")
-                && metadata.is_method == Some(true))
-            .then(|| metadata.receiver_type.clone())
-            .flatten();
-            let out_of_line_owner = (matches!(
-                (language, node.kind()),
-                ("cpp", "function_definition") | ("go", "method_declaration")
-            ) && metadata.is_method == Some(true))
-            .then(|| {
-                metadata
-                    .receiver_type
-                    .as_deref()
-                    .filter(|owner| traversal.scopes.last().map(String::as_str) != Some(*owner))
-            })
-            .flatten();
-            let qualname = if let Some(receiver) =
-                prototype_owner.as_deref().or(out_of_line_owner)
-            {
-                qualified(module, traversal.scopes, &format!("{receiver}.{name}"))
-            } else {
-                qualified(module, traversal.scopes, &name)
-            };
-            let mut details = serde_json::Map::new();
-            if let Some(receiver_name) = metadata.receiver_name.filter(|value| !value.is_empty()) {
-                details.insert("receiver_name".into(), json!(receiver_name));
-            }
-            if metadata.default_export {
-                details.insert("default_export".into(), json!(true));
-            }
-            let doc = syntax_doc(context, node);
-            if !doc.is_empty() {
-                details.insert("doc".into(), json!(doc));
-            }
-            if !metadata.decorators.is_empty() {
-                details.insert("decorators".into(), json!(metadata.decorators));
-            }
-            if metadata
-                .bases
-                .as_deref()
-                .is_some_and(|value| !value.is_empty())
-            {
-                details.insert("bases".into(), json!(metadata.bases));
-            }
-            if metadata
-                .receiver
-                .as_deref()
-                .is_some_and(|value| !value.is_empty())
-            {
-                details.insert("receiver".into(), json!(metadata.receiver));
-            }
-            if let Some(signature) = declaration_signature_if_informative(node, source) {
-                details.insert("signature".into(), json!(signature));
-            }
-            if metadata.is_async {
-                details.insert("async".into(), json!(true));
-            }
-            if let Some(test_role) = test_role {
-                details.insert("test_role".into(), json!(test_role));
-            }
-            if let Some(entrypoint) = if test_role == Some("test_case") {
-                Some("test")
-            } else {
+        state.symbols.insert(node.id(), id.clone());
+        let shared_id: std::sync::Arc<str> = std::sync::Arc::from(id.as_str());
+        let shared_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
+        let prepared_bindings = state.prepared_scope_bindings.remove(&node.id());
+        let is_callable = matches!(kind, "function" | "method" | "constructor");
+        let mut frame = ScopeFrame::new(
+            node,
+            std::sync::Arc::clone(&shared_id),
+            Some(shared_name),
+            true,
+            is_callable,
+            context,
+            prepared_bindings,
+        );
+        let mut metadata = if frame.analysis.is_some() {
+            context.profile.metadata(node, source, &name, context.file)
+        } else {
+            let (metadata, flow) =
                 context
                     .profile
-                    .entrypoint_role(node, source, &name, context.file)
-            } {
-                details.insert("entrypoint_base".into(), json!(entrypoint));
-            }
-            if let Some(is_public) = metadata.is_public {
-                details.insert("is_public".into(), json!(is_public));
-            }
-            if let Some(receiver_type) = metadata.receiver_type.as_ref() {
-                details.insert("receiver_type".into(), json!(receiver_type));
-            }
-            if prototype_owner.is_some() {
-                details.insert("prototype".into(), json!(true));
-            }
-            if language == "javascript" && commonjs_default_callable(node, source) {
-                details.insert("commonjs_default_callable".into(), json!(true));
-            }
-            if metadata.is_method == Some(true) && kind != "method" {
-                details.insert("is_method".into(), json!(true));
-            }
-            if metadata.is_static == Some(true) {
-                details.insert("is_static".into(), json!(true));
-            }
-            let native_semantic = if !metadata.param_types.is_empty() {
-                if state.flows.is_some() {
-                    details.insert("param_types".into(), serde_json::Value::Null);
-                    Some(Box::new(
-                        crate::typed_facts::NodeSemanticEntry::with_parameters(std::mem::take(
-                            &mut metadata.param_types,
-                        )),
-                    ))
-                } else {
-                    details.insert("param_types".into(), json!(metadata.param_types));
-                    None
-                }
-            } else {
-                None
-            };
-            details.insert("column".into(), json!(node.start_position().column));
-            if metadata.is_overload {
-                details.insert("is_overload".into(), json!(true));
-            }
-            if metadata.is_stub {
-                details.insert("is_stub".into(), json!(true));
-            }
-            if metadata.is_conditional {
-                details.insert("is_conditional".into(), json!(true));
-            }
-            let details = if details.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::Value::Object(details)
-            };
-            let node_index = facts.nodes.len();
-            facts.nodes.push(Node {
-                native_semantic,
-                id: id.clone(),
-                kind: kind.into(),
-                name: name.clone(),
-                qualname,
-                path: path.into(),
-                line,
-                end_line: node.end_position().row + offset + 1,
-                is_test: is_test(path)
-                    || test_role.is_some()
-                    || context.profile.test_attribute(node, source),
-                language: language.into(),
-                generated: false,
-                details,
-            });
-            frame.node_index = Some(node_index);
-            facts.edges.push(Edge {
-                src: parent_owner.into(),
-                dst: id.clone(),
-                kind: "contains".into(),
-                path: path.into(),
-                line,
-                evidence: node.kind().into(),
-                confidence: "exact".into(),
-            });
-            context.profile.extract_relations(
-                &SyntaxContext {
-                    node,
-                    source,
-                    owner: &id,
-                    offset,
-                    file_state: &context.file.state,
-                },
-                facts,
-            );
-            frame.reserved_flow_slot = true;
-            frame.metadata_return = metadata.return_type;
-            frame.metadata_ownership = metadata.object_ownership;
-            frame.enter(node, node_kind, is_boundary);
-            traversal.frames.push(frame);
-            traversal.scopes.push(name);
-        } else if !module_root {
-            if let Some(last) = traversal.frames.last_mut() {
-                last.enter_metrics(node, source, offset);
-            }
+                    .declaration(node, source, &name, context.file);
+            frame.legacy_flow = Some(flow);
+            metadata
+        };
+        let test_role = context.profile.test_role(node, source, path, context.file);
+        let prototype_owner = (language == "javascript"
+            && matches!(node.kind(), "function_expression" | "arrow_function")
+            && metadata.is_method == Some(true))
+        .then(|| metadata.receiver_type.clone())
+        .flatten();
+        let out_of_line_owner = (matches!(
+            (language, node.kind()),
+            ("cpp", "function_definition") | ("go", "method_declaration")
+        ) && metadata.is_method == Some(true))
+        .then(|| {
+            metadata
+                .receiver_type
+                .as_deref()
+                .filter(|owner| traversal.scopes.last().map(String::as_str) != Some(*owner))
+        })
+        .flatten();
+        let qualname = if let Some(receiver) =
+            prototype_owner.as_deref().or(out_of_line_owner)
+        {
+            qualified(module, traversal.scopes, &format!("{receiver}.{name}"))
+        } else {
+            qualified(module, traversal.scopes, &name)
+        };
+        let mut details = serde_json::Map::new();
+        if let Some(receiver_name) = metadata.receiver_name.filter(|value| !value.is_empty()) {
+            details.insert("receiver_name".into(), json!(receiver_name));
         }
-        let node_owner = traversal
-            .frames
-            .last()
-            .map_or(owner, |frame| frame.owner.as_ref());
+        if metadata.default_export {
+            details.insert("default_export".into(), json!(true));
+        }
+        let doc = syntax_doc(context, node);
+        if !doc.is_empty() {
+            details.insert("doc".into(), json!(doc));
+        }
+        if !metadata.decorators.is_empty() {
+            details.insert("decorators".into(), json!(metadata.decorators));
+        }
+        if metadata
+            .bases
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            details.insert("bases".into(), json!(metadata.bases));
+        }
+        if metadata
+            .receiver
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            details.insert("receiver".into(), json!(metadata.receiver));
+        }
+        if let Some(signature) = declaration_signature_if_informative(node, source) {
+            details.insert("signature".into(), json!(signature));
+        }
+        if metadata.is_async {
+            details.insert("async".into(), json!(true));
+        }
+        if let Some(test_role) = test_role {
+            details.insert("test_role".into(), json!(test_role));
+        }
+        if let Some(entrypoint) = if test_role == Some("test_case") {
+            Some("test")
+        } else {
+            context
+                .profile
+                .entrypoint_role(node, source, &name, context.file)
+        } {
+            details.insert("entrypoint_base".into(), json!(entrypoint));
+        }
+        if let Some(is_public) = metadata.is_public {
+            details.insert("is_public".into(), json!(is_public));
+        }
+        if let Some(receiver_type) = metadata.receiver_type.as_ref() {
+            details.insert("receiver_type".into(), json!(receiver_type));
+        }
+        if prototype_owner.is_some() {
+            details.insert("prototype".into(), json!(true));
+        }
+        if language == "javascript" && commonjs_default_callable(node, source) {
+            details.insert("commonjs_default_callable".into(), json!(true));
+        }
+        if metadata.is_method == Some(true) && kind != "method" {
+            details.insert("is_method".into(), json!(true));
+        }
+        if metadata.is_static == Some(true) {
+            details.insert("is_static".into(), json!(true));
+        }
+        let native_semantic = if !metadata.param_types.is_empty() {
+            if state.flows.is_some() {
+                details.insert("param_types".into(), serde_json::Value::Null);
+                Some(Box::new(
+                    crate::typed_facts::NodeSemanticEntry::with_parameters(std::mem::take(
+                        &mut metadata.param_types,
+                    )),
+                ))
+            } else {
+                details.insert("param_types".into(), json!(metadata.param_types));
+                None
+            }
+        } else {
+            None
+        };
+        details.insert("column".into(), json!(node.start_position().column));
+        if metadata.is_overload {
+            details.insert("is_overload".into(), json!(true));
+        }
+        if metadata.is_stub {
+            details.insert("is_stub".into(), json!(true));
+        }
+        if metadata.is_conditional {
+            details.insert("is_conditional".into(), json!(true));
+        }
+        let details = if details.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(details)
+        };
+        let node_index = facts.nodes.len();
+        facts.nodes.push(Node {
+            native_semantic,
+            id: id.clone(),
+            kind: kind.into(),
+            name: name.clone(),
+            qualname,
+            path: path.into(),
+            line,
+            end_line: node.end_position().row + offset + 1,
+            is_test: is_test(path)
+                || test_role.is_some()
+                || context.profile.test_attribute(node, source),
+            language: language.into(),
+            generated: false,
+            details,
+        });
+        frame.node_index = Some(node_index);
+        facts.edges.push(Edge {
+            src: parent_owner.into(),
+            dst: id.clone(),
+            kind: "contains".into(),
+            path: path.into(),
+            line,
+            evidence: node.kind().into(),
+            confidence: "exact".into(),
+        });
+        context.profile.extract_relations(
+            &SyntaxContext {
+                node,
+                source,
+                owner: &id,
+                offset,
+                file_state: &context.file.state,
+            },
+            facts,
+        );
+        frame.reserved_flow_slot = true;
+        frame.metadata_return = metadata.return_type;
+        frame.metadata_ownership = metadata.object_ownership;
+        frame.enter(node, node.kind(), is_boundary);
+        traversal.frames.push(frame);
+        traversal.scopes.push(name);
+    }
+
+    fn emit_node_references<'a>(
+        context: &VisitContext<'a>,
+        node: Syntax<'a>,
+        syntax_kind: Option<CompiledSyntaxKind>,
+        node_owner: &str,
+        facts: &mut Facts,
+    ) {
         let ctx = SyntaxContext {
             node,
-            source,
+            source: context.source,
             owner: node_owner,
-            offset,
+            offset: context.offset,
             file_state: &context.file.state,
         };
         if context
@@ -1387,7 +778,7 @@ impl SinglePassExtractor<'_> {
         {
             facts.references.push(crate::models::Reference {
                 source: node_owner.to_owned(),
-                expression: text(node, source).into(),
+                expression: text(node, context.source).into(),
                 kind: "reads".into(),
                 line: ctx.line(),
                 column: node.start_position().column,
@@ -1397,10 +788,96 @@ impl SinglePassExtractor<'_> {
                 receiver_hint: None,
             });
         }
-        if matches!(node_kind, "call" | "call_expression") {
+        if matches!(node.kind(), "call" | "call_expression") {
             routes::dependency_injection(&ctx, context.rule_ir, facts);
         }
         context.profile.extract_mutations(&ctx, facts);
+    }
+
+    fn visit_event<'a>(
+        context: &VisitContext<'a>,
+        state: &mut VisitState<'_, '_>,
+        node: Syntax<'a>,
+        traversal: &mut ScopeTraversal<'_, 'a>,
+        owner: &str,
+        facts: &mut Facts,
+        entering: bool,
+    ) {
+        if !entering {
+            Self::visit_exit_event(context, state, node, traversal, owner, facts);
+            return;
+        }
+        let node_kind = node.kind();
+        let is_boundary = scope_boundary_kind(context.language, node_kind);
+        let syntax_kind = context
+            .syntax
+            .as_ref()
+            .and_then(|syntax| syntax.classify(node.kind_id()));
+        for frame in traversal.frames.iter_mut() {
+            if frame.suspended_at.is_some() {
+                frame.enter_suspended(node);
+            } else {
+                frame.enter(node, node_kind, is_boundary);
+            }
+        }
+        if context.language == "python"
+            && traversal
+                .frames
+                .first()
+                .is_some_and(|root| root.suspended_at.is_none())
+            && module_export_enter_kind(node_kind)
+        {
+            if let Some(root) = traversal.frames.first_mut() {
+                root.observe_module_event(node, true);
+            }
+        }
+        let module_root = node.id() == context.root_id;
+        if module_root {
+            Self::enter_module_root_frame(context, state, node, traversal, owner, facts, is_boundary);
+        }
+        if node.is_error() || node.is_missing() {
+            Self::record_syntax_diagnostic(context, node, facts);
+        }
+        let parent_owner = traversal
+            .frames
+            .last()
+            .map_or_else(|| owner.to_owned(), |frame| frame.owner.as_ref().to_owned());
+        let kind = match context.syntax.as_ref() {
+            Some(_) => syntax_kind
+                .and_then(CompiledSyntaxKind::declaration)
+                .and_then(|decl| {
+                    if context.profile.symbol_kind(node_kind).is_some() {
+                        context
+                            .profile
+                            .symbol_with_context(node, context.source, context.file)
+                    } else {
+                        Some(decl)
+                    }
+                }),
+            None => context
+                .profile
+                .symbol_with_context(node, context.source, context.file),
+        };
+        if let Some(kind) = kind {
+            Self::enter_declaration_node(
+                context,
+                state,
+                node,
+                traversal,
+                facts,
+                kind,
+                (&parent_owner, is_boundary),
+            );
+        } else if !module_root {
+            if let Some(last) = traversal.frames.last_mut() {
+                last.enter_metrics(node, context.source, context.offset);
+            }
+        }
+        let node_owner = traversal
+            .frames
+            .last()
+            .map_or(owner, |frame| frame.owner.as_ref());
+        Self::emit_node_references(context, node, syntax_kind, node_owner, facts);
     }
 }
 
@@ -1432,7 +909,7 @@ fn route_candidate(enabled: bool, language: &str, node: Syntax<'_>) -> bool {
 
 #[cfg(feature = "lang-python")]
 enum PythonAction<'tree> {
-    Candidate(languages::python::DeferredEvent<'tree>),
+    Candidate(crate::languages::python::DeferredEvent<'tree>),
     Orm {
         node: Syntax<'tree>,
         owner: std::sync::Arc<str>,
@@ -1469,7 +946,7 @@ fn finish_python_actions(
                     offset: context.offset,
                     file_state: &context.file.state,
                 };
-                languages::python::finish_default_table(
+                crate::languages::python::finish_default_table(
                     &ctx,
                     facts,
                     context.language_context,
@@ -1488,7 +965,7 @@ fn finish_python_actions(
                     offset: context.offset,
                     file_state: &context.file.state,
                 };
-                languages::python::finish_deferred_event(
+                crate::languages::python::finish_deferred_event(
                     &event,
                     &ctx,
                     facts,
@@ -1544,29 +1021,29 @@ fn restore_append_order<T>(values: &mut Vec<T>, base_len: usize, batches: Vec<(u
     debug_assert!(appended.next().is_none());
 }
 
-struct ScopeFrame<'source, 'tree> {
-    root: Syntax<'tree>,
+struct ScopeFrame<'a> {
+    root: Syntax<'a>,
     owner: std::sync::Arc<str>,
     node_index: Option<usize>,
     name: Option<std::sync::Arc<str>>,
     metadata_return: Option<crate::semantic::TypeExpr>,
     metadata_ownership: Option<crate::semantic::ObjectOwnershipFact>,
-    bindings: Option<BindingCollector<'source, 'tree>>,
+    bindings: Option<BindingCollector<'a, 'a>>,
     prepared_bindings: Option<ScopeBindings>,
-    analysis: Option<ScopeAnalysis<'source, 'tree>>,
+    analysis: Option<ScopeAnalysis<'a, 'a>>,
     legacy_flow: Option<crate::semantic::ValueFlowFacts>,
     metrics: Option<super::fingerprints::CallableMetricsTracker>,
     reserved_flow_slot: bool,
     suspended_at: Option<usize>,
 }
-impl<'source, 'tree> ScopeFrame<'source, 'tree> {
+impl<'a> ScopeFrame<'a> {
     fn new(
-        root: Syntax<'tree>,
+        root: Syntax<'a>,
         owner: std::sync::Arc<str>,
         name: Option<std::sync::Arc<str>>,
         collect_bindings: bool,
         is_callable: bool,
-        context: &VisitContext<'source>,
+        context: &VisitContext<'a>,
         prepared_bindings: Option<ScopeBindings>,
     ) -> Self {
         Self {
@@ -1604,17 +1081,17 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
             suspended_at: None,
         }
     }
-    fn enter_metrics(&mut self, node: Syntax<'tree>, source: &str, offset: usize) {
+    fn enter_metrics(&mut self, node: Syntax<'a>, source: &str, offset: usize) {
         if let Some(metrics) = &mut self.metrics {
             super::fingerprints::CallableMetricsTracker::enter(metrics, node, self.root.id(), source, offset);
         }
     }
-    fn exit_metrics(&mut self, node: Syntax<'tree>) {
+    fn exit_metrics(&mut self, node: Syntax<'a>) {
         if let Some(metrics) = &mut self.metrics {
             super::fingerprints::CallableMetricsTracker::exit(metrics, node, self.root.id());
         }
     }
-    fn enter(&mut self, node: Syntax<'tree>, node_kind: &str, is_boundary: bool) {
+    fn enter(&mut self, node: Syntax<'a>, node_kind: &str, is_boundary: bool) {
         if let Some(bindings) = &mut self.bindings {
             bindings.enter_with_kind(node, node_kind);
         }
@@ -1625,19 +1102,19 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
             self.suspended_at = Some(node.id());
         }
     }
-    fn observe_module_event(&mut self, node: Syntax<'tree>, entering: bool) {
+    fn observe_module_event(&mut self, node: Syntax<'a>, entering: bool) {
         if self.root.kind() == "module" {
             if let Some(analysis) = &mut self.analysis {
                 analysis.observe_module_event(node, entering);
             }
         }
     }
-    fn enter_suspended(&mut self, node: Syntax<'tree>) {
+    fn enter_suspended(&mut self, node: Syntax<'a>) {
         if let Some(analysis) = &mut self.analysis {
             analysis.enter_suspended(node);
         }
     }
-    fn exit(&mut self, node: Syntax<'tree>) {
+    fn exit(&mut self, node: Syntax<'a>) {
         if let Some(suspended_at) = self.suspended_at {
             if suspended_at != node.id() {
                 if let Some(analysis) = &mut self.analysis {
@@ -1658,7 +1135,7 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
         self,
         context: &VisitContext<'_>,
         state: &mut VisitState<'_, '_>,
-    ) -> ScopePublication<'tree> {
+    ) -> ScopePublication<'a> {
         let collected_bindings = state
             .prepared_scope_bindings
             .remove(&self.root.id())
@@ -1715,7 +1192,7 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
         #[cfg(feature = "lang-html")]
         if let Some(framework) = flow.framework.as_mut() {
             for template in framework.template_contexts_mut() {
-                template.target_path = languages::html::local_template_target(
+                template.target_path = crate::languages::html::local_template_target(
                     context.path,
                     &template.target,
                     context.language_context,
@@ -1761,6 +1238,235 @@ struct ScopePublication<'tree> {
     module_outputs: Option<(Vec<crate::semantic::ExportBinding>, serde_json::Value)>,
 }
 
+fn retain_scope_framework_facts(facts: &mut Vec<crate::semantic::FrameworkFact>) {
+    facts.retain(|fact| {
+        matches!(
+            fact,
+            crate::semantic::FrameworkFact::ComponentConfiguration(_)
+                | crate::semantic::FrameworkFact::SymbolAttachment(_)
+                | crate::semantic::FrameworkFact::NamedBinding(_)
+                | crate::semantic::FrameworkFact::EndpointRequest(_)
+        )
+    });
+}
+
+fn merge_legacy_framework_array<T: serde::de::DeserializeOwned>(
+    flow: &mut crate::semantic::ValueFlowFacts,
+    raw_flow: &serde_json::Value,
+    key: &str,
+    label: &str,
+    is_kind: impl Fn(&crate::semantic::FrameworkFact) -> bool,
+    push: impl Fn(&mut crate::semantic::ValueFlowFacts, T),
+) {
+    let Some(value) = raw_flow.get(key) else {
+        return;
+    };
+    flow.framework
+        .get_or_insert_with(Default::default)
+        .facts
+        .retain(|fact| !is_kind(fact));
+    let entries: Vec<T> = serde_json::from_value(value.clone())
+        .unwrap_or_else(|err| panic!("parser-owned {label}: {err}"));
+    for entry in entries {
+        push(flow, entry);
+    }
+}
+
+fn merge_scope_projections(
+    owner: &str,
+    context: &VisitContext<'_>,
+    state: &mut VisitState<'_, '_>,
+    node: &Node,
+    flow: &mut crate::semantic::ValueFlowFacts,
+) {
+    if let Some(projections) = state.projections.remove(owner) {
+        if projections.fact_limit_exceeded {
+            flow.fact_limit_exceeded = true;
+        }
+        if let Some(mut projections) = projections.framework {
+            retain_scope_framework_facts(&mut projections.facts);
+            if !projections.facts.is_empty() {
+                flow.framework
+                    .get_or_insert_with(Default::default)
+                    .facts
+                    .append(&mut projections.facts);
+            }
+        }
+    }
+    if context.profile.typed_scope_projections() {
+        return;
+    }
+    let raw_flow = &node.details["value_flow"];
+    merge_legacy_framework_array(
+        flow,
+        raw_flow,
+        "component_configurations",
+        "typed component configurations",
+        |f| matches!(f, crate::semantic::FrameworkFact::ComponentConfiguration(_)),
+        |flow, fact| flow.push_component_configuration(fact),
+    );
+    merge_legacy_framework_array(
+        flow,
+        raw_flow,
+        "symbol_attachments",
+        "symbol attachments",
+        |f| matches!(f, crate::semantic::FrameworkFact::SymbolAttachment(_)),
+        |flow, fact| flow.push_symbol_attachment(fact),
+    );
+    merge_legacy_framework_array(
+        flow,
+        raw_flow,
+        "named_bindings",
+        "named bindings",
+        |f| matches!(f, crate::semantic::FrameworkFact::NamedBinding(_)),
+        |flow, fact| flow.push_named_binding(fact),
+    );
+    merge_legacy_framework_array(
+        flow,
+        raw_flow,
+        "endpoint_requests",
+        "endpoint requests",
+        |f| matches!(f, crate::semantic::FrameworkFact::EndpointRequest(_)),
+        |flow, fact| flow.push_endpoint_request(fact),
+    );
+    if raw_flow["fact_limit_exceeded"] == true {
+        flow.fact_limit_exceeded = true;
+    }
+}
+
+fn set_optional_json_detail(node: &mut Node, key: &str, value: Option<serde_json::Value>) {
+    if let Some(value) = value {
+        node.details[key] = value;
+    } else if let Some(details) = node.details.as_object_mut() {
+        details.shift_remove(key);
+    }
+}
+
+fn take_previous_scope_flow(
+    node: &Node,
+    state: &mut VisitState<'_, '_>,
+    preserve_invalid: &mut bool,
+) -> Option<crate::semantic::ValueFlowFacts> {
+    if let Some(flows) = state.flows.as_mut() {
+        if matches!(
+            flows.state(node),
+            Some(crate::typed_facts::FlowState::Invalid(_))
+        ) {
+            *preserve_invalid = true;
+            return None;
+        }
+        return flows.take(&node.id);
+    }
+    let raw = &node.details["value_flow"];
+    if raw.is_null() {
+        return None;
+    }
+    if raw["fact_limit_exceeded"] == true
+        || crate::typed_facts::encoded_scope_fact_count(raw)
+            > crate::semantic::DEFAULT_FACTS_PER_SCOPE
+    {
+        *preserve_invalid = true;
+        return None;
+    }
+    match crate::semantic::ValueFlowFacts::deserialize(raw) {
+        Ok(previous) => Some(previous),
+        Err(_) => {
+            *preserve_invalid = true;
+            None
+        }
+    }
+}
+
+fn merge_previous_scope_flow(
+    context: &VisitContext<'_>,
+    state: &mut VisitState<'_, '_>,
+    node: &Node,
+    flow: &mut crate::semantic::ValueFlowFacts,
+) -> bool {
+    let mut preserve_invalid = false;
+    if flow.is_empty() {
+        return false;
+    }
+    if let Some(mut previous) = take_previous_scope_flow(node, state, &mut preserve_invalid) {
+        if context.profile.typed_scope_projections() {
+            if let Some(mut projections) = previous.framework.take() {
+                retain_scope_framework_facts(&mut projections.facts);
+                if !projections.facts.is_empty() {
+                    let mut current = flow.framework.take().unwrap_or_default();
+                    projections.facts.append(&mut current.facts);
+                    current.facts = projections.facts;
+                    flow.framework = Some(current);
+                }
+            }
+            if previous.fact_limit_exceeded {
+                flow.fact_limit_exceeded = true;
+            }
+        }
+        flow.bindings.extend(previous.bindings);
+        flow.immutable_initializers
+            .extend(previous.immutable_initializers);
+        flow.fields.extend(previous.fields);
+    }
+    flow.bindings.sort_by_key(|v| v.position);
+    flow.immutable_initializers.sort_unstable();
+    flow.fields.sort_by_key(|v| v.position);
+    preserve_invalid
+}
+
+fn write_scope_bindings(
+    node: &mut Node,
+    state: &VisitState<'_, '_>,
+    bindings: ScopeBindings,
+) {
+    if state.flows.is_some() {
+        crate::typed_facts::NodeSemanticEntry::set_bindings(
+            node,
+            bindings.all,
+            bindings.rebindings,
+        );
+        return;
+    }
+    set_optional_json_detail(
+        node,
+        "bindings",
+        (!bindings.all.is_empty()).then(|| json!(bindings.all)),
+    );
+    set_optional_json_detail(
+        node,
+        "rebindings",
+        (!bindings.rebindings.is_empty()).then(|| json!(bindings.rebindings)),
+    );
+}
+
+fn write_scope_flow(
+    node: &mut Node,
+    context: &VisitContext<'_>,
+    state: &mut VisitState<'_, '_>,
+    boxed: Box<crate::semantic::ValueFlowFacts>,
+) -> bool {
+    let is_overflow = |flow_state: Option<&crate::typed_facts::FlowState>| {
+        matches!(
+            flow_state,
+            Some(crate::typed_facts::FlowState::Invalid(v)) if v["fact_limit_exceeded"] == true
+        )
+    };
+    let mut fact_limit_exceeded = boxed.fact_limit_exceeded;
+    if let Some(flows) = state.flows.as_mut() {
+        set_optional_json_detail(node, "value_flow", None);
+        flows.insert_boxed(node.id.clone(), boxed);
+        fact_limit_exceeded |= is_overflow(flows.state(node));
+    } else if context.profile.typed_scope_projections() {
+        let mut validated = FlowStore::default();
+        validated.insert_boxed(node.id.clone(), boxed);
+        fact_limit_exceeded |= is_overflow(validated.state(node));
+        node.details["value_flow"] =
+            json!(validated.state(node).expect("published scope flow").view());
+    } else {
+        node.details["value_flow"] = json!(boxed.as_ref());
+    }
+    fact_limit_exceeded
+}
+
 impl ScopePublication<'_> {
     fn publish(
         self,
@@ -1768,152 +1474,48 @@ impl ScopePublication<'_> {
         state: &mut VisitState<'_, '_>,
         facts: &mut Facts,
     ) {
-        let mut prepared_flow = self.flow;
-        let mut empty_flow = crate::semantic::ValueFlowFacts::default();
-        let flow = prepared_flow.as_deref_mut().unwrap_or(&mut empty_flow);
-        let mut bindings = self.bindings;
-        let module_outputs = self.module_outputs;
-        let mut preserve_invalid = false;
-        let Some(node) = self
-            .node_index
+        let ScopePublication {
+            root,
+            owner,
+            node_index,
+            name,
+            mut bindings,
+            module_outputs,
+            flow: mut prepared_flow,
+            reserved_flow_slot,
+            metrics,
+        } = self;
+        let Some(node) = node_index
             .and_then(|index| facts.nodes.get_mut(index))
-            .filter(|node| node.id == *self.owner)
+            .filter(|node| node.id == *owner)
         else {
             return;
         };
-        if let Some(projections) = state.projections.remove(&*self.owner) {
-            if projections.fact_limit_exceeded {
-                flow.fact_limit_exceeded = true;
-            }
-            if let Some(projections) = projections.framework {
-                let mut projections = *projections;
-                projections.facts.retain(|fact| {
-                    matches!(
-                        fact,
-                        crate::semantic::FrameworkFact::ComponentConfiguration(_)
-                            | crate::semantic::FrameworkFact::SymbolAttachment(_)
-                            | crate::semantic::FrameworkFact::NamedBinding(_)
-                            | crate::semantic::FrameworkFact::EndpointRequest(_)
-                    )
-                });
-                if !projections.facts.is_empty() {
-                    flow.framework
-                        .get_or_insert_with(Default::default)
-                        .facts
-                        .append(&mut projections.facts);
-                }
-            }
-        }
-        if !context.profile.typed_scope_projections() {
-            if let Some(configurations) = node.details["value_flow"].get("component_configurations")
-            {
-                flow.framework
-                    .get_or_insert_with(Default::default)
-                    .facts
-                    .retain(|fact| {
-                        !matches!(
-                            fact,
-                            crate::semantic::FrameworkFact::ComponentConfiguration(_)
-                        )
-                    });
-                let configurations: Vec<crate::semantic::ComponentConfigurationFact> =
-                    serde_json::from_value(configurations.clone())
-                        .expect("parser-owned typed component configurations");
-                for fact in configurations {
-                    flow.push_component_configuration(fact);
-                }
-            }
-            if let Some(value) = node.details["value_flow"].get("symbol_attachments") {
-                flow.framework
-                    .get_or_insert_with(Default::default)
-                    .facts
-                    .retain(|fact| {
-                        !matches!(
-                            fact,
-                            crate::semantic::FrameworkFact::SymbolAttachment(_)
-                        )
-                    });
-                let attachments: Vec<crate::semantic::SymbolAttachmentFact> =
-                    serde_json::from_value(value.clone()).expect("parser-owned symbol attachments");
-                for fact in attachments {
-                    flow.push_symbol_attachment(fact);
-                }
-            }
-            if let Some(value) = node.details["value_flow"].get("named_bindings") {
-                flow.framework
-                    .get_or_insert_with(Default::default)
-                    .facts
-                    .retain(|fact| {
-                        !matches!(fact, crate::semantic::FrameworkFact::NamedBinding(_))
-                    });
-                let bindings: Vec<crate::semantic::NamedBindingFact> =
-                    serde_json::from_value(value.clone()).expect("parser-owned named bindings");
-                for fact in bindings {
-                    flow.push_named_binding(fact);
-                }
-            }
-            if let Some(value) = node.details["value_flow"].get("endpoint_requests") {
-                flow.framework
-                    .get_or_insert_with(Default::default)
-                    .facts
-                    .retain(|fact| {
-                        !matches!(fact, crate::semantic::FrameworkFact::EndpointRequest(_))
-                    });
-                let requests: Vec<crate::semantic::EndpointRequestFact> =
-                    serde_json::from_value(value.clone()).expect("parser-owned endpoint requests");
-                for fact in requests {
-                    flow.push_endpoint_request(fact);
-                }
-            }
-            if node.details["value_flow"]["fact_limit_exceeded"] == true {
-                flow.fact_limit_exceeded = true;
-            }
-        }
+        let mut empty_flow = crate::semantic::ValueFlowFacts::default();
+        let flow = prepared_flow.as_deref_mut().unwrap_or(&mut empty_flow);
+        merge_scope_projections(&owner, context, state, node, flow);
+
         let mut visibility_exports = None;
-        if self.name.is_none() {
-            if let Some((exports, lazy_exports)) = module_outputs {
-                visibility_exports = Some(exports.clone());
-                if lazy_exports
-                    .as_array()
-                    .is_some_and(|entries| !entries.is_empty())
-                {
-                    node.details["lazy_exports"] = lazy_exports;
-                } else {
-                    node.details
-                        .as_object_mut()
-                        .expect("module details object")
-                        .shift_remove("lazy_exports");
+        let mut preserve_invalid = false;
+        if name.is_none() {
+            let exports = match module_outputs {
+                Some((exports, lazy_exports)) => {
+                    let has_lazy = lazy_exports
+                        .as_array()
+                        .is_some_and(|entries| !entries.is_empty());
+                    set_optional_json_detail(node, "lazy_exports", has_lazy.then_some(lazy_exports));
+                    Some(exports)
                 }
-                if exports.is_empty() {
-                    node.details
-                        .as_object_mut()
-                        .expect("module details object")
-                        .shift_remove("exports");
-                } else {
-                    node.details["exports"] = json!(exports);
-                }
-            } else {
-                if let Some(exports) = context.profile.module_exports_with_bindings(
-                    self.root,
-                    context.source,
-                    &bindings,
-                ) {
-                    visibility_exports = Some(exports.clone());
-                    if exports.is_empty() {
-                        node.details
-                            .as_object_mut()
-                            .expect("module details object")
-                            .shift_remove("exports");
-                    } else {
-                        node.details["exports"] = json!(exports);
-                    }
-                } else {
-                    node.details
-                        .as_object_mut()
-                        .expect("module details object")
-                        .shift_remove("exports");
-                }
-            }
+                None => context
+                    .profile
+                    .module_exports_with_bindings(root, context.source, &bindings),
+            };
+            visibility_exports = exports.clone();
+            set_optional_json_detail(
+                node,
+                "exports",
+                exports.filter(|e| !e.is_empty()).map(|e| json!(e)),
+            );
             state.root_summary = Some(ScopeBindings {
                 all: bindings.all.clone(),
                 rebindings: bindings.rebindings.clone(),
@@ -1926,131 +1528,28 @@ impl ScopePublication<'_> {
             bindings.all.dedup();
             bindings.rebindings.sort();
             bindings.rebindings.dedup();
-            if !flow.is_empty() {
-                let previous = if let Some(flows) = state.flows.as_mut() {
-                    if matches!(
-                        flows.state(node),
-                        Some(crate::typed_facts::FlowState::Invalid(_))
-                    ) {
-                        preserve_invalid = true;
-                        None
-                    } else {
-                        flows.take(&node.id)
-                    }
-                } else {
-                    let raw = &node.details["value_flow"];
-                    if raw.is_null() {
-                        None
-                    } else if raw["fact_limit_exceeded"] == true
-                        || crate::typed_facts::encoded_scope_fact_count(raw)
-                            > crate::semantic::DEFAULT_FACTS_PER_SCOPE
-                    {
-                        preserve_invalid = true;
-                        None
-                    } else {
-                        match crate::semantic::ValueFlowFacts::deserialize(raw) {
-                            Ok(previous) => Some(previous),
-                            Err(_) => {
-                                preserve_invalid = true;
-                                None
-                            }
-                        }
-                    }
-                };
-                if let Some(mut previous) = previous {
-                    if context.profile.typed_scope_projections() {
-                        if let Some(mut projections) = previous.framework.take() {
-                            projections.facts.retain(|fact| {
-                                matches!(
-                                    fact,
-                                    crate::semantic::FrameworkFact::ComponentConfiguration(_)
-                                        | crate::semantic::FrameworkFact::SymbolAttachment(_)
-                                        | crate::semantic::FrameworkFact::NamedBinding(_)
-                                        | crate::semantic::FrameworkFact::EndpointRequest(_)
-                                )
-                            });
-                            if !projections.facts.is_empty() {
-                                let mut current = flow.framework.take().unwrap_or_default();
-                                projections.facts.append(&mut current.facts);
-                                current.facts = projections.facts;
-                                flow.framework = Some(current);
-                            }
-                        }
-                        if previous.fact_limit_exceeded {
-                            flow.fact_limit_exceeded = true;
-                        }
-                    }
-                    flow.bindings.extend(previous.bindings);
-                    flow.immutable_initializers
-                        .extend(previous.immutable_initializers);
-                    flow.fields.extend(previous.fields);
-                }
-                flow.bindings.sort_by_key(|v| v.position);
-                flow.immutable_initializers.sort_unstable();
-                flow.fields.sort_by_key(|v| v.position);
-            }
+            preserve_invalid = merge_previous_scope_flow(context, state, node, flow);
         }
-        if state.flows.is_some() {
-            crate::typed_facts::NodeSemanticEntry::set_bindings(
-                node,
-                bindings.all,
-                bindings.rebindings,
-            );
-        } else {
-            if bindings.all.is_empty() {
-                if let Some(details) = node.details.as_object_mut() {
-                    details.remove("bindings");
-                }
-            } else {
-                node.details["bindings"] = json!(bindings.all);
-            }
-            if bindings.rebindings.is_empty() {
-                if let Some(details) = node.details.as_object_mut() {
-                    details.remove("rebindings");
-                }
-            } else {
-                node.details["rebindings"] = json!(bindings.rebindings);
-            }
-        }
-        let is_overflow = |state: Option<&crate::typed_facts::FlowState>| {
-            matches!(state, Some(crate::typed_facts::FlowState::Invalid(v)) if v["fact_limit_exceeded"] == true)
-        };
+
+        let flow_is_empty = flow.is_empty();
         let mut fact_limit_exceeded = flow.fact_limit_exceeded;
-        if !preserve_invalid && !flow.is_empty() {
-            if let Some(flows) = state.flows.as_mut() {
-                if let Some(details) = node.details.as_object_mut() {
-                    details.shift_remove("value_flow");
-                }
-                flows.insert_boxed(node.id.clone(), prepared_flow.unwrap_or_else(|| Box::new(empty_flow)));
-                fact_limit_exceeded |= is_overflow(flows.state(node));
-            } else if context.profile.typed_scope_projections() {
-                let mut validated = FlowStore::default();
-                validated.insert_boxed(node.id.clone(), prepared_flow.unwrap_or_else(|| Box::new(empty_flow)));
-                fact_limit_exceeded |= is_overflow(validated.state(node));
-                node.details["value_flow"] =
-                    json!(validated.state(node).expect("published scope flow").view());
-            } else {
-                node.details["value_flow"] = json!(flow);
-            }
-        } else if !preserve_invalid && self.reserved_flow_slot {
-            if let Some(details) = node.details.as_object_mut() {
-                details.shift_remove("value_flow");
-            }
+        write_scope_bindings(node, state, bindings);
+        if !preserve_invalid && !flow_is_empty {
+            let boxed = prepared_flow.unwrap_or_else(|| Box::new(empty_flow));
+            fact_limit_exceeded = write_scope_flow(node, context, state, boxed);
+        } else if !preserve_invalid && reserved_flow_slot {
+            set_optional_json_detail(node, "value_flow", None);
         }
-        let mut set_detail = |key: &str, value: serde_json::Value| {
-            if !node.details.is_object() {
-                node.details = json!({});
-            }
-            if let Some(details) = node.details.as_object_mut() {
-                details.insert(key.into(), value);
-            }
-        };
-        if let Some((cognitive_complexity, max_nesting_depth, statements)) = self.metrics {
+
+        if !node.details.is_object() {
+            node.details = json!({});
+        }
+        if let Some((cognitive_complexity, max_nesting_depth, statements)) = metrics {
             if cognitive_complexity > 0 {
-                set_detail(NodeDetailKey::COGNITIVE_COMPLEXITY, json!(cognitive_complexity));
+                node.details[NodeDetailKey::COGNITIVE_COMPLEXITY] = json!(cognitive_complexity);
             }
             if max_nesting_depth > 0 {
-                set_detail(NodeDetailKey::MAX_NESTING_DEPTH, json!(max_nesting_depth));
+                node.details[NodeDetailKey::MAX_NESTING_DEPTH] = json!(max_nesting_depth);
             }
             if !statements.is_empty() {
                 facts.statement_fingerprints.push(CallableFingerprints {
@@ -2060,12 +1559,12 @@ impl ScopePublication<'_> {
             }
         }
         if fact_limit_exceeded {
-            set_detail(NodeDetailKey::FACT_LIMIT_EXCEEDED, json!(true));
+            node.details[NodeDetailKey::FACT_LIMIT_EXCEEDED] = json!(true);
         }
         if let Some(exports) = visibility_exports.as_deref() {
             context
                 .profile
-                .finalize_file_visibility(self.root, context.source, facts, exports);
+                .finalize_file_visibility(root, context.source, facts, exports);
         }
     }
 }
@@ -2143,281 +1642,6 @@ fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
 }
 
 #[cfg(all(test, feature = "lang-python"))]
-mod legacy_hook_tests {
-    use super::*;
-    use crate::{
-        semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
-        typed_facts::TypedFacts,
-    };
-
-    struct Legacy;
-    impl LanguageProfile for Legacy {
-        fn id(&self) -> &'static str {
-            "legacy-typed"
-        }
-        fn extensions(&self) -> &'static [&'static str] {
-            &["py"]
-        }
-        fn grammar(&self, path: &str) -> tree_sitter::Language {
-            languages::require("python").unwrap().grammar(path)
-        }
-        fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
-            (kind == "function_definition").then_some("function")
-        }
-        fn node_prefix(&self, _: &str) -> &'static str {
-            "legacy"
-        }
-        fn normalize_import(&self, _: &str, _: &str) -> Option<languages::ImportPath> {
-            None
-        }
-        fn prepare(&self, root: Syntax<'_>, _: &str) -> FileContext {
-            FileContext {
-                root_bindings: Some((
-                    root.id(),
-                    ScopeBindings {
-                        all: vec!["prepared".into()],
-                        rebindings: vec!["rebound".into()],
-                    },
-                )),
-                ..Default::default()
-            }
-        }
-        fn declaration(
-            &self,
-            _: Syntax<'_>,
-            _: &str,
-            _: &str,
-            _: &FileContext,
-        ) -> (languages::SymbolMetadata, ValueFlowFacts) {
-            (
-                languages::SymbolMetadata {
-                    is_static: Some(true),
-                    return_type: Some(TypeExpr::Named {
-                        name: "MetadataReturn".into(),
-                    }),
-                    ..Default::default()
-                },
-                {
-                    ValueFlowFacts {
-                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
-                            alias_type: Some(TypeExpr::Named {
-                                name: "Alias".into(),
-                            }),
-                            ..Default::default()
-                        })),
-                        bindings: vec![BindingFact {
-                            name: "local".into(),
-                            position: SourcePosition { line: 2, column: 4 },
-                            value: ValueExpr::Alias {
-                                name: "argument".into(),
-                            },
-                            conditional: false,
-                        }],
-                        ..Default::default()
-                    }
-                },
-            )
-        }
-        crate::languages::support::delegate_extract_file!();
-    }
-
-    struct Incremental(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-    impl LanguageProfile for Incremental {
-        fn id(&self) -> &'static str {
-            "scope-order"
-        }
-        fn extensions(&self) -> &'static [&'static str] {
-            &["py"]
-        }
-        fn grammar(&self, path: &str) -> tree_sitter::Language {
-            Legacy.grammar(path)
-        }
-        fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
-            Legacy.symbol_kind(kind)
-        }
-        fn node_prefix(&self, _: &str) -> &'static str {
-            "scope-order"
-        }
-        fn normalize_import(&self, _: &str, _: &str) -> Option<languages::ImportPath> {
-            None
-        }
-        fn scope_analysis<'source, 'tree>(
-            &self,
-            node: Syntax<'tree>,
-            source: &'source str,
-            file: &FileContext,
-        ) -> Option<ScopeAnalysis<'source, 'tree>> {
-            let inner = languages::require("python")
-                .unwrap()
-                .scope_analysis(node, source, file)?;
-            if node.kind() != "function_definition" {
-                return Some(inner);
-            }
-            let name = node
-                .child_by_field_name("name")
-                .unwrap()
-                .utf8_text(source.as_bytes())
-                .unwrap()
-                .to_owned();
-            Some(ScopeAnalysis {
-                state: Some(LanguageAnalysis::Traced(Box::new(TracedAnalysis {
-                    inner,
-                    trace: self.0.clone(),
-                    name,
-                }))),
-                marker: std::marker::PhantomData,
-            })
-        }
-        fn value_flow(&self, _: Syntax<'_>, _: &str) -> ValueFlowFacts {
-            panic!("incremental profile requested legacy body summary")
-        }
-        fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, _: &mut Facts) {
-            if ctx.node.kind() == "call" {
-                self.0.lock().unwrap().push(format!(
-                    "call:{}",
-                    ctx.node.utf8_text(ctx.source.as_bytes()).unwrap()
-                ));
-            }
-        }
-        crate::languages::support::delegate_extract_file!();
-    }
-
-    #[test]
-    fn incremental_analysis_finishes_after_its_descendants() {
-        let trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut facts = Facts::default();
-        languages::parse_file(
-            &Incremental(trace.clone()),
-            "probe.py",
-            "def outer():\n    first()\n    def inner():\n        nested()\n    last()\n",
-            "probe",
-            &mut facts,
-        )
-        .unwrap();
-        assert!(facts.errors.is_empty());
-        assert_eq!(
-            *trace.lock().unwrap(),
-            [
-                "call:first()",
-                "call:nested()",
-                "flow:inner",
-                "call:last()",
-                "flow:outer"
-            ]
-        );
-    }
-
-    #[test]
-    fn legacy_hooks_preserve_typed_flow_and_offset_composition() {
-        let path = "typed.py";
-        let source = "def sample(argument):\n    local = argument\n    return local\n";
-        let mut failures = Vec::new();
-        for offset in [0, 7] {
-            let mut typed =
-                TypedFacts::from_public(super::super::extract(path, "python", "").unwrap());
-            if offset == 0 {
-                languages::parse_file_typed(
-                    &Legacy,
-                    path,
-                    source,
-                    "typed",
-                    &mut typed,
-                    &std::sync::Arc::new(languages::LanguageContext::default()),
-                )
-                .unwrap();
-            } else {
-                let mut parser = tree_sitter::Parser::new();
-                parser.set_language(&Legacy.grammar(path)).unwrap();
-                let tree = parser.parse(source, None).unwrap();
-                let root = tree.root_node();
-                let language_context = languages::LanguageContext::default();
-                let rule_ir = language_context.bind_rule_ir(&root.language());
-                let summary = SinglePassExtractor {
-                    source,
-                    path,
-                    profile: &Legacy,
-                    language_context: &language_context,
-                    rule_ir,
-                    route_context: routes::RouteContext::build(root, source, &language_context),
-                    file: Legacy.prepare(root, source),
-                    module: "typed",
-                    offset,
-                    symbols: HashMap::new(),
-                    ids: typed.facts.nodes.iter().map(|n| n.id.clone()).collect(),
-                    flows: Some(&mut typed.flows),
-                }
-                .visit(
-                    root,
-                    &mut Vec::new(),
-                    &format!("module:{path}"),
-                    &mut typed.facts,
-                );
-                if summary.all != ["prepared"] || summary.rebindings != ["rebound"] {
-                    failures.push(format!("offset={offset}: exact-root returned summary"));
-                }
-            }
-            let symbol = typed
-                .facts
-                .nodes
-                .iter()
-                .find(|n| n.name == "sample")
-                .unwrap();
-            if symbol.details["is_static"] != true || symbol.line != offset + 1 {
-                failures.push(format!("offset={offset}: metadata and owner position"));
-            }
-            let flow = typed
-                .flows
-                .get(symbol)
-                .expect("actual typed FlowStore entry");
-            if flow.return_type
-                != Some(TypeExpr::Named {
-                    name: "MetadataReturn".into(),
-                })
-                || flow.alias_type
-                    != Some(TypeExpr::Named {
-                        name: "Alias".into(),
-                    })
-                || flow.bindings[0].position.line != offset + 2
-            {
-                failures.push(format!("offset={offset}: typed flow/return/offset"));
-            }
-            if !symbol.details["value_flow"].is_null() {
-                failures.push(format!("offset={offset}: typed composition must own flow"));
-            }
-            let module = typed
-                .facts
-                .nodes
-                .iter()
-                .find(|n| n.kind == "module")
-                .unwrap();
-            if module.binding_names().collect::<Vec<_>>() != ["prepared"]
-                || module.rebinding_names().collect::<Vec<_>>() != ["rebound"]
-            {
-                failures.push(format!("offset={offset}: typed root summary publication"));
-            }
-            let public = serde_json::to_value(&typed).unwrap();
-            let symbol = public["nodes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|n| n["name"] == "sample")
-                .unwrap();
-            let decoded: ValueFlowFacts =
-                serde_json::from_value(symbol["details"]["value_flow"].clone()).unwrap();
-            if decoded.return_type
-                != Some(TypeExpr::Named {
-                    name: "MetadataReturn".into(),
-                })
-                || decoded.bindings[0].position.line != offset + 2
-            {
-                failures.push(format!("offset={offset}: public serialized typed flow"));
-            }
-        }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-}
-
-#[cfg(all(test, feature = "lang-python"))]
 mod tree_cursor_walk_tests {
     use super::*;
 
@@ -2453,7 +1677,7 @@ mod tree_cursor_walk_tests {
             "import os\nx = call(1, [2, 3])\ndef f(a):\n    if a:\n        return {'x': a}\n";
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&languages::python::language())
+            .set_language(&crate::languages::python::language())
             .expect("Python grammar");
         let tree = parser.parse(source, None).expect("Python syntax tree");
         let root = tree.root_node();

@@ -2,7 +2,7 @@ use super::super::commitments::{read_metadata_optional, MetadataKey};
 use super::super::paging;
 use super::selectors::path_bounds;
 use super::sql::rows;
-use super::DocSearchOptions;
+use super::types::DocSearchOptions;
 use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, MAX_PAGE_SIZE, QueryOptions};
 use anyhow::{bail, ensure, Context, Result};
@@ -54,7 +54,7 @@ pub fn document_contents_by_ids(
 }
 
 /// Resolves component prefix.
-pub fn resolve_component_prefix(conn: &Connection, component: &str) -> String {
+fn resolve_component_prefix(conn: &Connection, component: &str) -> String {
     let comp = component.trim().trim_end_matches('/');
     if comp.is_empty() {
         return String::new();

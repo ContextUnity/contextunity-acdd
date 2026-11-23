@@ -1,10 +1,11 @@
 //! Adapter schema definitions, spec collection configuration, and validation.
 
-use super::{
-    checked_child, error, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES,
+use super::constants::{
+    error, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES,
     DEFAULT_MAX_TOTAL_BYTES, DEFAULT_RETAIN_TRACES, DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB,
     MAX_METADATA_BYTES,
 };
+use crate::fs::checked_child;
 use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
 use crate::subsystems::SubsystemRegistry;

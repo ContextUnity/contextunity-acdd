@@ -1,6 +1,7 @@
-use super::{nearest_binding_scope, Syntax, SyntaxContext};
+use super::scope_facts::nearest_binding_scope;
+use crate::ast::syntax::{text, Syntax};
+use crate::languages::types::SyntaxContext;
 use crate::semantic::SourcePosition;
-use crate::ast::text;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -321,17 +322,11 @@ fn inert_require(node: Node<'_>, source: &str) -> bool {
             .is_some_and(|arguments| arguments.named_child_count() == 1)
 }
 
-pub(crate) fn commonjs_bindings(
+fn collect_commonjs_candidates(
     root: Node<'_>,
     source: &str,
     offset: usize,
-    shadowed_require_scopes: &HashSet<usize>,
-) -> Vec<CommonJsBinding> {
-    if !matches!(root.kind(), "program" | "source_file")
-        || shadowed_require_scopes.contains(&root.id())
-    {
-        return Vec::new();
-    }
+) -> (Vec<CommonJsBinding>, Vec<usize>) {
     let mut candidates = Vec::new();
     let mut declaration_ids = Vec::new();
     let mut captured_safe = true;
@@ -347,74 +342,67 @@ pub(crate) fn commonjs_bindings(
         ) {
             continue;
         }
-        if statement.kind() == "lexical_declaration" {
-            let is_const = statement
-                .child_by_field_name("kind")
-                .is_some_and(|kind| text(kind, source) == "const");
-            let mut cursor = statement.walk();
-            for declaration in statement
-                .named_children(&mut cursor)
-                .filter(|node| node.kind() == "variable_declarator")
-            {
-                let value = declaration.child_by_field_name("value");
-                if is_const {
-                    if let Some((name, module)) = declaration
-                        .child_by_field_name("name")
-                        .filter(|name| matches!(name.kind(), "identifier" | "object_pattern"))
-                        .zip(
-                            value
-                                .filter(|value| inert_require(*value, source))
-                                .and_then(|value| required_module(value, source)),
-                        )
-                    {
-                        let mut imports = Vec::new();
-                        collect_require_bindings(name, source, &mut imports);
-                        for (_, alias) in imports {
-                            if let Some(alias) = alias {
-                                candidates.push(CommonJsBinding {
-                                    alias,
-                                    module: module.clone(),
-                                    declaration: position(declaration, offset, false),
-                                    completed: position(declaration, offset, true),
-                                    invalidated: false,
-                                    captured_safe,
-                                });
-                                declaration_ids.push(declaration.id());
-                            }
+        if statement.kind() != "lexical_declaration" {
+            captured_safe = false;
+            continue;
+        }
+        let is_const = statement
+            .child_by_field_name("kind")
+            .is_some_and(|kind| text(kind, source) == "const");
+        let mut decl_cursor = statement.walk();
+        for declaration in statement
+            .named_children(&mut decl_cursor)
+            .filter(|node| node.kind() == "variable_declarator")
+        {
+            let value = declaration.child_by_field_name("value");
+            if is_const {
+                if let Some((name, module)) = declaration
+                    .child_by_field_name("name")
+                    .filter(|name| matches!(name.kind(), "identifier" | "object_pattern"))
+                    .zip(
+                        value
+                            .filter(|value| inert_require(*value, source))
+                            .and_then(|value| required_module(value, source)),
+                    )
+                {
+                    let mut imports = Vec::new();
+                    collect_require_bindings(name, source, &mut imports);
+                    for (_, alias) in imports {
+                        if let Some(alias) = alias {
+                            candidates.push(CommonJsBinding {
+                                alias,
+                                module: module.clone(),
+                                declaration: position(declaration, offset, false),
+                                completed: position(declaration, offset, true),
+                                invalidated: false,
+                                captured_safe,
+                            });
+                            declaration_ids.push(declaration.id());
                         }
                     }
                 }
-                if !is_const
-                    || value.is_some_and(|value| {
-                        !inert_initializer(value, 8) && !inert_require(value, source)
-                    })
-                {
-                    captured_safe = false;
-                }
             }
-        } else {
-            captured_safe = false;
+            if !is_const
+                || value.is_some_and(|value| {
+                    !inert_initializer(value, 8) && !inert_require(value, source)
+                })
+            {
+                captured_safe = false;
+            }
         }
     }
-    if candidates.is_empty() {
-        return candidates;
-    }
-    let mut aliases: HashSet<&str> = candidates
-        .iter()
-        .map(|binding| binding.alias.as_str())
-        .collect();
-    aliases.insert("require");
-    let mut pending = vec![root];
-    let mut nodes = Vec::new();
-    while let Some(node) = pending.pop() {
-        nodes.push(node);
-        let mut cursor = node.walk();
-        pending.extend(node.named_children(&mut cursor));
-    }
-    let mut bindings: HashMap<usize, HashSet<&str>> = HashMap::new();
+    (candidates, declaration_ids)
+}
+
+fn collect_commonjs_binding_scopes<'a>(
+    nodes: &[Node<'_>],
+    source: &'a str,
+    aliases: &HashSet<&str>,
+) -> (HashMap<usize, HashSet<&'a str>>, HashMap<usize, usize>) {
+    let mut bindings: HashMap<usize, HashSet<&'a str>> = HashMap::new();
     let mut declaration_scopes = HashMap::new();
     let mut bound = Vec::new();
-    for &node in &nodes {
+    for &node in nodes {
         let (pattern, scope) = match node.kind() {
             "variable_declarator" => (
                 node.child_by_field_name("name"),
@@ -454,6 +442,39 @@ pub(crate) fn commonjs_bindings(
             }
         }
     }
+    (bindings, declaration_scopes)
+}
+
+pub(crate) fn commonjs_bindings(
+    root: Node<'_>,
+    source: &str,
+    offset: usize,
+    shadowed_require_scopes: &HashSet<usize>,
+) -> Vec<CommonJsBinding> {
+    if !matches!(root.kind(), "program" | "source_file")
+        || shadowed_require_scopes.contains(&root.id())
+    {
+        return Vec::new();
+    }
+    let (mut candidates, declaration_ids) = collect_commonjs_candidates(root, source, offset);
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let mut aliases: HashSet<&str> = candidates
+        .iter()
+        .map(|binding| binding.alias.as_str())
+        .collect();
+    aliases.insert("require");
+    let mut pending = vec![root];
+    let mut nodes = Vec::new();
+    while let Some(node) = pending.pop() {
+        nodes.push(node);
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    let (bindings, declaration_scopes) =
+        collect_commonjs_binding_scopes(&nodes, source, &aliases);
+    let mut bound = Vec::new();
     let module_binding = |node: Node<'_>, alias: &str| {
         let mut current = Some(node);
         while let Some(scope) = current {
@@ -535,4 +556,40 @@ pub(crate) fn commonjs_bindings(
         binding.invalidated = require_invalidated || invalidated.contains(binding.alias.as_str());
     }
     candidates
+}
+
+pub(crate) fn ts_module_name(path: &str) -> String {
+    crate::languages::types::module_stem(path)
+        .trim_end_matches("/index")
+        .replace('/', ".")
+}
+
+pub(crate) fn normalize_ts_import(owner: &str, module: &str) -> Option<crate::languages::types::ImportPath> {
+    let path = std::path::Path::new(module);
+    let module = if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext,
+                "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts"
+            ) || (cfg!(feature = "lang-vue") && ext == "vue")
+                || (cfg!(feature = "lang-html") && matches!(ext, "html" | "htm" | "j2"))
+        }) {
+        crate::languages::types::module_stem(module)
+    } else {
+        module
+    };
+    let module = module.trim_end_matches("/index");
+    if module.starts_with("./") || module.starts_with("../") {
+        Some(crate::languages::types::ImportPath {
+            namespace: crate::languages::types::relative_namespace(owner, module)?,
+            relative: true,
+            symbol_path: false,
+        })
+    } else {
+        Some(crate::languages::types::ImportPath::absolute(
+            module.replace('/', "."),
+        ))
+    }
 }

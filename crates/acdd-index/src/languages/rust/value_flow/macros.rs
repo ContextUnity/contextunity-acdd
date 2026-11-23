@@ -1,5 +1,5 @@
 use super::types::parse_rust_type_text;
-use crate::ast::text;
+use crate::ast::syntax::text;
 use crate::semantic::{SourcePosition, TypeExpr};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -175,7 +175,7 @@ fn check_reexported_macro(
 ) -> Option<MacroResolution> {
     let arg = item.child_by_field_name("argument")?;
     let mut mod_imports = Vec::new();
-    super::super::collect_use(arg, source, "", &mut mod_imports);
+    super::super::patterns::collect_use(arg, source, "", &mut mod_imports);
     let mut saw_non_macro = false;
     let mut saw_exhausted = false;
     for (re_path, re_alias) in mod_imports {
@@ -352,7 +352,7 @@ fn collect_use_macro_shadows(
         return;
     };
     let mut use_imports = Vec::new();
-    super::super::collect_use(argument, source, "", &mut use_imports);
+    super::super::patterns::collect_use(argument, source, "", &mut use_imports);
     for (path, alias) in use_imports {
         if (alias == "vec" || alias == "format")
             && !path.starts_with("std::")

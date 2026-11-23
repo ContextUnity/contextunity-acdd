@@ -1,4 +1,9 @@
-use super::*;
+use super::lexical::lexical_binding_owner;
+use super::syntax_operations;
+use crate::ast::relations;
+use crate::ast::syntax::{text, Syntax};
+use crate::languages::manifests::syntax::{RegistrationCategory, SyntaxOperation, SyntaxRule};
+use crate::languages::types::SyntaxContext;
 use crate::models::{Edge, Facts, Node};
 use serde_json::json;
 
@@ -15,6 +20,75 @@ fn literal_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
     (!inner.contains('\\') && !inner.is_empty()).then_some(inner)
 }
 
+fn extract_decorator_candidate(
+    ctx: &SyntaxContext<'_, '_>,
+    rule: &crate::languages::manifests::syntax::SyntaxRule,
+    decorator: tree_sitter::Node<'_>,
+) -> Option<serde_json::Value> {
+    let SyntaxOperation::DecoratedRegistration {
+        member,
+        name_keyword,
+        imported_decorator,
+        ..
+    } = &rule.operation
+    else {
+        return None;
+    };
+    let expression = decorator.named_child(0)?;
+    let (callee, arguments) = if expression.kind() == "call" {
+        (
+            expression.child_by_field_name("function"),
+            expression.child_by_field_name("arguments"),
+        )
+    } else {
+        (Some(expression), None)
+    };
+    let callee_text = text(callee?, ctx.source);
+    let receiver = if *imported_decorator {
+        callee_text.split('.').next().unwrap_or("")
+    } else {
+        callee_text.strip_suffix(&format!(".{member}"))?
+    };
+    if receiver.is_empty()
+        || !receiver
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || !lexical_binding_owner(decorator, ctx.source, receiver)
+            .is_some_and(|owner| owner.kind() == "module")
+    {
+        return None;
+    }
+    let mut name = None;
+    let mut name_status = "default";
+    if let Some(arguments) = arguments {
+        let mut cursor = arguments.walk();
+        for argument in arguments.named_children(&mut cursor) {
+            if argument.kind() != "keyword_argument" {
+                name_status = "dynamic";
+                continue;
+            }
+            if argument
+                .child_by_field_name("name")
+                .is_some_and(|node| text(node, ctx.source) == name_keyword)
+            {
+                name = argument
+                    .child_by_field_name("value")
+                    .and_then(|node| literal_name(node, ctx.source));
+                name_status = if name.is_some() { "explicit" } else { "dynamic" };
+            }
+        }
+    }
+    Some(json!({
+        "pack": rule.pack,
+        "rule": rule.id,
+        "receiver": receiver,
+        "callee": callee_text,
+        "line": decorator.start_position().row + ctx.offset + 1,
+        "name": name,
+        "name_status": name_status,
+    }))
+}
+
 pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if ctx.node.kind() != "function_definition" {
         return;
@@ -24,76 +98,11 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
         return;
     }
     let mut candidates = Vec::new();
-    super::syntax_operations::for_each_decorated_registration_rule(|rule| {
-        let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
-            member,
-            name_keyword,
-            imported_decorator,
-            ..
-        } = &rule.operation
-        else {
-            return;
-        };
+    syntax_operations::for_each_decorated_registration_rule(|rule| {
         for &decorator in &decorators {
-            let Some(expression) = decorator.named_child(0) else {
-                continue;
-            };
-            let (callee, arguments) = if expression.kind() == "call" {
-                (
-                    expression.child_by_field_name("function"),
-                    expression.child_by_field_name("arguments"),
-                )
-            } else {
-                (Some(expression), None)
-            };
-            let Some(callee) = callee else {
-                continue;
-            };
-            let callee_text = text(callee, ctx.source);
-            let receiver = if *imported_decorator {
-                callee_text.split('.').next().unwrap_or("")
-            } else if let Some(receiver) = callee_text.strip_suffix(&format!(".{member}")) {
-                receiver
-            } else {
-                continue;
-            };
-            if receiver.is_empty()
-                || !receiver
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-            {
-                continue;
+            if let Some(candidate) = extract_decorator_candidate(ctx, rule, decorator) {
+                candidates.push(candidate);
             }
-            if !super::lexical_binding_owner(decorator, ctx.source, receiver)
-                .is_some_and(|owner| owner.kind() == "module")
-            {
-                continue;
-            }
-            let mut name = None;
-            let mut name_status = "default";
-            if let Some(arguments) = arguments {
-                let mut cursor = arguments.walk();
-                for argument in arguments.named_children(&mut cursor) {
-                    if argument.kind() == "keyword_argument" {
-                        if argument
-                            .child_by_field_name("name")
-                            .is_some_and(|node| text(node, ctx.source) == name_keyword)
-                        {
-                            name = argument
-                                .child_by_field_name("value")
-                                .and_then(|node| literal_name(node, ctx.source));
-                            name_status = if name.is_some() {
-                                "explicit"
-                            } else {
-                                "dynamic"
-                            };
-                        }
-                    } else {
-                        name_status = "dynamic";
-                    }
-                }
-            }
-            candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"callee":callee_text,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
         }
     });
     if !candidates.is_empty() {
@@ -241,13 +250,10 @@ fn confirmed_instance(
 }
 
 pub(super) fn registrations(facts: &mut Facts) {
-    super::syntax_operations::with_syntax_rules(|rules| registrations_with_rules(facts, rules));
+    syntax_operations::with_syntax_rules(|rules| registrations_with_rules(facts, rules));
 }
 
-fn registrations_with_rules(
-    facts: &mut Facts,
-    rules: &[super::super::manifests::syntax::SyntaxRule],
-) {
+fn registrations_with_rules(facts: &mut Facts, rules: &[SyntaxRule]) {
     let Some(module) = facts
         .nodes
         .iter()
@@ -285,7 +291,7 @@ fn registrations_with_rules(
             }) else {
                 continue;
             };
-            let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
+            let SyntaxOperation::DecoratedRegistration {
                 modules,
                 constructor,
                 provider,
@@ -313,9 +319,9 @@ fn registrations_with_rules(
                 continue;
             }
             let registration_kind = match category {
-                super::super::manifests::syntax::RegistrationCategory::Tool => "tool_registration",
-                super::super::manifests::syntax::RegistrationCategory::CliCommand => "cli_command_registration",
-                super::super::manifests::syntax::RegistrationCategory::EventHandler => "event_handler_registration",
+                RegistrationCategory::Tool => "tool_registration",
+                RegistrationCategory::CliCommand => "cli_command_registration",
+                RegistrationCategory::EventHandler => "event_handler_registration",
             };
             let name_status = candidate["name_status"].as_str().unwrap_or("dynamic");
             let advertised_name = if name_status == "explicit" {

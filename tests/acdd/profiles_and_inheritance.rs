@@ -4,9 +4,9 @@ use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::ErrorCode;
 use acdd_state::profile::{
     embedded_profile, render_command_with_test_filter, resolve_command_for_scope,
-    resolve_profile_from_str_with_dirs, resolve_profile_ref_with_dirs, validate_profile,
-    CommandDef, DetailedCommandDef, PatternCommandEntry, ProfileValidationOptions,
-    TestFilterConfig,
+    resolve_profile_from_str_with_dirs, resolve_profile_ref_with_dirs,
+    schema::{DetailedCommandDef, PatternCommandEntry, TestFilterConfig},
+    validate_profile, CommandDef, ProfileValidationOptions,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

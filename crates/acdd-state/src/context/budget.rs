@@ -1,6 +1,6 @@
 //! Tiered `ClaimResp` budget reservation constants and Tier 1 contract/subtask sizing.
 
-use super::{ClaimContextRequest, ClaimResp};
+use super::types::{ClaimContextRequest, ClaimResp};
 use crate::profile::{check_guidance_budget, resolve_and_budget_guidance, ResolvedGateProfile};
 use crate::spec::Subtask;
 use crate::types::GateNodeRecord;
@@ -16,13 +16,13 @@ pub const MAX_BLACKBOARD_CHARS: usize = 500;
 /// Minimum byte budget floor offered to each Tier 6 context lens when remaining response space permits.
 pub const MIN_LENS_BUDGET_BYTES: usize = 4_096;
 /// Maximum byte slice of Tier 1 remaining budget allocated to live subtask checklist rows.
-pub const SUBTASK_PROJECTION_BUDGET_CAP_BYTES: usize = 1_024;
+const SUBTASK_PROJECTION_BUDGET_CAP_BYTES: usize = 1_024;
 /// Maximum live subtask rows projected into `contract.subtasks`.
-pub const MAX_PROJECTED_SUBTASKS: usize = 16;
+const MAX_PROJECTED_SUBTASKS: usize = 16;
 /// Maximum byte cap for inline completed/cancelled subtask evidence inside `contract.subtasks`.
-pub const SUBTASK_EVIDENCE_BUDGET_CAP_BYTES: usize = 512;
+const SUBTASK_EVIDENCE_BUDGET_CAP_BYTES: usize = 512;
 /// Default soft byte ceiling for `ClaimResp` envelopes (`32 KiB`) so claim context stays lean without starving Tier 6 lenses on busy live runs.
-pub const CLAIM_DEFAULT_MAX_BYTES: usize = 32_768;
+pub(crate) const CLAIM_DEFAULT_MAX_BYTES: usize = 32_768;
 
 /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
 pub(super) fn preflight_mandatory(

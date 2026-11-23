@@ -1,11 +1,10 @@
-use super::{
-    edge_endpoints,
-    impact::{decode_edge_descriptor, resolve_traversal_kinds, MAX_DEEP_TRAVERSAL_FRONTIER},
-    ImpactDirection, TraversalMode, TraversalOptions,
+use super::types::{
+    decode_edge_descriptor, edge_endpoints, resolve_traversal_kinds, ImpactDirection,
+    TraversalMode, TraversalOptions, MAX_DEEP_TRAVERSAL_FRONTIER,
 };
 use crate::db::{
     commitments::{self, read_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES},
-    paging, reader, symbols,
+    paging, reader, source, symbols,
 };
 use crate::models::{stable_hash64, tags::NodeKind};
 use acdd_core::{
@@ -252,7 +251,7 @@ fn range_has_indexed_symbol(
 }
 
 fn worktree_postimage(root: &Path, adapter: &config::Adapter, path: &str) -> Result<Vec<u8>> {
-    symbols::read_confined_source_bytes(
+    source::read_confined_source_bytes(
         root,
         adapter,
         path,

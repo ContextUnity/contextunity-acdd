@@ -60,11 +60,12 @@ fn every_delta_rebuild_fallback_preserves_the_explicit_cache_directory() {
         workspace.prepare_fallback(case);
         let directory = workspace.directory();
         let changed = case.changed_path();
-        let result = pipeline::delta_with_cache_dir(
+        let result = pipeline::delta_with_selection(
             workspace.root(),
             &workspace.db(),
             &[changed.into()],
-            &directory,
+            None,
+            Some(&directory),
         )
         .unwrap();
         assert!(result.is_object(), "{case:?}: {result}");

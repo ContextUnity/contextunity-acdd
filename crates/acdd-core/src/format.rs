@@ -60,8 +60,14 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(sha256_bytes(data))
 }
 
-/// Streams `val` directly as compact JSON into a SHA-256 hasher without allocating a buffer.
-pub fn sha256_serde_json<T: Serialize + ?Sized>(val: &T) -> anyhow::Result<[u8; 32]> {
+/// Streams `reader` into a SHA-256 digest without buffering the entire input in memory.
+pub fn sha256_reader<R: io::Read>(reader: &mut R) -> io::Result<[u8; 32]> {
+    let mut writer = Sha256Writer(Sha256::new());
+    io::copy(reader, &mut writer)?;
+    Ok(writer.0.finalize().into())
+}
+
+fn sha256_serde_json<T: Serialize + ?Sized>(val: &T) -> anyhow::Result<[u8; 32]> {
     let mut writer = Sha256Writer(Sha256::new());
     serde_json::to_writer(&mut writer, val)?;
     Ok(writer.0.finalize().into())

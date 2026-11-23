@@ -1,8 +1,16 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support as syntax;
+use super::types::{
+    module_stem, relative_namespace, CallForm, DeclarationRole, ImportPath, LanguageFamily,
+    SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::ast::syntax::{field, text, ScopeBindings};
+use crate::models::{Facts, Node};
+use tree_sitter::Node as Syntax;
 /// Language profile for ruby source files.
-pub struct Ruby;
+struct Ruby;
 /// Shared ruby language profile.
-pub static RUBY: Ruby = Ruby;
+static RUBY: Ruby = Ruby;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -179,7 +187,7 @@ impl LanguageProfile for Ruby {
     fn receiver(&self, name: &str, _owner: &Node) -> bool {
         name == "self"
     }
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
         let mut bindings = syntax::bindings(
             self,
             node,
@@ -204,7 +212,6 @@ impl LanguageProfile for Ruby {
         }
         bindings
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "call" && ctx.node.child_by_field_name("receiver").is_none() {
             let method = field(ctx.node, ctx.source, "method");
@@ -258,4 +265,4 @@ impl LanguageProfile for Ruby {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&RUBY];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&RUBY];

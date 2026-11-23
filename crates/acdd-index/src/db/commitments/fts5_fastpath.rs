@@ -1,6 +1,14 @@
 //! Pure Rust decoder for SQLite FTS5 segment postings.
 
-use super::*;
+use super::base::{
+    finalize_fts_postings_digest, fts_commitment_spec, fts_digest_vocab,
+    load_fts_documents, FtsDocumentMap, FtsPosting,
+};
+use crate::commitments::FtsDomain;
+use anyhow::Result;
+use hashbrown::HashMap;
+use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 
 const FTS5_STRUCTURE_ROWID: i64 = 10;
 const FTS5_STRUCTURE_V2: &[u8; 4] = b"\xff\x00\x00\x01";
@@ -189,6 +197,163 @@ struct Fts5DecodeState<'a> {
     postings: Vec<FtsPosting>,
 }
 
+fn read_fts5_poslist(
+    pages: &[Vec<u8>],
+    cursor: &Fts5SegCursor<'_>,
+    n_pos: usize,
+    poslist: &mut Vec<u8>,
+) -> Option<()> {
+    poslist.clear();
+    let (mut n_rem, mut cur_idx, mut chunk_start) = (n_pos, cursor.leaf, cursor.off);
+    while n_rem > 0 {
+        let p = pages.get(cur_idx)?;
+        let sz = Fts5SegCursor::page_sz(p)?;
+        if chunk_start > sz || sz > p.len() {
+            return None;
+        }
+        let take = n_rem.min(sz - chunk_start);
+        poslist.extend_from_slice(&p[chunk_start..chunk_start + take]);
+        n_rem -= take;
+        if n_rem > 0 {
+            cur_idx += 1;
+            chunk_start = 4;
+        }
+    }
+    Some(())
+}
+
+fn intern_fts5_vocab_term(state: &mut Fts5DecodeState<'_>, vocab_term: &[u8]) -> Option<u32> {
+    if state
+        .last_term_id
+        .is_none_or(|id| state.terms[id as usize].as_ref() != vocab_term)
+    {
+        state.last_term_id = Some(match state.term_map.get(vocab_term) {
+            Some(&id) => id,
+            None => {
+                let id = u32::try_from(state.terms.len()).ok()?;
+                let owned = std::sync::Arc::<[u8]>::from(vocab_term);
+                state.term_map.insert(owned.clone(), id);
+                state.terms.push(owned);
+                id
+            }
+        });
+    }
+    state.last_term_id
+}
+
+fn decode_fts5_doc_postings(
+    state: &mut Fts5DecodeState<'_>,
+    term_id: u32,
+    rowid: i64,
+    poslist: &[u8],
+) -> Option<()> {
+    let document = state.documents.get_mut(&rowid)?;
+    let identity_sort_key = document.identity_sort_key?;
+    let mut pos_off = 0usize;
+    let (mut cur_col, mut cur_off) = (0u32, 0u32);
+    while pos_off < poslist.len() {
+        let val = next_v32(poslist, &mut pos_off)?;
+        if val == 0 {
+            return None;
+        }
+        if val == 1 {
+            cur_col = next_v32(poslist, &mut pos_off)?;
+            cur_off = next_v32(poslist, &mut pos_off)?.checked_sub(2)?;
+        } else {
+            cur_off = cur_off.checked_add(val - 2)?;
+        }
+        let col_idx = usize::try_from(cur_col).ok()?;
+        if col_idx >= state.num_columns {
+            return None;
+        }
+        document.token_counts[col_idx] = document.token_counts[col_idx].checked_add(1)?;
+        state.postings.push(FtsPosting {
+            term: term_id,
+            identity_sort_key,
+            column_index: u8::try_from(col_idx).ok()?,
+            column_sort_key: state.column_sort_keys[col_idx],
+            offset: i64::from(cur_off),
+        });
+    }
+    Some(())
+}
+
+fn advance_fts5_cursor(
+    pages: &[Vec<u8>],
+    cursor: &mut Fts5SegCursor<'_>,
+    n_pos: usize,
+) -> Option<bool> {
+    let p = pages.get(cursor.leaf)?;
+    let sz_leaf = Fts5SegCursor::page_sz(p)?;
+    let mut i_off = cursor.off.checked_add(n_pos)?;
+    if i_off < sz_leaf {
+        if i_off >= cursor.eod {
+            let (ft_off, _) = decode_fts5_varint32(p.get(sz_leaf..)?)?;
+            let n_keep = if i_off != usize::try_from(ft_off).ok()? {
+                usize::try_from(next_v32(&p[..sz_leaf], &mut i_off)?).ok()?
+            } else {
+                0
+            };
+            cursor.off = i_off;
+            cursor.load_term(n_keep)?;
+        } else {
+            let delta = next_v64(&p[..sz_leaf], &mut i_off)?;
+            if delta == 0 {
+                return None;
+            }
+            let next = cursor.rowid.wrapping_add_unsigned(delta);
+            if next <= cursor.rowid {
+                return None;
+            }
+            cursor.rowid = next;
+            cursor.off = i_off;
+        }
+        return Some(true);
+    }
+
+    let mut rem = i_off - sz_leaf;
+    loop {
+        if cursor.leaf + 1 >= pages.len() {
+            return (rem == 0).then_some(false);
+        }
+        cursor.next_page()?;
+        let np = &pages[cursor.leaf];
+        let sz = Fts5SegCursor::page_sz(np)?;
+        if rem >= sz - 4 {
+            rem -= sz - 4;
+            continue;
+        }
+        let mut landing = 4 + rem;
+        if landing >= cursor.eod {
+            let (ft_off, _) = decode_fts5_varint32(np.get(sz..)?)?;
+            let n_keep = if landing == usize::try_from(ft_off).ok()? {
+                0
+            } else {
+                usize::try_from(next_v32(&np[..sz], &mut landing)?).ok()?
+            };
+            cursor.off = landing;
+            cursor.load_term(n_keep)?;
+        } else {
+            let first = usize::from(u16::from_be_bytes([np[0], np[1]]));
+            let value = next_v64(&np[..sz], &mut landing)?;
+            cursor.rowid = if 4 + rem == first {
+                value as i64
+            } else {
+                if value == 0 {
+                    return None;
+                }
+                let next = cursor.rowid.wrapping_add_unsigned(value);
+                if next <= cursor.rowid {
+                    return None;
+                }
+                next
+            };
+            cursor.off = landing;
+        }
+        return Some(true);
+    }
+}
+
 fn decode_fts5_segment_pages(pages: &[Vec<u8>], state: &mut Fts5DecodeState<'_>) -> Option<()> {
     let Some(leaf_idx) = pages.iter().position(|page| page.len() != 4) else {
         return Some(());
@@ -223,158 +388,24 @@ fn decode_fts5_segment_pages(pages: &[Vec<u8>], state: &mut Fts5DecodeState<'_>)
             return None;
         };
 
-        poslist.clear();
-        let (mut n_rem, mut cur_idx, mut chunk_start) = (n_pos, cursor.leaf, cursor.off);
-        while n_rem > 0 {
-            let p = pages.get(cur_idx)?;
-            let sz = Fts5SegCursor::page_sz(p)?;
-            if chunk_start > sz || sz > p.len() {
-                return None;
-            }
-            let take = n_rem.min(sz - chunk_start);
-            poslist.extend_from_slice(&p[chunk_start..chunk_start + take]);
-            n_rem -= take;
-            if n_rem > 0 {
-                cur_idx += 1;
-                chunk_start = 4;
-            }
-        }
-
-        if state
-            .last_term_id
-            .is_none_or(|id| state.terms[id as usize].as_ref() != vocab_term)
-        {
-            state.last_term_id = Some(match state.term_map.get(vocab_term) {
-                Some(&id) => id,
-                None => {
-                    let id = u32::try_from(state.terms.len()).ok()?;
-                    let owned = std::sync::Arc::<[u8]>::from(vocab_term);
-                    state.term_map.insert(owned.clone(), id);
-                    state.terms.push(owned);
-                    id
-                }
-            });
-        }
-        let term_id = state.last_term_id?;
-
+        read_fts5_poslist(pages, &cursor, n_pos, &mut poslist)?;
+        let term_id = intern_fts5_vocab_term(state, vocab_term)?;
         let is_newest_for_term_doc =
             !state.multi_segment || state.seen_term_docs.insert((term_id, cursor.rowid));
         if is_newest_for_term_doc && !b_del {
-            let document = state.documents.get_mut(&cursor.rowid)?;
-            let identity_sort_key = document.identity_sort_key?;
-
-            let mut pos_off = 0usize;
-            let (mut cur_col, mut cur_off) = (0u32, 0u32);
-            while pos_off < poslist.len() {
-                let val = next_v32(&poslist, &mut pos_off)?;
-                if val == 0 {
-                    return None;
-                }
-                if val == 1 {
-                    cur_col = next_v32(&poslist, &mut pos_off)?;
-                    cur_off = next_v32(&poslist, &mut pos_off)?.checked_sub(2)?;
-                } else {
-                    cur_off = cur_off.checked_add(val - 2)?;
-                }
-                let col_idx = usize::try_from(cur_col).ok()?;
-                if col_idx >= state.num_columns {
-                    return None;
-                }
-                let offset = i64::from(cur_off);
-                document.token_counts[col_idx] = document.token_counts[col_idx].checked_add(1)?;
-                state.postings.push(FtsPosting {
-                    term: term_id,
-                    identity_sort_key,
-                    column_index: u8::try_from(col_idx).ok()?,
-                    column_sort_key: state.column_sort_keys[col_idx],
-                    offset,
-                });
-            }
+            decode_fts5_doc_postings(state, term_id, cursor.rowid, &poslist)?;
         }
-
-        let p = pages.get(cursor.leaf)?;
-        let sz_leaf = Fts5SegCursor::page_sz(p)?;
-        let mut i_off = cursor.off.checked_add(n_pos)?;
-        if i_off < sz_leaf {
-            if i_off >= cursor.eod {
-                let (ft_off, _) = decode_fts5_varint32(p.get(sz_leaf..)?)?;
-                let n_keep = if i_off != usize::try_from(ft_off).ok()? {
-                    usize::try_from(next_v32(&p[..sz_leaf], &mut i_off)?).ok()?
-                } else {
-                    0
-                };
-                cursor.off = i_off;
-                cursor.load_term(n_keep)?;
-            } else {
-                let delta = next_v64(&p[..sz_leaf], &mut i_off)?;
-                if delta == 0 {
-                    return None;
-                }
-                let next = cursor.rowid.wrapping_add_unsigned(delta);
-                if next <= cursor.rowid {
-                    return None;
-                }
-                cursor.rowid = next;
-                cursor.off = i_off;
-            }
-            (n_pos, b_del) = cursor.load_n_pos()?;
-        } else {
-            let mut rem = i_off - sz_leaf;
-            let found_next = loop {
-                if cursor.leaf + 1 >= pages.len() {
-                    break false;
-                }
-                cursor.next_page()?;
-                let np = &pages[cursor.leaf];
-                let sz = Fts5SegCursor::page_sz(np)?;
-                if rem >= sz - 4 {
-                    rem -= sz - 4;
-                    continue;
-                }
-                let mut landing = 4 + rem;
-                if landing >= cursor.eod {
-                    let (ft_off, _) = decode_fts5_varint32(np.get(sz..)?)?;
-                    let n_keep = if landing == usize::try_from(ft_off).ok()? {
-                        0
-                    } else {
-                        usize::try_from(next_v32(&np[..sz], &mut landing)?).ok()?
-                    };
-                    cursor.off = landing;
-                    cursor.load_term(n_keep)?;
-                } else {
-                    let first = usize::from(u16::from_be_bytes([np[0], np[1]]));
-                    let value = next_v64(&np[..sz], &mut landing)?;
-                    cursor.rowid = if 4 + rem == first {
-                        value as i64
-                    } else {
-                        if value == 0 {
-                            return None;
-                        }
-                        let next = cursor.rowid.wrapping_add_unsigned(value);
-                        if next <= cursor.rowid {
-                            return None;
-                        }
-                        next
-                    };
-                    cursor.off = landing;
-                }
-                break true;
-            };
-            if !found_next {
-                if rem > 0 {
-                    return None;
-                }
-                break;
-            }
-            (n_pos, b_del) = cursor.load_n_pos()?;
+        if !advance_fts5_cursor(pages, &mut cursor, n_pos)? {
+            break;
         }
+        (n_pos, b_del) = cursor.load_n_pos()?;
     }
     Some(())
 }
 
 /// Computes the canonical FTS digest directly from SQLite FTS5 `*_data` / `*_idx` shadow tables.
 /// Returns `Ok(None)` when the index requires `fts_digest_vocab` fallback.
-pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<String>> {
+pub(crate) fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<String>> {
     let table = match table {
         "node_search" => "node_search_postings",
         "doc_search" => "doc_search_postings",
@@ -448,12 +479,7 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
     {
         return Ok(None);
     }
-    let mut column_order: Vec<usize> = (0..spec.columns.len()).collect();
-    column_order.sort_unstable_by_key(|column| spec.columns[*column].as_bytes());
-    let mut column_sort_keys = vec![0; spec.columns.len()];
-    for (rank, column) in column_order.into_iter().enumerate() {
-        column_sort_keys[column] = u8::try_from(rank)?;
-    }
+    let column_sort_keys = super::base::fts_column_sort_keys(spec.columns)?;
 
     let mut state = Fts5DecodeState {
         multi_segment: segments.len() > 1,
@@ -518,4 +544,23 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
         return Err(err);
     }
     Ok(Some(hex::encode(h.finalize())))
+}
+
+pub(super) fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
+    if !matches!(table, "node_search_postings" | "doc_search_postings") {
+        return fts_digest_vocab(conn, table, order_by);
+    }
+    let snapshot = if conn.is_autocommit() {
+        Some(conn.unchecked_transaction()?)
+    } else {
+        None
+    };
+    let digest = match fts_digest_fastpath(conn, table)? {
+        Some(digest) => digest,
+        None => fts_digest_vocab(conn, table, order_by)?,
+    };
+    if let Some(snapshot) = snapshot {
+        snapshot.commit()?;
+    }
+    Ok(digest)
 }

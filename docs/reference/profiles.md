@@ -11,12 +11,11 @@ governs a run: its Git isolation & integration policy (`git:`), persistence mode
 `context`, `tools_add`, `tools_remove`), proofs, guidance slots, review contours,
 and ordered verification gates with `pass` / `fail` routing edges.
 
-Profiles use strict schema validation (`deny_unknown_fields`). Legacy `0.5.x`
-and pre-`0.6.2` profiles (without `version: 2`, or using removed `loop:`, `*_proof`
-wrappers, `proof: contract` / `seam_test` / `delivery`, `expected_failure`,
-`git.commit_mode`, `git.integrate`, `git_commit_notes`, or regex `output:` scrapers)
-fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade `0.5.x` workspaces per the
-[0.6.0 migration guide](../runbooks/migration-0.6.md).
+Profiles use strict schema validation (`deny_unknown_fields`). Legacy or
+non-`version: 2` profiles (or those using removed `loop:`, `*_proof` wrappers,
+`proof: contract` / `seam_test` / `delivery`, `expected_failure`,
+`git.commit_mode`, `git.integrate`, `git_commit_notes`, or regex `output:`
+scrapers) fail closed with `ACDD_PROFILE_SCHEMA_INVALID`.
 
 > [!NOTE]
 > Contract and command passes require claim-bound execution observations via
@@ -208,7 +207,7 @@ Each entry in `commands:` is one of:
 
 ### Gate Fields & Routing (`pass`, `fail`, `fail_drift`, `need`, `independent_from`)
 - `pass`: Explicit sibling gate ID on success (defaults to next sibling gate if omitted).
-- `fail`: Target sibling gate ID on `defect` reject/failure (replaces removed `0.5.x` `loop:` blocks).
+- `fail`: Target sibling gate ID on `defect` reject/failure.
 - `fail_drift`: Optional target sibling gate ID (e.g. `rearchitect`) on `architectural_drift` rejections, clearing cached builder context and rotating runner `ACDD_AGENT_SESSION_ID`.
 - `when`: Boolean tag expression (`tag`, `!tag`, `a & b`, `a + b`, `a | b`, `( ... )`)
   parsed and evaluated solely by `acdd_state::profile::when::WhenExpr`,
@@ -237,7 +236,7 @@ Built-in `ProofKind` values are:
 ### `DomainProvider` Extensions (`call`, `checks`, `context`, `tools_add`, `tools_remove`)
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
-- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`).
+- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`).
 - **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
 

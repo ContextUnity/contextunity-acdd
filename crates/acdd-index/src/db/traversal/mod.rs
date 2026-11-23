@@ -3,229 +3,26 @@
 mod change_impact;
 mod dead_tails;
 mod duplicates;
-mod impact;
+/// Graph impact and bounded traversal queries.
+pub mod impact;
 mod slice;
+mod types;
 
 use super::{paging, reader, symbols};
 use crate::models::{
     details::NodeDetailKey,
     tags::{EdgeKind, NodeKind},
 };
-use acdd_core::response::{CoverageOptions, QueryOptions};
-use anyhow::{bail, Result};
+use anyhow::Result;
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::str::FromStr;
 
-pub use super::cycles::cycles;
-pub use dead_tails::dead_tails_paged;
+pub(crate) use dead_tails::dead_tails_paged;
 pub use duplicates::duplicates_paged;
-pub use impact::{
-    impact_inbound, impact_with_path_options, removal_paged_with_path, traverse_with_path_options,
-};
-pub(crate) use impact::immediate_links;
-
-/// Typed edge direction for impact and traversal queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ImpactDirection {
-    /// Follow incoming dependents/callers (`dst_hash -> src_hash`).
-    #[default]
-    Inbound,
-    /// Follow outgoing dependencies/callees (`src_hash -> dst_hash`).
-    Outbound,
-}
-
-impl ImpactDirection {
-    /// Returns the canonical wire string (`"inbound"` or `"outbound"`).
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Inbound => "inbound",
-            Self::Outbound => "outbound",
-        }
-    }
-
-    /// Returns `true` for [`ImpactDirection::Inbound`].
-    pub const fn is_inbound(&self) -> bool {
-        matches!(self, Self::Inbound)
-    }
-
-    /// Converts a boolean `inbound` flag into [`ImpactDirection`].
-    pub const fn from_inbound(inbound: bool) -> Self {
-        if inbound {
-            Self::Inbound
-        } else {
-            Self::Outbound
-        }
-    }
-
-    /// Parses an optional direction string, defaulting `None` to [`ImpactDirection::Inbound`].
-    pub fn parse_optional(value: Option<&str>) -> Result<Self> {
-        match value {
-            None => Ok(Self::Inbound),
-            Some(raw) => raw.parse(),
-        }
-    }
-}
-
-impl FromStr for ImpactDirection {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "inbound" => Ok(Self::Inbound),
-            "outbound" => Ok(Self::Outbound),
-            _ => bail!("impact direction must be inbound or outbound"),
-        }
-    }
-}
-
-/// Typed relationship mode for graph traversal queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TraversalMode {
-    /// Call/invocation and reference dependency graph (default).
-    #[default]
-    Calls,
-    /// Parameter, assignment, and mutation data-flow edges.
-    DataFlow,
-    /// All dependency edges including structural containment/imports/docs.
-    All,
-}
-
-impl TraversalMode {
-    /// Returns the canonical wire string (`"calls"`, `"data-flow"`, or `"all"`).
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Calls => "calls",
-            Self::DataFlow => "data-flow",
-            Self::All => "all",
-        }
-    }
-
-    /// Parses an optional traversal mode, defaulting unknown or omitted values to [`TraversalMode::Calls`].
-    pub fn parse_optional(value: Option<&str>) -> Self {
-        match value {
-            Some("data-flow") | Some("dataflow") => Self::DataFlow,
-            Some("all") => Self::All,
-            _ => Self::Calls,
-        }
-    }
-}
-
-impl FromStr for TraversalMode {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "calls" => Ok(Self::Calls),
-            "data-flow" | "dataflow" => Ok(Self::DataFlow),
-            "all" => Ok(Self::All),
-            _ => bail!("traversal mode must be calls, data-flow, or all"),
-        }
-    }
-}
-
-/// Typed operation dispatched by [`query_with_path_options`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphQueryOp {
-    Overview,
-    Inspect,
-    Explain,
-    Impact,
-    Slice,
-    Untested,
-    Implementations,
-    Unwired,
-    Sql,
-    Doctor,
-    Search,
-    Duplicates,
-    DeadTails,
-}
-
-impl FromStr for GraphQueryOp {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "overview" => Ok(Self::Overview),
-            "inspect" => Ok(Self::Inspect),
-            "explain" => Ok(Self::Explain),
-            "impact" => Ok(Self::Impact),
-            "slice" => Ok(Self::Slice),
-            "untested" => Ok(Self::Untested),
-            "implementations" => Ok(Self::Implementations),
-            "unwired" => Ok(Self::Unwired),
-            "sql" => Ok(Self::Sql),
-            "doctor" => Ok(Self::Doctor),
-            "search" | "discover" | "find" => Ok(Self::Search),
-            "duplicates" => Ok(Self::Duplicates),
-            "dead_tails" => Ok(Self::DeadTails),
-            _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates,dead_tails"),
-        }
-    }
-}
-
-/// Bounds and filters a graph traversal.
-pub struct TraversalOptions<'a> {
-    /// Maximum graph depth.
-    pub depth: u32,
-    /// Whether to follow incoming relationships.
-    pub inbound: bool,
-    /// Optional relationship mode.
-    pub mode: Option<&'a str>,
-    /// Optional exact relationship kinds.
-    pub edge_types: Option<&'a [String]>,
-    /// Bounded page and generation contract.
-    pub page: &'a QueryOptions,
-}
-
-/// Bounds a generic graph query.
-pub struct GraphQueryOptions<'a> {
-    /// Maximum graph depth for traversal operations.
-    pub depth: u32,
-    /// Incoming or outgoing impact direction.
-    pub direction: Option<&'a str>,
-    /// Optional resolution coverage.
-    pub coverage: CoverageOptions,
-    /// Bounded page and generation contract.
-    pub page: &'a QueryOptions,
-}
-
-pub(super) fn normalize_scope(
-    target: Option<&str>,
-    path: Option<&str>,
-    label: &str,
-) -> Result<String> {
-    if let (Some(target), Some(path)) = (target, path) {
-        anyhow::ensure!(target == path, "{label} conflicts with path");
-    }
-    let raw = reader::strip_selector_uri_prefix(target.or(path).unwrap_or("").trim())
-        .trim_end_matches('/');
-    let scope = if raw == "." { "" } else { raw };
-    anyhow::ensure!(
-        !scope.starts_with('/')
-            && !scope
-                .split('/')
-                .any(|s| s == ".." || s == "." || (s.is_empty() && !scope.is_empty())),
-        "{label} must be workspace-relative"
-    );
-    Ok(scope.to_owned())
-}
-
-pub(super) const fn edge_endpoints(direction: ImpactDirection) -> (&'static str, &'static str) {
-    if direction.is_inbound() {
-        ("dst_hash", "src_hash")
-    } else {
-        ("src_hash", "dst_hash")
-    }
-}
-
-pub(super) fn page_bounds<'a, T>(items: &'a [T], options: &QueryOptions) -> (usize, &'a [T]) {
-    let total = items.len();
-    let start = options.offset.min(total);
-    let end = start.saturating_add(options.limit).min(total);
-    (total, &items[start..end])
-}
+pub use impact::{impact_inbound, impact_with_path_options, removal_paged_with_path};
+use impact::traverse_with_path_options;
+pub use types::{GraphQueryOptions, TraversalOptions};
+use types::{GraphQueryOp, ImpactDirection};
 
 fn sql_selector(selector: Option<&str>) -> Result<&str> {
     selector
@@ -351,8 +148,9 @@ pub fn query_with_path_options(
 
 #[cfg(test)]
 mod traversal_seam_tests {
+    use super::types::{GraphQueryOp, TraversalMode};
     use super::*;
-    use crate::db::SCHEMA_DDL;
+    use crate::db::schema::SCHEMA_DDL;
     use acdd_core::response::{QueryOptions, ResponsePolicy};
     use rusqlite::Connection;
 
@@ -380,5 +178,112 @@ mod traversal_seam_tests {
             QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
         let result = duplicates_paged(&conn, None, None, None, None, &options).unwrap();
         assert_eq!(result["min_lines"], 5);
+    }
+
+    #[test]
+    fn slice_edge_ordering_uses_native_ids_and_confidence() {
+        use crate::db::commitments;
+        use acdd_core::response::{CoverageOptions, Detail};
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA_DDL}INSERT INTO metadata(key,value) VALUES ('output_root','test-gen'),('workspace_root','/tmp');"
+        ))
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO path_dictionary(path_id, path) VALUES (1, 'contextunity/commerce/ingestion/a.py'), (2, 'contextunity/commerce/ingestion/b.py');
+             INSERT INTO files(path, status, digest, size, language, is_test, generated, path_hash)
+             VALUES ('contextunity/commerce/ingestion/a.py', 'indexed', 'aa', 0, 'python', 0, 0, 11),
+                    ('contextunity/commerce/ingestion/b.py', 'indexed', 'bb', 0, 'python', 0, 0, 22);
+             INSERT INTO coverage_evidence(evidence_id, evidence) VALUES (1, 'aaa'), (2, 'zzz');
+             INSERT INTO nodes(node_hash, id, kind, name, qualname, path_id, owner_path_id, line, end_line, language, generated, details, is_test)
+             VALUES (100, 'src', 'function', 'src', 'a.src', 1, 1, 1, 2, 'python', 0, '{}', 0),
+                    (200, 'test-a', 'function', 'test_a', 'b.test_a', 2, 2, 1, 2, 'python', 0, '{}', 0),
+                    (300, 'test-a!', 'function', 'test_a_bang', 'b.test_a_bang', 2, 2, 3, 4, 'python', 0, '{}', 0);
+             INSERT INTO edges(src_hash, dst_hash, kind, path_id, line, evidence_id, confidence_id, occurrence_count)
+             VALUES (100, 300, 'calls', 1, 1, 1, 1, 1),
+                    (100, 200, 'calls', 1, 2, 1, 2, 1);",
+        )
+        .unwrap();
+        commitments::seal(&conn).unwrap();
+        for detail in [Detail::Compact, Detail::Full] {
+            let page =
+                QueryOptions::resolve(&ResponsePolicy::default(), Some(100), 0, Some(detail), None)
+                    .unwrap();
+            let result = query_with_path_options(
+                &conn,
+                "slice",
+                Some("contextunity/commerce/ingestion"),
+                None,
+                &GraphQueryOptions {
+                    depth: 1,
+                    direction: None,
+                    coverage: CoverageOptions::default(),
+                    page: &page,
+                },
+            )
+            .unwrap();
+            let edges = result["edges"]["items"].as_array().unwrap();
+            assert!(edges.iter().any(|edge| edge["confidence"] == "aaa"));
+            assert!(edges.iter().any(|edge| edge["confidence"] == "zzz"));
+            let mut expected = edges.clone();
+            expected.sort_by(|a, b| {
+                a["src_public_id"]
+                    .as_str()
+                    .cmp(&b["src_public_id"].as_str())
+                    .then_with(|| a["dst_public_id"].as_str().cmp(&b["dst_public_id"].as_str()))
+                    .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
+                    .then_with(|| a["line"].as_i64().cmp(&b["line"].as_i64()))
+                    .then_with(|| {
+                        a["occurrence_count"]
+                            .as_i64()
+                            .cmp(&b["occurrence_count"].as_i64())
+                    })
+                    .then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
+                    .then_with(|| a["confidence"].as_str().cmp(&b["confidence"].as_str()))
+                    .then_with(|| {
+                        if detail == Detail::Full {
+                            a["evidence"].as_str().cmp(&b["evidence"].as_str())
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+            });
+            assert_eq!(edges, &expected, "internal edge order for {detail:?}");
+            let punctuated = edges
+                .iter()
+                .position(|edge| edge["dst_public_id"] == "test-a!")
+                .unwrap();
+            let prefix = edges
+                .iter()
+                .position(|edge| edge["dst_public_id"] == "test-a")
+                .unwrap();
+            assert!(prefix < punctuated);
+            let generation = result["edges"]["generation"].as_str().unwrap();
+            for (offset, edge) in expected.iter().enumerate() {
+                let page = QueryOptions::resolve(
+                    &ResponsePolicy::default(),
+                    Some(1),
+                    offset,
+                    Some(detail),
+                    Some(generation.to_owned()),
+                )
+                .unwrap();
+                let part = query_with_path_options(
+                    &conn,
+                    "slice",
+                    Some("contextunity/commerce/ingestion"),
+                    None,
+                    &GraphQueryOptions {
+                        depth: 1,
+                        direction: None,
+                        coverage: CoverageOptions::default(),
+                        page: &page,
+                    },
+                )
+                .unwrap();
+                assert_eq!(&part["edges"]["items"][0], edge);
+            }
+        }
     }
 }

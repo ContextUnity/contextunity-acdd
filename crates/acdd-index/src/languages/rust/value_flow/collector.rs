@@ -9,7 +9,7 @@ use super::types::{
     extract_callable_signature, generic_names, generic_param_serializer_bound, is_async,
     type_expr_has_unknown, type_expr_inner,
 };
-use crate::ast::text;
+use crate::ast::syntax::{collect, text, ScopeVisitor, SyntaxCollector};
 use crate::languages::support::value_flow_core::{ScopeFrameFlags, ValueFlowCollectorCore};
 use crate::semantic::{
     BindingFact, CallSiteEvidence, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
@@ -1005,7 +1005,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
     }
 }
 
-impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for RustValueFlowCollector<'_, 'tree> {
+impl<'tree> SyntaxCollector<'tree> for RustValueFlowCollector<'_, 'tree> {
     type Output = ValueFlowFacts;
     fn enter(&mut self, node: Node<'tree>) {
         RustValueFlowCollector::enter(self, node);
@@ -1018,8 +1018,33 @@ impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for RustValueFlowCollect
     }
 }
 
+impl<'source, 'tree> ScopeVisitor<'source, 'tree> for RustValueFlowCollector<'source, 'tree> {
+    fn enter(&mut self, node: Node<'tree>) {
+        RustValueFlowCollector::enter(self, node);
+    }
+
+    fn exit(&mut self, node: Node<'tree>) {
+        RustValueFlowCollector::exit(self, node);
+    }
+
+    fn enter_suspended(&mut self, node: Node<'tree>) {
+        RustValueFlowCollector::enter(self, node);
+    }
+
+    fn exit_suspended(&mut self, node: Node<'tree>) {
+        RustValueFlowCollector::exit(self, node);
+    }
+
+    fn finish(
+        self: Box<Self>,
+        _collect_module_aliases: bool,
+    ) -> (ValueFlowFacts, Option<HashSet<String>>) {
+        ((*self).finish(), None)
+    }
+}
+
 pub(in super::super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
-    crate::ast::visitor::collect(node, RustValueFlowCollector::new(node, source))
+    collect(node, RustValueFlowCollector::new(node, source))
 }
 
 fn collect_enclosing_thread_locals(

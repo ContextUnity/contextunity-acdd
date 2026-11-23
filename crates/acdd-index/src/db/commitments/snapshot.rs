@@ -1,4 +1,8 @@
-use super::{aggregate, batch_insert_commitments, fts_digest, root, ALGORITHM, DOMAINS, FTS};
+use super::base::{
+    aggregate, batch_insert_commitments, root, write_metadata, MetadataKey, FTS,
+};
+use super::fts5_fastpath::fts_digest;
+use crate::commitments::{ALGORITHM, DOMAINS};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
@@ -141,7 +145,7 @@ fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments) -> Result<
         "snapshot installation requires committed indexes"
     );
     let tx = conn.unchecked_transaction()?;
-    super::write_metadata(&tx, super::MetadataKey::CommitmentAlgorithm, ALGORITHM)?;
+    write_metadata(&tx, MetadataKey::CommitmentAlgorithm, ALGORITHM)?;
     tx.execute("DELETE FROM domain_commitments", [])?;
     for DomainCommitment {
         table,
@@ -158,7 +162,7 @@ fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments) -> Result<
         )?;
     }
     let root = root(&tx)?;
-    super::write_metadata(&tx, super::MetadataKey::OutputRoot, &root)?;
+    write_metadata(&tx, MetadataKey::OutputRoot, &root)?;
     tx.commit()?;
     Ok(root)
 }

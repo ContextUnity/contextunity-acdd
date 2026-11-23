@@ -1,4 +1,4 @@
-use super::{escape_text, inline_code, line_number, text_field, u64_field};
+use super::core::{escape_text, inline_code, line_number, text_field, u64_field};
 use serde_json::Value;
 
 pub(super) fn render(value: &Value, title: &str) -> String {

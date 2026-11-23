@@ -1,13 +1,18 @@
-use super::super::{budget_items, open_code_db_readonly};
-use super::{
-    collect_deleted_scoped_files, collect_scoped_worktree_files, effective_baseline_ref,
-    normalize_sig, public_callable_nodes, CodeDomainProvider, ParsedScopedFile,
-    ScopedCodeSnapshot,
+use super::super::common::{
+    budget_items, open_code_db_readonly, truncate_single_line, CODE_EXTERNAL_CALLERS_MAX_ITEMS,
+    CODE_SYMBOLS_MAX_ITEMS, CODE_SYMBOLS_MAX_SIG_CHARS, CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD,
+    CODE_TESTS_LENS_PAGE_SIZE, CODE_TESTS_LENS_SCOPED_FILE_LIMIT, CODE_TESTS_MAX_ITEMS,
+    CODE_TESTS_PER_FILE_GRAPH_LIMIT,
+};
+use super::common::{
+    collect_deleted_scoped_files, collect_git_diff_paths, collect_scoped_worktree_files,
+    effective_baseline_ref, is_interface_like_kind, is_non_symbol_container, normalize_sig,
+    public_callable_nodes, CodeDomainProvider, ParsedScopedFile, ScopedCodeSnapshot,
 };
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
-use acdd_core::git::{git_command, read_git_blob_utf8};
-use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::git::read_git_blob_utf8;
+use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::DomainContextReq;
 use acdd_core::response::{QueryOptions, ResponsePolicy};
 use acdd_index::ast::extract_typed;
@@ -15,11 +20,100 @@ use acdd_index::db::symbols;
 use acdd_index::languages;
 use acdd_index::models::Node;
 use anyhow::Result;
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+
+fn collect_graph_test_items(
+    worktree: &Path,
+    conn: &Connection,
+    snapshot: &ScopedCodeSnapshot,
+    seen: &mut BTreeSet<(String, String)>,
+    ranked_items: &mut Vec<(u8, usize, usize, Value)>,
+) -> Result<()> {
+    let page = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(CODE_TESTS_LENS_PAGE_SIZE),
+        0,
+        None,
+        None,
+    )?;
+    for (file_idx, rel) in snapshot
+        .files
+        .iter()
+        .take(CODE_TESTS_LENS_SCOPED_FILE_LIMIT)
+        .enumerate()
+    {
+        let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", &page) else {
+            continue;
+        };
+        let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) else {
+            continue;
+        };
+        let mut per_file_rank = 0usize;
+        for item in arr {
+            if per_file_rank >= CODE_TESTS_PER_FILE_GRAPH_LIMIT {
+                break;
+            }
+            let path = item["path"].as_str().unwrap_or_default().to_owned();
+            if !checked_child(worktree, Path::new(&path)).is_ok_and(|p| p.is_file()) {
+                continue;
+            }
+            let qualname = item["qualname"].as_str().unwrap_or_default().to_owned();
+            if seen.insert((path.clone(), qualname.clone())) {
+                ranked_items.push((
+                    0u8,
+                    per_file_rank,
+                    file_idx,
+                    json!({
+                        "path": path,
+                        "name": item["name"],
+                        "qualname": qualname,
+                        "line": item["line"],
+                        "discovery": "graph",
+                    }),
+                ));
+                per_file_rank += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_live_test_items(
+    snapshot: &ScopedCodeSnapshot,
+    seen: &mut BTreeSet<(String, String)>,
+    ranked_items: &mut Vec<(u8, usize, usize, Value)>,
+) {
+    for (file_idx, rel) in snapshot.files.iter().enumerate() {
+        let Some(parsed) = snapshot.parsed.get(rel) else {
+            continue;
+        };
+        let mut per_file_rank = 0usize;
+        for node in &parsed.facts.nodes {
+            let is_test_case =
+                node.details.get("test_role").and_then(Value::as_str) == Some("test_case");
+            if is_test_case && seen.insert((node.path.clone(), node.qualname.clone())) {
+                ranked_items.push((
+                    1u8,
+                    per_file_rank,
+                    file_idx,
+                    json!({
+                        "path": node.path,
+                        "name": node.name,
+                        "qualname": node.qualname,
+                        "line": node.line,
+                        "discovery": "live_ast",
+                    }),
+                ));
+                per_file_rank += 1;
+            }
+        }
+    }
+}
 
 impl CodeDomainProvider {
     fn effective_context_files(&self, req: &DomainContextReq) -> Vec<String> {
@@ -101,17 +195,16 @@ impl CodeDomainProvider {
                 .facts
                 .nodes
                 .iter()
-                .filter(|n| !super::is_non_symbol_container(&n.kind) && !n.is_test)
+                .filter(|n| !is_non_symbol_container(&n.kind) && !n.is_test)
                 .collect();
-            let keep_private = file_nodes.len() <= super::super::CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD;
+            let keep_private = file_nodes.len() <= CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD;
             let mut file_candidates = Vec::new();
             for node in file_nodes {
                 let raw_sig = node.details["signature"].as_str().unwrap_or_default();
-                let compact_sig =
-                    super::super::truncate_single_line(raw_sig, super::super::CODE_SYMBOLS_MAX_SIG_CHARS);
+                let compact_sig = truncate_single_line(raw_sig, CODE_SYMBOLS_MAX_SIG_CHARS);
                 let is_exported = compact_sig.starts_with("pub")
                     || compact_sig.starts_with("export ")
-                    || super::is_interface_like_kind(&node.kind);
+                    || is_interface_like_kind(&node.kind);
                 let target_hit = !target_text.is_empty()
                     && (target_text.contains(&node.name) || target_text.contains(&node.qualname));
                 if !keep_private && !is_exported && !target_hit {
@@ -138,7 +231,7 @@ impl CodeDomainProvider {
         }
         all_candidates.sort_by_key(|a| (a.0, a.1, a.2, a.3));
         let mut items: Vec<Value> = all_candidates.into_iter().map(|(_, _, _, _, v)| v).collect();
-        items.truncate(super::super::CODE_SYMBOLS_MAX_ITEMS);
+        items.truncate(CODE_SYMBOLS_MAX_ITEMS);
         Ok(budget_items("symbols", items, req.max_bytes))
     }
 
@@ -149,84 +242,13 @@ impl CodeDomainProvider {
         let mut seen = BTreeSet::new();
 
         if let Some(ref conn) = conn {
-            let page = QueryOptions::resolve(
-                &ResponsePolicy::default(),
-                Some(super::super::CODE_TESTS_LENS_PAGE_SIZE),
-                0,
-                None,
-                None,
-            )?;
-            for (file_idx, rel) in snapshot
-                .files
-                .iter()
-                .take(super::super::CODE_TESTS_LENS_SCOPED_FILE_LIMIT)
-                .enumerate()
-            {
-                if let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", &page) {
-                    if let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) {
-                        let mut per_file_rank = 0usize;
-                        for item in arr {
-                            if per_file_rank >= super::super::CODE_TESTS_PER_FILE_GRAPH_LIMIT {
-                                break;
-                            }
-                            let path = item["path"].as_str().unwrap_or_default().to_owned();
-                            if !checked_child(&req.worktree, Path::new(&path))
-                                .is_ok_and(|p| p.is_file())
-                            {
-                                continue;
-                            }
-                            let qualname = item["qualname"].as_str().unwrap_or_default().to_owned();
-                            if seen.insert((path.clone(), qualname.clone())) {
-                                ranked_items.push((
-                                    0u8,
-                                    per_file_rank,
-                                    file_idx,
-                                    json!({
-                                        "path": path,
-                                        "name": item["name"],
-                                        "qualname": qualname,
-                                        "line": item["line"],
-                                        "discovery": "graph",
-                                    }),
-                                ));
-                                per_file_rank += 1;
-                            }
-                        }
-                    }
-                }
-            }
+            collect_graph_test_items(&req.worktree, conn, &snapshot, &mut seen, &mut ranked_items)?;
         }
-
-        // Also include live test cases (never helper/Drop/module AST nodes) from scoped files.
-        for (file_idx, rel) in snapshot.files.iter().enumerate() {
-            let Some(parsed) = snapshot.parsed.get(rel) else {
-                continue;
-            };
-            let mut per_file_rank = 0usize;
-            for node in &parsed.facts.nodes {
-                let is_test_case =
-                    node.details.get("test_role").and_then(Value::as_str) == Some("test_case");
-                if is_test_case && seen.insert((node.path.clone(), node.qualname.clone())) {
-                    ranked_items.push((
-                        1u8,
-                        per_file_rank,
-                        file_idx,
-                        json!({
-                            "path": node.path,
-                            "name": node.name,
-                            "qualname": node.qualname,
-                            "line": node.line,
-                            "discovery": "live_ast",
-                        }),
-                    ));
-                    per_file_rank += 1;
-                }
-            }
-        }
+        collect_live_test_items(&snapshot, &mut seen, &mut ranked_items);
 
         ranked_items.sort_by_key(|a| (a.0, a.1, a.2));
         let mut items: Vec<Value> = ranked_items.into_iter().map(|(_, _, _, v)| v).collect();
-        items.truncate(super::super::CODE_TESTS_MAX_ITEMS);
+        items.truncate(CODE_TESTS_MAX_ITEMS);
         Ok(budget_items("tests", items, req.max_bytes))
     }
 
@@ -324,50 +346,9 @@ impl CodeDomainProvider {
             }
         }
 
-        items.truncate(super::super::CODE_EXTERNAL_CALLERS_MAX_ITEMS);
+        items.truncate(CODE_EXTERNAL_CALLERS_MAX_ITEMS);
         Ok(budget_items("external_callers", items, req.max_bytes))
     }
-}
-
-pub(super) fn collect_git_diff_paths(
-    worktree: &Path,
-    policy: &WorkspacePathPolicy,
-    baseline: &str,
-    diff_filter: &str,
-    predicate: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    if baseline.starts_with('-')
-        || (!worktree.join(".git").exists() && acdd_core::git::git_common_dir(worktree).is_err())
-    {
-        return Vec::new();
-    }
-    let Ok(out) = git_command(
-        worktree,
-        &[
-            "diff",
-            "--name-only",
-            diff_filter,
-            "--no-renames",
-            "-z",
-            baseline,
-            "--",
-        ],
-    ) else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut paths = BTreeSet::new();
-    for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
-        let rel = String::from_utf8_lossy(raw);
-        if let Some(norm) = normalize_rel_path(&rel) {
-            if policy.is_candidate_included(&norm) && predicate(&norm) {
-                paths.insert(norm);
-            }
-        }
-    }
-    paths.into_iter().collect()
 }
 
 fn collect_changed_worktree_files(

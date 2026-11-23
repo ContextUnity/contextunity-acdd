@@ -12,14 +12,25 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     let compact =
         reader::inspect_paged_with_path(&conn, "target", None, false, &options(10)).unwrap();
     assert_eq!(compact["documents"], serde_json::json!({"total": 0}));
-    let incoming = reader::explain_with_path_options(
+    let source = SourceOptions {
+        enabled: false,
+        leading_lines: 0,
+        max_body_lines: 0,
+        offset: 0,
+    };
+    let incoming = symbols::explain_with_path_options(
         &conn,
+        workspace.root(),
         "target",
         None,
-        &reader::ExplainOptions {
-            direction: reader::ExplainDirection::Incoming,
-            show_doc: true,
-            page: &options(10),
+        &symbols::SymbolExplainOptions {
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Incoming,
+                show_doc: true,
+                page: &options(10),
+            },
+            source: &source,
+            coverage: CoverageOptions::default(),
         },
     )
     .unwrap();
@@ -34,14 +45,19 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     assert!(incoming["incoming"]["generation"].is_string());
     let mut full = options(10);
     full.detail = Detail::Full;
-    let full_edge = reader::explain_with_path_options(
+    let full_edge = symbols::explain_with_path_options(
         &conn,
+        workspace.root(),
         "target",
         None,
-        &reader::ExplainOptions {
-            direction: reader::ExplainDirection::Incoming,
-            show_doc: true,
-            page: &full,
+        &symbols::SymbolExplainOptions {
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Incoming,
+                show_doc: true,
+                page: &full,
+            },
+            source: &source,
+            coverage: CoverageOptions::default(),
         },
     )
     .unwrap();
@@ -279,7 +295,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         workspace.root(),
         "target",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Both,
                 show_doc: true,
@@ -852,10 +868,10 @@ fn line_anchor_contract_matrix() {
     ] {
         match case {
             "exact_and_ambiguous" => {
-                let exact = reader::select(&conn, "alpha/shared.py#L1").unwrap();
+                let exact = crate::common::select_node(&conn, "alpha/shared.py#L1").unwrap();
                 assert_eq!(exact["path"], "alpha/shared.py");
 
-                let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+                let error = crate::common::select_node(&conn, "shared.py#L1").unwrap_err();
                 assert!(
                     matches!(
                         error.downcast_ref::<reader::SelectorError>(),
@@ -872,7 +888,7 @@ fn line_anchor_contract_matrix() {
                     );",
                 )
                 .unwrap();
-                let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+                let error = crate::common::select_node(&conn, "shared.py#L1").unwrap_err();
                 assert!(
                     matches!(
                         error.downcast_ref::<reader::SelectorError>(),
@@ -884,7 +900,7 @@ fn line_anchor_contract_matrix() {
                     .unwrap();
             }
             "missing_exact_line" => {
-                let error = reader::select(&conn, "alpha/shared.py#L2").unwrap_err();
+                let error = crate::common::select_node(&conn, "alpha/shared.py#L2").unwrap_err();
                 assert!(
                     matches!(
                         error.downcast_ref::<reader::SelectorError>(),
@@ -916,7 +932,7 @@ fn selector_propagates_candidate_enrichment_row_budget_errors() {
         )
         .unwrap();
 
-    let error = reader::select(&conn, "repeated").unwrap_err();
+    let error = crate::common::select_node(&conn, "repeated").unwrap_err();
     assert!(
         error.to_string().contains("8 MiB row budget"),
         "expected the candidate enrichment budget error to propagate, got: {error}"
@@ -970,7 +986,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
         workspace.root(),
         "caller",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1035,7 +1051,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
         workspace.root(),
         "caller",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1063,7 +1079,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
         workspace.root(),
         "caller",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1114,7 +1130,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         workspace.root(),
         "run",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1135,7 +1151,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
             workspace.root(),
             "run",
             None,
-            &symbols::ExplainOptions {
+            &symbols::SymbolExplainOptions {
                 explain: reader::ExplainOptions {
                     direction: reader::ExplainDirection::Outgoing,
                     show_doc: false,
@@ -1173,7 +1189,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         workspace.root(),
         "run",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Outgoing,
                 show_doc: false,
@@ -1219,7 +1235,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         impact_page.detail = detail;
         let mut reached = Vec::new();
         loop {
-            let impact = traversal::traverse_with_path_options(
+            let impact = traversal::impact::traverse_with_path_options(
                 &conn,
                 "run",
                 None,
@@ -1270,7 +1286,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         assert_eq!(reached.len(), 4);
         assert_eq!(reached.iter().collect::<BTreeSet<_>>().len(), 4);
         for edge in &possible {
-            let inbound = traversal::traverse_with_path_options(
+            let inbound = traversal::impact::traverse_with_path_options(
                 &conn,
                 edge["dst_public_id"].as_str().unwrap(),
                 None,

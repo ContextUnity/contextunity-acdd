@@ -4,15 +4,15 @@ use hashbrown::HashMap;
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
-struct Binding {
+struct ResolvedCommonJsBinding {
     completed: SourcePosition,
     captured_safe: bool,
 }
 
 #[derive(Default)]
 /// JavaScript-family CommonJS binding index prepared before linking.
-pub(crate) struct CommonJsBindings<'a> {
-    bindings: HashMap<(&'a str, &'a str), Option<Binding>>,
+pub(crate) struct ResolvedCommonJsBindings<'a> {
+    bindings: HashMap<(&'a str, &'a str), Option<ResolvedCommonJsBinding>>,
 }
 
 fn position(value: &Value) -> Option<SourcePosition> {
@@ -26,7 +26,7 @@ fn position(value: &Value) -> Option<SourcePosition> {
     })
 }
 
-impl<'a> CommonJsBindings<'a> {
+impl<'a> ResolvedCommonJsBindings<'a> {
     pub(crate) fn build(all: &'a dyn crate::FactsLookup) -> Self {
         let mut result = Self::default();
         for facts in all.values_facts() {
@@ -74,7 +74,7 @@ impl<'a> CommonJsBindings<'a> {
                         {
                             return None;
                         }
-                        Some(Binding {
+                        Some(ResolvedCommonJsBinding {
                             completed,
                             captured_safe: record["captured_safe"].as_bool()?,
                         })

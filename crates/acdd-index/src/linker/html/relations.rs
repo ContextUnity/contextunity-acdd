@@ -1,7 +1,12 @@
-use super::super::*;
 use super::templates::{ExpressionRegistry, Match, RenderContextRegistry};
+use crate::languages;
+use crate::models::{
+    compact_graph::CompactGraph as Graph,
+    Facts, Node,
+};
 use crate::semantic::ValueFlowFacts;
 use crate::typed_facts::FlowState;
+use hashbrown::HashMap;
 
 fn is_html_file(facts: &Facts) -> bool {
     facts
@@ -158,12 +163,12 @@ pub(in crate::linker) fn emit_request_routes(
             ),
             "local_unverified" => {
                 let matched = match_request_route(routes, method, url);
-                super::super::framework_relations::emit_route_match(
+                crate::linker::semantic_facts::emit_route_match(
                     graph,
                     path,
                     &node.id,
                     node.line,
-                    super::super::framework_relations::ENDPOINT_ROUTE_PRIMITIVE,
+                    crate::linker::semantic_facts::ENDPOINT_ROUTE_PRIMITIVE,
                     &node.name,
                     matched,
                     None,

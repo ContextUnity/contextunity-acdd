@@ -1,4 +1,13 @@
-use super::*;
+use super::prototypes::lexical_this_method;
+use super::scope_facts::{
+    self, collect_array_shadow_fact, collect_dom_global_shadow_fact, collect_pattern_binding_names,
+    collect_rebound_parameter_fact, nearest_binding_scope, pattern_binds_require,
+};
+use crate::ast::syntax::{field, text, Syntax};
+use crate::languages::context::FileContext;
+use crate::languages::manifests;
+use crate::languages::types::{DomListenerLocalDeclaration, DomListenerReceiverExpression};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Resolves a DOM receiver type name to a canonical receiver classification.
 pub fn typed_dom_receiver(name: &str) -> Option<&'static str> {
@@ -85,28 +94,6 @@ pub fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str
     }
 }
 
-pub(super) fn dom_global_name(name: &str) -> Option<&'static str> {
-    match name {
-        "document" => Some("document"),
-        "window" => Some("window"),
-        "Event" => Some("Event"),
-        "CustomEvent" => Some("CustomEvent"),
-        "MouseEvent" => Some("MouseEvent"),
-        "KeyboardEvent" => Some("KeyboardEvent"),
-        "EventTarget" => Some("EventTarget"),
-        "Element" => Some("Element"),
-        "HTMLElement" => Some("HTMLElement"),
-        "HTMLTableElement" => Some("HTMLTableElement"),
-        "HTMLDivElement" => Some("HTMLDivElement"),
-        "HTMLInputElement" => Some("HTMLInputElement"),
-        "HTMLButtonElement" => Some("HTMLButtonElement"),
-        "HTMLAnchorElement" => Some("HTMLAnchorElement"),
-        "Document" => Some("Document"),
-        "Window" => Some("Window"),
-        _ => None,
-    }
-}
-
 pub(super) fn browser_global_type(name: &str) -> bool {
     if typed_dom_receiver(name).is_some() {
         return true;
@@ -114,314 +101,143 @@ pub(super) fn browser_global_type(name: &str) -> bool {
     matches!(name, "Response" | "Request" | "FormData" | "Blob" | "File")
 }
 
-pub(super) fn remember_dom_global(
-    name: &str,
-    names: &mut [Option<&'static str>; 16],
-    count: &mut usize,
-) {
-    let Some(global) = dom_global_name(name.trim()) else {
-        return;
-    };
-    if *count < names.len() && !names[..*count].contains(&Some(global)) {
-        names[*count] = Some(global);
-        *count += 1;
-    }
-}
-
-pub(super) fn collect_dom_pattern_globals(
-    pattern: Syntax<'_>,
-    source: &str,
-    names: &mut [Option<&'static str>; 16],
-    count: &mut usize,
-) {
-    match pattern.kind() {
-        "identifier" | "shorthand_property_identifier_pattern" => {
-            remember_dom_global(text(pattern, source), names, count);
-        }
-        "pair_pattern" => {
-            if let Some(value) = pattern.child_by_field_name("value") {
-                collect_dom_pattern_globals(value, source, names, count);
-            }
-        }
-        "assignment_pattern" => {
-            if let Some(left) = pattern.child_by_field_name("left") {
-                collect_dom_pattern_globals(left, source, names, count);
-            }
-        }
-        "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern"
-        | "required_parameter" | "optional_parameter" | "formal_parameter" => {
-            if let Some(candidate) = pattern
-                .child_by_field_name("name")
-                .or_else(|| pattern.child_by_field_name("pattern"))
-            {
-                collect_dom_pattern_globals(candidate, source, names, count);
-                return;
-            }
-            let mut cursor = pattern.walk();
-            for child in pattern.named_children(&mut cursor) {
-                collect_dom_pattern_globals(child, source, names, count);
-            }
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn collect_dom_import_globals(
-    node: Syntax<'_>,
-    source: &str,
-    names: &mut [Option<&'static str>; 16],
-    count: &mut usize,
-) {
-    match node.kind() {
-        "import_clause" | "namespace_import" => {
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    remember_dom_global(text(child, source), names, count);
-                }
-            }
-        }
-        "import_specifier" => {
-            if let Some(local) = node
-                .child_by_field_name("alias")
-                .or_else(|| node.child_by_field_name("name"))
-            {
-                remember_dom_global(text(local, source), names, count);
-            }
-        }
-        _ => {}
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_dom_import_globals(child, source, names, count);
-    }
-}
-
-pub(super) fn nearest_binding_scope(node: Syntax<'_>, var_scoped: bool) -> Option<Syntax<'_>> {
-    let mut current = Some(node);
-    while let Some(scope) = current {
-        if var_scoped {
-            if matches!(
-                scope.kind(),
-                "program"
-                    | "source_file"
-                    | "function_declaration"
-                    | "generator_function_declaration"
-                    | "function_expression"
-                    | "generator_function"
-                    | "generator_function_expression"
-                    | "arrow_function"
-                    | "method_definition"
-            ) {
-                return Some(scope);
-            }
-        } else if matches!(
-            scope.kind(),
-            "statement_block"
-                | "catch_clause"
-                | "for_statement"
-                | "for_in_statement"
-                | "program"
-                | "source_file"
-        ) {
-            return Some(scope);
-        }
-        current = scope.parent();
-    }
-    None
-}
-
-pub(super) fn collect_array_shadow_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
-    let (array_binding, array_var_scoped) = match node.kind() {
-        "variable_declarator" => (
-            node.child_by_field_name("name")
-                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-            node.parent()
-                .is_some_and(|parent| parent.kind() == "variable_declaration"),
-        ),
-        "class_declaration"
-        | "interface_declaration"
-        | "type_alias_declaration"
-        | "enum_declaration"
-        | "function_declaration" => (field(node, source, "name") == Some("Array"), false),
-        "type_parameter" => (field(node, source, "name") == Some("Array"), false),
-        "required_parameter" | "optional_parameter" => {
-            (field(node, source, "name") == Some("Array"), true)
-        }
-        "import_specifier" => (
-            node.child_by_field_name("alias")
-                .or_else(|| node.child_by_field_name("name"))
-                .is_some_and(|name| text(name, source) == "Array"),
-            false,
-        ),
-        "import_clause" => (
-            node.named_child(0)
-                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-            false,
-        ),
-        "namespace_import" => (
-            node.named_child(0)
-                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-            false,
-        ),
-        _ => (false, false),
-    };
-    if array_binding {
-        let scope = if node.kind() == "type_parameter" {
-            let mut current = node.parent();
-            let mut owner = None;
-            while let Some(candidate) = current {
-                if matches!(
-                    candidate.kind(),
-                    "class_declaration"
-                        | "class"
-                        | "function_declaration"
-                        | "function_expression"
-                        | "arrow_function"
-                        | "method_definition"
-                ) {
-                    owner = Some(candidate);
-                    break;
-                }
-                current = candidate.parent();
-            }
-            owner
-        } else {
-            nearest_binding_scope(node, array_var_scoped)
-        };
-        if let Some(scope) = scope {
-            std::sync::Arc::make_mut(
-                &mut file.state.typescript_mut().shadowed_array_type_scopes,
-            )
-            .insert(scope.id());
-        }
-    }
-}
-
-pub(super) fn collect_rebound_parameter_fact(
-    node: Syntax<'_>,
-    source: &str,
-    file: &mut FileContext,
-) {
-    let rebound = match node.kind() {
+fn record_dom_local_writes(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let written = match node.kind() {
         "assignment_expression" | "augmented_assignment_expression" => {
             node.child_by_field_name("left")
         }
-        "variable_declarator" => node.child_by_field_name("name"),
         "update_expression" => node.named_child(0),
         _ => None,
     };
-    let Some(name) = rebound.filter(|name| name.kind() == "identifier") else {
+    let Some(name) = written.filter(|name| name.kind() == "identifier") else {
         return;
     };
-    let name = text(name, source);
-    let mut current = node.parent();
-    while let Some(scope) = current {
+    let name = text(name, source).to_owned();
+    let local_writes =
+        std::sync::Arc::make_mut(&mut file.state.typescript_mut().dom_listener_local_writes);
+    let mut parent = node.parent();
+    while let Some(scope) = parent {
+        if matches!(scope.kind(), "statement_block" | "program" | "source_file") {
+            local_writes
+                .entry(scope.id())
+                .or_default()
+                .entry(name.clone())
+                .or_default()
+                .push(node.start_byte());
+        }
         if matches!(
             scope.kind(),
-            "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
+            "function_declaration" | "function_expression" | "arrow_function" | "method_definition"
         ) {
-            std::sync::Arc::make_mut(
-                &mut file.state.typescript_mut().rebound_function_parameters,
-            )
-            .entry(scope.id())
-            .or_default()
-            .insert(name.to_owned());
+            break;
         }
-        current = scope.parent();
+        parent = scope.parent();
     }
 }
 
-pub(super) fn collect_dom_global_shadow_fact(
-    node: Syntax<'_>,
-    source: &str,
-    file: &mut FileContext,
-) {
-    let mut shadowed_globals = [None; 16];
-    let mut shadowed_count = 0;
-    let mut var_scoped = false;
-    match node.kind() {
-        "variable_declarator" => {
-            var_scoped = node
-                .parent()
-                .is_some_and(|parent| parent.kind() == "variable_declaration");
-            if let Some(name) = node.child_by_field_name("name") {
-                collect_dom_pattern_globals(
-                    name,
-                    source,
-                    &mut shadowed_globals,
-                    &mut shadowed_count,
-                );
-            }
-        }
-        "formal_parameters" | "required_parameter" | "optional_parameter" | "formal_parameter" => {
-            var_scoped = true;
-            collect_dom_pattern_globals(node, source, &mut shadowed_globals, &mut shadowed_count);
-        }
-        "arrow_function" => {
-            var_scoped = true;
-            if let Some(parameter) = node.child_by_field_name("parameter") {
-                collect_dom_pattern_globals(
-                    parameter,
-                    source,
-                    &mut shadowed_globals,
-                    &mut shadowed_count,
-                );
-            }
-        }
-        "function_declaration"
-        | "class_declaration"
-        | "enum_declaration"
-        | "interface_declaration"
-        | "type_alias_declaration" => {
-            if let Some(name) = field(node, source, "name") {
-                remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
-            }
-        }
-        "function_expression" => {
-            var_scoped = true;
-            if let Some(name) = field(node, source, "name") {
-                remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
-            }
-        }
-        "import_statement" => {
-            collect_dom_import_globals(node, source, &mut shadowed_globals, &mut shadowed_count)
-        }
-        "catch_clause" => {
-            if let Some(parameter) = node.child_by_field_name("parameter") {
-                collect_dom_pattern_globals(
-                    parameter,
-                    source,
-                    &mut shadowed_globals,
-                    &mut shadowed_count,
-                );
-            }
-        }
-        "assignment_expression" | "augmented_assignment_expression" => {
-            var_scoped = true;
-            if let Some(left) = node
-                .child_by_field_name("left")
-                .filter(|left| left.kind() == "identifier")
-            {
-                remember_dom_global(
-                    text(left, source),
-                    &mut shadowed_globals,
-                    &mut shadowed_count,
-                );
-            }
-        }
-        _ => {}
+fn collect_dom_class_field_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    if !matches!(node.kind(), "field_definition" | "public_field_definition") {
+        return;
     }
-    if shadowed_count > 0 {
-        if let Some(scope) = nearest_binding_scope(node, var_scoped) {
-            let by_scope = std::sync::Arc::make_mut(
-                &mut file.state.typescript_mut().shadowed_dom_global_scopes,
-            );
-            let globals = by_scope.entry(scope.id()).or_default();
-            for global in shadowed_globals[..shadowed_count].iter().flatten() {
-                globals.insert((*global).to_owned());
+    let Some(class) = node
+        .parent()
+        .filter(|body| body.kind() == "class_body")
+        .and_then(|body| body.parent())
+        .filter(|class| matches!(class.kind(), "class_declaration" | "class"))
+    else {
+        return;
+    };
+    let Some(name) = node
+        .child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("property"))
+        .filter(|name| matches!(name.kind(), "property_identifier" | "identifier"))
+    else {
+        return;
+    };
+    let static_field = (0..node.child_count()).any(|index| {
+        node.child(index)
+            .is_some_and(|child| child.kind() == "static")
+    });
+    let ty = (!static_field)
+        .then(|| {
+            node.child_by_field_name("type")
+                .and_then(|annotation| annotation.named_child(0))
+                .filter(|ty| ty.kind() == "type_identifier")
+                .map(|ty| text(ty, source).to_owned())
+        })
+        .flatten();
+    let fields =
+        std::sync::Arc::make_mut(&mut file.state.typescript_mut().dom_listener_class_fields)
+            .entry(class.id())
+            .or_default();
+    let name = text(name, source).to_owned();
+    match fields.entry(name) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            entry.insert(None);
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(ty);
+        }
+    }
+}
+
+fn collect_dom_function_receivers(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    if !matches!(
+        node.kind(),
+        "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
+    ) {
+        return;
+    }
+    let mut receivers = HashMap::new();
+    let mut duplicates = HashSet::new();
+    if let Some(parameters) = node.child_by_field_name("parameters") {
+        for parameter in parameters.named_children(&mut parameters.walk()) {
+            let Some(name) = parameter
+                .child_by_field_name("name")
+                .or_else(|| parameter.child_by_field_name("pattern"))
+                .filter(|name| name.kind() == "identifier")
+            else {
+                continue;
+            };
+            let Some(annotation) = parameter
+                .child_by_field_name("type")
+                .and_then(|ty| ty.named_child(0))
+                .filter(|ty| ty.kind() == "type_identifier")
+            else {
+                continue;
+            };
+            let ty = text(annotation, source);
+            if !matches!(
+                typed_dom_receiver(ty),
+                Some("Element" | "Document" | "Window" | "EventTarget")
+            ) {
+                continue;
+            }
+            let name = text(name, source).to_owned();
+            if receivers.insert(name.clone(), ty.to_owned()).is_some() {
+                duplicates.insert(name);
             }
         }
+    }
+    if node.kind() == "arrow_function" {
+        let parameter = first_callback_parameter(node);
+        if let (Some(parameter), Some(element)) =
+            (parameter, array_callback_element(node, source, file))
+        {
+            if matches!(
+                typed_dom_receiver(element),
+                Some("Element" | "Document" | "Window" | "EventTarget")
+            ) {
+                receivers.insert(text(parameter, source).to_owned(), element.to_owned());
+            }
+        }
+    }
+    for name in duplicates {
+        receivers.remove(&name);
+    }
+    if !receivers.is_empty() {
+        std::sync::Arc::make_mut(&mut file.state.typescript_mut().dom_listener_receivers)
+            .insert(node.id(), receivers);
     }
 }
 
@@ -479,191 +295,34 @@ pub(super) fn collect_scope_facts(
         if node.kind() == "variable_declarator" {
             scope_facts::index_dom_listener_declarator(node, source, file);
         }
-        if matches!(
-            node.kind(),
+        if let Some(params_node) = match node.kind() {
             "function_declaration"
-                | "generator_function_declaration"
-                | "function_expression"
-                | "generator_function"
-                | "generator_function_expression"
-                | "arrow_function"
-                | "method_definition"
-        ) {
-            if let Some(parameters) = node
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
+            | "generator_function_expression"
+            | "arrow_function"
+            | "method_definition" => node
                 .child_by_field_name("parameters")
-                .or_else(|| node.child_by_field_name("parameter"))
-            {
-                let mut names = Vec::new();
-                collect_pattern_binding_names(parameters, source, &mut names);
-                if !names.is_empty() {
-                    std::sync::Arc::make_mut(
-                        &mut file.state.typescript_mut().dom_listener_parameter_bindings,
-                    )
-                    .entry(node.id())
-                    .or_default()
-                    .extend(names);
-                }
-            }
-        }
-        if node.kind() == "catch_clause" {
-            if let Some(parameter) = node.child_by_field_name("parameter") {
-                let mut names = Vec::new();
-                collect_pattern_binding_names(parameter, source, &mut names);
-                if !names.is_empty() {
-                    std::sync::Arc::make_mut(
-                        &mut file.state.typescript_mut().dom_listener_parameter_bindings,
-                    )
-                    .entry(node.id())
-                    .or_default()
-                    .extend(names);
-                }
-            }
-        }
-        let written = match node.kind() {
-            "assignment_expression" | "augmented_assignment_expression" => {
-                node.child_by_field_name("left")
-            }
-            "update_expression" => node.named_child(0),
+                .or_else(|| node.child_by_field_name("parameter")),
+            "catch_clause" => node.child_by_field_name("parameter"),
             _ => None,
-        };
-        if let Some(name) = written.filter(|name| name.kind() == "identifier") {
-            let name = text(name, source).to_owned();
-            let local_writes = std::sync::Arc::make_mut(
-                &mut file.state.typescript_mut().dom_listener_local_writes,
-            );
-            let mut parent = node.parent();
-            while let Some(scope) = parent {
-                if matches!(scope.kind(), "statement_block" | "program" | "source_file") {
-                    local_writes
-                        .entry(scope.id())
-                        .or_default()
-                        .entry(name.clone())
-                        .or_default()
-                        .push(node.start_byte());
-                }
-                if matches!(
-                    scope.kind(),
-                    "function_declaration"
-                        | "function_expression"
-                        | "arrow_function"
-                        | "method_definition"
-                ) {
-                    break;
-                }
-                parent = scope.parent();
-            }
-        }
-        collect_dom_global_shadow_fact(node, source, file);
-        if matches!(node.kind(), "field_definition" | "public_field_definition") {
-            if let Some(class) = node
-                .parent()
-                .filter(|body| body.kind() == "class_body")
-                .and_then(|body| body.parent())
-                .filter(|class| matches!(class.kind(), "class_declaration" | "class"))
-            {
-                if let Some(name) = node
-                    .child_by_field_name("name")
-                    .or_else(|| node.child_by_field_name("property"))
-                    .filter(|name| matches!(name.kind(), "property_identifier" | "identifier"))
-                {
-                    let static_field = (0..node.child_count()).any(|index| {
-                        node.child(index)
-                            .is_some_and(|child| child.kind() == "static")
-                    });
-                    let ty = (!static_field)
-                        .then(|| {
-                            node.child_by_field_name("type")
-                                .and_then(|annotation| annotation.named_child(0))
-                                .filter(|ty| ty.kind() == "type_identifier")
-                                .map(|ty| text(ty, source).to_owned())
-                        })
-                        .flatten();
-                    let fields = std::sync::Arc::make_mut(
-                        &mut file.state.typescript_mut().dom_listener_class_fields,
-                    )
-                    .entry(class.id())
-                    .or_default();
-                    let name = text(name, source).to_owned();
-                    match fields.entry(name) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            entry.insert(None);
-                        }
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert(ty);
-                        }
-                    }
-                }
-            }
-        }
-        if matches!(
-            node.kind(),
-            "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
-        ) {
-            let mut receivers = HashMap::new();
-            let mut duplicates = HashSet::new();
-            if let Some(parameters) = node.child_by_field_name("parameters") {
-                for parameter in parameters.named_children(&mut parameters.walk()) {
-                    let Some(name) = parameter
-                        .child_by_field_name("name")
-                        .or_else(|| parameter.child_by_field_name("pattern"))
-                        .filter(|name| name.kind() == "identifier")
-                    else {
-                        continue;
-                    };
-                    let Some(annotation) = parameter
-                        .child_by_field_name("type")
-                        .and_then(|ty| ty.named_child(0))
-                        .filter(|ty| ty.kind() == "type_identifier")
-                    else {
-                        continue;
-                    };
-                    let ty = text(annotation, source);
-                    if !matches!(
-                        typed_dom_receiver(ty),
-                        Some("Element" | "Document" | "Window" | "EventTarget")
-                    ) {
-                        continue;
-                    }
-                    let name = text(name, source).to_owned();
-                    if receivers.insert(name.clone(), ty.to_owned()).is_some() {
-                        duplicates.insert(name);
-                    }
-                }
-            }
-            if node.kind() == "arrow_function" {
-                let parameter = node
-                    .child_by_field_name("parameter")
-                    .or_else(|| node.child_by_field_name("parameters")?.named_child(0))
-                    .and_then(|p| {
-                        if p.kind() == "identifier" {
-                            Some(p)
-                        } else {
-                            p.child_by_field_name("name")
-                                .or_else(|| p.child_by_field_name("pattern"))
-                                .filter(|n| n.kind() == "identifier")
-                        }
-                    });
-                if let (Some(parameter), Some(element)) =
-                    (parameter, array_callback_element(node, source, file))
-                {
-                    if matches!(
-                        typed_dom_receiver(element),
-                        Some("Element" | "Document" | "Window" | "EventTarget")
-                    ) {
-                        receivers.insert(text(parameter, source).to_owned(), element.to_owned());
-                    }
-                }
-            }
-            for name in duplicates {
-                receivers.remove(&name);
-            }
-            if !receivers.is_empty() {
+        } {
+            let mut names = Vec::new();
+            collect_pattern_binding_names(params_node, source, &mut names);
+            if !names.is_empty() {
                 std::sync::Arc::make_mut(
-                    &mut file.state.typescript_mut().dom_listener_receivers,
+                    &mut file.state.typescript_mut().dom_listener_parameter_bindings,
                 )
-                .insert(node.id(), receivers);
+                .entry(node.id())
+                .or_default()
+                .extend(names);
             }
         }
+        record_dom_local_writes(node, source, file);
+        collect_dom_global_shadow_fact(node, source, file);
+        collect_dom_class_field_fact(node, source, file);
+        collect_dom_function_receivers(node, source, file);
         collect_array_shadow_fact(node, source, file);
         collect_rebound_parameter_fact(node, source, file);
         let mut cursor = node.walk();
@@ -722,6 +381,241 @@ pub(super) fn array_type_shadowed(node: Syntax<'_>, file: &FileContext) -> bool 
         current = scope.parent();
     }
     false
+}
+
+fn element_type_from_annotation<'a>(
+    annotation: Syntax<'_>,
+    arrow: Syntax<'_>,
+    file: &FileContext,
+    source: &'a str,
+) -> Option<&'a str> {
+    let element = match annotation.kind() {
+        "array_type" => annotation.named_child(0)?,
+        "generic_type" => {
+            let name = annotation.child_by_field_name("name")?;
+            let name_str = text(name, source);
+            if name.kind() != "type_identifier"
+                || !matches!(
+                    name_str,
+                    "Array" | "NodeListOf" | "HTMLCollectionOf" | "Set"
+                )
+            {
+                return None;
+            }
+            let arguments = annotation.child_by_field_name("type_arguments")?;
+            if arguments.named_child_count() != 1 || array_type_shadowed(arrow, file) {
+                return None;
+            }
+            arguments.named_child(0)?
+        }
+        _ => return None,
+    };
+    if !matches!(element.kind(), "type_identifier" | "identifier") {
+        return None;
+    }
+    Some(text(element, source))
+}
+
+fn enclosing_function_node<'a>(mut current: Option<Syntax<'a>>) -> Option<Syntax<'a>> {
+    while let Some(node) = current {
+        if matches!(
+            node.kind(),
+            "function_declaration"
+                | "method_definition"
+                | "function_expression"
+                | "arrow_function"
+        ) {
+            return Some(node);
+        }
+        current = node.parent();
+    }
+    None
+}
+
+fn dom_query_all_element<'a>(
+    call_expr: Syntax<'_>,
+    source: &'a str,
+    file: &FileContext,
+) -> Option<&'a str> {
+    let callee = call_expr
+        .child_by_field_name("function")
+        .filter(|c| c.kind() == "member_expression")?;
+    let method = callee.child_by_field_name("property")?;
+    if !matches!(
+        text(method, source),
+        "querySelectorAll" | "getElementsByTagName" | "getElementsByClassName"
+    ) {
+        return None;
+    }
+    let object = callee.child_by_field_name("object")?;
+    dom_receiver_from_ast(object, source, file, 0).map(|_| "Element")
+}
+
+fn element_from_parameter_annotation<'a>(
+    call: Syntax<'_>,
+    receiver_name: &str,
+    arrow: Syntax<'_>,
+    file: &FileContext,
+    source: &'a str,
+) -> Option<&'a str> {
+    let enclosing = enclosing_function_node(call.parent())?;
+    let parameters = enclosing.child_by_field_name("parameters")?;
+    let mut cursor = parameters.walk();
+    let mut matches = parameters.named_children(&mut cursor).filter(|parameter| {
+        parameter
+            .child_by_field_name("name")
+            .or_else(|| parameter.child_by_field_name("pattern"))
+            .is_some_and(|name| name.kind() == "identifier" && text(name, source) == receiver_name)
+    });
+    let parameter = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let annotation = parameter.child_by_field_name("type")?.named_child(0)?;
+    let rebound = file.state.typescript().is_some_and(|state| {
+        state
+            .rebound_function_parameters
+            .get(&enclosing.id())
+            .is_some_and(|names| names.contains(receiver_name))
+    });
+    (!rebound).then(|| element_type_from_annotation(annotation, arrow, file, source))?
+}
+
+fn element_from_declarator<'a>(
+    declarator: Syntax<'_>,
+    receiver_name: &str,
+    arrow: Syntax<'_>,
+    file: &FileContext,
+    source: &'a str,
+) -> Option<&'a str> {
+    if declarator.kind() != "variable_declarator" {
+        return None;
+    }
+    let var_name = declarator.child_by_field_name("name")?;
+    if var_name.kind() != "identifier" || text(var_name, source) != receiver_name {
+        return None;
+    }
+    if let Some(ty_node) = declarator.child_by_field_name("type") {
+        let annotation = ty_node.named_child(0).unwrap_or(ty_node);
+        if let Some(el) = element_type_from_annotation(annotation, arrow, file, source) {
+            return Some(el);
+        }
+    }
+    let init = declarator
+        .child_by_field_name("value")
+        .filter(|init| init.kind() == "call_expression")?;
+    dom_query_all_element(init, source, file)
+}
+
+fn element_from_local_declaration<'a>(
+    call: Syntax<'_>,
+    receiver_name: &str,
+    arrow: Syntax<'_>,
+    file: &FileContext,
+    source: &'a str,
+) -> Option<&'a str> {
+    let mut current_scope = call.parent();
+    while let Some(node) = current_scope {
+        if matches!(node.kind(), "statement_block" | "program" | "source_file") {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.start_byte() >= call.start_byte() {
+                    break;
+                }
+                if !matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
+                    continue;
+                }
+                let mut decl_cursor = child.walk();
+                for declarator in child.named_children(&mut decl_cursor) {
+                    if let Some(el) =
+                        element_from_declarator(declarator, receiver_name, arrow, file, source)
+                    {
+                        return Some(el);
+                    }
+                }
+            }
+        }
+        if matches!(
+            node.kind(),
+            "function_declaration"
+                | "method_definition"
+                | "function_expression"
+                | "arrow_function"
+        ) {
+            break;
+        }
+        current_scope = node.parent();
+    }
+    None
+}
+
+fn element_from_this_field<'a>(
+    receiver: Syntax<'_>,
+    arrow: Syntax<'_>,
+    file: &FileContext,
+    source: &'a str,
+) -> Option<&'a str> {
+    let property = receiver.child_by_field_name("property")?;
+    let field_name = text(property, source);
+    let (_, class) = lexical_this_method(arrow)?;
+    let body = class.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if !matches!(child.kind(), "field_definition" | "public_field_definition") {
+            continue;
+        }
+        let Some(prop) = child
+            .child_by_field_name("property")
+            .or_else(|| child.child_by_field_name("name"))
+        else {
+            continue;
+        };
+        if text(prop, source) == field_name {
+            let ty_node = child.child_by_field_name("type")?;
+            let annotation = ty_node.named_child(0).unwrap_or(ty_node);
+            return element_type_from_annotation(annotation, arrow, file, source);
+        }
+    }
+    None
+}
+
+pub(super) fn array_callback_element<'a>(
+    arrow: Syntax<'_>,
+    source: &'a str,
+    file: &FileContext,
+) -> Option<&'a str> {
+    let call = arrow
+        .parent()
+        .filter(|parent| parent.kind() == "arguments")?
+        .parent()?;
+    let function = call
+        .child_by_field_name("function")
+        .filter(|function| function.kind() == "member_expression")?;
+    let method = function.child_by_field_name("property")?;
+    if !matches!(
+        text(method, source),
+        "forEach" | "map" | "filter" | "find" | "some" | "every" | "flatMap"
+    ) {
+        return None;
+    }
+    let receiver = function.child_by_field_name("object")?;
+    match receiver.kind() {
+        "identifier" => {
+            let receiver_name = text(receiver, source);
+            element_from_parameter_annotation(call, receiver_name, arrow, file, source).or_else(
+                || element_from_local_declaration(call, receiver_name, arrow, file, source),
+            )
+        }
+        "member_expression"
+            if receiver
+                .child_by_field_name("object")
+                .is_some_and(|obj| obj.kind() == "this") =>
+        {
+            element_from_this_field(receiver, arrow, file, source)
+        }
+        "call_expression" => dom_query_all_element(receiver, source, file),
+        _ => None,
+    }
 }
 
 pub(super) fn dom_global_shadowed(node: Syntax<'_>, file: &FileContext, name: &str) -> bool {

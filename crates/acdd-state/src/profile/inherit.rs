@@ -1490,6 +1490,71 @@ fn expand_templates_in_working(working: &mut WorkingProfile) -> Result<(), State
     expand_gate_list(&mut working.gates, &templates, &mut stack)
 }
 
+fn apply_template_defaults(
+    gate: &mut WorkingGate,
+    tpl: &GateTemplate,
+) {
+    if gate.gate.command.is_none() {
+        gate.gate.command = tpl.command.clone();
+    }
+    if gate.gate.guidance.is_empty() && !tpl.guidance.is_empty() {
+        gate.gate.guidance = tpl.guidance.clone();
+    }
+    if let Some(max_att) = tpl.max_attempts {
+        if !gate.has_explicit_max_attempts {
+            gate.gate.max_attempts = max_att;
+        }
+    }
+}
+
+fn expand_gate_template(
+    gate: &mut WorkingGate,
+    tpl_name: String,
+    templates: &BTreeMap<String, GateTemplate>,
+    stack: &mut Vec<String>,
+) -> Result<(), StateError> {
+    if stack.contains(&tpl_name) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("cyclic gate_templates expansion detected at '{tpl_name}'"),
+        ));
+    }
+    let tpl = templates.get(&tpl_name).ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "gate '{}' references unknown gate_template '{}'",
+                gate.gate.id, tpl_name
+            ),
+        )
+    })?;
+    stack.push(tpl_name);
+    let mut tpl_children: Vec<WorkingGate> = tpl
+        .gates
+        .iter()
+        .cloned()
+        .map(raw_to_working_gate)
+        .collect::<Result<Vec<_>, _>>()?;
+    for child in &mut tpl_children {
+        apply_template_defaults(child, tpl);
+    }
+    expand_gate_list(&mut tpl_children, templates, stack)?;
+    let inline_patch = std::mem::take(&mut gate.pending_template_gates_patch);
+    if !inline_patch.is_empty() {
+        if tpl_children.is_empty() {
+            tpl_children = build_gates_replace(inline_patch)?;
+        } else {
+            apply_gates_patch(&mut tpl_children, inline_patch)?;
+        }
+    }
+    if gate.children.is_empty() {
+        gate.children = tpl_children;
+    }
+    apply_template_defaults(gate, tpl);
+    stack.pop();
+    Ok(())
+}
+
 fn expand_gate_list(
     gates: &mut [WorkingGate],
     templates: &BTreeMap<String, GateTemplate>,
@@ -1497,65 +1562,7 @@ fn expand_gate_list(
 ) -> Result<(), StateError> {
     for gate in gates.iter_mut() {
         if let Some(tpl_name) = gate.gate.use_template.clone() {
-            if stack.contains(&tpl_name) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("cyclic gate_templates expansion detected at '{tpl_name}'"),
-                ));
-            }
-            let tpl = templates.get(&tpl_name).ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "gate '{}' references unknown gate_template '{}'",
-                        gate.gate.id, tpl_name
-                    ),
-                )
-            })?;
-            stack.push(tpl_name);
-            let mut tpl_children: Vec<WorkingGate> = tpl
-                .gates
-                .iter()
-                .cloned()
-                .map(raw_to_working_gate)
-                .collect::<Result<Vec<_>, _>>()?;
-            for child in &mut tpl_children {
-                if child.gate.command.is_none() {
-                    child.gate.command = tpl.command.clone();
-                }
-                if child.gate.guidance.is_empty() && !tpl.guidance.is_empty() {
-                    child.gate.guidance = tpl.guidance.clone();
-                }
-                if let Some(max_att) = tpl.max_attempts {
-                    if !child.has_explicit_max_attempts {
-                        child.gate.max_attempts = max_att;
-                    }
-                }
-            }
-            expand_gate_list(&mut tpl_children, templates, stack)?;
-            let inline_patch = std::mem::take(&mut gate.pending_template_gates_patch);
-            if !inline_patch.is_empty() {
-                if tpl_children.is_empty() {
-                    tpl_children = build_gates_replace(inline_patch)?;
-                } else {
-                    apply_gates_patch(&mut tpl_children, inline_patch)?;
-                }
-            }
-            if gate.children.is_empty() {
-                gate.children = tpl_children;
-            }
-            if gate.gate.command.is_none() {
-                gate.gate.command = tpl.command.clone();
-            }
-            if gate.gate.guidance.is_empty() && !tpl.guidance.is_empty() {
-                gate.gate.guidance = tpl.guidance.clone();
-            }
-            if let Some(max_att) = tpl.max_attempts {
-                if !gate.has_explicit_max_attempts {
-                    gate.gate.max_attempts = max_att;
-                }
-            }
-            stack.pop();
+            expand_gate_template(gate, tpl_name, templates, stack)?;
         }
         expand_gate_list(&mut gate.children, templates, stack)?;
         if let Some(tb) = &mut gate.tasks_children {

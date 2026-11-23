@@ -1,6 +1,183 @@
 use super::context::{has_node_binding, PhaseContext};
-use super::*;
-use crate::models::tags::{LanguageId, NodeKind};
+use crate::linker::{
+    python, rust,
+    types::{qualified, receiver_head, receiver_type_name, ReceiverType},
+};
+use crate::models::{
+    tags::{LanguageId, NodeKind},
+    Node,
+};
+use hashbrown::HashMap;
+
+fn resolve_parameter_annotation_receiver<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    node: &'a Node,
+    raw_annotation: &'a str,
+    is_rust: bool,
+    type_candidates: &mut Vec<&'a Node>,
+    lookup_key: &mut String,
+) -> Option<ReceiverType<'res>>
+where
+    'a: 'file,
+{
+    let annotation = receiver_type_name(raw_annotation)?;
+    let raw_head = receiver_head(raw_annotation);
+    let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
+    type_candidates.clear();
+    let mut scope = node
+        .qualname
+        .rsplit_once('.')
+        .map_or("", |(parent, _)| parent);
+    let mut annotation_shadowed = false;
+    while !scope.is_empty() {
+        if !is_rust
+            && ctx
+                .input
+                .by_qual
+                .get(scope)
+                .is_some_and(|scope_nodes| {
+                    scope_nodes.iter().any(|scope_node| {
+                        scope_node.path == *ctx.path
+                            && has_node_binding(
+                                ctx.input.interner,
+                                ctx.input.node_rebindings,
+                                scope_node.id.as_str(),
+                                head,
+                            )
+                    })
+                })
+        {
+            annotation_shadowed = true;
+            break;
+        }
+        type_candidates.extend(
+            ctx.lookup(qualified(lookup_key, scope, &annotation))
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.path == *ctx.path),
+        );
+        if !type_candidates.is_empty()
+            && ctx
+                .alias_import_positions
+                .get(&(scope, head))
+                .is_some_and(|position| {
+                    position.line <= node.line
+                        && type_candidates
+                            .iter()
+                            .any(|candidate| candidate.line < position.line)
+                })
+        {
+            type_candidates.clear();
+            annotation_shadowed = true;
+            break;
+        }
+        if !type_candidates.is_empty() {
+            break;
+        }
+        if is_rust
+            && !ctx
+                .aliases
+                .get(scope)
+                .is_some_and(|entries| entries.contains_key(head))
+            && ctx
+                .lookup(qualified(lookup_key, scope, head))
+                .iter()
+                .any(|candidate| {
+                    candidate.path == *ctx.path
+                        && matches!(
+                            candidate.kind.as_str(),
+                            k if k == NodeKind::Module.as_str() || k == "module_declaration"
+                        )
+                })
+        {
+            annotation_shadowed = true;
+            break;
+        }
+        if !is_rust
+            && ctx
+                .input
+                .by_qual
+                .get(scope)
+                .is_some_and(|scope_nodes| {
+                    scope_nodes
+                        .iter()
+                        .filter(|scope_node| scope_node.path == *ctx.path)
+                        .any(|scope_node| {
+                            has_node_binding(
+                                ctx.input.interner,
+                                ctx.input.node_bindings,
+                                scope_node.id.as_str(),
+                                head,
+                            )
+                        })
+                })
+        {
+            annotation_shadowed = true;
+            break;
+        }
+        if ctx
+            .aliases
+            .get(scope)
+            .is_some_and(|entries| entries.contains_key(head))
+        {
+            break;
+        }
+        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    let imported_type = if annotation_shadowed || !type_candidates.is_empty() {
+        None
+    } else {
+        ctx.alias_for(head, Some(node), true)
+    };
+    if let Some(imported) = imported_type {
+        if member.is_empty() {
+            type_candidates.extend_from_slice(imported);
+        } else {
+            for target in imported {
+                type_candidates.extend(
+                    ctx.lookup(qualified(lookup_key, &target.qualname, member))
+                        .iter()
+                        .copied()
+                        .filter(|candidate| candidate.path == target.path),
+                );
+            }
+        }
+    }
+    if type_candidates.is_empty()
+        && imported_type.is_some_and(Vec::is_empty)
+        && !annotation_shadowed
+        && ctx.python_nullable_parameter_wrapper(raw_annotation, node)
+    {
+        return None;
+    }
+    type_candidates.retain(|candidate| {
+        matches!(
+            candidate.kind.as_str(),
+            k if k == NodeKind::Class.as_str()
+                || k == NodeKind::Struct.as_str()
+                || k == NodeKind::Enum.as_str()
+                || k == NodeKind::Type.as_str()
+                || k == NodeKind::Interface.as_str()
+        )
+    });
+    type_candidates.sort_by(|a, b| a.id.cmp(&b.id));
+    type_candidates.dedup_by_key(|candidate| candidate.id.as_str());
+    Some(resolve_parameter_receiver(
+        ctx,
+        ParameterAnnotationSpec {
+            node,
+            raw_annotation,
+            annotation: &annotation,
+            raw_head,
+            head,
+            member,
+            is_rust,
+            annotation_shadowed,
+            imported_type,
+        },
+        type_candidates,
+    ))
+}
 
 pub(super) fn collect_typed_parameters<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -28,166 +205,16 @@ where
             let Some(raw_annotation) = annotation else {
                 continue;
             };
-            let Some(annotation) = receiver_type_name(raw_annotation) else {
-                continue;
-            };
-            let raw_head = receiver_head(raw_annotation);
-            let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
-            type_candidates.clear();
-            let mut scope = node
-                .qualname
-                .rsplit_once('.')
-                .map_or("", |(parent, _)| parent);
-            let mut annotation_shadowed = false;
-            while !scope.is_empty() {
-                if !is_rust
-                    && ctx
-                        .input
-                        .by_qual
-                        .get(scope)
-                        .is_some_and(|scope_nodes| {
-                            scope_nodes.iter().any(|scope_node| {
-                                scope_node.path == *ctx.path
-                                    && has_node_binding(
-                                        ctx.input.interner,
-                                        ctx.input.node_rebindings,
-                                        scope_node.id.as_str(),
-                                        head,
-                                    )
-                            })
-                        })
-                {
-                    annotation_shadowed = true;
-                    break;
-                }
-                type_candidates.extend(
-                    ctx.lookup(qualified(lookup_key, scope, &annotation))
-                        .iter()
-                        .copied()
-                        .filter(|candidate| candidate.path == *ctx.path),
-                );
-                if !type_candidates.is_empty()
-                    && ctx
-                        .alias_import_positions
-                        .get(&(scope, head))
-                        .is_some_and(|position| {
-                            position.line <= node.line
-                                && type_candidates
-                                    .iter()
-                                    .any(|candidate| candidate.line < position.line)
-                        })
-                {
-                    type_candidates.clear();
-                    annotation_shadowed = true;
-                    break;
-                }
-                if !type_candidates.is_empty() {
-                    break;
-                }
-                if is_rust
-                    && !ctx
-                        .aliases
-                        .get(scope)
-                        .is_some_and(|entries| entries.contains_key(head))
-                    && ctx
-                        .lookup(qualified(lookup_key, scope, head))
-                        .iter()
-                        .any(|candidate| {
-                            candidate.path == *ctx.path
-                                && matches!(
-                                    candidate.kind.as_str(),
-                                    k if k == NodeKind::Module.as_str()
-                                        || k == "module_declaration"
-                                )
-                        })
-                {
-                    annotation_shadowed = true;
-                    break;
-                }
-                if !is_rust
-                    && ctx
-                        .input
-                        .by_qual
-                        .get(scope)
-                        .is_some_and(|scope_nodes| {
-                            scope_nodes
-                                .iter()
-                                .filter(|scope_node| scope_node.path == *ctx.path)
-                                .any(|scope_node| {
-                                    has_node_binding(
-                                        ctx.input.interner,
-                                        ctx.input.node_bindings,
-                                        scope_node.id.as_str(),
-                                        head,
-                                    )
-                                })
-                        })
-                {
-                    annotation_shadowed = true;
-                    break;
-                }
-                if ctx
-                    .aliases
-                    .get(scope)
-                    .is_some_and(|entries| entries.contains_key(head))
-                {
-                    break;
-                }
-                scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-            }
-            let imported_type = if annotation_shadowed || !type_candidates.is_empty() {
-                None
-            } else {
-                ctx.alias_for(head, Some(node), true)
-            };
-            if let Some(imported) = imported_type {
-                if member.is_empty() {
-                    type_candidates.extend_from_slice(imported);
-                } else {
-                    for target in imported {
-                        type_candidates.extend(
-                            ctx.lookup(qualified(lookup_key, &target.qualname, member))
-                                .iter()
-                                .copied()
-                                .filter(|candidate| candidate.path == target.path),
-                        );
-                    }
-                }
-            }
-            if type_candidates.is_empty()
-                && imported_type.is_some_and(Vec::is_empty)
-                && !annotation_shadowed
-                && ctx.python_nullable_parameter_wrapper(raw_annotation, node)
-            {
-                continue;
-            }
-            type_candidates.retain(|candidate| {
-                matches!(
-                    candidate.kind.as_str(),
-                    k if k == NodeKind::Class.as_str()
-                        || k == NodeKind::Struct.as_str()
-                        || k == NodeKind::Enum.as_str()
-                        || k == NodeKind::Type.as_str()
-                        || k == NodeKind::Interface.as_str()
-                )
-            });
-            type_candidates.sort_by(|a, b| a.id.cmp(&b.id));
-            type_candidates.dedup_by_key(|candidate| candidate.id.as_str());
-            let receiver = resolve_parameter_receiver(
+            let Some(receiver) = resolve_parameter_annotation_receiver(
                 ctx,
-                ParameterAnnotationSpec {
-                    node,
-                    raw_annotation,
-                    annotation: &annotation,
-                    raw_head,
-                    head,
-                    member,
-                    is_rust,
-                    annotation_shadowed,
-                    imported_type,
-                },
-                &type_candidates,
-            );
+                node,
+                raw_annotation,
+                is_rust,
+                &mut type_candidates,
+                lookup_key,
+            ) else {
+                continue;
+            };
             if !matches!(receiver, ReceiverType::Unknown) {
                 typed_parameters
                     .entry(node.id.as_str())
@@ -294,17 +321,9 @@ where
 }
 
 fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
-    let mut name = annotation.trim().trim_matches(['\'', '"']);
-    while let Some(rest) = name.strip_prefix('&') {
-        name = rest.trim_start();
-        if name.starts_with('\'') {
-            let Some((_, after)) = name.split_once(char::is_whitespace) else {
-                return false;
-            };
-            name = after.trim_start();
-        }
-        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
-    }
+    let Some(name) = crate::linker::types::strip_rust_references(annotation, true) else {
+        return false;
+    };
     let Some((_, rest)) = name.split_once('<') else {
         return false;
     };

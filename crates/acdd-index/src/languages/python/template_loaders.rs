@@ -1,6 +1,8 @@
+use super::common::symbol_name as python_symbol_name;
+use crate::ast::syntax::{field, text};
+use crate::languages::manifests::syntax::SyntaxRule;
+use crate::languages::types::SyntaxContext;
 use crate::models::{Facts, Node as IndexedNode};
-use crate::ast::{field, text};
-use crate::languages::{LanguageProfile, SyntaxContext};
 use std::collections::HashMap;
 use std::path::{Component, Path};
 use tree_sitter::Node;
@@ -152,7 +154,7 @@ fn binding_event_with_kind<'source>(
             false
         }
         "type_alias_statement" => {
-            if let Some(name) = super::Python.symbol_name(node, source) {
+            if let Some(name) = python_symbol_name(node, source) {
                 emit(Some(name));
             }
             false
@@ -584,7 +586,11 @@ fn static_path(
     }
 }
 
-pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+pub(super) fn extract(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    mut for_each_rule: impl FnMut(&str, &mut dyn FnMut(&SyntaxRule)),
+) {
     let Some(function) = ctx
         .node
         .child_by_field_name("function")
@@ -592,7 +598,7 @@ pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     else {
         return;
     };
-    super::syntax_operations::for_each_loader_rule(text(function, ctx.source), |rule| {
+    for_each_rule(text(function, ctx.source), &mut |rule| {
         extract_configured(ctx, facts, rule);
     });
 }

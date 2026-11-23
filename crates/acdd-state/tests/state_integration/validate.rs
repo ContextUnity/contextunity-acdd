@@ -7,7 +7,7 @@ use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::harness::RunHarness;
-use acdd_state::machine::{plan_extend_scope, ExtendScopeInput};
+use acdd_state::machine::{evaluate_transition, ExtendScopeInput, TransitionInput};
 use acdd_state::profile::resolve_optional_profile_ref_with_dirs;
 use acdd_state::spec::parse_spec;
 use acdd_state::store::traits::exec_tx_with;
@@ -90,11 +90,14 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     let root = dir.path();
     let providers = full_providers();
 
-    // 1. Legacy 0.5 acdd.yaml triggers CONFIG_MIGRATION_REQUIRED.
+    // 1. Removed legacy keys fail schema validation via deny_unknown_fields -> ACDD_PROFILE_SCHEMA_INVALID.
     fs::write(root.join("acdd.yaml"), "milestones:\n  path: docs/milestones\n").unwrap();
     let res_legacy = validate_workspace(root, None, None, &providers).unwrap();
     assert!(!res_legacy.valid);
-    assert_eq!(res_legacy.diagnostics[0].code, "CONFIG_MIGRATION_REQUIRED");
+    assert_eq!(
+        res_legacy.diagnostics[0].code,
+        ErrorCode::ProfileSchemaInvalid.as_str()
+    );
 
     // 2. Invalid schema acdd.yaml triggers ACDD_PROFILE_SCHEMA_INVALID.
     fs::write(root.join("acdd.yaml"), "bogus_unknown: true\n").unwrap();
@@ -525,10 +528,11 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     let mut g_ext = g_done.clone();
     g_ext.nodes[0].status = NodeStatus::Ready;
     let machine_prof = to_machine_profile(&resolved_p).unwrap();
-    let ext_err = plan_extend_scope(
+    let ext_err = evaluate_transition(
         &g_ext,
         &machine_prof,
-        &ExtendScopeInput {
+        &acdd_state::types::ValidatedObservations::default(),
+        &TransitionInput::ExtendScope(ExtendScopeInput {
             node_cursor: NodeCursor::task(
                 TaskRef::new("t1").unwrap(),
                 Vec::new(),
@@ -536,7 +540,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
             paths: vec!["src/{a".to_owned()],
             reason: "need malformed".to_owned(),
             worker_id: None,
-        },
+        }),
     )
     .unwrap_err();
     assert_eq!(ext_err.code, ErrorCode::OutOfScopeChanges);

@@ -1,4 +1,6 @@
-use super::*;
+use super::types::{merge, ComputedKey, TypeTarget};
+use crate::semantic::SourcePosition;
+use hashbrown::HashMap;
 
 #[test]
 fn uncertain_field_writes_invalidate_declared_summary() {

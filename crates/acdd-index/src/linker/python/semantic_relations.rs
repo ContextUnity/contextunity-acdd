@@ -3,7 +3,7 @@ use crate::semantic::SourcePosition;
 use crate::languages::{self, dependency_registry::DependencyRegistry};
 use crate::interner::{LinkerInterner, SymbolId};
 use crate::linker::{
-    framework_relations::{
+    semantic_facts::{
         project_scope, DeclarativeRulePrimitive, OccurrenceTable, PreparedSemanticFacts,
     },
     semantic_context,
@@ -154,7 +154,7 @@ pub(in crate::linker) fn compose_file_relations<'a>(
 }
 
 #[derive(Clone, Copy)]
-enum ImportResolution {
+enum PythonImportResolution {
     Exact,
     Missing,
     Ambiguous,
@@ -272,10 +272,10 @@ fn exact_import_for_call<'a>(
     by_module: &HashMap<&'a str, Vec<&'a Node>>,
     semantic_context: &semantic_context::Context<'a>,
     interner: &LinkerInterner<'_>,
-) -> ImportResolution {
+) -> PythonImportResolution {
     let req = crate::interner::package_mask(call.module);
     if (file_mask & req) != req {
-        return ImportResolution::Missing;
+        return PythonImportResolution::Missing;
     }
     let mut exact = BTreeMap::<usize, BTreeSet<&'a str>>::new();
     for reference in facts.references.iter().filter(|reference| {
@@ -307,12 +307,12 @@ fn exact_import_for_call<'a>(
         }
     }
     let Some((_, owners)) = exact.first_key_value() else {
-        return ImportResolution::Missing;
+        return PythonImportResolution::Missing;
     };
     match owners.len() {
-        0 => ImportResolution::Missing,
-        1 => ImportResolution::Exact,
-        _ => ImportResolution::Ambiguous,
+        0 => PythonImportResolution::Missing,
+        1 => PythonImportResolution::Exact,
+        _ => PythonImportResolution::Ambiguous,
     }
 }
 
@@ -383,6 +383,169 @@ fn imported_type_targets<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn emit_di_injection_relations<'a>(
+    path: &str,
+    facts: &Facts,
+    references: &[Reference],
+    scope: &str,
+    file_mask: u64,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+    semantic_context: &semantic_context::Context<'a>,
+    by_module: &HashMap<&'a str, Vec<&'a Node>>,
+    by_id: &HashMap<SymbolId, &'a Node>,
+    interner: &LinkerInterner<'_>,
+    graph: &mut CompactGraph,
+) {
+    use languages::{
+        manifests::{SemanticCallee, SemanticOperation, SemanticTarget},
+        semantic::SemanticRelation,
+    };
+
+    let mut occurrences = OccurrenceTable::default();
+    let context = dependencies.language_context_for_path(path);
+    let rules = SymbolRelationRules {
+        semantic: &context.semantic_rules,
+        di_calls: &context.di_calls,
+        di_rule_origins: &context.di_rule_origins,
+    };
+    for effective in rules
+        .semantic
+        .iter()
+        .filter(|rule| rule.active && rule.scope == scope)
+    {
+        let SemanticOperation::CallToSymbol {
+            language,
+            callee: SemanticCallee::Imported { module, export },
+            argument,
+            target:
+                SemanticTarget::ImportedSymbol {
+                    language: target_language,
+                },
+            relation: SemanticRelation::InjectsDependency,
+        } = &effective.rule.operation
+        else {
+            continue;
+        };
+        if language != "python" || target_language != "python" {
+            continue;
+        }
+
+        for injection in references
+            .iter()
+            .filter(|reference| reference.kind == "injects")
+        {
+            let Some(caller) = interner
+                .lookup_node(by_id, injection.source.as_str())
+                .filter(|owner| owner.path == path && owner.language == *language)
+            else {
+                continue;
+            };
+            let mut calls: Vec<_> = references
+                .iter()
+                .filter(|reference| {
+                    reference.kind == "calls"
+                        && reference.source == injection.source
+                        && reference.line == injection.line
+                        && reference.column <= injection.column
+                        && rules.di_calls.iter().enumerate().any(|(index, rule)| {
+                            rule.callee == reference.expression
+                                && rule.argument == *argument
+                                && matches!(&injection.receiver_hint,
+                                Some(ReceiverHint::ConfiguredReference { origin })
+                                    if rules.di_rule_origins.get(&index) == Some(origin))
+                        })
+                        && (reference.expression == *export
+                            || declared_import_alias(
+                                facts,
+                                file_mask,
+                                by_id,
+                                interner,
+                                caller,
+                                &reference.expression,
+                                module,
+                                export,
+                            ))
+                })
+                .collect();
+            let Some(nearest_column) = calls.iter().map(|call| call.column).max() else {
+                continue;
+            };
+            calls.retain(|call| call.column == nearest_column);
+
+            let entry = occurrences.entry(
+                interner.lookup_symbol(&caller.id).expect("catalog caller"),
+                injection.line,
+                injection.column,
+                SemanticRelation::InjectsDependency,
+                &injection.expression,
+                interner,
+            );
+            if calls.len() != 1 {
+                entry.2 = true;
+                continue;
+            }
+            let call = calls[0];
+            match exact_import_for_call(
+                facts,
+                file_mask,
+                by_id,
+                caller,
+                ExternalImportCall {
+                    alias: &call.expression,
+                    module,
+                    export,
+                    at: SourcePosition {
+                        line: call.line,
+                        column: call.column,
+                    },
+                },
+                by_module,
+                semantic_context,
+                interner,
+            ) {
+                PythonImportResolution::Missing => {
+                    entry.3 = true;
+                    continue;
+                }
+                PythonImportResolution::Ambiguous => {
+                    entry.2 = true;
+                    continue;
+                }
+                PythonImportResolution::Exact => {}
+            }
+
+            match semantic_context.resolve_symbol(
+                caller,
+                &injection.expression,
+                SourcePosition {
+                    line: injection.line,
+                    column: injection.column,
+                },
+                SymbolRole::Callable,
+            ) {
+                Symbol::Callable(target) if target.language == *target_language => {
+                    entry
+                        .1
+                        .insert(interner.lookup_symbol(&target.id).expect("catalog target"));
+                }
+                Symbol::Ambiguous => entry.2 = true,
+                Symbol::Unknown | Symbol::Callable(_) | Symbol::Type(_) => entry.3 = true,
+            }
+        }
+    }
+
+    occurrences.emit_all(
+        graph,
+        path,
+        DeclarativeRulePrimitive::EmitEdge {
+            evidence:
+                "declarative imported symbol; exact import and unique callable target required",
+        },
+        interner,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compose_symbol_relations<'a>(
     path: &str,
     facts: &Facts,
@@ -394,10 +557,7 @@ pub(crate) fn compose_symbol_relations<'a>(
     prepared: &PreparedSemanticFacts<'_>,
     graph: &mut CompactGraph,
 ) {
-    use languages::{
-        manifests::{SemanticCallee, SemanticOperation, SemanticTarget},
-        semantic::SemanticRelation,
-    };
+    use languages::{manifests::SemanticTarget, semantic::SemanticRelation};
 
     let interner = prepared.interner;
     let class_facts = interner
@@ -417,153 +577,24 @@ pub(crate) fn compose_symbol_relations<'a>(
     {
         return;
     }
-    let mut occurrences = OccurrenceTable::default();
     let scope = project_scope(path, languages::LanguageFamily("python"), dependencies);
     let file_mask = crate::interner::file_import_mask(facts);
 
     if has_injects {
-        let context = dependencies.language_context_for_path(path);
-        let rules = SymbolRelationRules {
-            semantic: &context.semantic_rules,
-            di_calls: &context.di_calls,
-            di_rule_origins: &context.di_rule_origins,
-        };
-        for effective in rules
-            .semantic
-            .iter()
-            .filter(|rule| rule.active && rule.scope == scope)
-        {
-            let SemanticOperation::CallToSymbol {
-                language,
-                callee: SemanticCallee::Imported { module, export },
-                argument,
-                target:
-                    SemanticTarget::ImportedSymbol {
-                        language: target_language,
-                    },
-                relation: SemanticRelation::InjectsDependency,
-            } = &effective.rule.operation
-            else {
-                continue;
-            };
-            if language != "python" || target_language != "python" {
-                continue;
-            }
-
-            for injection in references
-                .iter()
-                .filter(|reference| reference.kind == "injects")
-            {
-                let Some(caller) = interner
-                    .lookup_node(by_id, injection.source.as_str())
-                    .filter(|owner| owner.path == path && owner.language == *language)
-                else {
-                    continue;
-                };
-                let mut calls: Vec<_> = references
-                    .iter()
-                    .filter(|reference| {
-                        reference.kind == "calls"
-                            && reference.source == injection.source
-                            && reference.line == injection.line
-                            && reference.column <= injection.column
-                            && rules.di_calls.iter().enumerate().any(|(index, rule)| {
-                                rule.callee == reference.expression
-                                    && rule.argument == *argument
-                                    && matches!(&injection.receiver_hint,
-                                    Some(ReceiverHint::ConfiguredReference { origin })
-                                        if rules.di_rule_origins.get(&index) == Some(origin))
-                            })
-                            && (reference.expression == *export
-                                || declared_import_alias(
-                                    facts,
-                                    file_mask,
-                                    by_id,
-                                    interner,
-                                    caller,
-                                    &reference.expression,
-                                    module,
-                                    export,
-                                ))
-                    })
-                    .collect();
-                let Some(nearest_column) = calls.iter().map(|call| call.column).max() else {
-                    continue;
-                };
-                calls.retain(|call| call.column == nearest_column);
-
-                let entry = occurrences.entry(
-                    interner.lookup_symbol(&caller.id).expect("catalog caller"),
-                    injection.line,
-                    injection.column,
-                    SemanticRelation::InjectsDependency,
-                    &injection.expression,
-                    interner,
-                );
-                if calls.len() != 1 {
-                    entry.2 = true;
-                    continue;
-                }
-                let call = calls[0];
-                match exact_import_for_call(
-                    facts,
-                    file_mask,
-                    by_id,
-                    caller,
-                    ExternalImportCall {
-                        alias: &call.expression,
-                        module,
-                        export,
-                        at: SourcePosition {
-                            line: call.line,
-                            column: call.column,
-                        },
-                    },
-                    by_module,
-                    semantic_context,
-                    interner,
-                ) {
-                    ImportResolution::Missing => {
-                        entry.3 = true;
-                        continue;
-                    }
-                    ImportResolution::Ambiguous => {
-                        entry.2 = true;
-                        continue;
-                    }
-                    ImportResolution::Exact => {}
-                }
-
-                match semantic_context.resolve_symbol(
-                    caller,
-                    &injection.expression,
-                    SourcePosition {
-                        line: injection.line,
-                        column: injection.column,
-                    },
-                    SymbolRole::Callable,
-                ) {
-                    Symbol::Callable(target) if target.language == *target_language => {
-                        entry
-                            .1
-                            .insert(interner.lookup_symbol(&target.id).expect("catalog target"));
-                    }
-                    Symbol::Ambiguous => entry.2 = true,
-                    Symbol::Unknown | Symbol::Callable(_) | Symbol::Type(_) => entry.3 = true,
-                }
-            }
-        }
+        emit_di_injection_relations(
+            path,
+            facts,
+            references,
+            &scope,
+            file_mask,
+            dependencies,
+            semantic_context,
+            by_module,
+            by_id,
+            interner,
+            graph,
+        );
     }
-
-    occurrences.emit_all(
-        graph,
-        path,
-        DeclarativeRulePrimitive::EmitEdge {
-            evidence:
-                "declarative imported symbol; exact import and unique callable target required",
-        },
-        interner,
-    );
 
     let mut attribute_counts = BTreeMap::<(SymbolId, &str), usize>::new();
     for fact in class_facts {

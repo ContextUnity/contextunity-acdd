@@ -10,7 +10,7 @@ use crate::models::{Facts, Node, Reference};
 use crate::semantic::ObjectOwnershipFact;
 use crate::languages::LanguageProfile;
 #[cfg(feature = "lang-typescript")]
-use crate::linker::resolution::ResolutionInput;
+use crate::linker::resolution::input::ResolutionInput;
 #[cfg(feature = "lang-typescript")]
 use crate::linker::value_flow;
 use hashbrown::HashMap;
@@ -104,6 +104,52 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
 }
 
 #[cfg(feature = "lang-typescript")]
+fn object_factory_binding_shadowed<'a>(
+    input: &ResolutionInput<'a>,
+    path: &str,
+    owner: &Node,
+    marker: &str,
+    binding: &str,
+    aliases: &HashMap<&str, HashMap<&str, Vec<&'a Node>>>,
+) -> bool {
+    let binding_id = input.interner.lookup_symbol(binding);
+    let mut scope = owner.qualname.as_str();
+    while !scope.is_empty() {
+        let registration_child_scope = input.by_qual.get(scope).is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                node.path == *path && node.details["receiver"].as_str() == Some(marker)
+            })
+        });
+        if !registration_child_scope
+            && (binding_id.is_some_and(|binding_id| {
+                input.by_qual.get(scope).is_some_and(|nodes| {
+                    nodes.iter().any(|node| {
+                        node.path == *path
+                            && input.interner.lookup_symbol(&node.id).is_some_and(|node_id| {
+                                super::super::typescript::resolution::has_indexed_symbol_id(
+                                    input.node_bindings,
+                                    node_id,
+                                    binding_id,
+                                ) || super::super::typescript::resolution::has_indexed_symbol_id(
+                                    input.node_rebindings,
+                                    node_id,
+                                    binding_id,
+                                )
+                            })
+                    })
+                })
+            }) || aliases
+                .get(scope)
+                .is_some_and(|names| names.contains_key(binding)))
+        {
+            return true;
+        }
+        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    false
+}
+
+#[cfg(feature = "lang-typescript")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::linker) fn object_factory_this_member<'a>(
     input: &ResolutionInput<'a>,
@@ -159,44 +205,12 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
         return false;
     };
 
-    let mut shadowed = false;
-    if let Some(binding) = ownership.as_ref().and_then(|fact| fact.guard.as_deref()) {
-        let binding_id = input.interner.lookup_symbol(binding);
-        let mut scope = owner.qualname.as_str();
-        while !scope.is_empty() {
-            let registration_child_scope = input.by_qual.get(scope).is_some_and(|nodes| {
-                nodes.iter().any(|node| {
-                    node.path == *path && node.details["receiver"].as_str() == Some(marker)
-                })
-            });
-            if !registration_child_scope {
-                shadowed |= binding_id.is_some_and(|binding_id| {
-                    input.by_qual.get(scope).is_some_and(|nodes| {
-                        nodes.iter().any(|node| {
-                            node.path == *path
-                                && input
-                                    .interner
-                                    .lookup_symbol(&node.id)
-                                    .is_some_and(|node_id| {
-                                        super::super::typescript::resolution::has_indexed_symbol_id(
-                                            input.node_bindings,
-                                            node_id,
-                                            binding_id,
-                                        ) || super::super::typescript::resolution::has_indexed_symbol_id(
-                                            input.node_rebindings,
-                                            node_id,
-                                            binding_id,
-                                        )
-                                    })
-                        })
-                    })
-                }) || aliases
-                    .get(scope)
-                    .is_some_and(|names| names.contains_key(binding));
-            }
-            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-        }
-    }
+    let shadowed = ownership
+        .as_ref()
+        .and_then(|fact| fact.guard.as_deref())
+        .is_some_and(|binding| {
+            object_factory_binding_shadowed(input, path, owner, marker, binding, aliases)
+        });
     if !shadowed {
         let mut members = input
             .by_name

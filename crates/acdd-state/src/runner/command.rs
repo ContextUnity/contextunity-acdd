@@ -4,7 +4,7 @@ use crate::profile::{
     render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
     CommandDef, ResolvedCommandInvocation, ResourceLimits,
 };
-use crate::runner::{
+use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, utf8_tail, BoundedLogWriter,
     StreamKind,
 };
@@ -62,7 +62,7 @@ pub struct CommandExecOutcome {
 }
 
 /// Scrub ambient orchestrator and Git variables from project verification child processes.
-pub fn sanitize_command_process(cmd: &mut Command) {
+pub(crate) fn sanitize_command_process(cmd: &mut Command) {
     for key in [
         "TRACEPARENT",
         "ACDD_CONFIG",
@@ -268,7 +268,7 @@ fn observe_bounded_output(
     if *captured_bytes < max_capture_bytes {
         let avail = max_capture_bytes - *captured_bytes;
         let take = line.len().min(avail);
-        let cut = crate::runner::utf8_floor_boundary(line, take);
+        let cut = acdd_core::format::utf8_floor_boundary(line, take);
         *captured_bytes = captured_bytes.saturating_add(cut + 1);
         if stream == StreamKind::Stderr {
             if !stderr_retained.is_empty() {
@@ -285,5 +285,47 @@ fn observe_bounded_output(
         if stderr_retained.len() > max_capture_bytes {
             *stderr_retained = utf8_tail(stderr_retained, max_capture_bytes).to_owned();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_command_process;
+    use std::process::Command;
+
+    #[test]
+    fn sanitize_command_process_scrubs_orchestrator_and_all_git_vars() {
+        let dir = acdd_core::fs::ScopedTempDir::create("acdd-sanitize-cmd").unwrap();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(
+            "for k in TRACEPARENT ACDD_CONFIG ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
+        );
+        cmd.current_dir(dir.path());
+        cmd.env("TRACEPARENT", "00-1111-2222-01")
+            .env("ACDD_CONFIG", "/x/acdd.yaml")
+            .env("ACDD_PROFILE", "code")
+            .env("ACDD_STATE_DB", "/x/state.sqlite")
+            .env("ACDD_CODE_DB", "/x/code-map.sqlite")
+            .env("ACDD_WORKSPACE_ROOT", "/x")
+            .env("ACDD_AGENT_SESSION_ID", "sess-1")
+            .env("ACDD_ROLE_MODE", "subagent")
+            .env("ACDD_ROLE_MODELS", "m1:high,m2")
+            .env("ACDD_MODEL", "m1")
+            .env("ACDD_REASONING", "high")
+            .env("GIT_DIR", "/x/.git")
+            .env("GIT_WORK_TREE", "/x")
+            .env("GIT_INDEX_FILE", "/x/.git/index")
+            .env("GIT_OBJECT_DIRECTORY", "/x/.git/objects")
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/y/.git/objects")
+            .env("GIT_COMMON_DIR", "/x/.git")
+            .env("GIT_AUTHOR_NAME", "Tester")
+            .env("ACDD_KEEP_OK", "yes");
+
+        sanitize_command_process(&mut cmd);
+        let output = cmd.output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains("LEAK:"), "unexpected env leak: {stdout}");
+        assert!(stdout.contains("KEEP:yes"));
     }
 }

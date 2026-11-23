@@ -18,8 +18,8 @@ fn abrupt_abort() -> ! {
     std::process::exit(134);
 }
 
-#[cfg(any(test, feature = "failpoints"))]
-pub fn hit(step: &str) {
+/// Evaluates `ACDD_FAILPOINT` unconditionally (used by failpoint builds and test harnesses).
+pub fn hit_from_env(step: &str) {
     let Ok(spec) = std::env::var("ACDD_FAILPOINT") else {
         return;
     };
@@ -33,9 +33,26 @@ pub fn hit(step: &str) {
         match action {
             "panic" => panic!("failpoint hit: {step}"),
             "exit" => std::process::exit(137),
-            _ => abrupt_abort(),
+            _ => {
+                #[cfg(any(test, feature = "failpoints"))]
+                abrupt_abort();
+                #[cfg(not(any(test, feature = "failpoints")))]
+                {
+                    #[cfg(unix)]
+                    unsafe {
+                        libc::_exit(134);
+                    }
+                    #[cfg(not(unix))]
+                    std::process::exit(134);
+                }
+            }
         }
     }
+}
+
+#[cfg(any(test, feature = "failpoints"))]
+pub fn hit(step: &str) {
+    hit_from_env(step);
 }
 
 /// Zero-cost no-op failpoint hook when built without `failpoints`.

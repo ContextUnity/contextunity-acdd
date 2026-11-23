@@ -1,4 +1,4 @@
-use super::OutputFormat;
+use crate::format::OutputFormat;
 use anyhow::{bail, Result};
 use std::path::Path;
 

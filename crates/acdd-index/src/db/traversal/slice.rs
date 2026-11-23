@@ -1,4 +1,7 @@
-use super::{impact::traverse_with_path_options, ImpactDirection, TraversalOptions};
+use super::{
+    impact::traverse_with_path_options,
+    types::{ImpactDirection, TraversalOptions},
+};
 use crate::db::{paging, reader};
 use crate::models::{
     details::NodeDetailKey,

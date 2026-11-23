@@ -1,4 +1,4 @@
-use super::super::resolution::ResolutionInput;
+use super::super::resolution::input::ResolutionInput;
 use super::super::semantic_context::Member;
 use crate::models::{compact_graph::CompactGraph, Node, ReceiverHint, Reference};
 use crate::semantic::ComponentMacroRole;
@@ -84,6 +84,35 @@ pub(in crate::linker) fn template_lexical_binding<'a>(
     })
 }
 
+fn lookup_slot_template_member<'a, 'aliases, A>(
+    input: &ResolutionInput<'a>,
+    binding_scope: &'a Node,
+    first: &str,
+    tail: &str,
+    alias_for: &A,
+) -> Option<Member<'a>>
+where
+    'a: 'aliases,
+    A: Fn(&str, Option<&'a Node>, bool) -> Option<&'aliases Vec<&'a Node>>,
+{
+    let component = binding_scope.details["vue_slot"]["component"].as_str()?;
+    let slot = binding_scope.details["vue_slot"]["slot"].as_str()?;
+    let [module] = alias_for(component, Some(binding_scope), false)
+        .map(Vec::as_slice)
+        .filter(|targets| targets.len() == 1)?
+    else {
+        return None;
+    };
+    if module.kind != "module" {
+        return None;
+    }
+    let receiver = input.value_flow.component_slot_type(module, slot, first)?;
+    let result = input
+        .semantic_context
+        .lookup_component_template_field(receiver, tail);
+    matches!(result, Member::Local(_) | Member::Ambiguous).then_some(result)
+}
+
 pub(in crate::linker) fn component_slot_member<'a, 'aliases, A>(
     input: &ResolutionInput<'a>,
     path: &str,
@@ -106,30 +135,8 @@ where
             .copied()
             .filter(|node| node.path == path && node.kind == "template_scope");
         if let (Some(binding_scope), None) = (scopes.next(), scopes.next()) {
-            let declares = binding_scope.binding_names().any(|name| name == first);
-            if declares {
-                let component = binding_scope.details["vue_slot"]["component"].as_str();
-                let slot = binding_scope.details["vue_slot"]["slot"].as_str();
-                if let (Some(component), Some(slot)) = (component, slot) {
-                    if let Some([module]) = alias_for(component, Some(binding_scope), false)
-                        .map(Vec::as_slice)
-                        .filter(|targets| targets.len() == 1)
-                    {
-                        if module.kind == "module" {
-                            if let Some(receiver) =
-                                input.value_flow.component_slot_type(module, slot, first)
-                            {
-                                let result = input
-                                    .semantic_context
-                                    .lookup_component_template_field(receiver, tail);
-                                if matches!(result, Member::Local(_) | Member::Ambiguous) {
-                                    return Some(result);
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
+            if binding_scope.binding_names().any(|name| name == first) {
+                return lookup_slot_template_member(input, binding_scope, first, tail, &alias_for);
             }
         }
         scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);

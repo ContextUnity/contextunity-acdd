@@ -132,3 +132,77 @@ pub(super) fn read_spool(file: &File, slice: SpoolSlice) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        db::writer::{self, BuildInputs, StagedFilePayload},
+        models::{compact_graph::CompactGraph, FileEntry},
+        typed_facts::{encode_facts, TypedFacts},
+    };
+    use acdd_core::config::Adapter;
+    use acdd_core::fs::ScopedTempDir;
+    use rusqlite::Connection;
+    use std::{collections::BTreeMap, fs::OpenOptions, io::Write};
+
+    #[test]
+    fn corrupt_staged_spool_offset_fails_closed_in_populate_owned() {
+        let workspace = ScopedTempDir::create("acdd-corrupt-spool").unwrap();
+        let acdd_dir = workspace.path().join(".acdd");
+        std::fs::create_dir_all(&acdd_dir).unwrap();
+        let spool_file = acdd_dir.join("corrupt-spool.bin");
+        let valid_blob = encode_facts(&TypedFacts::default()).unwrap();
+        let mut handle = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&spool_file)
+            .unwrap();
+        handle.write_all(&valid_blob).unwrap();
+        drop(handle);
+
+        let mut stage_conn = Connection::open_in_memory().unwrap();
+        let entry = FileEntry {
+            path: "src/unit.rs".to_owned(),
+            digest: "00".repeat(32),
+            bytes: 10,
+            mtime_ns: 1,
+            identity: [0, 0, 0],
+            language: "rust".to_owned(),
+            is_doc: false,
+        };
+        let mut staged_payloads = BTreeMap::from([(
+            entry.path.clone(),
+            StagedFilePayload {
+                storage_rows: Some(StagedPreparedStorage::Spilled(SpoolSlice {
+                    offset: 999_999,
+                    length: valid_blob.len() as u64,
+                })),
+                local_facts_leaf: Some((String::new(), String::new())),
+            },
+        )]);
+        let err = writer::populate_owned(
+            &mut stage_conn,
+            writer::PopulateOwnedParams {
+                root: workspace.path(),
+                adapter: &Adapter::default(),
+                entries: std::slice::from_ref(&entry),
+                facts: BTreeMap::from([(entry.path.clone(), TypedFacts::default())]),
+                graph: &CompactGraph::default(),
+                build_inputs: BuildInputs {
+                    manifest_digest: "test",
+                    memory_budget: 8 * 1024 * 1024,
+                    schema_ready: false,
+                },
+                staged_payloads: &mut staged_payloads,
+                payload_spool_path: Some(&spool_file),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("EOF") || err.to_string().contains("staged"),
+            "corrupt spool offset must fail closed: {err:#}"
+        );
+    }
+}

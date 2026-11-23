@@ -53,17 +53,20 @@ pub fn validate_standard_ident(raw: &str, kind: &'static str) -> Result<(), IdEr
     Ok(())
 }
 
-/// Return whether `raw` is a strictly lowercase 40-char (SHA-1) or 64-char (SHA-256) Git OID.
-pub fn is_valid_full_oid(raw: &str) -> bool {
+#[cfg(test)]
+pub(crate) fn is_valid_full_oid(raw: &str) -> bool {
     (raw.len() == 40 || raw.len() == 64)
         && raw
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Validate a strictly lowercase 40-char or 64-char Git OID.
-pub fn validate_full_oid(raw: &str, kind: &'static str) -> Result<(), IdError> {
-    if is_valid_full_oid(raw) {
+fn validate_full_oid(raw: &str, kind: &'static str) -> Result<(), IdError> {
+    let valid = (raw.len() == 40 || raw.len() == 64)
+        && raw
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if valid {
         Ok(())
     } else {
         Err(IdError::new(format!(
@@ -421,6 +424,7 @@ impl NodeCursor {
     }
 
     /// Decode a `- tasks:` container block node ID (`tasks#<idx>`).
+    #[cfg(test)]
     pub fn parse_tasks_block_node_id(raw: &str) -> Option<usize> {
         raw.strip_prefix("tasks#")
             .and_then(|rest| rest.parse::<usize>().ok())

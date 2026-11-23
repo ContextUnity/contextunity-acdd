@@ -286,14 +286,61 @@ impl<'a> LinkerInterner<'a> {
         Self::from_catalog_lookup(all)
     }
 
+    fn intern_file_node_symbols(&mut self, file_path: &'a str, facts: &'a Facts, suffixed_paths: &mut HashSet<&'a str>) {
+        let mut last_language: Option<&'a str> = None;
+        let mut last_kind: Option<&'a str> = None;
+        for (index, node) in facts.nodes.iter().enumerate() {
+            let node_path = node.path.as_str();
+            if node_path != file_path && suffixed_paths.insert(node_path) {
+                self.intern_path(node_path);
+                intern_module_path_suffixes(self, node_path);
+            }
+            self.intern_symbol(node.id.as_str());
+            self.intern_symbol(node.name.as_str());
+            self.intern_symbol(node.qualname.as_str());
+            let language = node.language.as_str();
+            if last_language != Some(language) {
+                self.intern_symbol(
+                    crate::models::compact_graph::CompactTag::known(language).unwrap_or(language),
+                );
+                last_language = Some(language);
+            }
+            let kind = node.kind.as_str();
+            if last_kind != Some(kind) {
+                self.intern_symbol(
+                    crate::models::compact_graph::CompactTag::known(kind).unwrap_or(kind),
+                );
+                last_kind = Some(kind);
+            }
+            for name in node.binding_names().chain(node.rebinding_names()) {
+                self.intern_symbol(name);
+            }
+            if !facts.semantic.is_complete() && facts.semantic.state(index).is_none() {
+                for fact in node.details["semantic_facts"].as_array().into_iter().flatten() {
+                    if let Some(expression) = fact["expression"].as_str() {
+                        self.intern_symbol(expression);
+                    }
+                    if let Some(owner) = fact["occurrence"]["owner_id"].as_str() {
+                        self.intern_symbol(owner);
+                    }
+                }
+            }
+            for export in node.details["exports"].as_array().into_iter().flatten() {
+                for key in ["name", "local", "module"] {
+                    if let Some(value) = export.get(key).and_then(serde_json::Value::as_str) {
+                        self.intern_symbol(value);
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn from_catalog_lookup(all: &'a dyn crate::FactsLookup) -> Self {
         let num_paths = all.len();
         let num_nodes: usize = all.values_facts().map(|f| f.nodes.len()).sum();
         let estimated_symbols = num_nodes.saturating_mul(3);
         let mut interner = Self::with_capacity(estimated_symbols, num_paths.saturating_mul(3));
         let mut suffixed_paths = HashSet::<&'a str>::with_capacity(num_paths);
-        let mut last_language: Option<&'a str> = None;
-        let mut last_kind: Option<&'a str> = None;
 
         for (file_path, facts) in all.iter_facts() {
             let path_id = interner.intern_path(file_path);
@@ -301,83 +348,23 @@ impl<'a> LinkerInterner<'a> {
                 intern_module_path_suffixes(&mut interner, file_path);
             }
             interner.set_file_import_mask(path_id, Self::file_import_mask(facts));
-            for (index, node) in facts.nodes.iter().enumerate() {
-                let node_path = node.path.as_str();
-                if node_path != file_path && suffixed_paths.insert(node_path) {
-                    interner.intern_path(node_path);
-                    intern_module_path_suffixes(&mut interner, node_path);
-                }
-                interner.intern_symbol(node.id.as_str());
-                interner.intern_symbol(node.name.as_str());
-                interner.intern_symbol(node.qualname.as_str());
-                let language = node.language.as_str();
-                if last_language != Some(language) {
-                    if let Some(static_lang) = crate::models::compact_graph::CompactTag::known(language) {
-                        interner.intern_symbol(static_lang);
-                    } else {
-                        interner.intern_symbol(language);
-                    }
-                    last_language = Some(language);
-                }
-                let kind = node.kind.as_str();
-                if last_kind != Some(kind) {
-                    if let Some(static_kind) = crate::models::compact_graph::CompactTag::known(kind) {
-                        interner.intern_symbol(static_kind);
-                    } else {
-                        interner.intern_symbol(kind);
-                    }
-                    last_kind = Some(kind);
-                }
-                for name in node.binding_names().chain(node.rebinding_names()) {
-                    interner.intern_symbol(name);
-                }
-                if !facts.semantic.is_complete() && facts.semantic.state(index).is_none() {
-                    for fact in node.details["semantic_facts"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                    {
-                        if let Some(expression) = fact["expression"].as_str() {
-                            interner.intern_symbol(expression);
-                        }
-                        if let Some(owner) = fact["occurrence"]["owner_id"].as_str() {
-                            interner.intern_symbol(owner);
-                        }
-                    }
-                }
-                for export in node.details["exports"].as_array().into_iter().flatten() {
-                    for key in ["name", "local", "module"] {
-                        if let Some(value) = export.get(key).and_then(serde_json::Value::as_str) {
-                            interner.intern_symbol(value);
-                        }
-                    }
-                }
-            }
+            interner.intern_file_node_symbols(file_path, facts, &mut suffixed_paths);
             for edge in &facts.edges {
-                if let Some(static_kind) =
+                interner.intern_symbol(
                     crate::models::compact_graph::CompactTag::known(edge.kind.as_str())
-                {
-                    interner.intern_symbol(static_kind);
-                } else {
-                    interner.intern_symbol(edge.kind.as_str());
-                }
-                if let Some(static_conf) =
+                        .unwrap_or(edge.kind.as_str()),
+                );
+                interner.intern_symbol(
                     crate::models::compact_graph::CompactTag::known(edge.confidence.as_str())
-                {
-                    interner.intern_symbol(static_conf);
-                } else {
-                    interner.intern_symbol(edge.confidence.as_str());
-                }
+                        .unwrap_or(edge.confidence.as_str()),
+                );
             }
             for reference in &facts.references {
                 interner.intern_symbol(&reference.expression);
-                if let Some(static_kind) =
+                interner.intern_symbol(
                     crate::models::compact_graph::CompactTag::known(reference.kind.as_str())
-                {
-                    interner.intern_symbol(static_kind);
-                } else {
-                    interner.intern_symbol(reference.kind.as_str());
-                }
+                        .unwrap_or(reference.kind.as_str()),
+                );
                 if let Some(module) = reference.module.as_deref() {
                     interner.intern_symbol(module);
                 }

@@ -4,14 +4,13 @@ use crate::db::commitments;
 use crate::db::schema::SCHEMA_DDL;
 use crate::models::compact_graph::CompactGraph;
 use crate::models::*;
-use crate::semantic::CatalogStoragePayload;
-use crate::typed_facts::{encode_facts, TypedFacts};
+use crate::typed_facts::{encode_facts, CatalogStoragePayload, SymbolCatalog, TypedFacts};
 use acdd_core::config::{self, Adapter};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use rayon::prelude::*;
-use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc, time::Instant};
+use std::{collections::BTreeMap, fs::File, path::Path, time::Instant};
 
 mod batch;
 /// Database extraction cache facilities.
@@ -22,19 +21,19 @@ pub use delta as delta_persist;
 mod dictionary;
 pub(crate) mod entrypoints;
 mod ingest;
+mod node_domain;
 mod seal;
 pub mod temp_table;
 
-use batch::*;
 use cache::PreparedCatalogStorage;
 use dictionary::*;
 use ingest::*;
 
-pub(crate) const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
 mod payload_store;
 pub use ingest::LocalFactsBatchWriter;
-pub use payload_store::{PayloadStore, SpoolSlice, StagedPreparedStorage};
+pub use payload_store::PayloadStore;
+use payload_store::StagedPreparedStorage;
 
 /// Staged payloads for an indexed file entry.
 #[derive(Debug)]
@@ -47,7 +46,7 @@ pub struct StagedFilePayload {
 
 /// Computes the deterministic commitment leaf entry for a file's compressed local facts blob.
 pub fn local_facts_leaf(file: &FileEntry, facts_blob: &[u8]) -> Result<(String, String)> {
-    seal::local_facts_leaf(
+    node_domain::local_facts_leaf(
         &file.path,
         &file.digest,
         &file.language,
@@ -169,6 +168,125 @@ pub struct PopulateOwnedParams<'a> {
     pub payload_spool_path: Option<&'a Path>,
 }
 
+fn load_composed_sources(
+    tx: &Connection,
+    facts: &BTreeMap<String, TypedFacts>,
+) -> Result<BTreeMap<String, CatalogStoragePayload>> {
+    let source_paths = facts
+        .values()
+        .flat_map(|facts| &facts.nodes)
+        .filter(|node| node.details.get(NodeDetailKey::INCLUDED_FROM).is_some())
+        .filter_map(|node| node.details[NodeDetailKey::SOURCE_PATH].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut sources = BTreeMap::new();
+    if source_paths.is_empty() {
+        return Ok(sources);
+    }
+    let mut stmt = tx.prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?;
+    for path in source_paths {
+        let encoded_facts: Vec<u8> = stmt
+            .query_row([path], |row| row.get(0))
+            .with_context(|| format!("missing composed source local_facts for {path}"))?;
+        sources.insert(path.to_owned(), catalog_payload(path, &encoded_facts)?);
+    }
+    Ok(sources)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_staged_catalog_chunk(
+    chunk_tx: &Connection,
+    chunk: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
+    payload_spool: Option<&File>,
+    composed_sources: &BTreeMap<String, CatalogStoragePayload>,
+    logical_commitments: &mut BTreeMap<&'static str, BTreeMap<String, String>>,
+    restore_payload_ms: &mut f64,
+) -> Result<Vec<LoadedCatalogFile>> {
+    let mut db_blobs = hashbrown::HashMap::new();
+    let mut staged = Vec::with_capacity(chunk.len());
+    for file in chunk {
+        let lean = facts.get(&file.path).context("missing catalog file")?;
+        let payload = staged_payloads
+            .remove(&file.path)
+            .context("missing staged file payload")?;
+        if payload.storage_rows.is_none() {
+            let blob: Vec<u8> = chunk_tx
+                .prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?
+                .query_row([&file.path], |row| row.get(0))
+                .with_context(|| format!("missing local_facts blob for {}", file.path))?;
+            db_blobs.insert(file.path.as_str(), blob);
+        }
+        staged.push((file, lean, payload));
+    }
+    let spool = payload_spool.context("missing staged payload spool")?;
+    let prepared = staged
+        .into_par_iter()
+        .map(|(file, lean, staged)| {
+            let restoring = Instant::now();
+            let (storage, local_facts_leaf, updated_local_facts, elapsed_ms) =
+                if let Some(storage) = staged.storage_rows {
+                    let decoded = match storage {
+                        StagedPreparedStorage::InMemory(storage) => (*storage, 0.0),
+                        StagedPreparedStorage::Spilled(slice) => {
+                            let bytes = payload_store::read_spool(spool, slice)?;
+                            (
+                                decode_prepared_storage(&bytes)?,
+                                restoring.elapsed().as_secs_f64() * 1000.,
+                            )
+                        }
+                    };
+                    let leaf = staged
+                        .local_facts_leaf
+                        .context("missing staged local_facts leaf")?;
+                    (decoded.0, leaf, None, decoded.1)
+                } else {
+                    let encoded_facts = db_blobs
+                        .get(file.path.as_str())
+                        .context("missing composed local_facts blob")?;
+                    let full = restore_catalog_file(file, lean, encoded_facts, composed_sources)?;
+                    let encoded = encode_facts(&full)?;
+                    let leaf = local_facts_leaf(file, &encoded)?;
+                    let storage = prepare_catalog_storage_with_facts(file, &full)?;
+                    (
+                        storage,
+                        leaf,
+                        Some(encoded),
+                        restoring.elapsed().as_secs_f64() * 1000.,
+                    )
+                };
+            Ok((
+                LoadedCatalogFile {
+                    node_docs: storage.node_docs,
+                    doc_bodies: storage.doc_bodies,
+                    local_facts_leaf,
+                    updated_local_facts,
+                    search_texts: storage.search_texts,
+                    reference_keys: storage.reference_keys,
+                },
+                storage.leaves,
+                elapsed_ms,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut loaded = Vec::with_capacity(prepared.len());
+    for (file, mut leaves, elapsed_ms) in prepared {
+        for domain in ["doc_sections", "shared_owners"] {
+            logical_commitments
+                .get_mut(domain)
+                .context("missing storage commitment domain")?
+                .extend(
+                    leaves
+                        .remove(domain)
+                        .context("missing prepared commitment domain")?,
+                );
+        }
+        *restore_payload_ms += elapsed_ms;
+        loaded.push(file);
+    }
+    Ok(loaded)
+}
+
 /// Populates an index with staged payloads.
 pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) -> Result<Value> {
     let PopulateOwnedParams {
@@ -234,7 +352,7 @@ pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) ->
         use commitments::MetadataKey;
         for (k, v) in [
             (MetadataKey::SchemaVersion, config::ENGINE_SCHEMA_VERSION.to_owned()),
-            (MetadataKey::IndexSemanticsVersion, crate::INDEX_SEMANTICS_VERSION.to_owned()),
+            (MetadataKey::IndexSemanticsVersion, crate::models::INDEX_SEMANTICS_VERSION.to_owned()),
             (MetadataKey::IndexerEngine, "contextunity-acdd-rust".to_owned()),
             (MetadataKey::WorkspaceRoot, root.to_string_lossy().into_owned()),
             (MetadataKey::Adapter, config::policy(root, adapter).to_string()),
@@ -265,26 +383,7 @@ pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) ->
         let t_files = Instant::now();
         let mut restore_payload_ms = 0.0;
         let composed_sources = if streamed_payloads {
-            let source_paths = facts
-                .values()
-                .flat_map(|facts| &facts.nodes)
-                .filter(|node| node.details.get(NodeDetailKey::INCLUDED_FROM).is_some())
-                .filter_map(|node| node.details[NodeDetailKey::SOURCE_PATH].as_str())
-                .collect::<std::collections::BTreeSet<_>>();
-            let mut sources = BTreeMap::new();
-            if !source_paths.is_empty() {
-                let mut stmt =
-                    tx.prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?;
-                for path in source_paths {
-                    let encoded_facts: Vec<u8> = stmt
-                        .query_row([path], |row| row.get(0))
-                        .with_context(|| {
-                            format!("missing composed source local_facts for {path}")
-                        })?;
-                    sources.insert(path.to_owned(), catalog_payload(path, &encoded_facts)?);
-                }
-            }
-            sources
+            load_composed_sources(&tx, &facts)?
         } else {
             BTreeMap::new()
         };
@@ -307,97 +406,16 @@ pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) ->
                 entries,
                 &facts,
                 &mut |chunk_tx, chunk, facts| {
-                    let mut db_blobs = hashbrown::HashMap::new();
-                    let mut staged = Vec::with_capacity(chunk.len());
-                    for file in chunk {
-                        let lean = facts.get(&file.path).context("missing catalog file")?;
-                        let payload = staged_payloads
-                            .remove(&file.path)
-                            .context("missing staged file payload")?;
-                        if payload.storage_rows.is_none() {
-                            let blob: Vec<u8> = chunk_tx
-                                .prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?
-                                .query_row([&file.path], |row| row.get(0))
-                                .with_context(|| {
-                                    format!("missing local_facts blob for {}", file.path)
-                                })?;
-                            db_blobs.insert(file.path.as_str(), blob);
-                        }
-                        staged.push((file, lean, payload));
-                    }
-                    let spool = payload_spool
-                        .as_ref()
-                        .context("missing staged payload spool")?;
-                    let prepared = staged
-                        .into_par_iter()
-                        .map(|(file, lean, staged)| {
-                            let restoring = Instant::now();
-                            let (storage, local_facts_leaf, updated_local_facts, elapsed_ms) =
-                                if let Some(storage) = staged.storage_rows {
-                                    let decoded = match storage {
-                                        StagedPreparedStorage::InMemory(storage) => (*storage, 0.0),
-                                        StagedPreparedStorage::Spilled(slice) => {
-                                            let bytes = payload_store::read_spool(spool, slice)?;
-                                            (
-                                                decode_prepared_storage(&bytes)?,
-                                                restoring.elapsed().as_secs_f64() * 1000.,
-                                            )
-                                        }
-                                    };
-                                    let leaf = staged
-                                        .local_facts_leaf
-                                        .context("missing staged local_facts leaf")?;
-                                    (decoded.0, leaf, None, decoded.1)
-                                } else {
-                                    let encoded_facts = db_blobs
-                                        .get(file.path.as_str())
-                                        .context("missing composed local_facts blob")?;
-                                    let full = restore_catalog_file(
-                                        file,
-                                        lean,
-                                        encoded_facts,
-                                        &composed_sources,
-                                    )?;
-                                    let encoded = encode_facts(&full)?;
-                                    let leaf = local_facts_leaf(file, &encoded)?;
-                                    let storage = prepare_catalog_storage_with_facts(file, &full)?;
-                                    (
-                                        storage,
-                                        leaf,
-                                        Some(encoded),
-                                        restoring.elapsed().as_secs_f64() * 1000.,
-                                    )
-                                };
-                            Ok((
-                                LoadedCatalogFile {
-                                    node_docs: storage.node_docs,
-                                    doc_bodies: storage.doc_bodies,
-                                    local_facts_leaf,
-                                    updated_local_facts,
-                                    search_texts: storage.search_texts,
-                                    reference_keys: storage.reference_keys,
-                                },
-                                storage.leaves,
-                                elapsed_ms,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    let mut loaded = Vec::with_capacity(prepared.len());
-                    for (file, mut leaves, elapsed_ms) in prepared {
-                        for domain in ["doc_sections", "shared_owners"] {
-                            logical_commitments
-                                .get_mut(domain)
-                                .context("missing storage commitment domain")?
-                                .extend(
-                                    leaves
-                                        .remove(domain)
-                                        .context("missing prepared commitment domain")?,
-                                );
-                        }
-                        restore_payload_ms += elapsed_ms;
-                        loaded.push(file);
-                    }
-                    Ok(loaded)
+                    load_staged_catalog_chunk(
+                        chunk_tx,
+                        chunk,
+                        facts,
+                        staged_payloads,
+                        payload_spool.as_ref(),
+                        &composed_sources,
+                        &mut logical_commitments,
+                        &mut restore_payload_ms,
+                    )
                 },
                 &graph_ranks,
                 build_inputs.schema_ready,
@@ -557,7 +575,7 @@ fn restore_catalog_file(
 
 fn catalog_payload(path: &str, encoded: &[u8]) -> Result<CatalogStoragePayload> {
     let facts = crate::typed_facts::decode_facts(encoded)?;
-    Ok(crate::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
+    Ok(SymbolCatalog::default().insert_typed_with_payload(path.to_owned(), facts))
 }
 
 fn prune_facts_for_stage(facts: &mut TypedFacts, keep_node_navigation_data: bool) {

@@ -1,6 +1,7 @@
-use crate::ast::text;
-use crate::languages::{
-    CompiledSyntaxGrammar, CompiledSyntaxKind, DeclarationRole, MAX_VALUE_FLOW_TYPE_DEPTH, Syntax,
+use crate::ast::syntax::{text, ScopeVisitor};
+use crate::languages::types::{
+    source_start, CompiledSyntaxGrammar, CompiledSyntaxKind, DeclarationRole, Syntax,
+    MAX_VALUE_FLOW_TYPE_DEPTH,
 };
 use crate::semantic::{
     BindingFact, CallSiteEvidence, FieldFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
@@ -645,6 +646,23 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
     }
 }
 
+impl<'source, 'tree> ScopeVisitor<'source, 'tree> for GenericScopeAnalysis<'source, 'tree> {
+    fn enter(&mut self, node: Syntax<'tree>) {
+        GenericScopeAnalysis::enter(self, node);
+    }
+
+    fn exit(&mut self, node: Syntax<'tree>) {
+        GenericScopeAnalysis::exit(self, node);
+    }
+
+    fn finish(
+        self: Box<Self>,
+        _collect_module_aliases: bool,
+    ) -> (ValueFlowFacts, Option<std::collections::HashSet<String>>) {
+        ((*self).finish(), None)
+    }
+}
+
 fn find_variable_declarator_child<'tree>(
     node: Syntax<'tree>,
     mut pred: impl FnMut(Syntax<'tree>) -> bool,
@@ -658,7 +676,7 @@ fn find_variable_declarator_child<'tree>(
 }
 
 fn position(node: Syntax<'_>) -> SourcePosition {
-    crate::languages::source_start(node)
+    source_start(node)
 }
 
 fn binding_target(node: Syntax<'_>) -> Option<Syntax<'_>> {
@@ -777,6 +795,104 @@ fn parse_type_expr(node: Syntax<'_>, source: &str, depth: usize) -> Option<TypeE
     clean_type_name(text(node, source)).map(|name| TypeExpr::Named { name })
 }
 
+fn collect_object_pattern_member(
+    item: Syntax<'_>,
+    source_value: &ValueExpr,
+    source: &str,
+    depth: usize,
+    out: &mut Vec<PatternBinding>,
+) {
+    if item.kind() == "shorthand_property_identifier_pattern" {
+        let key = text(item, source).trim();
+        if !key.is_empty() {
+            out.push(PatternBinding {
+                name: key.to_owned(),
+                value: project_pattern_value(source_value, "__field:", key),
+            });
+        }
+        return;
+    }
+    if item.kind() == "object_assignment_pattern" {
+        if let Some(left) = item.child_by_field_name("left").filter(|left| {
+            matches!(
+                left.kind(),
+                "shorthand_property_identifier_pattern" | "identifier"
+            )
+        }) {
+            let key = text(left, source).trim();
+            if !key.is_empty() {
+                out.push(PatternBinding {
+                    name: key.to_owned(),
+                    value: project_pattern_value(source_value, "__field:", key),
+                });
+            }
+        }
+        return;
+    }
+    if let (Some(key), Some(target)) = (
+        item.child_by_field_name("key")
+            .or_else(|| item.child_by_field_name("name")),
+        item.child_by_field_name("value")
+            .or_else(|| item.child_by_field_name("pattern")),
+    ) {
+        let key_name = text(key, source).trim();
+        if !key_name.is_empty() {
+            collect_pattern_bindings(
+                target,
+                project_pattern_value(source_value, "__field:", key_name),
+                source,
+                depth + 1,
+                out,
+            );
+        }
+        return;
+    }
+    if item.kind() == "field_pattern" {
+        let Some(name) = item.child_by_field_name("name") else {
+            return;
+        };
+        let key_name = text(name, source).trim();
+        if key_name.is_empty() {
+            return;
+        }
+        let val = project_pattern_value(source_value, "__field:", key_name);
+        if let Some(sub) = item.child_by_field_name("pattern") {
+            collect_pattern_bindings(sub, val, source, depth + 1, out);
+        } else {
+            out.push(PatternBinding {
+                name: key_name.to_owned(),
+                value: val,
+            });
+        }
+    }
+}
+
+fn collect_sequence_pattern_bindings(
+    pattern: Syntax<'_>,
+    source_value: &ValueExpr,
+    source: &str,
+    depth: usize,
+    out: &mut Vec<PatternBinding>,
+) {
+    let mut cursor = pattern.walk();
+    for (index, item) in pattern.named_children(&mut cursor).enumerate() {
+        if matches!(
+            item.kind(),
+            "rest_pattern" | "list_splat_pattern" | "dictionary_splat_pattern" | "comment"
+        ) {
+            continue;
+        }
+        let slot = index.to_string();
+        collect_pattern_bindings(
+            item,
+            project_pattern_value(source_value, "__index:", &slot),
+            source,
+            depth + 1,
+            out,
+        );
+    }
+}
+
 fn collect_pattern_bindings(
     pattern: Syntax<'_>,
     source_value: ValueExpr,
@@ -804,68 +920,7 @@ fn collect_pattern_bindings(
         "object_pattern" | "struct_pattern" | "record_pattern" => {
             let mut cursor = pattern.walk();
             for item in pattern.named_children(&mut cursor) {
-                if item.kind() == "shorthand_property_identifier_pattern" {
-                    let key = text(item, source).trim();
-                    if !key.is_empty() {
-                        out.push(PatternBinding {
-                            name: key.to_owned(),
-                            value: project_pattern_value(&source_value, "__field:", key),
-                        });
-                    }
-                    continue;
-                }
-                if item.kind() == "object_assignment_pattern" {
-                    if let Some(left) = item
-                        .child_by_field_name("left")
-                        .filter(|left| {
-                            matches!(
-                                left.kind(),
-                                "shorthand_property_identifier_pattern" | "identifier"
-                            )
-                        })
-                    {
-                        let key = text(left, source).trim();
-                        if !key.is_empty() {
-                            out.push(PatternBinding {
-                                name: key.to_owned(),
-                                value: project_pattern_value(&source_value, "__field:", key),
-                            });
-                        }
-                    }
-                    continue;
-                }
-                if let (Some(key), Some(target)) = (
-                    item.child_by_field_name("key")
-                        .or_else(|| item.child_by_field_name("name")),
-                    item.child_by_field_name("value")
-                        .or_else(|| item.child_by_field_name("pattern")),
-                ) {
-                    let key_name = text(key, source).trim();
-                    if !key_name.is_empty() {
-                        collect_pattern_bindings(
-                            target,
-                            project_pattern_value(&source_value, "__field:", key_name),
-                            source,
-                            depth + 1,
-                            out,
-                        );
-                    }
-                } else if item.kind() == "field_pattern" {
-                    if let Some(name) = item.child_by_field_name("name") {
-                        let key_name = text(name, source).trim();
-                        if !key_name.is_empty() {
-                            let val = project_pattern_value(&source_value, "__field:", key_name);
-                            if let Some(sub) = item.child_by_field_name("pattern") {
-                                collect_pattern_bindings(sub, val, source, depth + 1, out);
-                            } else {
-                                out.push(PatternBinding {
-                                    name: key_name.to_owned(),
-                                    value: val,
-                                });
-                            }
-                        }
-                    }
-                }
+                collect_object_pattern_member(item, &source_value, source, depth, out);
             }
         }
         "tuple_pattern"
@@ -873,26 +928,7 @@ fn collect_pattern_bindings(
         | "pattern_list"
         | "array_pattern"
         | "tuple_struct_pattern" => {
-            let mut cursor = pattern.walk();
-            let mut index = 0usize;
-            for item in pattern.named_children(&mut cursor) {
-                if matches!(
-                    item.kind(),
-                    "rest_pattern" | "list_splat_pattern" | "dictionary_splat_pattern" | "comment"
-                ) {
-                    index += 1;
-                    continue;
-                }
-                let slot = index.to_string();
-                collect_pattern_bindings(
-                    item,
-                    project_pattern_value(&source_value, "__index:", &slot),
-                    source,
-                    depth + 1,
-                    out,
-                );
-                index += 1;
-            }
+            collect_sequence_pattern_bindings(pattern, &source_value, source, depth, out);
         }
         _ => {}
     }
@@ -996,7 +1032,7 @@ mod tests {
     #[cfg(feature = "lang-typescript")]
     #[test]
     fn generic_scope_analysis_extracts_bindings_from_compiled_selectors() {
-        use crate::languages::{DeclarationRole, SyntaxGrammarSpec};
+        use crate::languages::types::{DeclarationRole, SyntaxGrammarSpec};
         use std::sync::Arc;
 
         let spec = SyntaxGrammarSpec {

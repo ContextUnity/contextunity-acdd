@@ -109,8 +109,8 @@ The shared body traversal replaces recursive declaration-body binding, value-flo
 > Invariant: Shared infrastructure, validation, Git execution, surface compatibility, and graph hygiene have canonical single owners across the workspace.
 > - INV-SINGLE-OWNER: Shared workspace configuration (`acdd_core::config`), error taxonomy (`acdd_core::errors`), path confinement and brace-aware glob matching (`acdd_core::{fs, path_policy}`), advisory locking (`acdd_core::lock`), system/telemetry primitives (`acdd_core::{sys, format, telemetry}`), and `validate`/`WhenExpr` (`acdd_state`) have one canonical owner with zero downstream duplicates. [`glob_matches`](../../crates/acdd-core/src/path_policy.rs) [`load_adapter`](../../crates/acdd-core/src/config/loader.rs)
 > - INV-GIT-SINGLE-OWNER: Raw `std::process::Command::new("git")` invocations are strictly confined to `crates/acdd-core/src/git.rs` (`acdd_core::git`); all downstream Git workflows in `acdd-state` and host `src/` route through `acdd_core::git`. [`git_command`](../../crates/acdd-core/src/git.rs)
-> - INV-SURFACE-COMPATIBILITY: Preserve public crate signatures, DTO contracts, and `ErrorCode` semantics without mirror `Mcp*` clone structs or duplicate `ClaimResp` Markdown renderers. [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs)
-> - INV-NO-DEAD-CODE-SHIMS: Ban `#![allow(dead_code, unused_imports)]`, legacy re-export shims (`src/core/*`, `src/db/*`), `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, and `dangling_calls`. [`collect_dead_tails`](../../crates/acdd-index/src/db/lint/dead_tails.rs)
+> - INV-SURFACE-COMPATIBILITY: Preserve active CLI/MCP wire and DTO contracts and `ErrorCode` semantics without mirror `Mcp*` clone structs or duplicate `ClaimResp` Markdown renderers, while forbidding dead or test-only `pub` / `pub use` compatibility shims across internal workspace crates. [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs)
+> - INV-NO-DEAD-CODE-SHIMS: Ban `#![allow(dead_code, unused_imports)]`, legacy re-export shims (`src/core/*`, `src/db/*`), `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, `dangling_calls`, and `dead_tails.unused_public_api` violations. [`collect_dead_tails`](../../crates/acdd-index/src/db/lint/dead_tails.rs)
 > - INV-BOUNDED-STRUCTURAL-COMPLEXITY: Production callables obey bounded AST cognitive complexity (`max_cognitive_complexity = 50`), control-flow nesting depth (`max_nesting_depth = 6`), outgoing graph fan-out (`max_fanout = 40`), zero `fact_budget_exceeded` overflows, and unique intra-crate nominal type names without fragmenting flat lookup or `match` router tables. [`collect_syntax_violations`](../../crates/acdd-index/src/db/lint/syntax.rs)
 > - INV-AR003-CANONICAL-INVARIANT-AUTHORITY: Every architectural invariant has one canonical `INV-*` declaration in `docs/architecture/*.md` or `docs/adr/*.md` with verified symbol links (and `acdd-rule` blocks for machine-enforceable boundaries), while `**/AGENTS.md` files stay concise operational routers. [`enforced_invariant_ids`](../../crates/acdd-index/src/db/lint/rules.rs)
 
@@ -161,11 +161,15 @@ from:
   exclude_paths:
     - "crates/acdd-index/src/languages/mod.rs"
     - "crates/acdd-index/src/languages/build_manifest.rs"
+    - "crates/acdd-index/src/languages/context.rs"
+    - "crates/acdd-index/src/languages/profile.rs"
+    - "crates/acdd-index/src/languages/routes.rs"
     - "crates/acdd-index/src/languages/semantic.rs"
     - "crates/acdd-index/src/languages/template.rs"
     - "crates/acdd-index/src/languages/toml_manifest.rs"
+    - "crates/acdd-index/src/languages/types.rs"
 to:
-  paths: ["crates/acdd-index/src/languages/mod.rs"]
+  paths: ["crates/acdd-index/src/languages/profile.rs"]
   symbols: ["LanguageProfile"]
 ```
 

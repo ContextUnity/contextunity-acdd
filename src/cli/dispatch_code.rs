@@ -1,4 +1,5 @@
-use super::{paths, AstCommand, Command, DocsCommand, QueryCommand};
+use super::args::{AstCommand, Command, DocsCommand, QueryCommand};
+use super::paths;
 use crate::{
     engine::{ast, pipeline as writer},
     format::OutputFormat,
@@ -608,7 +609,7 @@ fn dispatch_query(
             ctx.root,
             &selector,
             path.as_deref(),
-            &symbols::ExplainOptions {
+            &symbols::SymbolExplainOptions {
                 explain: reader::ExplainOptions {
                     direction: reader::ExplainDirection::Both,
                     show_doc: true,

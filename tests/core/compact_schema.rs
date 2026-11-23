@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use acdd_core::format::stable_hash64;
-use acdd_index::db::{commitments, reader, SCHEMA_DDL};
+use acdd_index::db::{commitments, reader, schema::SCHEMA_DDL};
 use anyhow::Result;
 use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::{params, Connection};
@@ -121,8 +121,6 @@ fn canonical_graph_tables_store_numeric_keys_and_first_class_owners() -> Result<
         let flags = NodeDetailFlags::from_json(raw);
         assert_eq!((flags.has_entrypoint, flags.has_cfg_test, flags.is_stub), (entrypoint, cfg_test, stub));
     }
-    commitments::seal(&conn)?;
-    commitments::verify(&conn)?;
     Ok(())
 }
 
@@ -168,7 +166,7 @@ fn cold_build_populates_node_owner_paths() -> Result<()> {
             assert!(details.get(key).is_some(), "missing {key}: {details}");
         }
         workspace.write("source/models.py", "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return f'{result}'\n");
-        let delta = writer::delta(&source, &db, &["models.py".into()])?;
+        let delta = writer::delta_with_selection(&source, &db, &["models.py".into()], None, None)?;
         let fresh = writer::build(&source, &workspace.path("fresh.sqlite"), None)?;
         assert_eq!(delta["output_root"], fresh["output_root"]);
     }

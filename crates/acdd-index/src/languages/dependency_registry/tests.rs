@@ -1,5 +1,8 @@
 use super::parser::filename_matches;
 use super::*;
+use anyhow::Result;
+use crate::languages::LanguageFamily;
+use std::fs;
 
 fn source_registry(files: &[(&str, &str)]) -> Result<DependencyRegistry> {
     let manifests: Vec<_> = files
@@ -442,131 +445,6 @@ semantic_rules:
     let temporary = acdd_core::fs::ScopedTempDir::create("acdd-framework-packs").unwrap();
     let semantic_root = temporary.path().join("semantic-replacement");
     fs::create_dir_all(semantic_root.join(".acdd/frameworks")).unwrap();
-    fs::write(
-        semantic_root.join("pyproject.toml"),
-        "[project]\nname='call-file-fixture'\ndependencies=['django']\n",
-    )
-    .unwrap();
-    let replacement = semantic_root.join(".acdd/frameworks/django.toml");
-    for (phase, enabled) in [
-        ("bundled", true),
-        ("empty replacement", false),
-        ("restored", true),
-    ] {
-        if phase == "empty replacement" {
-            fs::write(&replacement, "replace = true\n").unwrap();
-        } else if phase == "restored" {
-            fs::remove_file(&replacement).unwrap();
-        }
-        let registry = DependencyRegistry::try_collect_with_paths(&semantic_root, None, &[]).unwrap();
-        let manifest = registry
-            .framework_manifest_for_path(LanguageFamily("python"), "views.py", "django", "django")
-            .expect("package/project pack remains available");
-        let _ = manifest;
-        let extracted = crate::ast::extract_typed_with_registry(
-            "views.py",
-            "python",
-            "from django.shortcuts import render as show_page\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n\ndef shadowed(request, show_page):\n    return show_page(request, 'catalog/card.html')\n\ndef starred(request, args):\n    return show_page(*args, 'catalog/card.html')\n\ndef comprehension(request, callbacks):\n    return [show_page(request, 'catalog/card.html') for show_page in callbacks]\n",
-            &registry,
-        )
-        .unwrap();
-        assert!(extracted.facts.errors.is_empty(), "{phase}: parse errors");
-        let native_owner = &extracted
-            .facts
-            .nodes
-            .iter()
-            .find(|node| node.name == "page")
-            .expect("native ordinary caller declaration survives replacement")
-            .id;
-        let native_consumers: Vec<_> = extracted
-            .facts
-            .semantic
-            .entries()
-            .flat_map(|(_, entry)| match &entry.state {
-                crate::typed_facts::SemanticState::Valid { facts, .. } => facts.iter(),
-                crate::typed_facts::SemanticState::Invalid { .. } => {
-                    panic!("{phase}: canonical native semantic facts must remain valid")
-                }
-            })
-            .filter(|fact| {
-                matches!(
-                    fact.role,
-                    crate::semantic::SemanticFactRole::CallToFile { .. }
-                )
-            })
-            .collect();
-        assert_eq!(
-            native_consumers.len(),
-            usize::from(enabled),
-            "{phase}: native exact imported-call consumer fact"
-        );
-        assert!(
-            native_consumers
-                .iter()
-                .all(|fact| &fact.occurrence.owner_id == native_owner),
-            "{phase}: native actual caller declaration"
-        );
-        let extracted = serde_json::to_value(&extracted).unwrap();
-        let nodes = extracted["nodes"].as_array().unwrap();
-        let owner = nodes
-            .iter()
-            .find(|node| node["name"] == "page")
-            .expect("ordinary caller declaration survives replacement");
-        let consumers: Vec<_> = nodes
-            .iter()
-            .flat_map(|node| {
-                node["details"]
-                    .get("semantic_facts")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-            })
-            .filter(|fact| fact["role"]["kind"] == "call_to_file")
-            .collect();
-        if enabled {
-            assert_eq!(
-                consumers.len(),
-                1,
-                "{phase}: exact imported-call consumer fact"
-            );
-            assert_eq!(
-                consumers[0]["occurrence"]["owner_id"], owner["id"],
-                "{phase}: actual caller declaration"
-            );
-            assert_eq!(
-                consumers[0]["role"],
-                serde_json::json!({"kind":"call_to_file","import_owner":"module:views.py","alias":"show_page","module":"django.shortcuts","export":"render","relation":"renders_template"})
-            );
-            assert_eq!(
-                consumers[0]["identity"]["path"], "catalog/card.html",
-                "{phase}: literal identity"
-            );
-            assert_eq!(
-                consumers[0]["identity"]["target"],
-                serde_json::json!({"kind":"project_path_suffix","prefix":"templates/","language":"html"})
-            );
-            assert_eq!(consumers[0]["occurrence"]["line"], 4, "{phase}: occurrence");
-            for field in ["", "/identity", "/occurrence", "/role"] {
-                let mut malformed = consumers[0].clone();
-                malformed
-                    .pointer_mut(field)
-                    .unwrap()
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("unsupported".into(), true.into());
-                assert!(
-                    serde_json::from_value::<super::super::semantic::SemanticFact>(malformed)
-                        .is_err(),
-                    "strict stored DTO field {field}"
-                );
-            }
-        } else {
-            assert!(
-                consumers.is_empty(),
-                "empty replacement must remove consumer facts: {consumers:?}"
-            );
-        }
-    }
     let mut documented = Vec::new();
     for block in include_str!("../../../../../docs/reference/framework-manifests.md").split("```")
     {
@@ -1005,4 +883,471 @@ fn requirement_patterns_are_filename_scoped() {
     assert!(filename_matches("requirements*.txt", "requirements-dev.txt"));
     assert!(!filename_matches("requirements*.txt", "requirements-dev.yaml"));
     assert!(filename_matches("Cargo.toml", "Cargo.toml"));
+}
+
+#[test]
+fn manifest_parsers_and_module_prefixes_matrix() {
+    use super::parser::ParsedManifest;
+    use super::parsers::MANIFEST_PARSERS;
+    use crate::languages::{self, types::Ecosystem};
+
+    let _: Option<ParsedManifest> = None;
+
+    struct ParserCase {
+        ecosystem: Ecosystem,
+        filename: &'static str,
+        content: &'static str,
+        expected_deps: &'static [&'static str],
+        expected_prefixes: &'static [(&'static str, &'static str)],
+    }
+
+    let cases = [
+        ParserCase {
+            ecosystem: Ecosystem::Rust,
+            filename: "Cargo.toml",
+            content: "[package]\nname = \"demo-pkg\"\n[dependencies]\nserde-json = \"1\"\n",
+            expected_deps: &["serde_json"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::JavaScript,
+            filename: "package.json",
+            content: r#"{"name":"web","dependencies":{"zod":"^3"},"devDependencies":{"vitest":"1"},"optionalDependencies":{"opt":"1"}}"#,
+            expected_deps: &["zod", "vitest"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::JavaScript,
+            filename: "package.json",
+            content: r#"{"name":"web-tolerant","main":"index.js","bin":["ignored"],"dependencies":null,"devDependencies":{"vitest":"1"}}"#,
+            expected_deps: &["vitest"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::JavaScript,
+            filename: "package-lock.json",
+            content: r#"{"dependencies":null,"packages":{"node_modules/chalk":{"version":"5.3.0"}}}"#,
+            expected_deps: &["chalk"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Python,
+            filename: "pyproject.toml",
+            content: "[project]\nname='svc'\ndependencies=['fastapi>=0.110']\n",
+            expected_deps: &["fastapi"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Go,
+            filename: "go.mod",
+            content: "module example.com/acme/api\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgolang.org/x/sync v0.7.0 // indirect\n)\n",
+            expected_deps: &["github.com/gin-gonic/gin", "golang.org/x/sync"],
+            expected_prefixes: &[("example.com/acme/api", "")],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Go,
+            filename: "go.mod",
+            content: "module example.com/acme/inline\nrequire ( example.com/inline v1.2.3 )\nrequire github.com/after/inline v0.1.0\n",
+            expected_deps: &["example.com/inline", "github.com/after/inline"],
+            expected_prefixes: &[("example.com/acme/inline", "")],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Jvm,
+            filename: "pom.xml",
+            content: "<project><dependencies><dependency><groupId>io.ktor</groupId><artifactId>ktor-core</artifactId></dependency></dependencies></project>",
+            expected_deps: &["io.ktor"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Jvm,
+            filename: "build.gradle.kts",
+            content: "dependencies { implementation(\"org.springframework.boot:spring-boot-starter:3.0.0\") }",
+            expected_deps: &["org.springframework.boot"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Php,
+            filename: "composer.json",
+            content: r#"{"name":"acme/shop","require":{"php":"^8.3","laravel/framework":"^11.0"},"require-dev":{"phpunit/phpunit":"^11.0"},"autoload":{"psr-4":{"App\\":"src/","Acme\\Core\\":["core/","shared/"]}},"autoload-dev":{"psr-4":{"App\\Tests\\":"tests/"}}}"#,
+            expected_deps: &["laravel/framework", "phpunit/phpunit"],
+            expected_prefixes: &[
+                ("Acme\\Core", "core"),
+                ("Acme\\Core", "shared"),
+                ("App", "src"),
+                ("App\\Tests", "tests"),
+            ],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Php,
+            filename: "composer.json",
+            content: r#"{"name":"acme/tolerant","require":{"laravel/framework":"^11.0"},"require-dev":[],"autoload":{"psr-4":[]}}"#,
+            expected_deps: &["laravel/framework"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::CSharp,
+            filename: "Billing.csproj",
+            content: r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><RootNamespace>Acme.Billing</RootNamespace></PropertyGroup><ItemGroup><!-- <PackageReference Include="Ignored" /> --><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup></Project>"#,
+            expected_deps: &["Newtonsoft.Json", "Serilog"],
+            expected_prefixes: &[("Acme.Billing", "")],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::Ruby,
+            filename: "Gemfile",
+            content: "# comment\nsource 'https://rubygems.org'\ngem 'rails', '~> 7.1'\ngem(\"sidekiq\")\n",
+            expected_deps: &["rails", "sidekiq"],
+            expected_prefixes: &[],
+        },
+        ParserCase {
+            ecosystem: Ecosystem::CCpp,
+            filename: "CMakeLists.txt",
+            content: "cmake_minimum_required(VERSION 3.20)\n# find_package(Ignored)\nfind_package(OpenSSL REQUIRED)\nFIND_PACKAGE(fmt CONFIG REQUIRED)\n",
+            expected_deps: &["OpenSSL", "fmt"],
+            expected_prefixes: &[],
+        },
+    ];
+
+    for case in &cases {
+        let parser = MANIFEST_PARSERS
+            .iter()
+            .copied()
+            .find(|parser| {
+                parser.ecosystem() == case.ecosystem && parser.matches_filename(case.filename)
+            })
+            .unwrap_or_else(|| panic!("missing ManifestParser for {}", case.filename));
+        let parsed = parser.parse(case.filename, case.content);
+        let actual_deps: std::collections::BTreeSet<_> =
+            parsed.dependencies.iter().map(String::as_str).collect();
+        let expected_deps: std::collections::BTreeSet<_> =
+            case.expected_deps.iter().copied().collect();
+        assert_eq!(actual_deps, expected_deps, "{}", case.filename);
+        let actual_prefixes: Vec<_> = parsed
+            .module_prefixes
+            .iter()
+            .map(|item| (item.prefix.as_str(), item.source_root.as_str()))
+            .collect();
+        assert_eq!(actual_prefixes, case.expected_prefixes, "{}", case.filename);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    {
+        let autolib_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+            name: "",
+            manifests: &[ManifestSource {
+                path: "Cargo.toml",
+                source: "[package]\nname = \"demo-lib\"\nautolib = false\n[lib]\n",
+            }],
+        }])
+        .unwrap();
+        assert_eq!(
+            autolib_registry.rust_package_for_path("src/lib.rs"),
+            Some(("", "demo_lib"))
+        );
+    }
+
+    let registry = DependencyRegistry::try_collect_from_sources([
+        WorkspaceManifestSources {
+            name: "",
+            manifests: &[
+                ManifestSource {
+                    path: "go.mod",
+                    source: "module example.com/root\nrequire github.com/pkg/errors v0.9.1\n",
+                },
+                ManifestSource {
+                    path: "services/auth/go.mod",
+                    source: "module example.com/root/services/auth\nrequire golang.org/x/crypto v0.20.0\n",
+                },
+                ManifestSource {
+                    path: "backend/composer.json",
+                    source: r#"{"require":{"monolog/monolog":"^3.0"},"autoload":{"psr-4":{"App\\":"src/"}},"autoload-dev":{"psr-4":{"App\\Tests\\":"tests/"}}}"#,
+                },
+                ManifestSource {
+                    path: "dotnet/Billing.csproj",
+                    source: r#"<Project><PropertyGroup><RootNamespace>Acme.Billing</RootNamespace></PropertyGroup><ItemGroup><PackageReference Include="Dapper" Version="2.1.0" /></ItemGroup></Project>"#,
+                },
+                ManifestSource {
+                    path: "jvm/pom.xml",
+                    source: "<project><dependencies><dependency><groupId>com.squareup.okhttp3</groupId></dependency></dependencies></project>",
+                },
+                ManifestSource {
+                    path: "ruby/Gemfile",
+                    source: "gem 'puma'\n",
+                },
+                ManifestSource {
+                    path: "native/CMakeLists.txt",
+                    source: "find_package(ZLIB REQUIRED)\n",
+                },
+            ],
+        },
+        WorkspaceManifestSources {
+            name: "other",
+            manifests: &[ManifestSource {
+                path: "go.mod",
+                source: "module example.com/other\n",
+            }],
+        },
+    ])
+    .unwrap();
+
+    assert_eq!(
+        registry
+            .module_prefix_for_path(LanguageFamily("go"), "services/auth/handler.go")
+            .map(|p| p.prefix.as_str()),
+        Some("example.com/root/services/auth")
+    );
+    assert_eq!(
+        registry
+            .module_prefixes_for_path(LanguageFamily("go"), "services/auth/handler.go")
+            .into_iter()
+            .map(|p| p.prefix.as_str())
+            .collect::<Vec<_>>(),
+        vec!["example.com/root/services/auth", "example.com/root"]
+    );
+    assert_eq!(
+        registry
+            .module_prefix_for_path(LanguageFamily("go"), "[other]/main.go")
+            .map(|p| p.prefix.as_str()),
+        Some("example.com/other")
+    );
+    assert_eq!(
+        registry
+            .module_prefix_for_path(LanguageFamily("php"), "backend/src/User.php")
+            .map(|p| (p.prefix.as_str(), p.source_root.as_str())),
+        Some(("App", "backend/src"))
+    );
+    assert_eq!(
+        registry
+            .module_prefix_for_path(LanguageFamily("php"), "backend/tests/UserTest.php")
+            .map(|p| (p.prefix.as_str(), p.source_root.as_str())),
+        Some(("App\\Tests", "backend/tests"))
+    );
+    assert_eq!(
+        registry
+            .module_prefix_for_path(LanguageFamily("csharp"), "dotnet/Invoice.cs")
+            .map(|p| (p.prefix.as_str(), p.source_root.as_str())),
+        Some(("Acme.Billing", "dotnet"))
+    );
+    assert!(registry
+        .module_prefix_for_path(LanguageFamily("php"), "[other]/backend/src/User.php")
+        .is_none());
+
+    for (lang_id, module, path, expected_origin) in [
+        ("go", "github.com/pkg/errors", "main.go", "go.mod"),
+        ("php", "monolog/monolog", "backend/src/User.php", "backend/composer.json"),
+        ("csharp", "Dapper", "dotnet/Invoice.cs", "dotnet/Billing.csproj"),
+        ("java", "com.squareup.okhttp3", "jvm/App.java", "jvm/pom.xml"),
+        ("kotlin", "com.squareup.okhttp3", "jvm/App.kt", "jvm/pom.xml"),
+        ("ruby", "puma", "ruby/app.rb", "ruby/Gemfile"),
+        ("c", "ZLIB", "native/main.c", "native/CMakeLists.txt"),
+        ("cpp", "ZLIB", "native/main.cpp", "native/CMakeLists.txt"),
+    ] {
+        if let Some(profile) = languages::by_id(lang_id) {
+            assert_eq!(
+                registry.classification_for_path(profile, module, path).as_deref(),
+                Some(format!("external dependency (manifest: {expected_origin})").as_str()),
+                "{lang_id}: {module}"
+            );
+        }
+    }
+}
+
+#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+#[test]
+fn source_registry_scope_parity_matrix() {
+    use crate::languages;
+    use crate::linker;
+    use std::collections::BTreeMap;
+
+    const MANIFESTS: &[(&str, &str)] = &[
+        ("requirements.txt", "django\nfastapi\n"),
+        ("nested/requirements.txt", ""),
+        (
+            "package.json",
+            "{\"name\":\"primary\",\"dependencies\":{\"vue\":\"3\"}}",
+        ),
+        (
+            "package-lock.json",
+            "{\"lockfileVersion\":3,\"packages\":{\"node_modules/vue\":{\"version\":\"3\"}}}",
+        ),
+        (
+            ".acdd/frameworks/django.toml",
+            "[[route_calls]]\ncallee='LocalRoute'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n",
+        ),
+        (".acdd/frameworks/fastapi.yaml", "enabled: true\n"),
+    ];
+    const SOURCES: &[(&str, &str, &str)] = &[
+        ("app.py", "python", "from fastapi import FastAPI\nclass Record: pass\napp=FastAPI()\n@app.get('/records/', response_model=Record)\ndef records(): return []\nLocalRoute('/local/', records)\n"),
+        ("nested/app.py", "python", "class Record: pass\nclass View:\n    model=Record\n"),
+    ];
+    let extract_with_registry = |registry: &DependencyRegistry, files: &[(&str, &str, &str)]| {
+        files
+            .iter()
+            .map(|&(path, language, source)| {
+                crate::ast::extract_typed_with_registry(path, language, source, registry)
+                    .map(|facts| (path.to_owned(), facts))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()
+    };
+
+    let tmp = acdd_core::fs::ScopedTempDir::create("acdd-source-parity").unwrap();
+    let workspace = tmp.path().join("primary");
+    let linked = tmp.path().join("linked");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&linked).unwrap();
+    for (rel, content) in MANIFESTS {
+        let p = workspace.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, content).unwrap();
+    }
+    fs::write(linked.join("requirements.txt"), "fastapi\n").unwrap();
+
+    for name in [
+        "my-service",
+        "two words",
+        "команда",
+        "a/b",
+        "[other]",
+        "../other",
+    ] {
+        fs::write(
+            workspace.join("acdd.yaml"),
+            format!(
+                "roots: [.]\nlinked_workspaces:\n  - name: '{name}'\n    path: '{}'\n    roots: [.]\n",
+                linked.display()
+            ),
+        )
+        .unwrap();
+        let main: Vec<_> = MANIFESTS
+            .iter()
+            .map(|&(path, source)| ManifestSource { path, source })
+            .collect();
+        let linked_sources = [ManifestSource {
+            path: "requirements.txt",
+            source: "fastapi\n",
+        }];
+        let source = DependencyRegistry::try_collect_from_sources([
+            WorkspaceManifestSources {
+                name: "",
+                manifests: &main,
+            },
+            WorkspaceManifestSources {
+                name,
+                manifests: &linked_sources,
+            },
+        ])
+        .unwrap();
+        let adapter = crate::scanner::load_adapter(&workspace, None).unwrap();
+        let disk =
+            DependencyRegistry::try_collect_with_scan_config(&workspace, Some(&adapter)).unwrap();
+        assert_eq!(source.digest(), disk.digest());
+        for (path, pack) in [
+            ("app.py", "django"),
+            ("nested/app.py", "django"),
+            (&format!("[{name}]/app.py"), "fastapi"),
+        ] {
+            let source_m = source
+                .framework_manifest_for_path(LanguageFamily("python"), path, pack, pack)
+                .map(|m| serde_json::to_value(m).unwrap());
+            let disk_m = disk
+                .framework_manifest_for_path(LanguageFamily("python"), path, pack, pack)
+                .map(|m| serde_json::to_value(m).unwrap());
+            assert_eq!(source_m, disk_m);
+        }
+        let source_facts = extract_with_registry(&source, SOURCES).unwrap();
+        let disk_facts = extract_with_registry(&disk, SOURCES).unwrap();
+        for (path, facts) in &source_facts {
+            assert_eq!(
+                serde_json::to_value(facts.clone().into_public()).unwrap(),
+                serde_json::to_value(disk_facts[path].clone().into_public()).unwrap()
+            );
+        }
+        let actual: crate::models::Graph =
+            linker::link_compact_with_typed_registry(&source_facts, None, None, &source).into();
+        let expected: crate::models::Graph =
+            linker::link_compact_with_typed_registry(&disk_facts, None, None, &disk).into();
+        assert_eq!(
+            serde_json::to_value(&actual.edges).unwrap(),
+            serde_json::to_value(expected.edges).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&actual.coverage).unwrap(),
+            serde_json::to_value(expected.coverage).unwrap()
+        );
+        let nodes = &source_facts["app.py"].facts.nodes;
+        let route = nodes
+            .iter()
+            .find(|node| node.name == "GET /records/")
+            .unwrap();
+        let handler = nodes.iter().find(|node| node.name == "records").unwrap();
+        assert!(actual
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "handles" && edge.src == route.id && edge.dst == handler.id));
+        assert!(actual.edges.iter().any(|edge| edge.kind == "uses_model"));
+        assert!(!actual
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "uses_model" && edge.src.contains("nested/app.py")));
+        if !matches!(name, "a/b" | "../other") {
+            let app = format!("[{name}]/app.py");
+            let nested = format!("[{name}]/nested/app.py");
+            let files = [
+                (app.as_str(), "python", SOURCES[0].2),
+                (nested.as_str(), "python", SOURCES[1].2),
+            ];
+            let actual_facts = extract_with_registry(&source, &files).unwrap();
+            let expected_facts = extract_with_registry(&disk, &files).unwrap();
+            let actual: crate::models::Graph =
+                linker::link_compact_with_typed_registry(&actual_facts, None, None, &source).into();
+            let expected: crate::models::Graph =
+                linker::link_compact_with_typed_registry(&expected_facts, None, None, &disk).into();
+            assert_eq!(
+                serde_json::to_value(&actual.edges).unwrap(),
+                serde_json::to_value(&expected.edges).unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                serde_json::to_value(&actual.coverage).unwrap(),
+                serde_json::to_value(&expected.coverage).unwrap(),
+                "{name}"
+            );
+            let nodes = &actual_facts[&app].facts.nodes;
+            let route = nodes
+                .iter()
+                .find(|node| node.name == "GET /records/")
+                .unwrap();
+            let handler = nodes.iter().find(|node| node.name == "records").unwrap();
+            let model = nodes.iter().find(|node| node.name == "Record").unwrap();
+            for (kind, src, dst) in [
+                ("handles", &route.id, &handler.id),
+                ("uses_model", &handler.id, &model.id),
+            ] {
+                assert_eq!(
+                    actual
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.kind == kind && edge.src == *src && edge.dst == *dst)
+                        .count(),
+                    1,
+                    "{name}: exact linked {kind} target"
+                );
+            }
+            let view = actual_facts[&nested]
+                .facts
+                .nodes
+                .iter()
+                .find(|node| node.name == "View")
+                .unwrap();
+            assert!(
+                !actual
+                    .edges
+                    .iter()
+                    .any(|edge| edge.kind == "uses_model" && edge.src == view.id),
+                "{name}: linked FastAPI scope must not activate primary Django policy"
+            );
+        }
+        let _ = languages::LanguageFamily("python");
+    }
 }

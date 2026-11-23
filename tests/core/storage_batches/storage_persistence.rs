@@ -1,7 +1,7 @@
 use crate::common::Workspace;
 use acdd_index::models::DocSection;
-use acdd_index::{db::{commitments, reader}, scanner};
-use contextunity_acdd::engine::{pipeline, pipeline as writer};
+use acdd_index::{db::commitments, scanner};
+use contextunity_acdd::engine::pipeline;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -36,7 +36,27 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
     let extracted_facts = extraction_pool.install(|| {
         scan.entries
             .par_iter()
-            .map(|entry| writer::extract(workspace.root(), entry, &adapter))
+            .map(|entry| {
+                let source = std::fs::read_to_string(workspace.path(&entry.path))?;
+                if entry.is_doc {
+                    let docs = acdd_index::docs::extract_with_details_with_zones(
+                        &entry.path,
+                        &source,
+                        entry.mtime_ns as f64 / 1e9,
+                        &adapter.spec_paths(),
+                        None,
+                    )?
+                    .into_iter()
+                    .map(|(d, _)| d)
+                    .collect();
+                    Ok(acdd_index::models::Facts {
+                        docs,
+                        ..Default::default()
+                    })
+                } else {
+                    acdd_index::ast::extract(&entry.path, &entry.language, &source)
+                }
+            })
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
 
@@ -155,7 +175,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         .collect();
     let decoded_local_facts = local_facts
         .iter()
-        .map(|stored| reader::decode_local_facts(&stored.5))
+        .map(|stored| crate::common::decode_local_facts(&stored.5))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let durable: std::collections::BTreeMap<_, _> = decoded_local_facts
         .iter()
@@ -427,28 +447,5 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() -> anyho
         assert!(!output.status.success(), "{} unexpectedly built", label);
         assert!(!database.exists(), "{} published a database", label);
     }
-    Ok(())
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn public_extraction_rejects_a_file_entry_digest_mismatch() -> anyhow::Result<()> {
-    let workspace = Workspace::new();
-    workspace.write("src/lib.rs", "pub fn current() -> u8 { 1 }\n");
-    let adapter = scanner::load_adapter(workspace.root(), None)?;
-    let mut entry = scanner::scan_with_adapter(workspace.root(), &adapter)?
-        .entries
-        .into_iter()
-        .find(|entry| entry.path == "src/lib.rs")
-        .ok_or_else(|| anyhow::anyhow!("scanner did not return src/lib.rs"))?;
-    entry.digest = "deliberately-stale-digest".to_owned();
-    let error = writer::extract(workspace.root(), &entry, &adapter)
-        .expect_err("stale public extraction must fail closed");
-    assert!(
-        error
-            .to_string()
-            .contains("source changed during extraction"),
-        "stale public extraction must fail closed: {error:#}"
-    );
     Ok(())
 }

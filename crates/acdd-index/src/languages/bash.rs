@@ -1,9 +1,14 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support;
+use super::types::{CallForm, DeclarationRole, ImportPath, SyntaxContext, SyntaxGrammarSpec};
+use crate::ast::syntax::{field, text};
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 
 /// Language profile for Bash and POSIX shell scripts.
-pub struct Bash;
+struct Bash;
 /// Shared Bash language profile.
-pub static BASH: Bash = Bash;
+static BASH: Bash = Bash;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -106,8 +111,6 @@ impl LanguageProfile for Bash {
         support::relative_file_import(owner, trimmed)
     }
 
-    support::delegate_extract_file!();
-
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if !command_name(ctx).is_some_and(|cmd| matches!(cmd, "source" | ".")) {
             return;
@@ -147,4 +150,4 @@ fn command_name<'a>(ctx: &SyntaxContext<'a, '_>) -> Option<&'a str> {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&BASH];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&BASH];

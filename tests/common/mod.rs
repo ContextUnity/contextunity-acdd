@@ -8,3 +8,53 @@ pub mod sqlite;
 pub mod workspace;
 
 pub use workspace::Workspace;
+
+/// Test helper wrapping [`acdd_index::linker::link_with_registry`] without shipping a test-only
+/// convenience wrapper in `acdd_index`.
+#[allow(dead_code)]
+pub fn link_facts(
+    all: &std::collections::BTreeMap<String, acdd_index::models::Facts>,
+) -> acdd_index::models::Graph {
+    link_facts_with_root(all, None, None)
+}
+
+/// Test helper wrapping [`acdd_index::linker::link_with_registry`] with optional owners/root.
+#[allow(dead_code)]
+pub fn link_facts_with_root(
+    all: &std::collections::BTreeMap<String, acdd_index::models::Facts>,
+    owners: Option<&std::collections::BTreeSet<String>>,
+    root: Option<&std::path::Path>,
+) -> acdd_index::models::Graph {
+    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(root);
+    acdd_index::linker::link_with_registry(all, owners, root, &dependencies)
+}
+
+/// Test helper wrapping [`acdd_index::linker::link_compact_catalog_with_registry`].
+#[allow(dead_code)]
+pub fn link_catalog(catalog: &acdd_index::typed_facts::SymbolCatalog) -> acdd_index::models::Graph {
+    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(None);
+    acdd_index::linker::link_compact_catalog_with_registry(catalog, None, &dependencies).into()
+}
+
+/// Test helper decoding persisted `local_facts` payloads via [`acdd_index::typed_facts::decode_facts`].
+#[allow(dead_code)]
+pub fn decode_local_facts(blob: &[u8]) -> anyhow::Result<acdd_index::models::Facts> {
+    Ok(acdd_index::typed_facts::decode_facts(blob)?.into_public())
+}
+
+/// Test helper resolving one selector via [`acdd_index::db::reader::inspect_paged_with_path`].
+#[allow(dead_code)]
+pub fn select_node(conn: &rusqlite::Connection, selector: &str) -> anyhow::Result<serde_json::Value> {
+    let options = acdd_core::response::QueryOptions::resolve(
+        &acdd_core::response::ResponsePolicy::default(),
+        Some(1),
+        0,
+        Some(acdd_core::response::Detail::Full),
+        None,
+    )?;
+    Ok(
+        acdd_index::db::reader::inspect_paged_with_path(conn, selector, None, false, &options)?
+            ["node"]
+            .clone(),
+    )
+}

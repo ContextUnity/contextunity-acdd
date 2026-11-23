@@ -1,7 +1,7 @@
 //! Cross-spec, active-run, and linked-workspace dependency graph resolution for roadmap synthesis.
 
 use super::discovery::{checkout_spec_id, checkout_specs_from, scan_checkout_specs};
-use super::{
+use super::types::{
     ActiveRunMap, CheckoutSpecs, DependencyGraphData, DiscoveredWorkspace, LinkedWsCache, SpecInfo,
 };
 use crate::machine::schedule::is_dep_satisfied_against_statuses;
@@ -9,6 +9,7 @@ use crate::spec::SpecDocument;
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
 use crate::types::{NodeKind, NodeStatus, RunGraphSnapshot, ValidatedObservations};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::{
     checkout_scoped_target_selector, collect_external_satisfied_deps_cached,
     effective_active_run_config, load_dep_snapshot, load_task_status_map, load_tombstone_archives,
@@ -18,7 +19,6 @@ use crate::usecases::deps::{
 };
 use crate::usecases::dto::RoadmapDepEntry;
 use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list_all_tombstones};
-use crate::usecases::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
 use acdd_core::errors::StateError;
 use acdd_core::fs::canonical_root;

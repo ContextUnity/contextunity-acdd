@@ -5,7 +5,8 @@ use crate::languages::ImportPath;
 use crate::languages::{dependency_registry::DependencyRegistry, LanguageProfile};
 #[cfg(feature = "lang-rust")]
 use crate::linker::traits::ModulesByNamespace;
-use crate::linker::value_flow::{Symbol, TypeTarget};
+use crate::linker::types::{receiver_type_name, ReceiverType};
+use crate::linker::value_flow::types::{import_path, Symbol, TypeTarget};
 use crate::models::{Facts, Node};
 #[cfg(feature = "lang-rust")]
 use hashbrown::HashMap;
@@ -44,7 +45,7 @@ pub(in crate::linker) fn receiver_symbol<'a>(
             .as_str()
             .filter(|name| *name != "Self")
         {
-            let clean = super::super::receiver_type_name(receiver_type)
+            let clean = receiver_type_name(receiver_type)
                 .unwrap_or(std::borrow::Cow::Borrowed(receiver_type));
             return Some(resolve_type(clean.as_ref()));
         }
@@ -54,8 +55,8 @@ pub(in crate::linker) fn receiver_symbol<'a>(
     {
         let clean = name.replace("::", ".");
         if let Some((first, _)) = clean.split_once('.') {
-            if (super::resolution::is_registered_cargo_crate(first)
-                || crate::languages::rust::RUST.is_stdlib(first))
+            if (super::forwarding::is_registered_cargo_crate(first)
+                || crate::languages::rust::visibility::is_rust_stdlib(first))
                 && crate::languages::rust::is_registered_rust_type(name)
                 && matches!(resolve_type(first), Symbol::Unknown)
             {
@@ -98,7 +99,7 @@ pub(in crate::linker) fn qualified_external_annotation<'a>(
     head: &str,
     path: &str,
     dependencies: &DependencyRegistry,
-) -> Option<super::super::ReceiverType<'a>> {
+) -> Option<ReceiverType<'a>> {
     let profile = profile.filter(|profile| profile.id() == "rust")?;
     if !dependencies.declares_for_path(profile.family(), path, head) {
         return None;
@@ -106,8 +107,8 @@ pub(in crate::linker) fn qualified_external_annotation<'a>(
     let original = annotation.trim().trim_start_matches('&').trim_start();
     let original = original.strip_prefix("mut ").unwrap_or(original);
     Some(match original.split_once("::") {
-        Some((origin, _)) if origin == head => super::super::ReceiverType::External(origin, 0),
-        _ => super::super::ReceiverType::Unknown,
+        Some((origin, _)) if origin == head => ReceiverType::External(origin, 0),
+        _ => ReceiverType::Unknown,
     })
 }
 
@@ -118,11 +119,11 @@ pub(in crate::linker) fn external_annotation_type<'a>(
     head: &str,
     path: &str,
     dependencies: &DependencyRegistry,
-) -> Option<super::super::ReceiverType<'a>> {
+) -> Option<ReceiverType<'a>> {
     let profile = profile.filter(|profile| profile.id() == "rust")?;
     (profile.external_import(head).is_some()
         || dependencies.declares_for_path(profile.family(), path, head))
-    .then_some(super::super::ReceiverType::External(raw_head, 0))
+    .then_some(ReceiverType::External(raw_head, 0))
 }
 
 #[cfg(feature = "lang-rust")]
@@ -206,7 +207,7 @@ fn has_local_scope_member(facts: &Facts, scope_qualname: &str, name: &str, skip_
 #[cfg(feature = "lang-rust")]
 fn apply_forwarded_module_globs<'a>(
     context: &mut Context<'a>,
-    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
+    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
     rust_modules: &[(&'a Facts, &'a Node)],
 ) {
     for &(facts, module) in rust_modules {
@@ -291,7 +292,7 @@ fn resolve_single_glob_provider<'a>(
         .normalized_imports
         .get(&(module.path.as_str(), raw))
         .and_then(Option::as_ref)?;
-    let providers = languages::rust::linker::modules_at_import(
+    let providers = super::forwarding::modules_at_import(
         imports.modules,
         languages::LanguageFamily("rust"),
         normalized,
@@ -375,7 +376,7 @@ fn apply_registered_cargo_aliases<'a>(context: &mut Context<'a>, all: &'a dyn cr
                             .rsplit_once('.')
                             .is_some_and(|(_, n)| n == first))
             });
-            if !has_local_module && super::resolution::is_registered_cargo_crate(first) {
+            if !has_local_module && super::forwarding::is_registered_cargo_crate(first) {
                 register_cargo_import_aliases(context, reference, expr, &alias_counts);
             }
         }
@@ -389,7 +390,7 @@ pub(in crate::linker) fn import_globs<'a>(
     by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
-    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
+    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
 ) {
     let rust_modules: Vec<_> = all
         .values_facts()
@@ -428,7 +429,7 @@ struct RustGlobImports<'a, 'b> {
     by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
-    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
+    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
     rust_modules: &'b [(&'a Facts, &'a Node)],
 }
 
@@ -763,15 +764,6 @@ fn propagate_ancestor_external_imports<'a>(
     }
 }
 
-pub(in crate::linker) fn visible(owner: &Node, candidate: &Node) -> Option<bool> {
-    if candidate.language == "rust" && candidate.kind == "impl" {
-        Some(false)
-    } else if owner.language == "rust" {
-        Some(true)
-    } else {
-        None
-    }
-}
 
 pub(in crate::linker) fn nominal_application<'a>(
     owner: &Node,
@@ -801,20 +793,11 @@ pub(in crate::linker) fn admits_payload(
                 || (name == "Result" && argument_count <= 2))
 }
 
-pub(in crate::linker) fn reference_target<'target, 'node>(
-    target: &'target TypeTarget<'node>,
-) -> Option<&'target TypeTarget<'node>> {
-    match target {
-        TypeTarget::RustReference { target, .. } => Some(target),
-        _ => None,
-    }
-}
-
 pub(in crate::linker) fn standard_member(module: &str, member: &str) -> bool {
     if matches!(member, "new" | "from" | "with_capacity" | "default") {
         return false;
     }
-    let module = super::value_flow::import_path(module);
+    let module = import_path(module);
     let nominal = match module.as_ref() {
         "std.collections.HashMap"
         | "std.collections.HashSet"

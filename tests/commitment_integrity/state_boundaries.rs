@@ -313,26 +313,11 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
     );
     assert_eq!(merkle_root.len(), 64);
 
-    let mut reg = acdd_index::languages::LanguageRegistry::new();
-    assert!(reg.is_empty());
-    reg.enable("rust");
-    assert!(reg.is_enabled("rust"));
-    assert_eq!(reg.len(), 1);
-
-    let route_node = acdd_index::models::Node {
-        id: "route:get_user".into(), kind: "route".into(), name: "get_user".into(),
-        qualname: "api.get_user".into(), path: "src/api.rs".into(), line: 10, end_line: 15,
-        is_test: false, language: "rust".into(), generated: false,
-        details: serde_json::json!({ "method": "GET", "route_path": "/api/users/{id}" }),
-        native_semantic: None,
-    };
-    let routes = acdd_index::linker::RouteIndex::build(&[&route_node]);
-    assert_eq!(routes.len(), 1);
-    assert_eq!(routes.match_route("GET", "/api/users/123").unwrap().unwrap().id, "route:get_user");
-    assert!(routes.match_route("POST", "/api/users/123").unwrap().is_none());
+    assert!(acdd_index::languages::profiles().any(|p| p.id() == "rust"));
+    assert!(acdd_index::languages::by_id("rust").is_some());
 
     let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
-    acdd_index::db::initialize_code_map_schema(&mem_conn).unwrap();
+    mem_conn.execute_batch(acdd_index::db::schema::SCHEMA_DDL).unwrap();
     let table_count: i64 = mem_conn
         .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('nodes', 'edges', 'metadata', 'resolution_coverage')", [], |r| r.get(0))
         .unwrap();

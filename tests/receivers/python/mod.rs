@@ -1,6 +1,13 @@
 #![cfg(feature = "lang-python")]
 use acdd_index::semantic::{TypeExpr, ValueExpr, ValueFlowFacts};
-use acdd_index::{ast, db::commitments, linker};
+use acdd_index::{ast, db::commitments};
+pub(crate) mod linker {
+    pub(crate) fn link(
+        all: &std::collections::BTreeMap<String, acdd_index::models::Facts>,
+    ) -> acdd_index::models::Graph {
+        crate::common::link_facts(all)
+    }
+}
 use std::collections::BTreeMap;
 
 use crate::common::Workspace;

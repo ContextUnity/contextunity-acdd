@@ -49,7 +49,9 @@ fn database_publication_recovery_matrix() {
         match case {
             Input::PipelineFailures => {
                 use acdd_index::db::cache;
-                use contextunity_acdd::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
+                use contextunity_acdd::engine::pipeline::{
+                    build_with_selection_and_guard, hooks::PipelineTestHooks,
+                };
                 use std::sync::{Arc, Mutex};
 
                 let receipt = ws.path("index.sqlite.verified.json");
@@ -67,12 +69,13 @@ fn database_publication_recovery_matrix() {
                     drop(conn);
                     let seal = old["output_root"].as_str().unwrap();
                     assert!(cache::publish_verified(&db, ws.root(), seal).unwrap());
-                    assert!(cache::matches(
+                    assert!(cache::matches_with_reason(
                         &db,
                         ws.root(),
                         seal,
                         &cache::identity(&db).unwrap()
-                    ));
+                    )
+                    .is_ok());
                     let receipt_before = std::fs::read(&receipt).unwrap();
                     let recorded = Arc::new(Mutex::new(None));
                     let hook_recorded = Arc::clone(&recorded);
@@ -88,17 +91,25 @@ fn database_publication_recovery_matrix() {
                         (true, true) => PipelineTestHooks::fail_consumer_before_cleanup(obstruct),
                         (false, false) => unreachable!(),
                     };
-                    let result = build_with_test_hooks(ws.root(), &db, None, hooks);
+                    let result = build_with_selection_and_guard(
+                        ws.root(),
+                        &db,
+                        None,
+                        None,
+                        Some(hooks),
+                        None,
+                    );
                     if !obstruct_cleanup {
                         assert!(result.is_err());
                         assert_eq!(std::fs::read(&db).unwrap(), before);
                         assert_eq!(std::fs::read(&receipt).unwrap(), receipt_before);
-                        assert!(cache::matches(
+                        assert!(cache::matches_with_reason(
                             &db,
                             ws.root(),
                             seal,
                             &cache::identity(&db).unwrap()
-                        ));
+                        )
+                        .is_ok());
                     } else {
                         let (stage, displaced) = recorded.lock().unwrap().take().unwrap();
                         if published {
@@ -110,12 +121,13 @@ fn database_publication_recovery_matrix() {
                             assert_ne!(report["output_root"], old["output_root"]);
                             assert_eq!(report["verification_cache"], true);
                             let seal = report["output_root"].as_str().unwrap();
-                            assert!(cache::matches(
+                            assert!(cache::matches_with_reason(
                                 &db,
                                 ws.root(),
                                 seal,
                                 &cache::identity(&db).unwrap()
-                            ));
+                            )
+                            .is_ok());
                         } else {
                             let diagnostic = format!("{:#}", result.unwrap_err());
                             assert!(
@@ -133,12 +145,13 @@ fn database_publication_recovery_matrix() {
                             assert_eq!(std::fs::read(&stage).unwrap(), b"obstruction");
                             assert_eq!(std::fs::read(&db).unwrap(), before);
                             assert_eq!(std::fs::read(&receipt).unwrap(), receipt_before);
-                            assert!(cache::matches(
+                            assert!(cache::matches_with_reason(
                                 &db,
                                 ws.root(),
                                 seal,
                                 &cache::identity(&db).unwrap()
-                            ));
+                            )
+                            .is_ok());
                         }
                         assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
                         std::fs::remove_file(&stage).unwrap();
@@ -149,12 +162,13 @@ fn database_publication_recovery_matrix() {
                     let conn = acdd_index::db::reader::open(&db, ws.root()).unwrap();
                     acdd_index::db::commitments::verify(&conn).unwrap();
                     drop(conn);
-                    assert!(cache::matches(
+                    assert!(cache::matches_with_reason(
                         &db,
                         ws.root(),
                         recovered["output_root"].as_str().unwrap(),
                         &cache::identity(&db).unwrap()
-                    ));
+                    )
+                    .is_ok());
                     assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
                     assert!(!std::fs::read_dir(ws.root()).unwrap().any(|e| e
                         .unwrap()
@@ -245,7 +259,7 @@ fn database_publication_recovery_matrix() {
                 #[cfg(unix)]
                 {
                     use contextunity_acdd::engine::pipeline::{
-                        build_with_test_hooks, PipelineTestHooks,
+                        build_with_selection_and_guard, hooks::PipelineTestHooks,
                     };
                     use std::os::unix::fs::symlink;
                     use std::sync::{Arc, Mutex};
@@ -264,7 +278,15 @@ fn database_publication_recovery_matrix() {
                         .unwrap();
                         *recorded.lock().unwrap() = Some(stage.to_owned());
                     });
-                    let report = build_with_test_hooks(ws.root(), &db, None, hooks).unwrap();
+                    let report = build_with_selection_and_guard(
+                        ws.root(),
+                        &db,
+                        None,
+                        None,
+                        Some(hooks),
+                        None,
+                    )
+                    .unwrap();
                     let stage = stage_path.lock().unwrap().take().unwrap();
                     let error = report["cleanup_error"].as_str().unwrap();
                     for suffix in ["-wal", "-shm"] {
@@ -375,7 +397,7 @@ fn database_target_guard_matrix() {
                     let schema_err = SqliteStateBackend::open(&index).err().unwrap();
                     assert_eq!(schema_err.code, ErrorCode::ConfigMigrationRequired);
 
-                    // `confined_database_open_path`, `confined_sqlite_open_path(allow_missing=true)`,
+                    // `confined_database_open_path`, `confined_database_create_path`,
                     // `ensure_confined_dir_all`, `atomic_replace`, & `reader::open` reject symlinks and `..` traversal.
                     let outside = Workspace::new();
                     outside.write_bytes("foreign.sqlite", b"foreign");
@@ -387,7 +409,7 @@ fn database_target_guard_matrix() {
                     for (label, rejected) in [
                         ("open_ancestor_link", acdd_core::fs::confined_database_open_path(&ancestor_link.join("foreign.sqlite")).is_err()),
                         ("open_leaf_link", acdd_core::fs::confined_database_open_path(&leaf_link).is_err()),
-                        ("create_missing_parent_traversal_symlink", acdd_core::fs::confined_sqlite_open_path(&missing_traversal, true).is_err()),
+                        ("create_missing_parent_traversal_symlink", acdd_core::fs::confined_database_create_path(&missing_traversal).is_err()),
                         ("ensure_dir_missing_traversal", acdd_core::fs::ensure_confined_dir_all(directory, std::path::Path::new("nonexistent_probe/../escape/sub")).is_err()),
                         ("atomic_replace_leaf_symlink", acdd_core::fs::atomic_replace(&leaf_link, b"hijack").is_err()),
                         ("atomic_replace_ancestor_symlink", acdd_core::fs::atomic_replace(&ancestor_link.join("hijack.txt"), b"hijack").is_err()),
@@ -432,10 +454,12 @@ fn database_target_guard_matrix() {
                             break;
                         }
                         let (rejected, diagnostic) = if command == "delta" {
-                            let result = contextunity_acdd::engine::pipeline::delta(
+                            let result = contextunity_acdd::engine::pipeline::delta_with_selection(
                                 ws.root(),
                                 &target,
                                 &[ws.root().join("app.py")],
+                                None,
+                                None,
                             );
                             (result.is_err(), format!("{result:?}"))
                         } else {

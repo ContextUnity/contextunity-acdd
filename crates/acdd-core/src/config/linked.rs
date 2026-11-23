@@ -1,7 +1,8 @@
 //! Linked workspace path validation and canonical root collection.
 
+use super::constants::DEFAULT_IGNORED_NAMES;
 use super::schema::{LinkedWorkspace, LinkedWorkspaceConfig};
-use super::{safe_relative, DEFAULT_IGNORED_NAMES};
+use crate::fs::safe_relative;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};

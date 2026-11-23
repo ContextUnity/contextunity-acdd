@@ -490,23 +490,23 @@ fn test_safe_selector_resolution_and_disambiguation() {
     );
 
     let conn = w.open();
-    let ambiguous = reader::select(&conn, "scanner").unwrap_err();
+    let ambiguous = crate::common::select_node(&conn, "scanner").unwrap_err();
     assert!(matches!(
         ambiguous.downcast_ref::<reader::SelectorError>(),
         Some(reader::SelectorError::Ambiguous { selector, candidates })
             if selector == "scanner" && candidates.len() > 1
     ));
-    let missing = reader::select(&conn, "missing_symbol").unwrap_err();
+    let missing = crate::common::select_node(&conn, "missing_symbol").unwrap_err();
     assert!(matches!(
         missing.downcast_ref::<reader::SelectorError>(),
         Some(reader::SelectorError::NotFound { selector, .. }) if selector == "missing_symbol"
     ));
-    let invalid = reader::select(&conn, " ").unwrap_err();
+    let invalid = crate::common::select_node(&conn, " ").unwrap_err();
     assert!(matches!(
         invalid.downcast_ref::<reader::SelectorError>(),
         Some(reader::SelectorError::InvalidSyntax { .. })
     ));
-    let document = reader::select(&conn, "docs/contract.md").unwrap_err();
+    let document = crate::common::select_node(&conn, "docs/contract.md").unwrap_err();
     assert!(matches!(
         document.downcast_ref::<reader::SelectorError>(),
         Some(reader::SelectorError::DocLink { target }) if target == "docs/contract.md"

@@ -1,7 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::Workspace;
-use acdd_index::{ast, db::reader, linker};
+use acdd_index::{ast, db::reader};
 use std::collections::BTreeMap;
 
 #[test]
@@ -143,7 +143,7 @@ def caller(c: Calculator):
     let mut all = BTreeMap::new();
     all.insert("calc.py".to_string(), facts);
 
-    let graph = linker::link(&all);
+    let graph = crate::common::link_facts(&all);
 
     // 1. Direct function call to overloaded function
     let compute_cov = graph
@@ -203,7 +203,7 @@ def caller(c: Category):
     let conn = workspace.open();
 
     // Selecting "Category.move" must resolve directly to the runtime method without error
-    let node = reader::select(&conn, "Category.move")
+    let node = crate::common::select_node(&conn, "Category.move")
         .expect("Category.move must resolve without ambiguous error");
     assert_eq!(node["name"], "move");
     assert_eq!(node["kind"], "method");

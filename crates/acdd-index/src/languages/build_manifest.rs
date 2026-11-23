@@ -169,7 +169,7 @@ fn coordinate_group(coordinate: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{gradle_groups, maven_groups};
 
     #[test]
     fn parses_maven_and_gradle_dependency_group_prefixes() {

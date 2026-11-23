@@ -6,7 +6,7 @@ use crate::spec::SpecDocument;
 use crate::store::sqlite::SqliteStateReader;
 use crate::types::{RunRecord, RunTombstoneRecord};
 use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list_all_tombstones};
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{
     load_adapter, resolve_effective_state_db_path, resolve_state_db_path, Adapter,
     SpecCollectionConfig, ACDD_CONFIG_FILE,
@@ -74,26 +74,6 @@ pub(crate) fn parse_dep_syntax(
             task_ref: None,
         })
     }
-}
-
-/// Parse a `TaskSpec.depends_on` entry (`<task_ref>`, `<spec_id>`, `<ws>/<spec_id>`, `<spec_id>:<task_ref>`, or `<ws>/<spec_id>:<task_ref>`).
-pub fn parse_task_dependency(
-    raw: &str,
-    current_workspace: &str,
-    current_run_id: &RunId,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
-    spec_repos: &BTreeMap<String, PathBuf>,
-    local_task_refs: &BTreeSet<&str>,
-) -> Result<MachineTaskDep, StateError> {
-    parse_task_dependency_with_db(
-        raw,
-        current_workspace,
-        current_run_id,
-        linked_workspaces,
-        spec_repos,
-        local_task_refs,
-        None,
-    )
 }
 
 pub(crate) fn parse_task_dependency_with_db(

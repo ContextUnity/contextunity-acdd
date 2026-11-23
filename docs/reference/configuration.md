@@ -49,6 +49,7 @@ linked_workspaces:
 - **`roots`**: relative directories or file paths scanned for compiled language symbols and Markdown/MDX docs (scan roots control indexing only, not language import roots).
 - **`docs`**: relative directories or Markdown/MDX files indexed into searchable documentation sections; non-document files inside `docs` stay out of the code index.
 - **`ignore`**: literal file or directory basenames excluded from scanning (not glob patterns).
+- **Schema strictness**: `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits` enforce `#[serde(deny_unknown_fields)]`, rejecting unknown keys fail-closed with `ACDD_PROFILE_SCHEMA_INVALID`.
 - **Default exclusions**: `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.gitignore` rules, and symlinks.
 - **Manifest discovery**: indexes package manifests inside admitted roots plus direct root manifests (e.g. `roots: [src]` still picks up root `Cargo.toml` or `package.json` up to `4 MiB`).
 
@@ -79,12 +80,18 @@ Changing workflow, state, or output formatting settings does **not** trigger a c
 - **Rebuilds the code index**: `roots`, `docs`, `ignore`, `sensitive`, `limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`, and `adapter_version`.
 - **Never rebuilds the code index**: `specs` (and its `profile`, `prefixes`, `digits`), `profiles_dirs`, `state_db`, `retain_traces`, `modules`, `profile`, `response`, and `debug`.
 
-### Architectural zones and rules (`architecture:`)
+### Architectural zones, rules, and complexity limits (`architecture:`)
 
-Declare workspace-relative glob zones and static `ArchRuleSpec` boundary rules evaluated by `acdd lint`, `code_map_lint`, and `code.lint`:
+Declare workspace-relative glob zones, static `ArchRuleSpec` boundary rules, and `ComplexityLimits` thresholds evaluated by `acdd lint`, `code_map_lint`, and `code.lint` (`#[serde(deny_unknown_fields)]`):
 
 ```yaml
 architecture:
+  complexity:
+    max_cognitive_complexity: 50
+    max_nesting_depth: 6
+    max_fanout: 40
+    severity: warn
+    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
   zones:
     core: ["crates/acdd-core/src/**"]
     state: ["crates/acdd-state/src/**"]
@@ -95,10 +102,16 @@ architecture:
       kind: forbid_dependency
       from: { zones: ["core"] }
       to: { zones: ["state"], external_symbols: ["rusqlite"] }
+    - id: ARCH-ACYCLIC-CORE
+      severity: error
+      kind: forbid_cycles
+      from: { zones: ["core"] }
+      depth: 2
 ```
 
-- **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**`.
+- **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
 - **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
+- **`architecture.complexity`**: `ComplexityLimits` defaults (`max_cognitive_complexity: 50`, `max_nesting_depth: 6`, `max_fanout: 40`, `severity: warn`, optional `invariant: null`).
 
 ## Cold-build memory budget
 
@@ -212,7 +225,7 @@ Workflow gates are configured via **`GateProfile` (`version: 2`)** YAML files (s
 - **Proofs**: built-in `none`, `command`, `call`, or `review` (`contours:`), plus custom JSON Schemas under `proofs:`.
 - **Persistence (`save:`)**: `snapshot` checkpoints on leaf task gates (see [task snapshots](tasks.md#task-snapshots)), atomic `commit` receipts on delivery, `report` Markdown outputs, and terminal `archive` / `prune`.
 - **Routing & guards**: `pass` / `fail` / `fail_drift` edges, `need` dependencies, `independent_from` worker separation, and `when` predicates.
-- **SHA-256 pinning**: `<path>:<sha256_prefix>` (`>= 7` hex chars) locks parent/custom profiles and fails closed (`ACDD_PROFILE_SCHEMA_INVALID`) on unauthorized edits.
+- **SHA-256 pinning**: `<path>:<sha256_prefix>` (`>= 7` hex chars) locks parent/custom profiles and fails closed (`ACDD_PROFILE_SCHEMA_INVALID`) on unauthorized edits. See [ACDD Profiles Reference](profiles.md) for full schema details.
 
 ### Role and model configuration
 

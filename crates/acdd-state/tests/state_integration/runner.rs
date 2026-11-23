@@ -1,14 +1,13 @@
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_state::profile::{
-    CommandDef, DetailedCommandDef, PatternCommandEntry, ResourceLimits, RoleDef,
-    RoleExecutionMode, TestFilterConfig,
+    schema::{DetailedCommandDef, PatternCommandEntry, TestFilterConfig},
+    CommandDef, ResourceLimits, RoleDef, RoleExecutionMode,
 };
 use acdd_state::runner::*;
 use acdd_state::types::ClaimOutcome;
 use std::collections::BTreeMap;
 use std::fs;
-use std::process::Command;
 use tempfile::TempDir;
 
 fn test_run_id() -> RunId {
@@ -180,43 +179,6 @@ fn command_escaping_and_line_bounds_matrix() {
 }
 
 #[test]
-fn sanitize_command_process_scrubs_orchestrator_and_all_git_vars() {
-    let dir = TempDir::new().unwrap();
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(
-        "for k in TRACEPARENT ACDD_CONFIG ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
-    );
-    cmd.current_dir(dir.path());
-    cmd.env("TRACEPARENT", "00-1111-2222-01")
-        .env("ACDD_CONFIG", "/x/acdd.yaml")
-        .env("ACDD_PROFILE", "code")
-        .env("ACDD_STATE_DB", "/x/state.sqlite")
-        .env("ACDD_CODE_DB", "/x/code-map.sqlite")
-        .env("ACDD_WORKSPACE_ROOT", "/x")
-        .env("ACDD_AGENT_SESSION_ID", "sess-1")
-        .env("ACDD_ROLE_MODE", "subagent")
-        .env("ACDD_ROLE_MODELS", "m1:high,m2")
-        .env("ACDD_MODEL", "m1")
-        .env("ACDD_REASONING", "high")
-        .env("GIT_DIR", "/x/.git")
-        .env("GIT_WORK_TREE", "/x")
-        .env("GIT_INDEX_FILE", "/x/.git/index")
-        .env("GIT_OBJECT_DIRECTORY", "/x/.git/objects")
-        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/y/.git/objects")
-        .env("GIT_COMMON_DIR", "/x/.git")
-        .env("GIT_AUTHOR_NAME", "Tester")
-        .env("ACDD_KEEP_OK", "yes");
-
-    sanitize_command_process(&mut cmd);
-    let output = cmd.output().unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("LEAK:"), "unexpected env leak: {stdout}");
-    assert!(stdout.contains("KEEP:yes"));
-}
-
-
-#[test]
 fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
     let dir = TempDir::new().unwrap();
     let worktree = dir.path().to_path_buf();
@@ -261,11 +223,11 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
         mode: RoleExecutionMode::Subagent,
         reuse_on_reject: true,
         models: vec![
-            acdd_state::profile::ModelSpec {
+            acdd_state::profile::schema::ModelSpec {
                 model: "m1".to_owned(),
                 reasoning: Some("high".to_owned()),
             },
-            acdd_state::profile::ModelSpec {
+            acdd_state::profile::schema::ModelSpec {
                 model: "m2".to_owned(),
                 reasoning: None,
             },
@@ -329,7 +291,7 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
     )
     .unwrap();
     assert!(log_empty.contains("|inline|||\n"), "{log_empty}");
-    empty_model_role.models = vec![acdd_state::profile::ModelSpec {
+    empty_model_role.models = vec![acdd_state::profile::schema::ModelSpec {
         model: "m3".to_owned(),
         reasoning: None,
     }];

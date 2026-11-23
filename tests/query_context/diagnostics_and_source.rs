@@ -282,7 +282,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         workspace.root(),
         "selected",
         None,
-        &symbols::ExplainOptions {
+        &symbols::SymbolExplainOptions {
             explain: reader::ExplainOptions {
                 direction: reader::ExplainDirection::Both,
                 show_doc: true,
@@ -563,7 +563,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                             workspace.root(),
                             &name,
                             None,
-                            &symbols::ExplainOptions {
+                            &symbols::SymbolExplainOptions {
                                 explain: reader::ExplainOptions {
                                     direction: reader::ExplainDirection::Both,
                                     show_doc: true,
@@ -722,10 +722,12 @@ fn continuation_rejects_a_new_index_generation() {
         "code.py",
         "def first(): pass\ndef third(): pass\ndef second(): pass\n",
     );
-    writer::delta(
+    writer::delta_with_selection(
         workspace.root(),
         &workspace.db(),
         &[PathBuf::from("code.py")],
+        None,
+        None,
     )
     .unwrap();
     let conn = reader::open(&workspace.db(), workspace.root()).unwrap();
@@ -1062,9 +1064,9 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
             .unwrap();
             assert_eq!(overview["counts"]["unresolved"], 20 + unknown);
             assert_eq!(overview["counts"]["external_imports"], external);
-            let json = format::render(&overview, OutputFormat::Json, "code_map_overview");
+            let json = format::render_for_operation(&overview, OutputFormat::Json, "code_map_overview", None, format::OperationKind::Navigation);
             assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), overview);
-            let markdown = format::render(&overview, OutputFormat::Markdown, "code_map_overview");
+            let markdown = format::render_for_operation(&overview, OutputFormat::Markdown, "code_map_overview", None, format::OperationKind::Navigation);
             let mut expected_rows = vec![
                 format!("Resolution Health: {health}"),
                 "dynamic_callback): 6".to_owned(),
@@ -1140,8 +1142,13 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         },
     )
     .unwrap();
-    let empty_markdown =
-        format::render(&empty_overview, OutputFormat::Markdown, "code_map_overview");
+    let empty_markdown = format::render_for_operation(
+        &empty_overview,
+        OutputFormat::Markdown,
+        "code_map_overview",
+        None,
+        format::OperationKind::Navigation,
+    );
     if !empty_markdown.contains("Resolution Health: unavailable") {
         missing.push("zero denominator must report unavailable, never an invented 100%".to_owned());
     }
@@ -1220,7 +1227,13 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
             .as_str()
             .unwrap();
 
-        let markdown = format::render(&overview, OutputFormat::Markdown, "code_map_overview");
+        let markdown = format::render_for_operation(
+            &overview,
+            OutputFormat::Markdown,
+            "code_map_overview",
+            None,
+            format::OperationKind::Navigation,
+        );
         assert!(
             markdown
                 .to_ascii_lowercase()

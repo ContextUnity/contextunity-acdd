@@ -1,8 +1,22 @@
-use super::*;
-use crate::models::ReceiverHint;
-use crate::ast::{relations, routes};
+use crate::ast::relations;
+use crate::ast::scope_analysis::ScopeAnalysis;
+use crate::ast::syntax::{
+    field, scope_bindings, symbol_name as syntax_symbol_name, text, ScopeBindings, Syntax,
+};
+use crate::languages::context::{FileContext, LanguageContext};
+use crate::languages::manifests;
+use crate::languages::profile::LanguageProfile;
+use crate::languages::routes::{self, RouteContext};
+use crate::languages::sql;
+use crate::languages::types::{
+    call, AstSearchCapabilities, ImportPath, LanguageFamily, LanguageFileState, SymbolMetadata,
+    SyntaxContext, SyntaxGrammarSpec, TypeScriptFileState,
+};
+use crate::models::{Facts, Node, ReceiverHint, Reference};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
-mod dom;
+pub(crate) mod dom;
 mod projections;
 mod prototypes;
 mod types;
@@ -13,26 +27,19 @@ use dom::*;
 pub use dom::{typed_dom_property, typed_dom_receiver};
 use projections::*;
 use prototypes::*;
-use types::*;
+pub use types::kind;
 
-mod commonjs;
-pub(crate) mod linker;
+pub(crate) mod commonjs;
 use commonjs::{
     collect_require_bindings, require_is_shadowed, required_module, stable_module_binding,
 };
 pub(crate) use commonjs::{commonjs_bindings, commonjs_default_callable};
 mod package_metadata;
 mod scope_facts;
-use scope_facts::{collect_pattern_binding_names, pattern_binds_require};
+mod setup_summaries;
+use scope_facts::collect_pattern_binding_names;
 pub(crate) mod value_flow;
 mod visibility;
-
-pub(super) fn has_static_child(node: Syntax<'_>) -> bool {
-    (0..node.child_count()).any(|index| {
-        node.child(index)
-            .is_some_and(|child| child.kind() == "static")
-    })
-}
 
 fn is_iife_callee(mut node: Syntax<'_>) -> bool {
     loop {
@@ -88,7 +95,7 @@ pub(crate) fn finalize_configured_projections(
     projections::finalize_projections(facts, flows, file);
 }
 /// Performs language.
-pub fn language(path: &str, language: &str) -> tree_sitter::Language {
+fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
         || path.ends_with(".js")
         || path.ends_with(".jsx")
@@ -102,35 +109,16 @@ pub fn language(path: &str, language: &str) -> tree_sitter::Language {
         tree_sitter_typescript::language_typescript()
     }
 }
-/// Performs kind.
-pub fn kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        "function_declaration"
-        | "generator_function_declaration"
-        | "generator_function"
-        | "generator_function_expression"
-        | "arrow_function"
-        | "function_expression" => Some("function"),
-        "method_definition" | "method_signature" => Some("method"),
-        "class_declaration" | "class" => Some("class"),
-        "enum_declaration" => Some("enum"),
-        "enum_assignment" => Some("field"),
-        "interface_declaration" => Some("interface"),
-        "field_definition" => Some("field"),
-        "type_alias_declaration" => Some("type"),
-        _ => None,
-    }
-}
 
 /// TypeScript family profile that shares syntax rules with JavaScript.
-pub struct TypeScript {
+pub(crate) struct TypeScript {
     /// Enables JavaScript syntax and file extensions when true.
     pub javascript: bool,
 }
 /// Shared typescript language profile.
-pub static TYPESCRIPT: TypeScript = TypeScript { javascript: false };
+pub(crate) static TYPESCRIPT: TypeScript = TypeScript { javascript: false };
 /// Shared javascript language profile.
-pub static JAVASCRIPT: TypeScript = TypeScript { javascript: true };
+pub(crate) static JAVASCRIPT: TypeScript = TypeScript { javascript: true };
 
 #[derive(Default)]
 struct TsCandidate {
@@ -184,45 +172,61 @@ impl TypeScript {
         let found = node.children(&mut cursor).any(|child| child.kind() == "type");
         found
     }
-    fn imported_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+    fn walk_import_specifiers<'a>(
+        root: Syntax<'a>,
+        source: &'a str,
+        mut visit: impl FnMut(&'a str, &'a str, &'a str),
+    ) {
         let mut cursor = root.walk();
         for import in root
             .named_children(&mut cursor)
             .filter(|node| node.kind() == "import_statement")
         {
-            if Self::type_only_import(import) { continue; }
-            if field(import, source, "source")
-                .is_none_or(|module| module.trim_matches(['\'', '"']) != "node:test")
-            {
+            if Self::type_only_import(import) {
                 continue;
             }
+            let Some(module) = field(import, source, "source").map(|v| v.trim_matches(['\'', '"']))
+            else {
+                continue;
+            };
             let mut pending = vec![import];
             while let Some(node) = pending.pop() {
                 if node.kind() == "import_specifier" {
-                    if Self::type_only_import(node) { continue; }
+                    if Self::type_only_import(node) {
+                        continue;
+                    }
                     let imported = field(node, source, "name").unwrap_or_default();
                     let local = field(node, source, "alias").unwrap_or(imported);
-                    match imported {
-                        "test" | "it" => {
-                            file.state
-                                .typescript_mut()
-                                .test_case_imports
-                                .insert(local.to_owned());
-                        }
-                        "beforeEach" | "before" | "afterEach" | "after" => {
-                            file.state
-                                .typescript_mut()
-                                .test_fixture_imports
-                                .insert(local.to_owned());
-                        }
-                        _ => {}
-                    }
+                    visit(module, imported, local);
                     continue;
                 }
                 let mut cursor = node.walk();
                 pending.extend(node.named_children(&mut cursor));
             }
         }
+    }
+
+    fn imported_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+        Self::walk_import_specifiers(root, source, |module, imported, local| {
+            if module != "node:test" {
+                return;
+            }
+            match imported {
+                "test" | "it" => {
+                    file.state
+                        .typescript_mut()
+                        .test_case_imports
+                        .insert(local.to_owned());
+                }
+                "beforeEach" | "before" | "afterEach" | "after" => {
+                    file.state
+                        .typescript_mut()
+                        .test_fixture_imports
+                        .insert(local.to_owned());
+                }
+                _ => {}
+            }
+        });
     }
 
     fn block_binds_name(block: Syntax<'_>, source: &str, name: &str) -> bool {
@@ -255,31 +259,17 @@ impl TypeScript {
     }
 
     fn configured_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
-        use super::manifests::syntax::SyntaxOperation;
-        let mut cursor = root.walk();
-        for import in root.named_children(&mut cursor).filter(|node| node.kind() == "import_statement") {
-            if Self::type_only_import(import) { continue; }
-            let Some(module) = field(import, source, "source").map(|value| value.trim_matches(['\'', '"'])) else { continue };
-            let mut pending = vec![import];
-            while let Some(node) = pending.pop() {
-                if node.kind() == "import_specifier" {
-                    if Self::type_only_import(node) { continue; }
-                    let imported = field(node, source, "name").unwrap_or_default();
-                    let local = field(node, source, "alias").unwrap_or(imported);
-                    if file.rules.syntax_rules.iter().any(|rule| matches!(&rule.operation,
-                        SyntaxOperation::TestRunner { modules, members }
-                            if modules.iter().any(|value| value == module) && members.iter().any(|value| value == imported))) {
-                        file.state
-                            .typescript_mut()
-                            .test_case_imports
-                            .insert(local.to_owned());
-                    }
-                    continue;
-                }
-                let mut cursor = node.walk();
-                pending.extend(node.named_children(&mut cursor));
+        use manifests::syntax::SyntaxOperation;
+        Self::walk_import_specifiers(root, source, |module, imported, local| {
+            if file.rules.syntax_rules.iter().any(|rule| matches!(&rule.operation,
+                SyntaxOperation::TestRunner { modules, members }
+                    if modules.iter().any(|value| value == module) && members.iter().any(|value| value == imported))) {
+                file.state
+                    .typescript_mut()
+                    .test_case_imports
+                    .insert(local.to_owned());
             }
-        }
+        });
         let ts_state = file.state.typescript_mut();
         if ts_state.test_case_imports.is_empty() && ts_state.test_fixture_imports.is_empty() {
             return;
@@ -331,6 +321,38 @@ impl TypeScript {
         }
     }
 
+    fn is_callback_callee_shadowed(call: Syntax<'_>, source: &str, local: &str) -> bool {
+        let mut scope = call.parent();
+        while let Some(ancestor) = scope {
+            if ancestor.kind() == "for_in_statement" {
+                if let Some(target) = ancestor.child_by_field_name("left") {
+                    let mut names = Vec::new();
+                    collect_pattern_binding_names(target, source, &mut names);
+                    if names.iter().any(|name| name == local) {
+                        return true;
+                    }
+                }
+            }
+            if (matches!(ancestor.kind(), "statement_block" | "program")
+                && Self::block_binds_name(ancestor, source, local))
+                || (matches!(
+                    ancestor.kind(),
+                    "function_declaration"
+                        | "function_expression"
+                        | "arrow_function"
+                        | "method_definition"
+                ) && scope_bindings(ancestor, source)
+                    .all
+                    .iter()
+                    .any(|binding| binding == local))
+            {
+                return true;
+            }
+            scope = ancestor.parent();
+        }
+        false
+    }
+
     fn callback_runner(node: Syntax<'_>, source: &str, file: &FileContext) -> Option<&'static str> {
         let ts_state = file.state.typescript()?;
         if ts_state.test_case_imports.is_empty() && ts_state.test_fixture_imports.is_empty() {
@@ -351,41 +373,13 @@ impl TypeScript {
                     let arguments: Vec<_> = parent.named_children(&mut cursor).collect();
                     if arguments.len() != 2 || arguments[0].kind() != "string" || arguments[1].id() != current.id() { return None; }
                 }
-                let mut scope = call.parent();
-                let mut shadowed = false;
-                while let Some(ancestor) = scope {
-                    if ancestor.kind() == "for_in_statement" {
-                        if let Some(target) = ancestor.child_by_field_name("left") {
-                            let mut names = Vec::new();
-                            collect_pattern_binding_names(target, source, &mut names);
-                            if names.iter().any(|name| name == local) {
-                                shadowed = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (matches!(ancestor.kind(), "statement_block" | "program")
-                        && Self::block_binds_name(ancestor, source, local))
-                        || (matches!(
-                            ancestor.kind(),
-                            "function_declaration"
-                                | "function_expression"
-                                | "arrow_function"
-                                | "method_definition"
-                        ) && ast::scope_bindings(ancestor, source)
-                            .all
-                            .iter()
-                            .any(|binding| binding == local))
-                    {
-                        shadowed = true;
-                        break;
-                    }
-                    scope = ancestor.parent();
+                if Self::is_callback_callee_shadowed(call, source, local) {
+                    return None;
                 }
-                if !shadowed && ts_state.test_case_imports.contains(local) {
+                if ts_state.test_case_imports.contains(local) {
                     return Some("test_case");
                 }
-                if !shadowed && ts_state.test_fixture_imports.contains(local) {
+                if ts_state.test_fixture_imports.contains(local) {
                     return Some("test_fixture");
                 }
                 return None;
@@ -403,14 +397,13 @@ impl TypeScript {
         None
     }
 
-    fn metadata_with_documented(
+    fn extract_param_types_with_documented(
         &self,
-        mut node: Syntax<'_>,
+        node: Syntax<'_>,
         source: &str,
-        name: &str,
         file: &FileContext,
-        documented: BTreeMap<String, String>,
-    ) -> SymbolMetadata {
+        documented: &BTreeMap<String, String>,
+    ) -> BTreeMap<String, String> {
         let mut param_types = BTreeMap::new();
         if let Some(parameters) = node.child_by_field_name("parameters") {
             let mut cursor = parameters.walk();
@@ -509,43 +502,64 @@ impl TypeScript {
                 }
             }
         }
-        let is_async = text(node, source).trim_start().starts_with("async ");
-        let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
-        let local_object =
-            if !self.javascript && matches!(node.kind(), "pair" | "method_definition") {
-                node.parent()
-                    .and_then(|object| projected_object(object, source, &file.rules))
-            } else if self.javascript
-                || node.parent().is_some_and(|object| {
-                    projected_members_object(
+        param_types
+    }
+
+    fn resolve_local_object<'a>(
+        &self,
+        node: Syntax<'a>,
+        source: &str,
+        file: &FileContext,
+    ) -> Option<Syntax<'a>> {
+        if !self.javascript && matches!(node.kind(), "pair" | "method_definition") {
+            node.parent()
+                .and_then(|object| projected_object(object, source, &file.rules))
+        } else if self.javascript
+            || node.parent().is_some_and(|object| {
+                projected_members_object(
+                    object,
+                    source,
+                    &file.rules.syntax_rules,
+                    file.rules.has_factory_members,
+                ) || configured_projection_object(
+                    object,
+                    source,
+                    &file.rules.syntax_rules,
+                    file.rules.has_object_call_definitions,
+                )
+            })
+        {
+            if node.kind() == "pair" {
+                node.parent().and_then(|object| {
+                    same_object_prepared(
                         object,
                         source,
                         &file.rules.syntax_rules,
                         file.rules.has_factory_members,
-                    ) || configured_projection_object(
-                        object,
-                        source,
-                        &file.rules.syntax_rules,
                         file.rules.has_object_call_definitions,
                     )
                 })
-            {
-                if node.kind() == "pair" {
-                    node.parent().and_then(|object| {
-                        same_object_prepared(
-                            object,
-                            source,
-                            &file.rules.syntax_rules,
-                            file.rules.has_factory_members,
-                            file.rules.has_object_call_definitions,
-                        )
-                    })
-                } else {
-                    same_object_receiver(node, source, &file.rules)
-                }
             } else {
-                None
-            };
+                same_object_receiver(node, source, &file.rules)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn metadata_with_documented(
+        &self,
+        mut node: Syntax<'_>,
+        source: &str,
+        name: &str,
+        file: &FileContext,
+        documented: BTreeMap<String, String>,
+    ) -> SymbolMetadata {
+        let param_types =
+            self.extract_param_types_with_documented(node, source, file, &documented);
+        let is_async = text(node, source).trim_start().starts_with("async ");
+        let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
+        let local_object = self.resolve_local_object(node, source, file);
         let lexical_this = (node.kind() == "arrow_function")
             .then(|| lexical_this_method(node))
             .flatten();
@@ -759,17 +773,14 @@ impl LanguageProfile for TypeScript {
     fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
         Some(if self.javascript { &JS_SPEC } else { &TS_SPEC })
     }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &linker::TYPESCRIPT_LINKER
-    }
     fn scope_analysis<'source, 'tree>(
         &self,
         node: Syntax<'tree>,
         source: &'source str,
         file: &FileContext,
-    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+    ) -> Option<ScopeAnalysis<'source, 'tree>> {
         let _ = file;
-        Some(ast::ScopeAnalysis::typescript(node, source))
+        Some(ScopeAnalysis::typescript(node, source))
     }
 
     fn id(&self) -> &'static str {
@@ -898,6 +909,9 @@ impl LanguageProfile for TypeScript {
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")
     }
+    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
+        &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER
+    }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
         match k {
             "object" | "array" => Some("object"),
@@ -1015,17 +1029,14 @@ impl LanguageProfile for TypeScript {
         if node.kind() == "field_definition" {
             return field(node, source, "property");
         }
-        ast::symbol_name(node, source)
+        syntax_symbol_name(node, source)
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "ts"
     }
     fn module_name(&self, path: &str) -> String {
-        module_stem(path)
-            .trim_end_matches("/index")
-            .replace('/', ".")
+        commonjs::ts_module_name(path)
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         if node.kind() == "import_statement" {
@@ -1145,7 +1156,7 @@ impl LanguageProfile for TypeScript {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        super::sql::extract_literal(ctx, facts);
+        sql::extract_literal(ctx, facts);
         if ctx.node.kind() == "member_expression"
             && field(ctx.node, ctx.source, "object") == Some("process")
             && field(ctx.node, ctx.source, "property") == Some("env")
@@ -1194,53 +1205,7 @@ impl LanguageProfile for TypeScript {
             } else {
                 let reference_count = facts.references.len();
                 call(ctx, facts, true);
-                if let Some(reference) =
-                    facts
-                        .references
-                        .get_mut(reference_count)
-                        .filter(|reference| {
-                            reference.dynamic
-                                && reference.source == ctx.owner
-                                && reference.kind == "calls"
-                                && reference.line == ctx.line()
-                        })
-                {
-                    if let Some(function) = ctx.node.child_by_field_name("function") {
-                        if let Some(expression) = static_member_callee(function, ctx.source) {
-                            // Retain the existing direct JavaScript literal/optional
-                            // normalization; newly admitted nested paths keep raw identity.
-                            if self.javascript
-                                && function
-                                    .child_by_field_name("object")
-                                    .is_some_and(|object| object.kind() == "identifier")
-                                && (function.kind() == "subscript_expression"
-                                    || (function.child_by_field_name("optional_chain").is_some()
-                                        && expression.rsplit_once('.').is_some_and(
-                                            |(_, member)| {
-                                                member.bytes().all(|byte| {
-                                                    byte.is_ascii_alphanumeric()
-                                                        || matches!(byte, b'_' | b'$')
-                                                })
-                                            },
-                                        )))
-                            {
-                                reference.expression = expression;
-                            }
-                            reference.dynamic = false;
-                        }
-                    }
-                }
-                if let Some(function) = ctx
-                    .node
-                    .child_by_field_name("function")
-                    .filter(|function| function.kind() == "member_expression")
-                {
-                    if let Some(reference) = facts.references.last_mut() {
-                        reference.receiver_hint = value_flow::computed_member_hint(
-                            function, ctx.source, ctx.offset, false,
-                        );
-                    }
-                }
+                normalize_dynamic_call_reference(self.javascript, ctx, facts, reference_count);
             }
         }
     }
@@ -1441,115 +1406,6 @@ impl LanguageProfile for TypeScript {
                 member,
                 "json" | "text" | "arrayBuffer" | "blob" | "formData" | "clone"
             ),
-            "Document" => matches!(
-                member,
-                "querySelector"
-                    | "querySelectorAll"
-                    | "getElementById"
-                    | "getElementsByClassName"
-                    | "getElementsByTagName"
-                    | "createElement"
-                    | "createTextNode"
-                    | "addEventListener"
-                    | "removeEventListener"
-                    | "body"
-                    | "head"
-                    | "documentElement"
-            ),
-            "ParentNode" | "DocumentFragment" => matches!(
-                member,
-                "querySelector" | "querySelectorAll" | "appendChild" | "removeChild"
-            ),
-            "ChildNode" => matches!(member, "appendChild" | "removeChild"),
-            _ if dom::typed_dom_receiver(receiver) == Some("Element") => matches!(
-                member,
-                "querySelector"
-                    | "querySelectorAll"
-                    | "getAttribute"
-                    | "setAttribute"
-                    | "removeAttribute"
-                    | "closest"
-                    | "matches"
-                    | "addEventListener"
-                    | "removeEventListener"
-                    | "appendChild"
-                    | "removeChild"
-                    | "classList"
-            ),
-            "Window" => matches!(
-                member,
-                "addEventListener" | "removeEventListener" | "dispatchEvent"
-            ),
-            "EventTarget" => matches!(
-                member,
-                "addEventListener" | "removeEventListener" | "dispatchEvent"
-            ),
-            "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent" | "DragEvent"
-            | "ClipboardEvent" | "FocusEvent" => matches!(
-                member,
-                "stopPropagation" | "stopImmediatePropagation" | "preventDefault"
-            ),
-            "Storage" => matches!(
-                member,
-                "getItem" | "setItem" | "removeItem" | "clear" | "key" | "length"
-            ),
-            "URLSearchParams" => matches!(
-                member,
-                "append"
-                    | "delete"
-                    | "get"
-                    | "getAll"
-                    | "has"
-                    | "set"
-                    | "sort"
-                    | "forEach"
-                    | "entries"
-                    | "keys"
-                    | "values"
-            ),
-            "Headers" => matches!(
-                member,
-                "append"
-                    | "delete"
-                    | "get"
-                    | "getSetCookie"
-                    | "has"
-                    | "set"
-                    | "forEach"
-                    | "entries"
-                    | "keys"
-                    | "values"
-            ),
-            "DOMTokenList" => matches!(
-                member,
-                "add"
-                    | "remove"
-                    | "toggle"
-                    | "contains"
-                    | "replace"
-                    | "supports"
-                    | "entries"
-                    | "forEach"
-                    | "keys"
-                    | "values"
-            ),
-            "URL" => matches!(
-                member,
-                "hash"
-                    | "host"
-                    | "hostname"
-                    | "href"
-                    | "origin"
-                    | "password"
-                    | "pathname"
-                    | "port"
-                    | "protocol"
-                    | "search"
-                    | "searchParams"
-                    | "username"
-                    | "toString"
-                    | "toJSON"
-            ),
             "string" | "String" => matches!(
                 member,
                 "charAt"
@@ -1644,22 +1500,7 @@ impl LanguageProfile for TypeScript {
         owner: &str,
         module: &str,
     ) -> Option<ImportPath> {
-        let path = Path::new(module);
-        let module = if for_path(path).is_some_and(|p| p.family() == LanguageFamily("javascript")) {
-            module_stem(module)
-        } else {
-            module
-        };
-        let module = module.trim_end_matches("/index");
-        if module.starts_with("./") || module.starts_with("../") {
-            Some(ImportPath {
-                namespace: relative_namespace(owner, module)?,
-                relative: true,
-                symbol_path: false,
-            })
-        } else {
-            Some(ImportPath::absolute(module.replace('/', ".")))
-        }
+        commonjs::normalize_ts_import(owner, module)
     }
     fn external_import(&self, module: &str) -> Option<&'static str> {
         self.is_stdlib(module).then_some("Node.js standard library")
@@ -1747,7 +1588,7 @@ impl LanguageProfile for TypeScript {
         &self,
         root: Syntax<'_>,
         source: &str,
-        bindings: &ast::ScopeBindings,
+        bindings: &ScopeBindings,
     ) -> Option<Vec<crate::semantic::ExportBinding>> {
         Some(value_flow::exports(root, source, bindings))
     }
@@ -1867,7 +1708,15 @@ impl LanguageProfile for TypeScript {
             }
         }
 
-        relations::decorator_references(ctx, facts);
+        relations::decorator_references(
+            relations::RelationSpan {
+                node: ctx.node,
+                source: ctx.source,
+                owner: ctx.owner,
+                offset: ctx.offset,
+            },
+            facts,
+        );
         let mut record_type = |ty| {
             relations::type_references_with_value_queries(
                 facts,
@@ -1939,149 +1788,22 @@ impl LanguageProfile for TypeScript {
             return;
         }
         if !self.javascript && kind == "identifier" {
-            let runtime_value = ctx.node.parent().is_some_and(|parent| {
-                (parent.kind() == "variable_declarator"
-                    && parent.child_by_field_name("value") == Some(ctx.node))
-                    || (parent.kind() == "assignment_expression"
-                        && parent.child_by_field_name("right") == Some(ctx.node))
-                    || (matches!(parent.kind(), "return_statement" | "arguments" | "array")
-                        && (0..parent.named_child_count())
-                            .any(|index| parent.named_child(index) == Some(ctx.node)))
-            });
-            if runtime_value {
-                TS_SCRATCH.with(|s| {
-                    s.borrow_mut().candidates.push(TsCandidate {
-                        source: ctx.owner.into(),
-                        expression: text(ctx.node, ctx.source).into(),
-                        line: ctx.line(),
-                        column: ctx.node.start_position().column,
-                        is_member: false,
-                    });
-                });
-            }
+            record_ts_identifier_candidate(ctx);
         }
         if kind == "member_expression" {
-            let (called, write_only) = ctx.node.parent().map_or((false, false), |parent| {
-                let parent_kind = parent.kind();
-                (
-                    parent_kind == "call_expression"
-                        && parent.child_by_field_name("function") == Some(ctx.node),
-                    (matches!(
-                        parent_kind,
-                        "assignment_expression" | "augmented_assignment_expression"
-                    ) && parent.child_by_field_name("left") == Some(ctx.node))
-                        || parent_kind == "update_expression"
-                        || (parent_kind == "unary_expression"
-                            && text(parent, ctx.source).trim_start().starts_with("delete ")),
-                )
-            });
-            if !called && !write_only {
-                if let Some(hint @ ReceiverHint::TypedCallResult { .. }) =
-                    value_flow::computed_member_hint(ctx.node, ctx.source, ctx.offset, true)
-                {
-                    facts.references.push(simple_reference(
-                        ctx.owner,
-                        text(ctx.node, ctx.source),
-                        "references",
-                        ctx.line(),
-                        ctx.node.start_position().column,
-                        Some(hint),
-                    ));
-                }
-                if let (Some(object), Some(property)) = (
-                    ctx.node
-                        .child_by_field_name("object")
-                        .filter(|object| object.kind() == "identifier"),
-                    ctx.node
-                        .child_by_field_name("property")
-                        .filter(|property| property.kind() == "property_identifier"),
-                ) {
-                    TS_SCRATCH.with(|s| {
-                        s.borrow_mut().candidates.push(TsCandidate {
-                            source: ctx.owner.into(),
-                            expression: format!(
-                                "{}.{}",
-                                text(object, ctx.source),
-                                text(property, ctx.source)
-                            ),
-                            line: ctx.line(),
-                            column: ctx.node.start_position().column,
-                            is_member: true,
-                        });
-                    });
-                }
-            }
+            record_ts_member_candidate(ctx, facts);
         }
-        if self.javascript
-            && (matches!(
-                ctx.node.kind(),
-                "assignment_expression" | "augmented_assignment_expression"
-            ) || (ctx.node.kind() == "unary_expression"
-                && ctx
-                    .node
-                    .child(0)
-                    .is_some_and(|operator| operator.kind() == "delete")))
-        {
-            if let Some(left) = ctx
-                .node
-                .child_by_field_name("left")
-                .or_else(|| ctx.node.child_by_field_name("argument"))
-            {
-                if facts
-                    .nodes
-                    .first()
-                    .is_some_and(|node| node.kind == "module")
-                {
-                    TS_SCRATCH.with(|scratch| {
-                        let mut s = scratch.borrow_mut();
-                        if let Some(target) = (left.kind() == "identifier")
-                            .then(|| text(left, ctx.source))
-                            .or_else(|| direct_prototype_owner(left, ctx.source))
-                        {
-                            if !s.assigned.contains(target) {
-                                if target.len() <= 128 && s.assigned.len() < 64 {
-                                    s.assigned.insert(target.to_owned());
-                                } else {
-                                    s.assignment_overflow = true;
-                                }
-                            }
-                        }
-                        if let Some((owner, member)) = prototype_target(left, ctx.source) {
-                            if !s.write_overflow {
-                                let key = format!("{owner}.{member}");
-                                if let Some(count) = s.writes.get_mut(&key) {
-                                    *count = 2;
-                                } else if s.writes.len() < 64 {
-                                    s.writes.insert(key, 1);
-                                } else {
-                                    s.writes.clear();
-                                    s.write_overflow = true;
-                                }
-                            }
-                        }
-                        if let Some((owner, member, implementation)) =
-                            prototype_identifier_assignment(ctx.node, ctx.source)
-                        {
-                            if s.aliases.len() < 64
-                                && owner.len() + member.len() + implementation.len() <= 192
-                            {
-                                s.aliases.push(JsPrototypeAlias {
-                                    owner: owner.to_owned(),
-                                    member: member.to_owned(),
-                                    implementation: implementation.to_owned(),
-                                    line: ctx.line(),
-                                    column: ctx.node.start_position().column,
-                                });
-                            } else {
-                                s.alias_overflow = true;
-                            }
-                        }
-                    });
-                }
-            }
+        if self.javascript {
+            record_js_mutation_target(ctx, facts);
         }
+        let span = relations::RelationSpan {
+            node: ctx.node,
+            source: ctx.source,
+            owner: ctx.owner,
+            offset: ctx.offset,
+        };
         relations::mutation(
-            ctx,
+            span,
             facts,
             &["public_field_definition", "property_signature"],
             &[
@@ -2091,28 +1813,9 @@ impl LanguageProfile for TypeScript {
             ],
             &["member_expression"],
         );
-        if matches!(
-            ctx.node.kind(),
-            "public_field_definition" | "field_definition"
-        ) && has_static_child(ctx.node)
-        {
-            if let (Some(owner), Some(name)) = (
-                facts.nodes.iter().find(|node| node.id == ctx.owner),
-                ctx.node
-                    .child_by_field_name("name")
-                    .map(|name| text(name, ctx.source)),
-            ) {
-                let qualname = format!("{}.{}", owner.qualname, name);
-                let path = owner.path.clone();
-                if let Some(field) = facts.nodes.iter_mut().find(|node| {
-                    node.path == path && node.kind == "field" && node.qualname == qualname
-                }) {
-                    field.details["is_static"] = serde_json::json!(true);
-                }
-            }
-        }
+        mark_static_ts_field(ctx, facts);
         let before = facts.references.len();
-        relations::member_access(ctx, facts, &["member_expression"]);
+        relations::member_access(span, facts, &["member_expression"]);
         if let Some(reference) = facts.references.get_mut(before) {
             reference.column = ctx.node.start_position().column;
         }
@@ -2125,9 +1828,9 @@ impl LanguageProfile for TypeScript {
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::ast::routes::RouteContext,
+        rules: &LanguageContext,
+        rule_ir: &crate::languages::RuleIRHandle,
+        route_context: &RouteContext,
         projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
     ) {
         extract_projections(ctx, rules);
@@ -2144,298 +1847,549 @@ impl LanguageProfile for TypeScript {
     }
     fn finish(&self, facts: &mut Facts) {
         let candidates = TS_SCRATCH.with(|s| std::mem::take(&mut s.borrow_mut().candidates));
-        if !candidates.is_empty() {
-            let enums: HashSet<&str> = facts
-                .nodes
-                .iter()
-                .filter(|node| node.kind == "enum")
-                .map(|node| node.name.as_str())
-                .collect();
-            let imports: HashSet<String> = facts
-                .references
-                .iter()
-                .filter(|reference| reference.kind == "imports")
-                .filter_map(|reference| reference.alias.clone())
-                .collect();
-            let type_imports: HashSet<String> = facts
-                .references
-                .iter()
-                .filter(|reference| {
-                    reference.kind == "imports"
-                        && matches!(
-                            reference.receiver_hint.as_ref(),
-                            Some(ReceiverHint::TypeOnlyImport)
-                        )
-                })
-                .filter_map(|reference| reference.alias.clone())
-                .collect();
-            let bindings: HashMap<&str, HashSet<&str>> = facts
-                .nodes
-                .iter()
-                .map(|node| (node.id.as_str(), node.binding_names().collect()))
-                .collect();
-            for candidate in candidates {
-                let Some(local_names) = bindings.get(candidate.source.as_str()) else {
-                    continue;
-                };
-                if !candidate.is_member {
-                    if type_imports.contains(&candidate.expression) {
-                        facts.references.push(simple_reference(
-                            candidate.source,
-                            candidate.expression,
-                            "references",
-                            candidate.line,
-                            candidate.column,
-                            Some(ReceiverHint::TypeOnlyImport),
-                        ));
-                    }
-                } else {
-                    let Some((receiver, _)) = candidate.expression.split_once('.') else {
-                        continue;
-                    };
-                    if enums.contains(receiver)
-                        || imports.contains(receiver)
-                        || local_names.contains(receiver)
-                        || matches!(
-                            receiver,
-                            "navigator" | "location" | "history" | "performance" | "crypto"
-                        )
-                    {
-                        let hint = type_imports
-                            .contains(receiver)
-                            .then_some(ReceiverHint::TypeOnlyImport);
-                        facts.references.push(simple_reference(
-                            candidate.source,
-                            candidate.expression,
-                            "references",
-                            candidate.line,
-                            candidate.column,
-                            hint,
-                        ));
-                    }
-                }
-            }
-        }
+        finish_ts_identifier_candidates(facts, candidates);
         if self.javascript {
-            let (
-                writes,
-                write_overflow,
-                prototype_aliases,
-                alias_overflow,
-                assigned,
-                assignment_overflow,
-            ) = TS_SCRATCH.with(|s| {
-                let mut b = s.borrow_mut();
-                let writes = std::mem::take(&mut b.writes);
-                let write_overflow = b.write_overflow;
-                let prototype_aliases = std::mem::take(&mut b.aliases);
-                let alias_overflow = b.alias_overflow;
-                let assigned = std::mem::take(&mut b.assigned);
-                let assignment_overflow = b.assignment_overflow;
-                b.reset();
-                (
-                    writes,
-                    write_overflow,
-                    prototype_aliases,
-                    alias_overflow,
-                    assigned,
-                    assignment_overflow,
-                )
-            });
-            if prototype_aliases.is_empty()
-                && !facts
-                    .nodes
-                    .iter()
-                    .any(|node| node.details["prototype"] == true)
-            {
-                relations::implicit_fields(facts);
-                return;
-            }
-            let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") else {
-                return;
-            };
-            let module_id = module.id.clone();
-            let module_qualname = module.qualname.clone();
-            let rebound: std::collections::HashSet<String> =
-                module.rebinding_names().map(str::to_owned).collect();
-            let declarations: std::collections::HashSet<&str> = facts
-                .edges
-                .iter()
-                .filter(|edge| {
-                    edge.src == module_id
-                        && edge.kind == "contains"
-                        && matches!(
-                            edge.evidence.as_str(),
-                            "class_declaration" | "function_declaration"
-                        )
-                })
-                .map(|edge| edge.dst.as_str())
-                .collect();
-            let mut direct_constructors: std::collections::HashMap<&str, Vec<&Node>> =
-                std::collections::HashMap::new();
-            for node in facts
-                .nodes
-                .iter()
-                .filter(|node| declarations.contains(node.id.as_str()))
-            {
-                direct_constructors
-                    .entry(node.qualname.as_str())
-                    .or_default()
-                    .push(node);
-            }
-            let parents: std::collections::HashMap<&str, &str> = facts
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == "contains")
-                .map(|edge| (edge.dst.as_str(), edge.src.as_str()))
-                .collect();
-            let mut methods = std::collections::HashSet::new();
-            let mut constructor_ids = std::collections::HashSet::new();
-            let mut valid_aliases = Vec::new();
-            for method in facts
-                .nodes
-                .iter()
-                .filter(|node| node.details["prototype"] == true)
-            {
-                let Some(owner) = method.details["receiver_type"].as_str() else {
-                    continue;
-                };
-                let key = format!("{owner}.{}", method.name);
-                if write_overflow
-                    || assignment_overflow
-                    || writes.get(key.as_str()).copied() != Some(1)
-                    || rebound.contains(owner)
-                    || assigned.contains(owner)
-                {
-                    continue;
-                }
-                let qualname = format!("{module_qualname}.{owner}");
-                let Some([constructor]) = direct_constructors
-                    .get(qualname.as_str())
-                    .map(Vec::as_slice)
-                else {
-                    continue;
-                };
-                if constructor.kind == "class"
-                    && (constructor.line > method.line
-                        || (constructor.line == method.line
-                            && constructor.details["column"].as_u64().unwrap_or(0)
-                                >= method.details["column"].as_u64().unwrap_or(0)))
-                {
-                    continue;
-                }
-                methods.insert(method.id.clone());
-                if constructor.kind == "function" {
-                    constructor_ids.insert(constructor.id.clone());
-                }
-            }
-            if !write_overflow && !assignment_overflow && !alias_overflow {
-                let mut target_counts = std::collections::HashMap::<&str, usize>::new();
-                for alias in &prototype_aliases {
-                    *target_counts
-                        .entry(alias.implementation.as_str())
-                        .or_default() += 1;
-                }
-                for alias in &prototype_aliases {
-                    let key = format!("{}.{}", alias.owner, alias.member);
-                    if writes.get(key.as_str()).copied() != Some(1)
-                        || rebound.contains(&alias.owner)
-                        || assigned.contains(&alias.owner)
-                        || rebound.contains(&alias.implementation)
-                        || assigned.contains(&alias.implementation)
-                        || target_counts.get(alias.implementation.as_str()) != Some(&1)
-                    {
-                        continue;
-                    }
-                    let owner_qualname = format!("{module_qualname}.{}", alias.owner);
-                    let implementation_qualname =
-                        format!("{module_qualname}.{}", alias.implementation);
-                    let (Some([constructor]), Some([function])) = (
-                        direct_constructors
-                            .get(owner_qualname.as_str())
-                            .map(Vec::as_slice),
-                        direct_constructors
-                            .get(implementation_qualname.as_str())
-                            .map(Vec::as_slice),
-                    ) else {
-                        continue;
-                    };
-                    if function.kind != "function"
-                        || (
-                            function.line,
-                            function.details["column"].as_u64().unwrap_or(0),
-                        ) >= (alias.line, alias.column as u64)
-                        || (
-                            constructor.line,
-                            constructor.details["column"].as_u64().unwrap_or(0),
-                        ) >= (alias.line, alias.column as u64)
-                    {
-                        continue;
-                    }
-                    methods.insert(function.id.clone());
-                    if constructor.kind == "function" {
-                        constructor_ids.insert(constructor.id.clone());
-                    }
-                    valid_aliases.push((
-                        function.id.clone(),
-                        alias.owner.clone(),
-                        alias.member.clone(),
-                        alias.line,
-                        alias.column,
-                    ));
-                }
-            }
-            let valid_methods: std::collections::HashMap<String, String> = facts
-                .nodes
-                .iter()
-                .filter(|node| methods.contains(&node.id))
-                .filter_map(|node| {
-                    node.details["receiver_type"]
-                        .as_str()
-                        .map(|owner| (node.id.clone(), owner.to_owned()))
-                })
-                .collect();
-            for node in &mut facts.nodes {
-                if let Some((_, owner, member, line, column)) =
-                    valid_aliases.iter().find(|(id, ..)| *id == node.id)
-                {
-                    node.details["prototype"] = serde_json::json!(true);
-                    node.details["prototype_member"] = serde_json::json!(member);
-                    node.details["receiver_type"] = serde_json::json!(owner);
-                    node.details["prototype_assignment_line"] = serde_json::json!(line);
-                    node.details["prototype_assignment_column"] = serde_json::json!(column);
-                }
-                if methods.contains(&node.id) {
-                    node.details["prototype_valid"] = serde_json::json!(true);
-                }
-                if constructor_ids.contains(&node.id) {
-                    node.details["prototype_constructor"] = serde_json::json!(true);
-                }
-                if node.kind == "function" && node.details["receiver_name"] == "this" {
-                    let receiver = node.details["receiver_type"].as_str();
-                    let mut ancestor = node.id.as_str();
-                    for _ in 0..16 {
-                        let Some(parent) = parents.get(ancestor).copied() else {
-                            break;
-                        };
-                        if valid_methods
-                            .get(parent)
-                            .is_some_and(|owner| Some(owner.as_str()) == receiver)
-                        {
-                            node.details["prototype_lexical_this"] = serde_json::json!(true);
-                            break;
-                        }
-                        ancestor = parent;
-                    }
-                }
-            }
+            finish_js_prototypes(facts);
         }
         relations::implicit_fields(facts);
     }
 }
 
+fn normalize_dynamic_call_reference(
+    javascript: bool,
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    reference_count: usize,
+) {
+    if let Some(reference) = facts.references.get_mut(reference_count).filter(|reference| {
+        reference.dynamic
+            && reference.source == ctx.owner
+            && reference.kind == "calls"
+            && reference.line == ctx.line()
+    }) {
+        if let Some(function) = ctx.node.child_by_field_name("function") {
+            if let Some(expression) = static_member_callee(function, ctx.source) {
+                // Retain the existing direct JavaScript literal/optional
+                // normalization; newly admitted nested paths keep raw identity.
+                if javascript
+                    && function
+                        .child_by_field_name("object")
+                        .is_some_and(|object| object.kind() == "identifier")
+                    && (function.kind() == "subscript_expression"
+                        || (function.child_by_field_name("optional_chain").is_some()
+                            && expression.rsplit_once('.').is_some_and(|(_, member)| {
+                                member
+                                    .bytes()
+                                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
+                            })))
+                {
+                    reference.expression = expression;
+                }
+                reference.dynamic = false;
+            }
+        }
+    }
+    if let Some(function) = ctx
+        .node
+        .child_by_field_name("function")
+        .filter(|function| function.kind() == "member_expression")
+    {
+        if let Some(reference) = facts.references.last_mut() {
+            reference.receiver_hint =
+                value_flow::computed_member_hint(function, ctx.source, ctx.offset, false);
+        }
+    }
+}
+
+fn finish_ts_identifier_candidates(facts: &mut Facts, candidates: Vec<TsCandidate>) {
+    if candidates.is_empty() {
+        return;
+    }
+    let enums: HashSet<&str> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "enum")
+        .map(|node| node.name.as_str())
+        .collect();
+    let imports: HashSet<String> = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "imports")
+        .filter_map(|reference| reference.alias.clone())
+        .collect();
+    let type_imports: HashSet<String> = facts
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == "imports"
+                && matches!(
+                    reference.receiver_hint.as_ref(),
+                    Some(ReceiverHint::TypeOnlyImport)
+                )
+        })
+        .filter_map(|reference| reference.alias.clone())
+        .collect();
+    let bindings: HashMap<&str, HashSet<&str>> = facts
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.binding_names().collect()))
+        .collect();
+    for candidate in candidates {
+        let Some(local_names) = bindings.get(candidate.source.as_str()) else {
+            continue;
+        };
+        if !candidate.is_member {
+            if type_imports.contains(&candidate.expression) {
+                facts.references.push(simple_reference(
+                    candidate.source,
+                    candidate.expression,
+                    "references",
+                    candidate.line,
+                    candidate.column,
+                    Some(ReceiverHint::TypeOnlyImport),
+                ));
+            }
+            continue;
+        }
+        let Some((receiver, _)) = candidate.expression.split_once('.') else {
+            continue;
+        };
+        if enums.contains(receiver)
+            || imports.contains(receiver)
+            || local_names.contains(receiver)
+            || matches!(
+                receiver,
+                "navigator" | "location" | "history" | "performance" | "crypto"
+            )
+        {
+            let hint = type_imports
+                .contains(receiver)
+                .then_some(ReceiverHint::TypeOnlyImport);
+            facts.references.push(simple_reference(
+                candidate.source,
+                candidate.expression,
+                "references",
+                candidate.line,
+                candidate.column,
+                hint,
+            ));
+        }
+    }
+}
+
+fn finish_js_prototypes(facts: &mut Facts) {
+    let (
+        writes,
+        write_overflow,
+        prototype_aliases,
+        alias_overflow,
+        assigned,
+        assignment_overflow,
+    ) = TS_SCRATCH.with(|s| {
+        let mut b = s.borrow_mut();
+        let writes = std::mem::take(&mut b.writes);
+        let write_overflow = b.write_overflow;
+        let prototype_aliases = std::mem::take(&mut b.aliases);
+        let alias_overflow = b.alias_overflow;
+        let assigned = std::mem::take(&mut b.assigned);
+        let assignment_overflow = b.assignment_overflow;
+        b.reset();
+        (
+            writes,
+            write_overflow,
+            prototype_aliases,
+            alias_overflow,
+            assigned,
+            assignment_overflow,
+        )
+    });
+    if prototype_aliases.is_empty()
+        && !facts
+            .nodes
+            .iter()
+            .any(|node| node.details["prototype"] == true)
+    {
+        relations::implicit_fields(facts);
+        return;
+    }
+    let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") else {
+        return;
+    };
+    let module_id = module.id.clone();
+    let module_qualname = module.qualname.clone();
+    let rebound: std::collections::HashSet<String> =
+        module.rebinding_names().map(str::to_owned).collect();
+    let declarations: std::collections::HashSet<&str> = facts
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.src == module_id
+                && edge.kind == "contains"
+                && matches!(
+                    edge.evidence.as_str(),
+                    "class_declaration" | "function_declaration"
+                )
+        })
+        .map(|edge| edge.dst.as_str())
+        .collect();
+    let mut direct_constructors: std::collections::HashMap<&str, Vec<&Node>> =
+        std::collections::HashMap::new();
+    for node in facts
+        .nodes
+        .iter()
+        .filter(|node| declarations.contains(node.id.as_str()))
+    {
+        direct_constructors
+            .entry(node.qualname.as_str())
+            .or_default()
+            .push(node);
+    }
+    let parents: std::collections::HashMap<&str, &str> = facts
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == "contains")
+        .map(|edge| (edge.dst.as_str(), edge.src.as_str()))
+        .collect();
+    let mut methods = std::collections::HashSet::new();
+    let mut constructor_ids = std::collections::HashSet::new();
+    let mut valid_aliases = Vec::new();
+    for method in facts
+        .nodes
+        .iter()
+        .filter(|node| node.details["prototype"] == true)
+    {
+        let Some(owner) = method.details["receiver_type"].as_str() else {
+            continue;
+        };
+        let key = format!("{owner}.{}", method.name);
+        if write_overflow
+            || assignment_overflow
+            || writes.get(key.as_str()).copied() != Some(1)
+            || rebound.contains(owner)
+            || assigned.contains(owner)
+        {
+            continue;
+        }
+        let qualname = format!("{module_qualname}.{owner}");
+        let Some([constructor]) = direct_constructors
+            .get(qualname.as_str())
+            .map(Vec::as_slice)
+        else {
+            continue;
+        };
+        if constructor.kind == "class"
+            && (constructor.line > method.line
+                || (constructor.line == method.line
+                    && constructor.details["column"].as_u64().unwrap_or(0)
+                        >= method.details["column"].as_u64().unwrap_or(0)))
+        {
+            continue;
+        }
+        methods.insert(method.id.clone());
+        if constructor.kind == "function" {
+            constructor_ids.insert(constructor.id.clone());
+        }
+    }
+    if !write_overflow && !assignment_overflow && !alias_overflow {
+        collect_valid_prototype_aliases(
+            &prototype_aliases,
+            &module_qualname,
+            &writes,
+            &rebound,
+            &assigned,
+            &direct_constructors,
+            &mut methods,
+            &mut constructor_ids,
+            &mut valid_aliases,
+        );
+    }
+    let valid_methods: std::collections::HashMap<String, String> = facts
+        .nodes
+        .iter()
+        .filter(|node| methods.contains(&node.id))
+        .filter_map(|node| {
+            node.details["receiver_type"]
+                .as_str()
+                .map(|owner| (node.id.clone(), owner.to_owned()))
+        })
+        .collect();
+    for node in &mut facts.nodes {
+        if let Some((_, owner, member, line, column)) =
+            valid_aliases.iter().find(|(id, ..)| *id == node.id)
+        {
+            node.details["prototype"] = serde_json::json!(true);
+            node.details["prototype_member"] = serde_json::json!(member);
+            node.details["receiver_type"] = serde_json::json!(owner);
+            node.details["prototype_assignment_line"] = serde_json::json!(line);
+            node.details["prototype_assignment_column"] = serde_json::json!(column);
+        }
+        if methods.contains(&node.id) {
+            node.details["prototype_valid"] = serde_json::json!(true);
+        }
+        if constructor_ids.contains(&node.id) {
+            node.details["prototype_constructor"] = serde_json::json!(true);
+        }
+        if node.kind == "function" && node.details["receiver_name"] == "this" {
+            let receiver = node.details["receiver_type"].as_str();
+            let mut ancestor = node.id.as_str();
+            for _ in 0..16 {
+                let Some(parent) = parents.get(ancestor).copied() else {
+                    break;
+                };
+                if valid_methods
+                    .get(parent)
+                    .is_some_and(|owner| Some(owner.as_str()) == receiver)
+                {
+                    node.details["prototype_lexical_this"] = serde_json::json!(true);
+                    break;
+                }
+                ancestor = parent;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_valid_prototype_aliases(
+    prototype_aliases: &[JsPrototypeAlias],
+    module_qualname: &str,
+    writes: &std::collections::HashMap<String, u64>,
+    rebound: &std::collections::HashSet<String>,
+    assigned: &std::collections::HashSet<String>,
+    direct_constructors: &std::collections::HashMap<&str, Vec<&Node>>,
+    methods: &mut std::collections::HashSet<String>,
+    constructor_ids: &mut std::collections::HashSet<String>,
+    valid_aliases: &mut Vec<(String, String, String, usize, usize)>,
+) {
+    let mut target_counts = std::collections::HashMap::<&str, usize>::new();
+    for alias in prototype_aliases {
+        *target_counts
+            .entry(alias.implementation.as_str())
+            .or_default() += 1;
+    }
+    for alias in prototype_aliases {
+        let key = format!("{}.{}", alias.owner, alias.member);
+        if writes.get(key.as_str()).copied() != Some(1)
+            || rebound.contains(&alias.owner)
+            || assigned.contains(&alias.owner)
+            || rebound.contains(&alias.implementation)
+            || assigned.contains(&alias.implementation)
+            || target_counts.get(alias.implementation.as_str()) != Some(&1)
+        {
+            continue;
+        }
+        let owner_qualname = format!("{module_qualname}.{}", alias.owner);
+        let implementation_qualname = format!("{module_qualname}.{}", alias.implementation);
+        let (Some([constructor]), Some([function])) = (
+            direct_constructors
+                .get(owner_qualname.as_str())
+                .map(Vec::as_slice),
+            direct_constructors
+                .get(implementation_qualname.as_str())
+                .map(Vec::as_slice),
+        ) else {
+            continue;
+        };
+        if function.kind != "function"
+            || (
+                function.line,
+                function.details["column"].as_u64().unwrap_or(0),
+            ) >= (alias.line, alias.column as u64)
+            || (
+                constructor.line,
+                constructor.details["column"].as_u64().unwrap_or(0),
+            ) >= (alias.line, alias.column as u64)
+        {
+            continue;
+        }
+        methods.insert(function.id.clone());
+        if constructor.kind == "function" {
+            constructor_ids.insert(constructor.id.clone());
+        }
+        valid_aliases.push((
+            function.id.clone(),
+            alias.owner.clone(),
+            alias.member.clone(),
+            alias.line,
+            alias.column,
+        ));
+    }
+}
+
+fn record_ts_identifier_candidate(ctx: &SyntaxContext<'_, '_>) {
+    let runtime_value = ctx.node.parent().is_some_and(|parent| {
+        (parent.kind() == "variable_declarator"
+            && parent.child_by_field_name("value") == Some(ctx.node))
+            || (parent.kind() == "assignment_expression"
+                && parent.child_by_field_name("right") == Some(ctx.node))
+            || (matches!(parent.kind(), "return_statement" | "arguments" | "array")
+                && (0..parent.named_child_count())
+                    .any(|index| parent.named_child(index) == Some(ctx.node)))
+    });
+    if runtime_value {
+        TS_SCRATCH.with(|s| {
+            s.borrow_mut().candidates.push(TsCandidate {
+                source: ctx.owner.into(),
+                expression: text(ctx.node, ctx.source).into(),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                is_member: false,
+            });
+        });
+    }
+}
+
+fn record_ts_member_candidate(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    let (called, write_only) = ctx.node.parent().map_or((false, false), |parent| {
+        let parent_kind = parent.kind();
+        (
+            parent_kind == "call_expression"
+                && parent.child_by_field_name("function") == Some(ctx.node),
+            (matches!(
+                parent_kind,
+                "assignment_expression" | "augmented_assignment_expression"
+            ) && parent.child_by_field_name("left") == Some(ctx.node))
+                || parent_kind == "update_expression"
+                || (parent_kind == "unary_expression"
+                    && text(parent, ctx.source).trim_start().starts_with("delete ")),
+        )
+    });
+    if called || write_only {
+        return;
+    }
+    if let Some(hint @ ReceiverHint::TypedCallResult { .. }) =
+        value_flow::computed_member_hint(ctx.node, ctx.source, ctx.offset, true)
+    {
+        facts.references.push(simple_reference(
+            ctx.owner,
+            text(ctx.node, ctx.source),
+            "references",
+            ctx.line(),
+            ctx.node.start_position().column,
+            Some(hint),
+        ));
+    }
+    if let (Some(object), Some(property)) = (
+        ctx.node
+            .child_by_field_name("object")
+            .filter(|object| object.kind() == "identifier"),
+        ctx.node
+            .child_by_field_name("property")
+            .filter(|property| property.kind() == "property_identifier"),
+    ) {
+        TS_SCRATCH.with(|s| {
+            s.borrow_mut().candidates.push(TsCandidate {
+                source: ctx.owner.into(),
+                expression: format!(
+                    "{}.{}",
+                    text(object, ctx.source),
+                    text(property, ctx.source)
+                ),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                is_member: true,
+            });
+        });
+    }
+}
+
+fn record_js_mutation_target(ctx: &SyntaxContext<'_, '_>, facts: &Facts) {
+    let is_mutation_kind = matches!(
+        ctx.node.kind(),
+        "assignment_expression" | "augmented_assignment_expression"
+    ) || (ctx.node.kind() == "unary_expression"
+        && ctx
+            .node
+            .child(0)
+            .is_some_and(|operator| operator.kind() == "delete"));
+    if !is_mutation_kind
+        || !facts
+            .nodes
+            .first()
+            .is_some_and(|node| node.kind == "module")
+    {
+        return;
+    }
+    let Some(left) = ctx
+        .node
+        .child_by_field_name("left")
+        .or_else(|| ctx.node.child_by_field_name("argument"))
+    else {
+        return;
+    };
+    TS_SCRATCH.with(|scratch| {
+        let mut s = scratch.borrow_mut();
+        if let Some(target) = (left.kind() == "identifier")
+            .then(|| text(left, ctx.source))
+            .or_else(|| direct_prototype_owner(left, ctx.source))
+        {
+            if !s.assigned.contains(target) {
+                if target.len() <= 128 && s.assigned.len() < 64 {
+                    s.assigned.insert(target.to_owned());
+                } else {
+                    s.assignment_overflow = true;
+                }
+            }
+        }
+        if let Some((owner, member)) = prototype_target(left, ctx.source) {
+            if !s.write_overflow {
+                let key = format!("{owner}.{member}");
+                if let Some(count) = s.writes.get_mut(&key) {
+                    *count = 2;
+                } else if s.writes.len() < 64 {
+                    s.writes.insert(key, 1);
+                } else {
+                    s.writes.clear();
+                    s.write_overflow = true;
+                }
+            }
+        }
+        if let Some((owner, member, implementation)) =
+            prototype_identifier_assignment(ctx.node, ctx.source)
+        {
+            if s.aliases.len() < 64
+                && owner.len() + member.len() + implementation.len() <= 192
+            {
+                s.aliases.push(JsPrototypeAlias {
+                    owner: owner.to_owned(),
+                    member: member.to_owned(),
+                    implementation: implementation.to_owned(),
+                    line: ctx.line(),
+                    column: ctx.node.start_position().column,
+                });
+            } else {
+                s.alias_overflow = true;
+            }
+        }
+    });
+}
+
+fn mark_static_ts_field(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if !matches!(
+        ctx.node.kind(),
+        "public_field_definition" | "field_definition"
+    ) || !has_static_child(ctx.node)
+    {
+        return;
+    }
+    if let (Some(owner), Some(name)) = (
+        facts.nodes.iter().find(|node| node.id == ctx.owner),
+        ctx.node
+            .child_by_field_name("name")
+            .map(|name| text(name, ctx.source)),
+    ) {
+        let qualname = format!("{}.{}", owner.qualname, name);
+        let path = owner.path.clone();
+        if let Some(field) = facts.nodes.iter_mut().find(|node| {
+            node.path == path && node.kind == "field" && node.qualname == qualname
+        }) {
+            field.details["is_static"] = serde_json::json!(true);
+        }
+    }
+}
+
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&TYPESCRIPT, &JAVASCRIPT];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&TYPESCRIPT, &JAVASCRIPT];
 
 #[cfg(test)]
 mod callback_parameter_tests {

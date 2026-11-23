@@ -4,7 +4,7 @@ use super::budget::{
     add_omitted_section, is_pre_task_root_in_profile, MAX_BLACKBOARD_CHARS, MAX_BLACKBOARD_ITEMS,
     MIN_LENS_BUDGET_BYTES,
 };
-use super::{baseline_ref_for_node, ClaimContextRequest, ClaimResp};
+use super::types::{baseline_ref_for_node, ClaimContextRequest, ClaimResp};
 use crate::profile::GateDef;
 use crate::types::{
     ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, ClaimOutcome,

@@ -2,7 +2,7 @@ use super::super::commitments::{read_metadata, read_metadata_optional, MetadataK
 use super::super::{cycles, paging};
 use super::diagnostics::{diagnostic_reason, is_query_budget_exhaustion, resolution_cause_sql};
 use super::sql::rows;
-use super::{OverviewAspect, OverviewOptions};
+use super::types::{OverviewAspect, OverviewOptions};
 use crate::models::details::NodeDetailKey;
 use crate::models::tags::{CoverageStatus, EdgeKind, NodeKind};
 use acdd_core::response::QueryOptions;

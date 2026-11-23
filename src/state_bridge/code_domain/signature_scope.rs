@@ -1,5 +1,5 @@
-use super::super::open_code_db_readonly;
-use super::{
+use super::super::common::{combine_file_hashes, open_code_db_readonly};
+use super::common::{
     collect_deleted_scoped_files, collect_scoped_worktree_files, contains_identifier,
     effective_baseline_ref, normalize_sig, public_callable_nodes, CodeDomainProvider,
 };
@@ -48,7 +48,7 @@ impl CodeDomainProvider {
                 .map_or_else(|| "<deleted>".to_owned(), |src| sha256_hex(src.as_bytes()));
             file_hashes.insert(rel.clone(), hash);
         }
-        let live_digest = super::super::combine_file_hashes(&file_hashes);
+        let live_digest = combine_file_hashes(&file_hashes);
         Ok((conn, index_gen, scoped_files, live_digest))
     }
 
@@ -133,6 +133,88 @@ impl CodeDomainProvider {
     }
 }
 
+fn find_external_callers_in_index(
+    worktree: &Path,
+    conn: &Connection,
+    symbol: &Node,
+    admitted_scope: &[String],
+    policy: &WorkspacePathPolicy,
+) -> Result<Option<BTreeSet<String>>> {
+    let target_in_index: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM nodes target
+                JOIN path_dictionary tp ON tp.path_id = target.path_id
+                WHERE tp.path = ?1 AND target.kind = ?2 AND target.name = ?3 AND target.qualname = ?4
+            )",
+            params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !target_in_index {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT cp.path
+         FROM nodes target
+         JOIN path_dictionary tp ON tp.path_id = target.path_id
+         JOIN edges e ON e.dst_hash = target.node_hash
+           AND e.kind IN ('calls', 'imports', 'possible_calls', 'implements', 'overrides')
+         JOIN nodes caller ON caller.node_hash = e.src_hash AND caller.is_test = 0
+         JOIN path_dictionary cp ON cp.path_id = caller.path_id
+         WHERE tp.path = ?1 AND target.kind = ?2 AND target.name = ?3 AND target.qualname = ?4
+         ORDER BY cp.path",
+    )?;
+    let rows = stmt.query_map(
+        params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+        |row| row.get::<_, String>(0),
+    )?;
+    let mut external = BTreeSet::new();
+    for path in rows.flatten() {
+        if checked_child(worktree, Path::new(&path)).is_ok_and(|abs| abs.is_file())
+            && !policy.is_scope_admitted(&path, admitted_scope)
+        {
+            external.insert(path);
+        }
+    }
+    Ok(Some(external))
+}
+
+fn has_non_test_symbol_reference(
+    worktree: &Path,
+    baseline: &str,
+    path: &str,
+    symbol_name: &str,
+) -> bool {
+    let Ok(abs) = checked_child(worktree, Path::new(path)) else {
+        return false;
+    };
+    if !abs.is_file() {
+        return false;
+    }
+    let Some(lang) = languages::for_path(Path::new(path)) else {
+        return false;
+    };
+    let Some(src) = fs::read_to_string(&abs)
+        .ok()
+        .or_else(|| read_git_blob_utf8(worktree, baseline, path).ok().flatten())
+    else {
+        return false;
+    };
+    let Ok(typed) = extract_typed(path, lang.id(), &src) else {
+        return false;
+    };
+    typed.facts.references.iter().any(|r| {
+        let is_test_src = typed
+            .facts
+            .nodes
+            .iter()
+            .any(|n| n.id == r.source && n.is_test);
+        !is_test_src && contains_identifier(&r.expression, symbol_name)
+    })
+}
+
 pub(super) fn find_external_callers(
     worktree: &Path,
     conn: Option<&Connection>,
@@ -141,93 +223,39 @@ pub(super) fn find_external_callers(
     policy: &WorkspacePathPolicy,
     baseline: &str,
 ) -> Result<BTreeSet<String>> {
-    let mut external = BTreeSet::new();
     if let Some(conn) = conn {
-        let target_in_index: bool = conn
-            .query_row(
-                "SELECT EXISTS(
-                    SELECT 1
-                    FROM nodes target
-                    JOIN path_dictionary tp ON tp.path_id = target.path_id
-                    WHERE tp.path = ?1 AND target.kind = ?2 AND target.name = ?3 AND target.qualname = ?4
-                )",
-                params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if target_in_index {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT cp.path
-                 FROM nodes target
-                 JOIN path_dictionary tp ON tp.path_id = target.path_id
-                 JOIN edges e ON e.dst_hash = target.node_hash
-                   AND e.kind IN ('calls', 'imports', 'possible_calls', 'implements', 'overrides')
-                 JOIN nodes caller ON caller.node_hash = e.src_hash AND caller.is_test = 0
-                 JOIN path_dictionary cp ON cp.path_id = caller.path_id
-                 WHERE tp.path = ?1 AND target.kind = ?2 AND target.name = ?3 AND target.qualname = ?4
-                 ORDER BY cp.path",
-            )?;
-            let rows = stmt.query_map(
-                params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
-                |row| row.get::<_, String>(0),
-            )?;
-            for path in rows.flatten() {
-                if !checked_child(worktree, Path::new(&path)).is_ok_and(|abs| abs.is_file()) {
-                    continue;
-                }
-                if !policy.is_scope_admitted(&path, admitted_scope) {
-                    external.insert(path);
-                }
-            }
+        if let Some(external) =
+            find_external_callers_in_index(worktree, conn, symbol, admitted_scope, policy)?
+        {
             return Ok(external);
         }
     }
 
     // Fallback when code_db is absent or refreshed past a deleted target symbol: consult `baseline`
     // and live external files on disk.
-    if !baseline.starts_with('-')
-        && (worktree.join(".git").exists() || acdd_core::git::git_common_dir(worktree).is_ok())
+    let mut external = BTreeSet::new();
+    if baseline.starts_with('-')
+        || (!worktree.join(".git").exists() && acdd_core::git::git_common_dir(worktree).is_err())
     {
-        if let Ok(out) = git_command(
-            worktree,
-            &["grep", "-z", "-l", "-F", "-e", &symbol.name, baseline, "--"],
-        ) {
-            if out.status.success() {
-                let prefix = format!("{baseline}:");
-                for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
-                    let s = String::from_utf8_lossy(raw);
-                    let path = s.strip_prefix(&prefix).unwrap_or(&s);
-                    if !policy.is_scope_admitted(path, admitted_scope) {
-                        let Ok(abs) = checked_child(worktree, Path::new(path)) else {
-                            continue;
-                        };
-                        if !abs.is_file() {
-                            continue;
-                        }
-                        if let Some(lang) = languages::for_path(Path::new(path)) {
-                            let src_opt = fs::read_to_string(&abs)
-                                .ok()
-                                .or_else(|| read_git_blob_utf8(worktree, baseline, path).ok().flatten());
-                            if let Some(src) = src_opt {
-                                if let Ok(typed) = extract_typed(path, lang.id(), &src) {
-                                    let non_test_ref = typed.facts.references.iter().any(|r| {
-                                        let is_test_src = typed
-                                            .facts
-                                            .nodes
-                                            .iter()
-                                            .any(|n| n.id == r.source && n.is_test);
-                                        !is_test_src
-                                            && contains_identifier(&r.expression, &symbol.name)
-                                    });
-                                    if non_test_ref {
-                                        external.insert(path.to_owned());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        return Ok(external);
+    }
+    let Ok(out) = git_command(
+        worktree,
+        &["grep", "-z", "-l", "-F", "-e", &symbol.name, baseline, "--"],
+    ) else {
+        return Ok(external);
+    };
+    if !out.status.success() {
+        return Ok(external);
+    }
+    let prefix = format!("{baseline}:");
+    for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+        let s = String::from_utf8_lossy(raw);
+        let path = s.strip_prefix(&prefix).unwrap_or(&s);
+        if !policy.is_scope_admitted(path, admitted_scope)
+            && has_non_test_symbol_reference(worktree, baseline, path, &symbol.name)
+        {
+            external.insert(path.to_owned());
         }
     }
     Ok(external)

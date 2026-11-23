@@ -22,7 +22,7 @@ impl PartialEq for Base<'_> {
 impl Eq for Base<'_> {}
 
 #[derive(Clone, Copy)]
-pub(crate) enum Member<'a> {
+pub(crate) enum PythonReceiverMember<'a> {
     Local(&'a Node),
     External(
         &'a str,
@@ -44,9 +44,127 @@ fn is_stub_or_overload(node: &Node) -> bool {
 
 /// Precomputes Python C3 order and member lookup before generic reference linking.
 pub(crate) struct PythonReceivers<'a> {
-    members: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
-    supers: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
+    members: HashMap<&'a str, HashMap<&'a str, PythonReceiverMember<'a>>>,
+    supers: HashMap<&'a str, HashMap<&'a str, PythonReceiverMember<'a>>>,
     implementors: HashMap<&'a str, Vec<&'a Node>>,
+}
+
+fn find_enclosing_python_class<'a>(
+    class_names: &HashMap<(&str, &str), Vec<&'a Node>>,
+    path: &str,
+    qualname: &str,
+    child: &Node,
+) -> Option<&'a Node> {
+    let candidates = class_names.get(&(path, qualname))?;
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+    if let Some(enclosing) = candidates
+        .iter()
+        .find(|class| class.line <= child.line && child.end_line <= class.end_line)
+    {
+        return Some(*enclosing);
+    }
+    let child_is_stub = is_stub_or_overload(child);
+    if let Some(matching) = candidates
+        .iter()
+        .find(|class| is_stub_or_overload(class) == child_is_stub)
+    {
+        return Some(*matching);
+    }
+    candidates.first().copied()
+}
+
+fn collect_python_mutation_owners<'a>(
+    all: &'a dyn crate::FactsLookup,
+    class_names: &HashMap<(&str, &str), Vec<&'a Node>>,
+) -> (HashMap<&'a str, &'a Node>, HashSet<(&'a str, &'a str)>) {
+    let mut mutating_members: HashMap<&str, Vec<&str>> = HashMap::new();
+    for facts in all.values_facts() {
+        for reference in facts.references.iter().filter(|r| r.kind == "mutates") {
+            if let Some(("self" | "cls", member)) = reference.expression.split_once('.') {
+                mutating_members
+                    .entry(reference.source.as_str())
+                    .or_default()
+                    .push(member);
+            }
+        }
+    }
+    let mut mutation_owners = HashMap::new();
+    let mut assigned_members = HashSet::new();
+    if mutating_members.is_empty() {
+        return (mutation_owners, assigned_members);
+    }
+    for facts in all.values_facts() {
+        for node in &facts.nodes {
+            let Some(members) = mutating_members.get(node.id.as_str()) else {
+                continue;
+            };
+            let Some((mut scope, _)) = node.qualname.rsplit_once('.') else {
+                continue;
+            };
+            while !scope.is_empty() {
+                if let Some(class) = find_enclosing_python_class(class_names, &node.path, scope, node)
+                {
+                    mutation_owners.insert(node.id.as_str(), class);
+                    assigned_members
+                        .extend(members.iter().map(|member| (class.id.as_str(), *member)));
+                    break;
+                }
+                scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+            }
+        }
+    }
+    (mutation_owners, assigned_members)
+}
+
+fn insert_python_class_node_member<'a>(
+    members: &mut HashMap<&'a str, PythonReceiverMember<'a>>,
+    node: &'a Node,
+) {
+    let callable = matches!(node.kind.as_str(), "function" | "method");
+    let conditional = callable && node.details["is_conditional"].as_bool().unwrap_or(false);
+    let node_is_stub = is_stub_or_overload(node);
+    match members.get(node.name.as_str()) {
+        None => {
+            members.insert(
+                node.name.as_str(),
+                if conditional {
+                    PythonReceiverMember::Unknown
+                } else {
+                    PythonReceiverMember::Local(node)
+                },
+            );
+        }
+        Some(PythonReceiverMember::Local(existing)) => {
+            let existing_is_stub = is_stub_or_overload(existing);
+            if existing_is_stub && !node_is_stub {
+                members.insert(node.name.as_str(), PythonReceiverMember::Local(node));
+            } else if !existing_is_stub && node_is_stub {
+                // keep existing non-stub
+            } else if existing_is_stub && node_is_stub {
+                // both are stubs/overloads; keep existing stub so runtime implementation can replace it
+            } else if conditional || !callable {
+                members.insert(node.name.as_str(), PythonReceiverMember::Ambiguous);
+            } else {
+                members.insert(node.name.as_str(), PythonReceiverMember::Local(node));
+            }
+        }
+        Some(PythonReceiverMember::Ambiguous | PythonReceiverMember::Unknown)
+            if callable && !node_is_stub =>
+        {
+            members.insert(
+                node.name.as_str(),
+                if conditional {
+                    PythonReceiverMember::Ambiguous
+                } else {
+                    PythonReceiverMember::Local(node)
+                },
+            );
+        }
+        Some(PythonReceiverMember::Ambiguous | PythonReceiverMember::Unknown)
+        | Some(PythonReceiverMember::External(..)) => {}
+    }
 }
 
 impl<'a> PythonReceivers<'a> {
@@ -76,7 +194,7 @@ impl<'a> PythonReceivers<'a> {
             };
         }
         let mut bases: HashMap<&str, Vec<Base<'a>>> = HashMap::new();
-        let mut own: HashMap<&str, HashMap<&str, Member<'a>>> = HashMap::new();
+        let mut own: HashMap<&str, HashMap<&str, PythonReceiverMember<'a>>> = HashMap::new();
         let mut class_names: HashMap<(&str, &str), Vec<&'a Node>> = HashMap::new();
         for class in classes.values() {
             class_names
@@ -84,60 +202,8 @@ impl<'a> PythonReceivers<'a> {
                 .or_default()
                 .push(*class);
         }
-        let find_class = |path: &str, qualname: &str, child: &Node| -> Option<&'a Node> {
-            let candidates = class_names.get(&(path, qualname))?;
-            if candidates.len() == 1 {
-                return Some(candidates[0]);
-            }
-            if let Some(enclosing) = candidates
-                .iter()
-                .find(|class| class.line <= child.line && child.end_line <= class.end_line)
-            {
-                return Some(*enclosing);
-            }
-            let child_is_stub = is_stub_or_overload(child);
-            if let Some(matching) = candidates
-                .iter()
-                .find(|class| is_stub_or_overload(class) == child_is_stub)
-            {
-                return Some(*matching);
-            }
-            candidates.first().copied()
-        };
-        let mut mutating_members: HashMap<&str, Vec<&str>> = HashMap::new();
-        for facts in all.values_facts() {
-            for reference in facts.references.iter().filter(|r| r.kind == "mutates") {
-                if let Some(("self" | "cls", member)) = reference.expression.split_once('.') {
-                    mutating_members
-                        .entry(reference.source.as_str())
-                        .or_default()
-                        .push(member);
-                }
-            }
-        }
-        let mut mutation_owners = HashMap::new();
-        let mut assigned_members = HashSet::new();
-        if !mutating_members.is_empty() {
-            for facts in all.values_facts() {
-                for node in &facts.nodes {
-                    let Some(members) = mutating_members.get(node.id.as_str()) else {
-                        continue;
-                    };
-                    let Some((mut scope, _)) = node.qualname.rsplit_once('.') else {
-                        continue;
-                    };
-                    while !scope.is_empty() {
-                        if let Some(class) = find_class(node.path.as_str(), scope, node) {
-                            mutation_owners.insert(node.id.as_str(), class);
-                            assigned_members
-                                .extend(members.iter().map(|member| (class.id.as_str(), *member)));
-                            break;
-                        }
-                        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-                    }
-                }
-            }
-        }
+        let (mutation_owners, assigned_members) =
+            collect_python_mutation_owners(all, &class_names);
         for facts in all.values_facts() {
             let assigned_fields: HashSet<&str> = facts
                 .edges
@@ -149,8 +215,10 @@ impl<'a> PythonReceivers<'a> {
                 let owning_class = node
                     .qualname
                     .rsplit_once('.')
-                    .and_then(|(parent, _)| find_class(node.path.as_str(), parent, node));
-                // Member reads create synthetic field nodes; they do not override methods.
+                    .and_then(|(parent, _)| {
+                        find_enclosing_python_class(&class_names, &node.path, parent, node)
+                    });
+                // PythonReceiverMember reads create synthetic field nodes; they do not override methods.
                 if node.kind == "field"
                     && !assigned_fields.contains(node.id.as_str())
                     && !owning_class.is_some_and(|class| {
@@ -160,49 +228,7 @@ impl<'a> PythonReceivers<'a> {
                     continue;
                 }
                 if let Some(class) = owning_class {
-                    let members = own.entry(class.id.as_str()).or_default();
-                    let callable = matches!(node.kind.as_str(), "function" | "method");
-                    let conditional =
-                        callable && node.details["is_conditional"].as_bool().unwrap_or(false);
-                    let node_is_stub = is_stub_or_overload(node);
-                    match members.get(node.name.as_str()) {
-                        None => {
-                            members.insert(
-                                node.name.as_str(),
-                                if conditional {
-                                    Member::Unknown
-                                } else {
-                                    Member::Local(node)
-                                },
-                            );
-                        }
-                        Some(Member::Local(existing)) => {
-                            let existing_is_stub = is_stub_or_overload(existing);
-                            if existing_is_stub && !node_is_stub {
-                                members.insert(node.name.as_str(), Member::Local(node));
-                            } else if !existing_is_stub && node_is_stub {
-                                // keep existing non-stub
-                            } else if existing_is_stub && node_is_stub {
-                                // both are stubs/overloads; keep existing stub so runtime implementation can replace it
-                            } else if conditional || !callable {
-                                members.insert(node.name.as_str(), Member::Ambiguous);
-                            } else {
-                                members.insert(node.name.as_str(), Member::Local(node));
-                            }
-                        }
-                        Some(Member::Ambiguous | Member::Unknown) if callable && !node_is_stub => {
-                            members.insert(
-                                node.name.as_str(),
-                                if conditional {
-                                    Member::Ambiguous
-                                } else {
-                                    Member::Local(node)
-                                },
-                            );
-                        }
-                        Some(Member::Ambiguous | Member::Unknown) => {}
-                        Some(Member::External(..)) => {}
-                    }
+                    insert_python_class_node_member(own.entry(class.id.as_str()).or_default(), node);
                 }
             }
             for reference in &facts.references {
@@ -222,9 +248,9 @@ impl<'a> PythonReceivers<'a> {
                             // runtime value is not. Call resolution treats field members as
                             // unknown callables, while reference resolution can still link the
                             // exact field declaration.
-                            if !matches!(members.get(member), Some(Member::Local(node)) if node.kind == "field")
+                            if !matches!(members.get(member), Some(PythonReceiverMember::Local(node)) if node.kind == "field")
                             {
-                                members.insert(member, Member::Unknown);
+                                members.insert(member, PythonReceiverMember::Unknown);
                             }
                         }
                     }
@@ -237,9 +263,9 @@ impl<'a> PythonReceivers<'a> {
                     .entry(class.id.as_str())
                     .or_default()
                     .entry(binding)
-                    .or_insert(Member::Unknown);
-                if !matches!(member, Member::Local(node) if node.kind == "field") {
-                    *member = Member::Unknown;
+                    .or_insert(PythonReceiverMember::Unknown);
+                if !matches!(member, PythonReceiverMember::Local(node) if node.kind == "field") {
+                    *member = PythonReceiverMember::Unknown;
                 }
             }
         }
@@ -260,6 +286,58 @@ impl<'a> PythonReceivers<'a> {
             implementors: HashMap::new(),
         }
         .finish(&classes, &class_ids, &orders, &mut framework_receiver)
+    }
+
+    fn inherit_members_for_order(
+        order: &[Base<'a>],
+        class_path: &str,
+        super_call: bool,
+        own: &HashMap<&'a str, HashMap<&'a str, PythonReceiverMember<'a>>>,
+        framework_receiver: &mut impl FnMut(
+            &str,
+            &str,
+        ) -> Option<(
+            &'a str,
+            &'a str,
+            &'a crate::languages::manifests::ClassHierarchyReceiverRule,
+        )>,
+    ) -> HashMap<&'a str, PythonReceiverMember<'a>> {
+        let mut inherited = HashMap::new();
+        for base in order.iter().skip(usize::from(super_call)) {
+            match base {
+                Base::Local(base_id) => {
+                    if let Some(members) = own.get(base_id) {
+                        for (name, member) in members {
+                            inherited.entry(*name).or_insert(*member);
+                        }
+                    }
+                }
+                Base::External(key, origin, line) => {
+                    if let Some((provider, pack, rule)) = framework_receiver(class_path, key) {
+                        for name in &rule.members {
+                            if name
+                                .split_once('.')
+                                .is_some_and(|(head, _)| inherited.contains_key(head))
+                            {
+                                continue;
+                            }
+                            inherited
+                                .entry(name.as_str())
+                                .or_insert(PythonReceiverMember::External(
+                                    origin,
+                                    *line,
+                                    Some(provider),
+                                    Some((pack, rule)),
+                                ));
+                        }
+                    }
+                    // An unindexed base can override any later base's members.
+                    break;
+                }
+                Base::Unknown => break,
+            }
+        }
+        inherited
     }
 
     fn finish(
@@ -286,7 +364,7 @@ impl<'a> PythonReceivers<'a> {
             };
             let class_node = classes[id];
             if !is_stub_or_overload(class_node)
-                && !super::resolution::has_protocol_or_abc_base(class_node)
+                && !has_protocol_or_abc_base(class_node)
             {
                 for base in order.iter().skip(1) {
                     if let Base::Local(base_id) = base {
@@ -295,39 +373,13 @@ impl<'a> PythonReceivers<'a> {
                 }
             }
             for super_call in [false, true] {
-                let mut inherited = HashMap::new();
-                for base in order.iter().skip(usize::from(super_call)) {
-                    if let Base::Local(base_id) = base {
-                        if let Some(members) = own.get(base_id) {
-                            for (name, member) in members {
-                                inherited.entry(*name).or_insert(*member);
-                            }
-                        }
-                    } else if let Base::External(key, origin, line) = base {
-                        if let Some((provider, pack, rule)) =
-                            framework_receiver(classes[id].path.as_str(), key)
-                        {
-                            for name in &rule.members {
-                                if name
-                                    .split_once('.')
-                                    .is_some_and(|(head, _)| inherited.contains_key(head))
-                                {
-                                    continue;
-                                }
-                                inherited.entry(name.as_str()).or_insert(Member::External(
-                                    origin,
-                                    *line,
-                                    Some(provider),
-                                    Some((pack, rule)),
-                                ));
-                            }
-                        }
-                        // An unindexed base can override any later base's members.
-                        break;
-                    } else if matches!(base, Base::Unknown) {
-                        break;
-                    }
-                }
+                let inherited = Self::inherit_members_for_order(
+                    order,
+                    classes[id].path.as_str(),
+                    super_call,
+                    &own,
+                    framework_receiver,
+                );
                 if super_call {
                     self.supers.insert(id, inherited);
                 } else {
@@ -346,7 +398,7 @@ impl<'a> PythonReceivers<'a> {
         self.implementors.get(base_id).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> Member<'a> {
+    pub(crate) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> PythonReceiverMember<'a> {
         let map = if super_call {
             &self.supers
         } else {
@@ -357,7 +409,7 @@ impl<'a> PythonReceivers<'a> {
                 .get(class.id.as_str())
                 .is_some_and(|members| members.contains_key(head))
             {
-                return Member::Unknown;
+                return PythonReceiverMember::Unknown;
             }
         }
         if let Some(result) = map
@@ -366,7 +418,7 @@ impl<'a> PythonReceivers<'a> {
         {
             return *result;
         }
-        Member::Unknown
+        PythonReceiverMember::Unknown
     }
 
     pub(crate) fn return_policy(
@@ -378,12 +430,19 @@ impl<'a> PythonReceivers<'a> {
         &'a crate::languages::manifests::ClassHierarchyReceiverRule,
         &'a crate::languages::manifests::ReturnPolicy,
     )> {
-        let Member::External(_, _, _, Some((pack, rule))) = self.lookup(class, member, false)
+        let PythonReceiverMember::External(_, _, _, Some((pack, rule))) = self.lookup(class, member, false)
         else {
             return None;
         };
         Some((pack, rule, rule.returns.get(member)?))
     }
+}
+
+pub(in crate::linker) fn has_protocol_or_abc_base(node: &Node) -> bool {
+    node.details
+        .get("bases")
+        .and_then(|bases| bases.as_str())
+        .is_some_and(|bases| bases.contains("Protocol") || bases.contains("ABC"))
 }
 
 fn linearize<'a>(

@@ -1,59 +1,24 @@
 use super::ingest::{PreparedCoverage, PreparedDependency, PreparedGraph};
-use super::{CompactGraph, FileEntry, TypedFacts};
+use super::node_domain::{
+    finish_hashers, row_hasher, Leaves, OwnerHashers,
+};
+use crate::models::{compact_graph::CompactGraph, FileEntry};
+use crate::typed_facts::TypedFacts;
 use crate::{
     commitments::DOMAINS,
     db::commitments::{
-        encode_blob, encode_int as encode_integer, encode_real, encode_text, encode_text_bytes,
-        hash_shared_owner_leaves, key as leaf_key, new_leaf_hasher, SharedOwnerKind,
-        SharedOwnerRow,
+        encode_int as encode_integer, encode_real, encode_text, hash_shared_owner_leaves,
+        key as leaf_key, new_leaf_hasher, SharedOwnerKind, SharedOwnerRow,
     },
     models::{is_test, stable_hash64, Node, NodeDetailKey},
 };
 use anyhow::{ensure, Context, Result};
 use hashbrown::HashMap;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-type OwnerHashers<'a> = HashMap<&'a str, Sha256>;
-type Leaves = BTreeMap<String, String>;
 type NodeLookupMaps<'a> = (HashMap<i64, &'a str>, HashMap<&'a str, &'a str>);
-
-pub(super) struct NodeDomain<'a> {
-    hashers: OwnerHashers<'a>,
-}
-
-impl<'a> NodeDomain<'a> {
-    pub(super) fn new() -> Self {
-        Self {
-            hashers: OwnerHashers::new(),
-        }
-    }
-
-    pub(super) fn push(&mut self, owner: &'a str, node: &Node, details: &[u8]) -> Result<()> {
-        let line = i64::try_from(node.line).context("node line exceeds SQLite range")?;
-        let end_line =
-            i64::try_from(node.end_line).context("node end line exceeds SQLite range")?;
-        let hasher = row_hasher(&mut self.hashers, "nodes", owner);
-        encode_text(hasher, &node.id);
-        encode_text(hasher, &node.kind);
-        encode_text(hasher, &node.name);
-        encode_text(hasher, &node.qualname);
-        encode_text(hasher, &node.path);
-        encode_integer(hasher, line);
-        encode_integer(hasher, end_line);
-        encode_integer(hasher, i64::from(node.is_test));
-        encode_text(hasher, &node.language);
-        encode_integer(hasher, i64::from(node.generated));
-        encode_text_bytes(hasher, details);
-        encode_integer(hasher, stable_hash64(&node.id));
-        Ok(())
-    }
-
-    pub(super) fn finish(self) -> Result<BTreeMap<String, String>> {
-        finish_hashers("nodes", self.hashers)
-    }
-}
 
 #[derive(Default)]
 pub(super) struct ProjectionTimings {
@@ -97,26 +62,6 @@ struct OwnerLanguageLeafRow<'a> {
     status: &'a str,
     evidence: &'a str,
     language: &'a str,
-}
-
-pub(super) fn local_facts_leaf(
-    path: &str,
-    digest: &str,
-    language: &str,
-    is_test: bool,
-    facts_blob: &[u8],
-) -> Result<(String, String)> {
-    let mut hasher = new_leaf_hasher("local_facts", path);
-    hasher.update([0xff]);
-    encode_text(&mut hasher, path);
-    encode_text(&mut hasher, digest);
-    encode_text(&mut hasher, language);
-    encode_integer(&mut hasher, i64::from(is_test));
-    encode_integer(&mut hasher, 0);
-    encode_blob(&mut hasher, facts_blob);
-    let key = leaf_key("local_facts", path);
-    let digest = hex::encode(hasher.finalize());
-    Ok((key, digest))
 }
 
 pub(super) fn file_domain_leaves(
@@ -200,25 +145,6 @@ pub(super) fn logical_domain_leaves(
         );
     }
     Ok(domains)
-}
-
-fn row_hasher<'map, 'owner>(
-    hashers: &'map mut OwnerHashers<'owner>,
-    table: &str,
-    owner: &'owner str,
-) -> &'map mut Sha256 {
-    let hasher = hashers
-        .entry(owner)
-        .or_insert_with(|| new_leaf_hasher(table, owner));
-    hasher.update([0xff]);
-    hasher
-}
-
-fn finish_hashers(table: &'static str, hashers: OwnerHashers<'_>) -> Result<Leaves> {
-    Ok(hashers
-        .into_iter()
-        .map(|(owner, hasher)| (leaf_key(table, owner), hex::encode(hasher.finalize())))
-        .collect())
 }
 
 fn project_file_domains<'a>(

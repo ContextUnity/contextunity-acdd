@@ -1,5 +1,6 @@
 use crate::interner::{LinkerInterner, SymbolId};
-use super::super::receivers;
+use super::receivers;
+use super::super::resolution::input::ResolutionInput;
 use super::super::semantic_context::LanguageMemberLookup;
 use super::super::typescript::resolution::{
     has_indexed_name, has_indexed_symbol, has_indexed_symbol_id,
@@ -21,7 +22,7 @@ where
     if !profile.is_some_and(|profile| profile.id() == "python") {
         return false;
     }
-    let Some(annotation) = super::super::receiver_type_name(raw_annotation) else {
+    let Some(annotation) = crate::linker::types::receiver_type_name(raw_annotation) else {
         return false;
     };
     let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
@@ -116,12 +117,7 @@ pub(in crate::linker) fn is_dynamic_typing_annotation<'scope>(
         && (member == "Any" || is_dynamic_type_alias(name, owner, aliases, dynamic_aliases))
 }
 
-pub(in crate::linker) fn has_protocol_or_abc_base(node: &Node) -> bool {
-    node.details
-        .get("bases")
-        .and_then(|bases| bases.as_str())
-        .is_some_and(|bases| bases.contains("Protocol") || bases.contains("ABC"))
-}
+pub(in crate::linker) use super::receivers::has_protocol_or_abc_base;
 
 pub(in crate::linker) fn path_constructor_aliases<'ctx, 'refs: 'ctx, 'nodes: 'ctx>(
     profile: Option<&dyn LanguageProfile>,
@@ -177,12 +173,12 @@ pub(in crate::linker) fn imported_module_member<'a>(
     profile: Option<&dyn LanguageProfile>,
     module: &'a Node,
     tail: &str,
-    node_rebindings: &super::super::NodeBindingIndex,
+    node_rebindings: &crate::linker::types::NodeBindingIndex,
     interner: &LinkerInterner<'_>,
     by_qual: &HashMap<&'a str, Vec<&'a Node>>,
     lookup_key: &mut String,
     member_lookup: &LanguageMemberLookup<'_, 'a>,
-) -> Option<receivers::Member<'a>> {
+) -> Option<receivers::PythonReceiverMember<'a>> {
     if !profile.is_some_and(|profile| profile.id() == "python")
         || module.kind != "module"
         || module.language != "python"
@@ -195,7 +191,7 @@ pub(in crate::linker) fn imported_module_member<'a>(
     }
 
     let declarations = by_qual
-        .get(super::super::qualified(
+        .get(crate::linker::types::qualified(
             lookup_key,
             &module.qualname,
             class_name,
@@ -213,13 +209,186 @@ pub(in crate::linker) fn imported_module_member<'a>(
 /// Borrowed Python view of the shared resolution inputs needed by Python member lookup.
 /// The resolution phase builds it from its existing `FileResolver` field borrows.
 pub(in crate::linker) struct PythonResolutionView<'ctx, 'a, 'keys> {
-    pub(in crate::linker) input: &'ctx super::super::resolution::ResolutionInput<'a>,
+    pub(in crate::linker) input: &'ctx super::super::resolution::input::ResolutionInput<'a>,
     pub(in crate::linker) path: &'ctx str,
     pub(in crate::linker) file_module: &'ctx str,
     pub(in crate::linker) aliases: &'ctx HashMap<&'keys str, HashMap<&'a str, Vec<&'a Node>>>,
     pub(in crate::linker) alias_import_positions:
         &'ctx HashMap<(&'keys str, &'keys str), crate::semantic::SourcePosition>,
     pub(in crate::linker) member_lookup: &'ctx LanguageMemberLookup<'a, 'a>,
+}
+
+fn is_super_shadowed<'a>(
+    input: &ResolutionInput<'a>,
+    path: &str,
+    owner: Option<&Node>,
+    aliases: &HashMap<&str, HashMap<&str, Vec<&'a Node>>>,
+) -> bool {
+    let super_id = input.interner.lookup_symbol("super");
+    owner.is_some_and(|owner| {
+        let mut scope = owner.qualname.as_str();
+        while !scope.is_empty() {
+            if super_id.is_some_and(|super_id| {
+                input.by_qual.get(scope).is_some_and(|nodes| {
+                    nodes.iter().any(|node| {
+                        node.path == path
+                            && has_indexed_symbol(
+                                input.interner,
+                                input.node_bindings,
+                                node,
+                                super_id,
+                            )
+                    })
+                })
+            }) || aliases
+                .get(scope)
+                .is_some_and(|bindings| bindings.contains_key("super"))
+            {
+                return true;
+            }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        false
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_python_call_result_member<'ctx, 'a, 'keys, 'result, 'aliases, 'external, AliasFor, ExternalFor>(
+    context: &PythonResolutionView<'ctx, 'a, 'keys>,
+    profile: &'static dyn crate::languages::LanguageProfile,
+    owner_and_id: (Option<crate::interner::SymbolId>, Option<&'a Node>),
+    reference: &Reference,
+    callee: &str,
+    member: &str,
+    path_constructor_aliases: &HashMap<(&str, &str), &Reference>,
+    candidates: &mut Vec<&'a Node>,
+    lookup_key: &mut String,
+    alias_for: &mut AliasFor,
+    external_for: &mut ExternalFor,
+) -> receivers::PythonReceiverMember<'result>
+where
+    'a: 'aliases,
+    'a: 'result,
+    'external: 'result,
+    AliasFor: for<'name, 'owner> FnMut(
+        &'name str,
+        Option<&'owner Node>,
+        bool,
+    ) -> Option<&'aliases Vec<&'a Node>>,
+    ExternalFor: for<'name, 'owner> FnMut(
+        &'name str,
+        Option<&'owner Node>,
+        bool,
+    ) -> Option<&'external (String, usize)>,
+{
+    let input = context.input;
+    let path = context.path;
+    let (_, owner) = owner_and_id;
+    let (head, tail) = callee.split_once('.').unwrap_or((callee, ""));
+    let head_id = input.interner.lookup_symbol(head);
+    let mut scope = owner.map_or(context.file_module, |owner| owner.qualname.as_str());
+    let mut constructor_shadowed = false;
+    candidates.clear();
+    while !scope.is_empty() {
+        if head_id.is_some_and(|head_id| {
+            input.by_qual.get(scope).is_some_and(|nodes| {
+                nodes.iter().any(|node| {
+                    node.path == path
+                        && has_indexed_symbol(input.interner, input.node_bindings, node, head_id)
+                })
+            })
+        }) {
+            constructor_shadowed = true;
+            break;
+        }
+        if let Some(nodes) = input
+            .by_qual
+            .get(super::super::qualified(lookup_key, scope, callee))
+        {
+            candidates.extend(nodes.iter().copied().filter(|node| node.path == path));
+        }
+        if !candidates.is_empty()
+            && context
+                .alias_import_positions
+                .get(&(scope, head))
+                .is_some_and(|position| {
+                    position.line <= reference.line
+                        && candidates
+                            .iter()
+                            .any(|candidate| candidate.line < position.line)
+                })
+        {
+            candidates.clear();
+            constructor_shadowed = true;
+            break;
+        }
+        if !candidates.is_empty()
+            || context
+                .aliases
+                .get(scope)
+                .is_some_and(|entries| entries.contains_key(head))
+        {
+            break;
+        }
+        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    if candidates.is_empty()
+        && !constructor_shadowed
+        && context
+            .aliases
+            .get(scope)
+            .is_some_and(|entries| entries.contains_key(head))
+    {
+        if let Some(imported) = alias_for(head, owner, false) {
+            if tail.is_empty() {
+                candidates.extend_from_slice(imported);
+            } else {
+                for target in imported {
+                    if let Some(nodes) = input.by_qual.get(super::super::qualified(
+                        lookup_key,
+                        &target.qualname,
+                        tail,
+                    )) {
+                        candidates.extend(
+                            nodes
+                                .iter()
+                                .copied()
+                                .filter(|node| node.path == target.path),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by_key(|node| &node.id);
+    candidates.dedup_by_key(|node| &node.id);
+    if let [class] = candidates.as_slice() {
+        if class.kind == "class" {
+            return context.member_lookup.python(class, member, false);
+        }
+    }
+    if candidates.is_empty() && !constructor_shadowed {
+        if let Some((origin, import_line)) =
+            external_for(head, owner, false).filter(|(_, line)| *line <= reference.line)
+        {
+            if let Some(import) = path_constructor_aliases
+                .get(&(scope, head))
+                .filter(|import| import.line == *import_line)
+            {
+                if let Some(canonical) =
+                    pathlib_member(Some(profile), origin, &import.expression, tail, member)
+                {
+                    return receivers::PythonReceiverMember::External(
+                        origin.as_str(),
+                        *import_line,
+                        Some(canonical),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+    receivers::PythonReceiverMember::Unknown
 }
 
 /// Computes Python-only dynamic receiver evidence before the shared dynamic fallback runs.
@@ -242,7 +411,7 @@ pub(in crate::linker) fn dynamic_receiver_member<
     lookup_key: &mut String,
     mut alias_for: AliasFor,
     mut external_for: ExternalFor,
-) -> (receivers::Member<'result>, bool)
+) -> (receivers::PythonReceiverMember<'result>, bool)
 where
     'a: 'aliases,
     'a: 'result,
@@ -260,58 +429,29 @@ where
 {
     let input = context.input;
     let path = context.path;
-    let file_module = context.file_module;
     let Some(profile) = input
         .profiles
         .get(path)
         .copied()
         .filter(|profile| profile.id() == "python")
     else {
-        return (receivers::Member::Unknown, false);
+        return (receivers::PythonReceiverMember::Unknown, false);
     };
     let owner_id = input.interner.lookup_symbol(reference.source.as_str());
     let owner = owner_id.and_then(|id| input.by_id.get(&id).copied());
     let by_qual = input.by_qual;
-    let node_bindings = input.node_bindings;
     let node_rebindings = input.node_rebindings;
     let aliases = context.aliases;
-    let alias_import_positions = context.alias_import_positions;
     let member_lookup = context.member_lookup;
 
-    let mut computed: receivers::Member<'result> = receivers::Member::Unknown;
+    let mut computed: receivers::PythonReceiverMember<'result> = receivers::PythonReceiverMember::Unknown;
     let mut literal_builtin = false;
     match reference.receiver_hint.as_ref() {
         Some(ReceiverHint::StringLiteral { member }) => {
             literal_builtin = profile.builtin_member("str", member);
         }
         Some(ReceiverHint::Super { member }) => {
-            let super_id = input.interner.lookup_symbol("super");
-            let shadowed_super = owner.is_some_and(|owner| {
-                let mut scope = owner.qualname.as_str();
-                while !scope.is_empty() {
-                    if super_id.is_some_and(|super_id| {
-                        by_qual.get(scope).is_some_and(|nodes| {
-                            nodes.iter().any(|node| {
-                                node.path == path
-                                    && has_indexed_symbol(
-                                        input.interner,
-                                        node_bindings,
-                                        node,
-                                        super_id,
-                                    )
-                            })
-                        })
-                    }) || aliases
-                        .get(scope)
-                        .is_some_and(|bindings| bindings.contains_key("super"))
-                    {
-                        return true;
-                    }
-                    scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-                }
-                false
-            });
-            if !shadowed_super {
+            if !is_super_shadowed(input, path, owner, aliases) {
                 if let Some((owner_id, owner)) = owner_id.zip(owner).filter(|&(owner_id, owner)| {
                     owner.details["receiver_name"].as_str().is_some_and(|name| {
                         matches!(name, "self" | "cls")
@@ -338,105 +478,19 @@ where
                 member,
             },
         ) => {
-            let (head, tail) = callee.split_once('.').unwrap_or((callee, ""));
-            let head_id = input.interner.lookup_symbol(head);
-            let mut scope = owner.map_or(file_module, |owner| owner.qualname.as_str());
-            let mut constructor_shadowed = false;
-            candidates.clear();
-            while !scope.is_empty() {
-                if head_id.is_some_and(|head_id| {
-                    by_qual.get(scope).is_some_and(|nodes| {
-                        nodes.iter().any(|node| {
-                            node.path == path
-                                && has_indexed_symbol(input.interner, node_bindings, node, head_id)
-                        })
-                    })
-                }) {
-                    constructor_shadowed = true;
-                    break;
-                }
-                if let Some(nodes) = by_qual.get(super::super::qualified(lookup_key, scope, callee))
-                {
-                    candidates.extend(nodes.iter().copied().filter(|node| node.path == path));
-                }
-                if !candidates.is_empty()
-                    && alias_import_positions
-                        .get(&(scope, head))
-                        .is_some_and(|position| {
-                            position.line <= reference.line
-                                && candidates
-                                    .iter()
-                                    .any(|candidate| candidate.line < position.line)
-                        })
-                {
-                    candidates.clear();
-                    constructor_shadowed = true;
-                    break;
-                }
-                if !candidates.is_empty()
-                    || aliases
-                        .get(scope)
-                        .is_some_and(|entries| entries.contains_key(head))
-                {
-                    break;
-                }
-                scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-            }
-            if candidates.is_empty()
-                && !constructor_shadowed
-                && aliases
-                    .get(scope)
-                    .is_some_and(|entries| entries.contains_key(head))
-            {
-                if let Some(imported) = alias_for(head, owner, false) {
-                    if tail.is_empty() {
-                        candidates.extend_from_slice(imported);
-                    } else {
-                        for target in imported {
-                            if let Some(nodes) = by_qual.get(super::super::qualified(
-                                lookup_key,
-                                &target.qualname,
-                                tail,
-                            )) {
-                                candidates.extend(
-                                    nodes
-                                        .iter()
-                                        .copied()
-                                        .filter(|node| node.path == target.path),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            candidates.sort_by_key(|node| &node.id);
-            candidates.dedup_by_key(|node| &node.id);
-            if let [class] = candidates.as_slice() {
-                if class.kind == "class" {
-                    computed = member_lookup.python(class, member, false);
-                }
-            }
-            if candidates.is_empty() && !constructor_shadowed {
-                if let Some((origin, import_line)) =
-                    external_for(head, owner, false).filter(|(_, line)| *line <= reference.line)
-                {
-                    if let Some(import) = path_constructor_aliases
-                        .get(&(scope, head))
-                        .filter(|import| import.line == *import_line)
-                    {
-                        if let Some(canonical) =
-                            pathlib_member(Some(profile), origin, &import.expression, tail, member)
-                        {
-                            computed = receivers::Member::External(
-                                origin.as_str(),
-                                *import_line,
-                                Some(canonical),
-                                None,
-                            );
-                        }
-                    }
-                }
-            }
+            computed = resolve_python_call_result_member(
+                context,
+                profile,
+                (owner_id, owner),
+                reference,
+                callee,
+                member,
+                path_constructor_aliases,
+                candidates,
+                lookup_key,
+                &mut alias_for,
+                &mut external_for,
+            );
         }
         _ => {}
     }
@@ -465,7 +519,7 @@ pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys>(
         .interner
         .lookup_node(context.input.by_id, reference.source.as_str());
     let mut import_scope = owner
-        .map(|node| super::super::resolution::reference_scope(node, path))
+        .map(|node| crate::linker::resolution::context::reference_scope(node, path))
         .unwrap_or("");
     let first = reference
         .expression
@@ -511,12 +565,12 @@ pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys>(
 pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
     context: &PythonResolutionView<'ctx, 'a, 'keys>,
     reference: &Reference,
-    typed_receiver: Option<super::super::ReceiverType<'a>>,
+    typed_receiver: Option<crate::linker::types::ReceiverType<'a>>,
     known_receiver: bool,
     shadowed: bool,
     imported: Option<&Vec<&'a Node>>,
     lookup_key: &mut String,
-) -> Option<receivers::Member<'a>> {
+) -> Option<receivers::PythonReceiverMember<'a>> {
     let input = context.input;
     let path = context.path;
     let file_module = context.file_module;
@@ -533,7 +587,7 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
     let kind = reference.kind.as_str();
     let receiver_class =
         if profile.is_some_and(|profile| profile.id() == "python") && !tail.is_empty() {
-            if let Some(super::super::ReceiverType::Local(class)) = typed_receiver {
+            if let Some(crate::linker::types::ReceiverType::Local(class)) = typed_receiver {
                 Some(class)
             } else if known_receiver {
                 owner
@@ -550,7 +604,7 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
             } else if !shadowed {
                 let classes = imported.map(Vec::as_slice).unwrap_or_else(|| {
                     by_qual
-                        .get(super::super::qualified(lookup_key, file_module, first))
+                        .get(crate::linker::types::qualified(lookup_key, file_module, first))
                         .map(Vec::as_slice)
                         .unwrap_or_default()
                 });

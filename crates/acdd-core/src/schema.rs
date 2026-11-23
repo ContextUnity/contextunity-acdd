@@ -249,16 +249,6 @@ impl SchemaDef {
     }
 }
 
-/// Validate a `SchemaDef` definition tree.
-pub fn validate_schema(schema: &SchemaDef, path: &str) -> Result<(), StateError> {
-    schema.validate_schema(path)
-}
-
-/// Validate a JSON value against a `SchemaDef`.
-pub fn validate_value(schema: &SchemaDef, value: &Value, path: &str) -> Result<(), StateError> {
-    schema.validate_value(value, path)
-}
-
 fn schema_err(message: String) -> StateError {
     StateError::new(ErrorCode::ProfileSchemaInvalid, message)
 }
@@ -318,7 +308,7 @@ mod tests {
         ];
 
         for &(label, schema, expect_ok) in cases {
-            let res = validate_schema(schema, "$");
+            let res = schema.validate_schema("$");
             assert_eq!(res.is_ok(), expect_ok, "validate_schema({label}): {res:?}");
             if let Err(err) = res {
                 assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
@@ -350,7 +340,7 @@ mod tests {
         root.required = vec!["status".to_owned(), "version".to_owned()];
         root.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
 
-        validate_schema(&root, "$").unwrap();
+        root.validate_schema("$").unwrap();
 
         let cases: &[(&str, Value, bool)] = &[
             (
@@ -402,7 +392,7 @@ mod tests {
         ];
 
         for (label, value, expect_ok) in cases {
-            let res = validate_value(&root, value, "$");
+            let res = root.validate_value(value, "$");
             assert_eq!(res.is_ok(), *expect_ok, "validate_value({label}): {res:?}");
             if let Err(err) = res {
                 assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);

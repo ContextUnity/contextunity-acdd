@@ -462,10 +462,7 @@ fn line_range(anchor: &str) -> Option<Result<(usize, usize)>> {
     }
 }
 
-pub(crate) fn collect_link_errors(
-    root: &Path,
-    scoped_rel_paths: Option<&[String]>,
-) -> Result<(usize, Vec<String>)> {
+fn collect_doc_files(root: &Path, scoped_rel_paths: Option<&[String]>) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
         entry.depth() == 0
@@ -476,27 +473,132 @@ pub(crate) fn collect_link_errors(
             )
     }) {
         let entry = entry?;
-        if entry.file_type().is_file()
-            && acdd_core::fs::is_doc_path(&entry.path().to_string_lossy())
+        if !entry.file_type().is_file()
+            || !acdd_core::fs::is_doc_path(&entry.path().to_string_lossy())
         {
-            let path = entry.into_path();
-            if let Some(scope) = scoped_rel_paths {
-                if !scope.is_empty() {
-                    let rel = path
-                        .strip_prefix(root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    let policy = acdd_core::path_policy::WorkspacePathPolicy::default();
-                    if !policy.is_scope_admitted(&rel, scope) {
-                        continue;
-                    }
-                }
-            }
-            files.push(path);
+            continue;
         }
+        let path = entry.into_path();
+        if let Some(scope) = scoped_rel_paths.filter(|s| !s.is_empty()) {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !acdd_core::path_policy::WorkspacePathPolicy::default().is_scope_admitted(&rel, scope)
+            {
+                continue;
+            }
+        }
+        files.push(path);
     }
     files.sort();
+    Ok(files)
+}
+
+fn has_external_scheme(destination: &str) -> bool {
+    let Some((scheme, _)) = destination.split_once(':') else {
+        return false;
+    };
+    let valid_scheme = scheme
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
+    valid_scheme && !scheme.eq_ignore_ascii_case("file")
+}
+
+fn resolve_link_target(root: &Path, source: &Path, path: &str) -> PathBuf {
+    if let Some(file_path) = path
+        .get(..7)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        .map(|_| &path[7..])
+    {
+        let file_path = if let Some(rest) = file_path.strip_prefix("localhost/") {
+            format!("/{rest}")
+        } else if file_path == "localhost" {
+            "/".to_string()
+        } else {
+            file_path.to_string()
+        };
+        PathBuf::from(decode(&file_path))
+    } else if path.is_empty() {
+        source.to_path_buf()
+    } else if path.starts_with('/') {
+        root.join(decode(path.trim_start_matches('/')))
+    } else {
+        source.parent().unwrap_or(root).join(decode(path))
+    }
+}
+
+fn check_link_target(
+    root: &Path,
+    source: &Path,
+    is_archive: bool,
+    link: &Link,
+    documents: &mut HashMap<PathBuf, Document>,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let destination = link.target.as_str();
+    if has_external_scheme(destination) || destination == "#" {
+        return Ok(());
+    }
+    let (path, anchor) = destination.split_once('#').unwrap_or((destination, ""));
+    let path = path.split('?').next().unwrap_or(path);
+    let target = resolve_link_target(root, source, path);
+    let display = source.strip_prefix(root).unwrap_or(source).display();
+    if !target.exists() {
+        if !(is_archive && !acdd_core::fs::is_doc_path(&target.to_string_lossy())) {
+            errors.push(format!("{display}:{}: missing target {}", link.line, link.target));
+        }
+        return Ok(());
+    }
+    if anchor.is_empty() || !target.is_file() {
+        return Ok(());
+    }
+    let anchor = decode(anchor);
+    if let Some(range_res) = line_range(&anchor) {
+        match range_res {
+            Ok((start, end)) => {
+                let text = std::fs::read_to_string(&target)
+                    .with_context(|| format!("reading {}", target.display()))?;
+                let count = text.lines().count();
+                if start == 0 || end < start || end > count {
+                    errors.push(format!(
+                        "{display}:{}: missing line #{anchor} in {}",
+                        link.line, link.target
+                    ));
+                }
+            }
+            Err(_) => errors.push(format!(
+                "{display}:{}: invalid line range #{anchor} in {}",
+                link.line, link.target
+            )),
+        }
+        return Ok(());
+    }
+    if !acdd_core::fs::is_doc_path(&target.to_string_lossy()) {
+        return Ok(());
+    }
+    if !documents.contains_key(&target) {
+        documents.insert(target.clone(), load(&target)?);
+    }
+    if !documents[&target].anchors.contains(&anchor) {
+        errors.push(format!(
+            "{display}:{}: missing anchor #{} in {}",
+            link.line, anchor, link.target
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn collect_link_errors(
+    root: &Path,
+    scoped_rel_paths: Option<&[String]>,
+) -> Result<(usize, Vec<String>)> {
+    let files = collect_doc_files(root, scoped_rel_paths)?;
     let files_checked = files.len();
     let mut documents: HashMap<PathBuf, Document> = HashMap::new();
     let mut errors = Vec::new();
@@ -508,92 +610,7 @@ pub(crate) fn collect_link_errors(
             .any(|component| component.as_os_str() == "archive");
         let document = load(&source)?;
         for link in &document.links {
-            let destination = link.target.as_str();
-            let scheme = destination
-                .split_once(':')
-                .map(|(scheme, _)| scheme)
-                .filter(|scheme| {
-                    scheme
-                        .as_bytes()
-                        .first()
-                        .is_some_and(u8::is_ascii_alphabetic)
-                        && scheme.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
-                        })
-                });
-            if scheme.is_some_and(|scheme| !scheme.eq_ignore_ascii_case("file"))
-                || destination == "#"
-            {
-                continue;
-            }
-            let (path, anchor) = destination.split_once('#').unwrap_or((destination, ""));
-            let path = path.split('?').next().unwrap_or(path);
-            let target = if let Some(file_path) = path
-                .get(..7)
-                .filter(|prefix| prefix.eq_ignore_ascii_case("file://"))
-                .map(|_| &path[7..])
-            {
-                let file_path = if let Some(rest) = file_path.strip_prefix("localhost/") {
-                    format!("/{rest}")
-                } else if file_path == "localhost" {
-                    "/".to_string()
-                } else {
-                    file_path.to_string()
-                };
-                PathBuf::from(decode(&file_path))
-            } else if path.is_empty() {
-                source.clone()
-            } else if path.starts_with('/') {
-                root.join(decode(path.trim_start_matches('/')))
-            } else {
-                source.parent().unwrap_or(root).join(decode(path))
-            };
-            let display = source.strip_prefix(root).unwrap_or(&source).display();
-            if !target.exists() {
-                if is_archive && !acdd_core::fs::is_doc_path(&target.to_string_lossy()) {
-                    continue;
-                }
-                errors.push(format!(
-                    "{display}:{}: missing target {}",
-                    link.line, link.target
-                ));
-            } else if !anchor.is_empty() && target.is_file() {
-                let anchor = decode(anchor);
-                if let Some(range_res) = line_range(&anchor) {
-                    match range_res {
-                        Ok((start, end)) => {
-                            let text = std::fs::read_to_string(&target)
-                                .with_context(|| format!("reading {}", target.display()))?;
-                            let count = text.lines().count();
-                            if start == 0 || end < start || end > count {
-                                errors.push(format!(
-                                    "{display}:{}: missing line #{anchor} in {}",
-                                    link.line, link.target
-                                ));
-                            }
-                        }
-                        Err(_) => {
-                            errors.push(format!(
-                                "{display}:{}: invalid line range #{anchor} in {}",
-                                link.line, link.target
-                            ));
-                        }
-                    }
-                    continue;
-                }
-                if !acdd_core::fs::is_doc_path(&target.to_string_lossy()) {
-                    continue;
-                }
-                if !documents.contains_key(&target) {
-                    documents.insert(target.clone(), load(&target)?);
-                }
-                if !documents[&target].anchors.contains(&anchor) {
-                    errors.push(format!(
-                        "{display}:{}: missing anchor #{} in {}",
-                        link.line, anchor, link.target
-                    ));
-                }
-            }
+            check_link_target(root, &source, is_archive, link, &mut documents, &mut errors)?;
         }
         documents.insert(source, document);
     }

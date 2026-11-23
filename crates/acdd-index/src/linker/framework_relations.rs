@@ -1,284 +1,338 @@
-use crate::interner::{LinkerInterner, PathId, SymbolId};
-use super::*;
-use crate::typed_facts::FlowState;
+use crate::interner::{LinkerInterner, SymbolId};
 use crate::languages::{self, LanguageProfile};
-use crate::linker::semantic_context;
-use std::collections::BTreeSet;
-
-pub(crate) struct PreparedSemanticFacts<'a> {
-    pub(super) interner: &'a LinkerInterner<'a>,
-    pub(super) facts:
-        BTreeMap<PathId, Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>>,
-    pub(super) errors: BTreeMap<PathId, Vec<(usize, String, String)>>,
-}
-
-/// Canonical declarative framework rule action model.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum DeclarativeRulePrimitive {
-    /// Emits a route or endpoint match edge and coverage entry (`EmitRoute`).
-    EmitRoute {
-        kind: &'static str,
-        resolved_prefix: &'static str,
-        unmatched_prefix: &'static str,
-        ambiguous_prefix: &'static str,
+#[cfg(feature = "lang-html")]
+use crate::linker::html::templates as html_templates;
+use crate::linker::{
+    routes, semantic_context,
+    semantic_facts::{
+        emit_route_match, CompositionInput, PreparedSemanticFacts,
+        ENDPOINT_ROUTE_PRIMITIVE, NAMED_ROUTE_PRIMITIVE,
     },
-    /// Emits a declarative semantic occurrence edge (`EmitEdge`).
-    EmitEdge { evidence: &'static str },
-}
-
-type OccurrenceKey = (
-    SymbolId,
-    usize,
-    usize,
-    languages::semantic::SemanticRelation,
-);
-pub(super) type OccurrenceValue = (SymbolId, BTreeSet<SymbolId>, bool, bool);
-
-#[derive(Default)]
-pub(super) struct OccurrenceTable {
-    entries: BTreeMap<OccurrenceKey, OccurrenceValue>,
-}
-
-impl OccurrenceTable {
-    pub(super) fn entry(
-        &mut self,
-        owner: SymbolId,
-        line: usize,
-        column: usize,
-        relation: languages::semantic::SemanticRelation,
-        expression: &str,
-        interner: &LinkerInterner<'_>,
-    ) -> &mut OccurrenceValue {
-        let expression = interner
-            .lookup_symbol(expression)
-            .expect("semantic occurrence expression");
-        self.entries
-            .entry((owner, line, column, relation))
-            .or_insert_with(|| (expression, BTreeSet::new(), false, false))
-    }
-
-    pub(super) fn emit_all(
-        self,
-        graph: &mut Graph,
-        path: &str,
-        primitive: DeclarativeRulePrimitive,
-        interner: &LinkerInterner<'_>,
-    ) {
-        let DeclarativeRulePrimitive::EmitEdge { evidence } = primitive else {
-            return;
-        };
-        for ((owner, line, _, relation), (expression, targets, ambiguous, unresolved)) in
-            self.entries
-        {
-            emit_occurrence(
-                graph,
-                path,
-                owner,
-                line,
-                relation.as_str(),
-                interner.resolve_symbol(expression).to_owned(),
-                targets,
-                ambiguous,
-                unresolved,
-                evidence,
-                interner,
-            );
-        }
-    }
-}
-
-pub(super) struct CompositionInput<'a, 'lookup> {
-    pub(super) nodes: &'lookup [&'a Node],
-    pub(super) by_id: &'lookup HashMap<SymbolId, &'a Node>,
-    pub(super) semantic: &'lookup PreparedSemanticFacts<'a>,
-}
-
-fn extend_semantic_state<'a>(
-    state: &'a crate::typed_facts::SemanticState,
-    line: usize,
-    qualname: &str,
-    facts: &mut Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>,
-    errors: &mut Vec<(usize, String, String)>,
-) {
-    match state {
-        crate::typed_facts::SemanticState::Valid { facts: values, .. } => {
-            facts.extend(values.iter().map(std::borrow::Cow::Borrowed));
-        }
-        crate::typed_facts::SemanticState::Invalid { error, .. } => {
-            errors.push((line, qualname.to_owned(), error.clone()));
-        }
-    }
-}
-
-impl<'a> PreparedSemanticFacts<'a> {
-    pub(super) fn build(
-        all: &'a (dyn crate::FactsLookup + Sync),
-        interner: &'a LinkerInterner<'a>,
-    ) -> Self {
-        let entries: Vec<_> = all.iter_facts().collect();
-        let files: Vec<_> = entries
-            .par_iter()
-            .filter_map(|&(path, source)| {
-                let mut facts = Vec::new();
-                let mut errors = Vec::new();
-                if source.semantic.is_complete() {
-                    for (_, entry) in source.semantic.entries() {
-                        extend_semantic_state(
-                            &entry.state,
-                            entry.line,
-                            &entry.qualname,
-                            &mut facts,
-                            &mut errors,
-                        );
-                    }
-                } else {
-                    for (index, node) in source.nodes.iter().enumerate() {
-                        if let Some(state) = source.semantic.state(index) {
-                            extend_semantic_state(
-                                state,
-                                node.line,
-                                &node.qualname,
-                                &mut facts,
-                                &mut errors,
-                            );
-                            continue;
-                        }
-                        match languages::semantic::decode(node) {
-                            Ok(values) => {
-                                facts.extend(values.into_iter().map(std::borrow::Cow::Owned))
-                            }
-                            Err(error) => {
-                                errors.push((node.line, node.qualname.clone(), error.to_string()))
-                            }
-                        }
-                    }
-                }
-                (!facts.is_empty() || !errors.is_empty()).then(|| {
-                    (
-                        interner.lookup_path(path).expect("catalog path"),
-                        facts,
-                        errors,
-                    )
-                })
-            })
-            .collect();
-        let mut prepared = Self {
-            interner,
-            facts: BTreeMap::new(),
-            errors: BTreeMap::new(),
-        };
-        for (path, facts, errors) in files {
-            if !facts.is_empty() {
-                prepared.facts.insert(path, facts);
-            }
-            if !errors.is_empty() {
-                prepared.errors.insert(path, errors);
-            }
-        }
-        prepared
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_occurrence(
-    graph: &mut Graph,
-    path: &str,
-    owner_id: SymbolId,
-    line: usize,
-    kind: &str,
-    expression: String,
-    targets: BTreeSet<SymbolId>,
-    ambiguous: bool,
-    unresolved: bool,
-    evidence: &'static str,
-    interner: &LinkerInterner<'_>,
-) {
-    let status = if ambiguous || targets.len() > 1 {
-        "ambiguous"
-    } else if unresolved || targets.is_empty() {
-        "unresolved"
-    } else {
-        "resolved"
-    };
-    if status == "resolved" {
-        graph.push_edge(
-            path,
-            interner.resolve_symbol(owner_id),
-            interner.resolve_symbol(targets.into_iter().next().expect("resolved target")),
-            kind,
-            line,
-            expression.as_str(),
-            "exact",
-        );
-    }
-    graph.push_coverage(path, line, expression, status, evidence);
-}
-
-pub(super) const ENDPOINT_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
-    DeclarativeRulePrimitive::EmitRoute {
-        kind: "calls_endpoint",
-        resolved_prefix: "endpoint route",
-        unmatched_prefix: "unmatched endpoint route",
-        ambiguous_prefix: "ambiguous endpoint route",
-    };
-
-const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive = DeclarativeRulePrimitive::EmitRoute {
-    kind: "references_route",
-    resolved_prefix: "unique route name",
-    unmatched_prefix: "unmatched route name",
-    ambiguous_prefix: "ambiguous route name",
 };
+use crate::models::{
+    compact_graph::{CompactCoverage as Coverage, CompactGraph as Graph},
+    Facts, Node,
+};
+use crate::typed_facts::FlowState;
+use hashbrown::HashMap;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn emit_route_match(
-    graph: &mut Graph,
-    path: &str,
-    src: &str,
-    line: usize,
-    primitive: DeclarativeRulePrimitive,
+fn resolve_unique_sql_table<'a>(
     expression: &str,
-    matched: Result<Option<&Node>, ()>,
-    resolved_value: Option<&str>,
-    error_value: &str,
-) {
-    let DeclarativeRulePrimitive::EmitRoute {
-        kind,
-        resolved_prefix,
-        unmatched_prefix,
-        ambiguous_prefix,
-    } = primitive
-    else {
-        return;
+    sql_qualified: &HashMap<String, Vec<&'a Node>>,
+    sql_tables: &HashMap<String, Vec<&'a Node>>,
+) -> Option<&'a Node> {
+    let (full, short, qualified) = languages::sql::identifier_keys(expression);
+    let (tables, key) = if qualified {
+        (sql_qualified, full)
+    } else {
+        (sql_tables, short)
     };
-    let (status, evidence) = match matched {
-        Ok(Some(route)) => {
-            graph.push_edge(path, src, route.id.clone(), kind, line, expression, "exact");
-            (
-                "resolved",
-                format!(
-                    "{resolved_prefix}: {}",
-                    resolved_value.unwrap_or(&route.name)
-                ),
-            )
-        }
-        Ok(None) => ("unresolved", format!("{unmatched_prefix}: {error_value}")),
-        Err(()) => ("ambiguous", format!("{ambiguous_prefix}: {error_value}")),
-    };
-    graph.push_coverage(path, line, expression, status, evidence);
-}
-
-pub(super) fn project_scope(
-    path: &str,
-    family: languages::LanguageFamily,
-    dependencies: &languages::dependency_registry::DependencyRegistry,
-) -> String {
-    dependencies
-        .nearest_manifest_scope_for_path(family, path)
-        .unwrap_or_else(|| languages::workspace_path(path).0)
-        .to_owned()
+    let targets = tables.get(&key)?;
+    let mut physical = targets.iter().filter(|node| !node.generated);
+    let first = physical.next().copied();
+    if first.is_some() && physical.next().is_none() {
+        first
+    } else if first.is_none() && targets.len() == 1 {
+        targets.first().copied()
+    } else {
+        None
+    }
 }
 
 /// Composes relations that require facts owned by more than one language.
+///
+#[allow(clippy::too_many_arguments)]
+fn compose_file_framework_relations<'a>(
+    path: &'a str,
+    facts: &'a Facts,
+    flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+    semantic_context: &semantic_context::Context<'a>,
+    interner: &LinkerInterner<'a>,
+    by_id: &HashMap<SymbolId, &'a Node>,
+    prepared: &PreparedSemanticFacts<'_>,
+    sql_qualified: &HashMap<String, Vec<&Node>>,
+    sql_tables: &HashMap<String, Vec<&Node>>,
+    route_index: &routes::RouteIndex<'_>,
+    http_target_contexts: &routes::HttpTargetContexts,
+    semantic_targets: &BTreeMap<languages::semantic::SemanticIdentity, BTreeSet<SymbolId>>,
+    #[cfg(feature = "lang-html")] render_contexts: &html_templates::RenderContextRegistry<'a>,
+    #[cfg(feature = "lang-html")] expressions: &html_templates::ExpressionRegistry<'a>,
+) -> Graph {
+    let path_arc = std::sync::Arc::<str>::from(path);
+    let mut graph = Graph {
+        edges: Vec::new(),
+        coverage: Vec::new(),
+        path_arc: Some(std::sync::Arc::clone(&path_arc)),
+        path_pool: hashbrown::HashSet::new(),
+        node_id_pool: hashbrown::HashSet::new(),
+        evidence_pool: hashbrown::HashSet::new(),
+    };
+    let has_type_queries = facts
+        .references
+        .iter()
+        .any(|reference| reference.kind == "sql_type_queries_table");
+    let macro_rules = has_type_queries.then(|| dependencies.language_context_for_path(path));
+    let mut local_types = HashMap::<&str, Option<&Node>>::new();
+    let mut parents = HashMap::<&str, &str>::new();
+    let mut shadows = std::collections::HashSet::<&str>::new();
+    let mut imports = std::collections::HashSet::<&str>::new();
+    if has_type_queries {
+        shadows.extend(facts.nodes.iter().map(|node| node.name.as_str()));
+        imports.extend(
+            facts
+                .references
+                .iter()
+                .filter(|reference| reference.kind == "imports")
+                .filter_map(|reference| reference.alias.as_deref()),
+        );
+        for node in facts.nodes.iter().filter(|node| node.kind == "struct") {
+            local_types
+                .entry(node.name.as_str())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(node));
+        }
+        for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
+            parents.insert(edge.dst.as_str(), edge.src.as_str());
+        }
+    }
+    for reference in facts.references.iter().filter(|reference| {
+        matches!(
+            reference.kind.as_str(),
+            "defines_table" | "queries_table" | "mutates_table" | "references_table"
+        )
+    }) {
+        if let Some(target) = resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables) {
+            graph.push_edge(
+                path,
+                &reference.source,
+                &target.id,
+                reference.kind.as_str(),
+                reference.line,
+                reference.expression.as_str(),
+                "exact",
+            );
+        }
+    }
+    for reference in facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "sql_type_queries_table")
+    {
+        let Some(type_name) = reference.alias.as_deref() else { continue };
+        let Some(model) = local_types.get(type_name).and_then(|node| *node) else { continue };
+        let Some(macro_path) = reference.module.as_deref() else { continue };
+        if !macro_rules
+            .as_ref()
+            .and_then(|rules| rules.prepared_projections("rust"))
+            .is_some_and(|rules| rules.macro_tables.contains_key(macro_path))
+        {
+            continue;
+        }
+        let Some(macro_head) = macro_path.split("::").next() else { continue };
+        if parents.get(reference.source.as_str()) != parents.get(model.id.as_str())
+            || !parents.contains_key(reference.source.as_str())
+            || shadows.contains(macro_head)
+            || imports.contains(macro_head)
+            || imports.contains(type_name)
+        {
+            continue;
+        }
+        if let Some(target) = resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables) {
+            graph.push_edge(
+                path,
+                &model.id,
+                &target.id,
+                "queries_table",
+                reference.line,
+                reference.expression.as_str(),
+                "exact",
+            );
+        }
+    }
+    for owner in &facts.nodes {
+        if let Some(FlowState::Valid { facts: flow, .. }) = interner
+            .lookup_symbol(&owner.id)
+            .and_then(|id| flows.and_then(|flows| flows.get(&id).copied()))
+        {
+            super::projections::compose(&mut graph, owner, flow.as_ref(), semantic_context, by_id, dependencies);
+        }
+    }
+    for (line, expression, error) in interner
+        .lookup_path(path)
+        .and_then(|path| prepared.errors.get(&path))
+        .into_iter()
+        .flatten()
+    {
+        graph.coverage.push(Coverage {
+            path: std::sync::Arc::clone(&path_arc),
+            line: *line,
+            expression: expression.clone(),
+            status: "unresolved".into(),
+            evidence: format!("invalid persisted semantic fact: {error}").into(),
+        });
+    }
+    super::python::semantic_relations::compose_file_relations(
+        path,
+        by_id,
+        dependencies,
+        semantic_context,
+        prepared,
+        semantic_targets,
+        &mut graph,
+    );
+    #[cfg(feature = "lang-html")]
+    super::html::relations::emit_render_targets(path, render_contexts, &mut graph);
+    emit_file_endpoint_and_route_relations(
+        path,
+        facts,
+        dependencies,
+        route_index,
+        http_target_contexts,
+        &mut graph,
+    );
+    #[cfg(feature = "lang-html")]
+    super::html::relations::emit_request_routes(
+        path,
+        facts,
+        flows,
+        interner,
+        route_index,
+        dependencies,
+        &mut graph,
+    );
+    #[cfg(feature = "lang-html")]
+    super::html::relations::emit_template_references(
+        path,
+        facts,
+        expressions,
+        render_contexts,
+        dependencies,
+        &mut graph,
+    );
+    graph
+}
+
+fn emit_file_endpoint_and_route_relations(
+    path: &str,
+    facts: &Facts,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+    route_index: &routes::RouteIndex<'_>,
+    http_target_contexts: &routes::HttpTargetContexts,
+    graph: &mut Graph,
+) {
+    let mut file_rules = None;
+    let mut unscoped_endpoint_rule = None;
+    for reference in facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "calls_endpoint")
+    {
+        let rules = file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
+        let has_unscoped_endpoint_rule = *unscoped_endpoint_rule.get_or_insert_with(|| {
+            rules.syntax_rules.iter().any(|rule| {
+                matches!(
+                    rule.operation,
+                    languages::manifests::syntax::SyntaxOperation::HttpClientCall {
+                        target_context: None,
+                        ..
+                    } | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
+                )
+            }) || rules.semantic_rules.iter().any(|rule| {
+                rule.active
+                    && matches!(
+                        rule.rule.operation,
+                        languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                    )
+            })
+        });
+        let origin = match &reference.receiver_hint {
+            Some(crate::models::ReceiverHint::ConfiguredReference { origin }) => {
+                let origin_is_configured = rules.syntax_rules.iter().any(|rule| {
+                    rule.pack == origin.pack
+                        && rule.id == origin.rule
+                        && matches!(
+                            rule.operation,
+                            languages::manifests::syntax::SyntaxOperation::HttpClientCall { .. }
+                                | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
+                        )
+                }) || rules.semantic_rules.iter().any(|rule| {
+                    rule.active
+                        && rule.pack == origin.pack
+                        && rule.rule.id == origin.rule
+                        && matches!(
+                            rule.rule.operation,
+                            languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                        )
+                });
+                if !origin_is_configured {
+                    continue;
+                }
+                Some(origin)
+            }
+            _ if has_unscoped_endpoint_rule => None,
+            _ => continue,
+        };
+        let (method, url) = reference
+            .expression
+            .split_once(' ')
+            .unwrap_or(("ANY", &reference.expression));
+        if routes::is_remote_client_url(url) {
+            graph.reference_coverage(path, reference, "external", "remote HTTP endpoint".into());
+            continue;
+        }
+        let target_context = origin.and_then(|origin| http_target_contexts.get(path, origin));
+        emit_route_match(
+            graph,
+            path,
+            &reference.source,
+            reference.line,
+            ENDPOINT_ROUTE_PRIMITIVE,
+            &reference.expression,
+            route_index.match_route_in_context(method, url, target_context, path),
+            None,
+            &reference.expression,
+        );
+    }
+    for reference in facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "references_route")
+    {
+        let Some(crate::models::ReceiverHint::NamedRoute { origin, key: name }) =
+            &reference.receiver_hint
+        else {
+            continue;
+        };
+        let rules = file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
+        if !rules.syntax_rules.iter().any(|rule| {
+            rule.pack == origin.pack
+                && rule.id == origin.rule
+                && matches!(
+                    rule.operation,
+                    languages::manifests::syntax::SyntaxOperation::NamedRouteCall { .. }
+                        | languages::manifests::syntax::SyntaxOperation::TemplateNamedRoute { .. }
+                )
+        }) {
+            continue;
+        }
+        emit_route_match(
+            graph,
+            path,
+            &reference.source,
+            reference.line,
+            NAMED_ROUTE_PRIMITIVE,
+            &reference.expression,
+            route_index.match_route_name(name),
+            Some(name.as_str()),
+            name.as_str(),
+        );
+    }
+}
+
+/// Composes cross-language framework, route, template, and SQL graph relations from indexed facts.
 ///
 /// Route handlers, HTTP clients, HTML requests, and template render contexts
 /// are indexed independently by their source profiles. This pass joins those
@@ -326,7 +380,6 @@ pub(super) fn compose<'a>(
     );
     use languages::semantic::{SemanticFactRole, SemanticIdentity};
     let semantic_facts = &prepared.facts;
-    let semantic_errors = &prepared.errors;
     let mut semantic_targets = BTreeMap::<SemanticIdentity, BTreeSet<SymbolId>>::new();
     for (&path, decoded) in semantic_facts {
         let path = interner.resolve_path(path);
@@ -363,238 +416,25 @@ pub(super) fn compose<'a>(
     owned_files
         .par_iter()
         .map(|&(path, facts)| {
-            let path_arc = std::sync::Arc::<str>::from(path);
-            let mut graph = Graph {
-                edges: Vec::new(),
-                coverage: Vec::new(),
-                path_arc: Some(std::sync::Arc::clone(&path_arc)),
-                path_pool: hashbrown::HashSet::new(),
-                node_id_pool: hashbrown::HashSet::new(),
-                evidence_pool: hashbrown::HashSet::new(),
-            };
-            let has_type_queries = facts.references.iter().any(|reference| reference.kind == "sql_type_queries_table");
-            let macro_rules = has_type_queries.then(|| dependencies.language_context_for_path(path));
-            let mut local_types = HashMap::<&str, Option<&Node>>::new();
-            let mut parents = HashMap::<&str, &str>::new();
-            let mut shadows = std::collections::HashSet::<&str>::new();
-            let mut imports = std::collections::HashSet::<&str>::new();
-            if has_type_queries {
-                shadows.extend(facts.nodes.iter().map(|node| node.name.as_str()));
-                imports.extend(facts.references.iter().filter(|reference| reference.kind == "imports").filter_map(|reference| reference.alias.as_deref()));
-                for node in facts.nodes.iter().filter(|node| node.kind == "struct") {
-                    local_types.entry(node.name.as_str()).and_modify(|entry| *entry = None).or_insert(Some(node));
-                }
-                for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
-                    parents.insert(edge.dst.as_str(), edge.src.as_str());
-                }
-            }
-            for reference in facts.references.iter().filter(|reference| matches!(reference.kind.as_str(), "defines_table" | "queries_table" | "mutates_table" | "references_table")) {
-                let (full, short, qualified) = languages::sql::identifier_keys(&reference.expression);
-                let (tables, key) = if qualified { (&sql_qualified, full) } else { (&sql_tables, short) };
-                if let Some(targets) = tables.get(&key) {
-                    let mut physical = targets.iter().filter(|node| !node.generated);
-                    let first = physical.next();
-                    let target = if first.is_some() && physical.next().is_none() {
-                        first
-                    } else if first.is_none() && targets.len() == 1 {
-                        targets.first()
-                    } else {
-                        None
-                    };
-                    if let Some(target) = target {
-                        graph.push_edge(path, &reference.source, &target.id, reference.kind.as_str(), reference.line, reference.expression.as_str(), "exact");
-                    }
-                }
-            }
-            for reference in facts.references.iter().filter(|reference| reference.kind == "sql_type_queries_table") {
-                let Some(type_name) = reference.alias.as_deref() else { continue };
-                let Some(model) = local_types.get(type_name).and_then(|node| *node) else { continue };
-                let Some(macro_path) = reference.module.as_deref() else { continue };
-                if !macro_rules.as_ref().and_then(|rules| rules.prepared_projections("rust")).is_some_and(|rules| rules.macro_tables.contains_key(macro_path)) { continue; }
-                let Some(macro_head) = macro_path.split("::").next() else { continue };
-                if parents.get(reference.source.as_str()) != parents.get(model.id.as_str())
-                    || !parents.contains_key(reference.source.as_str())
-                    || shadows.contains(macro_head)
-                    || imports.contains(macro_head)
-                    || imports.contains(type_name)
-                { continue; }
-                let (full, short, qualified) = languages::sql::identifier_keys(&reference.expression);
-                let (tables, key) = if qualified { (&sql_qualified, full) } else { (&sql_tables, short) };
-                if let Some(targets) = tables.get(&key) {
-                    let mut physical = targets.iter().filter(|node| !node.generated);
-                    let first = physical.next();
-                    let target = if first.is_some() && physical.next().is_none() { first }
-                        else if first.is_none() && targets.len() == 1 { targets.first() }
-                        else { None };
-                    if let Some(target) = target {
-                        graph.push_edge(path, &model.id, &target.id, "queries_table", reference.line, reference.expression.as_str(), "exact");
-                    }
-                }
-            }
-            for owner in &facts.nodes {
-                if let Some(FlowState::Valid { facts: flow, .. }) = interner
-                    .lookup_symbol(&owner.id)
-                    .and_then(|id| flows.and_then(|flows| flows.get(&id).copied()))
-                {
-                    super::projections::compose(&mut graph, owner, flow, semantic_context, by_id, dependencies);
-                }
-            }
-            for (line, expression, error) in
-                interner.lookup_path(path).and_then(|path| semantic_errors.get(&path)).into_iter().flatten()
-            {
-                graph.coverage.push(Coverage {
-                    path: std::sync::Arc::clone(&path_arc),
-                    line: *line,
-                    expression: expression.clone(),
-                    status: "unresolved".into(),
-                    evidence: format!("invalid persisted semantic fact: {error}").into(),
-                });
-            }
-            super::python::semantic_relations::compose_file_relations(
-                path,
-                by_id,
-                dependencies,
-                semantic_context,
-                prepared,
-                &semantic_targets,
-                &mut graph,
-            );
-            #[cfg(feature = "lang-html")]
-            super::html::relations::emit_render_targets(path, &render_contexts, &mut graph);
-
-            let mut file_rules = None;
-            let mut unscoped_endpoint_rule = None;
-            for reference in facts
-                .references
-                .iter()
-                .filter(|reference| reference.kind == "calls_endpoint")
-            {
-                let rules =
-                    file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
-                let has_unscoped_endpoint_rule = *unscoped_endpoint_rule.get_or_insert_with(|| {
-                    rules.syntax_rules.iter().any(|rule| {
-                        matches!(
-                            rule.operation,
-                            languages::manifests::syntax::SyntaxOperation::HttpClientCall {
-                                target_context: None,
-                                ..
-                            } | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
-                        )
-                    }) || rules.semantic_rules.iter().any(|rule| {
-                        rule.active
-                            && matches!(
-                                rule.rule.operation,
-                                languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
-                            )
-                    })
-                });
-                let origin = match &reference.receiver_hint {
-                    Some(crate::models::ReceiverHint::ConfiguredReference { origin }) => {
-                        let origin_is_configured = rules.syntax_rules.iter().any(|rule| {
-                            rule.pack == origin.pack
-                                && rule.id == origin.rule
-                                && matches!(
-                                    rule.operation,
-                                    languages::manifests::syntax::SyntaxOperation::HttpClientCall { .. }
-                                        | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
-                                )
-                        }) || rules.semantic_rules.iter().any(|rule| {
-                            rule.active
-                                && rule.pack == origin.pack
-                                && rule.rule.id == origin.rule
-                                && matches!(
-                                    rule.rule.operation,
-                                    languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
-                                )
-                        });
-                        if !origin_is_configured {
-                            continue;
-                        }
-                        Some(origin)
-                    }
-                    _ if has_unscoped_endpoint_rule => None,
-                    _ => continue,
-                };
-                let (method, url) = reference
-                    .expression
-                    .split_once(' ')
-                    .unwrap_or(("ANY", &reference.expression));
-                if routes::is_remote_client_url(url) {
-                    graph.reference_coverage(path, reference, "external", "remote HTTP endpoint".into());
-                    continue;
-                }
-                let target_context = origin.and_then(|origin| http_target_contexts.get(path, origin));
-                emit_route_match(
-                    &mut graph,
-                    path,
-                    &reference.source,
-                    reference.line,
-                    ENDPOINT_ROUTE_PRIMITIVE,
-                    &reference.expression,
-                    route_index.match_route_in_context(method, url, target_context, path),
-                    None,
-                    &reference.expression,
-                );
-            }
-
-            #[cfg(feature = "lang-html")]
-            super::html::relations::emit_request_routes(
+            compose_file_framework_relations(
                 path,
                 facts,
                 flows,
+                dependencies,
+                semantic_context,
                 interner,
+                by_id,
+                prepared,
+                &sql_qualified,
+                &sql_tables,
                 &route_index,
-                dependencies,
-                &mut graph,
-            );
-
-            for reference in facts
-                .references
-                .iter()
-                .filter(|reference| reference.kind == "references_route")
-            {
-                let Some(crate::models::ReceiverHint::NamedRoute { origin, key: name }) =
-                    &reference.receiver_hint
-                else {
-                    continue;
-                };
-                let rules =
-                    file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
-                if !rules.syntax_rules.iter().any(|rule| {
-                    rule.pack == origin.pack
-                        && rule.id == origin.rule
-                        && matches!(
-                            rule.operation,
-                            languages::manifests::syntax::SyntaxOperation::NamedRouteCall { .. }
-                                | languages::manifests::syntax::SyntaxOperation::TemplateNamedRoute { .. }
-                        )
-                }) {
-                    continue;
-                }
-                emit_route_match(
-                    &mut graph,
-                    path,
-                    &reference.source,
-                    reference.line,
-                    NAMED_ROUTE_PRIMITIVE,
-                    &reference.expression,
-                    route_index.match_route_name(name),
-                    Some(name),
-                    name,
-                );
-            }
-
-            #[cfg(feature = "lang-html")]
-            super::html::relations::emit_template_references(
-                path,
-                facts,
-                &expressions,
+                &http_target_contexts,
+                &semantic_targets,
+                #[cfg(feature = "lang-html")]
                 &render_contexts,
-                dependencies,
-                &mut graph,
-            );
-
-            graph
+                #[cfg(feature = "lang-html")]
+                &expressions,
+            )
         })
         .collect()
 }

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::{super::*, linker};
 
 #[test]
 fn rust_standard_collection_adapters_preserve_element_receivers() {

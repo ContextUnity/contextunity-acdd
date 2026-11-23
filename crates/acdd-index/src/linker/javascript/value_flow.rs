@@ -1,6 +1,20 @@
-use super::super::value_flow::{Binding, ReadTrace, SemanticResolver, TypeTarget, ValueFlowIndex};
+use super::super::value_flow::types::{
+    Binding, ReadTrace, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowLookup,
+};
 use crate::models::Node;
 use crate::semantic::SourcePosition;
+
+fn typed_dom_receiver(name: &str) -> Option<&'static str> {
+    #[cfg(feature = "lang-typescript")]
+    {
+        crate::languages::typescript::typed_dom_receiver(name)
+    }
+    #[cfg(not(feature = "lang-typescript"))]
+    {
+        let _ = name;
+        None
+    }
+}
 
 pub(in crate::linker) fn construct<'a>(owner: &Node, callee: &str) -> Option<TypeTarget<'a>> {
     if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") && callee == "[]" {
@@ -11,7 +25,7 @@ pub(in crate::linker) fn construct<'a>(owner: &Node, callee: &str) -> Option<Typ
 }
 
 pub(in crate::linker) fn evaluate_call<'a>(
-    index: &ValueFlowIndex<'a>,
+    index: &impl ValueFlowLookup<'a>,
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
@@ -41,9 +55,9 @@ pub(in crate::linker) fn evaluate_call<'a>(
                         owner,
                         base_receiver,
                         at,
-                        super::super::value_flow::SymbolRole::Type,
+                        SymbolRole::Type,
                     ) {
-                        super::super::value_flow::Symbol::Type(target) => Some(target),
+                        Symbol::Type(target) => Some(target),
                         _ => None,
                     }
                 });
@@ -84,8 +98,7 @@ pub(in crate::linker) fn platform_member_return<'a>(
     let TypeTarget::Builtin(receiver) = receiver else {
         return None;
     };
-    let name = super::super::typescript::semantic_context::typed_dom_receiver(receiver)
-        .unwrap_or(receiver);
+    let name = typed_dom_receiver(receiver).unwrap_or(receiver);
     let returned = match (name, member) {
         (
             "Array",
@@ -98,8 +111,7 @@ pub(in crate::linker) fn platform_member_return<'a>(
             "querySelector" | "closest" | "appendChild" | "removeChild" | "cloneNode"
             | "insertBefore" | "replaceChild",
         ) if matches!(name, "Element" | "HTMLElement" | "Node")
-            || super::super::typescript::semantic_context::typed_dom_receiver(name)
-                == Some("Element") =>
+            || typed_dom_receiver(name) == Some("Element") =>
         {
             "Element"
         }
@@ -107,8 +119,7 @@ pub(in crate::linker) fn platform_member_return<'a>(
             name,
             "getBoundingClientRect",
         ) if matches!(name, "Element" | "HTMLElement")
-            || super::super::typescript::semantic_context::typed_dom_receiver(name)
-                == Some("Element") =>
+            || typed_dom_receiver(name) == Some("Element") =>
         {
             "DOMRect"
         }

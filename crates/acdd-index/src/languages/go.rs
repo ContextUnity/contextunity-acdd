@@ -1,10 +1,18 @@
-use super::*;
+use super::context::FileContext;
+use super::profile::LanguageProfile;
+use super::types::{
+    call, module_stem, parse_package_declaration, CallForm, DeclarationRole, ImportPath,
+    LanguageFamily, SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::ast::syntax::{field, text};
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 /// Performs language.
-pub fn language() -> tree_sitter::Language {
+fn language() -> tree_sitter::Language {
     tree_sitter_go::language()
 }
 /// Performs kind.
-pub fn kind(kind: &str) -> Option<&'static str> {
+fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration" => Some("function"),
         "method_declaration" => Some("method"),
@@ -14,29 +22,13 @@ pub fn kind(kind: &str) -> Option<&'static str> {
 }
 
 fn parse_package_name(source: &str) -> Option<&str> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed
-            .strip_prefix("package")
-            .filter(|rest| rest.starts_with(char::is_whitespace))
-        {
-            let rest = rest.split_once("//").map_or(rest, |(before, _)| before);
-            let pkg = rest.split_whitespace().next()?.trim_matches(';');
-            if !pkg.is_empty() {
-                return Some(pkg);
-            }
-        }
-    }
-    None
+    parse_package_declaration(source, false)
 }
 
 /// Language profile for go source files.
-pub struct Go;
+struct Go;
 /// Shared go language profile.
-pub static GO: Go = Go;
+static GO: Go = Go;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -158,7 +150,6 @@ impl LanguageProfile for Go {
         let dir_b = path_b.rsplit_once('/').map_or("", |(d, _)| d);
         dir_a == dir_b
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);
@@ -244,4 +235,4 @@ impl LanguageProfile for Go {
 }
 
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&GO];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&GO];

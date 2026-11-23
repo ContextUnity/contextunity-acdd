@@ -188,7 +188,7 @@ fn rust_tuple_field_contract_changes_relink_nominal_consumers_like_cold_builds()
 #[cfg(feature = "lang-python")]
 #[test]
 fn large_independent_receiver_graphs_preserve_per_file_resolution_and_stable_order() {
-    use acdd_index::{ast, linker};
+    use acdd_index::ast;
     use std::collections::BTreeMap;
 
     let mut source = "class Target:\n    def work(self): pass\n".to_owned();
@@ -205,7 +205,7 @@ fn large_independent_receiver_graphs_preserve_per_file_resolution_and_stable_ord
     assert!(files.values().map(|facts| facts.nodes.len()).sum::<usize>() >= 8192);
     let mut expected = acdd_index::models::Graph::default();
     for (path, facts) in &files {
-        let part = linker::link(&BTreeMap::from([(path.clone(), facts.clone())]));
+        let part = crate::common::link_facts(&BTreeMap::from([(path.clone(), facts.clone())]));
         expected.edges.extend(part.edges);
         expected.coverage.extend(part.coverage);
     }
@@ -215,7 +215,7 @@ fn large_independent_receiver_graphs_preserve_per_file_resolution_and_stable_ord
     expected
         .coverage
         .sort_by(|a, b| (&a.path, a.line, &a.expression).cmp(&(&b.path, b.line, &b.expression)));
-    let actual = linker::link(&files);
+    let actual = crate::common::link_facts(&files);
     assert_eq!(
         serde_json::json!([actual.edges, actual.coverage]),
         serde_json::json!([expected.edges, expected.coverage])

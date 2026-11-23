@@ -1,6 +1,265 @@
-use super::*;
+use super::types::{
+    duplicate_position, flow_dependent, merge, node_position, resolve_type, same_fields,
+    same_target, stored_type_expr, symbol_type, valid_scope_facts, valid_value, Binding,
+    BindingEvent,
+    BindingList, Definitions, Epochs, InitializedScope, NamedNodes, ReadEpochs, ReadTrace, Scope,
+    ScopeFacts, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
+    EMPTY_SCOPE_FACTS,
+};
+use crate::interner::{LinkerInterner, SymbolId};
+use crate::models::{Facts, Node, ReceiverHint, Reference};
+use crate::semantic::{SourcePosition, ValueExpr, ValueFlowFacts};
+use hashbrown::HashMap;
+use rayon::prelude::*;
+use std::{borrow::Cow, collections::BTreeMap};
+
+fn initialize_scope<'a>(
+    node: &'a Node,
+    by_name: &NamedNodes<'a>,
+    resolver: &impl SemanticResolver<'a>,
+    limits: SemanticLimits,
+) -> InitializedScope<'a> {
+    let encoded = &node.details["value_flow"];
+    let typed = resolver.value_flow(node);
+    let oversized = typed.is_some_and(|facts| {
+        crate::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
+    }) || crate::typed_facts::encoded_scope_fact_count(encoded)
+        > limits.facts_per_scope;
+    let decoded = if oversized {
+        Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
+    } else if let Some(facts) = typed {
+        Ok(ScopeFacts::Borrowed(facts))
+    } else if resolver.has_typed_flows() || encoded.is_null() || oversized {
+        Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
+    } else {
+        ValueFlowFacts::deserialize_for_scope(
+            encoded,
+            node.kind == "template_scope"
+                && node.language == "javascript"
+                && node.details["classic_global"] == true,
+        )
+        .map(|facts| ScopeFacts::Decoded(Box::new(facts)))
+    };
+    let (facts, mut invalid) = match decoded {
+        Ok(facts) => (facts, false),
+        Err(_) => (ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS), true),
+    };
+    invalid |=
+        oversized || resolver.invalid_value_flow(node) || !valid_scope_facts(node, &facts, limits);
+    let mut parents = Vec::new();
+    let mut parent = node
+        .qualname
+        .rsplit_once('.')
+        .map_or("", |(parent, _)| parent);
+    while !parent.is_empty() {
+        if let Some([owner]) = by_name
+            .get(&(node.path.as_str(), parent))
+            .map(Vec::as_slice)
+        {
+            if !(node.language == "python"
+                && matches!(node.kind.as_str(), "function" | "method")
+                && owner.kind == "class")
+            {
+                parents.push(owner.id.as_str());
+            }
+        }
+        parent = parent.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    invalid |= parents.len() > limits.alias_depth;
+    let mut bindings = HashMap::new();
+    if matches!(
+        node.kind.as_str(),
+        "function" | "method" | "lambda" | "template_scope"
+    ) {
+        for name in node.binding_names() {
+            if name.len() <= limits.name_bytes {
+                bindings.insert(
+                    name,
+                    BindingList::One(Binding {
+                        position: node_position(node),
+                        target: TypeTarget::Unknown,
+                        valid_until: None,
+                        restores_previous: false,
+                        immutable_initializer: false,
+                    }),
+                );
+            }
+        }
+    }
+    for (name, annotation) in node.parameter_types() {
+        let position = node_position(node);
+        let target = if invalid || name.len() > limits.name_bytes {
+            TypeTarget::Unknown
+        } else {
+            annotation
+                .filter(|name| !name.is_empty() && name.len() <= limits.name_bytes)
+                .map_or(TypeTarget::Unknown, |name| {
+                    resolve_type(
+                        node,
+                        &stored_type_expr(name, &node.language),
+                        position,
+                        resolver,
+                        limits,
+                    )
+                })
+        };
+        bindings.insert(
+            name,
+            BindingList::One(Binding {
+                position,
+                target,
+                valid_until: None,
+                restores_previous: false,
+                immutable_initializer: false,
+            }),
+        );
+    }
+    let returned = if invalid {
+        TypeTarget::Unknown
+    } else if node.language == "rust"
+        && node.kind == "constant"
+        && node.details["rust_enum_variant"] == true
+    {
+        node.qualname
+            .rsplit_once('.')
+            .and_then(|(enum_qual, _)| by_name.get(&(node.path.as_str(), enum_qual)))
+            .and_then(|nodes| {
+                let mut enums = nodes.iter().copied().filter(|cand| cand.kind == "enum");
+                let first = enums.next()?;
+                enums.next().is_none().then_some(TypeTarget::Local(first))
+            })
+            .unwrap_or(TypeTarget::Unknown)
+    } else {
+        let ty = if node.kind == "constant" {
+            facts.alias_type.as_ref()
+        } else {
+            facts.return_type.as_ref()
+        };
+        ty.map_or(TypeTarget::Unknown, |ty| {
+            resolve_type(node, ty, node_position(node), resolver, limits)
+        })
+    };
+    (
+        node,
+        facts,
+        Scope {
+            parents,
+            bindings,
+            invalid,
+            module: node.kind == "module",
+        },
+        returned,
+    )
+}
+
+fn field_owner<'a>(
+    owner: &'a Node,
+    names: &NamedNodes<'a>,
+    resolver: &impl SemanticResolver<'a>,
+) -> Option<&'a Node> {
+    if matches!(owner.kind.as_str(), "class" | "struct" | "interface") {
+        return Some(owner);
+    }
+    if super::super::vue::value_flow::owns_module_fields(owner) {
+        return Some(owner);
+    }
+    let mut parent = owner
+        .qualname
+        .rsplit_once('.')
+        .map_or("", |(parent, _)| parent);
+    while !parent.is_empty() {
+        if let Some([node]) = names.get(&(owner.path.as_str(), parent)).map(Vec::as_slice) {
+            if matches!(node.kind.as_str(), "class" | "struct" | "interface") {
+                return Some(*node);
+            }
+        }
+        parent = parent.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    owner.details["receiver_type"].as_str().and_then(|name| {
+        let clean = crate::linker::types::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
+        match resolver.resolve_symbol(
+            owner,
+            clean.as_ref(),
+            node_position(owner),
+            SymbolRole::Type,
+        ) {
+            Symbol::Type(TypeTarget::Local(node)) => Some(node),
+            _ => None,
+        }
+    })
+}
 
 impl<'a> ValueFlowIndex<'a> {
+    /// Performs build.
+    pub fn build(all: &'a BTreeMap<String, Facts>, resolver: &impl SemanticResolver<'a>) -> Self {
+        Self::build_with_limits(all, resolver, SemanticLimits::default())
+    }
+
+    /// Builds with limits.
+    pub fn build_with_limits(
+        all: &'a BTreeMap<String, Facts>,
+        resolver: &impl SemanticResolver<'a>,
+        limits: SemanticLimits,
+    ) -> Self {
+        let nodes: Vec<&Node> = all.values().flat_map(|facts| &facts.nodes).collect();
+        let interner = LinkerInterner::from_catalog(all);
+        let by_id: HashMap<SymbolId, &Node> = nodes
+            .iter()
+            .map(|node| {
+                (
+                    interner
+                        .lookup_symbol(&node.id)
+                        .expect("catalog node id is interned"),
+                    *node,
+                )
+            })
+            .collect();
+        Self::build_initialized(
+            all,
+            nodes,
+            &interner,
+            &by_id,
+            resolver,
+            limits,
+            |nodes, names| {
+                nodes
+                    .iter()
+                    .map(|&node| initialize_scope(node, names, resolver, limits))
+                    .collect()
+            },
+        )
+    }
+
+    pub(crate) fn build_parallel(
+        all: &'a dyn crate::FactsLookup,
+        nodes: Vec<&'a Node>,
+        interner: &LinkerInterner<'a>,
+        by_id: &HashMap<SymbolId, &'a Node>,
+        resolver: &(impl SemanticResolver<'a> + Sync),
+    ) -> Self {
+        let limits = SemanticLimits::default();
+        Self::build_initialized(
+            all,
+            nodes,
+            interner,
+            by_id,
+            resolver,
+            limits,
+            |nodes, names| {
+                if nodes.len() >= 8192 {
+                    nodes
+                        .par_iter()
+                        .map(|&node| initialize_scope(node, names, resolver, limits))
+                        .collect()
+                } else {
+                    nodes
+                        .iter()
+                        .map(|&node| initialize_scope(node, names, resolver, limits))
+                        .collect()
+                }
+            },
+        )
+    }
     pub(super) fn build_initialized(
         all: &'a dyn crate::FactsLookup,
         nodes: Vec<&'a Node>,
@@ -277,7 +536,7 @@ impl<'a> ValueFlowIndex<'a> {
             Some(definitions),
         );
         match prev_target {
-            Some(prev) if super::same_target(&prev, &evaluated) => prev,
+            Some(prev) if same_target(&prev, &evaluated) => prev,
             Some(_) => TypeTarget::Unknown,
             None => evaluated,
         }

@@ -1,8 +1,8 @@
-use super::super::{
+use super::super::common::{
     combine_file_hashes, local_adapter_path_for_worktree, resolve_worktree_adapter,
     worktree_code_db_candidate,
 };
-use super::{collect_scoped_worktree_files, CodeDomainProvider};
+use super::common::{collect_scoped_worktree_files, for_each_candidate_file, CodeDomainProvider};
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
@@ -88,7 +88,7 @@ fn compute_lint_live_digest(
     }
 
     let include_all_sources = scoped_paths.is_none();
-    super::for_each_candidate_file(&req.worktree, &req.path_policy, true, |abs, rel| {
+    for_each_candidate_file(&req.worktree, &req.path_policy, true, |abs, rel| {
         if is_doc_path(&rel) {
             if !rel.starts_with("archive/") && !rel.contains("/archive/") {
                 file_hashes.insert(rel, hash_file_or_marker(abs, "<missing>"));

@@ -1,8 +1,15 @@
-use super::*;
+use super::profile::LanguageProfile;
+use super::support::c_family;
+use super::types::{
+    call, CallForm, DeclarationRole, ImportPath, LanguageFamily, SyntaxContext, SyntaxGrammarSpec,
+};
+use crate::ast::syntax::ScopeBindings;
+use crate::models::Facts;
+use tree_sitter::Node as Syntax;
 /// Language profile for c source files.
-pub struct CProfile;
+struct CProfile;
 /// Shared c language profile.
-pub static C: CProfile = CProfile;
+static C: CProfile = CProfile;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declaration_roles: &[
@@ -68,10 +75,9 @@ impl LanguageProfile for CProfile {
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
         c_family::include_path(self, owner, module)
     }
-    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ScopeBindings {
         c_family::bindings(self, node, source)
     }
-    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         c_family::include(ctx, facts);
     }
@@ -82,4 +88,4 @@ impl LanguageProfile for CProfile {
     }
 }
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&C];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&C];

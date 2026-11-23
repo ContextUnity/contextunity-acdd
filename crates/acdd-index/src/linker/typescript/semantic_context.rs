@@ -1,4 +1,4 @@
-use super::super::value_flow::{Symbol, SymbolRole, TypeTarget};
+use super::super::value_flow::types::{Symbol, SymbolRole, TypeTarget};
 use crate::models::Node;
 use crate::semantic::TypeExpr;
 use crate::languages::LanguageProfile;
@@ -68,8 +68,6 @@ pub(in crate::linker) fn typed_dom_receiver(_name: &str) -> Option<&'static str>
     None
 }
 
-#[cfg(feature = "lang-typescript")]
-pub(in crate::linker) use crate::languages::typescript::typed_dom_property;
 
 #[cfg(not(feature = "lang-typescript"))]
 pub(in crate::linker) fn typed_dom_property(

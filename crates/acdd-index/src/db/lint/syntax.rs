@@ -1,5 +1,6 @@
-use super::{is_archived_path, LintIndexData, LintScope, LintViolation};
-use crate::db::{paging, reader};
+use super::types::{is_archived_path, LintIndexData, LintScope, LintViolation};
+use crate::db::paging;
+use crate::db::reader::{selectors::path_bounds, sql::rows};
 use crate::models::{
     details::NodeDetailKey,
     tags::{EdgeKind, NodeKind},
@@ -26,7 +27,7 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         !normalized.starts_with('/') && !path.split('/').any(|part| part == ".."),
         "lint target must be an indexed workspace-relative path or empty for the workspace"
     );
-    let (prefix, end) = reader::path_bounds(path);
+    let (prefix, end) = path_bounds(path);
     let profiles = supported_language_profiles();
     let profiles_json = serde_json::to_string(&profiles)?;
     let params: &[&dyn ToSql] = &[&path, &prefix, &end, &profiles_json];
@@ -47,7 +48,7 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         params,
     )?;
     ensure!(source_files > 0, "lint target has no indexed source files with a compiled language profile; excluded, unsupported, and documentation files are not syntax-checked");
-    let mut languages = reader::rows(conn, &format!("SELECT f.language,count(*) files FROM files f WHERE {scope} AND {supported} GROUP BY f.language ORDER BY f.language"), params, profiles.len())?;
+    let mut languages = rows(conn, &format!("SELECT f.language,count(*) files FROM files f WHERE {scope} AND {supported} GROUP BY f.language ORDER BY f.language"), params, profiles.len())?;
     for language in &mut languages {
         language["diagnostic_scope"] = json!(match language["language"].as_str() {
             Some("vue") => "embedded JavaScript/TypeScript scripts; template and style syntax are not checked",
@@ -101,7 +102,7 @@ fn collect_parse_violations(
     let profiles = supported_language_profiles();
     let profiles_json = serde_json::to_string(&profiles)?;
     let prefix_target = scope.exact_prefix().unwrap_or("");
-    let (lower, upper) = reader::path_bounds(prefix_target);
+    let (lower, upper) = path_bounds(prefix_target);
     let mut stmt = conn.prepare(
         "SELECT e.path, e.line, e.message
          FROM errors e
@@ -170,7 +171,7 @@ fn collect_complexity_and_budget_violations(
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     let prefix_target = index.scope.exact_prefix().unwrap_or("");
-    let (lower, upper) = reader::path_bounds(prefix_target);
+    let (lower, upper) = path_bounds(prefix_target);
     let cc_pat = format!("%{}%", NodeDetailKey::COGNITIVE_COMPLEXITY);
     let nest_pat = format!("%{}%", NodeDetailKey::MAX_NESTING_DEPTH);
     let budget_pat = format!("%{}%", NodeDetailKey::FACT_LIMIT_EXCEEDED);
@@ -232,7 +233,7 @@ fn collect_high_fanout_violations(
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     let prefix_target = index.scope.exact_prefix().unwrap_or("");
-    let (lower, upper) = reader::path_bounds(prefix_target);
+    let (lower, upper) = path_bounds(prefix_target);
     let sql = format!(
         "SELECT n.qualname, p.path, n.line, COUNT(DISTINCT e.dst_hash) AS fanout
          FROM edges e

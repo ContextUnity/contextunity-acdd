@@ -1,6 +1,5 @@
 use super::*;
 use crate::languages::harness::{query_scalar, ExtractorHarness};
-use acdd_index::db::reader;
 use std::collections::BTreeMap;
 
 const INITIAL: &str = "<script>class Alpha { work() {} }\nclass Beta { work() {} }\nconst worker = new Alpha();</script>\n<script>worker.work();</script>\n";
@@ -58,7 +57,7 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
             |row| row.get(0),
         )
         .unwrap();
-    let facts = reader::decode_local_facts(&blob).unwrap();
+    let facts = crate::common::decode_local_facts(&blob).unwrap();
     let projected = serde_json::to_value(&facts).unwrap();
     let scope = projected["nodes"]
         .as_array()

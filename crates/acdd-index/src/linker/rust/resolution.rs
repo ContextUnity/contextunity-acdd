@@ -4,10 +4,8 @@ use crate::languages::LanguageProfile;
 use crate::models::{compact_graph::CompactGraph, Node, ReceiverHint, Reference};
 use hashbrown::HashMap;
 
-pub use crate::languages::rust::declarative_macro_classification;
-
 pub(in crate::linker) fn dynamic_receiver_member<'a>(
-    input: &super::super::resolution::ResolutionInput<'a>,
+    input: &super::super::resolution::input::ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     owner: Option<&'a Node>,
@@ -71,7 +69,7 @@ pub(in crate::linker) fn dynamic_receiver_member<'a>(
             return false;
         }
     }
-    super::super::emit_inferred(
+    crate::linker::resolution::context::emit_inferred(
         graph,
         path,
         reference,
@@ -201,62 +199,6 @@ fn fallback_receiver_value(
     value
 }
 
-/// Helper to verify registered Cargo ecosystem crates statically from ecosystem list
-pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
-    matches!(
-        crate_name,
-        "rusqlite"
-            | "tree-sitter"
-            | "tree_sitter"
-            | "serde"
-            | "serde_json"
-            | "serde_yaml"
-            | "tokio"
-            | "anyhow"
-            | "clap"
-            | "tracing"
-            | "rayon"
-            | "tempfile"
-            | "regex"
-            | "thiserror"
-            | "parking_lot"
-            | "crossbeam"
-            | "log"
-            | "git2"
-            | "walkdir"
-            | "ignore"
-            | "sha2"
-            | "hex"
-            | "toml"
-            | "uuid"
-            | "chrono"
-            | "hashbrown"
-            | "indexmap"
-            | "petgraph"
-            | "libc"
-            | "dirs"
-            | "pulldown-cmark"
-            | "pulldown_cmark"
-            | "schemars"
-            | "rmcp"
-            | "zstd"
-            | "cc"
-            | "bstr"
-            | "futures"
-            | "syn"
-            | "quote"
-            | "proc_macro2"
-            | "proc-macro2"
-            | "base64"
-            | "bytes"
-            | "http"
-            | "tower"
-            | "axum"
-            | "hyper"
-            | "url"
-    )
-}
-
 #[cfg(feature = "lang-rust")]
 pub(in crate::linker) struct RustExplicitTarget {
     pub(in crate::linker) namespace: String,
@@ -265,7 +207,7 @@ pub(in crate::linker) struct RustExplicitTarget {
 
 #[cfg(feature = "lang-rust")]
 fn explicit_target_from_sibling_crate(
-    input: &super::super::resolution::ResolutionInput<'_>,
+    input: &super::super::resolution::input::ResolutionInput<'_>,
     path: &str,
     first: &str,
     tail: &str,
@@ -297,7 +239,7 @@ fn explicit_target_from_sibling_crate(
 
 #[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(
-    input: &super::super::resolution::ResolutionInput<'_>,
+    input: &super::super::resolution::input::ResolutionInput<'_>,
     profile: Option<&dyn LanguageProfile>,
     path: &str,
     file_module: &str,
@@ -362,7 +304,7 @@ pub(in crate::linker) fn rust_explicit_module_target(
         }
     }
     if let Some((namespace, workspace)) =
-        crate::languages::rust::linker::resolve_workspace_crate_namespace(
+        super::forwarding::resolve_workspace_crate_namespace(
             input.profiles.keys().copied(),
             input.dependency_registry,
             path,
@@ -400,7 +342,7 @@ pub(in crate::linker) fn rust_explicit_module_target(
 
 #[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn explicit_reexport_targets<'a>(
-    input: &super::super::resolution::ResolutionInput<'a>,
+    input: &super::super::resolution::input::ResolutionInput<'a>,
     file_module: &str,
     target: &RustExplicitTarget,
     lookup_key: &mut String,
@@ -1023,7 +965,9 @@ fn resolve_local_macro_call(
         macro_analysis_gap(profile, reference, &[target], path, graph);
         return true;
     }
-    if let Some((provider, pack)) = declarative_macro_classification(&reference.expression) {
+    if let Some((provider, pack)) =
+        crate::languages::rust::declarative_macro_classification(&reference.expression)
+    {
         graph.reference_coverage(
             path,
             reference,
@@ -1271,7 +1215,7 @@ pub(in crate::linker) fn impl_source<'a>(
                 .iter()
                 .flat_map(|node| {
                     by_qual
-                        .get(super::super::qualified(lookup_key, &node.qualname, rest))
+                        .get(crate::linker::types::qualified(lookup_key, &node.qualname, rest))
                         .into_iter()
                         .flatten()
                         .copied()
@@ -1282,7 +1226,7 @@ pub(in crate::linker) fn impl_source<'a>(
         }
     } else {
         by_qual
-            .get(super::super::qualified(lookup_key, file_module, &clean))
+            .get(crate::linker::types::qualified(lookup_key, file_module, &clean))
             .into_iter()
             .flatten()
             .copied()
@@ -1304,99 +1248,4 @@ pub(in crate::linker) fn impl_source<'a>(
         (types.len() == 1).then(|| types[0].id.clone()),
         source_heuristic,
     )
-}
-
-#[cfg(all(test, feature = "lang-rust"))]
-mod self_crate_resolution_tests {
-    use crate::ast::extract;
-    use crate::languages::dependency_registry::DependencyRegistry;
-    use crate::linker;
-    use acdd_core::fs::ScopedTempDir;
-    use std::collections::BTreeMap;
-    use std::fs;
-
-    #[test]
-    fn rust_self_crate_resolution_excludes_library_files_and_keeps_sibling_targets() {
-        let dir = ScopedTempDir::create("contextunity-test-rust-self-crate").unwrap();
-        let root = dir.path();
-
-        for (pkg_prefix, crate_name) in [("", "my_crate"), ("crates/sub_crate/", "sub_crate")] {
-            fs::create_dir_all(root.join(format!("{pkg_prefix}src/bin"))).unwrap();
-            fs::create_dir_all(root.join(format!("{pkg_prefix}tests"))).unwrap();
-            fs::create_dir_all(root.join(format!("{pkg_prefix}examples"))).unwrap();
-            fs::create_dir_all(root.join(format!("{pkg_prefix}benches"))).unwrap();
-            fs::write(
-                root.join(format!("{pkg_prefix}Cargo.toml")),
-                format!("[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\n"),
-            )
-            .unwrap();
-        }
-
-        let files = [
-            (
-                "src/lib.rs",
-                "pub mod sub;\npub fn target() {}\npub fn bad_self_call() { my_crate::target(); }\npub fn good_crate_call() { crate::target(); }\n",
-            ),
-            (
-                "src/sub.rs",
-                "use my_crate::target as imported_target;\npub fn bad_sub_direct() { my_crate::target(); }\npub fn bad_sub_use() { imported_target(); }\n",
-            ),
-            ("src/main.rs", "fn main_calls() { my_crate::target(); }\n"),
-            ("src/bin/cli.rs", "fn bin_calls() { my_crate::target(); }\n"),
-            ("tests/it.rs", "#[test]\nfn test_calls() { my_crate::target(); }\n"),
-            ("examples/demo.rs", "fn example_calls() { my_crate::target(); }\n"),
-            ("benches/perf.rs", "fn bench_calls() { my_crate::target(); }\n"),
-            (
-                "crates/sub_crate/src/lib.rs",
-                "pub fn target() {}\npub fn bad_subcrate_self() { sub_crate::target(); }\n",
-            ),
-            (
-                "crates/sub_crate/tests/it.rs",
-                "#[test]\nfn subcrate_test_calls() { sub_crate::target(); }\n",
-            ),
-        ];
-
-        let mut facts = BTreeMap::new();
-        for &(rel, src) in &files {
-            fs::write(root.join(rel), src).unwrap();
-            facts.insert(rel.to_owned(), extract(rel, "rust", src).unwrap());
-        }
-        let registry = DependencyRegistry::collect(Some(root));
-        let graph = linker::link_with_registry(&facts, None, Some(root), &registry);
-
-        let has_call = |src_path: &str, src_fn: &str, dst_path: &str| {
-            let src_id = &facts[src_path]
-                .nodes
-                .iter()
-                .find(|n| n.name == src_fn)
-                .unwrap()
-                .id;
-            let dst_id = &facts[dst_path]
-                .nodes
-                .iter()
-                .find(|n| n.name == "target")
-                .unwrap()
-                .id;
-            graph
-                .edges
-                .iter()
-                .any(|e| e.kind == "calls" && &e.src == src_id && &e.dst == dst_id)
-        };
-
-        for (src_path, src_fn, dst_path, expect_linked, label) in [
-            ("src/lib.rs", "bad_self_call", "src/lib.rs", false, "src/lib.rs must reject my_crate::target()"),
-            ("src/lib.rs", "good_crate_call", "src/lib.rs", true, "src/lib.rs crate::target() links"),
-            ("src/sub.rs", "bad_sub_direct", "src/lib.rs", false, "src/sub.rs must reject my_crate::target()"),
-            ("src/sub.rs", "bad_sub_use", "src/lib.rs", false, "src/sub.rs must reject use my_crate::target"),
-            ("src/main.rs", "main_calls", "src/lib.rs", true, "src/main.rs my_crate::target() links"),
-            ("src/bin/cli.rs", "bin_calls", "src/lib.rs", true, "src/bin/cli.rs my_crate::target() links"),
-            ("tests/it.rs", "test_calls", "src/lib.rs", true, "tests/it.rs my_crate::target() links"),
-            ("examples/demo.rs", "example_calls", "src/lib.rs", true, "examples/demo.rs my_crate::target() links"),
-            ("benches/perf.rs", "bench_calls", "src/lib.rs", true, "benches/perf.rs my_crate::target() links"),
-            ("crates/sub_crate/src/lib.rs", "bad_subcrate_self", "crates/sub_crate/src/lib.rs", false, "subcrate src/lib.rs must reject sub_crate::target()"),
-            ("crates/sub_crate/tests/it.rs", "subcrate_test_calls", "crates/sub_crate/src/lib.rs", true, "subcrate tests/it.rs sub_crate::target() links"),
-        ] {
-            assert_eq!(has_call(src_path, src_fn, dst_path), expect_linked, "{label}");
-        }
-    }
 }

@@ -796,6 +796,7 @@ impl InMemorySqliteStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn table_names(&self) -> Result<Vec<String>, StateError> {
         self.with_reader(|conn| {
             let mut stmt = conn

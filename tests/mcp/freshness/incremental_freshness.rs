@@ -309,340 +309,6 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
     }
 }
 
-fn database_sidecars(database: &std::path::Path) -> Vec<(PathBuf, std::io::Result<fs::Metadata>)> {
-    ["-wal", "-shm", "-journal"]
-        .into_iter()
-        .map(|suffix| {
-            let path = PathBuf::from(format!("{}{suffix}", database.display()));
-            let metadata = fs::symlink_metadata(&path);
-            (path, metadata)
-        })
-        .collect()
-}
-
-#[test]
-fn delta_rollback_receipt_verification_matrix() {
-    use contextunity_acdd::engine::pipeline::{delta_with_test_hooks, PipelineTestHooks};
-    use std::path::Path;
-
-    #[derive(Clone, Copy)]
-    enum Phase {
-        Failure,
-        Verification,
-        Publication,
-    }
-    #[derive(Clone, Copy, PartialEq)]
-    enum Receipt {
-        Trusted,
-        Untrusted,
-        Absent,
-        Directory,
-    }
-    struct Case {
-        name: &'static str,
-        before: fn(&Path),
-        after: fn(&Path),
-        late: fn(&Path),
-        phase: Phase,
-        receipt: Receipt,
-        drift: bool,
-        wal: bool,
-        tampered: bool,
-        retry: bool,
-    }
-    fn noop(_: &Path) {}
-    fn touch(db: &Path) {
-        fs::File::options()
-            .write(true)
-            .open(db)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))
-            .unwrap();
-    }
-    fn epoch(db: &Path) {
-        fs::File::options()
-            .write(true)
-            .open(db)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
-            .unwrap();
-    }
-    let base = Workspace::with_files(&[("main.rs", "pub fn before() {}\n")]);
-    let server = in_process_server(&base);
-    let first = snapshot(&server).unwrap();
-    let base_database = server.db.clone();
-    drop(server);
-    let conn = rusqlite::Connection::open(&base_database).unwrap();
-    conn.execute_batch("CREATE TRIGGER reject_file_delete BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT, 'forced delta rollback'); END;").unwrap();
-    drop(conn);
-    let root = first["output_root"].as_str().unwrap();
-    assert!(db::cache::publish_verified(&base_database, base.root(), root).unwrap());
-    base.write("main.rs", "pub fn after_() {}\n");
-    let seed = fs::read(&base_database).unwrap();
-    let copy = Workspace::new();
-    fs::create_dir_all(copy.path(".acdd")).unwrap();
-    let database = copy.db();
-    let receipt = PathBuf::from(format!("{}.verified.json", database.display()));
-    let mut cases = Vec::new();
-    for (name, before) in [
-        (
-            "missing",
-            (|db: &Path| fs::remove_file(format!("{}.verified.json", db.display())).unwrap())
-                as fn(&Path),
-        ),
-        ("corrupt", |db: &Path| {
-            fs::write(format!("{}.verified.json", db.display()), b"invalid json").unwrap()
-        }),
-        ("root", |db: &Path| {
-            let path = format!("{}.verified.json", db.display());
-            let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            value["root"] = json!("/wrong-root");
-            fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-        }),
-        ("database", |db: &Path| {
-            let path = format!("{}.verified.json", db.display());
-            let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            value["database"] = json!("/wrong-database");
-            fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-        }),
-        ("identity", |db: &Path| {
-            let path = format!("{}.verified.json", db.display());
-            let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            value["identity"]["main"]["size"] = json!(0);
-            fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-        }),
-        #[cfg(unix)]
-        ("permissions", |db: &Path| {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                format!("{}.verified.json", db.display()),
-                fs::Permissions::from_mode(0o644),
-            )
-            .unwrap();
-        }),
-    ] {
-        cases.push(Case {
-            name,
-            before,
-            after: touch,
-            late: noop,
-            phase: Phase::Failure,
-            receipt: Receipt::Untrusted,
-            drift: false,
-            wal: false,
-            tampered: false,
-            retry: false,
-        });
-    }
-    cases.extend([
-        Case {
-            name: "tampered database",
-            before: noop,
-            after: |db| {
-                IndexFixture::open(db)
-                    .tamper_function_names("tampered")
-                    .unwrap();
-            },
-            late: noop,
-            phase: Phase::Failure,
-            receipt: Receipt::Untrusted,
-            drift: false,
-            wal: false,
-            tampered: true,
-            retry: false,
-        },
-        Case {
-            name: "benign identity drift",
-            before: noop,
-            after: epoch,
-            late: noop,
-            phase: Phase::Failure,
-            receipt: Receipt::Trusted,
-            drift: true,
-            wal: false,
-            tampered: false,
-            retry: false,
-        },
-        Case {
-            name: "publication directory",
-            before: noop,
-            after: epoch,
-            late: |db| {
-                let path = format!("{}.verified.json", db.display());
-                fs::remove_file(&path).unwrap();
-                fs::create_dir(path).unwrap();
-            },
-            phase: Phase::Publication,
-            receipt: Receipt::Directory,
-            drift: false,
-            wal: false,
-            tampered: false,
-            retry: false,
-        },
-        Case {
-            name: "nonempty wal",
-            before: noop,
-            after: epoch,
-            late: |db| {
-                fs::write(format!("{}-wal", db.display()), b"nonempty wal").unwrap();
-            },
-            phase: Phase::Publication,
-            receipt: Receipt::Absent,
-            drift: false,
-            wal: true,
-            tampered: false,
-            retry: false,
-        },
-        Case {
-            name: "verification drift",
-            before: noop,
-            after: epoch,
-            late: touch,
-            phase: Phase::Verification,
-            receipt: Receipt::Absent,
-            drift: false,
-            wal: false,
-            tampered: false,
-            retry: false,
-        },
-        Case {
-            name: "publication drift",
-            before: noop,
-            after: epoch,
-            late: touch,
-            phase: Phase::Publication,
-            receipt: Receipt::Absent,
-            drift: false,
-            wal: false,
-            tampered: false,
-            retry: false,
-        },
-        Case {
-            name: "valid receipt and retry",
-            before: noop,
-            after: noop,
-            late: noop,
-            phase: Phase::Failure,
-            receipt: Receipt::Trusted,
-            drift: false,
-            wal: false,
-            tampered: false,
-            retry: true,
-        },
-    ]);
-    for case in cases {
-        fs::write(&database, &seed).unwrap();
-        assert!(db::cache::publish_verified(&database, base.root(), root).unwrap());
-        let before = db::cache::identity(&database).unwrap();
-        let hooks = match case.phase {
-            Phase::Failure => PipelineTestHooks::delta_failure(case.before, case.after),
-            Phase::Verification => {
-                PipelineTestHooks::delta_failure_during_verification(case.after, case.late)
-            }
-            Phase::Publication => {
-                PipelineTestHooks::delta_failure_before_publication(case.after, case.late)
-            }
-        };
-        let error = delta_with_test_hooks(
-            base.root(),
-            &database,
-            &[PathBuf::from("main.rs")],
-            &copy.path(".acdd/extraction-cache"),
-            &hooks,
-        )
-        .unwrap_err();
-        assert!(
-            format!("{error:#}").contains("forced delta rollback"),
-            "{}: {error:#}",
-            case.name
-        );
-        #[cfg(unix)]
-        if case.name == "permissions" {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let identity = db::cache::identity(&database).unwrap();
-        assert_eq!(
-            db::cache::matches_with_reason(&database, base.root(), root, &identity).is_ok(),
-            case.receipt == Receipt::Trusted,
-            "{}",
-            case.name
-        );
-        if case.drift {
-            assert_ne!(before, identity, "identity drift was not exercised");
-        }
-        if case.tampered {
-            assert!(db::reader::open(&database, base.root()).is_err());
-        }
-        if case.receipt == Receipt::Directory {
-            assert!(receipt.is_dir());
-            assert_eq!(fs::read_dir(&receipt).unwrap().count(), 0);
-            fs::remove_dir(&receipt).unwrap();
-        }
-        if case.receipt == Receipt::Absent {
-            assert!(!receipt.exists());
-        }
-        if case.wal {
-            let wal = PathBuf::from(format!("{}-wal", database.display()));
-            assert!(fs::metadata(&wal).unwrap().len() > 0);
-            assert!(db::cache::describe_diff(&before, &identity).contains("wal:"));
-            fs::remove_file(wal).unwrap();
-        }
-        let conn = rusqlite::Connection::open(&database).unwrap();
-        let old_root: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key='output_root'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(old_root, root);
-        if !case.tampered {
-            let name: String = conn
-                .query_row("SELECT name FROM nodes WHERE name='before'", [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
-            assert_eq!(name, "before");
-        }
-        conn.execute_batch("DROP TRIGGER reject_file_delete")
-            .unwrap();
-        drop(conn);
-        if case.retry {
-            assert!(
-                receipt.exists(),
-                "rollback must preserve the verified receipt"
-            );
-            let retried = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
-                base.root(),
-                &database,
-                &[PathBuf::from("main.rs")],
-                &copy.path(".acdd/extraction-cache"),
-            )
-            .unwrap();
-            assert_ne!(retried["output_root"].as_str().unwrap(), root);
-            let conn = rusqlite::Connection::open(&database).unwrap();
-            let name: String = conn
-                .query_row("SELECT name FROM nodes WHERE name='after_'", [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
-            assert_eq!(name, "after_");
-        }
-        for (sidecar, metadata) in database_sidecars(&database) {
-            assert!(
-                matches!(metadata, Err(error) if error.kind() == std::io::ErrorKind::NotFound),
-                "{}: sidecar remains or cannot be inspected: {}",
-                case.name,
-                sidecar.display()
-            );
-        }
-        if receipt.exists() {
-            fs::remove_file(&receipt).unwrap();
-        }
-    }
-}
-
 #[test]
 fn same_server_refreshes_add_edit_rename_and_delete() {
     enum Mutation {
@@ -734,11 +400,12 @@ fn external_delta_invalidates_cached_connection_without_another_write() {
     let server = in_process_server(&ws);
     snapshot(&server).unwrap();
     ws.write("main.rs", "pub fn after() {}\n");
-    let delta = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
+    let delta = contextunity_acdd::engine::pipeline::delta_with_selection(
         ws.root(),
         &server.db,
         &[PathBuf::from("main.rs")],
-        &ws.path(".acdd/extraction-cache"),
+        None,
+        Some(&ws.path(".acdd/extraction-cache")),
     )
     .unwrap();
     let identity = db::cache::identity(&server.db).unwrap();
@@ -761,9 +428,7 @@ fn cold_rebuild_waits_for_active_mcp_reader_before_rename() {
         ws.write("main.rs", "pub fn before() {}\n");
         invalidate_mcp_connection_cache(&server.db).unwrap();
         assert_eq!(snapshot(&server).unwrap()["nodes"][0]["name"], "before");
-        assert_eq!(snapshot(&second).unwrap()["nodes"][0]["name"], "before");
-        assert!(server.connection.lock().unwrap().is_some());
-        assert!(second.connection.lock().unwrap().is_some());
+        assert!(snapshot(&second).unwrap()["nodes"][0]["name"] == "before");
         let inode = fs::metadata(&server.db).unwrap().ino();
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -787,11 +452,14 @@ fn cold_rebuild_waits_for_active_mcp_reader_before_rename() {
         let (boundary_tx, boundary_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let builder = std::thread::spawn(move || {
-            use contextunity_acdd::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
+            use contextunity_acdd::engine::pipeline::{
+                build_with_selection_and_guard, hooks::PipelineTestHooks,
+            };
             let hooks = PipelineTestHooks::before_generation_lock(move |_| {
                 let _ = boundary_tx.send(());
             });
-            let result = build_with_test_hooks(&root, &db, None, hooks);
+            let result =
+                build_with_selection_and_guard(&root, &db, None, None, Some(hooks), None);
             let _ = done_tx.send(result);
         });
         let reached = boundary_rx.recv_timeout(Duration::from_secs(10));

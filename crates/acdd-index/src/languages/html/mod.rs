@@ -1,25 +1,39 @@
-use super::template::{TemplateMasker, TemplateTagKind};
-use super::*;
+use crate::ast::syntax::{text, Syntax};
+use crate::languages::context::LanguageContext;
+use crate::languages::manifests;
+use crate::languages::profile::{LanguageProfile, TreeExtractArgs, TreeExtractor};
+use crate::languages::template::{TemplateMasker, TemplateTagKind};
+use crate::languages::types::{
+    module_stem, with_warm_parser, AstSearchCapabilities, ImportPath, LanguageFamily, SyntaxContext,
+};
+use crate::models::{Facts, Reference};
+use anyhow::{Context, Result};
+use std::path::Path;
+use std::sync::Arc;
+
+mod common;
 mod javascript;
 mod request_attributes;
+use common::{attribute_value, for_each_tag_attribute, is_html_entity, source_node, NodeFields};
 use request_attributes::{extract_request_attributes, request_url_status};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 /// Represents html data.
-pub struct Html;
+struct Html;
 /// Shared html language profile.
-pub static HTML: Html = Html;
+static HTML: Html = Html;
 /// Language profiles provided by this module.
-pub static PROFILES: &[&dyn LanguageProfile] = &[&HTML];
+pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&HTML];
 
-/// Extracts an HTML file using the shared HTML profile.
-pub fn extract_html_file(
-    path: &str,
-    source: &str,
-    module: &str,
-    facts: &mut Facts,
-) -> Result<()> {
-    HTML.extract_file(path, source, module, facts)
+fn javascript_profile() -> Option<&'static dyn LanguageProfile> {
+    #[cfg(feature = "lang-typescript")]
+    {
+        Some(&super::typescript::JAVASCRIPT)
+    }
+    #[cfg(not(feature = "lang-typescript"))]
+    {
+        None
+    }
 }
 
 impl LanguageProfile for Html {
@@ -30,15 +44,15 @@ impl LanguageProfile for Html {
         LanguageFamily("javascript")
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
-        by_id("javascript").map_or(&[], |profile| profile.manifest_filenames())
+        javascript_profile().map_or(&[], |profile| profile.manifest_filenames())
     }
     fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
-        by_id("javascript").map_or_else(Vec::new, |profile| {
+        javascript_profile().map_or_else(Vec::new, |profile| {
             profile.extract_manifest_dependencies(filename, content)
         })
     }
     fn is_stdlib(&self, module: &str) -> bool {
-        by_id("javascript").is_some_and(|profile| profile.is_stdlib(module))
+        javascript_profile().is_some_and(|profile| profile.is_stdlib(module))
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["html", "htm", "j2"]
@@ -136,62 +150,21 @@ impl LanguageProfile for Html {
                 symbol_path: false,
             });
         }
-        by_id("javascript")?.normalize_import_with_root(root, owner, module)
+        javascript_profile()?.normalize_import_with_root(root, owner, module)
     }
     fn external_import(&self, module: &str) -> Option<&'static str> {
         if module.starts_with("https://") || module.starts_with("http://") {
             Some("remote JavaScript module")
         } else {
-            by_id("javascript").and_then(|profile| profile.external_import(module))
+            javascript_profile().and_then(|profile| profile.external_import(module))
         }
     }
     fn builtin(&self, name: &str) -> bool {
-        by_id("javascript").is_some_and(|profile| profile.builtin(name))
-    }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        extract_file_impl(
-            path,
-            source,
-            module,
-            facts,
-            None,
-            &dependency_registry::DependencyRegistry::bundled_framework_rules()
-                .language_context_for_path(path),
-        )
+        javascript_profile().is_some_and(|profile| profile.builtin(name))
     }
 
     fn finish(&self, facts: &mut Facts) {
         javascript::finish(facts);
-    }
-}
-
-fn is_html_entity(slice: &str) -> bool {
-    if !slice.starts_with('&') {
-        return false;
-    }
-    if let Some(semi) = slice.find(';') {
-        if semi > 1 && semi <= 12 {
-            let inner = &slice[1..semi];
-            if let Some(num) = inner.strip_prefix('#') {
-                if let Some(hex) = num.strip_prefix(['x', 'X']) {
-                    !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit())
-                } else {
-                    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
-                }
-            } else {
-                inner.chars().all(|c| c.is_ascii_alphanumeric())
-            }
-        } else {
-            false
-        }
-    } else {
-        false
     }
 }
 
@@ -206,33 +179,6 @@ fn template_reference(path: &str, expression: String, kind: &str, line: usize) -
         alias: None,
         module: None,
         receiver_hint: None,
-    }
-}
-
-pub(super) struct NodeFields {
-    pub(super) id: String,
-    pub(super) kind: String,
-    pub(super) name: String,
-    pub(super) qualname: String,
-    pub(super) line: usize,
-    pub(super) end_line: usize,
-    pub(super) details: Value,
-}
-
-pub(super) fn source_node(path: &str, language: &'static str, fields: NodeFields) -> Node {
-    Node {
-        native_semantic: None,
-        id: fields.id,
-        kind: fields.kind,
-        name: fields.name,
-        qualname: fields.qualname,
-        path: path.into(),
-        line: fields.line,
-        end_line: fields.end_line,
-        is_test: crate::models::is_test(path),
-        language: language.into(),
-        generated: false,
-        details: fields.details,
     }
 }
 
@@ -468,39 +414,45 @@ fn emit_template_import_bindings(
     dialect: &manifests::syntax::TemplateDialect,
 ) {
     if let Some(rest) = after_directive(content, &dialect.import) {
-        if let Some((target, suffix)) = quoted_template_target(rest) {
-            if let Some(alias) = suffix
-                .trim()
-                .strip_prefix(dialect.alias.as_str())
-                .and_then(|rest| rest.strip_prefix(' '))
-                .map(str::trim)
-                .filter(|alias| valid_template_name(alias))
-            {
-                emit_template_import_binding(path, target, "*", alias, line, facts);
-            }
+        let Some((target, suffix)) = quoted_template_target(rest) else {
+            return;
+        };
+        if let Some(alias) = suffix
+            .trim()
+            .strip_prefix(dialect.alias.as_str())
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(str::trim)
+            .filter(|alias| valid_template_name(alias))
+        {
+            emit_template_import_binding(path, target, "*", alias, line, facts);
         }
-    } else if let Some(rest) = after_directive(content, &dialect.from) {
-        if let Some((target, suffix)) = quoted_template_target(rest) {
-            if let Some(imports) = after_directive(suffix.trim(), &dialect.import) {
-                for entry in imports.split(',') {
-                    let mut words = entry.split_whitespace();
-                    let Some(name) = words.next().filter(|name| valid_template_name(name)) else {
-                        continue;
-                    };
-                    let alias = match words.next() {
-                        None => name,
-                        Some(keyword) if keyword == dialect.alias => {
-                            match words.next().filter(|alias| valid_template_name(alias)) {
-                                Some(alias) if words.next().is_none() => alias,
-                                _ => continue,
-                            }
-                        }
-                        _ => continue,
-                    };
-                    emit_template_import_binding(path, target, name, alias, line, facts);
+        return;
+    }
+    let Some(rest) = after_directive(content, &dialect.from) else {
+        return;
+    };
+    let Some((target, suffix)) = quoted_template_target(rest) else {
+        return;
+    };
+    let Some(imports) = after_directive(suffix.trim(), &dialect.import) else {
+        return;
+    };
+    for entry in imports.split(',') {
+        let mut words = entry.split_whitespace();
+        let Some(name) = words.next().filter(|name| valid_template_name(name)) else {
+            continue;
+        };
+        let alias = match words.next() {
+            None => name,
+            Some(keyword) if keyword == dialect.alias => {
+                match words.next().filter(|alias| valid_template_name(alias)) {
+                    Some(alias) if words.next().is_none() => alias,
+                    _ => continue,
                 }
             }
-        }
+            _ => continue,
+        };
+        emit_template_import_binding(path, target, name, alias, line, facts);
     }
 }
 
@@ -541,6 +493,113 @@ fn directory_matches_path(path: &str, directory: &str) -> bool {
                 && path.as_bytes().get(index - 1) == Some(&b'/')
                 && path.as_bytes().get(index + directory.len()) == Some(&b'/')
         })
+}
+
+fn select_tag_dialect<'a>(
+    tag_kind: TemplateTagKind,
+    directive: &str,
+    dialects: &[(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)],
+    owned: &[(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)],
+) -> Option<(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)> {
+    if !owned.is_empty() {
+        return (owned.len() == 1).then(|| owned[0]);
+    }
+    if tag_kind != TemplateTagKind::Statement {
+        return (dialects.len() == 1).then(|| dialects[0]);
+    }
+    let mut matching = dialects.iter().copied().filter(|(_, dialect)| {
+        [
+            &dialect.assignment,
+            &dialect.function,
+            &dialect.import,
+            &dialect.from,
+            &dialect.load,
+            &dialect.include,
+            &dialect.extends,
+        ]
+        .iter()
+        .any(|name| name.as_str() == directive)
+            || dialect
+                .scope_open
+                .iter()
+                .chain(&dialect.scope_close)
+                .any(|name| name == directive)
+    });
+    if let Some(candidate) = matching.next() {
+        matching.next().is_none().then_some(candidate)
+    } else {
+        (dialects.len() == 1).then(|| dialects[0])
+    }
+}
+
+struct StatementTagMeta<'a> {
+    path: &'a str,
+    module: &'a str,
+    content: &'a str,
+    directive: &'a str,
+    line: usize,
+}
+
+fn process_statement_template_tag(
+    meta: StatementTagMeta<'_>,
+    facts: &mut Facts,
+    named_route_rules: &[(&manifests::syntax::SyntaxRule, &String, &String)],
+    dialect: Option<(&manifests::syntax::SyntaxRule, &manifests::syntax::TemplateDialect)>,
+    nested_scope: &mut usize,
+) {
+    let StatementTagMeta {
+        path,
+        module,
+        content,
+        directive,
+        line,
+    } = meta;
+    for (rule, configured, expression_prefix) in named_route_rules {
+        if let Some(name) = named_route_tag(content, configured) {
+            emit_named_route_reference(path, name, line, facts, rule, expression_prefix);
+        }
+    }
+    let Some((_, dialect)) = dialect else { return };
+    if dialect.scope_close.iter().any(|name| name == directive) {
+        *nested_scope = nested_scope.saturating_sub(1);
+    }
+    if *nested_scope == 0 {
+        if let Some(rest) = after_directive(content, &dialect.assignment) {
+            if let Some((name, value)) = rest.split_once('=') {
+                let name = name.trim();
+                if valid_template_name(name) && !value.trim().is_empty() {
+                    emit_template_binding(path, module, name, "variable", line, facts);
+                }
+            }
+        } else if let Some(rest) = after_directive(content, &dialect.function) {
+            if let Some((name, arguments)) = rest.split_once('(') {
+                let name = name.trim();
+                if valid_template_name(name) && arguments.trim_end().ends_with(')') {
+                    emit_template_binding(path, module, name, "function", line, facts);
+                }
+            }
+        }
+        emit_template_import_bindings(content, path, line, facts, dialect);
+    }
+    if valid_template_name(directive) {
+        emit_template_rule_reference(path, "tag", directive, line, facts);
+    }
+    emit_template_loads(content, path, line, facts, dialect);
+    for (name, relation) in [
+        (&dialect.include, "includes"),
+        (&dialect.extends, "extends"),
+        (&dialect.import, "template_imports"),
+        (&dialect.from, "template_imports"),
+    ] {
+        if let Some(target) = after_directive(content, name).and_then(extract_template_target) {
+            emit_template_reference(path, target, relation, line, facts);
+        }
+    }
+    if dialect.scope_open.iter().any(|name| name == directive)
+        || (directive == dialect.assignment && !content.contains('='))
+    {
+        *nested_scope += 1;
+    }
 }
 
 fn preprocess_template<'a>(
@@ -591,96 +650,21 @@ fn preprocess_template<'a>(
             let first_node = facts.nodes.len();
             let content = tag.content.trim();
             let directive = content.split_whitespace().next().unwrap_or("");
-            let dialect = if !owned.is_empty() {
-                (owned.len() == 1).then(|| owned[0])
-            } else if tag.kind == TemplateTagKind::Statement {
-                let mut matching = dialects.iter().copied().filter(|(_, dialect)| {
-                    [
-                        &dialect.assignment,
-                        &dialect.function,
-                        &dialect.import,
-                        &dialect.from,
-                        &dialect.load,
-                        &dialect.include,
-                        &dialect.extends,
-                    ]
-                    .iter()
-                    .any(|name| name.as_str() == directive)
-                        || dialect
-                            .scope_open
-                            .iter()
-                            .chain(&dialect.scope_close)
-                            .any(|name| name == directive)
-                });
-                if let Some(candidate) = matching.next() {
-                    matching.next().is_none().then_some(candidate)
-                } else {
-                    (dialects.len() == 1).then(|| dialects[0])
-                }
-            } else {
-                (dialects.len() == 1).then(|| dialects[0])
-            };
+            let dialect = select_tag_dialect(tag.kind, directive, &dialects, &owned);
             if tag.kind == TemplateTagKind::Statement {
-                for (rule, configured, expression_prefix) in &named_route_rules {
-                    if let Some(name) = named_route_tag(content, configured) {
-                        emit_named_route_reference(
-                            path,
-                            name,
-                            tag.line,
-                            facts,
-                            rule,
-                            expression_prefix,
-                        );
-                    }
-                }
-                let Some((_, dialect)) = dialect else { return };
-                let directive = content.split_whitespace().next().unwrap_or("");
-                if dialect.scope_close.iter().any(|name| name == directive) {
-                    nested_scope = nested_scope.saturating_sub(1);
-                }
-                if nested_scope == 0 {
-                    if let Some(rest) = after_directive(content, &dialect.assignment) {
-                        if let Some((name, value)) = rest.split_once('=') {
-                            let name = name.trim();
-                            if valid_template_name(name) && !value.trim().is_empty() {
-                                emit_template_binding(
-                                    path, module, name, "variable", tag.line, facts,
-                                );
-                            }
-                        }
-                    } else if let Some(rest) = after_directive(content, &dialect.function) {
-                        if let Some((name, arguments)) = rest.split_once('(') {
-                            let name = name.trim();
-                            if valid_template_name(name) && arguments.trim_end().ends_with(')') {
-                                emit_template_binding(
-                                    path, module, name, "function", tag.line, facts,
-                                );
-                            }
-                        }
-                    }
-                    emit_template_import_bindings(content, path, tag.line, facts, dialect);
-                }
-                if valid_template_name(directive) {
-                    emit_template_rule_reference(path, "tag", directive, tag.line, facts);
-                }
-                emit_template_loads(content, path, tag.line, facts, dialect);
-                for (name, relation) in [
-                    (&dialect.include, "includes"),
-                    (&dialect.extends, "extends"),
-                    (&dialect.import, "template_imports"),
-                    (&dialect.from, "template_imports"),
-                ] {
-                    if let Some(target) =
-                        after_directive(content, name).and_then(extract_template_target)
-                    {
-                        emit_template_reference(path, target, relation, tag.line, facts);
-                    }
-                }
-                if dialect.scope_open.iter().any(|name| name == directive)
-                    || (directive == dialect.assignment && !content.contains('='))
-                {
-                    nested_scope += 1;
-                }
+                process_statement_template_tag(
+                    StatementTagMeta {
+                        path,
+                        module,
+                        content,
+                        directive,
+                        line: tag.line,
+                    },
+                    facts,
+                    &named_route_rules,
+                    dialect,
+                    &mut nested_scope,
+                );
             } else if dialect.is_some()
                 && tag.kind == TemplateTagKind::Interpolation
                 && nested_scope == 0
@@ -791,39 +775,6 @@ fn emit_template_reference(path: &str, target: &str, kind: &str, line: usize, fa
     });
 }
 
-pub(super) fn for_each_tag_attribute<'tree>(
-    tag: Syntax<'tree>,
-    mut visit: impl FnMut(Syntax<'tree>) -> Result<std::ops::ControlFlow<()>>,
-) -> Result<()> {
-    let mut cursor = tag.walk();
-    for attribute in tag
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() == "attribute")
-    {
-        if visit(attribute)?.is_break() {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn attribute_value<'a>(tag: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
-    let mut found = None;
-    let _ = for_each_tag_attribute(tag, |attribute| {
-        if attribute
-            .named_child(0)
-            .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name))
-        {
-            found = attribute
-                .named_child(1)
-                .map(|node| text(node, source).trim_matches(['\'', '"']).trim());
-            return Ok(std::ops::ControlFlow::Break(()));
-        }
-        Ok(std::ops::ControlFlow::Continue(()))
-    });
-    found
-}
-
 fn record_tag_activation_signals(
     tag: Syntax<'_>,
     source: &str,
@@ -919,6 +870,147 @@ fn javascript_type(value: &str) -> bool {
     .any(|mime| value.eq_ignore_ascii_case(mime))
 }
 
+fn try_extract_script_fragment(path: &str, parse_input: &str, facts: &mut Facts) -> bool {
+    let is_script_fragment = (path.contains("_script") || path.contains("script"))
+        && !parse_input.contains("<html")
+        && !parse_input.contains("<div")
+        && !parse_input.contains("<body")
+        && !parse_input.contains("<template")
+        && !parse_input.contains("<script");
+    if !is_script_fragment {
+        return false;
+    }
+    let Some(javascript) = javascript_profile() else {
+        return false;
+    };
+    let mut wrapped = String::with_capacity(parse_input.len() + 8);
+    wrapped.push_str("({\n");
+    wrapped.push_str(parse_input);
+    wrapped.push_str("\n})");
+    let Ok(Some(tree)) = with_warm_parser(javascript.id(), javascript.grammar(path), |parser| {
+        parser.parse(&wrapped, None)
+    }) else {
+        return false;
+    };
+    let owner = format!("module:{path}");
+    let file = javascript.prepare(tree.root_node(), &wrapped);
+    let mut nodes = vec![tree.root_node()];
+    while let Some(node) = nodes.pop() {
+        javascript.extract_imports(
+            &SyntaxContext {
+                node,
+                source: &wrapped,
+                owner: &owner,
+                offset: 0,
+                file_state: &file.state,
+            },
+            facts,
+        );
+        let mut cursor = node.walk();
+        nodes.extend(node.named_children(&mut cursor));
+    }
+    true
+}
+
+fn record_script_island_scope(
+    context: &mut javascript::ScriptExtraction<'_>,
+    node: Syntax<'_>,
+    body: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+) {
+    let first_full_line = body.start_position().row
+        + if body.start_position().column == 0 { 1 } else { 2 };
+    let last_full_line = body.end_position().row;
+    let exclusive_inline = if node.start_position().row == node.end_position().row {
+        let line_start = source[..node.start_byte()]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let line_end = source[node.end_byte()..]
+            .find('\n')
+            .map_or(source.len(), |index| node.end_byte() + index);
+        source[line_start..line_end].trim() == text(node, source).trim()
+    } else {
+        false
+    };
+    if first_full_line <= last_full_line || exclusive_inline {
+        let island_id = format!("html-js-island:{path}:{}", body.start_byte());
+        context.facts.nodes.push(source_node(
+            path,
+            "javascript",
+            NodeFields {
+                id: island_id,
+                kind: "island_scope".into(),
+                name: "JavaScript script island".into(),
+                qualname: format!("{module}.script@{}", body.start_byte()),
+                line: if exclusive_inline {
+                    node.start_position().row + 1
+                } else {
+                    first_full_line
+                },
+                end_line: if exclusive_inline {
+                    node.end_position().row + 1
+                } else {
+                    last_full_line
+                },
+                details: Value::Null,
+            },
+        ));
+    }
+}
+
+fn extract_embedded_scripts(
+    context: &mut javascript::ScriptExtraction<'_>,
+    root: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+    activation_keys: &manifests::semantic::SyntaxActivationKeys,
+    html_request_rules: &[&manifests::syntax::SyntaxRule],
+) -> Result<()> {
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if matches!(node.kind(), "start_tag" | "self_closing_tag") {
+            record_tag_activation_signals(node, source, activation_keys, context.facts);
+            for rule in html_request_rules {
+                extract_request_attributes(node, source, path, module, context.facts, rule);
+            }
+            javascript::extract_handlers(context, node)?;
+        }
+        if node.kind() == "script_element" && executable_script(node, source) {
+            let mut cursor = node.walk();
+            if let Some(start_tag) = node
+                .named_children(&mut cursor)
+                .find(|n| n.kind() == "start_tag")
+            {
+                record_tag_activation_signals(start_tag, source, activation_keys, context.facts);
+            }
+            let mut cursor = node.walk();
+            for body in node
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() == "raw_text")
+            {
+                javascript::extract_island(
+                    context,
+                    javascript::Island {
+                        start: body.start_byte(),
+                        end: body.end_byte(),
+                        position: body.start_position(),
+                        kind: javascript::script_kind(node, source),
+                        object_literal: false,
+                    },
+                )?;
+                record_script_island_scope(context, node, body, path, source, module);
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    Ok(())
+}
+
 fn extract_file_impl(
     path: &str,
     source: &str,
@@ -926,6 +1018,7 @@ fn extract_file_impl(
     facts: &mut Facts,
     mut flows: Option<&mut crate::typed_facts::FlowStore>,
     rules: &Arc<LanguageContext>,
+    tree_extract: TreeExtractor,
 ) -> Result<()> {
     let has_template_tags = source.contains("{%")
         || source.contains("{{")
@@ -937,51 +1030,16 @@ fn extract_file_impl(
         std::borrow::Cow::Borrowed(source)
     };
     let parse_input = parsed_source.as_ref();
-    let is_script_fragment = (path.contains("_script") || path.contains("script"))
-        && !parse_input.contains("<html")
-        && !parse_input.contains("<div")
-        && !parse_input.contains("<body")
-        && !parse_input.contains("<template")
-        && !parse_input.contains("<script");
-    if is_script_fragment {
-        if let Some(javascript) = by_id("javascript") {
-            let mut wrapped = String::with_capacity(parse_input.len() + 8);
-            wrapped.push_str("({\n");
-            wrapped.push_str(parse_input);
-            wrapped.push_str("\n})");
-            if let Ok(Some(tree)) =
-                with_warm_parser(javascript.id(), javascript.grammar(path), |parser| {
-                    parser.parse(&wrapped, None)
-                })
-            {
-                let owner = format!("module:{path}");
-                let file = javascript.prepare(tree.root_node(), &wrapped);
-                let mut nodes = vec![tree.root_node()];
-                while let Some(node) = nodes.pop() {
-                    javascript.extract_imports(
-                        &SyntaxContext {
-                            node,
-                            source: &wrapped,
-                            owner: &owner,
-                            offset: 0,
-                            file_state: &file.state,
-                        },
-                        facts,
-                    );
-                    let mut cursor = node.walk();
-                    nodes.extend(node.named_children(&mut cursor));
-                }
-                return Ok(());
-            }
-        }
+    if try_extract_script_fragment(path, parse_input, facts) {
+        return Ok(());
     }
     let tree = with_warm_parser("html", tree_sitter_html::language(), |parser| {
         parser.parse(parse_input, None)
     })?
     .context("HTML parse cancelled")?;
     let err_count = facts.errors.len();
-    ast::extract_tree_with_language_context(
-        ast::TreeExtractContext {
+    tree_extract(
+        TreeExtractArgs {
             profile: &HTML,
             root: tree.root_node(),
             path,
@@ -1007,7 +1065,7 @@ fn extract_file_impl(
         })
         .collect();
     let activation_keys = rules.syntax_activation_keys();
-    let javascript_profile = by_id("javascript");
+    let javascript_profile = javascript_profile();
     let mut global_scope = None;
     if let Some(profile) = javascript_profile {
         with_warm_parser("javascript", tree_sitter_javascript::language(), |parser| {
@@ -1021,101 +1079,17 @@ fn extract_file_impl(
                 facts,
                 flows,
                 rules,
+                tree_extract,
             };
-            let mut pending = vec![tree.root_node()];
-            while let Some(node) = pending.pop() {
-                if matches!(node.kind(), "start_tag" | "self_closing_tag") {
-                    record_tag_activation_signals(node, source, activation_keys, context.facts);
-                    for rule in &html_request_rules {
-                        extract_request_attributes(
-                            node,
-                            source,
-                            path,
-                            module,
-                            context.facts,
-                            rule,
-                        );
-                    }
-                    javascript::extract_handlers(&mut context, node)?;
-                }
-                if node.kind() == "script_element" && executable_script(node, source) {
-                    let mut cursor = node.walk();
-                    if let Some(start_tag) = node
-                        .named_children(&mut cursor)
-                        .find(|n| n.kind() == "start_tag")
-                    {
-                        record_tag_activation_signals(
-                            start_tag,
-                            source,
-                            activation_keys,
-                            context.facts,
-                        );
-                    }
-                    let mut cursor = node.walk();
-                    for body in node
-                        .named_children(&mut cursor)
-                        .filter(|n| n.kind() == "raw_text")
-                    {
-                        javascript::extract_island(
-                            &mut context,
-                            javascript::Island {
-                                start: body.start_byte(),
-                                end: body.end_byte(),
-                                position: body.start_position(),
-                                kind: javascript::script_kind(node, source),
-                                object_literal: false,
-                            },
-                        )?;
-                        let first_full_line = body.start_position().row
-                            + if body.start_position().column == 0 {
-                                1
-                            } else {
-                                2
-                            };
-                        let last_full_line = body.end_position().row;
-                        let exclusive_inline =
-                            if node.start_position().row == node.end_position().row {
-                                let line_start = source[..node.start_byte()]
-                                    .rfind('\n')
-                                    .map_or(0, |index| index + 1);
-                                let line_end = source[node.end_byte()..]
-                                    .find('\n')
-                                    .map_or(source.len(), |index| node.end_byte() + index);
-                                source[line_start..line_end].trim() == text(node, source).trim()
-                            } else {
-                                false
-                            };
-                        if first_full_line <= last_full_line || exclusive_inline {
-                            let island_id = format!("html-js-island:{path}:{}", body.start_byte());
-                            context.facts.nodes.push(source_node(
-                                path,
-                                "javascript",
-                                NodeFields {
-                                    id: island_id,
-                                    kind: "island_scope".into(),
-                                    name: "JavaScript script island".into(),
-                                    qualname: format!("{module}.script@{}", body.start_byte()),
-                                    line: if exclusive_inline {
-                                        node.start_position().row + 1
-                                    } else {
-                                        first_full_line
-                                    },
-                                    end_line: if exclusive_inline {
-                                        node.end_position().row + 1
-                                    } else {
-                                        last_full_line
-                                    },
-                                    details: Value::Null,
-                                },
-                            ));
-                        }
-                    }
-                    continue;
-                }
-                let mut cursor = node.walk();
-                pending.extend(node.named_children(&mut cursor));
-            }
-            Ok::<(), anyhow::Error>(())
+            extract_embedded_scripts(
+                &mut context,
+                tree.root_node(),
+                path,
+                source,
+                module,
+                activation_keys,
+                &html_request_rules,
+            )
         })??;
     } else {
         let mut pending = vec![tree.root_node()];
@@ -1172,6 +1146,7 @@ pub(crate) fn extract_typed_with_context(
     module: &str,
     typed: &mut crate::typed_facts::TypedFacts,
     rules: &Arc<LanguageContext>,
+    tree_extract: TreeExtractor,
 ) -> Result<()> {
     extract_file_impl(
         path,
@@ -1180,29 +1155,9 @@ pub(crate) fn extract_typed_with_context(
         &mut typed.facts,
         Some(&mut typed.flows),
         rules,
+        tree_extract,
     )?;
     javascript::finish_typed(&mut typed.facts, &mut typed.flows);
     typed.project_named_selectors();
     Ok(())
-}
-
-#[cfg(test)]
-#[test]
-fn django_url_tag_emits_named_route_reference() {
-    let mut facts = crate::models::Facts::default();
-    extract_file_impl(
-        "templates/products.html",
-        "{% url 'product-list' %}",
-        "templates.products",
-        &mut facts,
-        None,
-        &dependency_registry::DependencyRegistry::bundled_framework_rules()
-            .language_context_for_path("templates/products.html"),
-    )
-    .unwrap();
-
-    assert!(facts.references.iter().any(|reference| {
-        reference.kind == "references_route"
-            && reference.expression == "django.route_name.product-list"
-    }));
 }

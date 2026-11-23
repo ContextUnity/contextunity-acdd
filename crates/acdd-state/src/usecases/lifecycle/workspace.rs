@@ -8,7 +8,7 @@ use crate::types::{
     GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, RunRecord, RunStatus, SaveAction,
     WorktreeLifecycle,
 };
-use crate::usecases::StateEngineConfig;
+use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{
     load_adapter, Adapter, ACDD_CONFIG_FILE, DEFAULT_CODE_DB, DEFAULT_STATE_DB,
 };

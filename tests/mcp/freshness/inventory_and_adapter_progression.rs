@@ -9,24 +9,6 @@ fn large_inventory_workspace() -> Workspace {
 
     let database = ws.db();
     ws.build_to(&database);
-
-    {
-        let conn = rusqlite::Connection::open(&database).unwrap();
-        let inventory: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key='inventory_snapshot'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        conn.execute(
-            "UPDATE metadata SET value=?1 WHERE key='inventory_snapshot'",
-            [format!("{inventory}{}", " ".repeat(8 * 1024 * 1024))],
-        )
-        .unwrap();
-        acdd_index::db::commitments::seal(&conn).unwrap();
-    }
-
     ws
 }
 

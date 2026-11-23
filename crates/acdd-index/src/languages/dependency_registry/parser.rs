@@ -1,56 +1,8 @@
-use super::super::LanguageFamily;
-use super::parsers;
-
-/// Supported language ecosystems for modular dependency manifest parsing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Ecosystem {
-    Rust,
-    JavaScript,
-    Python,
-    Go,
-    Jvm,
-    Php,
-    CSharp,
-    Ruby,
-    CCpp,
-}
-
-impl Ecosystem {
-    /// Resolves a canonical `LanguageFamily` name into its governing `Ecosystem`.
-    pub fn from_family(family: &str) -> Option<Self> {
-        match family {
-            "rust" => Some(Self::Rust),
-            "javascript" => Some(Self::JavaScript),
-            "python" => Some(Self::Python),
-            "go" => Some(Self::Go),
-            "java" | "kotlin" => Some(Self::Jvm),
-            "php" => Some(Self::Php),
-            "csharp" => Some(Self::CSharp),
-            "ruby" => Some(Self::Ruby),
-            "c" | "cpp" => Some(Self::CCpp),
-            _ => None,
-        }
-    }
-
-    /// Returns all `LanguageFamily` identities governed by this ecosystem's manifests.
-    pub const fn families(self) -> &'static [LanguageFamily] {
-        match self {
-            Self::Rust => &[LanguageFamily("rust")],
-            Self::JavaScript => &[LanguageFamily("javascript")],
-            Self::Python => &[LanguageFamily("python")],
-            Self::Go => &[LanguageFamily("go")],
-            Self::Jvm => &[LanguageFamily("java"), LanguageFamily("kotlin")],
-            Self::Php => &[LanguageFamily("php")],
-            Self::CSharp => &[LanguageFamily("csharp")],
-            Self::Ruby => &[LanguageFamily("ruby")],
-            Self::CCpp => &[LanguageFamily("c"), LanguageFamily("cpp")],
-        }
-    }
-}
+pub(crate) use crate::languages::types::Ecosystem;
 
 /// Workspace-relative module namespace prefix declared by a dependency manifest.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ModulePrefix {
+pub(crate) struct ModulePrefix {
     /// Ecosystem owning this prefix.
     pub ecosystem: Ecosystem,
     /// Declared namespace prefix (e.g. `example.com/app`, `App`, `Acme.Billing`).
@@ -78,7 +30,7 @@ pub(crate) struct RustManifestInfo {
 
 /// Typed output produced by a [`ManifestParser`] plugin.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParsedManifest {
+pub(crate) struct ParsedManifest {
     /// Ecosystem owning this manifest.
     pub ecosystem: Ecosystem,
     /// External dependencies declared by the manifest.
@@ -118,8 +70,9 @@ impl ParsedManifest {
 }
 
 /// Trait implemented by ecosystem-specific dependency manifest parsers.
-pub trait ManifestParser: Send + Sync {
+pub(crate) trait ManifestParser: Send + Sync {
     /// Ecosystem handled by this parser.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn ecosystem(&self) -> Ecosystem;
 
     /// Exact filenames or wildcard patterns (`*.ext`, `prefix*.ext`) recognized by this parser.
@@ -135,19 +88,6 @@ pub trait ManifestParser: Send + Sync {
     /// Parses manifest `content` for basename `filename` into a typed [`ParsedManifest`].
     fn parse(&self, filename: &str, content: &str) -> ParsedManifest;
 }
-
-/// Registered ecosystem manifest parsers evaluated during workspace discovery.
-pub static MANIFEST_PARSERS: &[&'static dyn ManifestParser] = &[
-    &parsers::cargo::CARGO_PARSER,
-    &parsers::npm::NPM_PARSER,
-    &parsers::python::PYTHON_PARSER,
-    &parsers::go::GO_PARSER,
-    &parsers::jvm::JVM_PARSER,
-    &parsers::php::PHP_PARSER,
-    &parsers::csharp::CSHARP_PARSER,
-    &parsers::ruby::RUBY_PARSER,
-    &parsers::c_cpp::C_CPP_PARSER,
-];
 
 /// Matches an exact filename or single-wildcard (`*`) filename pattern.
 pub(crate) fn filename_matches(pattern: &str, filename: &str) -> bool {

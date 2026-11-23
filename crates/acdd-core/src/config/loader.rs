@@ -1,15 +1,15 @@
 //! Workspace adapter loading, strict validation, and SQLite policy serialization.
 
+use super::constants::{
+    error, schema_error, ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES, DEFAULT_RETAIN_TRACES,
+    DEFAULT_STATE_DB,
+};
 use super::linked::resolve_linked_workspaces;
 use super::schema::{
     default_profiles_dirs, default_specs, validate_and_normalize_specs, Adapter, AdapterFile,
     LinkedWorkspace, ScannerLimits, SpecCollectionConfig, StrictAdapterReport,
 };
-use super::{
-    checked_child, error, safe_relative, schema_error, ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES,
-    DEFAULT_RETAIN_TRACES, DEFAULT_STATE_DB, LEGACY_05_KEYS,
-};
-use crate::errors::{ErrorCode, StateError};
+use crate::fs::{checked_child, safe_relative};
 use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
 use crate::subsystems::{SubsystemId, SubsystemRegistry};
@@ -36,13 +36,66 @@ pub fn load_adapter_report(
     load_adapter_inner(root, adapter_path)
 }
 
-/// Loads and normalizes workspace adapter configuration, failing closed on any linked-workspace error.
-pub fn load_adapter_strict(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
-    let report = load_adapter_report(root, adapter_path)?;
-    if !report.linked_workspace_errors.is_empty() {
-        return Err(schema_error(report.linked_workspace_errors.join("; ")));
+struct ParsedAdapterConfig {
+    raw: AdapterFile,
+    identity: Option<serde_yaml::Value>,
+    adapter_version: Option<String>,
+    explicit_adapter_path: Option<PathBuf>,
+}
+
+fn parse_adapter_config_file(
+    canonical_root: &Path,
+    adapter_path: Option<&Path>,
+    selected: Option<&Path>,
+) -> std::io::Result<ParsedAdapterConfig> {
+    let Some(path) = selected else {
+        return Ok(ParsedAdapterConfig {
+            raw: AdapterFile::default(),
+            identity: None,
+            adapter_version: None,
+            explicit_adapter_path: None,
+        });
+    };
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(error("adapter must not be a symlink"));
     }
-    Ok(report.adapter)
+    let canonical = path.canonicalize()?;
+    if !canonical.starts_with(canonical_root) {
+        return Err(error("adapter must be inside workspace root"));
+    }
+    let explicit_adapter_path = adapter_path.is_some().then(|| canonical.clone());
+    let content = fs::read_to_string(&canonical)?;
+    let mut identity: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| schema_error(format!("invalid acdd.yaml: {e}")))?;
+    if let Some(mapping) = identity.as_mapping_mut() {
+        for excluded in [
+            "response",
+            "DEBUG",
+            "debug",
+            "modules",
+            "profile",
+            "state_db",
+            "retain_traces",
+            "profiles_dirs",
+            "specs",
+        ] {
+            mapping.remove(serde_yaml::Value::String(excluded.into()));
+        }
+    }
+    let parsed: AdapterFile = serde_yaml::from_str(&content)
+        .map_err(|e| schema_error(format!("invalid acdd.yaml schema: {e}")))?;
+    let version_str = parsed.adapter_version.as_ref().map(|v| match v {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
+    Ok(ParsedAdapterConfig {
+        raw: parsed,
+        identity: Some(identity),
+        adapter_version: version_str,
+        explicit_adapter_path,
+    })
 }
 
 fn load_adapter_inner(
@@ -53,71 +106,12 @@ fn load_adapter_inner(
     let default_path = canonical_root.join(ACDD_CONFIG_FILE);
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
-    let mut explicit_adapter_path = None;
-    let (raw, identity, adapter_version) = match selected {
-        None => (AdapterFile::default(), None, None),
-        Some(path) => {
-            let metadata = fs::symlink_metadata(path)?;
-            if metadata.file_type().is_symlink() {
-                return Err(error("adapter must not be a symlink"));
-            }
-            let canonical = path.canonicalize()?;
-            if !canonical.starts_with(&canonical_root) {
-                return Err(error("adapter must be inside workspace root"));
-            }
-            if adapter_path.is_some() {
-                explicit_adapter_path = Some(canonical.clone());
-            }
-            let content = fs::read_to_string(&canonical)?;
-            let mut identity: serde_yaml::Value = serde_yaml::from_str(&content)
-                .map_err(|e| schema_error(format!("invalid acdd.yaml: {e}")))?;
-            if let Some(mapping) = identity.as_mapping() {
-                let found_legacy: Vec<&str> = LEGACY_05_KEYS
-                    .iter()
-                    .copied()
-                    .filter(|key| mapping.contains_key(serde_yaml::Value::String((*key).to_owned())))
-                    .collect();
-                if !found_legacy.is_empty() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        StateError::new(
-                            ErrorCode::ConfigMigrationRequired,
-                            format!(
-                                "legacy 0.5.x acdd.yaml keys require migration: {}",
-                                found_legacy.join(", ")
-                            ),
-                        )
-                        .with_hint(
-                            "Follow docs/runbooks/migration-0.6.md to update 0.5.x configuration keys",
-                        ),
-                    ));
-                }
-            }
-            if let Some(mapping) = identity.as_mapping_mut() {
-                for excluded in [
-                    "response",
-                    "DEBUG",
-                    "debug",
-                    "modules",
-                    "profile",
-                    "state_db",
-                    "retain_traces",
-                    "profiles_dirs",
-                    "specs",
-                ] {
-                    mapping.remove(serde_yaml::Value::String(excluded.into()));
-                }
-            }
-            let parsed: AdapterFile = serde_yaml::from_str(&content)
-                .map_err(|e| schema_error(format!("invalid acdd.yaml schema: {e}")))?;
-            let version_str = parsed.adapter_version.as_ref().map(|v| match v {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            });
-            (parsed, Some(identity), version_str)
-        }
-    };
+    let ParsedAdapterConfig {
+        raw,
+        identity,
+        adapter_version,
+        explicit_adapter_path,
+    } = parse_adapter_config_file(&canonical_root, adapter_path, selected)?;
     raw.response
         .validate()
         .map_err(|e| schema_error(e.to_string()))?;
@@ -450,6 +444,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
 mod tests {
     use super::super::paths::{resolve_code_db_path, resolve_state_db_path};
     use super::*;
+    use crate::errors::{ErrorCode, StateError};
 
     #[test]
     fn specs_collections_and_adapter_digest_isolation_matrix() {
@@ -612,8 +607,8 @@ roots: [.]
             );
         }
 
-        // 2. Legacy 0.5 keys -> ConfigMigrationRequired via StateError::from_anyhow.
-        for legacy_key in [
+        // 2. Removed legacy keys are rejected via deny_unknown_fields -> ProfileSchemaInvalid.
+        for unknown_key in [
             "milestones",
             "plans",
             "tasks_db",
@@ -624,30 +619,22 @@ roots: [.]
             "task_project",
             "acdd_profile",
         ] {
-            let yaml = if matches!(legacy_key, "milestones" | "plans") {
-                format!("{legacy_key}: [docs/{legacy_key}]\n")
+            let yaml = if matches!(unknown_key, "milestones" | "plans") {
+                format!("{unknown_key}: [docs/{unknown_key}]\n")
             } else {
-                format!("{legacy_key}: legacy_val\n")
+                format!("{unknown_key}: legacy_val\n")
             };
             std::fs::write(dir.join(ACDD_CONFIG_FILE), &yaml).unwrap();
             let err: anyhow::Error = load_adapter(&dir, None).unwrap_err().into();
             let state_err = StateError::from_anyhow(&err).expect("StateError expected");
             assert_eq!(
                 state_err.code,
-                ErrorCode::ConfigMigrationRequired,
-                "{legacy_key}: {state_err}"
-            );
-            assert!(
-                state_err
-                    .hint
-                    .as_deref()
-                    .is_some_and(|h| h.contains("migration-0.6.md")),
-                "{legacy_key}: {:?}",
-                state_err.hint
+                ErrorCode::ProfileSchemaInvalid,
+                "{unknown_key}: {state_err}"
             );
         }
 
-        // 3. load_adapter_report / load_adapter_strict linked_workspaces validation.
+        // 3. load_adapter_report linked_workspaces validation.
         let valid_ws = dir.join("valid_ws");
         let file_not_dir = dir.join("not_a_dir.txt");
         let _outside_cleanup = crate::fs::ScopedTempDir::create("acdd_strict_outside").unwrap();
@@ -685,7 +672,7 @@ linked_workspaces:
         assert_eq!(non_strict.linked_workspaces.len(), 1);
         assert_eq!(non_strict.linked_workspaces[0].name, "dup");
 
-        // load_adapter_report surfaces every linked-workspace error; load_adapter_strict fails closed.
+        // load_adapter_report surfaces every linked-workspace error directly.
         let report = load_adapter_report(&dir, None).unwrap();
         let expected_err_count = if cfg!(unix) { 5 } else { 4 };
         assert_eq!(
@@ -694,9 +681,14 @@ linked_workspaces:
             "{:?}",
             report.linked_workspace_errors
         );
-        let strict_err: anyhow::Error = load_adapter_strict(&dir, None).unwrap_err().into();
-        let state_err = StateError::from_anyhow(&strict_err).expect("StateError expected");
-        assert_eq!(state_err.code, ErrorCode::ProfileSchemaInvalid);
+        assert!(
+            report
+                .linked_workspace_errors
+                .iter()
+                .any(|e| e.contains("duplicate")),
+            "{:?}",
+            report.linked_workspace_errors
+        );
 
         // 4. resolve_state_db_path / resolve_code_db_path helpers.
         let mut adapter = Adapter::default();

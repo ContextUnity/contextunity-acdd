@@ -1,10 +1,10 @@
 use super::super::parser::{Ecosystem, ManifestParser, ParsedManifest};
 
 /// Parser for C/C++ build manifests (`CMakeLists.txt`, `meson.build`).
-pub struct CCppParser;
+pub(crate) struct CCppParser;
 
 /// Shared C/C++ manifest parser instance.
-pub static C_CPP_PARSER: CCppParser = CCppParser;
+pub(crate) static C_CPP_PARSER: CCppParser = CCppParser;
 
 impl ManifestParser for CCppParser {
     fn ecosystem(&self) -> Ecosystem {

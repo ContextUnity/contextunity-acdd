@@ -1,5 +1,5 @@
-use super::{paging, reader};
-use crate::db::traversal;
+use crate::db::paging;
+use crate::db::reader::{selectors::select_detail_with_path, sql::rows};
 use crate::models::{
     stable_hash64,
     tags::{EdgeKind, NodeKind},
@@ -80,7 +80,7 @@ fn call_node(row: &Value) -> Result<CallNode> {
 }
 
 fn selected_call_node(conn: &Connection, hash: i64) -> Result<CallNode> {
-    let rows = reader::rows(
+    let rows = rows(
         conn,
         "SELECT n.node_hash AS hash,n.id,n.name,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.node_hash=?1",
         &[&hash],
@@ -123,7 +123,7 @@ fn call_paths(
             EdgeKind::Calls.as_str(),
             MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1
         );
-        let expanded = reader::rows(
+        let expanded = rows(
             conn,
             &sql,
             &[&frontier_json],
@@ -241,7 +241,7 @@ fn page_call_nodes(
     let sql = format!(
         "SELECT {columns},json_extract(n.details,'$.test_role') AS test_role FROM json_each(?1) requested JOIN nodes n ON n.node_hash=CAST(requested.value AS INTEGER) JOIN path_dictionary p ON p.path_id=n.path_id ORDER BY CAST(requested.key AS INTEGER)"
     );
-    let mut items = reader::rows(conn, &sql, &[&serialized], options.limit)?;
+    let mut items = rows(conn, &sql, &[&serialized], options.limit)?;
     for (item, (_hash, path)) in items.iter_mut().zip(page) {
         let call_path = path
             .nodes
@@ -298,7 +298,7 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
         ),
         &[&stable_hash64(id)],
     )?;
-    let dependencies = traversal::immediate_links(conn, id, inbound, false)?;
+    let dependencies = paging::immediate_links(conn, id, inbound, false)?;
     let immediate = seeds.saturating_add(dependencies);
     if immediate > 1000 {
         bail!(
@@ -322,7 +322,7 @@ pub fn tests_paged_with_path(
         _ => bail!("direction must be inbound or outbound"),
     };
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
+    let node = select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let id_hash = stable_hash64(id);
     admit_test_mapping(conn, id, inbound)?;

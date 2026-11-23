@@ -1,5 +1,5 @@
-use super::{LintScope, LintViolation};
-use crate::db::reader;
+use super::types::{LintScope, LintViolation};
+use crate::db::reader::selectors as reader;
 use crate::models::{tags::NodeKind, StatementFingerprint};
 use acdd_core::lint::{LintCategory, LintSeverity};
 use anyhow::Result;
