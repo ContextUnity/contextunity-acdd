@@ -126,6 +126,7 @@ fn source_line_anchors_check_bounds() {
 #[test]
 fn discovers_workspace_markdown_and_excludes_generated_directories() {
     let workspace = Workspace::new();
+    workspace.write("acdd.yaml", "ignore:\n  - website\n");
     for path in ["AGENTS.md", "skills/example/SKILL.md", "other/note.md"] {
         workspace.write(path, "[missing](missing.md)\n");
     }
@@ -133,6 +134,7 @@ fn discovers_workspace_markdown_and_excludes_generated_directories() {
         "target/note.md",
         ".git/note.md",
         ".worktrees/example/note.md",
+        "website/note.md",
     ] {
         workspace.write(path, "[missing](missing.md)\n");
     }
@@ -145,6 +147,7 @@ fn discovers_workspace_markdown_and_excludes_generated_directories() {
         "target/note.md",
         ".git/note.md",
         ".worktrees/example/note.md",
+        "website/note.md",
     ] {
         assert!(!errors.contains(path), "{errors}");
     }

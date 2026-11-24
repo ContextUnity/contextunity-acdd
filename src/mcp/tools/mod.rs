@@ -54,7 +54,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Uses server worktree routing; pass worktree for explicit selection."
+        description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Workspace-wide only (has no path parameter; use code_map_search with path or code_map_analyze with target for directory scope). Uses server worktree routing; pass worktree for explicit selection."
     )]
     async fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         code_tools::code_map_overview(self, p).await
@@ -75,7 +75,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Search names, qualified names, indexed parameter and return types, decorators, and tokens. Use takes:Type or returns:Type to filter by a parameter or return type. A trailing * is a name prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
+        description = "Search names, qualified names, indexed parameter and return types, decorators, and tokens. Filter optionally by kind, classification ('production', 'test', 'documentation'), or path; use takes:Type or returns:Type for type filters. A trailing * is a name prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
     )]
     async fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         code_tools::code_map_search(self, p).await
@@ -131,7 +131,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted if path has a recognized file extension or resolves to a single-language directory. Call acdd_guide with topic=ast for the profile capability matrix and examples."
+        description = "Tree-sitter structural search over admitted source (default limit: 15). Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted to infer from path or search compatible indexed languages in scope. Call acdd_guide with topic=ast for the profile capability matrix and examples."
     )]
     async fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         code_tools::ast_grep_search(self, p).await

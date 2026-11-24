@@ -795,6 +795,7 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -808,6 +809,7 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
             path: Some("./pkg"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(1),
         },
     )
@@ -823,6 +825,7 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
             path: Some("file:pkg/sub/b.py"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -839,6 +842,7 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
                     path: Some(invalid),
                     include_docs: false,
                     exact: false,
+                    classification: None,
                     page: &options(10)
                 }
             )

@@ -27,6 +27,22 @@ pub(super) fn looks_like_sql(value: &str) -> bool {
     })
 }
 
+fn resolve_symbol_view_options(
+    page_input: &super::inputs::PageInput,
+    source_input: &super::inputs::SourceInput,
+    include_coverage: bool,
+    policy: &ResponsePolicy,
+) -> anyhow::Result<(
+    acdd_core::response::QueryOptions,
+    acdd_core::response::SourceOptions,
+    CoverageOptions,
+)> {
+    let page = page_input.resolve(policy)?;
+    let source = source_input.resolve_with(policy, page_input.generation.as_deref(), Some(false))?;
+    let coverage = CoverageOptions { include_coverage };
+    Ok((page, source, coverage))
+}
+
 async fn responding_blocking(
     server: &Server,
     output_format: OutputFormat,
@@ -173,11 +189,8 @@ pub(super) async fn code_map_inspect(server: &Server, p: Inspect) -> CallToolRes
         move |server, adapter, policy| {
             let selector = p.selector()?;
             let path = p.path()?;
-            let page = p.page.resolve(policy)?;
-            let source = p.source(policy, false)?;
-            let coverage = CoverageOptions {
-                include_coverage: p.include_coverage,
-            };
+            let (page, source, coverage) =
+                resolve_symbol_view_options(&p.page, &p.source_input, p.include_coverage, policy)?;
             let mut result = server.read_with_adapter(adapter, |c| {
                 let mut result = symbols::inspect_with_path_options(
                     c,
@@ -269,16 +282,19 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
         None,
         Some(DiscoveryKind::Search),
         move |server, adapter, policy| {
+            let pattern = p.pattern()?;
+            let path = p.path()?;
             server.read_with_adapter(adapter, |c| {
                 let default_detail =
                     (p.page.limit.unwrap_or(policy.page_size) > 10).then_some(Detail::Compact);
                 let page = p.page.resolve_with_default_detail(policy, default_detail)?;
                 let res = symbols::search_with_options(
                     c,
-                    p.pattern()?,
+                    pattern,
                     &symbols::SearchOptions {
                         kind: p.kind.as_deref(),
-                        path: p.path.as_deref().filter(|path| !path.is_empty()),
+                        classification: p.classification,
+                        path: path.filter(|path| !path.is_empty()),
                         include_docs: p.include_docs,
                         exact: p.exact,
                         page: &page,
@@ -312,9 +328,10 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
                 if format == OutputFormat::Markdown {
                     res["request_scope"] = serde_json::json!({
                         "workspace_root": server.root.display().to_string(),
-                        "pattern": p.pattern,
+                        "pattern": pattern,
                         "kind": p.kind,
-                        "path": p.path,
+                        "classification": p.classification.map(acdd_core::response::SymbolClassification::as_str),
+                        "path": path,
                         "exact": p.exact,
                         "include_docs": p.include_docs,
                     });
@@ -336,11 +353,13 @@ pub(super) async fn code_map_tests(server: &Server, p: Tests) -> CallToolResult 
         None,
         None,
         move |server, adapter, policy| {
+            let selector = p.selector()?;
+            let path = p.path()?;
             server.read_with_adapter(adapter, |c| {
                 symbols::tests_paged_with_path(
                     c,
-                    &p.selector,
-                    p.path.as_deref(),
+                    selector,
+                    path,
                     &p.direction,
                     &p.page.resolve(policy)?,
                 )
@@ -360,14 +379,16 @@ pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResul
         None,
         None,
         move |server, adapter, policy| {
+            let selector = p.selector()?;
+            let path = p.path()?;
             let page = p.page.resolve(policy)?;
             server.read_with_adapter(adapter, |c| {
                 traversal::impact_with_path_options(
                     c,
                     &server.root,
-                    p.selector.as_deref(),
+                    selector,
                     p.changes.as_deref(),
-                    p.path.as_deref(),
+                    path,
                     &traversal::TraversalOptions {
                         depth: p.depth,
                         inbound: traversal::impact_inbound(Some(p.direction.as_str()))?,
@@ -392,18 +413,17 @@ pub(super) async fn code_map_explain(server: &Server, p: Explain) -> CallToolRes
         Some(true),
         None,
         move |server, adapter, policy| {
-            let page = p.page.resolve(policy)?;
-            let source = p.source(policy, false)?;
-            let coverage = CoverageOptions {
-                include_coverage: p.include_coverage,
-            };
+            let selector = p.selector()?;
+            let path = p.path()?;
+            let (page, source, coverage) =
+                resolve_symbol_view_options(&p.page, &p.source_input, p.include_coverage, policy)?;
             server.read_with_adapter(adapter, |c| {
                 let direction = reader::ExplainDirection::parse_optional(p.direction.as_deref())?;
                 symbols::explain_with_path_options(
                     c,
                     &server.root,
-                    &p.selector,
-                    p.path.as_deref(),
+                    selector,
+                    path,
                     &symbols::SymbolExplainOptions {
                         explain: reader::ExplainOptions {
                             direction,
@@ -440,23 +460,16 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
         None,
         discovery,
         move |server, adapter, policy| {
-            let (effective_op, effective_selector) = if implicit_sql {
+            let selector = p.selector()?;
+            let path = p.path()?;
+            let (effective_op, effective_selector) = if implicit_sql || p.operation.trim() == "sql" {
                 (
                     "sql",
-                    p.sql
-                        .as_deref()
-                        .or(p.query.as_deref())
-                        .or(p.selector.as_deref())
+                    p.sql_statement()?
                         .or_else(|| looks_like_sql(&p.operation).then_some(p.operation.as_str())),
                 )
             } else {
-                (
-                    p.operation.as_str(),
-                    p.target
-                        .as_deref()
-                        .or(p.selector.as_deref())
-                        .or(p.query.as_deref()),
-                )
+                (p.operation.as_str(), p.target.as_deref().or(selector))
             };
             server.read_with_adapter(adapter, |c| {
                 let page = p.page.resolve(policy)?;
@@ -471,9 +484,9 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
                 }
                 if let Some(target) = p.target.as_deref() {
                     anyhow::ensure!(
-                        p.selector.as_deref().is_none_or(|s| s == target)
+                        selector.is_none_or(|s| s == target)
                             && p.query.as_deref().is_none_or(|s| s == target)
-                            && p.path.as_deref().is_none_or(|s| s == target),
+                            && path.is_none_or(|s| s == target),
                         "target conflicts with selector, query, or path"
                     );
                 }
@@ -481,7 +494,7 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
                     traversal::duplicates_paged(
                         c,
                         effective_selector,
-                        p.path.as_deref(),
+                        path,
                         p.level.as_deref(),
                         p.min_lines,
                         &page,
@@ -491,7 +504,7 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
                         c,
                         effective_op,
                         effective_selector,
-                        p.path.as_deref(),
+                        path,
                         &traversal::GraphQueryOptions {
                             depth: p.depth,
                             direction: p.direction.as_deref(),
@@ -555,11 +568,13 @@ pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> Call
         None,
         None,
         move |server, adapter, policy| {
+            let selector = p.selector()?;
+            let path = p.path()?;
             server.read_with_adapter(adapter, |c| {
                 traversal::removal_paged_with_path(
                     c,
-                    &p.selector,
-                    p.path.as_deref(),
+                    selector,
+                    path,
                     &p.page.resolve(policy)?,
                 )
             })
@@ -578,6 +593,7 @@ pub(super) async fn code_map_lint(server: &Server, p: Lint) -> CallToolResult {
         None,
         None,
         move |server, adapter, policy| {
+            let target = p.target()?.map(str::trim).filter(|s| !s.is_empty());
             let page = p.page.resolve(policy)?;
             server.read_with_adapter(adapter, |c| {
                 let rule_ids: Option<Vec<String>> = p.rules.as_ref().map(|list| {
@@ -587,11 +603,7 @@ pub(super) async fn code_map_lint(server: &Server, p: Lint) -> CallToolResult {
                         .collect()
                 });
                 let req = acdd_index::db::lint::LintRequest {
-                    target: p
-                        .target
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty()),
+                    target,
                     paths: None,
                     categories: p.categories.as_deref(),
                     rule_ids: rule_ids.as_deref().filter(|r| !r.is_empty()),
@@ -607,6 +619,8 @@ pub(super) async fn code_map_lint(server: &Server, p: Lint) -> CallToolResult {
     .await
 }
 
+const DEFAULT_AST_SEARCH_LIMIT: usize = 15;
+
 pub(super) async fn ast_grep_search(server: &Server, p: Ast) -> CallToolResult {
     let format = p.page.output_format();
     responding_blocking(
@@ -617,32 +631,40 @@ pub(super) async fn ast_grep_search(server: &Server, p: Ast) -> CallToolResult {
         None,
         Some(DiscoveryKind::Ast),
         move |server, adapter, policy| {
+            let pattern = p.pattern()?;
+            let path = p.path()?;
             server.read_with_adapter(adapter, |conn| {
-                let pattern = p.pattern()?;
-                let language = ast::resolve_ast_language(
-                    conn,
-                    &server.root,
-                    adapter,
-                    p.language.as_deref(),
-                    p.path.as_deref(),
-                )?;
-                let mut result = ast::search_paged_with_adapter(
+                let languages = ast::resolve_ast_languages(
                     conn,
                     &server.root,
                     adapter,
                     pattern,
-                    &language,
-                    p.path.as_deref(),
-                    &p.page.resolve(policy)?,
+                    p.language.as_deref(),
+                    path,
                 )?;
+                let lang_refs: Vec<&str> = languages.iter().map(String::as_str).collect();
+                let mut options = p.page.resolve(policy)?;
+                if p.page.limit.is_none() {
+                    options.limit = DEFAULT_AST_SEARCH_LIMIT.min(policy.page_size).max(1);
+                }
+                let mut result = ast::search_paged_languages_with_adapter(
+                    conn,
+                    &server.root,
+                    adapter,
+                    pattern,
+                    &lang_refs,
+                    path,
+                    &options,
+                )?;
+                let language_label = languages.join(", ");
                 result["pattern"] = serde_json::json!(pattern);
-                result["language"] = serde_json::json!(language);
+                result["language"] = serde_json::json!(language_label);
                 if format == OutputFormat::Markdown {
                     result["request_scope"] = serde_json::json!({
                         "workspace_root": server.root.display().to_string(),
                         "pattern": pattern,
-                        "language": language,
-                        "path": p.path,
+                        "language": language_label,
+                        "path": path,
                     });
                 }
                 Ok(result)

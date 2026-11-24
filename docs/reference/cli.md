@@ -52,7 +52,7 @@ acdd read notes.txt --mode delta --baseline HEAD
 acdd read notes.txt --mode raw --output-file exports/read.txt
 ```
 
-- **`read <path>`**: shares the same layered reader and budgets as MCP `acdd_read` (see [layered file reader](mcp-tools.md#layered-file-reader)).
+- **`read <path>`**: shares the same layered reader, response detail policy (`response.detail`, `compact` by default), and budgets as MCP `acdd_read` (see [layered file reader](mcp-tools.md#layered-file-reader)).
 - **Auto mode**: selects `snippet` when `--selector` is given, `search` when `--pattern` is given, and `lines` otherwise (or pass a symbol selector directly with `--mode snippet`).
 - **Index requirements**: `lines`, `raw`, `search`, and `delta` run without an index; Markdown `outline` requires `docs`; code `outline` and `snippet` require the code index.
 - **Symbol paging**: bound output with `--max-body-lines` and `--leading-lines`, and continue across pages using `--source-offset` + `--generation`.
@@ -64,7 +64,7 @@ acdd query overview
 acdd query overview --aspects entrypoints
 acdd query overview --aspects entrypoints_with_tests
 acdd query overview --aspects topology
-acdd query search 'parse*' --kind function --limit 30
+acdd query search 'parse*' --kind function --classification production --limit 30
 acdd query search 'takes:GateProfile'
 acdd query search 'returns:Result'
 acdd query inspect 'src/module.py:parse' --show-source
@@ -94,7 +94,7 @@ acdd --format json query overview
 - **`query tests`**: supports `--direction inbound` (covering tests) and `--direction outbound` (production targets exercised by a test).
 - **`query run <op>`**: executes `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, or `dead_tails`.
 - **`query analyze`**: accepts an indexed path, empty workspace target, or one read-only `SELECT`/`WITH` statement (computes cycles in CLI diagnostic mode; MCP uses `include_cycles: true`).
-- **`query inspect --show-source`**: returns the digest-checked symbol body; continue with `--source-offset` and the previous page's `--generation`. Source pages break strictly on line boundaries (see [limits and freshness](../runbooks/limits-and-freshness.md)).
+- **`query inspect --show-source`**: returns the digest-checked symbol body (omitting resolution `coverage` by default, matching MCP `code_map_inspect`); continue with `--source-offset` and the previous page's `--generation`. Source pages break strictly on line boundaries (see [limits and freshness](../runbooks/limits-and-freshness.md)).
 - **`--format markdown|json`**: global output flag valid before or after any subcommand; Markdown renders verified vs. candidate edge evidence, while JSON preserves exact structured payloads.
 - **`analysis_gaps` & explain edges**: `inspect` and `explain` include paged `analysis_gaps` (reason, path, line, scope, evidence) plus `calls` (exact) and `possible_calls` (`possible`, bounded branch joins), including `trait_object_dispatch` and `macro_expansion_not_analyzed`.
 
@@ -107,7 +107,7 @@ acdd ast grep 'print($VALUE)' --lang python --path src
 ```
 
 - **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`).
-- **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (`--limit 1..=100` matches MCP page objects; `101..=10000` returns CLI-only aggregate matches).
+- **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (infers compatible language(s) from `--path` or pattern grammar when `--lang` is omitted, dropping `yaml`/`json`/`toml` whenever at least one programming language parses cleanly; omits empty capture entries for anonymous `$$$` wildcards; `--limit 1..=100` matches MCP page objects while defaulting to `100` on CLI vs `15` on MCP `ast_grep_search`, and `101..=10000` returns CLI-only aggregate matches).
 
 ### Unified architectural and documentation lint (`acdd lint`)
 

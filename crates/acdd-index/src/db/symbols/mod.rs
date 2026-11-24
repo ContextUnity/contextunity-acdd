@@ -103,6 +103,7 @@ mod tests {
             "alpha",
             &SearchOptions {
                 kind: Some("function"),
+                classification: None,
                 path: Some("file://./src"),
                 include_docs: false,
                 exact: true,

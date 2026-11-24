@@ -309,6 +309,7 @@ fn queries_bound_results_and_indexes_cover_edge_predicates() {
                     path: None,
                     include_docs: false,
                     exact: false,
+                    classification: None,
                     page: &page,
                 },
             )

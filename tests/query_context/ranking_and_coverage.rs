@@ -60,6 +60,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &page_options,
             },
         )
@@ -95,6 +96,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &full,
         },
     )
@@ -111,6 +113,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -125,6 +128,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -265,6 +269,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
                         path,
                         include_docs,
                         exact: false,
+                        classification: None,
                         page: &query,
                     },
                 )
@@ -468,6 +473,7 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -486,6 +492,7 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &page_options,
             },
         )
@@ -508,6 +515,7 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -1380,6 +1388,7 @@ fn compact_search_preserves_distinct_selectors_and_locations() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(10),
         },
     )
@@ -1394,6 +1403,7 @@ fn compact_search_preserves_distinct_selectors_and_locations() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &full_options,
         },
     )

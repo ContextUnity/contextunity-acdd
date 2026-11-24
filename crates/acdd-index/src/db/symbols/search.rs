@@ -13,7 +13,9 @@ use crate::models::{
     stable_hash64,
     tags::{EdgeKind, LanguageId, NodeKind},
 };
-use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_core::response::{
+    Detail, QueryOptions, ResponsePolicy, SourceOptions, SymbolClassification,
+};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
@@ -37,16 +39,28 @@ fn escape_like(value: &str) -> String {
         .replace('_', "\\_")
 }
 
-fn scope_filter_sql(kind_idx: usize, path_idx: usize, include_docs_idx: usize) -> String {
+fn scope_filter_sql(
+    kind_idx: usize,
+    path_idx: usize,
+    include_docs_idx: usize,
+    class_idx: usize,
+) -> String {
     let function = NodeKind::Function.as_str();
     let method = NodeKind::Method.as_str();
     let markdown = LanguageId::Markdown.as_str();
     let p_start = path_idx + 1;
     let p_end = path_idx + 2;
+    let prod = SymbolClassification::Production.sql_code();
+    let test = SymbolClassification::Test.sql_code();
+    let docs = SymbolClassification::Documentation.sql_code();
     format!(
         "(?{kind_idx}='' OR n.kind=?{kind_idx} OR (?{kind_idx}='{method}' AND n.kind='{function}') OR (?{kind_idx}='{function}' AND n.kind='{method}')) \
          AND (?{path_idx}='' OR pd.path=?{path_idx} OR (pd.path>=?{p_start} AND pd.path<?{p_end})) \
-         AND (?{include_docs_idx}=1 OR n.language!='{markdown}')"
+         AND (?{include_docs_idx}=1 OR ?{class_idx}={docs} OR n.language!='{markdown}') \
+         AND (?{class_idx} IS NULL \
+              OR (?{class_idx}={prod} AND n.is_test=0 AND n.language!='{markdown}') \
+              OR (?{class_idx}={test} AND n.is_test=1 AND n.language!='{markdown}') \
+              OR (?{class_idx}={docs} AND n.language='{markdown}'))"
     )
 }
 
@@ -55,6 +69,7 @@ struct ExactSearchContext<'a> {
     graph_boost: &'a str,
     pattern: &'a str,
     kind: &'a str,
+    classification_code: Option<i64>,
     path: &'a str,
     path_start: &'a str,
     path_end: &'a str,
@@ -72,6 +87,7 @@ fn run_exact_search_query(
         graph_boost,
         pattern,
         kind,
+        classification_code,
         path,
         path_start,
         path_end,
@@ -84,14 +100,14 @@ fn run_exact_search_query(
             "(SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id",
             String::new(),
             "CASE WHEN n.name=?1 THEN 0 ELSE 2 END",
-            scope_filter_sql(2, 3, 6),
+            scope_filter_sql(2, 3, 6, 7),
         )
     } else {
         (
             "node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id",
             "node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND ".to_owned(),
             "CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END",
-            scope_filter_sql(3, 4, 7),
+            scope_filter_sql(3, 4, 7, 8),
         )
     };
     let where_clause = format!("{match_pred}{scope_filter}");
@@ -104,7 +120,7 @@ fn run_exact_search_query(
             "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
         )
     };
-    let mut params: Vec<&dyn ToSql> = Vec::with_capacity(7);
+    let mut params: Vec<&dyn ToSql> = Vec::with_capacity(8);
     if !fts_query.is_empty() {
         params.push(&fts_query);
     }
@@ -115,6 +131,7 @@ fn run_exact_search_query(
         &path_start,
         &path_end,
         &include_docs,
+        &classification_code,
     ]);
     if ranked {
         ranked_search_page(conn, &sql, &params, options)
@@ -132,6 +149,7 @@ fn run_wildcard_search_query(
         columns,
         graph_boost,
         kind,
+        classification_code,
         path,
         path_start,
         path_end,
@@ -145,7 +163,7 @@ fn run_wildcard_search_query(
         .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'))
     {
         let query = format!("\"{prefix}\"*");
-        let scope_filter = scope_filter_sql(2, 4, 7);
+        let scope_filter = scope_filter_sql(2, 4, 7, 8);
         let from = format!(
             "FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND {scope_filter}"
         );
@@ -174,17 +192,34 @@ fn run_wildcard_search_query(
         return ranked_search_page(
             conn,
             &sql,
-            &[&like, &kind, &query, &path, &path_start, &path_end, &include_docs],
+            &[
+                &like,
+                &kind,
+                &query,
+                &path,
+                &path_start,
+                &path_end,
+                &include_docs,
+                &classification_code,
+            ],
             options,
         );
     }
-    let scope_filter = scope_filter_sql(2, 3, 6);
+    let scope_filter = scope_filter_sql(2, 3, 6, 7);
     paging::query(
         conn,
         &format!(
             "SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND {scope_filter} ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,pd.path,n.line,n.id"
         ),
-        &[&like, &kind, &path, &path_start, &path_end, &include_docs],
+        &[
+            &like,
+            &kind,
+            &path,
+            &path_start,
+            &path_end,
+            &include_docs,
+            &classification_code,
+        ],
         options,
     )
 }
@@ -193,7 +228,14 @@ fn try_type_filter_search(
     conn: &Connection,
     pattern: &str,
     columns: &str,
-    (kind, path, path_start, path_end, include_docs): (&str, &str, &str, &str, bool),
+    (kind, classification_code, path, path_start, path_end, include_docs): (
+        &str,
+        Option<i64>,
+        &str,
+        &str,
+        &str,
+        bool,
+    ),
     options: &QueryOptions,
 ) -> Result<Option<Value>> {
     let Some((field, value)) = pattern
@@ -220,7 +262,7 @@ fn try_type_filter_search(
     } else {
         "EXISTS (SELECT 1 FROM json_each(n.details,'$.param_types') p WHERE p.type='text' AND p.value LIKE ?1 ESCAPE '\\')".to_owned()
     };
-    let scope_filter = scope_filter_sql(2, 3, 6);
+    let scope_filter = scope_filter_sql(2, 3, 6, 7);
     let sql = format!(
         "SELECT {columns} FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE {predicate} AND n.kind IN ('{}','{}') AND {scope_filter} ORDER BY pd.path,n.line,n.id",
         NodeKind::Function.as_str(),
@@ -229,7 +271,15 @@ fn try_type_filter_search(
     let nodes = paging::query(
         conn,
         &sql,
-        &[&query, &kind, &path, &path_start, &path_end, &include_docs],
+        &[
+            &query,
+            &kind,
+            &path,
+            &path_start,
+            &path_end,
+            &include_docs,
+            &classification_code,
+        ],
         options,
     )?;
     Ok(Some(json!({"pattern":pattern,"nodes":nodes})))
@@ -252,7 +302,7 @@ fn try_default_exact_search(
         };
         let query = format!("({}) OR ({})", term("acddtakes"), term("acddreturns"));
         let budget = QueryBudget::new(conn);
-        let scope_filter = scope_filter_sql(2, 3, 6);
+        let scope_filter = scope_filter_sql(2, 3, 6, 7);
         let matched = conn.query_row(
             &format!(
                 "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND {scope_filter})"
@@ -263,7 +313,8 @@ fn try_default_exact_search(
                 exact_ctx.path,
                 exact_ctx.path_start,
                 exact_ctx.path_end,
-                exact_ctx.include_docs
+                exact_ctx.include_docs,
+                exact_ctx.classification_code
             ],
             |row| row.get::<_, bool>(0),
         )?;
@@ -283,11 +334,13 @@ pub fn search_with_options(
 ) -> Result<Value> {
     let SearchOptions {
         kind,
+        classification,
         path,
         include_docs,
         exact,
         page: options,
     } = *options;
+    let classification_code = classification.map(SymbolClassification::sql_code);
     let pattern = pattern.trim();
     if pattern.is_empty()
         || pattern.len() > 1024
@@ -313,8 +366,8 @@ pub fn search_with_options(
         }
     }
     let path = path.unwrap_or("");
-    if pattern == "*" && kind.is_empty() && path.is_empty() {
-        bail!("pattern must contain a symbol fragment, or use '*' with a path or kind scope");
+    if pattern == "*" && kind.is_empty() && path.is_empty() && classification.is_none() {
+        bail!("pattern must contain a symbol fragment, or use '*' with a path, kind, or classification scope");
     }
     let (path_start, path_end) = path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
@@ -328,7 +381,14 @@ pub fn search_with_options(
         conn,
         pattern,
         &columns,
-        (kind, path, &path_start, &path_end, include_docs),
+        (
+            kind,
+            classification_code,
+            path,
+            &path_start,
+            &path_end,
+            include_docs,
+        ),
         options,
     )? {
         return Ok(res);
@@ -338,6 +398,7 @@ pub fn search_with_options(
         graph_boost: &graph_boost,
         pattern,
         kind,
+        classification_code,
         path,
         path_start: &path_start,
         path_end: &path_end,
@@ -370,7 +431,7 @@ pub fn search_with_options(
         )
         .context("search offset exceeds SQLite integer range")?;
         let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
-        let filters = scope_filter_sql(2, 3, 8);
+        let filters = scope_filter_sql(2, 3, 8, 12);
         let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
         let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END + CASE WHEN ?11=1 AND n.node_hash IN (SELECT node_hash FROM fts_and_matches) THEN 250 ELSE 0 END - bm25(node_search)";
         let sql = format!(
@@ -442,6 +503,7 @@ pub fn search_with_options(
                     &candidate_limit,
                     &and_query,
                     &and_bonus,
+                    &classification_code,
                 ],
                 options,
             )
@@ -704,13 +766,13 @@ pub fn search_results_with_navigation(
             object.insert("is_test".into(), json!(is_test));
             let classification =
                 if object.get("language").and_then(Value::as_str) == Some(markdown) {
-                    "documentation"
+                    SymbolClassification::Documentation
                 } else if is_test {
-                    "test"
+                    SymbolClassification::Test
                 } else {
-                    "production"
+                    SymbolClassification::Production
                 };
-            object.insert("classification".into(), json!(classification));
+            object.insert("classification".into(), json!(classification.as_str()));
         }
         if let Some(docstring) = docstring.as_deref().and_then(first_docstring_sentence) {
             object.insert("docstring_first_sentence".into(), json!(docstring));

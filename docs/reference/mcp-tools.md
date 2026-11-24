@@ -31,20 +31,29 @@ MCP navigation accepts unified parameter spellings alongside the canonical field
 
 | Tool | Canonical field | Accepted aliases |
 | --- | --- | --- |
-| `code_map_search` | `pattern` | `query` |
+| `code_map_search` | `pattern`, `path` | `query`, `file_path` respectively |
 | `code_map_inspect` | `selector`, `path` | `symbol`, `file_path` respectively |
+| `code_map_explain` | `selector`, `path` | `symbol`, `file_path` respectively |
+| `code_map_impact` | `selector`, `path` | `symbol`, `file_path` respectively |
+| `code_map_tests` | `selector`, `path` | `symbol`, `file_path` respectively |
+| `code_map_prove_removal` | `selector`, `path` | `symbol`, `file_path` respectively |
 | `acdd_read` | `path`, `selector`, `pattern`, `line_count` | `file_path`, `symbol`, `query`, `max_lines` (`lines`) respectively |
-| `ast_grep_search` | `pattern` | `query` |
-| `search_docs` | `query`, `component` | `pattern`, `path` respectively |
-| `get_doc` | `path_or_id` | `path`, `selector` |
-| `code_map_analyze` | `target` | `path`, `selector`; omission selects workspace totals |
-| `code_map_query` | `selector` | `query`; `sql` selects read-only SQL mode |
+| `ast_grep_search` | `pattern`, `path` | `query`, `file_path` respectively |
+| `search_docs` | `query`, `component` | `pattern`, `path` / `file_path` respectively |
+| `get_doc` | `path_or_id` | `path`, `file_path`, `doc_id`, `selector` |
+| `code_map_analyze` | `target` | `path`, `file_path`, `selector`; omission selects workspace totals |
+| `code_map_lint` | `target` | `path`, `file_path`; omission lints the full workspace |
+| `code_map_query` | `selector`, `path` | `symbol` / `query`, `file_path`; `sql` selects read-only SQL mode |
 
 Aliases are explicit optional properties in the published `tools/list` schemas;
 the canonical field is not required when an alias supplies the value. Handlers
 normalize these fields before querying. Supply one spelling per value; a nonempty
-canonical field together with an alias is a duplicate-field error. `code_map_query` resolves its separate
-optional fields as described under [SQL](#sql-queries).
+canonical field together with an alias is a duplicate-field error. Unrecognized
+parameters fail fast with `rejected_arguments`, returning supported parameters,
+fuzzy matches, and cross-tool or parameter redirect hints when common mismatches
+occur (such as `path` on `code_map_overview` or `query` on `get_doc`).
+`code_map_query` resolves its separate optional fields as described under
+[SQL](#sql-queries).
 
 Recommended navigation sequence:
 
@@ -85,7 +94,7 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
 
 ### Layered file reader
 
-`acdd_read` and CLI `acdd read` share one layered file and symbol reader:
+`acdd_read` and CLI `acdd read` share one layered file and symbol reader and respect `response.detail` (`compact` by default):
 
 - **Modes (`mode`)**:
   - `auto` (default): selects `snippet` when `selector` is set, `search` when `pattern` is set, and `lines` otherwise.
@@ -112,9 +121,9 @@ Every static capability runs over identical index and state engines on both surf
 
 | MCP Tool | CLI Equivalent | Purpose |
 | --- | --- | --- |
-| `code_map_overview` | `acdd query overview` | Summarize workspace counts, languages, docs hubs, entrypoints, topology, and per-workspace coverage. |
-| `code_map_search` | `acdd query search` | Search symbols by exact name, prefix (`parse*`), FTS5 BM25 query, or type filter (`takes:`, `returns:`). |
-| `code_map_inspect` | `acdd query inspect` | Inspect one symbol's signature, docstring, caller/callee summary, governing invariants, and linked docs. |
+| `code_map_overview` | `acdd query overview` | Summarize workspace-wide counts, languages, docs hubs, entrypoints, topology, and per-workspace coverage (no `path` filter). |
+| `code_map_search` | `acdd query search` | Search symbols by exact name, prefix (`parse*`), FTS5 BM25 query, `kind`, `classification` (`production`, `test`, `documentation`), or type filter (`takes:`, `returns:`). |
+| `code_map_inspect` | `acdd query inspect` | Inspect one symbol's signature, docstring, caller/callee summary, governing invariants, and linked docs (`include_coverage` off by default). |
 | `acdd_read` | `acdd read` | Read line slices, search matches, Git deltas, outlines, or digest-verified symbol bodies (plus `output_file` export). |
 | `code_map_explain` | `acdd query explain` | List direct `incoming`, `outgoing`, or `both` relationship edges and analysis gaps for a symbol. |
 | `code_map_impact` | `acdd query impact` | Trace multi-hop blast radius (`inbound` / `outbound`) for a symbol or `--changes staged\|unstaged\|head`. |
@@ -268,7 +277,7 @@ breadcrumb. JSON continues to return the structured semantic result.
   - `code_map_inspect` / `code_map_explain`: clamp `leading_lines` (`0..=20`, default `5`) and `max_body_lines` (`1..=500`, default from `response.source_context.max_body_lines` or `200`) with an `8 KiB` source sub-budget.
   - `acdd_read`: returns the full selected symbol when it fits `max_output_bytes` (`1,024–98,304`), honoring explicit `max_body_lines >= 1` and paging strictly on complete line boundaries (oversized single lines return a budget error + local-file hint).
 - **Pagination & generations**:
-  - Code-map tools use `limit` (`1..=100`, default `30`), `offset`, `next_offset`, and code-index `generation` (`source_offset > 0` always requires the previous page's `generation`).
+  - Code-map tools use `limit` (`1..=100`, default `30`, or `15` for `ast_grep_search`), `offset`, `next_offset`, and code-index `generation` (`source_offset > 0` always requires the previous page's `generation`).
   - Completed zero-result code-map pages return `total` and `items` cleanly without pagination fields; trimming removes tail records cleanly and advances `next_offset`.
   - Task-list pagination (`acdd_state`) reports `total`, `limit`, `offset`, `returned`, `has_more`, and a separate `runs.generation` bound to task/subtask state.
 - **Search previews (`code_map_search`)**:
@@ -277,7 +286,7 @@ breadcrumb. JSON continues to return the structured semantic result.
 
 ## AST pattern capabilities
 
-- **`ast_grep_search.language`**: accepts any compiled profile ID (`python`, `rust`, `typescript`, etc.) or infers it automatically when `path` is a recognized file or a single-language indexed directory (multi-language dirs require an explicit language).
+- **`ast_grep_search.language`**: accepts any compiled profile ID (`python`, `rust`, `typescript`, etc.) or infers compatible language(s) automatically when omitted (`path` extension if recognized, otherwise every indexed language in scope whose grammar accepts `pattern`, dropping `yaml`/`json`/`toml` when at least one programming language parses cleanly). Default `limit` is `15` in MCP (`100` in CLI `acdd ast grep`).
 
 Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
@@ -289,7 +298,7 @@ Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples.
 | `attribute` | Matches declared decorators or annotations layered over declarations. |
 
 - **Capability matrix**: Rust supports all 4; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`.
-- **Metavariables**: `$NAME` captures one node; `$$$SEQ` captures zero or more nodes (e.g. `class Widget`, `def target($$$)`, `fn target`).
+- **Metavariables**: `$NAME` captures one node; `$$$SEQ` captures zero or more nodes (e.g. `class Widget`, `def target($$$)`, `fn target`). Anonymous `$$$` wildcards omit empty `""` entries from `captures`.
 - **Errors**: invalid syntax or unsupported fragments return diagnostic code, language, line/column range, repair hint, and indented examples without raw JSON dumps.
 
 ## SQL queries

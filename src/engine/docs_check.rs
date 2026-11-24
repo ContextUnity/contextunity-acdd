@@ -463,14 +463,45 @@ fn line_range(anchor: &str) -> Option<Result<(usize, usize)>> {
 }
 
 fn collect_doc_files(root: &Path, scoped_rel_paths: Option<&[String]>) -> Result<Vec<PathBuf>> {
+    let mut ignored_names = acdd_core::config::load_adapter(root, None)
+        .map(|adapter| adapter.ignored_names)
+        .unwrap_or_default();
+    ignored_names.extend(
+        ["target", ".git", ".worktrees", ".acdd"]
+            .into_iter()
+            .map(str::to_owned),
+    );
+    let ignored_globs: Vec<String> = ignored_names
+        .iter()
+        .filter(|pat| {
+            pat.contains('/') || pat.contains('*') || pat.contains('?') || pat.contains('{')
+        })
+        .cloned()
+        .collect();
     let mut files = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
-        entry.depth() == 0
-            || !entry.file_type().is_dir()
-            || !matches!(
-                entry.file_name().to_str(),
-                Some("target" | ".git" | ".worktrees" | ".acdd")
-            )
+        if entry.depth() == 0 {
+            return true;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if ignored_names.contains(name.as_ref()) {
+            return false;
+        }
+        if !ignored_globs.is_empty() {
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if ignored_globs
+                .iter()
+                .any(|pat| acdd_core::path_policy::glob_matches(pat, &rel))
+            {
+                return false;
+            }
+        }
+        true
     }) {
         let entry = entry?;
         if !entry.file_type().is_file()

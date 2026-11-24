@@ -103,7 +103,7 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
             if ca == cb {
                 dp[i + 1][j + 1] = dp[i][j];
             } else {
-                dp[i + 1][j + 1] = 1 + dp[i][j].min(dp[i + 1][j]).min(dp[i + 1][j + 1]);
+                dp[i + 1][j + 1] = 1 + dp[i][j].min(dp[i + 1][j]).min(dp[i][j + 1]);
             }
         }
     }
@@ -137,6 +137,110 @@ fn find_suggestions<'a>(rejected: &[String], allowed: &[&'a str]) -> Vec<(String
     suggestions
 }
 
+const ARGUMENT_REDIRECTS: &[(&str, &str, &str)] = &[
+    (
+        "code_map_overview",
+        "path",
+        "acdd_read(path=..., mode=\"outline\") or code_map_analyze(target=...)",
+    ),
+    (
+        "code_map_overview",
+        "file_path",
+        "acdd_read(path=..., mode=\"outline\") or code_map_analyze(target=...)",
+    ),
+    (
+        "code_map_overview",
+        "target",
+        "code_map_analyze(target=...) or code_map_search(path=...)",
+    ),
+    (
+        "code_map_search",
+        "selector",
+        "'pattern' (or code_map_inspect(selector=...))",
+    ),
+    (
+        "code_map_search",
+        "symbol",
+        "'pattern' (or code_map_inspect(selector=...))",
+    ),
+    ("code_map_search", "target", "'path'"),
+    ("code_map_tests", "target", "'selector'"),
+    ("code_map_tests", "query", "'selector'"),
+    ("code_map_tests", "name", "'selector'"),
+    ("code_map_inspect", "target", "'selector' or 'path'"),
+    (
+        "code_map_inspect",
+        "query",
+        "'selector' (or code_map_search(pattern=...))",
+    ),
+    ("code_map_explain", "target", "'selector' or 'path'"),
+    ("code_map_impact", "target", "'selector' or 'changes'"),
+    ("code_map_prove_removal", "target", "'selector'"),
+    (
+        "code_map_analyze",
+        "sql",
+        "'target' (or code_map_query(sql=...))",
+    ),
+    (
+        "code_map_analyze",
+        "query",
+        "'target' (or code_map_query(sql=...))",
+    ),
+    ("acdd_read", "target", "'path' or 'selector'"),
+    ("acdd_read", "search", "'pattern' with mode=\"search\""),
+    ("ast_grep_search", "target", "'path'"),
+    ("search_docs", "target", "'component' or 'path'"),
+    ("get_doc", "query", "search_docs(query=...)"),
+    ("get_doc", "pattern", "search_docs(query=...)"),
+    ("get_doc", "title", "'section' (or search_docs(query=...))"),
+    ("get_doc", "heading", "'section'"),
+    ("acdd_blackboard", "message", "'payload'"),
+    ("acdd_blackboard", "body", "'payload'"),
+    ("acdd_blackboard", "content", "'payload'"),
+    ("acdd_blackboard", "text", "'payload'"),
+];
+
+fn resolve_cursor_redirect(allowed: &[&str]) -> Option<&'static str> {
+    match (allowed.contains(&"node"), allowed.contains(&"offset")) {
+        (true, true) => Some("'node' (or 'offset' and 'generation' for pagination)"),
+        (true, false) => Some("'node'"),
+        (false, true) => Some("'offset' and 'generation'"),
+        (false, false) => None,
+    }
+}
+
+fn resolve_scope_redirect(allowed: &[&str]) -> Option<&'static str> {
+    if allowed.contains(&"path") {
+        Some("'path'")
+    } else if allowed.contains(&"target") {
+        Some("'target'")
+    } else {
+        None
+    }
+}
+
+fn find_argument_redirects(
+    tool_name: &str,
+    rejected: &[String],
+    allowed: &[&str],
+) -> Vec<(String, &'static str)> {
+    rejected
+        .iter()
+        .filter_map(|field| {
+            let hint = ARGUMENT_REDIRECTS
+                .iter()
+                .find(|(tool, arg, _)| *tool == tool_name && *arg == field.as_str())
+                .map(|(_, _, hint)| *hint)
+                .or_else(|| match field.as_str() {
+                    "cursor" => resolve_cursor_redirect(allowed),
+                    "scope" => resolve_scope_redirect(allowed),
+                    _ => None,
+                })?;
+            Some((field.clone(), hint))
+        })
+        .collect()
+}
+
 fn rejected_arguments_error(
     tool_name: &str,
     fields: &[String],
@@ -147,7 +251,13 @@ fn rejected_arguments_error(
         .take(16)
         .map(|field| field.chars().take(128).collect::<String>())
         .collect::<Vec<_>>();
-    let suggestions = find_suggestions(&truncated_fields, allowed);
+    let redirects = find_argument_redirects(tool_name, &truncated_fields, allowed);
+    let remaining_fields: Vec<String> = truncated_fields
+        .iter()
+        .filter(|field| !redirects.iter().any(|(orig, _)| orig == *field))
+        .cloned()
+        .collect();
+    let suggestions = find_suggestions(&remaining_fields, allowed);
     let suggestion_text = if suggestions.is_empty() {
         String::new()
     } else {
@@ -157,8 +267,17 @@ fn rejected_arguments_error(
             .collect();
         format!(" Did you mean: {}?", items.join(", "))
     };
+    let redirect_text = if redirects.is_empty() {
+        String::new()
+    } else {
+        let items: Vec<String> = redirects
+            .iter()
+            .map(|(orig, hint)| format!("for '{orig}', try {hint}"))
+            .collect();
+        format!(" Hint: {}.", items.join("; "))
+    };
     let message = format!(
-        "Unrecognized argument(s): {}. Valid supported parameters for '{tool_name}': {}.{suggestion_text}",
+        "Unrecognized argument(s): {}. Valid supported parameters for '{tool_name}': {}.{suggestion_text}{redirect_text}",
         truncated_fields.join(", "),
         allowed.join(", ")
     );

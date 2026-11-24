@@ -22,8 +22,8 @@ default. The shared CLI/MCP seam tests compare omitted and explicit Markdown,
 then compare parsed JSON for operations with CLI equivalents. `acdd_read`
 shares its reader and bounded renderer with CLI `read`; core text/export tests
 compare parsed JSON across both transports. See
-[`stdio_compact_navigation_preserves_symbol_and_page_contracts`](../../tests/mcp/context.rs)
-and [`mcp_exposes_and_executes_evolution_tools`](../../tests/mcp/tool_evolution/cli_and_relations.rs).
+[`acdd_read_core_modes_and_cli_share_bounded_text_and_exports`](../../tests/mcp/test_read.rs)
+and [`mcp_and_cli_expose_evolution_tools_and_selector_errors`](../../tests/mcp/tool_evolution/cli_and_relations.rs).
 For every shared operation, route equivalent validated input and semantic data
 through the same formatter. Compare Markdown content exactly and JSON after
 parsing. Normalize only transport framing, trailing newline, transport-specific

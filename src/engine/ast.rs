@@ -6,20 +6,19 @@ use acdd_index::{
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
-/// Performs search.
-pub fn search(
+/// Searches indexed sources across one or more `languages` for AST `pattern`.
+pub(crate) fn search_languages_with_adapter(
     conn: &rusqlite::Connection,
     root: &Path,
+    adapter: &scanner::Adapter,
     pattern: &str,
-    language: &str,
+    languages: &[&str],
     path: Option<&str>,
     limit: usize,
 ) -> Result<Value> {
     if limit == 0 || limit > 10000 {
-        bail!("limit must be1..10000");
+        bail!("limit must be 1..=10000");
     }
-    let explicit_config = std::env::var_os("ACDD_CONFIG").map(std::path::PathBuf::from);
-    let adapter = scanner::load_adapter(&scanner::canonical_root(root)?, explicit_config.as_deref())?;
     let mut matches = Vec::new();
     let mut offset = 0;
     let mut generation = None;
@@ -33,7 +32,15 @@ pub fn search(
             Some(Detail::Compact),
             generation.clone(),
         )?;
-        let page = search_paged_with_adapter(conn, root, &adapter, pattern, language, path, &options)?;
+        let page = search_paged_languages_with_adapter(
+            conn,
+            root,
+            adapter,
+            pattern,
+            languages,
+            path,
+            &options,
+        )?;
         if page.get("diagnostic").is_some() {
             return Ok(page);
         }
@@ -279,6 +286,11 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
     let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-tsx-upfront").unwrap();
     std::fs::create_dir_all(root.path().join("src")).unwrap();
     std::fs::write(
+        root.path().join("src/app.ts"),
+        "const count: number = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
         root.path().join("src/view.tsx"),
         "const view = <Widget value={value} />;\n",
     )
@@ -301,6 +313,16 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
         assert_eq!(result["matches"]["total"], 1, "{result}");
         assert_eq!(result["matches"]["items"][0]["captures"]["VALUE"], "value");
     }
+    let ts_only = search_paged(
+        &conn,
+        root.path(),
+        "<Widget value={$VALUE} />",
+        "typescript",
+        Some("src/app.ts"),
+        &options,
+    )
+    .unwrap();
+    assert_eq!(ts_only["diagnostic"]["code"], "unsupported_ast_pattern");
     let invalid = search_paged(
         &conn,
         root.path(),
@@ -465,34 +487,55 @@ fn prefiltered_ast_search_matches_full_scan_with_100_percent_recall() {
     }
 }
 
-/// Resolves an explicit AST language or infers it from a file extension or single-language directory.
-pub(crate) fn resolve_ast_language(
+fn normalize_ast_scope(path: Option<&str>) -> Option<&str> {
+    let mut trimmed = path?.trim();
+    if trimmed.is_empty() {
+        return Some("");
+    }
+    while let Some(rest) = trimmed.strip_prefix("./") {
+        trimmed = rest;
+    }
+    (!matches!(trimmed, "" | ".")).then_some(trimmed)
+}
+
+fn try_pattern_diagnostic(error: anyhow::Error) -> Result<Value> {
+    if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
+        return Ok(json!({"diagnostic": diagnostic}));
+    }
+    Err(error)
+}
+
+fn is_config_data_language(language: &str) -> bool {
+    matches!(language, "yaml" | "json" | "toml")
+}
+
+/// Resolves an explicit AST language or infers compatible language(s) from `path` or `pattern`.
+pub(crate) fn resolve_ast_languages(
     conn: &rusqlite::Connection,
     root: &Path,
     adapter: &scanner::Adapter,
+    pattern: &str,
     language: Option<&str>,
     path: Option<&str>,
-) -> Result<String> {
+) -> Result<Vec<String>> {
     if let Some(lang) = language.map(str::trim).filter(|l| !l.is_empty()) {
-        return Ok(lang.to_owned());
+        return Ok(vec![lang.to_owned()]);
     }
-    let trimmed_path = path.map(str::trim).filter(|p| !p.is_empty());
+    let trimmed_path = normalize_ast_scope(path);
+    let abs_path = match trimmed_path {
+        None => None,
+        Some(p) => Some(scanner::resolve_file_path(root, adapter, p)?),
+    };
     if let Some(p) = trimmed_path {
         if let Some(profile) = acdd_index::languages::for_path(Path::new(p)) {
-            return Ok(profile.id().to_owned());
+            return Ok(vec![profile.id().to_owned()]);
         }
     }
 
-    let is_dir_scope = match trimmed_path {
-        None | Some(".") => true,
-        Some(p) => scanner::resolve_file_path(root, adapter, p).is_ok_and(|abs| abs.is_dir()),
-    };
+    let is_dir_scope = abs_path.as_ref().is_none_or(|abs| abs.is_dir());
 
     if is_dir_scope {
-        let scope = match trimmed_path {
-            None | Some(".") => "",
-            Some(p) => p.trim_start_matches("./").trim_end_matches('/'),
-        };
+        let scope = trimmed_path.map(|p| p.trim_end_matches('/')).unwrap_or("");
         let (path_start, path_end) = acdd_index::db::reader::path_bounds(scope);
         let rows = acdd_index::db::reader::rows(
             conn,
@@ -506,14 +549,33 @@ pub(crate) fn resolve_ast_language(
             .filter(|lang| acdd_index::languages::require(lang).is_ok())
             .collect();
         if detected.len() == 1 {
-            return Ok(detected.into_iter().next().expect("checked len == 1"));
+            return Ok(detected.into_iter().collect());
         }
         if detected.len() > 1 {
+            let mut compatible = Vec::new();
+            for lang in &detected {
+                match ast::pattern_symbol_name(pattern, lang) {
+                    Ok(_) => compatible.push(lang.clone()),
+                    Err(error) if error.downcast_ref::<PatternSearchDiagnostic>().is_some() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            if !compatible.is_empty() {
+                let programming: Vec<String> = compatible
+                    .iter()
+                    .filter(|lang| !is_config_data_language(lang))
+                    .cloned()
+                    .collect();
+                if !programming.is_empty() {
+                    return Ok(programming);
+                }
+                return Ok(compatible);
+            }
             let compiled = compiled_languages_summary();
             let listed = detected.into_iter().collect::<Vec<_>>().join(", ");
             let display_scope = if scope.is_empty() { "." } else { scope };
             bail!(
-                "Cannot infer AST language for '{display_scope}' (found multiple languages: {listed}); specify 'language' explicitly.\nCompiled languages: {compiled}.\nExamples: language='python' with pattern='class Widget', or path='src/example.py' with pattern='class Widget'.\nCall acdd_guide(topic='ast') for profile capabilities and examples."
+                "AST pattern does not parse in any detected language for '{display_scope}' ({listed}); specify 'language' explicitly or rewrite 'pattern'.\nCompiled languages: {compiled}.\nExamples: language='python' with pattern='class Widget', or path='src/example.py' with pattern='class Widget'.\nCall acdd_guide(topic='ast') for profile capabilities and examples."
             );
         }
     }
@@ -553,6 +615,7 @@ fn search_paged(
 }
 
 /// Performs search paged using an already-loaded [`scanner::Adapter`].
+#[cfg(test)]
 pub(crate) fn search_paged_with_adapter(
     conn: &rusqlite::Connection,
     root: &Path,
@@ -562,7 +625,23 @@ pub(crate) fn search_paged_with_adapter(
     path: Option<&str>,
     options: &QueryOptions,
 ) -> Result<Value> {
-    acdd_index::languages::require(language)?;
+    search_paged_languages_with_adapter(conn, root, adapter, pattern, &[language], path, options)
+}
+
+/// Performs paged AST search across one or more compiled languages using an already-loaded [`scanner::Adapter`].
+pub(crate) fn search_paged_languages_with_adapter(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    adapter: &scanner::Adapter,
+    pattern: &str,
+    languages: &[&str],
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    anyhow::ensure!(!languages.is_empty(), "at least one AST language is required");
+    for language in languages {
+        acdd_index::languages::require(language)?;
+    }
     anyhow::ensure!((1..=100).contains(&options.limit), "limit must be 1..=100");
     anyhow::ensure!(
         options.offset < ast::SEARCH_MATCH_HORIZON,
@@ -577,70 +656,89 @@ pub(crate) fn search_paged_with_adapter(
     );
     let root = scanner::canonical_root(root)?;
     let generation = acdd_index::db::paging::generation(conn, options)?;
+    let path = normalize_ast_scope(path);
     if let Some(path) = path {
         scanner::resolve_file_path(&root, adapter, path)?;
     }
-    let path = path.unwrap_or("");
+    let path = path.map(|p| p.trim_end_matches('/')).unwrap_or("");
     let (path_start, path_end) = acdd_index::db::reader::path_bounds(path);
-    let declaration = match ast::pattern_symbol_name(pattern, language) {
-        Ok(declaration) => declaration,
-        Err(error) => {
-            if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
-                return Ok(json!({"diagnostic":diagnostic}));
+    let single_language = languages.len() == 1;
+    let mut files: Vec<(String, String, &str)> = Vec::new();
+    let mut matchers = std::collections::HashMap::with_capacity(languages.len());
+    for &language in languages {
+        let declaration = match ast::pattern_symbol_name(pattern, language) {
+            Ok(declaration) => declaration,
+            Err(error) => {
+                let diag = try_pattern_diagnostic(error)?;
+                if single_language {
+                    return Ok(diag);
+                }
+                continue;
             }
-            return Err(error);
-        }
-    };
-    let files = if let Some(name) = declaration.as_deref() {
-        let candidate_files = acdd_index::db::reader::rows(
-            conn,
-            "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
-            &[&name, &language, &path, &path_start, &path_end],
-            500000,
-        )?;
-        if candidate_files.is_empty() {
-            // Local syntax can bind a name without creating an indexed symbol.
+        };
+        let lang_files = if let Some(name) = declaration.as_deref() {
+            let candidate_files = acdd_index::db::reader::rows(
+                conn,
+                "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
+                &[&name, &language, &path, &path_start, &path_end],
+                500000,
+            )?;
+            if candidate_files.is_empty() {
+                // Local syntax can bind a name without creating an indexed symbol.
+                acdd_index::db::reader::rows(
+                    conn,
+                    "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
+                    &[&language, &path, &path_start, &path_end],
+                    500000,
+                )?
+            } else {
+                candidate_files
+            }
+        } else {
             acdd_index::db::reader::rows(
                 conn,
                 "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
                 &[&language, &path, &path_start, &path_end],
                 500000,
             )?
-        } else {
-            candidate_files
-        }
-    } else {
-        acdd_index::db::reader::rows(
-            conn,
-            "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
-            &[&language, &path, &path_start, &path_end],
-            500000,
-        )?
-    };
-    let mut matcher = match ast::search::PreparedAstMatcher::new(language, pattern) {
-        Ok(matcher) => matcher,
-        Err(error) => {
-            if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
-                return Ok(json!({"diagnostic":diagnostic}));
+        };
+        let matcher = match ast::search::PreparedAstMatcher::new(language, pattern) {
+            Ok(matcher) => matcher,
+            Err(error) => {
+                let diag = try_pattern_diagnostic(error)?;
+                if single_language {
+                    return Ok(diag);
+                }
+                continue;
             }
-            return Err(error);
+        };
+        matchers.insert(language, matcher);
+        for row in lang_files {
+            if let (Some(file_path), Some(file_digest)) =
+                (row["path"].as_str(), row["digest"].as_str())
+            {
+                files.push((file_path.to_owned(), file_digest.to_owned(), language));
+            }
         }
-    };
+    }
+    if !single_language {
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+    }
     let mut items = Vec::new();
     let mut matched = 0;
     let mut complete = true;
     let mut work_limited = false;
+    let mut seen_compatible_file = false;
+    let mut deferred_diagnostic = None;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    for file in files {
-        let file_path = file["path"].as_str().unwrap_or_default();
-        let file_digest = file["digest"].as_str().unwrap_or_default();
+    for (file_path, file_digest, file_lang) in files {
         if std::time::Instant::now() >= deadline {
             complete = false;
             work_limited = true;
             break;
         }
         let source =
-            std::fs::read_to_string(scanner::resolve_file_path(&root, adapter, file_path)?)?;
+            std::fs::read_to_string(scanner::resolve_file_path(&root, adapter, &file_path)?)?;
         anyhow::ensure!(
             scanner::digest(source.as_bytes()) == file_digest,
             "source changed during AST query; retry"
@@ -650,19 +748,24 @@ pub(crate) fn search_paged_with_adapter(
             complete = false;
             break;
         }
+        let matcher = matchers.get_mut(file_lang).expect("matcher initialized");
         let page = match matcher.search_page(
             &source,
-            file_path,
+            &file_path,
             options.offset.saturating_sub(matched),
             remaining,
             deadline,
         ) {
-            Ok(page) => page,
+            Ok(page) => {
+                seen_compatible_file = true;
+                page
+            }
             Err(error) => {
-                if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
-                    return Ok(json!({"diagnostic":diagnostic}));
+                let diag = try_pattern_diagnostic(error)?;
+                if single_language && deferred_diagnostic.is_none() {
+                    deferred_diagnostic = Some(diag);
                 }
-                return Err(error);
+                continue;
             }
         };
         matched += page.matched;
@@ -671,6 +774,11 @@ pub(crate) fn search_paged_with_adapter(
             complete = false;
             work_limited = page.work_limited;
             break;
+        }
+    }
+    if !seen_compatible_file {
+        if let Some(diagnostic) = deferred_diagnostic {
+            return Ok(diagnostic);
         }
     }
     let next = options.offset + items.len();

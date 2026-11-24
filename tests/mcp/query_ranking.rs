@@ -49,6 +49,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -85,6 +86,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
                 path: Some("signature.py"),
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &options,
             },
         )
@@ -108,6 +110,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
                     path: Some("signature.py"),
                     include_docs: false,
                     exact: false,
+                    classification: None,
                     page: &options,
                 },
             )
@@ -123,6 +126,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -157,6 +161,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &page,
             },
         )
@@ -183,6 +188,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: Some("underscored.py"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -203,6 +209,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: Some("types.rs"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -252,6 +259,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -280,6 +288,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: Some("signature.py"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -293,6 +302,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: Some("signature.py"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -306,6 +316,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: Some("types.rs"),
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -377,6 +388,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &page_options,
         },
     )
@@ -397,6 +409,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -411,6 +424,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -429,6 +443,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &page_options,
             },
         )
@@ -466,6 +481,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &page_options,
         },
     )

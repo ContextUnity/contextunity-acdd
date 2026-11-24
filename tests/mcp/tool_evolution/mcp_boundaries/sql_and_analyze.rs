@@ -13,12 +13,18 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         .expect("MCP transport");
     let tools = crate::json_array(&catalog["result"]["tools"]);
     for (name, canonical, aliases) in [
-        ("get_doc", "path_or_id", vec!["path", "selector"]),
-        ("search_docs", "query", vec!["pattern", "path"]),
-        ("ast_grep_search", "pattern", vec!["query"]),
-        ("code_map_search", "pattern", vec!["query"]),
+        ("get_doc", "path_or_id", vec!["path", "file_path", "doc_id", "selector"]),
+        ("search_docs", "query", vec!["pattern", "path", "file_path"]),
+        ("ast_grep_search", "pattern", vec!["query", "file_path"]),
+        ("code_map_search", "pattern", vec!["query", "file_path"]),
         ("code_map_inspect", "selector", vec!["symbol", "file_path"]),
-        ("code_map_analyze", "target", vec!["path", "selector"]),
+        ("code_map_explain", "selector", vec!["symbol", "file_path"]),
+        ("code_map_impact", "selector", vec!["symbol", "file_path"]),
+        ("code_map_tests", "selector", vec!["symbol", "file_path"]),
+        ("code_map_prove_removal", "selector", vec!["symbol", "file_path"]),
+        ("code_map_analyze", "target", vec!["path", "file_path", "selector"]),
+        ("code_map_lint", "target", vec!["path", "file_path"]),
+        ("code_map_query", "selector", vec!["symbol", "query", "file_path"]),
     ] {
         let schema = &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
         assert!(
@@ -45,6 +51,8 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             json!({"path_or_id":"docs/contract.md","detail":"compact"}),
             vec![
                 json!({"path":"docs/contract.md","detail":"compact"}),
+                json!({"file_path":"docs/contract.md","detail":"compact"}),
+                json!({"doc_id":"doc:docs/contract.md:0","detail":"compact"}),
                 json!({"selector":"docs/contract.md","detail":"compact"}),
             ],
         ),
@@ -58,6 +66,58 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             ],
         ),
         (
+            "code_map_explain",
+            json!({"selector":"first","path":"src/app.py"}),
+            vec![
+                json!({"symbol":"first","file_path":"src/app.py"}),
+                json!({"symbol":"first","path":"src/app.py"}),
+                json!({"selector":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "code_map_tests",
+            json!({"selector":"first","path":"src/app.py"}),
+            vec![
+                json!({"symbol":"first","file_path":"src/app.py"}),
+                json!({"symbol":"first","path":"src/app.py"}),
+                json!({"selector":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "code_map_impact",
+            json!({"selector":"first","path":"src/app.py"}),
+            vec![
+                json!({"symbol":"first","file_path":"src/app.py"}),
+                json!({"symbol":"first","path":"src/app.py"}),
+                json!({"selector":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "code_map_prove_removal",
+            json!({"selector":"first","path":"src/app.py"}),
+            vec![
+                json!({"symbol":"first","file_path":"src/app.py"}),
+                json!({"symbol":"first","path":"src/app.py"}),
+                json!({"selector":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"first","path":"src/app.py"}),
+            vec![
+                json!({"query":"first","file_path":"src/app.py"}),
+                json!({"pattern":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "code_map_lint",
+            json!({"target":"src/app.py"}),
+            vec![
+                json!({"path":"src/app.py"}),
+                json!({"file_path":"src/app.py"}),
+            ],
+        ),
+        (
             "acdd_read",
             json!({"path":"src/app.py","start_line":1,"line_count":1}),
             vec![json!({"file_path":"src/app.py","start_line":1,"line_count":1})],
@@ -67,6 +127,7 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             json!({"target":"src/app.py"}),
             vec![
                 json!({"path":"src/app.py"}),
+                json!({"file_path":"src/app.py"}),
                 json!({"selector":"src/app.py"}),
             ],
         ),
@@ -74,12 +135,19 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         (
             "ast_grep_search",
             json!({"pattern":"def first():","language":"python","path":"src"}),
-            vec![json!({"query":"def first():","language":"python","path":"src"})],
+            vec![
+                json!({"query":"def first():","language":"python","path":"src"}),
+                json!({"pattern":"def first():","language":"python","file_path":"src"}),
+            ],
         ),
         (
             "code_map_query",
             json!({"operation":"inspect","selector":"src/app.py:first"}),
-            vec![json!({"operation":"inspect","query":"src/app.py:first"})],
+            vec![
+                json!({"operation":"inspect","query":"src/app.py:first"}),
+                json!({"operation":"inspect","symbol":"src/app.py:first"}),
+                json!({"operation":"inspect","selector":"first","file_path":"src/app.py"}),
+            ],
         ),
         (
             "code_map_query",
@@ -112,6 +180,10 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             json!({"path":"docs/contract.md","selector":"docs/contract.md"}),
         ),
         (
+            "get_doc",
+            json!({"path":"docs/contract.md","doc_id":"doc:docs/contract.md:0"}),
+        ),
+        (
             "search_docs",
             json!({"query":"contract","pattern":"contract"}),
         ),
@@ -132,6 +204,22 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             json!({"selector":"first","symbol":"other"}),
         ),
         (
+            "code_map_explain",
+            json!({"selector":"first","symbol":"other"}),
+        ),
+        (
+            "code_map_tests",
+            json!({"selector":"first","symbol":"other"}),
+        ),
+        (
+            "code_map_impact",
+            json!({"selector":"first","symbol":"other"}),
+        ),
+        (
+            "code_map_prove_removal",
+            json!({"selector":"first","symbol":"other"}),
+        ),
+        (
             "code_map_inspect",
             json!({"selector":"first","path":"src/app.py","file_path":"other.py"}),
         ),
@@ -142,6 +230,26 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         (
             "code_map_analyze",
             json!({"target":"src/app.py","path":"src/app.py"}),
+        ),
+        (
+            "code_map_lint",
+            json!({"target":"src/app.py","path":"src/app.py"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"inspect","selector":"first","symbol":"other"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"inspect","selector":"first","query":"other"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"inspect","symbol":"first","query":"other"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"sql","sql":"SELECT 1","query":"SELECT 2"}),
         ),
     ] {
         let rejection = m

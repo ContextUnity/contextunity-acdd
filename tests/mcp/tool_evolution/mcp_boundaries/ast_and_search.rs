@@ -155,6 +155,71 @@ fn mcp_search_ast_boundaries() {
     );
 
     m.finish().expect("server must finish successfully");
+
+    let mut cls = McpTestHarness::indexed(&[
+        ("src/app.py", "def item_target(): pass\n"),
+        ("tests/test_app.py", "def test_item_target(): pass\n"),
+        (
+            "docs/intro.md",
+            "---\ntitle: Item Target Guide\n---\n# Item Target Guide\n",
+        ),
+    ])
+    .expect("MCP initialize");
+    for (pattern, classification, expected_names) in [
+        ("*item*", "production", &["item_target"][..]),
+        ("*item*", "test", &["test_item_target"][..]),
+        ("Item*", "documentation", &["Item Target Guide"][..]),
+        ("*", "test", &["test_app.py", "test_item_target"][..]),
+    ] {
+        let found = cls
+            .payload(
+                "code_map_search",
+                json!({"pattern": pattern, "classification": classification}),
+            )
+            .expect("MCP classification filter should succeed");
+        let items = crate::json_array(&found["nodes"]["items"]);
+        assert_eq!(
+            found["nodes"]["total"],
+            expected_names.len(),
+            "{classification}: {found}"
+        );
+        let actual_names: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item["name"].as_str())
+            .collect();
+        assert_eq!(actual_names, expected_names, "{classification}: {found}");
+        for item in items {
+            assert_eq!(item["classification"], classification, "{found}");
+        }
+    }
+    let bad_cls = cls
+        .text(
+            "code_map_search",
+            json!({"pattern": "*item*", "classification": "bogus"}),
+        )
+        .expect_err("invalid classification must reject");
+    assert!(bad_cls.tool_message().is_some(), "{bad_cls}");
+    let cli_out = run_cli(
+        cls.workspace(),
+        &[
+            "--format",
+            "json",
+            "query",
+            "search",
+            "*item*",
+            "--classification",
+            "test",
+        ],
+    );
+    assert!(
+        cli_out.status.success(),
+        "CLI query search --classification failed: {}",
+        String::from_utf8_lossy(&cli_out.stderr)
+    );
+    let cli_json: Value = serde_json::from_slice(&cli_out.stdout).expect("CLI JSON");
+    assert_eq!(cli_json["nodes"]["total"], 1, "{cli_json}");
+    assert_eq!(cli_json["nodes"]["items"][0]["name"], "test_item_target");
+    cls.finish().expect("server must finish successfully");
 }
 
 #[test]
@@ -227,12 +292,16 @@ fn document_search_and_section_validation_boundaries() {
 #[test]
 fn ast_language_inference_and_actionable_diagnostics() {
     use acdd_index::languages;
+    let many_calls: String = (0..16)
+        .map(|i| format!("many_call({i})\n"))
+        .collect();
     let fixture = AnalysisFixture::indexed_files(&[
         (
             "app.py",
             "class Widget:\n    pass\ndef target(value):\n    return value\n",
         ),
         ("more.py", "def target(other):\n    return other\n"),
+        ("many.py", &many_calls),
         ("pkg/only.py", "def pkg_only():\n    return 7\n"),
         ("lib.rs", "fn target() {}\n"),
     ]);
@@ -245,7 +314,19 @@ fn ast_language_inference_and_actionable_diagnostics() {
             .payload("ast_grep_search", json!({"pattern":pattern,"path":path}))
             .expect("MCP tool should succeed");
         assert_eq!(result["matches"]["total"], 1, "{pattern}: {result}");
+        assert_eq!(result["matches"]["limit"], 15, "{pattern}: {result}");
+        if pattern.contains("$$$") {
+            assert!(!result["matches"]["items"][0]["captures"].as_object().unwrap().contains_key(""), "{result}");
+        }
     }
+    let mixed = m.payload("ast_grep_search", json!({"pattern":"def $NAME($$$)","path":"app.py"})).expect("MCP");
+    let mixed_caps = mixed["matches"]["items"][0]["captures"].as_object().unwrap();
+    assert_eq!(mixed_caps.get("NAME"), Some(&json!("target")));
+    assert!(!mixed_caps.contains_key(""), "{mixed}");
+    let paged = m.payload("ast_grep_search", json!({"pattern":"many_call($$$)","path":"many.py"})).expect("MCP");
+    assert_eq!(paged["matches"]["limit"], 15);
+    assert_eq!(crate::json_array(&paged["matches"]["items"]).len(), 15);
+    assert_eq!(paged["matches"]["has_more"], true);
     // Explicit language supports a workspace scope without a file extension.
     let explicit = m
         .payload(
@@ -343,31 +424,130 @@ fn ast_language_inference_and_actionable_diagnostics() {
         .expect("single-language directory should infer AST language");
     assert_eq!(dir_inferred["language"], "python");
     assert_eq!(dir_inferred["matches"]["total"], 1);
-    for path in [None, Some(""), Some("src"), Some("unknown.xyz")] {
+    for path in [None, Some("."), Some("./.")] {
+        let narrowed = m
+            .payload(
+                "ast_grep_search",
+                json!({"pattern":"class Widget","path":path}),
+            )
+            .expect("multi-language workspace should select compatible AST language");
+        assert_eq!(narrowed["language"], "python", "{narrowed}");
+        assert_eq!(narrowed["matches"]["total"], 1, "{narrowed}");
+    }
+    for (path, pattern, expected_fragments) in [
+        (
+            Some("src"),
+            "class Widget",
+            &["language", "path", "acdd_guide", "Examples:"][..],
+        ),
+        (
+            Some("unknown.xyz"),
+            "class Widget",
+            &["language", "path", "acdd_guide", "Examples:"][..],
+        ),
+        (
+            Some("../outside"),
+            "class Widget",
+            &["relative plain path"][..],
+        ),
+        (
+            None,
+            "def (((",
+            &["does not parse in any detected language", "language", "path", "acdd_guide", "Examples:"][..],
+        ),
+    ] {
         let (_, response) = m
             .call(
                 "ast_grep_search",
-                json!({"pattern":"class Widget","path":path}),
+                json!({"pattern":pattern,"path":path}),
             )
             .expect("MCP transport");
         assert_eq!(response["result"]["isError"], true, "{response}");
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
-        for profile in languages::profiles() {
-            assert!(message.contains(profile.id()), "{message}");
+        if expected_fragments.contains(&"acdd_guide") {
+            for profile in languages::profiles() {
+                assert!(message.contains(profile.id()), "{message}");
+            }
+            if cfg!(feature = "lang-rust") && path.is_none() {
+                assert!(message.contains("python, rust"), "{message}");
+            }
         }
-        if cfg!(feature = "lang-rust") && matches!(path, None | Some("")) {
-            assert!(
-                message.contains("Cannot infer AST language")
-                    && message.contains("python, rust"),
-                "{message}"
-            );
+        for fragment in expected_fragments {
+            assert!(message.contains(fragment), "{message}");
         }
-        assert!(
-            message.contains("language") && message.contains("path"),
-            "{message}"
+    }
+    if cfg!(feature = "lang-rust") {
+        let mut multi_files = vec![
+            ("a.py", "helper(alpha)\n"),
+            (
+                "b.rs",
+                "enum Command { ExtendScope }\nfn main() { let _ = Command::ExtendScope; let _ = helper(beta); }\n",
+            ),
+        ];
+        if languages::by_id("yaml").is_some() {
+            multi_files.push((
+                "config.yaml",
+                "command: Command::ExtendScope\nitems:\n  - name: alpha\n",
+            ));
+        }
+        if languages::by_id("json").is_some() {
+            multi_files.push(("config.json", "{\"port\": 8080}\n"));
+        }
+        if languages::by_id("toml").is_some() {
+            multi_files.push(("config.toml", "port = 8080\n"));
+        }
+        let multi = AnalysisFixture::indexed_files(&multi_files);
+        let mut mm = multi.start_mcp().expect("MCP initialize");
+        let page1 = mm
+            .payload(
+                "ast_grep_search",
+                json!({"pattern":"helper($ARG)","limit":1}),
+            )
+            .expect("compatible multi-language AST search should succeed");
+        assert_eq!(page1["language"], "python, rust", "{page1}");
+        assert_eq!(page1["matches"]["has_more"], true, "{page1}");
+        assert_eq!(page1["matches"]["items"][0]["path"], "a.py", "{page1}");
+        assert_eq!(page1["matches"]["items"][0]["captures"]["ARG"], "alpha");
+        let page2 = mm
+            .payload(
+                "ast_grep_search",
+                json!({"pattern":"helper($ARG)","limit":1,"offset":1,"generation":page1["generation"]}),
+            )
+            .expect("multi-language AST continuation should succeed");
+        assert_eq!(page2["matches"]["total"], 2, "{page2}");
+        assert_eq!(page2["matches"]["has_more"], false, "{page2}");
+        assert_eq!(page2["matches"]["items"][0]["path"], "b.rs", "{page2}");
+        assert_eq!(page2["matches"]["items"][0]["captures"]["ARG"], "beta");
+        let mut infer_cases = vec![("Command::ExtendScope", None, "rust", "b.rs")];
+        if languages::by_id("yaml").is_some() {
+            infer_cases.extend([
+                ("- name: $NAME", None, "yaml", "config.yaml"),
+                ("Command::ExtendScope", Some("yaml"), "yaml", "config.yaml"),
+            ]);
+        }
+        for (pattern, lang, expected_lang, expected_path) in infer_cases {
+            let args = match lang {
+                Some(l) => json!({"pattern":pattern,"language":l}),
+                None => json!({"pattern":pattern}),
+            };
+            let res = mm.payload("ast_grep_search", args).expect("MCP tool should succeed");
+            assert_eq!(res["language"], expected_lang, "{pattern}: {res}");
+            assert_eq!(res["matches"]["items"][0]["path"], expected_path, "{pattern}: {res}");
+        }
+        mm.finish().expect("server must finish successfully");
+
+        let cli_out = run_cli(
+            multi.workspace(),
+            &["--format", "json", "ast", "grep", "helper($ARG)", "--limit", "150"],
         );
-        assert!(message.contains("acdd_guide"), "{message}");
-        assert!(message.contains("Examples:"), "{message}");
+        assert!(
+            cli_out.status.success(),
+            "CLI ast grep without --lang failed: {}",
+            String::from_utf8_lossy(&cli_out.stderr)
+        );
+        let cli_json: Value = serde_json::from_slice(&cli_out.stdout).expect("CLI JSON");
+        assert_eq!(cli_json["language"], "python, rust", "{cli_json}");
+        assert_eq!(cli_json["matches"].as_array().unwrap().len(), 2, "{cli_json}");
     }
     for language in ["python"]
         .into_iter()

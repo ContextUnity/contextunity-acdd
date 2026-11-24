@@ -122,6 +122,7 @@ pub fn query_with_path_options(
             selector.unwrap_or(""),
             &symbols::SearchOptions {
                 kind: None,
+                classification: None,
                 path,
                 include_docs: false,
                 exact: false,

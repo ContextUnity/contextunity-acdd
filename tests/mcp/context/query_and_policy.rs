@@ -25,11 +25,68 @@ fn mcp_budget_and_query_errors_explain_how_to_retry() {
             json!({"selector":"file:nonexistent.rs"}),
             "File paths are passed without a file: prefix",
         ),
+        (
+            "code_map_overview",
+            json!({"path":"README.md"}),
+            "code_map_analyze(target=...)",
+        ),
+        (
+            "code_map_tests",
+            json!({"target":"README.md"}),
+            "for 'target', try 'selector'",
+        ),
+        (
+            "acdd_blackboard",
+            json!({"action":"read","run_id":"r1"}),
+            "'run' for 'run_id'",
+        ),
+        (
+            "acdd_blackboard",
+            json!({"action":"post","topic":"notes","body":"hello"}),
+            "for 'body', try 'payload'",
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"Indexed","cursor":"1"}),
+            "for 'cursor', try 'offset' and 'generation'",
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"Indexed","scope":"README.md"}),
+            "for 'scope', try 'path'",
+        ),
+        (
+            "get_doc",
+            json!({"query":"Indexed"}),
+            "search_docs(query=...)",
+        ),
     ] {
         let (_, response) = client.call(name, arguments).expect("MCP transport");
         assert_eq!(response["result"]["isError"], true, "{response}");
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(message.contains(expected), "{name}: {message}");
+    }
+    for (name, arguments, forbidden) in [
+        (
+            "acdd_blackboard",
+            json!({"action":"post","topic":"notes","body":"hello"}),
+            "'node' for 'body'",
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"Indexed","cursor":"1"}),
+            "try 'node'",
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"Indexed","run_id":"r1"}),
+            "'run'",
+        ),
+    ] {
+        let (_, response) = client.call(name, arguments).expect("MCP transport");
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let message = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!message.contains(forbidden), "{name}: {message}");
     }
     client.finish().expect("server must finish successfully");
 }
@@ -433,7 +490,13 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
     let listed = client
         .request_value("tools/list", json!({}))
         .expect("MCP transport");
-    for tool in crate::json_array(&listed["result"]["tools"]) {
+    let tools = crate::json_array(&listed["result"]["tools"]);
+    let catalog_bytes = serde_json::to_vec(&listed["result"]["tools"]).unwrap().len();
+    assert!(
+        catalog_bytes <= 60_000,
+        "compacted tools/list schema catalog should stay under 60,000 bytes, got {catalog_bytes} bytes"
+    );
+    for tool in tools {
         let format = &tool["inputSchema"]["properties"]["format"];
         assert_eq!(format["type"], "string", "tool {}: {format}", tool["name"]);
         assert_eq!(
@@ -442,6 +505,14 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
             "tool {} has an unexpected format selector: {format}",
             tool["name"]
         );
+        if let Some(worktree_desc) = tool["inputSchema"]["properties"]["worktree"]["description"].as_str() {
+            assert!(
+                worktree_desc.len() <= 100,
+                "tool {} has bloated worktree description ({} chars): {worktree_desc}",
+                tool["name"],
+                worktree_desc.len()
+            );
+        }
         let format_is_required =
             tool["inputSchema"]["required"]
                 .as_array()

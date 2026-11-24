@@ -45,29 +45,29 @@ acdd claim <node_cursor> --run <run> --worker <worker_id> --worktree .worktrees/
 acdd submit <node_cursor> --action pass --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
 ```
 
-## Discovery & read protocol
+## Discovery & read protocol (Graph-First)
 
-- **Known symbol**: Call `acdd_read(selector="SymbolName")` directly (optionally add
-  `path="..."`); follow returned `source_offset` + `generation` until complete
-  instead of searching + slicing lines manually. `symbol` aliases `selector` (do
-  not supply both non-null).
-- **Line/text/diff reads**: Use `acdd_read(path=..., mode="lines|raw|search|delta|outline")`
-  (`end_line`, `lines="100-200"`, `file_path`, and `query` aliases supported).
-  Use `mode="search"` (`regex=false|true`) for workspace text/config searches;
-  reserve shell `rg -n` for gitignored or unadmitted paths.
-- **Discovery & call graph**: Use `code_map_search(pattern=..., detail="compact")`
-  (`takes:Type`, `returns:Type`, `prefix*`), `ast_grep_search` (`$NAME`, `$$$SEQ`
-  over `complete_syntax`, `declaration_without_body`, `fragment_probe`),
-  `code_map_inspect` / `code_map_explain`, and depth-1 `code_map_impact` before
-  changing or removing interfaces. `code_map_prove_removal` checks static
-  candidates (`possible_calls`) but is not a runtime-safety proof.
-- **Tests**: `code_map_tests` traverses verified `calls` paths from tests;
-  `possible_calls` and lexical suggestions are navigation hints, not verified
-  coverage.
-- **Documentation**: Use `search_docs(query=..., include_excerpt=true)`, then
-  `get_doc(path=..., detail="compact")` for outlines and `get_doc(path=..., section="...")`
-  for full sections. Archived files under `*/archive/` are excluded from default
-  search and emit no `governs` / `documents` graph edges.
+Always investigate codebases and documentation using ACDD's structural graph and docs tools **first**. Do **not** use `acdd_read(mode="search")` or sequential `acdd_read(start_line=...)` slices as a replacement for `grep` or blind file browsing.
+
+1. **Discover symbols, implementations & syntax (`code_map_search`, `ast_grep_search`, `code_map_query`)**:
+   - Locate definitions by name, prefix, FTS5 tokens, or type signature with `code_map_search(pattern=..., detail="compact")` (`takes:Type`, `returns:Type`, `prefix*`; filter with `kind:`, `classification: "production" | "test" | "documentation"`, `path:` / `file_path:`). Reuse returned `signature`, `inspect_selector`, and automatic previews instead of re-reading files.
+   - Match structural syntax with `ast_grep_search` (`$NAME`, `$$$SEQ` over `complete_syntax`, `declaration_without_body`, `fragment_probe`).
+   - Query architectural slices, trait/class implementors, untested surfaces, or custom relations with `code_map_query(operation="slice" | "implementations" | "untested" | "unwired" | "sql")`.
+2. **Trace relationships, callers & blast radius (`code_map_inspect`, `code_map_explain`, `code_map_impact`, `code_map_tests`)**:
+   - Call `code_map_inspect` for one declaration's summary, up to 5 direct callers/callees, linked docs, and governing `INV-*` invariants (pass `show_source: true` only when source is missing from previews).
+   - Call `code_map_explain` for full paged `incoming`/`outgoing` edges of every kind (`calls`, `imports`, `implements`, `inherits`, `mutates`, `queries_table`, ...).
+   - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) before modifying or removing interfaces. `code_map_prove_removal` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
+   - Call `code_map_tests` to traverse verified `calls` paths from `test_case` nodes (`possible_calls` and lexical suggestions remain hints, not verified coverage).
+   - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `tests`, `prove_removal`, `query`, and `acdd_read`.)*
+3. **Discover & read documentation (`search_docs`, `get_doc`)**:
+   - Search guides, ADRs, and architecture docs with `search_docs(query=..., include_excerpt=true)`.
+   - Inspect structure with `get_doc(path_or_id=..., detail="compact")` (accepts `path`, `file_path`, `doc_id`, or `selector`), then read only the needed section via `get_doc(path_or_id=..., section="...")`. Archived `*/archive/` docs are excluded from default search and emit no graph edges.
+4. **Targeted `acdd_read` — ONLY for concrete scenarios**:
+   - **Full symbol body (`selector=` / `symbol=`)**: Use `acdd_read(selector="SymbolName")` (optionally `path="..."`) ONLY after locating the symbol via `code_map_*` when its full body is needed beyond `search`/`inspect` previews; follow `source_offset` + `generation`.
+   - **File outline (`mode="outline"`)**: Use `acdd_read(path=..., mode="outline")` when you need a quick declaration/heading map of one known file.
+   - **Git diff (`mode="delta"`)**: Use `acdd_read(path=..., mode="delta")` to inspect uncommitted/baseline diffs on a known file.
+   - **Targeted lines (`mode="lines"`)**: Use ONLY for narrow known line coordinates (e.g. a compiler/test error line or `code_map_impact` edge line, keeping `line_count <= 80` so metadata stays within compact client inline caps) — NEVER scan files sequentially from line 1.
+   - **Literal text search (`mode="search"`)**: Use ONLY for literal config values, YAML/TOML keys, or string constants that symbol/AST search cannot index, and always scope with a specific `path:` rather than scanning `.` (`regex=true|false`); reserve `rg -n` strictly for gitignored or unadmitted paths.
 - **Graph hygiene & unified lint (`duplicates`, `dead_tails`, `code_map_lint`)**: Before submitting `build`,
   `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
   `code_map_query(operation="dead_tails", path=...)` (workspace-wide without

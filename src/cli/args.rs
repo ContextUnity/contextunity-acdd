@@ -612,6 +612,9 @@ pub enum QueryCommand {
         #[arg(long)]
         /// Optional kind value.
         kind: Option<String>,
+        #[arg(long)]
+        /// Optional symbol classification filter (`production`, `test`, or `documentation`).
+        classification: Option<String>,
         #[arg(long, default_value_t = 100)]
         /// The limit value.
         limit: usize,
@@ -750,8 +753,8 @@ pub enum AstCommand {
         /// The pattern value.
         pattern: String,
         #[arg(long = "lang", alias = "language")]
-        /// The language value.
-        language: String,
+        /// Optional language filter (inferred from --path or pattern grammar when omitted).
+        language: Option<String>,
         #[arg(long)]
         /// Optional path value.
         path: Option<String>,

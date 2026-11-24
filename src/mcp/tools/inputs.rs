@@ -1,7 +1,7 @@
 use crate::format::OutputFormat;
 use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_core::lint::{LintCategory, LintSeverity};
-use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions, SymbolClassification};
 use acdd_state::types::{RejectionFindings, ReviewEvidence, SubmitAction};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -45,6 +45,20 @@ fn aliased_string<'a>(
     )
 }
 
+fn resolve_selector_alias<'a>(
+    selector: Option<&'a str>,
+    symbol: Option<&'a str>,
+) -> anyhow::Result<&'a str> {
+    Ok(aliased_value(selector, &[symbol], "selector")?.unwrap_or(""))
+}
+
+fn resolve_path_alias<'a>(
+    path: Option<&'a str>,
+    file_path: Option<&'a str>,
+) -> anyhow::Result<Option<&'a str>> {
+    aliased_value(path, &[file_path], "path")
+}
+
 // An empty schema object accepts any JSON value and stays valid for MCP clients.
 fn any_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     serde_json::Map::new().into()
@@ -60,18 +74,18 @@ fn output_format_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents page input data.
 pub struct PageInput {
-    /// Items per collection, 1..=100; defaults to adapter response.page_size (30).
+    /// Items per page (1..=100; default 30, 15 for ast_grep_search).
     pub limit: Option<usize>,
     #[serde(default)]
-    /// The offset value.
+    /// Zero-based page offset.
     pub offset: usize,
-    /// Compact omits heavy node details; full remains subject to the byte limit.
+    /// compact or full (subject to response byte limit).
     pub detail: Option<Detail>,
-    /// Use the generation returned by the previous page when offset is nonzero.
+    /// Page generation token required when offset > 0.
     pub generation: Option<String>,
-    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+    /// Worktree path or unique name/prefix selector; omit or '.' for server root.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -102,7 +116,7 @@ impl PageInput {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents overview input data.
 pub struct OverviewInput {
-    /// Optional database aspects: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'entrypoints_with_tests', 'topology', 'compiled_profiles', or 'metadata'. The discovery adapter also accepts 'discovery', 'manifest_components', 'documentation_hubs', and 'milestones'. 'entrypoints' excludes tests; 'entrypoints_with_tests' includes them. An omitted or empty list selects every database aspect except 'cycles', 'topology', and both entrypoint aspects and includes discovery; unsupported values report all accepted names.
+    /// Optional database ('counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'entrypoints_with_tests', 'topology', 'compiled_profiles', 'metadata') or discovery ('discovery', 'manifest_components', 'documentation_hubs', 'milestones') aspects.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
     /// The page value.
@@ -111,24 +125,38 @@ pub struct OverviewInput {
 #[derive(Deserialize, JsonSchema)]
 /// Represents selector data.
 pub struct Selector {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Alias for selector.
+    pub symbol: Option<String>,
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
 }
+impl Selector {
+    pub(super) fn selector(&self) -> anyhow::Result<&str> {
+        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
+}
 #[derive(Default, Deserialize, JsonSchema)]
 /// Shared source preview and continuation options.
 pub struct SourceInput {
-    /// Optional show source value.
+    /// Include source body.
     pub show_source: Option<bool>,
-    /// Optional leading lines value.
+    /// Leading context lines (0..=20).
     pub leading_lines: Option<usize>,
-    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
+    /// Source body line limit (1..=500; default 200).
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
+    /// Source line offset; nonzero requires previous generation.
     #[serde(default)]
     pub source_offset: usize,
 }
@@ -166,19 +194,19 @@ impl SourceInput {
 #[derive(Deserialize, JsonSchema)]
 /// Represents inspect data.
 pub struct Inspect {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline. Accepts 'symbol' as a unified alias.
+    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
     #[serde(default)]
     pub selector: Option<String>,
-    /// Alternative to selector; provide exactly one of selector or symbol.
+    /// Alias for selector.
     pub symbol: Option<String>,
-    /// Restrict selector resolution to a workspace-relative file or directory; accepts 'file_path' as a unified alias.
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
-    /// Alternative to path; restrict selector resolution to a workspace-relative file or directory.
+    /// Alias for path.
     pub file_path: Option<String>,
     #[serde(default = "yes")]
-    /// Whether show doc applies.
+    /// Include linked documentation.
     pub show_doc: bool,
-    /// Include paged resolution coverage in addition to the compact summary.
+    /// Include paged resolution coverage.
     #[serde(default)]
     pub include_coverage: bool,
     #[serde(flatten)]
@@ -190,25 +218,11 @@ pub struct Inspect {
 }
 impl Inspect {
     pub(super) fn selector(&self) -> anyhow::Result<&str> {
-        Ok(aliased_value(
-            self.selector.as_deref(),
-            &[self.symbol.as_deref()],
-            "selector",
-        )?
-        .unwrap_or(""))
+        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
     }
 
     pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
-        aliased_value(self.path.as_deref(), &[self.file_path.as_deref()], "path")
-    }
-
-    pub(super) fn source(
-        &self,
-        policy: &ResponsePolicy,
-        required: bool,
-    ) -> anyhow::Result<SourceOptions> {
-        self.source_input
-            .resolve_with(policy, self.page.generation.as_deref(), Some(required))
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
     }
 }
 
@@ -349,16 +363,21 @@ impl Snippet {
 #[derive(Deserialize, JsonSchema)]
 /// Represents explain data.
 pub struct Explain {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Alias for selector.
+    pub symbol: Option<String>,
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
-    /// Optional direction value.
+    /// Alias for path.
+    pub file_path: Option<String>,
+    /// Edge direction: incoming, outgoing, or both (default).
     pub direction: Option<String>,
     #[serde(default = "yes")]
-    /// Whether show doc applies.
+    /// Include linked documentation.
     pub show_doc: bool,
-    /// Include paged resolution coverage in addition to the compact summary.
+    /// Include paged resolution coverage.
     #[serde(default)]
     pub include_coverage: bool,
     #[serde(flatten)]
@@ -369,37 +388,40 @@ pub struct Explain {
     pub page: PageInput,
 }
 impl Explain {
-    pub(super) fn source(
-        &self,
-        policy: &ResponsePolicy,
-        required: bool,
-    ) -> anyhow::Result<SourceOptions> {
-        self.source_input
-            .resolve_with(policy, self.page.generation.as_deref(), Some(required))
+    pub(super) fn selector(&self) -> anyhow::Result<&str> {
+        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
     }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents search symbols data.
 pub struct SearchSymbols {
-    /// Symbol pattern; query is accepted as an alias. Use '*' with a path or kind scope to list all symbols in that scope.
+    /// Symbol pattern (alias: query). Use '*' with path or kind scope to list symbols.
     #[serde(default)]
     pub pattern: String,
-    /// Alternative to pattern; provide exactly one of pattern or query.
+    /// Alias for pattern.
     pub query: Option<String>,
-    /// Match only the complete symbol name or qualified name, without full-text search.
+    /// Match complete name or qualname only.
     #[serde(default)]
     pub exact: bool,
-    /// Optional kind value.
+    /// Optional kind filter.
     pub kind: Option<String>,
-    /// Restrict results to a workspace-relative file or directory; an empty string leaves results unfiltered.
+    /// Optional classification filter ('production', 'test', or 'documentation').
+    pub classification: Option<SymbolClassification>,
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     /// Group results by file path.
     #[serde(default)]
     pub group_by_file: bool,
-    /// Include Markdown documentation nodes in the code symbol search.
+    /// Include Markdown documentation nodes.
     #[serde(default)]
     pub include_docs: bool,
-    /// Include source previews for up to three hits when the total exceeds three; totals at most three include previews automatically.
+    /// Include source previews for up to 3 hits (auto-included when total <= 3).
     #[serde(default)]
     pub include_preview: bool,
     #[serde(flatten)]
@@ -410,30 +432,52 @@ impl SearchSymbols {
     pub(super) fn pattern(&self) -> anyhow::Result<&str> {
         aliased_string(&self.pattern, &[self.query.as_deref()], "pattern")
     }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents tests data.
 pub struct Tests {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Alias for selector.
+    pub symbol: Option<String>,
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     #[serde(default = "inbound")]
-    /// The direction value.
+    /// Traversal direction: inbound (default) or outbound.
     pub direction: String,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
 }
+impl Tests {
+    pub(super) fn selector(&self) -> anyhow::Result<&str> {
+        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents impact data.
 pub struct Impact {
-    /// Optional exact symbol ID or name; required when changes is omitted. Provide exactly one of selector or changes.
+    /// Symbol ID or name (alias: symbol); provide one of selector or changes.
     pub selector: Option<String>,
-    /// Git change view: staged, unstaged, or head. Exactly one of selector or changes is required.
+    /// Alias for selector.
+    pub symbol: Option<String>,
+    /// Git change view: staged, unstaged, or head.
     pub changes: Option<String>,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.
     #[serde(default = "inbound")]
     pub direction: String,
@@ -448,6 +492,15 @@ pub struct Impact {
     /// The page value.
     pub page: PageInput,
 }
+impl Impact {
+    pub(super) fn selector(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(self.selector.as_deref(), &[self.symbol.as_deref()], "selector")
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Bounded graph or read-only SQL query. SQL uses the compact canonical tables;
 /// join nodes to path_dictionary on path_id and edges to nodes on node_hash.
@@ -455,8 +508,10 @@ pub struct Query {
     /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or 'dead_tails'.
     #[serde(default)]
     pub operation: String,
-    /// Exact symbol ID or name (path:name, path:known_kind:name, path:line, path#Lline), or the read-only SELECT/WITH SQL statement when operation='sql'.
+    /// Symbol selector or SQL statement when operation='sql' (aliases: symbol, query).
     pub selector: Option<String>,
+    /// Alias for selector.
+    pub symbol: Option<String>,
     /// Read-only SELECT/WITH SQL statement; implies operation='sql' when operation is omitted.
     /// Schema: nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant).
     /// Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id.
@@ -470,8 +525,10 @@ pub struct Query {
     pub level: Option<String>,
     /// Minimum function/method statement count for duplicates operation (default: 5).
     pub min_lines: Option<usize>,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.
     pub direction: Option<String>,
     /// Include paged resolution coverage for inspect and explain operations.
@@ -484,15 +541,34 @@ pub struct Query {
     /// The page value.
     pub page: PageInput,
 }
+impl Query {
+    pub(super) fn selector(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(
+            self.selector.as_deref(),
+            &[self.symbol.as_deref(), self.query.as_deref()],
+            "selector",
+        )
+    }
+
+    pub(super) fn sql_statement(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(self.sql.as_deref(), &[self.selector()?], "sql")
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents analyze data.
 pub struct Analyze {
-    /// File or directory target; accepts unified 'path' and 'selector' aliases. Omit target for workspace totals.
+    /// Relative file/directory target or SQL statement (aliases: path, file_path, selector); omit for workspace totals.
     #[serde(default)]
     pub target: String,
-    /// Alternative to target for a file, directory, or read-only SQL statement.
+    /// Alias for target.
     pub path: Option<String>,
-    /// Alternative to target or path; omit all three for workspace totals.
+    /// Alias for target.
+    pub file_path: Option<String>,
+    /// Alias for target.
     pub selector: Option<String>,
     /// Whether include cycles applies.
     pub include_cycles: Option<bool>,
@@ -507,7 +583,11 @@ impl Analyze {
     pub(super) fn target(&self) -> anyhow::Result<&str> {
         Ok(aliased_value(
             (!self.target.is_empty()).then_some(self.target.as_str()),
-            &[self.path.as_deref(), self.selector.as_deref()],
+            &[
+                self.path.as_deref(),
+                self.file_path.as_deref(),
+                self.selector.as_deref(),
+            ],
             "target",
         )?
         .unwrap_or(""))
@@ -516,15 +596,17 @@ impl Analyze {
 #[derive(Deserialize, JsonSchema)]
 /// Represents ast data.
 pub struct Ast {
-    /// AST pattern; accepts 'query' as a unified alias.
+    /// AST pattern (alias: query).
     #[serde(default)]
     pub pattern: String,
-    /// Alternative to pattern; provide exactly one of pattern or query.
+    /// Alias for pattern.
     pub query: Option<String>,
-    /// The language value (e.g. 'python', 'rust', 'typescript'). Optional when 'path' has a recognized file extension or resolves to an indexed single-language directory; required for multi-language scopes.
+    /// Language profile ID (e.g. 'python', 'rust', 'typescript'); omitted infers from path or grammar.
     pub language: Option<String>,
-    /// Optional path value.
+    /// Relative file or directory scope (alias: file_path).
     pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -533,22 +615,28 @@ impl Ast {
     pub(super) fn pattern(&self) -> anyhow::Result<&str> {
         aliased_string(&self.pattern, &[self.query.as_deref()], "pattern")
     }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents search docs data.
 pub struct SearchDocs {
-    /// Documentation query; accepts 'pattern' as a unified alias.
+    /// Documentation search query (alias: pattern).
     #[serde(default)]
     pub query: String,
-    /// Alternative to query for documentation search terms.
+    /// Alias for query.
     pub pattern: Option<String>,
-    /// Optional doc type value.
+    /// Optional doc type filter.
     pub doc_type: Option<String>,
-    /// Optional documentation component or directory prefix filter; accepts 'path' as a unified alias.
+    /// Documentation component or directory prefix (aliases: path, file_path).
     pub component: Option<String>,
-    /// Alternative to component for a documentation component or directory prefix.
+    /// Alias for component.
     pub path: Option<String>,
-    /// Include a short match-centered content excerpt in each result (recommended: true for zero-round-trip triage).
+    /// Alias for component.
+    pub file_path: Option<String>,
+    /// Include short match-centered excerpt.
     #[serde(default)]
     pub include_excerpt: bool,
     #[serde(flatten)]
@@ -563,7 +651,7 @@ impl SearchDocs {
     pub(super) fn component(&self) -> anyhow::Result<Option<&str>> {
         aliased_value(
             self.component.as_deref(),
-            &[self.path.as_deref()],
+            &[self.path.as_deref(), self.file_path.as_deref()],
             "component",
         )
     }
@@ -571,14 +659,18 @@ impl SearchDocs {
 #[derive(Deserialize, JsonSchema)]
 /// Represents get doc data.
 pub struct GetDoc {
-    /// Document path or ID; accepts unified 'path' and 'selector' aliases.
+    /// Document path or ID (aliases: path, file_path, doc_id, selector).
     #[serde(default)]
     pub path_or_id: String,
-    /// Alternative to path_or_id for an indexed document path or ID.
+    /// Alias for path_or_id.
     pub path: Option<String>,
-    /// Alternative to path_or_id or path; provide exactly one document selector.
+    /// Alias for path_or_id.
+    pub file_path: Option<String>,
+    /// Alias for path_or_id.
+    pub doc_id: Option<String>,
+    /// Alias for path_or_id.
     pub selector: Option<String>,
-    /// Optional exact section title. Omit with detail='compact' to inspect the document outline before reading a section.
+    /// Exact section title; omit with detail='compact' for outline.
     pub section: Option<String>,
     #[serde(flatten)]
     /// The page value.
@@ -588,7 +680,12 @@ impl GetDoc {
     pub(super) fn path_or_id(&self) -> anyhow::Result<&str> {
         aliased_string(
             &self.path_or_id,
-            &[self.path.as_deref(), self.selector.as_deref()],
+            &[
+                self.path.as_deref(),
+                self.file_path.as_deref(),
+                self.doc_id.as_deref(),
+                self.selector.as_deref(),
+            ],
             "path_or_id",
         )
     }
@@ -596,8 +693,12 @@ impl GetDoc {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Unified architectural, graph hygiene, syntax, and documentation lint query.
 pub struct Lint {
-    /// Optional workspace-relative file, directory, or glob target; omit for full workspace.
+    /// Relative file, directory, or glob target (aliases: path, file_path); omit for full workspace.
     pub target: Option<String>,
+    /// Alias for target.
+    pub path: Option<String>,
+    /// Alias for target.
+    pub file_path: Option<String>,
     /// Optional lint categories (`arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`); omit for default `[arch, syntax, docs]`.
     pub categories: Option<Vec<LintCategory>>,
     /// Optional rule or invariant ID filters.
@@ -608,6 +709,15 @@ pub struct Lint {
     /// The page value.
     pub page: PageInput,
 }
+impl Lint {
+    pub(super) fn target(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(
+            self.target.as_deref(),
+            &[self.path.as_deref(), self.file_path.as_deref()],
+            "target",
+        )
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents guide data.
 pub struct Guide {
@@ -617,9 +727,9 @@ pub struct Guide {
     #[serde(default)]
     /// Whether force applies.
     pub force: bool,
-    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+    /// Worktree path or unique name/prefix selector; omit or '.' for server root.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -801,7 +911,7 @@ pub struct StateInput {
     pub include_prometheus: Option<bool>,
     /// Worktree routing selector (or boolean `true` on `action="start"` to create a managed worktree).
     pub worktree: Option<WorktreeInput>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -825,7 +935,7 @@ pub struct ClaimInput {
     pub steal_remote: bool,
     /// Worktree selector.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -847,7 +957,7 @@ pub struct VerifyInput {
     pub claim_revision: Option<u32>,
     /// Worktree selector.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -886,7 +996,7 @@ pub struct SubmitInput {
     pub allow_main: bool,
     /// Worktree selector.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
@@ -934,7 +1044,7 @@ pub struct BlackboardInput {
     pub generation: Option<u64>,
     /// Worktree selector.
     pub worktree: Option<String>,
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,

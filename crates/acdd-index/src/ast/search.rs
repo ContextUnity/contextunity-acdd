@@ -148,6 +148,9 @@ fn structural_match(
     let token = text(pattern, ps);
     if token.starts_with("__ACDD_META_") && pattern.named_child_count() == 0 {
         let name = token.trim_start_matches("__ACDD_META_");
+        if name.is_empty() {
+            return true;
+        }
         let value = json!(text(target, source));
         return match captures.get(name) {
             Some(old) => *old == value,
@@ -226,21 +229,23 @@ fn structural_match(
         }
         let token = text(p[0], ps);
         if token.starts_with("__ACDD_MANY_") {
+            let name = token.trim_start_matches("__ACDD_MANY_");
             for count in 0..=t.len() {
                 if !budget.step() {
                     return false;
                 }
                 let mut branch = caps.clone();
-                let name = token.trim_start_matches("__ACDD_MANY_");
-                let value = if count == 0 {
-                    ""
-                } else {
-                    &ts[t[0].start_byte()..t[count - 1].end_byte()]
-                };
-                if branch.get(name).is_some_and(|v| v != value) {
-                    continue;
+                if !name.is_empty() {
+                    let value = if count == 0 {
+                        ""
+                    } else {
+                        &ts[t[0].start_byte()..t[count - 1].end_byte()]
+                    };
+                    if branch.get(name).is_some_and(|v| v != value) {
+                        continue;
+                    }
+                    branch.insert(name.into(), json!(value));
                 }
-                branch.insert(name.into(), json!(value));
                 if sequence(
                     &p[1..],
                     &t[count..],

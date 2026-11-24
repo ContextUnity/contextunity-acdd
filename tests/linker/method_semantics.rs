@@ -255,6 +255,7 @@ fn rust_and_python_methods_are_classified_persisted_and_searchable() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &page,
             },
         )

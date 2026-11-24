@@ -19,6 +19,59 @@ pub enum Detail {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+/// Closed symbol classification filter and label (`production`, `test`, `documentation`).
+pub enum SymbolClassification {
+    /// Production source symbols (`is_test = 0`, non-Markdown).
+    Production,
+    /// Test symbols and fixtures (`is_test = 1`, non-Markdown).
+    Test,
+    /// Indexed Markdown documentation nodes (`language = 'markdown'`).
+    Documentation,
+}
+
+impl SymbolClassification {
+    /// Canonical lowercase wire string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Test => "test",
+            Self::Documentation => "documentation",
+        }
+    }
+
+    /// Stable SQL filter discriminant (`0` = production, `1` = test, `2` = documentation).
+    pub const fn sql_code(self) -> i64 {
+        match self {
+            Self::Production => 0,
+            Self::Test => 1,
+            Self::Documentation => 2,
+        }
+    }
+}
+
+impl std::fmt::Display for SymbolClassification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SymbolClassification {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim() {
+            "production" => Ok(Self::Production),
+            "test" => Ok(Self::Test),
+            "documentation" => Ok(Self::Documentation),
+            other => anyhow::bail!(
+                "invalid classification '{other}'; expected one of: production, test, documentation"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 /// Represents source context policy data.

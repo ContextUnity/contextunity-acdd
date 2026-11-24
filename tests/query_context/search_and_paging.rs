@@ -50,6 +50,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
             path: Some("pkg"),
             include_docs: false,
             exact: true,
+            classification: None,
             page: &options(30),
         },
     )
@@ -72,6 +73,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
             path: None,
             include_docs: false,
             exact: true,
+            classification: None,
             page: &options(30),
         },
     )
@@ -86,6 +88,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
                 path: None,
                 include_docs: false,
                 exact: true,
+                classification: None,
                 page: &options(30)
             }
         )
@@ -121,6 +124,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
                 path: None,
                 include_docs: false,
                 exact: true,
+                classification: None,
                 page: &options(30),
             },
         )
@@ -142,6 +146,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: None,
             include_docs: false,
             exact: true,
+            classification: None,
             page: &query,
         },
     )
@@ -159,6 +164,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: None,
             include_docs: false,
             exact: true,
+            classification: None,
             page: &query,
         },
     )
@@ -176,6 +182,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: Some("file:symbols.py"),
             include_docs: false,
             exact: true,
+            classification: None,
             page: &options(10),
         },
     )
@@ -191,6 +198,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: None,
             include_docs: false,
             exact: true,
+            classification: None,
             page: &options(10),
         },
     )
@@ -210,6 +218,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: None,
             include_docs: true,
             exact: true,
+            classification: None,
             page: &options(10),
         },
     )
@@ -229,6 +238,7 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             path: None,
             include_docs: true,
             exact: true,
+            classification: None,
             page: &options(10),
         },
     )
@@ -265,6 +275,7 @@ fn prefix_search_finds_namespaced_rust_methods_using_fts_candidates() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(30),
         },
     )
@@ -308,6 +319,7 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &query,
             },
         )
@@ -467,6 +479,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(30),
         },
     )
@@ -482,6 +495,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
                 path: None,
                 include_docs: false,
                 exact: false,
+                classification: None,
                 page: &options(30)
             }
         )
@@ -512,6 +526,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &full
         }
     )
@@ -543,6 +558,7 @@ fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(30),
         },
     )
@@ -558,6 +574,7 @@ fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(30),
         },
     )
@@ -571,6 +588,7 @@ fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
             path: None,
             include_docs: true,
             exact: false,
+            classification: None,
             page: &options(30),
         },
     )

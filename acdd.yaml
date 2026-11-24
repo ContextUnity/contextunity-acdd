@@ -2,6 +2,7 @@ DEBUG: true
 roots:
   - src
   - crates
+  - tests
 docs:
   - README.md
   - INSTALL.md

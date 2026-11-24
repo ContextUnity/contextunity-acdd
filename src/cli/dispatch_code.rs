@@ -205,9 +205,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                 source.has_valid_paging_anchor(generation.as_deref()),
                 "source continuation requires generation"
             );
-            let mut page =
-                QueryOptions::resolve(&ctx.adapter.response, None, 0, None, generation)?;
-            page.detail = Detail::Full;
+            let page = QueryOptions::resolve(&ctx.adapter.response, None, 0, None, generation)?;
             let node_ctx = crate::state_bridge::active_node_context(
                 ctx.root,
                 ctx.adapter,
@@ -331,26 +329,44 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
         } => {
             require_subsystem(ctx.adapter, SubsystemId::Code)?;
             let conn = open_or_rebuild(ctx.db, ctx.root, ctx.explicit_config, ctx.cache_dir)?;
+            let languages = ast::resolve_ast_languages(
+                &conn,
+                ctx.root,
+                ctx.adapter,
+                &pattern,
+                language.as_deref(),
+                path.as_deref(),
+            )?;
+            let lang_refs: Vec<&str> = languages.iter().map(String::as_str).collect();
             let mut result = if (1..=MAX_PAGE_SIZE).contains(&limit) {
-                ast::search_paged_with_adapter(
+                ast::search_paged_languages_with_adapter(
                     &conn,
                     ctx.root,
                     ctx.adapter,
                     &pattern,
-                    &language,
+                    &lang_refs,
                     path.as_deref(),
                     &cli_page(limit)?,
                 )?
             } else {
-                ast::search(&conn, ctx.root, &pattern, &language, path.as_deref(), limit)?
+                ast::search_languages_with_adapter(
+                    &conn,
+                    ctx.root,
+                    ctx.adapter,
+                    &pattern,
+                    &lang_refs,
+                    path.as_deref(),
+                    limit,
+                )?
             };
+            let language_label = languages.join(", ");
             result["pattern"] = json!(pattern);
-            result["language"] = json!(language);
+            result["language"] = json!(language_label);
             if ctx.output_format == OutputFormat::Markdown {
                 result["request_scope"] = json!({
                     "workspace_root": ctx.root.display().to_string(),
                     "pattern": pattern,
-                    "language": language,
+                    "language": language_label,
                     "path": path,
                 });
             }
@@ -518,9 +534,7 @@ fn dispatch_query(
                 &symbols::InspectOptions {
                     show_doc,
                     source: &source,
-                    coverage: CoverageOptions {
-                        include_coverage: true,
-                    },
+                    coverage: CoverageOptions::default(),
                     page: &page,
                 },
             )?;
@@ -536,16 +550,24 @@ fn dispatch_query(
         QueryCommand::Search {
             pattern,
             kind,
+            classification,
             limit,
         } => {
             let page = cli_page(limit)?;
             let exact = false;
             let include_docs = false;
+            let parsed_classification = classification
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::parse::<acdd_core::response::SymbolClassification>)
+                .transpose()?;
             let result = symbols::search_with_options(
                 conn,
                 &pattern,
                 &symbols::SearchOptions {
                     kind: kind.as_deref(),
+                    classification: parsed_classification,
                     path: None,
                     include_docs,
                     exact,
@@ -558,6 +580,7 @@ fn dispatch_query(
                     "workspace_root": ctx.root.display().to_string(),
                     "pattern": pattern,
                     "kind": kind,
+                    "classification": parsed_classification.map(acdd_core::response::SymbolClassification::as_str),
                     "exact": exact,
                     "include_docs": include_docs,
                 });

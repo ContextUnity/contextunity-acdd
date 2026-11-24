@@ -1,10 +1,12 @@
 use crate::db::reader::types as reader_types;
-use acdd_core::response::{CoverageOptions, QueryOptions, SourceOptions};
+use acdd_core::response::{CoverageOptions, QueryOptions, SourceOptions, SymbolClassification};
 
 /// Filters and paging for a symbol search.
 pub struct SearchOptions<'a> {
     /// Optional symbol kind.
     pub kind: Option<&'a str>,
+    /// Optional symbol classification (`production`, `test`, `documentation`).
+    pub classification: Option<SymbolClassification>,
     /// Workspace-relative file or directory scope.
     pub path: Option<&'a str>,
     /// Whether Markdown document symbols are included.

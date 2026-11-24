@@ -148,6 +148,7 @@ fn htmx_request_identity_and_bounds() {
                     path: None,
                     include_docs: false,
                     exact: false,
+                    classification: None,
                     page: &options,
                 },
             )
@@ -232,6 +233,7 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options,
         },
     )
@@ -256,6 +258,7 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &second_options,
         },
     )

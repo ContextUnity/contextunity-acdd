@@ -712,6 +712,7 @@ fn continuation_rejects_a_new_index_generation() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &options(1),
         },
     )
@@ -742,6 +743,7 @@ fn continuation_rejects_a_new_index_generation() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &query
         }
     )
@@ -757,6 +759,7 @@ fn continuation_rejects_a_new_index_generation() {
             path: None,
             include_docs: false,
             exact: false,
+            classification: None,
             page: &query
         }
     )

@@ -272,6 +272,15 @@ fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
         rejected_json["error"]["supported_parameters"].is_array(),
         "expected supported_parameters list"
     );
+    let target_rejected = read_response(&mut client, json!({"target": "test.txt"}));
+    assert_eq!(target_rejected["result"]["isError"], true);
+    assert!(
+        target_rejected["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("'path' or 'selector'"),
+        "{target_rejected}"
+    );
     client.finish().expect("server must finish successfully");
 }
 
@@ -863,6 +872,22 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     // Default acdd_read suppresses Hints; include_hints=true opts in.
     let no_hints = read_tool(&mut client, json!({"selector":"compute"}));
     assert!(no_hints.get("Hints").is_none(), "{no_hints}");
+    let cli_read_out = run_cli_json(&w, &["read", "service.py", "--selector", "compute"]);
+    assert!(
+        cli_read_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_read_out.stderr)
+    );
+    let cli_read: serde_json::Value = serde_json::from_slice(&cli_read_out.stdout).unwrap();
+    assert_eq!(cli_read["node"], no_hints["node"], "{cli_read}");
+    let cli_inspect_out = run_cli_json(&w, &["query", "inspect", "compute"]);
+    assert!(
+        cli_inspect_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_inspect_out.stderr)
+    );
+    let cli_inspect: serde_json::Value = serde_json::from_slice(&cli_inspect_out.stdout).unwrap();
+    assert!(cli_inspect.get("coverage").is_none(), "{cli_inspect}");
     let snippet = read_tool(
         &mut client,
         json!({"selector":"compute","include_hints":true}),
