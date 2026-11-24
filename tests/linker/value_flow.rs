@@ -5,6 +5,7 @@ use acdd_index::{
 use acdd_index::linker::value_flow::{
     SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
+use acdd_index::linker::value_flow::types::ValueFlowLookup;
 use std::collections::BTreeMap;
 
 struct BuiltinResolver;
@@ -53,14 +54,14 @@ fn replay_preserves_duplicate_positions_and_strict_source_order() {
     let owner = Node {
         native_semantic: None,
         id: "owner".into(),
-        kind: "function".into(),
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "owner".into(),
         qualname: "owner".into(),
         path: "test.py".into(),
         line: 1,
         end_line: 8,
         is_test: true,
-        language: "python".into(),
+        language: acdd_index::models::tags::LanguageId::Python,
         generated: false,
         details: serde_json::json!({"value_flow": flow}),
     };
@@ -114,14 +115,14 @@ fn semantic_limits_reject_excessive_or_invalid_facts() {
     let owner = Node {
         native_semantic: None,
         id: "owner".into(),
-        kind: "function".into(),
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "owner".into(),
         qualname: "owner".into(),
         path: "limits.py".into(),
         line: 1,
         end_line: 3,
         is_test: true,
-        language: "python".into(),
+        language: acdd_index::models::tags::LanguageId::Python,
         generated: false,
         details: serde_json::json!({"value_flow": facts}),
     };
@@ -172,14 +173,14 @@ fn named_type_aliases_resolve_with_cycle_and_depth_guards() {
         Node {
             native_semantic: None,
             id: name.into(),
-            kind: "type_alias".into(),
+            kind: acdd_index::models::tags::NodeKind::Type,
             name: name.into(),
             qualname: name.into(),
             path: "test.py".into(),
             line: 1,
             end_line: 1,
             is_test: true,
-            language: "python".into(),
+            language: acdd_index::models::tags::LanguageId::Python,
             generated: false,
             details: serde_json::json!({"value_flow": {"alias_type": {"kind": "named", "name": rhs}}}),
         }
@@ -269,14 +270,14 @@ fn inferred_factory_returns_relink_bindings_and_leave_cycles_unknown() {
         Node {
             native_semantic: None,
             id: name.into(),
-            kind: kind.into(),
+            kind: acdd_index::models::tags::NodeKind::parse(kind).expect("valid node kind"),
             name: name.into(),
             qualname: name.into(),
             path: "test.py".into(),
             line,
             end_line: line + 1,
             is_test: true,
-            language: "python".into(),
+            language: acdd_index::models::tags::LanguageId::Python,
             generated: false,
             details: serde_json::json!({"value_flow": flow}),
         }
@@ -294,10 +295,10 @@ fn inferred_factory_returns_relink_bindings_and_leave_cycles_unknown() {
                 return Symbol::Unknown;
             };
             match role {
-                SymbolRole::Type | SymbolRole::Constructor if node.kind == "class" => {
+                SymbolRole::Type | SymbolRole::Constructor if node.kind == acdd_index::models::tags::NodeKind::Class => {
                     Symbol::Type(TypeTarget::Local(node))
                 }
-                SymbolRole::Callable if node.kind == "function" => Symbol::Callable(node),
+                SymbolRole::Callable if node.kind == acdd_index::models::tags::NodeKind::Function => Symbol::Callable(node),
                 _ => Symbol::Unknown,
             }
         }
@@ -396,14 +397,14 @@ fn ordinary_typescript_class_call_is_not_a_constructor() {
     let class = Node {
         native_semantic: None,
         id: "Worker".into(),
-        kind: "class".into(),
+        kind: acdd_index::models::tags::NodeKind::Class,
         name: "Worker".into(),
         qualname: "Worker".into(),
         path: "test.ts".into(),
         line: 1,
         end_line: 2,
         is_test: true,
-        language: "typescript".into(),
+        language: acdd_index::models::tags::LanguageId::Typescript,
         generated: false,
         details: serde_json::Value::Null,
     };
@@ -420,7 +421,7 @@ fn ordinary_typescript_class_call_is_not_a_constructor() {
     let index = ValueFlowIndex::build(&all, &resolver);
     let at = SourcePosition { line: 3, column: 0 };
     assert!(index
-        .type_of_expression(class, "Worker", at, &resolver)
+        .type_of_expression_tracked(class, "Worker", at, &resolver, None)
         .is_none());
     assert!(matches!(
         index.resolve_value(

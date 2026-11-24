@@ -120,14 +120,14 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     let node = Node {
         native_semantic: None,
         id: "scope:src/main.js:1:1".into(),
-        kind: "scope".into(),
+        kind: crate::models::tags::NodeKind::TemplateScope,
         name: "main".into(),
         qualname: "main".into(),
         path: "src/main.js".into(),
         line: 1,
         end_line: 1,
         is_test: false,
-        language: "javascript".into(),
+        language: crate::models::tags::LanguageId::Javascript,
         generated: false,
         details: json!({"scope": "module"}),
     };
@@ -143,23 +143,11 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
             }],
             ..ValueFlowFacts::default()
         }),
-        original: None,
-        classic_fields_first: Some(true),
     };
-    let fields_first_wire = serde_json::to_string(&fields_first.view()).unwrap();
-    assert!(fields_first_wire.starts_with("{\"fields\":["));
-    assert!(fields_first_wire.contains(",\"bindings\":null"));
+    let fields_wire = serde_json::to_value(fields_first.view()).unwrap();
+    assert_eq!(fields_wire["fields"].as_array().unwrap().len(), 1);
 
     let original = json!({"preserved": true});
-    let original_flow = FlowState::Valid {
-        facts: Box::new(ValueFlowFacts::default()),
-        original: Some(original.clone()),
-        classic_fields_first: Some(true),
-    };
-    assert_eq!(
-        serde_json::to_value(original_flow.view()).unwrap(),
-        original
-    );
     let invalid_flow = FlowState::Invalid(original.clone());
     assert_eq!(serde_json::to_value(invalid_flow.view()).unwrap(), original);
     let original_semantic = crate::typed_facts::SemanticState::Valid {
@@ -332,24 +320,21 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         ..Default::default()
     };
     let mut flow_node = facts.nodes[0].clone();
-    flow_node.details["value_flow"] = serde_json::to_value(valid_flow).unwrap();
+    flow_node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, serde_json::to_value(valid_flow).unwrap());
     let flow_input = TypedFacts::from_public(crate::models::Facts {
         nodes: vec![flow_node],
         ..Default::default()
     });
     assert!(matches!(
         flow_input.flows.state(&flow_input.nodes[0]),
-        Some(FlowState::Valid {
-            original: Some(_),
-            ..
-        })
+        Some(FlowState::Valid { .. })
     ));
     let expected_flow = serde_json::to_value(&flow_input).unwrap();
     let flow_cache = encode_entry(&key, &flow_input).unwrap();
     let flow_reopened = decode_entry(&flow_cache, &key, 1024 * 1024).unwrap();
     assert!(matches!(
         flow_reopened.flows.state(&flow_reopened.nodes[0]),
-        Some(FlowState::Valid { original: None, .. })
+        Some(FlowState::Valid { .. })
     ));
     assert_eq!(serde_json::to_value(flow_reopened).unwrap(), expected_flow);
     let local_flow_blob = crate::typed_facts::encode_facts(&flow_input).unwrap();
@@ -358,14 +343,14 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         local_flow_reopened
             .flows
             .state(&local_flow_reopened.nodes[0]),
-        Some(FlowState::Valid { original: None, .. })
+        Some(FlowState::Valid { .. })
     ));
     assert_eq!(
         serde_json::to_value(local_flow_reopened).unwrap(),
         expected_flow
     );
     let blob = crate::typed_facts::encode_facts(&facts).unwrap();
-    assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
+    assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x01").is_err());
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x02").is_err());
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x03").is_err());
@@ -454,7 +439,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     for bad in bad_markers {
         let mut public: crate::models::Facts =
             serde_json::from_value(serde_json::to_value(&decoded).unwrap()).unwrap();
-        public.nodes[0].details["named_definition_uncertainties"] = bad;
+        public.nodes[0].set_detail(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES, bad);
         assert!(crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0]).is_err());
         let invalid = TypedFacts::from_public(public);
         assert!(invalid.flows.has_invalid_named_uncertainty_carriers());
@@ -557,7 +542,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     let mut malformed: crate::models::Facts =
         serde_json::from_value(serde_json::to_value(&native_reopened).unwrap()).unwrap();
     let raw = json!([{"future_semantic_field":true}]);
-    malformed.nodes[0].details["semantic_facts"] = raw.clone();
+    malformed.nodes[0].set_detail(crate::models::details::NodeDetailKey::SEMANTIC_FACTS, raw.clone());
     let malformed = TypedFacts::from_public(malformed);
     let malformed =
         decode_entry(&encode_entry(&key, &malformed).unwrap(), &key, 1024 * 1024).unwrap();
@@ -587,14 +572,14 @@ fn test_classic_global_cache_roundtrip() {
     let node = Node {
         native_semantic: None,
         id: "html-js:change_form.html:classic".into(),
-        kind: "template_scope".into(),
+        kind: crate::models::tags::NodeKind::TemplateScope,
         name: "classic scripts".into(),
         qualname: "module.script".into(),
         path: "change_form.html".into(),
         line: 1,
         end_line: 10,
         is_test: false,
-        language: "javascript".into(),
+        language: crate::models::tags::LanguageId::Javascript,
         generated: false,
         details: json!({
             "column": 43,
@@ -658,14 +643,14 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
     let node = Node {
         native_semantic: None,
         id: "fn:src/lib.rs:hello".into(),
-        kind: "function".into(),
+        kind: crate::models::tags::NodeKind::Function,
         name: "hello".into(),
         qualname: "crate::hello".into(),
         path: "src/lib.rs".into(),
         line: 10,
         end_line: 20,
         is_test: false,
-        language: "rust".into(),
+        language: crate::models::tags::LanguageId::Rust,
         generated: false,
         details: json!({"async": true}),
     };

@@ -503,14 +503,14 @@ mod tests {
         facts1.nodes.push(Node {
             native_semantic: None,
             id: "node_1".into(),
-            kind: "function".into(),
+            kind: crate::models::tags::NodeKind::Function,
             name: "test_fn".into(),
             qualname: "mod::test_fn".into(),
             path: "src/file1.rs".into(),
             line: 1,
             end_line: 5,
             is_test: false,
-            language: "rust".into(),
+            language: crate::models::tags::LanguageId::Rust,
             generated: false,
             details: serde_json::json!({
                 "semantic_facts": [{"occurrence": {"owner_id": "missing_owner"}}]
@@ -532,14 +532,14 @@ mod tests {
         facts2.nodes.push(Node {
             native_semantic: None,
             id: "node_2".into(),
-            kind: "class".into(),
+            kind: crate::models::tags::NodeKind::Class,
             name: "TestClass".into(),
             qualname: "pkg.TestClass".into(),
             path: "src/file2.py".into(),
             line: 10,
             end_line: 20,
             is_test: false,
-            language: "python".into(),
+            language: crate::models::tags::LanguageId::Python,
             generated: false,
             details: serde_json::Value::Null,
         });

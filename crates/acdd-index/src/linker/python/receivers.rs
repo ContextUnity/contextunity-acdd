@@ -38,9 +38,20 @@ pub(crate) enum PythonReceiverMember<'a> {
     Unknown,
 }
 
+impl<'a> From<PythonReceiverMember<'a>> for LanguageMemberResult<'a> {
+    fn from(member: PythonReceiverMember<'a>) -> Self {
+        match member {
+            PythonReceiverMember::Local(node) => Self::Local(node),
+            PythonReceiverMember::External(module, import_line, provider, hierarchy) => Self::External { module, import_line, provider, hierarchy },
+            PythonReceiverMember::Ambiguous => Self::Ambiguous,
+            PythonReceiverMember::Unknown => Self::Unknown,
+        }
+    }
+}
+
 fn is_stub_or_overload(node: &Node) -> bool {
-    node.details["is_stub"].as_bool().unwrap_or(false)
-        || node.details["is_overload"].as_bool().unwrap_or(false)
+    node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB).as_bool().unwrap_or(false)
+        || node.detail_entry(crate::models::details::NodeDetailKey::IS_OVERLOAD).as_bool().unwrap_or(false)
 }
 
 /// Precomputes Python C3 order and member lookup before generic reference linking.
@@ -124,7 +135,7 @@ fn insert_python_class_node_member<'a>(
     node: &'a Node,
 ) {
     let callable = matches!(node.kind.as_str(), "function" | "method");
-    let conditional = callable && node.details["is_conditional"].as_bool().unwrap_or(false);
+    let conditional = callable && node.detail_entry(crate::models::details::NodeDetailKey::IS_CONDITIONAL).as_bool().unwrap_or(false);
     let node_is_stub = is_stub_or_overload(node);
     match members.get(node.name.as_str()) {
         None => {
@@ -184,7 +195,7 @@ impl<'a> PythonReceivers<'a> {
         let classes: HashMap<&str, &Node> = all
             .values_facts()
             .flat_map(|facts| &facts.nodes)
-            .filter(|node| node.language == "python" && node.kind == "class")
+            .filter(|node| node.language == crate::models::tags::LanguageId::Python && node.kind == crate::models::tags::NodeKind::Class)
             .map(|node| (node.id.as_str(), node))
             .collect();
         if classes.is_empty() {
@@ -220,7 +231,7 @@ impl<'a> PythonReceivers<'a> {
                         find_enclosing_python_class(&class_names, &node.path, parent, node)
                     });
                 // PythonReceiverMember reads create synthetic field nodes; they do not override methods.
-                if node.kind == "field"
+                if node.kind == crate::models::tags::NodeKind::Field
                     && !assigned_fields.contains(node.id.as_str())
                     && !owning_class.is_some_and(|class| {
                         assigned_members.contains(&(class.id.as_str(), node.name.as_str()))
@@ -249,7 +260,7 @@ impl<'a> PythonReceivers<'a> {
                             // runtime value is not. Call resolution treats field members as
                             // unknown callables, while reference resolution can still link the
                             // exact field declaration.
-                            if !matches!(members.get(member), Some(PythonReceiverMember::Local(node)) if node.kind == "field")
+                            if !matches!(members.get(member), Some(PythonReceiverMember::Local(node)) if node.kind == crate::models::tags::NodeKind::Field)
                             {
                                 members.insert(member, PythonReceiverMember::Unknown);
                             }
@@ -265,7 +276,7 @@ impl<'a> PythonReceivers<'a> {
                     .or_default()
                     .entry(binding)
                     .or_insert(PythonReceiverMember::Unknown);
-                if !matches!(member, PythonReceiverMember::Local(node) if node.kind == "field") {
+                if !matches!(member, PythonReceiverMember::Local(node) if node.kind == crate::models::tags::NodeKind::Field) {
                     *member = PythonReceiverMember::Unknown;
                 }
             }
@@ -444,6 +455,16 @@ impl LanguageMemberIndex for PythonReceivers<'_> {
         &["python"]
     }
 
+    fn handles_receiver(&self, receiver: &Node) -> bool {
+        receiver.kind == crate::models::tags::NodeKind::Class
+    }
+
+    fn lookup_local_member<'a>(
+        &'a self, receiver: &Node, member: &str, _associated: bool, caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        self.lookup_member(receiver, member, false, caller)
+    }
+
     fn lookup_member<'a>(
         &'a self,
         receiver: &Node,
@@ -451,14 +472,7 @@ impl LanguageMemberIndex for PythonReceivers<'_> {
         super_call: bool,
         _caller: &Node,
     ) -> LanguageMemberResult<'a> {
-        match self.lookup(receiver, member, super_call) {
-            PythonReceiverMember::Local(node) => LanguageMemberResult::Local(node),
-            PythonReceiverMember::External(module, import_line, provider, hierarchy) => {
-                LanguageMemberResult::External { module, import_line, provider, hierarchy }
-            }
-            PythonReceiverMember::Ambiguous => LanguageMemberResult::Ambiguous,
-            PythonReceiverMember::Unknown => LanguageMemberResult::Unknown,
-        }
+        self.lookup(receiver, member, super_call).into()
     }
 
     fn implementors(&self, base: &Node) -> Option<&[&Node]> {
@@ -475,8 +489,7 @@ impl LanguageMemberIndex for PythonReceivers<'_> {
 }
 
 pub(in crate::linker) fn has_protocol_or_abc_base(node: &Node) -> bool {
-    node.details
-        .get("bases")
+    node.detail_get(crate::models::details::NodeDetailKey::BASES)
         .and_then(|bases| bases.as_str())
         .is_some_and(|bases| bases.contains("Protocol") || bases.contains("ABC"))
 }

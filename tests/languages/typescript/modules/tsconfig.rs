@@ -140,13 +140,13 @@ fn typescript_type_value_export_identity() {
             provider
                 .nodes
                 .iter()
-                .any(|node| node.kind == "enum" && node.name == "Color"),
+                .any(|node| node.kind == acdd_index::models::tags::NodeKind::Enum && node.name == "Color"),
             "{:#?}",
             provider.nodes
         );
         for name in ["Red", "Blue"] {
             assert!(
-                provider.nodes.iter().any(|node| node.kind == "field"
+                provider.nodes.iter().any(|node| node.kind == acdd_index::models::tags::NodeKind::Field
                     && node.name == name
                     && node.qualname.ends_with(&format!("Color.{name}"))),
                 "{name}: {:#?}",

@@ -20,7 +20,7 @@ fn unproven(workspace: Opaque, root: Opaque, conn: Opaque, row: Opaque, client: 
     let targets: Vec<String> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "method" && matches!(node.name.as_str(), "finish" | "len"))
+        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && matches!(node.name.as_str(), "finish" | "len"))
         .map(|node| node.id.clone())
         .collect();
     assert_eq!(targets.len(), 2);

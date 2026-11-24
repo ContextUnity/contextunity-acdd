@@ -1532,7 +1532,7 @@ fn exercise<'a>(
     assert!(
         interner_nodes
             .iter()
-            .any(|n| n.kind == "method" && n.qualname.ends_with(".LinkerInterner.from_catalog")),
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.qualname.ends_with(".LinkerInterner.from_catalog")),
         "expected normalized qualname without <'a>: {interner_nodes:#?}"
     );
     assert!(
@@ -2065,14 +2065,14 @@ pub fn tuple_option_join_and_monotonic_loop(
     let tuple_owner = acdd_index::models::Node {
         native_semantic: None,
         id: "fn:tuple_join.py:1:run".into(),
-        kind: "function".into(),
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "run".into(),
         qualname: "tuple_join.run".into(),
         path: "tuple_join.py".into(),
         line: 1,
         end_line: 4,
         is_test: true,
-        language: "python".into(),
+        language: acdd_index::models::tags::LanguageId::Python,
         generated: false,
         details: serde_json::json!({
             "value_flow": acdd_index::semantic::ValueFlowFacts {

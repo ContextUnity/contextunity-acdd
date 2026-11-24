@@ -1,6 +1,8 @@
+use crate::languages::profile::ProfileLinker;
+use super::lookup::resolve_type;
 use super::types::{
-    collect_candidate_join, node_position, resolve_type, same_target, symbol_type, Definitions,
-    ReadTrace, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
+    collect_candidate_join, node_position, same_target, symbol_type, Definitions, ReadTrace,
+    SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
 use crate::models::Node;
 use crate::semantic::{SourcePosition, ValueExpr, ValueFlowFacts};
@@ -37,12 +39,22 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
+        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let eval = crate::languages::profile::CallEvalContext { index: self, owner, at, resolver, trace };
+        if let Some(result) = linker.and_then(|linker| linker.evaluate_language_value(
+            &eval, value, self.limits,
+            &|value| self.evaluate_tracked(owner, value, at, resolver, definitions, trace),
+            &|value| self.explicit_payload(owner, value, at, resolver, trace, 0),
+            &|targets| join_branch_targets(targets, true, Some(linker)),
+        )) {
+            return result;
+        }
         match value {
             ValueExpr::Annotated { type_expr } => {
                 resolve_type(owner, type_expr, at, resolver, self.limits)
             }
             ValueExpr::Construct { callee } => {
-                if let Some(target) = crate::languages::by_id(&owner.language)
+                if let Some(target) = crate::languages::by_id(owner.language.as_str())
                     .and_then(|profile| profile.linker().construct_value(owner, callee))
                 {
                     return target;
@@ -54,7 +66,7 @@ impl<'a> ValueFlowIndex<'a> {
                 .cloned()
                 .unwrap_or_else(|| {
                     match resolver.resolve_symbol(owner, name, at, SymbolRole::Callable) {
-                        Symbol::Callable(node) if node.kind == "constant" => self
+                        Symbol::Callable(node) if node.kind == crate::models::tags::NodeKind::Constant => self
                             .returns
                             .get(node.id.as_str())
                             .cloned()
@@ -78,6 +90,7 @@ impl<'a> ValueFlowIndex<'a> {
                     })
                     .collect(),
                 false,
+                crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker()),
             ),
             ValueExpr::Call { callee, site } => self.evaluate_call(
                 owner,
@@ -112,7 +125,7 @@ impl<'a> ValueFlowIndex<'a> {
                 definitions,
                 trace,
             ),
-            ValueExpr::Unknown => TypeTarget::Unknown,
+            _ => TypeTarget::Unknown,
         }
     }
 
@@ -130,7 +143,7 @@ impl<'a> ValueFlowIndex<'a> {
             return *inner;
         }
         let ValueExpr::Call { callee, .. } = value else {
-            if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+            if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
                 return self.explicit_payload(owner, value, at, resolver, trace, 0);
             }
             return TypeTarget::Unknown;
@@ -187,7 +200,7 @@ impl<'a> ValueFlowIndex<'a> {
         if let Some(target) = linker.and_then(|l| l.constructor_result(owner, callee, at, resolver)) {
             return target;
         }
-        if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
+        if linker.is_some_and(|linker| linker.payload_uses_async_return()) {
             if self
                 .callable_expression_tracked(owner, callee, at, resolver, trace)
                 .is_some_and(|callable| self.async_returns.contains_key(callable.id.as_str()))
@@ -245,49 +258,27 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        if owner.language == "python"
-            && matches!(
-                receiver_expr,
-                ValueExpr::Call { callee: super_name, site: None } if super_name == "super"
-            )
-        {
-            if let Symbol::Callable(callable) = resolver.resolve_python_super_member(owner, callee)
-            {
-                if let Some(result) = self.return_type_tracked(callable, trace) {
-                    return result.clone();
-                }
-            }
-            return TypeTarget::Unknown;
+        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let eval = crate::languages::profile::CallEvalContext {
+            index: self, owner, at, resolver, trace,
+        };
+        if let Some(result) = linker.and_then(|linker| linker.special_member_call(&eval, receiver_expr, callee)) {
+            return result;
         }
         let receiver =
             self.evaluate_tracked(owner, receiver_expr, at, resolver, definitions, trace);
         if let Symbol::Callable(callable) = resolver.resolve_member(&receiver, callee, owner, at) {
             if let Some(result) = self.return_type_tracked(callable, trace) {
-                if !(owner.language == "python"
-                    && callee == "__aenter__"
-                    && matches!(result, TypeTarget::Unknown))
-                {
+                if linker.is_none_or(|linker| linker.accept_member_return(callee, result)) {
                     return result.clone();
                 }
             }
         }
-        let member_result = if owner.language == "rust" {
-            self.resolve_rust_member_or_adapter(&receiver, callee, owner, at, resolver)
-        } else {
-            resolver.resolve_member_result(&receiver, callee, owner, at)
-        };
+        let member_result = self.resolve_member_call(&receiver, callee, owner, at, resolver);
         if let Some(target) = member_result {
             return target;
         }
-        let eval = crate::languages::profile::CallEvalContext {
-            index: self,
-            owner,
-            at,
-            resolver,
-            trace,
-        };
-        if let Some(target) = crate::languages::by_id(owner.language.as_str())
-            .and_then(|profile| profile.linker().evaluate_member_call_fallback(&eval, &receiver, callee))
+        if let Some(target) = linker.and_then(|linker| linker.evaluate_member_call_fallback(&eval, &receiver, callee))
         {
             return target;
         }
@@ -304,10 +295,7 @@ impl<'a> ValueFlowIndex<'a> {
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
         let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
-        if owner.language == "rust"
-            && receiver == "self"
-            && owner.details["receiver_name"].as_str() == Some("self")
-        {
+        if linker.is_some_and(|linker| linker.lexical_receiver_field(owner, receiver)) {
             let target = symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type));
             return linker
                 .and_then(|l| l.local_receiver_class(&target))
@@ -343,7 +331,7 @@ impl<'a> ValueFlowIndex<'a> {
             }
         }
         if let TypeTarget::Builtin(name) = &receiver_type {
-            if matches!(owner.language.as_str(), "javascript" | "typescript") {
+            if linker.is_some_and(|linker| linker.builtin_field_projection(owner)) {
                 if let Some(prop_type) = resolver.property_type(owner, name, member) {
                     return TypeTarget::Builtin(prop_type);
                 }
@@ -367,53 +355,15 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        let language_linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
-        let operation = language_linker.and_then(|linker| linker.value_projection(member));
-        if operation.is_some() {
-            if let Some(target) = self.evaluate_rust_project(
-                owner,
-                value,
-                member,
-                at,
-                resolver,
-                definitions,
-                trace,
-            ) {
-                return target;
-            }
-            if matches!(
-                operation.as_ref(),
-                Some(crate::languages::profile::LanguageValueProjection::Adapter)
-            ) {
-                return self.evaluate_rust_adapter(
-                    owner,
-                    value,
-                    member,
-                    at,
-                    resolver,
-                    definitions,
-                    trace,
-                );
-            }
-        }
-        let source = if matches!(
-            operation.as_ref(),
-            Some(crate::languages::profile::LanguageValueProjection::Field(_))
-        )
-            && matches!(value, ValueExpr::Alias { name } if name == "self")
-            && owner.details["receiver_name"].as_str() == Some("self")
-        {
-            symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type))
-        } else {
-            self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
-        };
+        let language_linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
         if let Some(index_str) = member.strip_prefix("__index:") {
             return self.project_index(owner, &source, index_str);
         }
         if let Some(field) = member.strip_prefix("__field:") {
             return self.project_field(owner, &source, field, at, resolver, trace);
         }
-        if let TypeTarget::RustTuple(items) | TypeTarget::Tuple(items) = &source {
+        if let TypeTarget::Tuple(items) = &source {
             if let Ok(index) = member.parse::<usize>() {
                 return items.get(index).cloned().unwrap_or(TypeTarget::Unknown);
             }
@@ -435,17 +385,19 @@ impl<'a> ValueFlowIndex<'a> {
     fn project_index(&self, owner: &Node, source: &TypeTarget<'a>, index_str: &str) -> TypeTarget<'a> {
         let base = crate::languages::by_id(owner.language.as_str())
             .map_or(source, |profile| profile.linker().unwrap_reference(source));
+        if let Some(target) = crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().special_index_projection(base, index_str))
+        {
+            return target;
+        }
         match base {
-            TypeTarget::Tuple(items) | TypeTarget::RustTuple(items) => index_str
+            TypeTarget::Tuple(items) => index_str
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| items.get(index))
                 .cloned()
                 .unwrap_or(TypeTarget::Unknown),
-            TypeTarget::Collection { item, .. }
-            | TypeTarget::RustCollection { item }
-            | TypeTarget::RustSlice { item }
-            | TypeTarget::RustTypedContainer { item, .. } => (**item).clone(),
+            TypeTarget::Collection { item, .. } => (**item).clone(),
             _ => TypeTarget::Unknown,
         }
     }
@@ -459,15 +411,20 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
+        if let Some(target) = crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().special_field_projection(source, member, owner, at, resolver))
+        {
+            return target;
+        }
         match source {
-            TypeTarget::Tuple(items) | TypeTarget::RustTuple(items) => member
+            TypeTarget::Tuple(items) => member
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| items.get(index))
                 .cloned()
                 .unwrap_or(TypeTarget::Unknown),
             TypeTarget::Builtin(name)
-                if matches!(owner.language.as_str(), "javascript" | "typescript") =>
+                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().builtin_field_projection(owner)) =>
             {
                 resolver
                     .property_type(owner, name, member)
@@ -479,7 +436,7 @@ impl<'a> ValueFlowIndex<'a> {
                     _ => TypeTarget::Unknown,
                 }
             }
-            TypeTarget::External { .. } if owner.language == "rust" => {
+            TypeTarget::External { .. } if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().external_field_projection()) => {
                 match resolver.resolve_member(source, member, owner, at) {
                     Symbol::Type(target) => target,
                     _ => TypeTarget::Unknown,
@@ -491,14 +448,6 @@ impl<'a> ValueFlowIndex<'a> {
                     owner: owner.id.clone(),
                     position: at,
                     member: member.to_owned(),
-                }
-            }
-            TypeTarget::RustReference { .. } | TypeTarget::RustDeref { .. } => {
-                match resolver.resolve_member(source, member, owner, at) {
-                    Symbol::Type(target) => target,
-                    Symbol::Callable(node) => TypeTarget::Callable(node),
-                    Symbol::Ambiguous => TypeTarget::Ambiguous,
-                    _ => TypeTarget::Unknown,
                 }
             }
             TypeTarget::Object(members) => members.get(member).map_or(TypeTarget::Unknown, |node| {
@@ -521,139 +470,7 @@ impl<'a> ValueFlowIndex<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_rust_project(
-        &self,
-        owner: &'a Node,
-        value: &ValueExpr,
-        member: &str,
-        at: SourcePosition,
-        resolver: &impl SemanticResolver<'a>,
-        definitions: Option<&Definitions<'a>>,
-        trace: Option<&ReadTrace<'a, '_>>,
-    ) -> Option<TypeTarget<'a>> {
-        use crate::languages::profile::LanguageValueProjection as Projection;
-        let operation = crate::languages::by_id(&owner.language)?
-            .linker()
-            .value_projection(member)?;
-        if matches!(operation, Projection::GenericCall) {
-            let ValueExpr::BranchJoin { alternatives } = value else {
-                return Some(TypeTarget::Unknown);
-            };
-            let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] =
-                alternatives.as_slice()
-            else {
-                return Some(TypeTarget::Unknown);
-            };
-            return Some(
-                super::super::rust::value_flow::deserializer_result(
-                    owner,
-                    callee,
-                    type_expr,
-                    at,
-                    resolver,
-                    self.limits,
-                )
-                .unwrap_or_else(|| {
-                    self.evaluate_tracked(owner, call, at, resolver, definitions, trace)
-                }),
-            );
-        }
-        if matches!(
-            operation,
-            Projection::Array | Projection::Tuple | Projection::BranchJoin
-        ) {
-            let ValueExpr::BranchJoin { alternatives } = value else {
-                return Some(TypeTarget::Unknown);
-            };
-            if matches!(operation, Projection::Tuple) {
-                return Some(TypeTarget::RustTuple(
-                    alternatives
-                        .iter()
-                        .map(|item| {
-                            self.evaluate_tracked(owner, item, at, resolver, definitions, trace)
-                        })
-                        .collect(),
-                ));
-            }
-            if matches!(operation, Projection::BranchJoin) {
-                return Some(join_branch_targets(
-                    alternatives
-                        .iter()
-                        .map(|item| {
-                            self.evaluate_tracked(owner, item, at, resolver, definitions, trace)
-                        })
-                        .collect(),
-                    true,
-                ));
-            }
-            let mut items = alternatives
-                .iter()
-                .map(|item| self.evaluate_tracked(owner, item, at, resolver, definitions, trace));
-            let item = items.next().unwrap_or(TypeTarget::Unknown);
-            let item = if items.all(|other| same_target(&item, &other)) {
-                item
-            } else {
-                TypeTarget::Unknown
-            };
-            return Some(TypeTarget::RustCollection {
-                item: Box::new(item),
-            });
-        }
-        if let Projection::Reference { mutable } = &operation {
-            return Some(TypeTarget::RustReference {
-                target: Box::new(self.evaluate_tracked(
-                    owner,
-                    value,
-                    at,
-                    resolver,
-                    definitions,
-                    trace,
-                )),
-                mutable: *mutable,
-            });
-        }
-        let Projection::Field(field) = operation else {
-            return None;
-        };
-        let source = if matches!(value, ValueExpr::Alias { name } if name == "self")
-            && owner.details["receiver_name"].as_str() == Some("self")
-        {
-            symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type))
-        } else {
-            self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
-        };
-        let linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
-        if let TypeTarget::RustTuple(items) = linker.map_or(&source, |l| l.unwrap_reference(&source)) {
-            return Some(
-                field
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|index| items.get(index))
-                    .cloned()
-                    .unwrap_or(TypeTarget::Unknown),
-            );
-        }
-        Some(
-            linker
-                .and_then(|l| l.local_receiver_class(&source))
-                .and_then(|class| self.field_type_tracked(class, &field, trace))
-                .cloned()
-                .or_else(|| {
-                    if matches!(
-                        &source,
-                        TypeTarget::External { .. } | TypeTarget::Builtin(_)
-                    ) {
-                        resolver.resolve_member_result(&source, &field, owner, at)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(TypeTarget::Unknown),
-        )
-    }
-
-    fn resolve_rust_member_or_adapter(
+    fn resolve_member_call(
         &self,
         receiver: &TypeTarget<'a>,
         member: &str,
@@ -661,81 +478,10 @@ impl<'a> ValueFlowIndex<'a> {
         at: SourcePosition,
         resolver: &impl SemanticResolver<'a>,
     ) -> Option<TypeTarget<'a>> {
-        match resolver.resolve_member_result(receiver, member, owner, at) {
-            Some(
-                target @ (TypeTarget::RustWrapper { .. }
-                | TypeTarget::RustIterator { .. }
-                | TypeTarget::RustTuple(_)),
-            ) => Some(target),
-            _ => super::super::rust::value_flow::declared_adapter_result(
-                receiver, member, owner, at, resolver,
-            ),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_rust_adapter(
-        &self,
-        owner: &'a Node,
-        value: &ValueExpr,
-        member: &str,
-        at: SourcePosition,
-        resolver: &impl SemanticResolver<'a>,
-        definitions: Option<&Definitions<'a>>,
-        trace: Option<&ReadTrace<'a, '_>>,
-    ) -> TypeTarget<'a> {
-        let receiver = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
-        if let Some(projected) = super::super::rust::value_flow::project(&receiver, member, resolver)
-        {
-            if !matches!(projected, TypeTarget::Unknown) {
-                return projected;
-            }
-            if matches!(member, "?" | "unwrap" | "expect")
-                && (matches!(&receiver, TypeTarget::Unknown)
-                    || matches!(&receiver, TypeTarget::Builtin(name)
-                        if name == "Option" || name == "Result"))
-            {
-                return self.explicit_payload(owner, value, at, resolver, trace, 0);
-            }
-            return TypeTarget::Unknown;
-        }
-        // Prefer known Rust adapter semantics over a generic method signature:
-        // library signatures often erase the borrowed payload type.
-        if member != "?" {
-            if let Symbol::Callable(callable) =
-                resolver.resolve_member(&receiver, member, owner, at)
-            {
-                if let Some(trace) = trace {
-                    trace.returned(callable.id.as_str());
-                }
-                if let Some(target) = self
-                    .returns
-                    .get(callable.id.as_str())
-                    .filter(|t| !matches!(t, TypeTarget::Unknown))
-                {
-                    return target.clone();
-                }
-                if let Some(target) = self.resolve_rust_member_or_adapter(
-                    &receiver, member, owner, at, resolver,
-                ) {
-                    return target;
-                }
-                return TypeTarget::Unknown;
-            }
-        }
-        if let Some(result) = self.resolve_rust_member_or_adapter(
-            &receiver, member, owner, at, resolver,
-        ) {
-            return result;
-        }
-        if matches!(member, "?" | "unwrap" | "expect")
-            && (matches!(&receiver, TypeTarget::Unknown)
-                || matches!(&receiver, TypeTarget::Builtin(name)
-                    if name == "Option" || name == "Result"))
-        {
-            return self.explicit_payload(owner, value, at, resolver, trace, 0);
-        }
-        TypeTarget::Unknown
+        crate::languages::by_id(owner.language.as_str()).map_or_else(
+            || resolver.resolve_member_result(receiver, member, owner, at),
+            |profile| profile.linker().member_call_result(receiver, member, owner, at, resolver),
+        )
     }
 
     fn evaluate_object(
@@ -814,6 +560,7 @@ impl<'a> ValueFlowIndex<'a> {
                 }
             }
             return self.callback_param_from_receiver(
+                owner,
                 &receiver,
                 callee,
                 arg_index,
@@ -851,7 +598,8 @@ impl<'a> ValueFlowIndex<'a> {
 
     fn callback_param_from_receiver(
         &self,
-        mut receiver: &TypeTarget<'a>,
+        owner: &Node,
+        receiver: &TypeTarget<'a>,
         method: &str,
         arg_index: usize,
         param_index: usize,
@@ -861,28 +609,12 @@ impl<'a> ValueFlowIndex<'a> {
         if param_index != 0 || !valid_arg {
             return TypeTarget::Unknown;
         }
-        while matches!(receiver, TypeTarget::RustReference { .. })
-            || matches!(receiver, TypeTarget::RustDeref { wrapper, .. } if *wrapper != "LocalKey")
+        if let Some(result) = crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().callback_receiver(receiver, method))
         {
-            match receiver {
-                TypeTarget::RustReference { target, .. }
-                | TypeTarget::RustDeref { target, .. } => receiver = target,
-                _ => break,
-            }
+            return result;
         }
         match receiver {
-            TypeTarget::RustDeref {
-                wrapper: "LocalKey",
-                target,
-            } if matches!(method, "with" | "try_with") => match target.as_ref() {
-                TypeTarget::RustTuple(items) => items.first().map_or(TypeTarget::Unknown, |inner| {
-                    TypeTarget::RustReference {
-                        mutable: false,
-                        target: Box::new(inner.clone()),
-                    }
-                }),
-                _ => TypeTarget::Unknown,
-            },
             TypeTarget::Promise(inner) if matches!(method, "then" | "finally") => {
                 if method == "then" {
                     (**inner).clone()
@@ -890,58 +622,10 @@ impl<'a> ValueFlowIndex<'a> {
                     TypeTarget::Unknown
                 }
             }
-            TypeTarget::Collection { item, .. }
-            | TypeTarget::RustIterator { item }
-            | TypeTarget::RustCollection { item }
-            | TypeTarget::RustSlice { item }
-            | TypeTarget::RustTypedContainer { item, .. }
-                if matches!(
-                    method,
-                    "map"
-                        | "filter"
-                        | "forEach"
-                        | "find"
-                        | "some"
-                        | "every"
-                        | "flatMap"
-                        | "inspect"
-                        | "filter_map"
-                        | "flat_map"
-                        | "for_each"
-                        | "try_for_each"
-                        | "position"
-                        | "rposition"
-                        | "take_while"
-                        | "skip_while"
-                        | "map_while"
-                        | "partition"
-                        | "find_map"
-                        | "any"
-                        | "all"
-                        | "retain"
-                ) =>
+            TypeTarget::Collection { item, .. } if collection_callback(method) =>
             {
                 (**item).clone()
             }
-            TypeTarget::RustWrapper { ok, .. }
-                if matches!(
-                    method,
-                    "map"
-                        | "and_then"
-                        | "inspect"
-                        | "filter"
-                        | "is_some_and"
-                        | "is_none_or"
-                        | "ok_or_else"
-                        | "map_or"
-                        | "map_or_else"
-                ) =>
-            {
-                (**ok).clone()
-            }
-            TypeTarget::RustWrapper {
-                err: Some(err), ..
-            } if matches!(method, "map_err" | "or_else" | "inspect_err") => (**err).clone(),
             _ => TypeTarget::Unknown,
         }
     }
@@ -969,7 +653,7 @@ impl<'a> ValueFlowIndex<'a> {
             if let Some(facts) = resolver.value_flow(node) {
                 Some(Cow::Borrowed(facts))
             } else if !resolver.has_typed_flows() {
-                ValueFlowFacts::deserialize_for_scope(&node.details["value_flow"], false)
+                ValueFlowFacts::deserialize_for_scope(node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW), false)
                     .ok()
                     .map(Cow::Owned)
             } else {
@@ -979,7 +663,7 @@ impl<'a> ValueFlowIndex<'a> {
         match value {
             ValueExpr::Annotated { type_expr } => resolver.resolve_payload(owner, type_expr, at),
             ValueExpr::Call { callee, .. } => {
-                if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
                     if let TypeTarget::Promise(inner) =
                         self.evaluate_tracked(owner, value, at, resolver, None, trace)
                     {
@@ -994,7 +678,7 @@ impl<'a> ValueFlowIndex<'a> {
                 if let Some(trace) = trace {
                     trace.returned(callable.id.as_str());
                 }
-                if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
                     return self
                         .async_returns
                         .get(callable.id.as_str())
@@ -1011,23 +695,12 @@ impl<'a> ValueFlowIndex<'a> {
             }
             ValueExpr::Alias { name } => {
                 // Reaching-value uncertainty still fences projection; a write cannot revive an old annotation.
-                let reaching_wrapper = match self.lookup_tracked(owner, name, at, trace) {
-                    Some(target) if owner.language == "rust" => {
-                        matches!(target, TypeTarget::RustWrapper { .. })
-                            || matches!(target, TypeTarget::Builtin(wrapper)
-                                if matches!(wrapper.as_str(), "Option" | "Result"))
-                    }
-                    Some(TypeTarget::Promise(_)) => true,
-                    Some(TypeTarget::Builtin(wrapper))
-                        if matches!(
-                            owner.language.as_str(),
-                            "typescript" | "javascript" | "vue"
-                        ) =>
-                    {
-                        wrapper == "Promise"
-                    }
-                    _ => false,
-                };
+                let reaching_wrapper = self.lookup_tracked(owner, name, at, trace).is_some_and(|target| {
+                    crate::languages::by_id(owner.language.as_str()).map_or(
+                        matches!(target, TypeTarget::Promise(_)),
+                        |profile| profile.linker().reaching_payload_wrapper(target),
+                    )
+                });
                 if !reaching_wrapper {
                     return TypeTarget::Unknown;
                 }
@@ -1066,17 +739,18 @@ impl<'a> ValueFlowIndex<'a> {
                 TypeTarget::Unknown
             }
             ValueExpr::Project { value, member }
-                if owner.language == "rust" && super::super::rust::value_flow::is_adapter(member) =>
+                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().is_value_adapter(member)) =>
             {
                 let receiver = self.evaluate_tracked(owner, value, at, resolver, None, trace);
-                let projected = super::super::rust::value_flow::project(&receiver, member, resolver)
+                let linker = crate::languages::by_id(owner.language.as_str()).unwrap().linker();
+                let projected = linker.adapter_value(&receiver, member, resolver)
                     .or_else(|| {
-                        self.resolve_rust_member_or_adapter(
+                        self.resolve_member_call(
                             &receiver, member, owner, at, resolver,
                         )
                     })
                     .unwrap_or(TypeTarget::Unknown);
-                super::super::rust::value_flow::unwrap_payload(&projected).unwrap_or(projected)
+                linker.value_payload(&projected).unwrap_or(projected)
             }
             ValueExpr::Scoped { value, .. } => {
                 self.explicit_payload(owner, value, at, resolver, trace, depth + 1)
@@ -1086,19 +760,19 @@ impl<'a> ValueFlowIndex<'a> {
     }
 }
 
-fn tuple_items<'a, 'b>(target: &'b TypeTarget<'a>, rust: bool) -> Option<&'b [TypeTarget<'a>]> {
-    match target {
-        TypeTarget::RustTuple(items) if rust => Some(items),
-        TypeTarget::Tuple(items) if !rust => Some(items),
-        _ => None,
-    }
+pub(in crate::linker) fn collection_callback(method: &str) -> bool {
+    matches!(method, "map" | "filter" | "forEach" | "find" | "some" | "every" | "flatMap"
+        | "inspect" | "filter_map" | "flat_map" | "for_each" | "try_for_each" | "position"
+        | "rposition" | "take_while" | "skip_while" | "map_while" | "partition" | "find_map"
+        | "any" | "all" | "retain")
 }
 
-fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], rust: bool) -> Option<TypeTarget<'a>> {
-    let arity = tuple_items(targets.first()?, rust)?.len();
+fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], linker: Option<&dyn crate::languages::profile::LanguageLinker>) -> Option<TypeTarget<'a>> {
+    let TypeTarget::Tuple(first) = targets.first()? else { return None; };
+    let arity = first.len();
     if !targets
         .iter()
-        .all(|t| tuple_items(t, rust).is_some_and(|items| items.len() == arity))
+        .all(|t| matches!(t, TypeTarget::Tuple(items) if items.len() == arity))
     {
         return None;
     }
@@ -1107,70 +781,32 @@ fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], rust: bool) -> Option<Typ
             join_branch_targets(
                 targets
                     .iter()
-                    .filter_map(|t| tuple_items(t, rust).map(|items| items[i].clone()))
+                    .filter_map(|t| match t { TypeTarget::Tuple(items) => Some(items[i].clone()), _ => None })
                     .collect(),
                 true,
+                linker,
             )
         })
         .collect();
-    Some(if rust { TypeTarget::RustTuple(joined) } else { TypeTarget::Tuple(joined) })
+    Some(TypeTarget::Tuple(joined))
 }
 
 fn join_branch_targets<'a>(
     targets: Vec<TypeTarget<'a>>,
     collapse_identical_local: bool,
+    linker: Option<&dyn crate::languages::profile::LanguageLinker>,
 ) -> TypeTarget<'a> {
-    use super::types::RustWrapperKind;
     if targets.is_empty() || targets.iter().all(|t| matches!(t, TypeTarget::Unknown)) {
         return TypeTarget::Unknown;
     }
     if targets.len() == 1 {
         return targets.into_iter().next().unwrap();
     }
-    if let Some(tuple) =
-        join_tuple_elements(&targets, true).or_else(|| join_tuple_elements(&targets, false))
-    {
+    if let Some(special) = linker.and_then(|linker| linker.join_language_targets(&targets, &|targets| join_branch_targets(targets, true, Some(linker)))) {
+        return special;
+    }
+    if let Some(tuple) = join_tuple_elements(&targets, linker) {
         return tuple;
-    }
-    let is_opt = |t: &TypeTarget<'a>| {
-        matches!(t, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, .. })
-    };
-    if targets.iter().any(is_opt)
-        && targets.iter().all(|t| {
-            is_opt(t) || matches!(t, TypeTarget::Unknown) || matches!(t, TypeTarget::Builtin(n) if n == "Option")
-        })
-    {
-        let payloads = targets
-            .into_iter()
-            .filter_map(|t| match t {
-                TypeTarget::RustWrapper { ok, .. } => Some(*ok),
-                _ => None,
-            })
-            .collect();
-        return TypeTarget::RustWrapper {
-            wrapper: RustWrapperKind::Option,
-            ok: Box::new(join_branch_targets(payloads, true)),
-            err: None,
-        };
-    }
-    if targets.iter().all(|t| {
-        matches!(t, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, .. })
-    }) {
-        let mut oks = Vec::with_capacity(targets.len());
-        let mut errs = Vec::with_capacity(targets.len());
-        for target in targets {
-            if let TypeTarget::RustWrapper { ok, err, .. } = target {
-                oks.push(*ok);
-                errs.extend(err.map(|e| *e));
-            }
-        }
-        let joined_err =
-            (errs.len() == oks.len()).then(|| Box::new(join_branch_targets(errs, true)));
-        return TypeTarget::RustWrapper {
-            wrapper: RustWrapperKind::Result,
-            ok: Box::new(join_branch_targets(oks, true)),
-            err: joined_err,
-        };
     }
     let first = &targets[0];
     let allow_collapse = !matches!(

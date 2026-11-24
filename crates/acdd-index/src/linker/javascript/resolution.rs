@@ -39,8 +39,8 @@ pub(in crate::linker) fn returned_object_field_writes<'node, 'reference>(
             let owner = interner.lookup_node(by_id, reference.source.as_str())?;
             let marker = owner
                 .language
-                .eq("javascript")
-                .then(|| owner.details["receiver"].as_str())
+                .eq(&crate::models::tags::LanguageId::Javascript)
+                .then(|| owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str())
                 .flatten()?
                 .strip_prefix("object_return:")?;
             Some((marker, field))
@@ -72,8 +72,8 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
     let Some(marker) = input
         .interner
         .lookup_node(input.by_id, reference.source.as_str())
-        .filter(|owner| owner.language == "javascript")
-        .and_then(|owner| owner.details["receiver"].as_str())
+        .filter(|owner| owner.language == crate::models::tags::LanguageId::Javascript)
+        .and_then(|owner| owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str())
         .filter(|marker| marker.starts_with("object_return:"))
     else {
         return false;
@@ -90,8 +90,8 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
         .copied()
         .filter(|node| {
             node.path == *path
-                && node.kind == "field"
-                && node.details["receiver"].as_str() == Some(marker)
+                && node.kind == crate::models::tags::NodeKind::Field
+                && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
         });
     let (Some(field), None) = (fields.next(), fields.next()) else {
         return false;
@@ -117,7 +117,7 @@ fn object_factory_binding_shadowed<'a>(
     while !scope.is_empty() {
         let registration_child_scope = input.by_qual.get(scope).is_some_and(|nodes| {
             nodes.iter().any(|node| {
-                node.path == *path && node.details["receiver"].as_str() == Some(marker)
+                node.path == *path && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
             })
         });
         if !registration_child_scope
@@ -191,10 +191,10 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
         .interner
         .lookup_node(input.by_id, reference.source.as_str())
         .filter(|owner| {
-            owner.language == "javascript" && matches!(owner.kind.as_str(), "method" | "function")
+            owner.language == crate::models::tags::LanguageId::Javascript && matches!(owner.kind.as_str(), "method" | "function")
         })
         .and_then(|owner| {
-            owner.details["receiver"]
+            owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
                 .as_str()
                 .filter(|marker| {
                     marker.starts_with("object_return:") || object_ownership(owner).is_some()
@@ -221,18 +221,18 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
             .filter(|node| {
                 node.path == *path
                     && matches!(node.kind.as_str(), "field" | "method")
-                    && node.details["receiver"].as_str() == Some(marker)
+                    && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
                     && object_ownership(node) == ownership
             });
         let member = members.next();
         let unique = member.is_some() && members.next().is_none();
         if unique {
             if let Some(member) = member
-                .filter(|member| reference.kind != "calls" || member.kind == "method")
-                .filter(|member| reference.kind != "mutates" || member.kind == "field")
+                .filter(|member| reference.kind != "calls" || member.kind == crate::models::tags::NodeKind::Method)
+                .filter(|member| reference.kind != "mutates" || member.kind == crate::models::tags::NodeKind::Field)
             {
                 if reference.kind != "references"
-                    || member.kind != "method"
+                    || member.kind != crate::models::tags::NodeKind::Method
                     || !lexical_this_calls.contains(&(
                         reference.source.as_str(),
                         reference.line,
@@ -244,8 +244,8 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
                         path,
                         reference,
                         member.id.clone(),
-                        reference.kind.as_str(),
-                        "exact",
+                        crate::models::tags::EdgeKind::parse(&reference.kind),
+                        crate::models::tags::EdgeConfidence::Exact,
                     );
                 }
                 graph.reference_coverage(
@@ -333,7 +333,7 @@ pub(in crate::linker) fn commonjs_default_callable<'a>(
         return None;
     };
     let scope = facts.nodes.first()?;
-    if module.kind != "module"
+    if module.kind != crate::models::tags::NodeKind::Module
         || !context.admits_commonjs_binding(scope, first, owner, reference.position())
     {
         return None;
@@ -350,8 +350,8 @@ pub(in crate::linker) fn commonjs_default_callable<'a>(
     match defaults.as_slice() {
         [callable]
             if callable.path == module.path
-                && callable.kind == "function"
-                && callable.details["commonjs_default_callable"] == true =>
+                && callable.kind == crate::models::tags::NodeKind::Function
+                && callable.detail_entry(crate::models::details::NodeDetailKey::COMMONJS_DEFAULT_CALLABLE) == true =>
         {
             Some(*callable)
         }

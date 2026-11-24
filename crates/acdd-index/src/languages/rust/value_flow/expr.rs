@@ -204,9 +204,7 @@ pub(super) fn value_depth(
             compound_sequence_expr(node, source, depth, shadowed_macros)
         }
         "reference_expression" => reference_value_expr(node, source, depth, shadowed_macros),
-        "closure_expression" => ValueExpr::Construct {
-            callee: "__rust_closure!".to_owned(),
-        },
+        "closure_expression" => ValueExpr::RustClosure,
         "string_literal" | "raw_string_literal" => named_annotated_expr("str"),
         "byte_string_literal" | "raw_byte_string_literal" => ValueExpr::Annotated {
             type_expr: TypeExpr::Applied {
@@ -229,10 +227,7 @@ pub(super) fn value_depth(
         "float_literal" => literal_suffix_expr(node, source, &["f64", "f32"]),
         "range_expression" => range_element_type(node, source).map_or(ValueExpr::Unknown, |item| {
             ValueExpr::Annotated {
-                type_expr: TypeExpr::Applied {
-                    base: "__rust_range".to_owned(),
-                    args: vec![item],
-                },
+                type_expr: TypeExpr::RustRange { item: Box::new(item) },
             }
         }),
         "type_cast_expression" => node
@@ -294,19 +289,18 @@ fn compound_sequence_expr(
         return ValueExpr::Unknown;
     }
     let mut cursor = node.walk();
-    ValueExpr::Project {
+    ValueExpr::RustProject {
         value: Box::new(ValueExpr::BranchJoin {
             alternatives: node
                 .named_children(&mut cursor)
                 .map(|child| value_depth(child, source, depth + 1, shadowed_macros))
                 .collect(),
         }),
-        member: if node.kind() == "array_expression" {
-            "__rust_array"
+        operation: if node.kind() == "array_expression" {
+            crate::semantic::types::RustProjection::Array
         } else {
-            "__rust_tuple"
-        }
-        .to_owned(),
+            crate::semantic::types::RustProjection::Tuple
+        },
     }
 }
 
@@ -317,14 +311,11 @@ fn reference_value_expr(
     shadowed_macros: &HashSet<&'static str>,
 ) -> ValueExpr {
     node.child_by_field_name("value")
-        .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
+        .map_or(ValueExpr::Unknown, |inner| ValueExpr::RustProject {
             value: Box::new(value_depth(inner, source, depth + 1, shadowed_macros)),
-            member: if text(node, source).trim_start().starts_with("&mut ") {
-                "__rust_ref_mut"
-            } else {
-                "__rust_ref"
-            }
-            .to_owned(),
+            operation: crate::semantic::types::RustProjection::Reference {
+                mutable: text(node, source).trim_start().starts_with("&mut "),
+            },
         })
 }
 
@@ -338,9 +329,9 @@ fn unary_value_expr(
     if trimmed.starts_with('*') {
         node.child_by_field_name("argument")
             .or_else(|| node.named_child(0))
-            .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
+            .map_or(ValueExpr::Unknown, |inner| ValueExpr::RustProject {
                 value: Box::new(value_depth(inner, source, depth + 1, shadowed_macros)),
-                member: "__rust_deref".to_owned(),
+                operation: crate::semantic::types::RustProjection::Dereference,
             })
     } else if trimmed.starts_with('!') {
         named_annotated_expr("bool")
@@ -387,40 +378,6 @@ fn macro_invocation_expr(
     }
 }
 
-fn resolve_mapped_member_tag<'a>(
-    node: Node<'_>,
-    member_name: &'a str,
-    source: &str,
-) -> &'a str {
-    if member_name == "unwrap_or" && has_string_literal_first_arg(node, 1) {
-        return "__rust_unwrap_or_str";
-    }
-    if member_name == "map_or" && has_string_literal_first_arg(node, 2) {
-        return "__rust_map_or_str";
-    }
-    if member_name == "map" || member_name == "and_then" {
-        return single_arg_node(node)
-            .and_then(|arg| match arg.kind() {
-                "closure_expression" if member_name == "and_then" => {
-                    is_identity_some_closure(arg, source).then_some("__rust_identity_some")
-                }
-                "scoped_identifier" | "identifier" => {
-                    static_fn_map_tag(text(arg, source).trim())
-                }
-                _ => None,
-            })
-            .unwrap_or(member_name);
-    }
-    if member_name == "filter_map" && is_filter_map_ok_arg(node, source) {
-        return "__rust_filter_map_ok";
-    }
-    if member_name == "get" && single_arg_node(node).is_some_and(|arg| arg.kind() == "range_expression")
-    {
-        return "__rust_get_range";
-    }
-    member_name
-}
-
 fn single_arg_node(call: Node<'_>) -> Option<Node<'_>> {
     call.child_by_field_name("arguments")
         .filter(|args| args.named_child_count() == 1)
@@ -450,46 +407,6 @@ fn is_identity_some_closure(arg: Node<'_>, source: &str) -> bool {
         )
     })()
     .unwrap_or(false)
-}
-
-fn static_fn_map_tag(path: &str) -> Option<&'static str> {
-    match path {
-        "str::trim" | "str::trim_start" | "str::trim_end" | "String::as_str" => {
-            Some("__rust_map_str_trim")
-        }
-        "str::to_owned"
-        | "str::to_string"
-        | "ToOwned::to_owned"
-        | "ToString::to_string"
-        | "Into::into"
-        | "String::from" => Some("__rust_map_to_string"),
-        "Value::as_str" | "serde_json::Value::as_str" | "toml::Value::as_str" => {
-            Some("__rust_map_as_str")
-        }
-        "toml::Value::as_table" => Some("__rust_map_as_toml_table"),
-        "toml::Value::as_integer" | "Value::as_i64" | "serde_json::Value::as_i64" => {
-            Some("__rust_map_i64")
-        }
-        "toml::Value::as_bool" | "Value::as_bool" | "serde_json::Value::as_bool" => {
-            Some("__rust_map_bool")
-        }
-        "Value::as_array"
-        | "Value::as_array_mut"
-        | "serde_json::Value::as_array"
-        | "serde_json::Value::as_array_mut" => Some("__rust_map_as_array"),
-        "Value::as_object"
-        | "Value::as_object_mut"
-        | "serde_json::Value::as_object"
-        | "serde_json::Value::as_object_mut" => Some("__rust_map_as_object"),
-        "Value::as_u64" | "serde_json::Value::as_u64" => Some("__rust_map_u64"),
-        "Path::to_str"
-        | "std::path::Path::to_str"
-        | "OsStr::to_str"
-        | "std::ffi::OsStr::to_str" => Some("__rust_map_path_to_str"),
-        "Path::to_path_buf" | "std::path::Path::to_path_buf" => Some("__rust_map_to_path_buf"),
-        "Clone::clone" => Some("__rust_map_cloned"),
-        _ => None,
-    }
 }
 
 fn is_filter_map_ok_arg(node: Node<'_>, source: &str) -> bool {
@@ -547,19 +464,6 @@ fn is_known_projection_member(member_name: &str) -> bool {
             | "map_or_else"
             | "map_err"
             | "filter_map"
-            | "__rust_filter_map_ok"
-            | "__rust_map_str_trim"
-            | "__rust_map_to_string"
-            | "__rust_map_as_str"
-            | "__rust_map_as_array"
-            | "__rust_map_as_object"
-            | "__rust_map_u64"
-            | "__rust_map_i64"
-            | "__rust_map_bool"
-            | "__rust_map_path_to_str"
-            | "__rust_map_to_path_buf"
-            | "__rust_map_cloned"
-            | "__rust_get_range"
             | "flat_map"
             | "flatten"
             | "inspect"
@@ -712,7 +616,6 @@ fn is_known_projection_member(member_name: &str) -> bool {
             | "unwrap_or"
             | "unwrap_or_else"
             | "unwrap_or_default"
-            | "__rust_identity_some"
             | "prepare"
             | "prepare_cached"
             | "transaction"
@@ -787,7 +690,59 @@ fn call_field_expression_expr(
     let receiver = function.child_by_field_name("value")?;
     let member = function.child_by_field_name("field")?;
     let raw_member = text(member, source);
-    let member_name = resolve_mapped_member_tag(node, raw_member, source);
+    if raw_member == "and_then" && single_arg_node(node).is_some_and(|arg| arg.kind() == "closure_expression" && is_identity_some_closure(arg, source)) {
+        let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+        return Some(if matches!(inner, ValueExpr::Unknown) { ValueExpr::Unknown } else {
+            ValueExpr::RustProject { value: Box::new(inner), operation: crate::semantic::types::RustProjection::IdentitySome }
+        });
+    }
+    if raw_member == "filter_map" && is_filter_map_ok_arg(node, source) {
+        let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+        return Some(if matches!(inner, ValueExpr::Unknown) { ValueExpr::Unknown } else {
+            ValueExpr::RustProject { value: Box::new(inner), operation: crate::semantic::types::RustProjection::FilterMapOk }
+        });
+    }
+    let string_fallback = match raw_member {
+        "unwrap_or" if has_string_literal_first_arg(node, 1) => Some(crate::semantic::types::RustProjection::UnwrapOrStr),
+        "map_or" if has_string_literal_first_arg(node, 2) => Some(crate::semantic::types::RustProjection::MapOrStr),
+        _ => None,
+    };
+    if let Some(operation) = string_fallback {
+        let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+        return Some(if matches!(inner, ValueExpr::Unknown) { ValueExpr::Unknown } else {
+            ValueExpr::RustProject { value: Box::new(inner), operation }
+        });
+    }
+    if matches!(raw_member, "map" | "and_then") {
+        let operation = single_arg_node(node).and_then(|arg| match text(arg, source).trim() {
+            "str::trim" | "str::trim_start" | "str::trim_end" | "String::as_str" => Some(crate::semantic::types::RustProjection::MapTrim),
+            "str::to_owned" | "str::to_string" | "ToOwned::to_owned" | "ToString::to_string" | "Into::into" | "String::from" => Some(crate::semantic::types::RustProjection::MapString),
+            "Value::as_str" | "serde_json::Value::as_str" | "toml::Value::as_str" => Some(crate::semantic::types::RustProjection::MapAsStr),
+            "Value::as_u64" | "serde_json::Value::as_u64" => Some(crate::semantic::types::RustProjection::MapU64),
+            "toml::Value::as_integer" | "Value::as_i64" | "serde_json::Value::as_i64" => Some(crate::semantic::types::RustProjection::MapI64),
+            "toml::Value::as_bool" | "Value::as_bool" | "serde_json::Value::as_bool" => Some(crate::semantic::types::RustProjection::MapBool),
+            "Path::to_str" | "std::path::Path::to_str" | "OsStr::to_str" | "std::ffi::OsStr::to_str" => Some(crate::semantic::types::RustProjection::MapPathStr),
+            "Path::to_path_buf" | "std::path::Path::to_path_buf" => Some(crate::semantic::types::RustProjection::MapPathBuf),
+            "Clone::clone" => Some(crate::semantic::types::RustProjection::MapCloned),
+            "Value::as_array" | "Value::as_array_mut" | "serde_json::Value::as_array" | "serde_json::Value::as_array_mut" => Some(crate::semantic::types::RustProjection::MapArray),
+            "Value::as_object" | "Value::as_object_mut" | "serde_json::Value::as_object" | "serde_json::Value::as_object_mut" => Some(crate::semantic::types::RustProjection::MapObject),
+            "toml::Value::as_table" => Some(crate::semantic::types::RustProjection::MapTomlTable),
+            _ => None,
+        });
+        if let Some(operation) = operation {
+            let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+            return Some(if matches!(inner, ValueExpr::Unknown) { ValueExpr::Unknown } else {
+                ValueExpr::RustProject { value: Box::new(inner), operation }
+            });
+        }
+    }
+    if raw_member == "get" && single_arg_node(node).is_some_and(|arg| arg.kind() == "range_expression") {
+        let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+        return Some(if matches!(inner, ValueExpr::Unknown) { ValueExpr::Unknown } else {
+            ValueExpr::RustProject { value: Box::new(inner), operation: crate::semantic::types::RustProjection::GetRange }
+        });
+    }
+    let member_name = raw_member;
     if let Some(projected) =
         closure_projection_expr(node, member_name, receiver, source, depth, shadowed_macros)
     {
@@ -852,8 +807,7 @@ fn call_expression_expr(
             .filter(|arguments| (1..=4).contains(&arguments.named_child_count()))
             .map(|arguments| {
                 let mut cursor = arguments.walk();
-                TypeExpr::Applied {
-                    base: "__rust_call_arguments".to_owned(),
+                TypeExpr::RustCallArguments {
                     args: arguments
                         .named_children(&mut cursor)
                         .map(|argument| type_expr(argument, source))
@@ -890,14 +844,13 @@ fn call_expression_expr(
             if let Some(arg) = single_arg_node(node) {
                 let inner = value_depth(arg, source, depth + 1, shadowed_macros);
                 if !matches!(inner, ValueExpr::Unknown) {
-                    return ValueExpr::Project {
+                    return ValueExpr::RustProject {
                         value: Box::new(inner),
-                        member: if callee.ends_with("Some") {
-                            "__rust_wrap_some"
+                        operation: if callee.ends_with("Some") {
+                            crate::semantic::types::RustProjection::Some
                         } else {
-                            "__rust_wrap_ok"
-                        }
-                        .to_owned(),
+                            crate::semantic::types::RustProjection::Ok
+                        },
                     };
                 }
             }
@@ -914,11 +867,11 @@ fn call_expression_expr(
             || callee.contains("json")
             || callee.contains("serde");
         return match generic_result {
-            Some(type_expr) if is_deserializer => ValueExpr::Project {
+            Some(type_expr) if is_deserializer => ValueExpr::RustProject {
                 value: Box::new(ValueExpr::BranchJoin {
                     alternatives: vec![call, ValueExpr::Annotated { type_expr }],
                 }),
-                member: "__rust_generic_call".to_owned(),
+                operation: crate::semantic::types::RustProjection::GenericCall,
             },
             _ => call,
         };
@@ -960,14 +913,15 @@ fn index_value_expr(
     let index = node
         .child_by_field_name("index")
         .or_else(|| node.named_child(1));
-    let member = match index.map(|idx| idx.kind()) {
-        Some("range_expression") => "__rust_range_slice",
-        Some("string_literal" | "raw_string_literal") | None => "__rust_index",
-        Some(_) => "__rust_elem_index",
+    use crate::semantic::types::RustProjection;
+    let operation = match index.map(|idx| idx.kind()) {
+        Some("range_expression") => RustProjection::RangeSlice,
+        Some("string_literal" | "raw_string_literal") | None => RustProjection::Index,
+        Some(_) => RustProjection::ElementIndex,
     };
-    base.map_or(ValueExpr::Unknown, |base| ValueExpr::Project {
+    base.map_or(ValueExpr::Unknown, |base| ValueExpr::RustProject {
         value: Box::new(value_depth(base, source, depth + 1, shadowed_macros)),
-        member: member.to_owned(),
+        operation,
     })
 }
 
@@ -983,9 +937,9 @@ fn field_value_expr(
     let Some(member) = node.child_by_field_name("field") else {
         return ValueExpr::Unknown;
     };
-    ValueExpr::Project {
+    ValueExpr::RustField {
         value: Box::new(value_depth(receiver, source, depth + 1, shadowed_macros)),
-        member: format!("__rust_field:{}", text(member, source)),
+        member: (text(member, source)).to_string(),
     }
 }
 
@@ -1125,11 +1079,11 @@ fn if_expression_expr(
     } else if then_val == else_val {
         then_val
     } else {
-        ValueExpr::Project {
+        ValueExpr::RustProject {
             value: Box::new(ValueExpr::BranchJoin {
                 alternatives: vec![then_val, else_val],
             }),
-            member: "__rust_if_join".to_owned(),
+            operation: crate::semantic::types::RustProjection::BranchJoin,
         }
     }
 }
@@ -1161,11 +1115,11 @@ fn vec_token_expr(node: Node<'_>, source: &str) -> Option<ValueExpr> {
             for child in node.named_children(&mut cursor) {
                 items.push(vec_token_expr(child, source)?);
             }
-            (!items.is_empty()).then_some(ValueExpr::Project {
+            (!items.is_empty()).then_some(ValueExpr::RustProject {
                 value: Box::new(ValueExpr::BranchJoin {
                     alternatives: items,
                 }),
-                member: "__rust_tuple".to_owned(),
+                operation: crate::semantic::types::RustProjection::Tuple,
             })
         }
         _ => None,
@@ -1234,9 +1188,9 @@ fn vec_chain_expr(children: &[Node<'_>], source: &str) -> Option<ValueExpr> {
             }
         } else {
             pos += 2;
-            ValueExpr::Project {
+            ValueExpr::RustField {
                 value: Box::new(expr),
-                member: format!("__rust_field:{member}"),
+                member: member.to_string(),
             }
         };
     }
@@ -1257,9 +1211,9 @@ fn vec_macro_expr(node: Node<'_>, source: &str) -> Option<ValueExpr> {
         return None;
     }
     let elem = vec_chain_expr(&children, source)?;
-    Some(ValueExpr::Project {
+    Some(ValueExpr::RustProject {
         value: Box::new(elem),
-        member: "__rust_vec_of".to_owned(),
+        operation: crate::semantic::types::RustProjection::Vector,
     })
 }
 
@@ -1310,12 +1264,15 @@ pub(super) fn value_expr_within_depth(expr: &ValueExpr, depth: usize) -> bool {
                     .and_then(|s| s.receiver.as_deref())
                     .is_none_or(|receiver| value_expr_within_depth(receiver, depth + 1))
         }
-        ValueExpr::Await { value: inner } => value_expr_within_depth(inner, depth + 1),
+        ValueExpr::Await { value: inner } | ValueExpr::RustProject { value: inner, .. } => value_expr_within_depth(inner, depth + 1),
         ValueExpr::Scoped {
             value: inner,
             body_end,
         } => body_end.line > 0 && value_expr_within_depth(inner, depth + 1),
         ValueExpr::Project {
+            value: inner,
+            member,
+        } | ValueExpr::RustField {
             value: inner,
             member,
         } => {
@@ -1341,7 +1298,10 @@ pub(super) fn sanitize_binding_value(value: ValueExpr) -> ValueExpr {
     }
 }
 
-pub(super) fn unwrap_option_result_member(pattern: Node<'_>, source: &str) -> Option<&'static str> {
+#[derive(Clone, Copy)]
+pub(super) enum PatternProjection { Payload, Error, Identity }
+
+pub(super) fn unwrap_option_result_member(pattern: Node<'_>, source: &str) -> Option<PatternProjection> {
     if pattern.kind() != "tuple_struct_pattern" {
         return None;
     }
@@ -1349,9 +1309,9 @@ pub(super) fn unwrap_option_result_member(pattern: Node<'_>, source: &str) -> Op
         .child_by_field_name("type")
         .map(|t| text(t, source).trim().to_owned());
     match type_name.as_deref().and_then(|n| n.rsplit("::").next()) {
-        Some("Ok" | "Some") => Some("unwrap"),
-        Some("Err") => Some("__rust_err"),
-        Some("Vacant" | "Occupied") => Some(""),
+        Some("Ok" | "Some") => Some(PatternProjection::Payload),
+        Some("Err") => Some(PatternProjection::Error),
+        Some("Vacant" | "Occupied") => Some(PatternProjection::Identity),
         _ => None,
     }
 }
@@ -1397,9 +1357,9 @@ fn substitute_closure_param(
             .iter()
             .find(|(bound, _)| bound == name)
             .map(|(_, field_idx)| match field_idx {
-                Some(idx) => ValueExpr::Project {
+                Some(idx) => ValueExpr::RustField {
                     value: Box::new(item_expr.clone()),
-                    member: format!("__rust_field:{idx}"),
+                    member: idx.to_string(),
                 },
                 None => item_expr.clone(),
             })
@@ -1407,6 +1367,14 @@ fn substitute_closure_param(
         ValueExpr::Project { value, member } => ValueExpr::Project {
             value: Box::new(substitute_closure_param(*value, item_expr, bindings)),
             member,
+        },
+        ValueExpr::RustField { value, member } => ValueExpr::RustField {
+            value: Box::new(substitute_closure_param(*value, item_expr, bindings)),
+            member,
+        },
+        ValueExpr::RustProject { value, operation } => ValueExpr::RustProject {
+            value: Box::new(substitute_closure_param(*value, item_expr, bindings)),
+            operation,
         },
         ValueExpr::Call { callee, site } => ValueExpr::Call {
             callee,
@@ -1433,15 +1401,17 @@ fn substitute_closure_param(
 
 fn static_closure_projection(closure_node: Node<'_>, member_name: &str, item_expr: ValueExpr, source: &str) -> ValueExpr {
     let full = text(closure_node, source).trim();
+    if member_name == "map" {
+        let operation = match full {
+            "Some" | "std::option::Option::Some" | "core::option::Option::Some" => Some(crate::semantic::types::RustProjection::Some),
+            "Ok" | "std::result::Result::Ok" | "core::result::Result::Ok" => Some(crate::semantic::types::RustProjection::Ok),
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            return ValueExpr::RustProject { value: Box::new(item_expr), operation };
+        }
+    }
     let projected_member = match full {
-        "Some" | "std::option::Option::Some" | "core::option::Option::Some"
-            if member_name == "map" =>
-        {
-            Some("__rust_wrap_some")
-        }
-        "Ok" | "std::result::Result::Ok" | "core::result::Result::Ok" if member_name == "map" => {
-            Some("__rust_wrap_ok")
-        }
         "str::trim" => Some("trim"),
         "str::trim_start" => Some("trim_start"),
         "str::trim_end" => Some("trim_end"),
@@ -1488,13 +1458,14 @@ fn closure_projection_expr(
     depth: usize,
     shadowed_macros: &HashSet<&'static str>,
 ) -> Option<ValueExpr> {
+    use crate::semantic::types::RustProjection;
     let tag = match member_name {
-        "map" => "__rust_closure_map",
-        "and_then" => "__rust_closure_and_then",
-        "filter_map" => "__rust_closure_filter_map",
-        "flat_map" => "__rust_closure_flat_map",
-        "map_or" | "map_or_else" => "__rust_closure_map_or",
-        "with" => "__rust_local_key",
+        "map" => RustProjection::ClosureMap,
+        "and_then" => RustProjection::ClosureAndThen,
+        "filter_map" => RustProjection::ClosureFilterMap,
+        "flat_map" => RustProjection::ClosureFlatMap,
+        "map_or" | "map_or_else" => RustProjection::ClosureMapOr,
+        "with" => RustProjection::ClosureMap,
         _ => return None,
     };
     let args = node.child_by_field_name("arguments")?;
@@ -1518,14 +1489,9 @@ fn closure_projection_expr(
     if matches!(recv_val, ValueExpr::Unknown) {
         return None;
     }
-    let item_expr = ValueExpr::Project {
+    let item_expr = ValueExpr::RustProject {
         value: Box::new(recv_val.clone()),
-        member: if member_name == "with" {
-            "__rust_local_key"
-        } else {
-            "__rust_iter_item"
-        }
-        .to_owned(),
+        operation: if member_name == "with" { RustProjection::LocalKey } else { RustProjection::IteratorItem },
     };
     let (body_sub, default_val, default_ok) = if closure_node.kind() == "closure_expression" {
         eval_closure_projection_body(
@@ -1555,9 +1521,9 @@ fn closure_projection_expr(
         if matches!(body_sub, ValueExpr::Unknown) || !value_expr_within_depth(&body_sub, 0) {
             return None;
         }
-        return Some(ValueExpr::Project {
+        return Some(ValueExpr::RustProject {
             value: Box::new(body_sub),
-            member: tag.to_owned(),
+            operation: tag,
         });
     }
     let mut alternatives = vec![recv_val, body_sub];
@@ -1568,12 +1534,12 @@ fn closure_projection_expr(
             ValueExpr::Unknown
         });
     }
-    Some(ValueExpr::Project {
-        value: Box::new(ValueExpr::Project {
+    Some(ValueExpr::RustProject {
+        value: Box::new(ValueExpr::RustProject {
             value: Box::new(ValueExpr::BranchJoin { alternatives }),
-            member: "__rust_tuple".to_owned(),
+            operation: crate::semantic::types::RustProjection::Tuple,
         }),
-        member: tag.to_owned(),
+        operation: tag,
     })
 }
 

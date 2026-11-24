@@ -1,5 +1,5 @@
 use super::super::input::ResolutionInput;
-use crate::linker::python;
+use crate::languages::profile::ProfileLinker;
 use crate::models::{compact_graph::CompactGraph as Graph, Node};
 
 pub(super) fn emit_inherited_method_edges(
@@ -23,13 +23,14 @@ pub(super) fn emit_inherited_method_edges(
     else {
         return;
     };
-    let is_interface = candidate.kind == "interface"
-        || candidate.kind == "trait"
-        || python::resolution::has_protocol_or_abc_base(candidate);
+    let is_interface = candidate.kind == crate::models::tags::NodeKind::Interface
+        || candidate.kind == crate::models::tags::NodeKind::Trait
+        || crate::languages::by_id(candidate.language.as_str())
+            .is_some_and(|profile| profile.linker().has_protocol_or_abc_base(candidate));
     let method_kind = if is_interface {
-        "implements"
+        crate::models::tags::EdgeKind::Implements
     } else {
-        "overrides"
+        crate::models::tags::EdgeKind::Overrides
     };
     for source_method in source_methods
         .iter()
@@ -52,7 +53,7 @@ pub(super) fn emit_inherited_method_edges(
                     target_method.qualname,
                     target_method.name
                 ),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
         }
     }

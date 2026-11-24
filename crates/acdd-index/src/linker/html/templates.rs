@@ -26,7 +26,7 @@ impl<'a> TemplateRootRegistry<'a> {
             let mut roots = source
                 .nodes
                 .iter()
-                .filter(|node| node.kind == "template_loader_root" && node.language == "python")
+                .filter(|node| node.kind == crate::models::tags::NodeKind::TemplateLoaderRoot && node.language == crate::models::tags::LanguageId::Python)
                 .peekable();
             if roots.peek().is_none() {
                 continue;
@@ -123,7 +123,7 @@ fn source_imports_are_external(
     else {
         return false;
     };
-    let Some(imports) = node.details["import_modules"]
+    let Some(imports) = node.detail_entry(crate::models::details::NodeDetailKey::IMPORT_MODULES)
         .as_array()
         .filter(|imports| !imports.is_empty())
     else {
@@ -189,7 +189,7 @@ fn template_library_name<'a>(path: &'a str, directory: &str) -> Option<&'a str> 
         })
 }
 
-pub(in crate::linker) fn required_full_facts(
+pub(crate) fn required_full_facts(
     facts: &dyn crate::FactsLookup,
     catalog: &[(&str, &str)],
     dependencies: &languages::dependency_registry::DependencyRegistry,
@@ -314,7 +314,7 @@ fn node_value_flow<'a>(
     {
         return Some(std::borrow::Cow::Borrowed(facts.as_ref()));
     }
-    ValueFlowFacts::deserialize_for_scope(&node.details["value_flow"], false)
+    ValueFlowFacts::deserialize_for_scope(node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW), false)
         .ok()
         .map(std::borrow::Cow::Owned)
 }
@@ -335,7 +335,7 @@ impl<'a> TemplateRegistry<'a> {
             let Some(module) = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "python")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
             else {
                 continue;
             };
@@ -376,17 +376,17 @@ impl<'a> TemplateRegistry<'a> {
                         .nodes
                         .iter()
                         .filter(|node| {
-                            node.kind == "function"
+                            node.kind == crate::models::tags::NodeKind::Function
                                 && node.qualname.rsplit_once('.').is_some_and(|(owner, name)| {
                                     owner == module.qualname && name == node.name
                                 })
-                                && node.details["decorators"].is_array()
+                                && node.detail_entry(crate::models::details::NodeDetailKey::DECORATORS).is_array()
                         })
                         .collect()
                 });
                 let mut symbols: HashMap<String, HashMap<&'a str, Vec<&Node>>> = HashMap::new();
                 for &function in functions.iter() {
-                    let Some(decorators) = function.details["decorators"].as_array() else {
+                    let Some(decorators) = function.detail_entry(crate::models::details::NodeDetailKey::DECORATORS).as_array() else {
                         continue;
                     };
                     for decorator in decorators.iter().filter_map(|value| value.as_str()) {
@@ -532,7 +532,7 @@ impl<'a> ExpressionRegistry<'a> {
             let Some(module) = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "html")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
             else {
                 continue;
             };
@@ -541,7 +541,7 @@ impl<'a> ExpressionRegistry<'a> {
             for node in &facts.nodes {
                 match (
                     node.kind.as_str(),
-                    node.details["template_binding"].as_str(),
+                    node.detail_entry(crate::models::details::NodeDetailKey::TEMPLATE_BINDING).as_str(),
                 ) {
                     ("variable", Some("variable")) => {
                         variables.entry(&node.name).or_default().push(node)
@@ -750,7 +750,7 @@ impl<'a> RenderContextRegistry<'a> {
                 source
                     .nodes
                     .iter()
-                    .find(|node| node.kind == "module" && node.language == "html")
+                    .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
                     .map(|node| (path, node))
             })
             .collect();
@@ -762,7 +762,7 @@ impl<'a> RenderContextRegistry<'a> {
             let Some(import_owner) = source
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "python")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
             else {
                 continue;
             };
@@ -774,7 +774,7 @@ impl<'a> RenderContextRegistry<'a> {
             let rules = dependencies.language_context_for_path(path);
             let workspace = languages::workspace_path(path).0;
             for node in source.nodes.iter().filter(|node| {
-                node.language == "python"
+                node.language == crate::models::tags::LanguageId::Python
                     && matches!(node.kind.as_str(), "module" | "function" | "method")
             }) {
                 let Some(flow) = node_value_flow(node, semantic_context.symbol_id(&node.id), flows)
@@ -969,7 +969,7 @@ fn verified_library_instance(
     })
 }
 
-fn match_template_symbol<'a>(
+pub(super) fn match_template_symbol<'a>(
     expression: &str,
     template_rules: &[&'a languages::manifests::syntax::SyntaxRule],
     mut match_library: impl FnMut(&str, &str) -> bool,
@@ -1020,32 +1020,6 @@ pub(crate) fn builtin_evidence(
     "builtin:shared_template".to_owned()
 }
 
-pub(in crate::linker) fn builtin_in_scope(
-    expression: &str,
-    reference: &Reference,
-    profile: Option<&dyn crate::languages::LanguageProfile>,
-    template_loads: &[&Reference],
-    template_rules: &[&languages::manifests::syntax::SyntaxRule],
-) -> Option<bool> {
-    if !profile.is_some_and(|profile| profile.id() == "html") {
-        return None;
-    }
-    if match_template_symbol(expression, template_rules, |tag, library| {
-        template_loads.iter().any(|load| {
-            load.expression == library
-                && load.line < reference.line
-                && load.alias.as_deref().is_none_or(|selected| selected == tag)
-        })
-    })
-    .is_some()
-    {
-        return Some(true);
-    }
-    Some(
-        expression.starts_with("template.")
-            && profile.is_some_and(|profile| profile.builtin(expression)),
-    )
-}
 
 pub(in crate::linker) fn resolve_reference(
     input: &ResolutionInput<'_>,
@@ -1095,13 +1069,13 @@ pub(in crate::linker) fn resolve_reference(
                         path,
                         reference.source.clone(),
                         target.id.clone(),
-                        "references",
+                        crate::models::tags::EdgeKind::References,
                         reference.line,
                         format!(
                             "configured template {kind} from {}{provenance}",
                             target.path
                         ),
-                        "exact",
+                        crate::models::tags::EdgeConfidence::Exact,
                     );
                     (
                         "resolved",
@@ -1146,13 +1120,13 @@ pub(in crate::linker) fn resolve_reference(
                 path,
                 reference.source.clone(),
                 symbol.id.clone(),
-                "references",
+                crate::models::tags::EdgeKind::References,
                 reference.line,
                 format!(
                     "template {kind} from {} via {}{provenance}",
                     symbol.path, module.path
                 ),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
             graph.reference_coverage(
                 path,

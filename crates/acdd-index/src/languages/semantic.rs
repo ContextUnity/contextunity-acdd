@@ -31,7 +31,7 @@ pub(crate) fn push(facts: &mut Facts, fact: SemanticFact) {
 
 /// Decodes semantic facts stored in node details.
 pub fn decode(node: &Node) -> anyhow::Result<Vec<SemanticFact>> {
-    match node.details.get("semantic_facts") {
+    match node.detail_get(crate::models::details::NodeDetailKey::SEMANTIC_FACTS) {
         None => Ok(Vec::new()),
         Some(value) => Ok(serde_json::from_value(value.clone())?),
     }

@@ -73,13 +73,13 @@ fn structural_callee_identity_matrix() {
                 let service = facts["src/model.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "Service" && node.kind == "struct")
+                    .find(|node| node.name == "Service" && node.kind == acdd_index::models::tags::NodeKind::Struct)
                     .unwrap();
                 assert_eq!(service.name, "Service");
                 let model_module = facts["src/model.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.kind == "module")
+                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
                     .unwrap();
                 assert!(
                     graph
@@ -93,7 +93,7 @@ fn structural_callee_identity_matrix() {
                 let factory = facts["src/operations.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "make" && node.kind == "function")
+                    .find(|node| node.name == "make" && node.kind == acdd_index::models::tags::NodeKind::Function)
                     .unwrap();
                 let details = crate::common::assertions::projected_node_details(
                     &facts["src/operations.rs"],

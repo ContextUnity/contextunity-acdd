@@ -24,7 +24,7 @@ pub(crate) struct PreparedSemanticFacts<'a> {
 pub(crate) enum DeclarativeRulePrimitive {
     /// Emits a route or endpoint match edge and coverage entry (`EmitRoute`).
     EmitRoute {
-        kind: &'static str,
+        kind: crate::models::tags::EdgeKind,
         resolved_prefix: &'static str,
         unmatched_prefix: &'static str,
         ambiguous_prefix: &'static str,
@@ -212,10 +212,10 @@ fn emit_occurrence(
             path,
             interner.resolve_symbol(owner_id),
             interner.resolve_symbol(targets.into_iter().next().expect("resolved target")),
-            kind,
+            crate::models::tags::EdgeKind::parse(kind),
             line,
             expression.as_str(),
-            "exact",
+            crate::models::tags::EdgeConfidence::Exact,
         );
     }
     graph.push_coverage(path, line, expression, status, evidence);
@@ -223,14 +223,14 @@ fn emit_occurrence(
 
 pub(in crate::linker) const ENDPOINT_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
     DeclarativeRulePrimitive::EmitRoute {
-        kind: "calls_endpoint",
+        kind: crate::models::tags::EdgeKind::CallsEndpoint,
         resolved_prefix: "endpoint route",
         unmatched_prefix: "unmatched endpoint route",
         ambiguous_prefix: "ambiguous endpoint route",
     };
 
 pub(super) const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive = DeclarativeRulePrimitive::EmitRoute {
-    kind: "references_route",
+    kind: crate::models::tags::EdgeKind::ReferencesRoute,
     resolved_prefix: "unique route name",
     unmatched_prefix: "unmatched route name",
     ambiguous_prefix: "ambiguous route name",
@@ -259,7 +259,7 @@ pub(in crate::linker) fn emit_route_match<E>(
     };
     let (status, evidence) = match matched {
         Ok(Some(route)) => {
-            graph.push_edge(path, src, route.id.clone(), kind, line, expression, "exact");
+            graph.push_edge(path, src, route.id.clone(), kind, line, expression, crate::models::tags::EdgeConfidence::Exact);
             (
                 "resolved",
                 format!(

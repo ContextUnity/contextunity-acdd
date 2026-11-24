@@ -188,19 +188,19 @@ impl Document<'_, '_> {
         let mut scope_node = Node {
             native_semantic: None,
             id: id.clone(),
-            kind: "template_scope".into(),
+            kind: crate::models::tags::NodeKind::TemplateScope,
             name: format!("template@{}:{}", point.row + 1, point.column),
             qualname,
             path: path.into(),
             line: point.row + 1,
             end_line: node.end_position().row + 1,
-            language: "vue".into(),
+            language: crate::models::tags::LanguageId::Vue,
             is_test: is_test(path),
             generated: false,
             details: serde_json::json!({"bindings":bindings,"rebindings":[]}),
         };
         if let Some((component, slot)) = slot_provider {
-            scope_node.details["vue_slot"] =
+            *scope_node.detail_entry_mut(crate::models::details::NodeDetailKey::VUE_SLOT) =
                 serde_json::json!({"component": component, "slot": slot});
         }
         if !typed_bindings.is_empty() {
@@ -220,7 +220,7 @@ impl Document<'_, '_> {
                 flows.insert(id.clone(), flow);
             } else {
                 self.facts.pending_flow_nodes.push(self.facts.nodes.len());
-                scope_node.details["value_flow"] =
+                *scope_node.detail_entry_mut(crate::models::details::NodeDetailKey::VALUE_FLOW) =
                     serde_json::to_value(flow).expect("valid Vue scope flow");
             }
         }

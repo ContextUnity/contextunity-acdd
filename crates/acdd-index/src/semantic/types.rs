@@ -8,17 +8,17 @@ use crate::models::details::NodeDetailKey;
     Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(deny_unknown_fields)]
-/// Represents source position data.
+/// A source location using a one-based line and zero-based column.
 pub struct SourcePosition {
-    /// The line value.
+    /// One-based source line.
     pub line: usize,
-    /// The column value.
+    /// Zero-based source column.
     pub column: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-/// Enumerates the supported type expr values.
+/// A bounded type expression extracted from source.
 pub enum TypeExpr {
     /// Type identified by a declaration name.
     Named {
@@ -32,7 +32,22 @@ pub enum TypeExpr {
         /// Type arguments in source order.
         args: Vec<TypeExpr>,
     },
-    /// Represents the unknown case.
+    /// Element type carried by a Rust range expression.
+    RustRange {
+        /// Range element type.
+        item: Box<TypeExpr>,
+    },
+    /// Element type of a fixed-size Rust array.
+    RustArray {
+        /// Array element type.
+        item: Box<TypeExpr>,
+    },
+    /// Explicit type arguments attached to a Rust call.
+    RustCallArguments {
+        /// Explicit type arguments in source order.
+        args: Vec<TypeExpr>,
+    },
+    /// No type could be established.
     Unknown,
 }
 
@@ -60,6 +75,95 @@ pub enum StaticArgument {
     },
     /// No static literal proof.
     Unknown,
+}
+
+/// Closed Rust-only structural value projections.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RustProjection {
+    /// A generic deserializer call.
+    GenericCall,
+    /// An array literal.
+    Array,
+    /// A tuple literal.
+    Tuple,
+    /// A complete branch join.
+    BranchJoin,
+    /// Dereference a Rust value.
+    Dereference,
+    /// Construct a vector from a known element.
+    Vector,
+    /// Wrap a value in Some.
+    Some,
+    /// Wrap a value in Ok.
+    Ok,
+    /// Apply a closure through map.
+    ClosureMap,
+    /// Apply a closure through and_then.
+    ClosureAndThen,
+    /// Apply a closure through filter_map.
+    ClosureFilterMap,
+    /// Apply a closure through flat_map.
+    ClosureFlatMap,
+    /// Select an item from a flat-mapped value.
+    FlatMapItem,
+    /// Apply a closure with a fallback.
+    ClosureMapOr,
+    /// The row supplied to a database query closure.
+    ClosureRow,
+    /// An entry supplied to a filter_entry closure.
+    FilterEntryItem,
+    /// The element yielded to a Rust iteration or closure.
+    IteratorItem,
+    /// The value supplied by a thread-local key.
+    LocalKey,
+    /// The error payload of a Result value.
+    ErrorPayload,
+    /// Index using a string key or an unknown index expression.
+    Index,
+    /// Index a sequence by element.
+    ElementIndex,
+    /// Index a sequence by a range.
+    RangeSlice,
+    /// A checked range lookup on a string or sequence.
+    GetRange,
+    /// Map a string trimming function over a Rust value.
+    MapTrim,
+    /// Map conversion to an owned string over a Rust value.
+    MapString,
+    /// Unwrap with a string literal fallback.
+    UnwrapOrStr,
+    /// Map with a string literal fallback.
+    MapOrStr,
+    /// Map a value's string accessor.
+    MapAsStr,
+    /// Map a value's unsigned integer accessor.
+    MapU64,
+    /// Map a value's signed integer accessor.
+    MapI64,
+    /// Map a value's boolean accessor.
+    MapBool,
+    /// Map a path or OS-string accessor to a string slice.
+    MapPathStr,
+    /// Map conversion to an owned path.
+    MapPathBuf,
+    /// Map cloning over an iterator or wrapper.
+    MapCloned,
+    /// Filter an iterator by successful Result payloads.
+    FilterMapOk,
+    /// Map a JSON array accessor.
+    MapArray,
+    /// Map a JSON object accessor.
+    MapObject,
+    /// Map a TOML table accessor.
+    MapTomlTable,
+    /// An and_then closure that returns its argument through unshadowed Some.
+    IdentitySome,
+    /// A reference expression.
+    Reference {
+        /// Whether the reference is mutable.
+        mutable: bool,
+    },
 }
 
 impl ValueExpr {
@@ -95,6 +199,8 @@ impl ValueExpr {
             Self::Await { value }
             | Self::Scoped { value, .. }
             | Self::Project { value, .. }
+            | Self::RustField { value, .. }
+            | Self::RustProject { value, .. }
             | Self::CallbackParam { callee: value, .. } => value.valid_call_sites(depth + 1),
             Self::BranchJoin { alternatives } => alternatives
                 .iter()
@@ -136,8 +242,10 @@ pub(crate) fn deserialize_typed_call<'de, D: serde::Deserializer<'de>>(
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-/// Enumerates the supported value expr values.
+/// A bounded expression used to infer a value's type and provenance.
 pub enum ValueExpr {
+    /// A lexically proven Rust closure.
+    RustClosure,
     /// Value with an explicit type annotation.
     Annotated {
         /// Annotated type.
@@ -203,6 +311,20 @@ pub enum ValueExpr {
         /// Object pattern member name.
         member: String,
     },
+    /// A field or tuple position projected from a Rust value.
+    RustField {
+        /// Source value.
+        value: Box<ValueExpr>,
+        /// Field name or tuple position.
+        member: String,
+    },
+    /// A Rust-specific structural projection.
+    RustProject {
+        /// Source value.
+        value: Box<ValueExpr>,
+        /// Closed projection operation.
+        operation: RustProjection,
+    },
     /// Closure or callback parameter typed from a higher-order callee signature.
     CallbackParam {
         /// Higher-order callee expression whose signature supplies the callback parameter type.
@@ -220,17 +342,17 @@ pub enum ValueExpr {
         #[serde(default, skip_serializing_if = "is_false")]
         builtin_guard: bool,
     },
-    /// Represents the unknown case.
+    /// No value could be established.
     Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Represents object member data.
+/// A member exposed by an object expression.
 pub struct ObjectMember {
-    /// The name value.
+    /// Public member name.
     pub name: String,
-    /// The position value.
+    /// Member declaration position.
     pub position: SourcePosition,
     /// Proven declaration name when the public member is an alias.
     #[serde(default, skip_serializing_if = "ObjectMemberTarget::is_same_name")]
@@ -269,13 +391,13 @@ impl ObjectMember {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Represents binding fact data.
+/// A source binding and its value at a position.
 pub struct BindingFact {
-    /// The name value.
+    /// Bound name.
     pub name: String,
-    /// The position value.
+    /// Binding position.
     pub position: SourcePosition,
-    /// The value value.
+    /// Value assigned to the binding.
     pub value: ValueExpr,
     #[serde(default, skip_serializing_if = "is_false")]
     /// Whether conditional applies.
@@ -299,13 +421,13 @@ pub struct BranchJoinFact {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Represents field fact data.
+/// A field assignment and its value at a position.
 pub struct FieldFact {
-    /// The name value.
+    /// Assigned field name.
     pub name: String,
-    /// The position value.
+    /// Assignment position.
     pub position: SourcePosition,
-    /// The value value.
+    /// Assigned value.
     pub value: ValueExpr,
     #[serde(default, skip_serializing_if = "is_false")]
     /// Whether conditional applies.
@@ -766,12 +888,12 @@ where
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
-/// Represents value flow facts data.
+/// Value-flow evidence collected for one scope.
 pub struct ValueFlowFacts {
     /// Optional storage for less common scope and framework facts.
     #[serde(flatten, deserialize_with = "deserialize_framework_facts")]
     pub framework: Option<Box<FrameworkScopeFacts>>,
-    /// The bindings value.
+    /// Source-ordered local binding facts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<BindingFact>,
     /// Control-flow transfer facts, separate from source assignment writes.
@@ -783,7 +905,7 @@ pub struct ValueFlowFacts {
     /// Optional return type value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_type: Option<TypeExpr>,
-    /// The fields value.
+    /// Source-ordered field assignment facts.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldFact>,
 }
@@ -851,9 +973,9 @@ pub struct FrameworkScopeFacts {
     pub fact_limit_exceeded: bool,
     /// Explicit result type exposed only after awaiting an async callable.
     pub async_return_type: Option<TypeExpr>,
-    /// Optional return value value.
+    /// Returned expression, when known.
     pub return_value: Option<ValueExpr>,
-    /// Optional return position value.
+    /// Source position of the return, when known.
     pub return_position: Option<SourcePosition>,
     /// Optional alias type value.
     pub alias_type: Option<TypeExpr>,
@@ -1594,6 +1716,10 @@ impl ValueFlowFacts {
                         type_keys(argument, visit, depth + 1);
                     }
                 }
+                TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => type_keys(item, visit, depth + 1),
+                TypeExpr::RustCallArguments { args } => {
+                    for argument in args.iter().take(16) { type_keys(argument, visit, depth + 1); }
+                }
                 TypeExpr::Unknown => {}
             }
         }
@@ -1628,14 +1754,15 @@ impl ValueFlowFacts {
                     visit(receiver);
                     visit(member);
                 }
-                ValueExpr::Project { value, member } => {
+                ValueExpr::Project { value, member } | ValueExpr::RustField { value, member } => {
                     value_keys(value, visit, depth + 1);
                     visit(member);
                 }
+                ValueExpr::RustProject { value, .. } => value_keys(value, visit, depth + 1),
                 ValueExpr::CallbackParam { callee, .. } => {
                     value_keys(callee, visit, depth + 1);
                 }
-                ValueExpr::Object { .. } | ValueExpr::Unknown => {}
+                ValueExpr::Object { .. } | ValueExpr::RustClosure | ValueExpr::Unknown => {}
             }
         }
         for ty in self
@@ -2023,9 +2150,9 @@ impl ValueFlowFacts {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Represents export binding data.
+/// An exported name and its local binding or source module.
 pub struct ExportBinding {
-    /// The name value.
+    /// Exported name.
     pub name: String,
     /// Optional local value.
     pub local: Option<String>,

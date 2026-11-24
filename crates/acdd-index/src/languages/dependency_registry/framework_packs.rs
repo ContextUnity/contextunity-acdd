@@ -699,26 +699,6 @@ impl DependencyRegistry {
             .filter(|manifest| manifest.enabled)
     }
 
-    /// Returns a workspace-local manifest unconditionally, otherwise a bundled
-    /// manifest only when the workspace declares its package.
-    pub fn framework_manifest_for_path(
-        &self,
-        family: LanguageFamily,
-        path: &str,
-        framework: &str,
-        package: &str,
-    ) -> Option<&FrameworkManifest> {
-        let (workspace, _) = workspace_path(path);
-        if self
-            .framework_manifests
-            .contains_key(&(workspace.to_owned(), framework.to_owned()))
-            || self.declares_for_path(family, path, package)
-        {
-            self.effective_framework_manifest(path, framework)
-        } else {
-            None
-        }
-    }
 }
 
 pub(crate) fn named_binding_project<'a>(

@@ -381,7 +381,7 @@ fn rust_simple_and_associated_declarations_keep_compact_classification() {
 struct ScopeOrderProfile(std::sync::Mutex<Vec<String>>);
 impl acdd_index::languages::LanguageProfile for ScopeOrderProfile {
     fn id(&self) -> &'static str {
-        "scope-order"
+        "python"
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["py"]
@@ -468,7 +468,7 @@ fn incremental_scope_analysis_does_not_invoke_legacy_flow_hooks() {
 struct DeclarativeProfile(&'static SyntaxGrammarSpec);
 impl LanguageProfile for DeclarativeProfile {
     fn id(&self) -> &'static str {
-        "declarative-probe"
+        "python"
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["py"]
@@ -552,7 +552,7 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
     for (category, observed) in [
         (
             "declaration",
-            declaration.is_some_and(|node| node.kind == "function"),
+            declaration.is_some_and(|node| node.kind == acdd_index::models::tags::NodeKind::Function),
         ),
         (
             "scope",

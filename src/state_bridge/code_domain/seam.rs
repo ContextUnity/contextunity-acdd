@@ -292,7 +292,7 @@ impl CodeDomainProvider {
         let has_callable_prod_symbol = scoped_code_files.iter().any(|path| {
             live_facts
                 .get(path)
-                .is_some_and(|facts| facts.nodes.iter().any(|n| !n.is_test && is_callable_kind(&n.kind)))
+                .is_some_and(|facts| facts.nodes.iter().any(|n| !n.is_test && is_callable_kind(n.kind.as_str())))
         });
         if !has_callable_prod_symbol {
             let test_overlaps_scope = test_starts
@@ -407,7 +407,7 @@ fn expand_db_seam_edges(
                 let Some(n) = dst_live
                     .nodes
                     .iter()
-                    .find(|n| n.qualname == db_edge.dst_qualname && n.kind == db_edge.dst_kind)
+                    .find(|n| n.qualname == db_edge.dst_qualname && n.kind.as_str() == db_edge.dst_kind)
                     .or_else(|| dst_live.nodes.iter().find(|n| n.qualname == db_edge.dst_qualname))
                 else {
                     continue;
@@ -511,7 +511,7 @@ fn bfs_seam_reachability(
                 cur_key.path, cur_key.qualname, edge.kind, dst.path, dst.qualname
             ));
             let bare_module_import = edge.kind == EdgeKind::Imports.as_str()
-                && dst.kind == NodeKind::Module.as_str()
+                && dst.kind == NodeKind::Module
                 && target_symbol.is_none();
             if !dst.is_test
                 && !bare_module_import
@@ -830,7 +830,7 @@ fn resolve_test_start_nodes(
                         .nodes
                         .iter()
                         .filter(|n| {
-                            is_callable_kind(&n.kind)
+                            is_callable_kind(n.kind.as_str())
                                 && (n.is_test || symbol.is_some())
                                 && line.is_none_or(|l| n.line == l)
                                 && symbol.is_none_or(|s| node_matches_symbol(n, s))
@@ -850,7 +850,7 @@ fn resolve_test_start_nodes(
     let mut matched = Vec::new();
     for facts in live_facts.values() {
         for n in &facts.nodes {
-            if n.is_test && is_callable_kind(&n.kind) && node_matches_symbol(n, target_sym) {
+            if n.is_test && is_callable_kind(n.kind.as_str()) && node_matches_symbol(n, target_sym) {
                 matched.push(n.clone());
             }
         }
@@ -876,7 +876,7 @@ fn resolve_test_start_nodes(
             load_live_facts(worktree, &p, live_facts, file_hashes);
             if let Some(facts) = live_facts.get(&p) {
                 for n in &facts.nodes {
-                    if n.is_test && is_callable_kind(&n.kind) && node_matches_symbol(n, target_sym) {
+                    if n.is_test && is_callable_kind(n.kind.as_str()) && node_matches_symbol(n, target_sym) {
                         matched.push(n.clone());
                     }
                 }
@@ -932,7 +932,7 @@ fn discover_fallback_test_starts(
     let mut starts: Vec<Node> = live_facts
         .values()
         .flat_map(|facts| facts.nodes.iter())
-        .filter(|n| n.is_test && is_callable_kind(&n.kind))
+        .filter(|n| n.is_test && is_callable_kind(n.kind.as_str()))
         .cloned()
         .collect();
     if !starts.is_empty() {
@@ -983,7 +983,7 @@ fn test_starts_reference_scoped_files(
         }
         if let Some(facts) = live_facts.get(rel) {
             for node in &facts.nodes {
-                if !node.is_test && node.kind != NodeKind::Module.as_str() && !node.name.is_empty()
+                if !node.is_test && node.kind != NodeKind::Module && !node.name.is_empty()
                 {
                     scoped_tokens.insert(node.name.clone());
                 }

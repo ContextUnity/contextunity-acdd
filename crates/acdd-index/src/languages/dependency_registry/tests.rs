@@ -57,6 +57,15 @@ fn source_inventory_rejects_noncanonical_and_unsupported_paths() {
 
 #[test]
 fn source_inventory_rejects_duplicate_paths_and_pack_identities() {
+    let registry = DependencyRegistry::collect(None);
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/languages/manifests");
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if matches!(path.extension().and_then(|ext| ext.to_str()), Some("toml" | "yaml" | "yml")) {
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            assert!(registry.standard_framework_manifests.contains_key(name), "missing bundled manifest {name}");
+        }
+    }
     for files in [
         vec![("package.json", "{}"), ("package.json", "{}")],
         vec![
@@ -99,9 +108,8 @@ fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
     let dependency = ("requirements.txt", "django\n");
     let bundled = source_registry(&[dependency, ("nested/requirements.txt", "")]).unwrap();
     let admits = |registry: &DependencyRegistry, path| {
-        registry
-            .framework_manifest_for_path(LanguageFamily("python"), path, "django", "django")
-            .is_some()
+        registry.declares_for_path(LanguageFamily("python"), path, "django")
+            && registry.effective_framework_manifest(path, "django").is_some()
     };
     assert!(admits(&bundled, "app.py"));
     assert!(!admits(&bundled, "nested/app.py"));
@@ -122,7 +130,7 @@ fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
     let empty = source_registry(&[]).unwrap();
     assert!(!admits(&empty, "app.py"));
     let local = source_registry(&[(".acdd/frameworks/django.toml", "")]).unwrap();
-    assert!(admits(&local, "app.py"));
+    assert!(local.effective_framework_manifest("app.py", "django").is_some());
     let deleted = source_registry(&[dependency]).unwrap();
     assert!(admits(&deleted, "app.py"));
 }
@@ -254,12 +262,7 @@ fn source_registry_validates_named_workspace_scope_before_rule_preparation() {
             .digest()
     );
     assert!(registry
-        .framework_manifest_for_path(
-            LanguageFamily("python"),
-            "[frontend]/app.py",
-            "local",
-            "tablekit"
-        )
+        .effective_framework_manifest("[frontend]/app.py", "local")
         .is_none());
 }
 
@@ -649,12 +652,7 @@ di_calls:
                         continue;
                     }
                 };
-                let Some(manifest) = registry.framework_manifest_for_path(
-                    family,
-                    "src/views.py",
-                    "django",
-                    "django",
-                ) else {
+                let Some(manifest) = registry.effective_framework_manifest("src/views.py", "django") else {
                     failures.push(format!("{label}: explicit project pack did not activate"));
                     continue;
                 };
@@ -768,14 +766,7 @@ di_calls:
                     ),
                     (
                         "project pack stays in its workspace",
-                        registry
-                            .framework_manifest_for_path(
-                                family,
-                                "[other]/src/views.py",
-                                "django",
-                                "django",
-                            )
-                            .is_none(),
+                        !registry.declares_for_path(family, "[other]/src/views.py", "django"),
                     ),
                 ] {
                     if !satisfied {
@@ -784,12 +775,7 @@ di_calls:
                 }
                 let again = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
                 if registry.digest() != again.digest()
-                    || again.framework_manifest_for_path(
-                        family,
-                        "src/views.py",
-                        "django",
-                        "django",
-                    ) != Some(manifest)
+                    || again.effective_framework_manifest("src/views.py", "django") != Some(manifest)
                 {
                     failures.push(format!("{label}: re-collection is not deterministic"));
                 }
@@ -846,14 +832,12 @@ di_calls:
     let root = workspace.as_path();
     let undeclared = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
     if undeclared
-        .framework_manifest_for_path(family, "src/app.py", "django", "django")
-        .is_some()
+        .declares_for_path(family, "src/app.py", "django")
     {
         failures.push("undeclared bundled framework activated without a project pack".to_owned());
     }
     if undeclared
-        .framework_manifest_for_path(family, "src/app.py", "gridviewspec", "grid_view_spec")
-        .is_some()
+        .declares_for_path(family, "src/app.py", "grid_view_spec")
     {
         failures
             .push("undeclared GridViewSpec bundle activated without a project pack".to_owned());
@@ -864,7 +848,8 @@ di_calls:
     )
     .unwrap();
     let registry = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
-    match registry.framework_manifest_for_path(family, "src/app.py", "gridviewspec", "grid_view_spec") {
+    assert!(registry.declares_for_path(family, "src/app.py", "grid_view_spec"));
+    match registry.effective_framework_manifest("src/app.py", "gridviewspec") {
         Some(manifest)
             if manifest
                 .class_hierarchy_receivers
@@ -1248,12 +1233,13 @@ fn source_registry_scope_parity_matrix() {
             (&format!("[{name}]/app.py"), "fastapi"),
         ] {
             let source_m = source
-                .framework_manifest_for_path(LanguageFamily("python"), path, pack, pack)
+                .effective_framework_manifest(path, pack)
                 .map(|m| serde_json::to_value(m).unwrap());
             let disk_m = disk
-                .framework_manifest_for_path(LanguageFamily("python"), path, pack, pack)
+                .effective_framework_manifest(path, pack)
                 .map(|m| serde_json::to_value(m).unwrap());
             assert_eq!(source_m, disk_m);
+            assert_eq!(source.declares_for_path(LanguageFamily("python"), path, pack), disk.declares_for_path(LanguageFamily("python"), path, pack));
         }
         let source_facts = extract_with_registry(&source, SOURCES).unwrap();
         let disk_facts = extract_with_registry(&disk, SOURCES).unwrap();

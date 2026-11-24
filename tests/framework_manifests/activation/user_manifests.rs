@@ -172,15 +172,6 @@ syntax_rules:
                 continue;
             }
         };
-        if indexed
-            .registry
-            .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
-            .is_none()
-        {
-            failures.push(format!(
-                "generic .{extension} manifest did not reach its linker"
-            ));
-        }
         let indexed_file = query_count(
             &indexed.conn,
             "SELECT count(*) FROM path_dictionary WHERE path=?1",
@@ -230,14 +221,6 @@ syntax_rules:
     undeclared
         .link_sources(&[("index.html", "html", "<p>No framework declaration</p>\n")])
         .unwrap();
-    if undeclared
-        .registry
-        .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
-        .is_none()
-    {
-        failures
-            .push("an undeclared project did not activate its local Django manifest".to_owned());
-    }
     assert!(
         failures.is_empty(),
         "manifest contract failures:\n{}",

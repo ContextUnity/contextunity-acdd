@@ -267,7 +267,7 @@ pub(super) fn public_callable_nodes(facts: &Facts) -> Vec<Node> {
     let exports: BTreeSet<String> = facts
         .nodes
         .iter()
-        .filter(|n| n.kind == NodeKind::Module.as_str())
+        .filter(|n| n.kind == NodeKind::Module)
         .filter_map(|n| n.details["exports"].as_array())
         .flatten()
         .filter(|e| e["module"].is_null() && e["type_only"] != Value::Bool(true))
@@ -277,7 +277,7 @@ pub(super) fn public_callable_nodes(facts: &Facts) -> Vec<Node> {
         .nodes
         .iter()
         .filter(|n| {
-            is_callable_kind(&n.kind)
+            is_callable_kind(n.kind.as_str())
                 && !n.is_test
                 && (n.details["is_public"].as_bool() == Some(true)
                     || n.details["visibility"].as_str() == Some("public")

@@ -341,8 +341,8 @@ impl<'a> NamedBindings<'a> {
             if let Some(target) = nodes.get(&target_id).copied().filter(|target| {
                 target.path == definition.owner.path
                     && match target_kind {
-                        NamedTargetKind::Object => target.kind == "object",
-                        NamedTargetKind::ListenerScope => target.kind == "template_scope",
+                        NamedTargetKind::Object => target.kind == crate::models::tags::NodeKind::Object,
+                        NamedTargetKind::ListenerScope => target.kind == crate::models::tags::NodeKind::TemplateScope,
                         NamedTargetKind::Callable => false,
                     }
             }) {
@@ -360,7 +360,7 @@ impl<'a> NamedBindings<'a> {
                             path,
                             crate::semantic::SourcePosition {
                                 line: owner.line,
-                                column: owner.details["column"].as_u64().unwrap_or(0) as usize,
+                                column: owner.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
                             },
                         ))
                         .or_default()

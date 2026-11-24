@@ -219,7 +219,7 @@ fn callback_receiver_authority() {
                 .find(|node| node.name == "query_map")
                 .unwrap();
             let caller = facts.nodes.iter().find(|node| node.name == "f").unwrap();
-            assert_eq!(method.kind, "method");
+            assert_eq!(method.kind, acdd_index::models::tags::NodeKind::Method);
             let method_details = crate::common::assertions::projected_node_details(facts, method);
             assert_eq!(
                 method_details["receiver_type"], receiver,
@@ -237,7 +237,7 @@ fn callback_receiver_authority() {
             let target = &facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "method" && node.qualname.ends_with(".Item.finish"))
+                .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.qualname.ends_with(".Item.finish"))
                 .unwrap()
                 .id;
             let mut references: Vec<_> = facts

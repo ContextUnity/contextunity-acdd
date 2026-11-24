@@ -54,7 +54,7 @@ fn classic_require_rebindings_do_not_change_independent_module_imports() {
         let loader = facts
             .nodes
             .iter()
-            .find(|node| node.kind == "function" && node.name == "require")
+            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "require")
             .map(|node| node.id.clone());
         let imports: Vec<_> = facts
             .references
@@ -476,7 +476,7 @@ fn embedded_script_identity_and_delta() {
             let node = facts
                 .nodes
                 .iter()
-                .find(|node| node.name == *name && node.kind == *kind)
+                .find(|node| node.name == *name && node.kind.as_str() == *kind)
                 .unwrap();
             assert_eq!(node.line, *line, "{}", case.case_id);
             assert_eq!(
@@ -495,7 +495,7 @@ fn embedded_script_identity_and_delta() {
             let node = facts
                 .nodes
                 .iter()
-                .find(|node| node.name == *target && node.kind == *kind)
+                .find(|node| node.name == *target && node.kind.as_str() == *kind)
                 .unwrap();
             assert!(
                 graph.edges.iter().any(|edge| edge.kind == "calls"
@@ -519,7 +519,7 @@ fn embedded_script_identity_and_delta() {
                 facts
                     .nodes
                     .iter()
-                    .filter(|node| node.kind == "template_scope")
+                    .filter(|node| node.kind == acdd_index::models::tags::NodeKind::TemplateScope)
                     .count(),
                 count,
                 "{}",
@@ -530,7 +530,7 @@ fn embedded_script_identity_and_delta() {
             let functions: std::collections::BTreeSet<_> = facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == "function" && node.name == name)
+                .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == name)
                 .map(|node| node.id.clone())
                 .collect();
             assert_eq!(functions.len(), count, "{}", case.case_id);
@@ -602,7 +602,7 @@ fn classic_javascript_globals_are_shared_by_scripts_and_inline_handlers() {
     let work = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "method" && node.name == "run")
+        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "run")
         .unwrap();
     let launch = facts
         .nodes
@@ -669,7 +669,7 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
                     && facts
                         .nodes
                         .iter()
-                        .any(|owner| owner.id == reference.source && owner.language == "javascript")
+                        .any(|owner| owner.id == reference.source && owner.language == acdd_index::models::tags::LanguageId::Javascript)
             }),
             "{expression} does not belong to a JavaScript island owner"
         );

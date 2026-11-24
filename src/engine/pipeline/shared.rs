@@ -188,14 +188,14 @@ pub(super) fn extract_typed_source_with_digest(
             nodes.push(Node {
                 native_semantic: None,
                 id: doc.doc_id.clone(),
-                kind: "document".into(),
+                kind: acdd_index::models::tags::NodeKind::Document,
                 name: doc.section_title.clone(),
                 qualname: doc.doc_id.clone(),
                 path: doc.path.clone(),
                 line,
                 end_line,
                 is_test: false,
-                language: "markdown".into(),
+                language: acdd_index::models::tags::LanguageId::Markdown,
                 generated: false,
                 details,
             });
@@ -208,14 +208,14 @@ pub(super) fn extract_typed_source_with_digest(
                     nodes.push(Node {
                         native_semantic: None,
                         id: format!("invariant:{}:{invariant_line}:{name}", doc.path),
-                        kind: "invariant".into(),
+                        kind: acdd_index::models::tags::NodeKind::Invariant,
                         name: name.to_owned(),
                         qualname: format!("{}::{name}", doc.doc_id),
                         path: doc.path.clone(),
                         line: invariant_line,
                         end_line: invariant_line,
                         is_test: false,
-                        language: "markdown".into(),
+                        language: acdd_index::models::tags::LanguageId::Markdown,
                         generated: false,
                         details: json!({
                             "document_id": doc.doc_id,
@@ -247,7 +247,7 @@ pub fn components(facts: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> 
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
         f.nodes
             .iter()
-            .any(|n| n.kind == "module")
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Module)
             .then_some(path.as_str())
     }));
     assign_components(facts, &owners);
@@ -277,9 +277,9 @@ pub(super) fn assign_file_component(
     f: &mut TypedFacts,
     owners: Option<&BTreeMap<String, String>>,
 ) {
-    f.facts.retain_nodes(|n| n.kind != "component");
+    f.facts.retain_nodes(|n| n.kind != acdd_index::models::tags::NodeKind::Component);
     f.edges.retain(|e| !e.src.starts_with("component:"));
-    if !f.nodes.iter().any(|n| n.kind == "module") {
+    if !f.nodes.iter().any(|n| n.kind == acdd_index::models::tags::NodeKind::Module) {
         return;
     }
     let root = path.split_once('/').map_or(".", |(root, _)| root);
@@ -288,14 +288,14 @@ pub(super) fn assign_file_component(
         f.nodes.push(Node {
             native_semantic: None,
             id: id.clone(),
-            kind: "component".into(),
+            kind: acdd_index::models::tags::NodeKind::Component,
             name: root.into(),
             qualname: root.into(),
             path: root.into(),
             line: 1,
             end_line: 1,
             is_test: false,
-            language: "workspace".into(),
+            language: acdd_index::models::tags::LanguageId::Workspace,
             generated: false,
             details: Value::Null,
         });

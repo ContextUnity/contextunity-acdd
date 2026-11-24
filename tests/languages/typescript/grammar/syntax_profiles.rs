@@ -58,15 +58,15 @@ export const processUser = (u: User) => {
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "class" && n.name == "UserService"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Class && n.name == "UserService"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "method" && n.name == "getUser"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.name == "getUser"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "function" && n.name == "processUser"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "processUser"));
     let process_user = facts
         .nodes
         .iter()
@@ -129,7 +129,7 @@ fn parser_slot_grammar_reuse() {
             facts
                 .nodes
                 .iter()
-                .any(|node| node.name == expected_name && node.kind == "function"),
+                .any(|node| node.name == expected_name && node.kind == acdd_index::models::tags::NodeKind::Function),
             "{profile_id}:{path}: {facts:#?}"
         );
     }

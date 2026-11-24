@@ -150,7 +150,7 @@ fn platform_global_contract_matrix() {
                 if expression == "URL" {
                     assert!(targets
                         .iter()
-                        .any(|node| node.kind == "class" && node.name == "URL"));
+                        .any(|node| node.kind == acdd_index::models::tags::NodeKind::Class && node.name == "URL"));
                 }
             }
         }
@@ -306,7 +306,7 @@ fn conversion_globals_are_external_with_local_precedence() {
         let local_string = facts[&local_path]
             .nodes
             .iter()
-            .find(|node| node.kind == "function" && node.name == "String")
+            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String")
             .unwrap()
             .id
             .clone();

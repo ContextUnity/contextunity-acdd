@@ -13,7 +13,7 @@ pub(in crate::linker) fn dynamic_receiver_member<'a>(
 ) -> bool {
     use super::super::{semantic_context::Member, value_flow::TypeTarget};
 
-    let Some(owner) = owner.filter(|owner| owner.language == "rust") else {
+    let Some(owner) = owner.filter(|owner| owner.language == crate::models::tags::LanguageId::Rust) else {
         return false;
     };
     if reference.kind != "calls" {
@@ -157,18 +157,20 @@ fn fallback_receiver_value(
                     arguments: Vec::new(),
                 }),
             },
-            Some(inner) => ValueExpr::Project {
+            Some(inner) => ValueExpr::RustField {
                 value: Box::new(inner),
-                member: format!("__rust_field:{name}"),
+                member: name.to_string(),
             },
         };
         for &op in unary_ops[..unary_len].iter().rev() {
-            let member = match op {
-                b'*' => "__rust_deref",
-                b'm' => "__rust_ref_mut",
-                _ => "__rust_ref",
+            next = if op == b'*' {
+                ValueExpr::RustProject { value: Box::new(next), operation: crate::semantic::types::RustProjection::Dereference }
+            } else {
+                ValueExpr::RustProject {
+                    value: Box::new(next),
+                    operation: crate::semantic::types::RustProjection::Reference { mutable: op == b'm' },
+                }
             };
-            next = ValueExpr::Project { value: Box::new(next), member: member.to_owned() };
         }
         value = Some(if try_result {
             ValueExpr::Project { value: Box::new(next), member: "?".to_owned() }
@@ -180,16 +182,13 @@ fn fallback_receiver_value(
 }
 
 #[cfg(feature = "lang-rust")]
-pub(in crate::linker) use crate::linker::traits::ExplicitModuleTarget as RustExplicitTarget;
-
-#[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(
     input: &super::super::resolution::input::ResolutionInput<'_>,
     profile: Option<&dyn LanguageProfile>,
     path: &str,
     file_module: &str,
     expression: &str,
-) -> Option<RustExplicitTarget> {
+) -> Option<crate::linker::traits::ExplicitModuleTarget> {
     if profile.is_none_or(|profile| profile.id() != "rust") {
         return None;
     }
@@ -197,7 +196,7 @@ pub(in crate::linker) fn rust_explicit_module_target(
     if let Some(namespace) =
         super::forwarding::resolve_relative_module_prefix(path, file_module, expression)
     {
-        return Some(RustExplicitTarget {
+        return Some(crate::linker::traits::ExplicitModuleTarget {
             namespace,
             workspace: local_workspace.to_owned(),
         });
@@ -218,7 +217,7 @@ pub(in crate::linker) fn rust_explicit_module_target(
     else {
         return None;
     };
-    Some(RustExplicitTarget {
+    Some(crate::linker::traits::ExplicitModuleTarget {
         namespace,
         workspace,
     })
@@ -228,7 +227,7 @@ pub(in crate::linker) fn rust_explicit_module_target(
 pub(in crate::linker) fn explicit_reexport_targets<'a>(
     input: &super::super::resolution::input::ResolutionInput<'a>,
     file_module: &str,
-    target: &RustExplicitTarget,
+    target: &crate::linker::traits::ExplicitModuleTarget,
     lookup_key: &mut String,
 ) -> Vec<&'a Node> {
     let Some(rust_modules) = input
@@ -282,10 +281,10 @@ fn emit_self_target(
     path: &str,
     reference: &Reference,
     receiver: &Node,
-    kind: &str,
+    kind: crate::models::tags::EdgeKind,
     evidence: String,
 ) -> bool {
-    graph.reference_edge(path, reference, receiver.id.clone(), kind, "inferred");
+    graph.reference_edge(path, reference, receiver.id.clone(), kind, crate::models::tags::EdgeConfidence::Inferred);
     graph.reference_coverage(path, reference, "resolved", evidence.into());
     true
 }
@@ -302,7 +301,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
         if let Some(crate::linker::value_flow::Symbol::Callable(target)) =
             owner.and_then(|owner| member_lookup.context().rust_alias_member(owner, reference))
         {
-            graph.reference_edge(path, reference, target.id.clone(), "calls", "exact");
+            graph.reference_edge(path, reference, target.id.clone(), crate::models::tags::EdgeKind::Calls, crate::models::tags::EdgeConfidence::Exact);
             graph.reference_coverage(
                 path,
                 reference,
@@ -324,8 +323,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
     };
     let Some(receiver) = member_lookup.receiver_for("rust", owner) else {
         if let Some(recv_ty) = owner
-            .details
-            .get("receiver_type")
+            .detail_get(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
             .and_then(|value| value.as_str())
             .map(str::trim)
             .filter(|ty| profile.is_some_and(|p| p.builtin_type(ty)))
@@ -368,8 +366,8 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
                     path,
                     reference,
                     target.id.clone(),
-                    reference.kind.as_str(),
-                    "inferred",
+                    crate::models::tags::EdgeKind::parse(&reference.kind),
+                    crate::models::tags::EdgeConfidence::Inferred,
                 );
                 graph.reference_coverage(
                     path,
@@ -411,7 +409,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
             path,
             reference,
             receiver,
-            "calls",
+            crate::models::tags::EdgeKind::Calls,
             format!("Self calls indexed constructor {}", receiver.qualname),
         );
     }
@@ -421,7 +419,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
             path,
             reference,
             receiver,
-            "references",
+            crate::models::tags::EdgeKind::References,
             format!("Self refers to indexed receiver type {}", receiver.qualname),
         );
     }
@@ -439,8 +437,8 @@ fn emit_rust_const_match(
         path,
         reference,
         target.id.clone(),
-        reference.kind.as_str(),
-        "exact",
+        crate::models::tags::EdgeKind::parse(&reference.kind),
+        crate::models::tags::EdgeConfidence::Exact,
     );
     graph.reference_coverage(path, reference, "resolved", reason.into());
     true
@@ -476,7 +474,7 @@ fn resolve_module_scoped_constant<'a>(
                     let q = format!("{}.{seg}", parent.qualname);
                     if let Some(target) = semantic_context
                         .nodes_in_path(&q, &parent.path)
-                        .find(|n| n.kind == "constant")
+                        .find(|n| n.kind == crate::models::tags::NodeKind::Constant)
                     {
                         return Some(target);
                     }
@@ -519,11 +517,11 @@ fn resolve_qualified_rust_constant<'a>(
         reference.position(),
         crate::linker::value_flow::SymbolRole::Type,
     ) {
-        if reference.kind == "references" || type_node.kind == "enum" {
+        if reference.kind == "references" || type_node.kind == crate::models::tags::NodeKind::Enum {
             let qualified = format!("{}.{}", type_node.qualname, member);
             if let Some(target) = semantic_context
                 .nodes_in_path(&qualified, &type_node.path)
-                .find(|node| node.kind == "constant")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Constant)
             {
                 return emit_rust_const_match(
                     graph,
@@ -583,7 +581,7 @@ pub(super) fn resolve_rust_constant<'a>(
         let q = format!("{cur_scope}.{expr}");
         if let Some(target) = semantic_context
             .nodes_in_path(&q, path)
-            .find(|node| node.kind == "constant")
+            .find(|node| node.kind == crate::models::tags::NodeKind::Constant)
         {
             return emit_rust_const_match(
                 graph,
@@ -601,7 +599,7 @@ pub(super) fn resolve_rust_constant<'a>(
                 semantic_context.imported_alias(mod_node, expr)
             {
                 if *pos <= reference.position() {
-                    if let Some(target) = targets.iter().copied().find(|n| n.kind == "constant") {
+                    if let Some(target) = targets.iter().copied().find(|n| n.kind == crate::models::tags::NodeKind::Constant) {
                         return emit_rust_const_match(
                             graph,
                             path,
@@ -628,14 +626,14 @@ fn find_macro_in_module<'a>(
     let direct = format!("{mod_qualname}.{tail}");
     if let Some(m) = semantic_context
         .nodes_in_path(&direct, path)
-        .find(|n| n.kind == "macro")
+        .find(|n| n.kind == crate::models::tags::NodeKind::Macro)
     {
         return Some(m);
     }
     let re_imp = semantic_context.imported_alias(mod_node, tail)?;
     match re_imp {
         super::super::semantic_context::Imported::Nodes(re_nodes, _, _) => {
-            re_nodes.iter().copied().find(|n| n.kind == "macro")
+            re_nodes.iter().copied().find(|n| n.kind == crate::models::tags::NodeKind::Macro)
         }
         super::super::semantic_context::Imported::External(target_path, _, _, _) => {
             let re_clean = target_path
@@ -645,7 +643,7 @@ fn find_macro_in_module<'a>(
             let full_re = format!("{mod_qualname}.{re_clean}");
             semantic_context
                 .nodes_in_path(&full_re, path)
-                .find(|n| n.kind == "macro")
+                .find(|n| n.kind == crate::models::tags::NodeKind::Macro)
         }
         _ => None,
     }
@@ -684,7 +682,7 @@ fn find_direct_macro_in_scopes<'a>(
         };
         if let Some(node) = semantic_context
             .nodes_in_path(&full_name, path)
-            .find(|n| n.kind == "macro")
+            .find(|n| n.kind == crate::models::tags::NodeKind::Macro)
         {
             return Some(node);
         }
@@ -738,7 +736,7 @@ fn find_macro_in_imported_nodes<'a>(
     semantic_context: &super::super::semantic_context::Context<'a>,
 ) -> Option<&'a Node> {
     if tail.is_empty() {
-        return nodes.iter().copied().find(|n| n.kind == "macro");
+        return nodes.iter().copied().find(|n| n.kind == crate::models::tags::NodeKind::Macro);
     }
     nodes
         .iter()
@@ -769,7 +767,7 @@ fn find_macro_in_external_target<'a>(
         if tail.is_empty() {
             if let Some(m) = semantic_context
                 .nodes_in_path(&full_target, path)
-                .find(|n| n.kind == "macro")
+                .find(|n| n.kind == crate::models::tags::NodeKind::Macro)
             {
                 return Some(m);
             }
@@ -778,7 +776,7 @@ fn find_macro_in_external_target<'a>(
         let mod_tail = format!("{full_target}.{tail}");
         if let Some(m) = semantic_context
             .nodes_in_path(&mod_tail, path)
-            .find(|n| n.kind == "macro")
+            .find(|n| n.kind == crate::models::tags::NodeKind::Macro)
         {
             return Some(m);
         }
@@ -837,7 +835,7 @@ fn resolve_local_macro_call<'a>(
         .or_else(|| find_imported_macro(&scopes, owner, head, tail, path, semantic_context));
 
     if let Some(target) = local_macro {
-        graph.reference_edge(path, reference, target.id.clone(), "calls", "exact");
+        graph.reference_edge(path, reference, target.id.clone(), crate::models::tags::EdgeKind::Calls, crate::models::tags::EdgeConfidence::Exact);
         graph.reference_coverage(
             path,
             reference,
@@ -865,7 +863,7 @@ fn extract_flow_trait_object<'a>(
     target: &crate::linker::value_flow::TypeTarget<'a>,
 ) -> Option<&'a Node> {
     match target {
-        crate::linker::value_flow::TypeTarget::Local(node) if node.kind == "trait" => Some(*node),
+        crate::linker::value_flow::TypeTarget::Local(node) if node.kind == crate::models::tags::NodeKind::Trait => Some(*node),
         crate::linker::value_flow::TypeTarget::RustReference { target, .. }
         | crate::linker::value_flow::TypeTarget::RustDeref { target, .. } => {
             extract_flow_trait_object(target)
@@ -933,7 +931,7 @@ pub(in crate::linker) fn trait_object_call<'a>(
         ) {
             crate::linker::value_flow::Symbol::Type(
                 crate::linker::value_flow::TypeTarget::Local(node),
-            ) if node.kind == "trait" => Some(node),
+            ) if node.kind == crate::models::tags::NodeKind::Trait => Some(node),
             _ => None,
         }
     });
@@ -958,14 +956,14 @@ pub(in crate::linker) fn trait_object_call<'a>(
         ),
     );
     if let Some((declaration, implementors)) = dispatched {
-        graph.reference_edge(path, reference, declaration.id.clone(), "calls", "inferred");
+        graph.reference_edge(path, reference, declaration.id.clone(), crate::models::tags::EdgeKind::Calls, crate::models::tags::EdgeConfidence::Inferred);
         for target in implementors {
             graph.reference_edge(
                 path,
                 reference,
                 target.id.clone(),
-                "possible_calls",
-                "possible",
+                crate::models::tags::EdgeKind::PossibleCalls,
+                crate::models::tags::EdgeConfidence::Possible,
             );
         }
     }
@@ -1042,10 +1040,10 @@ pub(in crate::linker) fn macro_analysis_gap(
 ) {
     if reference.kind != "calls"
         || !profile.is_some_and(|profile| profile.id() == "rust")
-        || !candidates.iter().any(|candidate| candidate.kind == "macro")
+        || !candidates.iter().any(|candidate| candidate.kind == crate::models::tags::NodeKind::Macro)
         || candidates
             .iter()
-            .any(|candidate| candidate.kind == "macro" && candidate.details["rust_macro_projected"] == true)
+            .any(|candidate| candidate.kind == crate::models::tags::NodeKind::Macro && candidate.detail_entry(crate::models::details::NodeDetailKey::RUST_MACRO_PROJECTED) == true)
     {
         return;
     }
@@ -1059,16 +1057,6 @@ pub(in crate::linker) fn macro_analysis_gap(
             reference.expression
         ),
     );
-}
-
-pub(in crate::linker) fn macro_reference_candidate(
-    profile: Option<&dyn LanguageProfile>,
-    owner: Option<&Node>,
-    candidate: &Node,
-) -> bool {
-    profile.is_some_and(|profile| profile.id() == "rust")
-        && owner.is_some_and(|owner| owner.kind == "macro")
-        && matches!(candidate.kind.as_str(), "function" | "method")
 }
 
 pub(in crate::linker) fn impl_source<'a>(

@@ -1,3 +1,4 @@
+use crate::languages::profile::ProfileLinker;
 use crate::interner::{LinkerInterner, SymbolId};
 use crate::models::{tags::NodeKind, Facts, Node};
 use crate::{
@@ -27,7 +28,7 @@ impl<'a> NamespaceIndexes<'a> {
         let mut modules_by_namespace: ModulesByNamespace<'a> = HashMap::new();
         for node in nodes
             .iter()
-            .filter(|node| node.kind == NodeKind::Module.as_str())
+            .filter(|node| node.kind == NodeKind::Module)
         {
             let Some(profile) = profiles.get(node.path.as_str()) else {
                 continue;
@@ -84,8 +85,8 @@ impl<'a> NamespaceIndexes<'a> {
                 facts
                     .nodes
                     .iter()
-                    .find(|node| node.kind == NodeKind::Module.as_str())
-                    .and_then(|node| languages::by_id(&node.language))
+                    .find(|node| node.kind == NodeKind::Module)
+                    .and_then(|node| languages::by_id(node.language.as_str()))
                     .map(|profile| (path, profile))
             })
             .collect();

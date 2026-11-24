@@ -226,7 +226,7 @@ fn add_field(
 ) -> String {
     let qualname = format!("{}.{name}", owner.qualname);
     if let Some(n) = facts.nodes.iter().find(|n| {
-        (n.kind == "field" || matches!(n.kind.as_str(), "method" | "function"))
+        (n.kind == crate::models::tags::NodeKind::Field || matches!(n.kind.as_str(), "method" | "function"))
             && n.qualname == qualname
     }) {
         return n.id.clone();
@@ -235,14 +235,14 @@ fn add_field(
     facts.nodes.push(Node {
         native_semantic: None,
         id: id.clone(),
-        kind: "field".into(),
+        kind: crate::models::tags::NodeKind::Field,
         name: name.into(),
         qualname,
         path: owner.path.into(),
         line,
         end_line,
         is_test: owner.is_test,
-        language: owner.language.into(),
+        language: crate::models::tags::LanguageId::parse(owner.language).expect("recognized language profile"),
         generated: false,
         details: serde_json::Value::Null,
     });
@@ -287,7 +287,7 @@ pub(crate) fn mutation(
                     p.qualname.clone(),
                     p.path.clone(),
                     p.is_test,
-                    p.language.clone(),
+                    p.language,
                 )
             };
             let meta = FieldOwner {
@@ -295,7 +295,7 @@ pub(crate) fn mutation(
                 qualname: &owner_meta.1,
                 path: &owner_meta.2,
                 is_test: owner_meta.3,
-                language: &owner_meta.4,
+                language: owner_meta.4.as_str(),
             };
             add_field(
                 facts,
@@ -327,7 +327,7 @@ pub(crate) fn mutation(
                     p.qualname.clone(),
                     p.path.clone(),
                     p.is_test,
-                    p.language.clone(),
+                    p.language,
                 ),
                 p.path.clone(),
                 p.id.clone(),
@@ -338,7 +338,7 @@ pub(crate) fn mutation(
             qualname: &owner_meta.1,
             path: &owner_meta.2,
             is_test: owner_meta.3,
-            language: &owner_meta.4,
+            language: owner_meta.4.as_str(),
         };
         let id = add_field(
             facts,
@@ -484,7 +484,7 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
                 class.qualname.clone(),
                 class.path.clone(),
                 class.is_test,
-                class.language.clone(),
+                class.language,
             )
         };
         let owner_meta = FieldOwner {
@@ -492,7 +492,7 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
             qualname: &qualname,
             path: &path,
             is_test,
-            language: &language,
+            language: language.as_str(),
         };
         add_field(facts, &owner_meta, &name, line, line);
     }

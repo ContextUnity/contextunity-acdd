@@ -692,7 +692,7 @@ pub(crate) fn execute_call_rules<'source>(
     let Some(module_owner) = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
         .map(|node| node.id.clone())
     else {
         return;
@@ -775,15 +775,15 @@ pub(crate) fn execute_call_rules<'source>(
 
 /// Project effective rules onto actual module identities, including empty files.
 pub(crate) fn file_providers(facts: &mut Facts, context: &LanguageContext) {
-    let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
+    let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
         return;
     };
     let (id, path, language) = (
         module.id.clone(),
         module.path.clone(),
-        module.language.clone(),
+        module.language,
     );
-    let prepared = context.file_provider_rules_for_language(&language);
+    let prepared = context.file_provider_rules_for_language(language.as_str());
     let indices = prepared.into_iter().flatten().copied().chain(
         0..if prepared.is_none() {
             context.semantic_rules.len()
@@ -807,7 +807,7 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &LanguageContext) {
             | manifests::SemanticOperation::SymbolAttachment { .. }
             | manifests::SemanticOperation::EndpointProjection { .. } => continue,
         };
-        for literal in target.paths(&path, &language) {
+        for literal in target.paths(&path, language.as_str()) {
             semantic::push(
                 facts,
                 effective.fact(
@@ -835,7 +835,7 @@ pub(crate) fn publish_scope_projections(
         let Some(flow) = projections.remove(&node.id) else {
             continue;
         };
-        let output = &mut node.details["value_flow"];
+        let output = node.detail_entry_mut(crate::models::details::NodeDetailKey::VALUE_FLOW);
         if !output.is_object() {
             *output = serde_json::json!({});
         }

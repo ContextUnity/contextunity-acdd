@@ -708,7 +708,7 @@ impl SinglePassExtractor<'_> {
         facts.nodes.push(Node {
             native_semantic,
             id: id.clone(),
-            kind: kind.into(),
+            kind: crate::models::tags::NodeKind::parse(kind).expect("recognized declaration kind"),
             name: name.clone(),
             qualname,
             path: path.into(),
@@ -717,7 +717,7 @@ impl SinglePassExtractor<'_> {
             is_test: is_test(path)
                 || test_role.is_some()
                 || context.profile.test_attribute(node, source),
-            language: language.into(),
+            language: crate::models::tags::LanguageId::parse(language).expect("recognized language profile"),
             generated: false,
             details,
         });

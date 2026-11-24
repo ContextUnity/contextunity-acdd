@@ -1,6 +1,7 @@
+use super::super::value_flow::resolve_type;
 use super::super::value_flow::types::{
-    node_position, resolve_type, symbol_type, ConfiguredReceiverAuthority, ReadTrace,
-    SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowLookup,
+    node_position, symbol_type, ConfiguredReceiverAuthority, ReadTrace, SemanticLimits,
+    SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowLookup,
 };
 use crate::models::Node;
 use crate::semantic::{SourcePosition, TypeExpr};
@@ -9,7 +10,7 @@ pub(in crate::linker) fn literal_type<'a>(
     owner: &Node,
     expression: &str,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     match expression {
@@ -24,9 +25,9 @@ pub(in crate::linker) fn constructor_result<'a>(
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     if let Symbol::Type(target @ (TypeTarget::Local(_) | TypeTarget::Builtin(_))) =
@@ -41,9 +42,9 @@ pub(in crate::linker) fn constructor_symbol<'a>(
     owner: &'a Node,
     expression: &str,
     at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
 ) -> Option<Symbol<'a>> {
-    (owner.language == "python")
+    (owner.language == crate::models::tags::LanguageId::Python)
         .then(|| resolver.resolve_symbol(owner, expression, at, SymbolRole::Constructor))
 }
 
@@ -52,10 +53,10 @@ pub(in crate::linker) fn dotted_member_result<'a>(
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     let mut split = callee.rsplit_once('.');
@@ -81,7 +82,7 @@ pub(in crate::linker) fn dotted_member_result<'a>(
 pub(in crate::linker) fn collection_return_element<'a>(
     owner: &'a Node,
     expression: &TypeExpr,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
     limits: SemanticLimits,
 ) -> Option<TypeTarget<'a>> {
     let TypeExpr::Applied { base, args } = expression else {
@@ -108,14 +109,14 @@ pub(in crate::linker) fn callable_target_return<'s, 'a>(
     target: &'s TypeTarget<'a>,
     owner: &'a Node,
     at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<&'s TypeTarget<'a>> {
     match target {
         TypeTarget::Callable(callable) => index.return_type_tracked(callable, trace),
         TypeTarget::CallableReturn(ret) => Some(ret.as_ref()),
         TypeTarget::ClassType(inner) => Some(inner.as_ref()),
-        TypeTarget::Local(class) if owner.language == "python" && class.kind == "class" => {
+        TypeTarget::Local(class) if owner.language == crate::models::tags::LanguageId::Python && class.kind == crate::models::tags::NodeKind::Class => {
             match resolver.resolve_member(target, "__call__", owner, at) {
                 Symbol::Callable(call_fn) => index.return_type_tracked(call_fn, trace),
                 _ => None,
@@ -130,7 +131,7 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
     receiver: &TypeTarget<'a>,
     member: &str,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     if is_pathlib_target(receiver) && member == "parent" {
@@ -187,10 +188,10 @@ pub(in crate::linker) fn synthetic_member_result<'a>(
     receiver: &TypeTarget<'a>,
     callee: &str,
     at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
+    resolver: &dyn SemanticResolver<'a>,
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     if callee == "__truediv__" && is_pathlib_target(receiver) {

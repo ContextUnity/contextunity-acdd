@@ -1,9 +1,10 @@
+use crate::languages::profile::ProfileLinker;
+use super::lookup::{resolve_type, stored_type_expr};
 use super::types::{
-    duplicate_position, flow_dependent, merge, node_position, resolve_type, same_fields,
-    same_target, stored_type_expr, symbol_type, valid_scope_facts, valid_value, Binding,
-    BindingEvent, BindingList, Definitions, Epochs, InitializedScope, NamedNodes, ReadEpochs,
-    ReadTrace, Scope, ScopeFacts, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
-    ValueFlowIndex, EMPTY_SCOPE_FACTS,
+    duplicate_position, flow_dependent, merge, node_position, same_fields, same_target,
+    symbol_type, valid_scope_facts, valid_value, Binding, BindingEvent, BindingList, Definitions,
+    Epochs, InitializedScope, NamedNodes, ReadEpochs, ReadTrace, Scope, ScopeFacts, SemanticLimits,
+    SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex, EMPTY_SCOPE_FACTS,
 };
 use crate::interner::{LinkerInterner, SymbolId};
 use crate::models::{Facts, Node, ReceiverHint, Reference};
@@ -12,13 +13,28 @@ use hashbrown::HashMap;
 use rayon::prelude::*;
 use std::{borrow::Cow, collections::BTreeMap};
 
+fn project_fields<'a>(
+    fields: &mut HashMap<&'a str, HashMap<String, TypeTarget<'a>>>,
+    owners: &[&'a Node],
+    resolver: &impl SemanticResolver<'a>,
+) {
+    let mut seen = hashbrown::HashSet::new();
+    for owner in owners {
+        if seen.insert(owner.language) {
+            if let Some(profile) = crate::languages::by_id(owner.language.as_str()) {
+                profile.linker().project_fields(fields, owners, resolver);
+            }
+        }
+    }
+}
+
 fn initialize_scope<'a>(
     node: &'a Node,
     by_name: &NamedNodes<'a>,
     resolver: &impl SemanticResolver<'a>,
     limits: SemanticLimits,
 ) -> InitializedScope<'a> {
-    let encoded = &node.details["value_flow"];
+    let encoded = &node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW);
     let typed = resolver.value_flow(node);
     let oversized = typed
         .is_some_and(|facts| crate::typed_facts::scope_fact_count(facts) > limits.facts_per_scope)
@@ -32,9 +48,8 @@ fn initialize_scope<'a>(
     } else {
         ValueFlowFacts::deserialize_for_scope(
             encoded,
-            node.kind == "template_scope"
-                && node.language == "javascript"
-                && node.details["classic_global"] == true,
+            crate::languages::by_id(node.language.as_str())
+                .is_some_and(|profile| profile.linker().classic_global_scope(node)),
         )
         .map(|facts| ScopeFacts::Decoded(Box::new(facts)))
     };
@@ -54,10 +69,7 @@ fn initialize_scope<'a>(
             .get(&(node.path.as_str(), parent))
             .map(Vec::as_slice)
         {
-            if !(node.language == "python"
-                && matches!(node.kind.as_str(), "function" | "method")
-                && owner.kind == "class")
-            {
+            if crate::languages::by_id(node.language.as_str()).is_none_or(|profile| profile.linker().inherits_scope(node, owner)) {
                 parents.push(owner.id.as_str());
             }
         }
@@ -94,7 +106,7 @@ fn initialize_scope<'a>(
                 .map_or(TypeTarget::Unknown, |name| {
                     resolve_type(
                         node,
-                        &stored_type_expr(name, &node.language),
+                        &stored_type_expr(name, node.language.as_str()),
                         position,
                         resolver,
                         limits,
@@ -114,20 +126,20 @@ fn initialize_scope<'a>(
     }
     let returned = if invalid {
         TypeTarget::Unknown
-    } else if crate::languages::by_id(&node.language)
+    } else if crate::languages::by_id(node.language.as_str())
         .is_some_and(|profile| profile.linker().returns_parent_enum(node))
     {
         node.qualname
             .rsplit_once('.')
             .and_then(|(enum_qual, _)| by_name.get(&(node.path.as_str(), enum_qual)))
             .and_then(|nodes| {
-                let mut enums = nodes.iter().copied().filter(|cand| cand.kind == "enum");
+                let mut enums = nodes.iter().copied().filter(|cand| cand.kind == crate::models::tags::NodeKind::Enum);
                 let first = enums.next()?;
                 enums.next().is_none().then_some(TypeTarget::Local(first))
             })
             .unwrap_or(TypeTarget::Unknown)
     } else {
-        let ty = if node.kind == "constant" {
+        let ty = if node.kind == crate::models::tags::NodeKind::Constant {
             facts.alias_type.as_ref()
         } else {
             facts.return_type.as_ref()
@@ -143,7 +155,7 @@ fn initialize_scope<'a>(
             parents,
             bindings,
             invalid,
-            module: node.kind == "module",
+            module: node.kind == crate::models::tags::NodeKind::Module,
         },
         returned,
     )
@@ -157,7 +169,8 @@ fn field_owner<'a>(
     if matches!(owner.kind.as_str(), "class" | "struct" | "interface") {
         return Some(owner);
     }
-    if super::super::vue::value_flow::owns_module_fields(owner) {
+    if crate::languages::by_id(owner.language.as_str())
+        .is_some_and(|profile| crate::languages::profile::ProfileLinker::linker(profile).owns_module_fields(owner)) {
         return Some(owner);
     }
     let mut parent = owner
@@ -172,7 +185,7 @@ fn field_owner<'a>(
         }
         parent = parent.rsplit_once('.').map_or("", |(parent, _)| parent);
     }
-    owner.details["receiver_type"].as_str().and_then(|name| {
+    owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str().and_then(|name| {
         let clean = crate::linker::types::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
         match resolver.resolve_symbol(
             owner,
@@ -285,7 +298,7 @@ impl<'a> ValueFlowIndex<'a> {
         let ordered = index.evaluate_scope_bindings(&owners, &raw, resolver, &definitions);
         let mut field_events =
             index.evaluate_field_facts(&owners, &raw, &by_name, resolver, &definitions);
-        super::super::rust::value_flow::project_deref_fields(&mut index.fields, &owners, resolver);
+        project_fields(&mut index.fields, &owners, resolver);
         index.replay_initial_bindings(&owners, &ordered, resolver, &definitions);
         index.run_fixed_point_iteration(
             &owners,
@@ -329,13 +342,8 @@ impl<'a> ValueFlowIndex<'a> {
         if scope.invalid {
             return;
         }
-        let supports_async = match node.language.as_str() {
-            "typescript" | "javascript" | "vue" => {
-                matches!(node.kind.as_str(), "function" | "method" | "lambda")
-            }
-            "python" => matches!(node.kind.as_str(), "function" | "method"),
-            _ => false,
-        };
+        let supports_async = crate::languages::by_id(node.language.as_str())
+            .is_some_and(|profile| profile.linker().supports_async_return(node));
         if supports_async {
             if let Some(async_type) = facts.async_return_type.as_ref() {
                 let returned =
@@ -343,19 +351,18 @@ impl<'a> ValueFlowIndex<'a> {
                 if !matches!(returned, TypeTarget::Unknown | TypeTarget::Ambiguous) {
                     self.async_returns.insert(node.id.as_str(), returned);
                 }
-                if node.language == "python" {
-                    if let Some(element) =
-                        super::super::python::value_flow::collection_return_element(
-                            node, async_type, resolver, limits,
-                        )
-                    {
-                        self.async_return_collection_elements
-                            .insert(node.id.as_str(), element);
-                    }
+                if let Some(element) =
+                    crate::languages::by_id(node.language.as_str()).and_then(|profile| {
+                        profile.linker().collection_return_element(node, async_type, resolver, limits)
+                    })
+                {
+                    self.async_return_collection_elements
+                        .insert(node.id.as_str(), element);
                 }
             }
         }
-        if node.language != "python" {
+        if !crate::languages::by_id(node.language.as_str())
+            .is_some_and(|profile| profile.linker().supports_collection_facts()) {
             return;
         }
         for fact in facts.collection_elements() {
@@ -372,12 +379,9 @@ impl<'a> ValueFlowIndex<'a> {
         }
         if matches!(node.kind.as_str(), "function" | "method") {
             if let Some(return_type) = facts.return_type.as_ref() {
-                if let Some(element) = super::super::python::value_flow::collection_return_element(
-                    node,
-                    return_type,
-                    resolver,
-                    limits,
-                ) {
+                if let Some(element) = crate::languages::by_id(node.language.as_str()).and_then(|profile| {
+                    profile.linker().collection_return_element(node, return_type, resolver, limits)
+                }) {
                     self.return_collection_elements
                         .insert(node.id.as_str(), element);
                 }
@@ -395,7 +399,7 @@ impl<'a> ValueFlowIndex<'a> {
         use hashbrown::hash_map::Entry;
         for owner in owners {
             let facts = &raw[owner.id.as_str()];
-            if owner.kind != "module"
+            if owner.kind != crate::models::tags::NodeKind::Module
                 || !facts
                     .component_macros()
                     .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots)
@@ -461,7 +465,7 @@ impl<'a> ValueFlowIndex<'a> {
                     continue;
                 }
                 let target = self.evaluate_single_binding(owner, binding, resolver, definitions);
-                self.record_python_collection_return(owner, binding, &target, resolver);
+                self.record_collection_return(owner, binding, &target, resolver);
                 let write = Binding {
                     position: binding.position,
                     target,
@@ -470,7 +474,7 @@ impl<'a> ValueFlowIndex<'a> {
                         | ValueExpr::Scoped { body_end, .. } => Some(*body_end),
                         _ => None,
                     },
-                    restores_previous: owner.language != "python"
+                    restores_previous: crate::languages::by_id(owner.language.as_str()).is_none_or(|profile| profile.linker().scoped_binding_restores())
                         && matches!(binding.value, ValueExpr::Scoped { .. }),
                     immutable_initializer: binding.immutable_initializer,
                 };
@@ -545,23 +549,17 @@ impl<'a> ValueFlowIndex<'a> {
             resolver,
             Some(definitions),
         );
-        finalize_binding_target(prev_target, evaluated)
+        finalize_binding_target(owner, prev_target, evaluated)
     }
 
-    fn record_python_collection_return(
+    fn record_collection_return(
         &mut self,
         owner: &'a Node,
         binding: BindingEvent<'_, 'a>,
         target: &TypeTarget<'a>,
         resolver: &impl SemanticResolver<'a>,
     ) {
-        if owner.language != "python"
-            || !matches!(
-                target,
-                TypeTarget::Builtin(name)
-                    if matches!(name.as_str(), "list" | "List" | "Sequence" | "Iterable")
-            )
-        {
+        if !crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().collection_return(target)) {
             return;
         }
         let call = match binding.value {
@@ -677,7 +675,7 @@ impl<'a> ValueFlowIndex<'a> {
                         resolver,
                         Some(definitions),
                     );
-                    finalize_binding_target(prev_target, evaluated)
+                    finalize_binding_target(owner, prev_target, evaluated)
                 } else {
                     continue;
                 };
@@ -821,7 +819,7 @@ impl<'a> ValueFlowIndex<'a> {
                         Some(definitions),
                         Some(&trace),
                     );
-                    finalize_binding_target(prev_target, evaluated)
+                    finalize_binding_target(owner, prev_target, evaluated)
                 }
             };
             *reads = Some(trace.reads.into_inner());
@@ -889,7 +887,7 @@ impl<'a> ValueFlowIndex<'a> {
                 .or_insert_with(|| target.clone());
             *entry = merge(entry, target);
         }
-        super::super::rust::value_flow::project_deref_fields(&mut fields, owners, resolver);
+        project_fields(&mut fields, owners, resolver);
         if !same_fields(&self.fields, &fields) {
             epochs.fields += 1;
         }
@@ -989,19 +987,13 @@ impl<'a> ValueFlowIndex<'a> {
         if callee.len() > limits.name_bytes || callee.matches('.').count() > limits.alias_depth {
             return TypeTarget::Unknown;
         }
-        if let Some(inner) = callee
-            .strip_suffix("()")
-            .filter(|_| owner.language == "python")
+        let eval = crate::languages::profile::CallEvalContext {
+            index: self, owner, at, resolver, trace: None,
+        };
+        if let Some(result) = crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().indirect_call_result(&eval, callee))
         {
-            return self
-                .type_of_expression(owner, inner, at, resolver)
-                .and_then(|target| {
-                    super::super::python::value_flow::callable_target_return(
-                        self, target, owner, at, resolver, None,
-                    )
-                })
-                .cloned()
-                .unwrap_or(TypeTarget::Unknown);
+            return result;
         }
         let (callee_name, is_try) = match callee.strip_suffix('?') {
             Some(base) => (base, true),
@@ -1069,7 +1061,7 @@ fn collect_binding_events<'a, 'raw>(
         .map(|(event_index, binding)| BindingEvent {
             name: typed.map_or_else(
                 || {
-                    owner.details["value_flow"]["bindings"][event_index]["name"]
+                    owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["bindings"][event_index]["name"]
                         .as_str()
                         .expect("decoded binding name remains in arena")
                 },
@@ -1091,7 +1083,7 @@ fn collect_binding_events<'a, 'raw>(
                 .map(|(event_index, join)| BindingEvent {
                     name: typed.map_or_else(
                         || {
-                            owner.details["value_flow"]["branch_joins"][event_index]["name"]
+                            owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["branch_joins"][event_index]["name"]
                                 .as_str()
                                 .expect("decoded branch-join name remains in arena")
                         },
@@ -1155,21 +1147,30 @@ fn collect_replay_events<'a, 'raw>(
         .collect()
 }
 
-fn unwrap_rust_ref<'a>(mut target: &'a TypeTarget<'a>) -> &'a TypeTarget<'a> {
-    while let TypeTarget::RustReference { target: inner, .. } = target {
-        target = inner;
+fn normalize_binding_target<'t, 'a>(
+    mut target: &'t TypeTarget<'a>,
+    linker: Option<&dyn crate::languages::profile::LanguageLinker>,
+) -> &'t TypeTarget<'a> {
+    if let Some(linker) = linker {
+        loop {
+            let next = linker.unwrap_reference(target);
+            if std::ptr::eq(target, next) { break; }
+            target = next;
+        }
     }
     target
 }
 
 fn finalize_binding_target<'a>(
+    owner: &Node,
     prev_target: Option<TypeTarget<'a>>,
     evaluated: TypeTarget<'a>,
 ) -> TypeTarget<'a> {
+    let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
     match prev_target {
         Some(prev)
             if matches!(evaluated, TypeTarget::Unknown)
-                || same_target(unwrap_rust_ref(&prev), unwrap_rust_ref(&evaluated)) =>
+                || same_target(normalize_binding_target(&prev, linker), normalize_binding_target(&evaluated, linker)) =>
         {
             prev
         }

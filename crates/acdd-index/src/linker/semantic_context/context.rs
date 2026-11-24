@@ -4,6 +4,7 @@
 //! workspace namespaces as ordinary graph linking. No disk or SQL is consulted
 //! while reducing values or resolving calls.
 
+use crate::languages::profile::ProfileLinker;
 pub(super) use crate::interner::{PathId, SymbolId};
 pub(super) use crate::linker::types::{
     import_provider_modules, ModulesByNamespace, PackageExports,
@@ -95,7 +96,7 @@ pub(in crate::linker) enum Imported<'a> {
     Unknown,
 }
 
-pub(in crate::linker) enum Member<'a> {
+pub(crate) enum Member<'a> {
     Local(&'a Node),
     External(&'a str, usize, Option<&'a str>),
     ConfiguredExternal {
@@ -131,10 +132,10 @@ pub(super) enum FactoryDeclarations<'a> {
 
 pub(crate) struct Context<'a> {
     pub(super) interner: &'a crate::interner::LinkerInterner<'a>,
-    pub(super) dependencies: &'a DependencyRegistry,
+    pub(in crate::linker) dependencies: &'a DependencyRegistry,
     pub(super) named: crate::linker::named_bindings::NamedBindings<'a>,
     pub(super) flows: Option<&'a HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,
-    pub(super) by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
+    pub(in crate::linker) by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
     pub(super) by_id: &'a HashMap<SymbolId, &'a Node>,
     pub(super) node_bindings: &'a crate::linker::types::NodeBindingIndex,
     pub(super) node_rebindings: &'a crate::linker::types::NodeBindingIndex,
@@ -165,7 +166,7 @@ pub(crate) struct Context<'a> {
     pub(super) import_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
 }
 
-pub(in crate::linker) struct LanguageMemberLookup<'ctx, 'a> {
+pub(crate) struct LanguageMemberLookup<'ctx, 'a> {
     context: &'ctx Context<'a>,
 }
 
@@ -218,7 +219,7 @@ impl<'a> Context<'a> {
         self.member_states.get(language_id).copied()
     }
 
-    pub(super) fn lookup_language_member(
+    pub(in crate::linker) fn lookup_language_member(
         &self,
         language_id: &str,
         receiver: &Node,
@@ -241,7 +242,7 @@ impl<'a> Context<'a> {
             .map_or(languages::profile::LanguageMemberResult::Unknown, |state| state.lookup_property(receiver, member))
     }
 
-    pub(super) fn lookup_language_builtin(
+    pub(in crate::linker) fn lookup_language_builtin(
         &self,
         language_id: &str,
         receiver: &str,
@@ -256,77 +257,6 @@ impl<'a> Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    #[cfg(feature = "lang-rust")]
-    pub(super) fn rayon_extension_base(
-        &self,
-        receiver: &TypeTarget<'_>,
-        member: &str,
-        caller: &Node,
-    ) -> Option<&'static str> {
-        let receiver =
-            crate::linker::rust::value_flow::reference_target(receiver).unwrap_or(receiver);
-        let rayon_container_base = |name: &str| -> Option<&'static str> {
-            match name {
-                "HashMap" => Some("HashMap"),
-                "BTreeMap" => Some("BTreeMap"),
-                "HashSet" => Some("HashSet"),
-                "BTreeSet" => Some("BTreeSet"),
-                _ => None,
-            }
-        };
-        let base = match receiver {
-            TypeTarget::RustCollection { .. } => "Vec",
-            TypeTarget::RustSlice { .. } => "Slice",
-            TypeTarget::RustTypedContainer { base, .. } => rayon_container_base(base)?,
-            TypeTarget::RustDeref { wrapper, .. } => rayon_container_base(wrapper)?,
-            TypeTarget::Builtin(name) if name == "Vec" => "Vec",
-            TypeTarget::Builtin(name) => rayon_container_base(name.as_str())?,
-            _ => return None,
-        };
-        if !self.dependencies.declares_for_path(
-            languages::LanguageFamily("rust"),
-            &caller.path,
-            "rayon",
-        ) {
-            return None;
-        }
-        let mut scope = caller.qualname.as_str();
-        let mut imported = false;
-        loop {
-            let module_boundary = self
-                .nodes_in_path(scope, &caller.path)
-                .any(|owner| matches!(owner.kind.as_str(), "module" | "module_declaration"));
-            imported |= self.nodes_in_path(scope, &caller.path).any(|owner| {
-                self.symbol_id(&owner.id).and_then(|id| self.imports.get(&id)).is_some_and(|aliases| {
-                    aliases.values().any(|import| matches!(import, Imported::External(origin, _, reference, _)
-                        if reference.alias.as_deref() == Some("*") && origin.trim_end_matches("::*") == "rayon::prelude"))
-                })
-            });
-            if imported || module_boundary {
-                break;
-            }
-            let Some((parent, _)) = scope.rsplit_once('.') else {
-                break;
-            };
-            scope = parent;
-        }
-        if !imported {
-            return None;
-        }
-        let lookup_base = if matches!(base, "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") {
-            "Vec"
-        } else {
-            base
-        };
-        let (_, rule) = self.dependencies.class_hierarchy_authority_for_path(
-            &caller.path,
-            lookup_base,
-            Some("rust-cargo"),
-        )?;
-        (rule.provider == "rayon" && rule.members.iter().any(|allowed| allowed == member))
-            .then_some(base)
-    }
-
     pub(in crate::linker) fn symbol_name(&self, symbol: SymbolId) -> &str {
         self.interner.resolve_symbol(symbol)
     }
@@ -464,20 +394,16 @@ impl<'a> Context<'a> {
         receiver: &str,
         member: &str,
     ) -> Option<String> {
-        #[cfg(feature = "lang-typescript")]
-        let lookup_name =
-            crate::languages::typescript::typed_dom_receiver(receiver).unwrap_or(receiver);
-        #[cfg(not(feature = "lang-typescript"))]
-        let lookup_name = receiver;
+        let profile = languages::for_path(std::path::Path::new(path));
+        let lookup_name = profile.map_or(receiver, |profile| {
+            profile.linker().normalize_dom_receiver(receiver)
+        });
         if let Some(receiver) = self.receiver_type(path, lookup_name) {
             return receiver.properties.get(member).cloned();
         }
-        #[cfg(feature = "lang-typescript")]
-        {
-            crate::languages::typescript::typed_dom_property(receiver, member).map(str::to_owned)
-        }
-        #[cfg(not(feature = "lang-typescript"))]
-        None
+        profile
+            .and_then(|profile| profile.linker().dom_property_type(receiver, member))
+            .map(str::to_owned)
     }
 }
 
@@ -587,41 +513,6 @@ impl<'a> Context<'a> {
     }
     pub(in crate::linker) fn dependencies_digest(&self) -> String {
         self.dependencies.digest().to_string()
-    }
-    pub(super) fn python_super_member(&self, owner: &Node, member: &str) -> Symbol<'a> {
-        if owner.language != "python"
-            || !owner
-                .details
-                .get("receiver_name")
-                .and_then(|value| value.as_str())
-                .is_some_and(|name| matches!(name, "self" | "cls"))
-        {
-            return Symbol::Unknown;
-        }
-        let Some((class_qual, _)) = owner.qualname.rsplit_once('.') else {
-            return Symbol::Unknown;
-        };
-        let Some(class) = self
-            .nodes_in_path(class_qual, &owner.path)
-            .find(|node| node.kind == "class")
-        else {
-            return Symbol::Unknown;
-        };
-        let mut scope = owner.qualname.as_str();
-        while !scope.is_empty() {
-            if self.nodes_in_path(scope, &owner.path).any(|node| {
-                node.binding_names().any(|name| name == "super")
-                    || self.node_has_rebinding(node, "super")
-                    || self.imported_alias(node, "super").is_some()
-            }) {
-                return Symbol::Unknown;
-            }
-            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
-        }
-        match self.lookup_language_member("python", class, member, true, owner) {
-            languages::profile::LanguageMemberResult::Local(node) => Symbol::Callable(node),
-            _ => Symbol::Unknown,
-        }
     }
     pub(super) fn receiver_type(
         &self,
@@ -875,7 +766,7 @@ impl<'a> Context<'a> {
     }
 
     pub(in crate::linker) fn tracks_commonjs_binding(&self, scope: &Node, alias: &str) -> bool {
-        self.import_state("javascript")
+        self.import_state(scope.language.as_str())
             .is_some_and(|state| state.tracks_binding(scope, alias))
     }
 
@@ -896,12 +787,22 @@ impl<'a> Context<'a> {
         owner: &Node,
         at: SourcePosition,
     ) -> bool {
-        self.import_state("javascript")
-            .is_some_and(|state| state.admits_binding(scope, alias, owner, at))
+        self.import_state(scope.language.as_str()).is_some_and(|state| {
+            state.tracks_binding(scope, alias) && state.admits_binding(scope, alias, owner, at)
+        })
     }
     pub(super) fn visible(owner: &Node, candidate: &Node, at: SourcePosition, role: SymbolRole) -> bool {
-        if let Some(visible) = crate::linker::rust::value_flow::visible(owner, candidate) {
+        if let Some(visible) = languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().symbol_visible(owner, candidate))
+        {
             return visible;
+        }
+        if candidate.language != owner.language {
+            if let Some(visible) = languages::by_id(candidate.language.as_str())
+                .and_then(|profile| profile.linker().symbol_visible(owner, candidate))
+            {
+                return visible;
+            }
         }
         if matches!(role, SymbolRole::Type) {
             return true;
@@ -913,12 +814,9 @@ impl<'a> Context<'a> {
         {
             return true;
         }
-        if crate::linker::typescript::semantic_context::visible(owner, candidate) {
-            return true;
-        }
         SourcePosition {
             line: candidate.line,
-            column: candidate.details["column"].as_u64().unwrap_or(0) as usize,
+            column: candidate.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
         } < at
     }
 
@@ -982,10 +880,10 @@ impl<'a> Context<'a> {
                     return Symbol::Unknown;
                 }
                 match target_kind {
-                    NamedTargetKind::Object if target.kind == "object" => {
+                    NamedTargetKind::Object if target.kind == crate::models::tags::NodeKind::Object => {
                         Symbol::Type(TypeTarget::Local(target))
                     }
-                    NamedTargetKind::ListenerScope if target.kind == "template_scope" => {
+                    NamedTargetKind::ListenerScope if target.kind == crate::models::tags::NodeKind::TemplateScope => {
                         Symbol::Type(TypeTarget::Local(target))
                     }
                     NamedTargetKind::Callable
@@ -1281,12 +1179,11 @@ impl<'a> Context<'a> {
         self
     }
 
-    pub(super) fn classify(&self, nodes: impl Iterator<Item = &'a Node>, role: SymbolRole) -> Symbol<'a> {
+    pub(in crate::linker) fn classify(&self, nodes: impl Iterator<Item = &'a Node>, role: SymbolRole) -> Symbol<'a> {
         let mut candidates: Vec<&'a Node> = nodes
             .filter(|node| {
-                node.language != "javascript"
-                    || node.details["prototype"] != true
-                    || node.details["prototype_valid"] == true
+                languages::by_id(node.language.as_str())
+                    .is_none_or(|profile| profile.linker().admits_classified_node(node))
             })
             .filter(|node| match role {
                 SymbolRole::Type => matches!(
@@ -1295,20 +1192,19 @@ impl<'a> Context<'a> {
                 ),
                 SymbolRole::Constructor => {
                     matches!(node.kind.as_str(), "class" | "struct" | "enum")
-                        || (node.language == "javascript"
-                            && node.kind == "function"
-                            && node.details["prototype_constructor"] == true)
+                        || languages::by_id(node.language.as_str())
+                            .is_some_and(|profile| profile.linker().is_constructor_symbol(node))
                 }
                 SymbolRole::Callable => {
                     matches!(
                         node.kind.as_str(),
                         "function" | "method" | "class" | "struct" | "enum"
-                    ) || languages::by_id(&node.language)
+                    ) || languages::by_id(node.language.as_str())
                         .is_some_and(|profile| profile.linker().callable_constant(node))
                 }
             })
             .collect();
-        crate::linker::types::filter_stubs_and_overloads(&mut candidates);
+        crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
         if candidates.is_empty() {
             return Symbol::Unknown;
         }
@@ -1317,7 +1213,7 @@ impl<'a> Context<'a> {
         }
         let node = candidates[0];
         if (matches!(node.kind.as_str(), "function" | "method")
-            || languages::by_id(&node.language)
+            || languages::by_id(node.language.as_str())
                 .is_some_and(|profile| profile.linker().callable_constant(node)))
             && !matches!(role, SymbolRole::Constructor)
         {
@@ -1350,20 +1246,18 @@ impl<'a> Context<'a> {
             .and_then(|aliases| self.symbol_id(alias).and_then(|alias| aliases.get(&alias)))
     }
 
-    pub(super) fn member(
+    pub(in crate::linker) fn member(
         &self,
         receiver: &Node,
         member: &str,
         associated: bool,
         caller: &Node,
     ) -> Symbol<'a> {
-        if receiver.language != "python" || receiver.kind == "class" {
-            if let Some(state) = self.member_state(receiver.language.as_str()) {
-                return match state.lookup_member(receiver, member, associated, caller) {
-                    languages::profile::LanguageMemberResult::Ambiguous => Symbol::Ambiguous,
-                    result => self.classify(result.into_nodes().into_iter(), SymbolRole::Callable),
-                };
-            }
+        if let Some(state) = self.member_state(receiver.language.as_str()).filter(|state| state.handles_receiver(receiver)) {
+            return match state.lookup_member(receiver, member, associated, caller) {
+                languages::profile::LanguageMemberResult::Ambiguous => Symbol::Ambiguous,
+                result => self.classify(result.into_nodes().into_iter(), SymbolRole::Callable),
+            };
         }
         let mut lookup_key = String::with_capacity(128);
         self.classify(
@@ -1390,7 +1284,6 @@ impl<'a> Context<'a> {
         self.lookup_member_mode(receiver, member, caller, false)
     }
 
-    #[cfg(feature = "lang-rust")]
     pub(in crate::linker) fn dynamic_dispatch<'s>(
         &'s self,
         receiver: &'s Node,
@@ -1400,7 +1293,6 @@ impl<'a> Context<'a> {
             .dynamic_dispatch(receiver, member)
     }
 
-    #[cfg(feature = "lang-typescript")]
     pub(in crate::linker) fn lookup_component_template_field<'s>(
         &'s self,
         receiver: &'s TypeTarget<'a>,
@@ -1409,10 +1301,8 @@ impl<'a> Context<'a> {
         let TypeTarget::Local(receiver) = receiver else {
             return Member::Unknown;
         };
-        if !matches!(
-            receiver.language.as_str(),
-            "typescript" | "javascript" | "vue"
-        ) || !matches!(receiver.kind.as_str(), "class" | "interface")
+        if !languages::by_id(receiver.language.as_str())
+            .is_some_and(|profile| profile.linker().admits_component_template_field(receiver))
         {
             return Member::Unknown;
         }
@@ -1421,14 +1311,5 @@ impl<'a> Context<'a> {
             languages::profile::LanguageMemberResult::Candidates(fields) if fields.len() > 1 => Member::Ambiguous,
             _ => Member::Unknown,
         }
-    }
-
-    #[cfg(not(feature = "lang-typescript"))]
-    pub(in crate::linker) fn lookup_component_template_field<'s>(
-        &'s self,
-        _receiver: &'s TypeTarget<'a>,
-        _member: &str,
-    ) -> Member<'s> {
-        Member::Unknown
     }
 }

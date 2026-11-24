@@ -12,8 +12,6 @@ const STARLETTE_OVERLAY_FILES: &[(&str, &str)] = &[
 
 struct Case {
     pack: &'static str,
-    package: &'static str,
-    family: LanguageFamily,
     manifest: &'static str,
     declaration: &'static str,
     empty: &'static str,
@@ -31,8 +29,6 @@ struct Case {
 const CASES: &[Case] = &[
     Case {
         pack: "django",
-        package: "django",
-        family: LanguageFamily("python"),
         manifest: "pyproject.toml",
         declaration: "[project]\nname='registration'\ndependencies=['django']\n",
         empty: "[project]\nname='plain'\ndependencies=[]\n",
@@ -42,8 +38,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "starlette",
-        package: "starlette",
-        family: LanguageFamily("python"),
         manifest: "requirements-dev.txt",
         declaration: "starlette>=0.1\n",
         empty: "# no packages\n",
@@ -53,8 +47,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "fastapi",
-        package: "fastapi",
-        family: LanguageFamily("python"),
         manifest: "setup.cfg",
         declaration: "[options]\ninstall_requires =\n    fastapi>=0.1\n",
         empty: "[options]\ninstall_requires =\n",
@@ -64,8 +56,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "gridviewspec",
-        package: "grid-view-spec",
-        family: LanguageFamily("python"),
         manifest: "Pipfile",
         declaration: "[packages]\ngrid-view-spec='*'\n",
         empty: "[packages]\n",
@@ -81,8 +71,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "nuxt",
-        package: "nuxt",
-        family: LanguageFamily("javascript"),
         manifest: "package.json",
         declaration: "{\"dependencies\":{\"nuxt\":\"*\"}}",
         empty: "{\"dependencies\":{}}",
@@ -105,8 +93,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "vue-runtime",
-        package: "vue",
-        family: LanguageFamily("javascript"),
         manifest: "package-lock.json",
         declaration: "{\"lockfileVersion\":3,\"packages\":{\"node_modules/vue\":{\"version\":\"3\"},\"node_modules/pinia\":{\"version\":\"3\"}}}",
         empty: "{\"lockfileVersion\":3,\"packages\":{}}",
@@ -125,8 +111,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "htmx",
-        package: "htmx.org",
-        family: LanguageFamily("javascript"),
         manifest: "pnpm-lock.yaml",
         declaration: "lockfileVersion: '9.0'\npackages:\n  'htmx.org@2.0.0':\n    resolution: {integrity: example}\n",
         empty: "lockfileVersion: '9.0'\npackages: {}\n",
@@ -151,8 +135,6 @@ const CASES: &[Case] = &[
     },
     Case {
         pack: "alpinejs",
-        package: "alpinejs",
-        family: LanguageFamily("javascript"),
         manifest: "yarn.lock",
         declaration: "alpinejs@^3.0.0:\n  version \"3.0.0\"\n",
         empty: "# no packages\n",
@@ -271,9 +253,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         );
         assert_eq!(coverage_status(conn, "ordinary.py", "provide"), "resolved");
     };
-    let inventory_registry = FrameworkHarness::from_manifests(&[("requirements.txt", "django\n")])
-        .unwrap()
-        .registry;
     let inventory_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("crates/acdd-index/src/languages/manifests");
     let inventory = std::fs::read_dir(inventory_directory)
@@ -295,33 +274,17 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
             identities.insert(id.to_owned()),
             "duplicate source inventory identity {id}"
         );
-        assert!(
-            inventory_registry
-                .framework_manifest_for_path(LanguageFamily("python"), "inventory.py", id, "django")
-                .is_some(),
-            "supported source file {} absent from production bundle inventory",
-            path.display()
-        );
     }
 
     for case in cases {
         let sources = sources_for(case, Some(case.declaration), None, true);
         let indexed = sources.index().unwrap();
-        assert!(
-            indexed
-                .registry
-                .framework_manifest_for_path(case.family, case.edge.0, case.pack, case.package)
-                .is_some(),
-            "{}: declaration admits the bundled pack",
-            case.pack
-        );
-        assert!(
-            indexed
-                .registry
-                .framework_manifest_for_path(case.family, "plain/probe.py", case.pack, case.package)
-                .is_none(),
-            "nearest empty package scope"
-        );
+        if case.pack == "django" {
+            let has_template_symbols = |path: &str| indexed.registry.language_context_for_path(path)
+                .syntax_rules.iter().any(|rule| rule.pack == "django" && rule.id == "template-symbols");
+            assert!(has_template_symbols(case.edge.0));
+            assert!(!has_template_symbols("plain/probe.py"));
+        }
         observe(&indexed.conn, case, true);
         if case.gated && case.pack != "nuxt" {
             edge(&indexed.conn, case, "plain/", false);
@@ -337,12 +300,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
 
         let unrelated_sources = sources_for(case, None, None, false);
         let cached_registry = FrameworkHarness::bundled_registry();
-        assert!(
-            cached_registry
-                .framework_manifest_for_path(case.family, case.edge.0, case.pack, case.package)
-                .is_none(),
-            "unrelated workspace declaration isolation"
-        );
         let unrelated_conn = unrelated_sources
             .index_with_registry(cached_registry)
             .unwrap();
@@ -372,13 +329,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
             .index()
             .unwrap();
             assert_ne!(disabled_index.registry.digest(), before);
-            assert!(
-                disabled_index
-                    .registry
-                    .framework_manifest_for_path(case.family, case.edge.0, case.pack, case.package)
-                    .is_none(),
-                "disabled local tombstone must not fall back to bundled pack"
-            );
             observe(&disabled_index.conn, case, false);
 
             pack["enabled"] = true.into();
@@ -434,22 +384,10 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
             }
             sources.index().unwrap()
         };
-        let check = |registry: &DependencyRegistry,
-                     conn: &Connection,
+        let check = |conn: &Connection,
                      enabled: bool,
                      bundled: bool,
                      overlay: bool| {
-            let loaded = registry.framework_manifest_for_path(
-                LanguageFamily("python"),
-                "app.py",
-                "starlette",
-                "starlette",
-            );
-            assert_eq!(
-                loaded.is_some(),
-                enabled,
-                "{extension} effective pack admission"
-            );
             commitments::verify(conn).unwrap();
             let mut expected = Vec::new();
             if enabled && bundled {
@@ -478,7 +416,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         let enabled_source = serialize(&value);
         let enabled = index_with(Some(&enabled_source));
         check(
-            &enabled.registry,
             &enabled.conn,
             true,
             mode != "replace",
@@ -488,7 +425,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         value["enabled"] = false.into();
         let disabled_source = serialize(&value);
         let disabled = index_with(Some(&disabled_source));
-        check(&disabled.registry, &disabled.conn, false, false, false);
+        check(&disabled.conn, false, false, false);
         assert!(
             !disabled
                 .registry
@@ -501,7 +438,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         let reenabled_source = serialize(&value);
         let reenabled = index_with(Some(&reenabled_source));
         check(
-            &reenabled.registry,
             &reenabled.conn,
             true,
             mode != "replace",
@@ -510,7 +446,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
 
         let restored_defaults = index_with(None);
         check(
-            &restored_defaults.registry,
             &restored_defaults.conn,
             true,
             true,
@@ -522,19 +457,6 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         let mut atelier_sources = VirtualWorkspace::from_files(STARLETTE_OVERLAY_FILES);
         atelier_sources.write(&atelier_manifest, &reenabled_source);
         let atelier = atelier_sources.index().unwrap();
-        assert_eq!(
-            atelier
-                .registry
-                .framework_manifest_for_path(
-                    LanguageFamily("python"),
-                    "app.py",
-                    "atelier",
-                    "not-installed"
-                )
-                .unwrap()
-                .name,
-            "atelier"
-        );
         assert_eq!(
             route_handle_labels(&atelier.conn),
             ["ANY /records/->records", "GET /local/->records"],

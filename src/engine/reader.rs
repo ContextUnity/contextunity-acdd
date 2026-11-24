@@ -475,14 +475,14 @@ fn read_outline_content(
     let content = facts
         .nodes
         .iter()
-        .filter(|n| n.kind != "module")
+        .filter(|n| n.kind != acdd_index::models::tags::NodeKind::Module)
         .map(|n| {
             format!(
                 "{}:{} {} {}",
                 n.line,
                 n.end_line,
                 n.kind,
-                n.details["signature"].as_str().unwrap_or(&n.qualname)
+                n.detail_str(acdd_index::models::NodeDetailKey::SIGNATURE).unwrap_or(&n.qualname)
             )
         })
         .collect::<Vec<_>>()

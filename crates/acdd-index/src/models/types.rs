@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// Current index semantics version combining the contract epoch and language profile digest.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
-    "15:specs-contract-v1:",
+    "16:specs-contract-v1:",
     env!("ACDD_LANGUAGE_PROFILE_DIGEST")
 );
 
@@ -20,7 +20,7 @@ pub struct Node {
     /// Stable symbol identifier used by graph edges and selectors.
     pub id: String,
     /// Semantic category such as `function`, `method`, or `class`.
-    pub kind: String,
+    pub kind: NodeKind,
     /// Unqualified declaration name.
     pub name: String,
     /// Fully qualified name within the language namespace.
@@ -34,7 +34,7 @@ pub struct Node {
     /// Whether the declaration belongs to test code.
     pub is_test: bool,
     /// Language profile identifier used for extraction.
-    pub language: String,
+    pub language: LanguageId,
     /// Whether the declaration came from generated source.
     pub generated: bool,
     /// Small JSON projection needed for navigation; full AST facts stay separate.
@@ -140,16 +140,14 @@ impl Serialize for Node {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         NodeDto {
             id: &self.id,
-            kind: self.kind_tag().map_or(&self.kind, |kind| kind.as_str()),
+            kind: self.kind.as_str(),
             name: &self.name,
             qualname: &self.qualname,
             path: &self.path,
             line: self.line,
             end_line: self.end_line,
             is_test: self.is_test,
-            language: self
-                .language_tag()
-                .map_or(&self.language, |language| language.as_str()),
+            language: self.language.as_str(),
             generated: self.generated,
             details: self,
         }
@@ -258,31 +256,31 @@ impl NodeSemanticEntry {
 }
 
 impl Node {
-    /// Returns the closed node kind when the persisted tag is recognized.
-    pub fn kind_tag(&self) -> Option<NodeKind> {
-        NodeKind::parse(&self.kind)
-    }
-
-    /// Sets the persisted node kind from its closed tag.
-    pub fn with_kind_tag(mut self, kind: NodeKind) -> Self {
-        self.kind = kind.as_str().to_owned();
-        self
-    }
-
-    /// Returns the closed language identifier when the persisted tag is recognized.
-    pub fn language_tag(&self) -> Option<LanguageId> {
-        LanguageId::parse(&self.language)
-    }
-
-    /// Sets the persisted language identifier from its closed tag.
-    pub fn with_language_tag(mut self, language: LanguageId) -> Self {
-        self.language = language.as_str().to_owned();
-        self
-    }
-
     /// Returns a persisted detail entry using its canonical key.
-    pub fn detail_entry(&self, key: &'static str) -> &Value {
+    pub fn detail_entry(&self, key: &str) -> &Value {
         self.details.get(key).unwrap_or(&JSON_NULL)
+    }
+
+    /// Returns a detail if present, preserving the distinction between missing and null.
+    pub fn detail_get(&self, key: &str) -> Option<&Value> {
+        self.details.get(key)
+    }
+
+    /// Returns a mutable detail only when it is already present.
+    pub fn detail_get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        self.details.get_mut(key)
+    }
+
+    /// Returns a mutable persisted detail entry using its canonical key.
+    pub fn detail_entry_mut(&mut self, key: &str) -> &mut Value {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        self.details
+            .as_object_mut()
+            .expect("node details must be a JSON object")
+            .entry(key.to_owned())
+            .or_insert(Value::Null)
     }
 
     /// Stores a detail entry using its canonical key.
@@ -963,8 +961,8 @@ mod tests {
             native_semantic: None,
             id: "func:foo".into(),
             path: "src/foo.go".into(),
-            language: "go".into(),
-            kind: "method".into(),
+            language: crate::models::tags::LanguageId::Go,
+            kind: crate::models::tags::NodeKind::Method,
             name: "foo".into(),
             qualname: "Service.foo".into(),
             line: 1,
@@ -989,7 +987,9 @@ mod tests {
             NodeDetailKey::RECEIVER_HINT,
             NodeDetailKey::PARAM_TYPES,
         ] {
-            assert!(node.details.get(key).is_none());
+            assert!(node.detail_get(key).is_none());
         }
+        node.set_detail(NodeDetailKey::VALUE_FLOW, Value::Null);
+        assert_eq!(node.detail_get(NodeDetailKey::VALUE_FLOW), Some(&Value::Null));
     }
 }

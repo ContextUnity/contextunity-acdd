@@ -54,7 +54,7 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     let source = "def run():\n    pass\n\nclass Thing:\n    pass\n";
     let mut function_facts = Facts::default();
     ast::parse::parse_file(
-        &Probe(&FUNCTION_SPEC, "function-probe"),
+        &Probe(&FUNCTION_SPEC, "python"),
         "probe.py",
         source,
         "probe",
@@ -64,11 +64,11 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     assert!(function_facts
         .nodes
         .iter()
-        .any(|node| node.name == "run" && node.kind == "function"));
+        .any(|node| node.name == "run" && node.kind == acdd_index::models::tags::NodeKind::Function));
 
     let mut class_facts = Facts::default();
     ast::parse::parse_file(
-        &Probe(&CLASS_SPEC, "class-probe"),
+        &Probe(&CLASS_SPEC, "python"),
         "probe.py",
         source,
         "probe",
@@ -78,14 +78,18 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     assert!(class_facts
         .nodes
         .iter()
-        .any(|node| node.name == "Thing" && node.kind == "class"));
+        .any(|node| node.name == "Thing" && node.kind == acdd_index::models::tags::NodeKind::Class));
 
     let wrong_grammar = ast::parse::parse_file(
-        &Probe(&FUNCTION_SPEC, "wrong-grammar-probe"),
+        &Probe(&FUNCTION_SPEC, "rust"),
         "probe.rs",
         "fn run() {}",
         "probe",
         &mut Facts::default(),
     );
     assert!(wrong_grammar.is_err());
+    assert!(ast::parse::parse_file(
+        &Probe(&FUNCTION_SPEC, "unknown-profile"),
+        "probe.py", source, "probe", &mut Facts::default(),
+    ).is_err());
 }

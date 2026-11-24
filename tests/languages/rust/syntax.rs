@@ -52,7 +52,7 @@ fn declaration<'a>(facts: &'a Facts, kind: &str, name: &str) -> &'a Node {
     facts
         .nodes
         .iter()
-        .find(|node| node.kind == kind && node.name == name)
+        .find(|node| node.kind.as_str() == kind && node.name == name)
         .unwrap()
 }
 
@@ -396,15 +396,15 @@ fn declarations_and_static_constructor_metadata_are_preserved() {
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "struct" && n.name == "Config"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Struct && n.name == "Config"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "enum" && n.name == "Status"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Enum && n.name == "Status"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "method" && n.name == "new"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.name == "new"));
     let constructor = facts
         .nodes
         .iter()

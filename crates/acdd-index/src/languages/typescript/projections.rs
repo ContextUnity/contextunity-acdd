@@ -537,7 +537,7 @@ pub(super) fn finalize_projections(
     if !typed {
         for node in &mut facts.nodes {
             if let Some(state) = store.state(node) {
-                node.details["value_flow"] = serde_json::json!(state.view());
+                node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, serde_json::json!(state.view()));
             }
         }
     }
@@ -1039,7 +1039,7 @@ pub(super) fn extract_configuration(
     rules: &LanguageContext,
     projections: &mut HashMap<String, ValueFlowFacts>,
 ) {
-    let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") else {
+    let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
         return;
     };
     for rule in &rules.syntax_rules {

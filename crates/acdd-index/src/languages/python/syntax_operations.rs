@@ -57,7 +57,7 @@ impl ModelIndex {
             ..Self::default()
         };
         for node in &facts.nodes {
-            if node.kind == "class" {
+            if node.kind == crate::models::tags::NodeKind::Class {
                 let class = ModelClass {
                     id: node.id.clone(),
                     name: node.name.clone(),
@@ -274,7 +274,7 @@ pub(super) fn extract_class_method_registrations(
     PREPARED_SYNTAX_CONTEXT.with(|context| {
         let context = context.borrow();
         let Some(context) = context.as_ref() else { return };
-        let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else { return };
+        let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else { return };
         let module_id = module.id.clone();
         let module_qualname = module.qualname.clone();
         let mut registrations = Vec::new();
@@ -282,7 +282,7 @@ pub(super) fn extract_class_method_registrations(
             let SyntaxOperation::ClassMethodRegistration { module: import_module, base, member, .. } = &rule.operation else { continue };
             if !context.class_registration_imports.iter().any(|(module, name, _)| module == import_module && name == base) { continue; }
             let mut proven_classes = HashSet::new();
-            for class in facts.nodes.iter().filter(|node| node.kind == "class" && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == module_id && edge.dst == node.id)) {
+            for class in facts.nodes.iter().filter(|node| node.kind == crate::models::tags::NodeKind::Class && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == module_id && edge.dst == node.id)) {
                 let proven = facts.references.iter().filter(|reference| reference.kind == "inherits" && reference.source == class.id).any(|parent| {
                     let (alias, suffix) = parent.expression.split_once('.').unwrap_or((&parent.expression, ""));
                     lexical.python_module_write_count(alias) == 1 && (suffix.is_empty() && proven_classes.contains(alias) || facts.references.iter().filter(|reference| {
@@ -293,7 +293,7 @@ pub(super) fn extract_class_method_registrations(
                 if !proven { continue; }
                 proven_classes.insert(class.name.as_str());
                 if lexical.python_class_write_count(class.line, member) != 1 { continue; }
-                for method in facts.nodes.iter().filter(|node| node.kind == "method" && node.name == *member && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == class.id && edge.dst == node.id)) {
+                for method in facts.nodes.iter().filter(|node| node.kind == crate::models::tags::NodeKind::Method && node.name == *member && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == class.id && edge.dst == node.id)) {
                     registrations.push((rule, class, method));
                 }
             }
@@ -302,9 +302,9 @@ pub(super) fn extract_class_method_registrations(
             let SyntaxOperation::ClassMethodRegistration { provider, .. } = &rule.operation else { unreachable!() };
             let id = format!("cli_command_registration:{}:{}:{}:{}:{}", method.path, class.line, class.name, rule.pack, rule.id);
             let node = crate::models::Node {
-                native_semantic: None, id: id.clone(), kind: "cli_command_registration".into(), name: class.name.clone(),
+                native_semantic: None, id: id.clone(), kind: crate::models::tags::NodeKind::CliCommandRegistration, name: class.name.clone(),
                 qualname: format!("{}.command.{}", module_qualname, class.name), path: method.path.clone(), line: class.line,
-                end_line: class.line, is_test: method.is_test, language: "python".into(), generated: false,
+                end_line: class.line, is_test: method.is_test, language: crate::models::tags::LanguageId::Python, generated: false,
                 details: serde_json::json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"handler":method.id,"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
             };
             let edge = |src: String, dst: String, kind: &str| crate::models::Edge { src, dst, kind: kind.into(), path: method.path.clone(), line: class.line, evidence: "configured class method registration".into(), confidence: "exact".into() };
@@ -637,7 +637,7 @@ fn prepared_receiver_handler_is_class(
             return (false, false);
         };
         for candidate in facts.nodes.iter().skip(prepared.receiver_fact_node_cursor) {
-            if candidate.kind == "class" {
+            if candidate.kind == crate::models::tags::NodeKind::Class {
                 prepared.receiver_class_ids.insert(candidate.id.clone());
             }
         }

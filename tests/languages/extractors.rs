@@ -101,11 +101,11 @@ func Run() {
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "method" && n.name == "Start"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.name == "Start"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "function" && n.name == "Run"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "Run"));
 }
 
 #[cfg(feature = "lang-python")]

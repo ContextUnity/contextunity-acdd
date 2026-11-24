@@ -12,7 +12,7 @@ fn javascript_routes_preserve_middleware_and_framework_decorators_with_finite_re
     let mut routes: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "route")
+        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Route)
         .map(|node| node.name.as_str())
         .collect();
     routes.sort_unstable();

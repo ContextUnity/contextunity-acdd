@@ -10,7 +10,7 @@ fn python_routes_preserve_http_decorators_and_django_patterns_as_mapping_calls_r
     let mut routes: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "route")
+        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Route)
         .map(|node| node.name.as_str())
         .collect();
     routes.sort_unstable();

@@ -16,7 +16,7 @@ fn vue_iteration_and_slot_scopes_keep_all_bindings_and_source_coordinates() {
         .nodes
         .iter()
         .find(|node| {
-            node.kind == "template_scope"
+            node.kind == acdd_index::models::tags::NodeKind::TemplateScope
                 && crate::common::assertions::projected_node_details(&facts, node)["bindings"]
                     .as_array()
                     .is_some_and(|names| names.iter().any(|name| name == "item"))
@@ -42,7 +42,7 @@ fn vue_iteration_and_slot_scopes_keep_all_bindings_and_source_coordinates() {
         .nodes
         .iter()
         .find(|node| {
-            node.kind == "template_scope"
+            node.kind == acdd_index::models::tags::NodeKind::TemplateScope
                 && crate::common::assertions::projected_node_details(&facts, node)["bindings"]
                     .as_array()
                     .is_some_and(|names| names.iter().any(|name| name == "entry"))
@@ -239,7 +239,7 @@ fn vue_v_for_destructured_aliases_scope_cleanly() {
             .nodes
             .iter()
             .find(|node| {
-                node.kind == "template_scope"
+                node.kind == acdd_index::models::tags::NodeKind::TemplateScope
                     && crate::common::assertions::projected_node_details(&facts, node)["bindings"]
                         .as_array()
                         .is_some_and(|names| {

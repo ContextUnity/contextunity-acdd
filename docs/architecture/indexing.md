@@ -143,9 +143,9 @@ When extending semantic resolution or coverage across existing and new language 
 
 Assignments take effect after their right-hand expression completes. Unknown writes and ambiguous declarations block stale proofs. Explicit return annotations take precedence over bounded summaries of complete straight-line returns. Inference records dependencies on return, binding, and field summaries and reevaluates expressions when those summaries change, preserving owner order and the bounded iteration count. Alias cycles, unsupported dynamic values, and exhausted inference limits retain uncertainty. Reference linking uses cached receivers; it does not parse JSON or consult disk or SQL for each method call.
 
-The internal graph uses static tags for known edge kinds, confidence values, and coverage statuses, with owned strings for arbitrary values. Public graph adapters retain the existing string fields. SQLite persistence uses bounded multi-value batches, shared key ownership, and reusable search buffers; serialization and graph ordering use the same string values across both representations.
+The internal graph stores node kinds, languages, edge kinds, and confidence values as closed enums. Public edge adapters retain string fields and reject unrecognized edge kinds or confidence values when converting to the internal graph. SQLite persistence uses bounded multi-value batches, shared key ownership, and reusable search buffers; serialization and graph ordering use the same string values across both representations.
 
-Canonical HTML classic scopes preserve their empty `bindings` and `fields` JSON slots as null and decode those slots as empty sections on both public and cached paths. Other scopes retain strict value-flow decoding. Coverage commitment leaves preload dictionaries and stream borrowed canonical rows; noncanonical SQLite storage retains the generic encoding path. Partial sealing loads dictionaries for the selected owners.
+HTML classic scopes decode legacy empty `bindings` and `fields` slots as empty sections and serialize the canonical typed flow projection. Other scopes retain strict value-flow decoding. Coverage commitment leaves preload dictionaries and stream borrowed canonical rows; noncanonical SQLite storage retains the generic encoding path. Partial sealing loads dictionaries for the selected owners.
 
 Incremental dependency keys include value-flow types, constructors, aliases, return expressions, computed-call hints, and export facts. A changed provider expands the consumer frontier before the language linker hydrates required facts. Full and incremental indexing share the same reducer and symbol admission rules.
 
@@ -211,7 +211,7 @@ Manifest `call_to_file` rules reuse the Python lexical import/literal owners and
   message: "Avoid shrink_to_fit reallocations on indexed fact buffers"
 
 - id: ARCH-L2-NO-RAW-NODE-DETAILS-INDEX
-  severity: warn
+  severity: error
   kind: ast_pattern
   from:
     zones: [index]

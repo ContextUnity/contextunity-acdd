@@ -17,14 +17,14 @@ pub(super) fn source_node(path: &str, language: &'static str, fields: NodeFields
     Node {
         native_semantic: None,
         id: fields.id,
-        kind: fields.kind,
+        kind: crate::models::tags::NodeKind::parse(&fields.kind).expect("recognized HTML declaration kind"),
         name: fields.name,
         qualname: fields.qualname,
         path: path.into(),
         line: fields.line,
         end_line: fields.end_line,
         is_test: crate::models::is_test(path),
-        language: language.into(),
+        language: crate::models::tags::LanguageId::parse(language).expect("recognized language profile"),
         generated: false,
         details: fields.details,
     }

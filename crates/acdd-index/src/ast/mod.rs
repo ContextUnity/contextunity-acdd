@@ -17,15 +17,6 @@ use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
 pub use search::{pattern_symbol_name, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON};
 
-fn with_language_str(mut node: Node, language: &str) -> Node {
-    if let Some(language_tag) = LanguageId::parse(language) {
-        node.with_language_tag(language_tag)
-    } else {
-        node.language = language.to_owned();
-        node
-    }
-}
-
 /// Extracts language facts for a source file and returns their public projection.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
     Ok(extract_typed(path, language, source)?.into_public())
@@ -107,13 +98,13 @@ fn manifest_entrypoint_candidates(
             let Some(module) = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == NodeKind::Module.as_str())
+                .find(|node| node.kind == NodeKind::Module)
             else {
                 return false;
             };
             let qualified = format!("{}.{}", module.qualname, callable);
             let mut targets = facts.nodes.iter().filter(|node| {
-                node.kind == NodeKind::Function.as_str() && node.qualname == qualified
+                node.kind == NodeKind::Function && node.qualname == qualified
             });
             let Some(target) = targets.next() else {
                 return false;
@@ -125,19 +116,17 @@ fn manifest_entrypoint_candidates(
         let registration = Node {
             native_semantic: None,
             id,
-            kind: String::new(),
+            kind: NodeKind::MainRegistration,
             name: entry.name.clone(),
             qualname: entry.target.clone(),
             path: path.to_owned(),
             line: 1,
             end_line: 1,
             is_test: is_test(path),
-            language: String::new(),
+            language: LanguageId::parse(language).expect("recognized language profile"),
             generated: false,
             details: serde_json::json!({"manifest_origin": entry.origin, "manifest_name": entry.name, "callable": callable, "direct_module": direct_module}),
-        }
-        .with_kind_tag(NodeKind::MainRegistration);
-        let registration = with_language_str(registration, language);
+        };
         facts.nodes.push(registration);
     }
     if language == LanguageId::Python.as_str() {
@@ -159,19 +148,17 @@ pub fn extract_typed_with_registry(
     let module_node = Node {
         native_semantic: None,
         id: format!("module:{path}"),
-        kind: String::new(),
+        kind: NodeKind::Module,
         name: path.rsplit('/').next().unwrap_or(path).into(),
         qualname: module.clone(),
         path: path.into(),
         line: 1,
         end_line: source.lines().count().max(1),
         is_test: is_test(path),
-        language: String::new(),
+        language: LanguageId::parse(language).expect("recognized language profile"),
         generated: false,
         details: serde_json::Value::Null,
-    }
-    .with_kind_tag(NodeKind::Module);
-    let module_node = with_language_str(module_node, language);
+    };
     facts.nodes.push(module_node);
 
     let bytes = source.len();
@@ -322,7 +309,7 @@ mod legacy_hook_tests {
     struct Legacy;
     impl LanguageProfile for Legacy {
         fn id(&self) -> &'static str {
-            "legacy-typed"
+            "python"
         }
         fn extensions(&self) -> &'static [&'static str] {
             &["py"]
@@ -395,7 +382,7 @@ mod legacy_hook_tests {
     struct Incremental(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
     impl LanguageProfile for Incremental {
         fn id(&self) -> &'static str {
-            "scope-order"
+            "python"
         }
         fn extensions(&self) -> &'static [&'static str] {
             &["py"]
@@ -562,7 +549,7 @@ mod legacy_hook_tests {
                 .facts
                 .nodes
                 .iter()
-                .find(|n| n.kind == "module")
+                .find(|n| n.kind == crate::models::tags::NodeKind::Module)
                 .unwrap();
             if module.binding_names().collect::<Vec<_>>() != ["prepared"]
                 || module.rebinding_names().collect::<Vec<_>>() != ["rebound"]

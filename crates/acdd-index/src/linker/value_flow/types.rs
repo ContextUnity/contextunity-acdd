@@ -6,7 +6,6 @@ use crate::{
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
 use hashbrown::HashMap;
-use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap, sync::Arc};
 
 pub(super) type Definitions<'a> = HashMap<(&'a str, SourcePosition), Vec<&'a Node>>;
@@ -99,6 +98,8 @@ impl hashbrown::Equivalent<(&str, SourcePosition, &str, &str)> for ComputedKey<'
 #[derive(Clone, Debug)]
 /// Resolved receiver, callable, or nominal type target tracked during value-flow analysis.
 pub enum TypeTarget<'a> {
+    /// A lexically proven Rust closure.
+    RustClosure,
     /// Finite rule result; missing members never acquire unrestricted external authority.
     ConfiguredReceiver {
         /// Effective row identity.
@@ -249,6 +250,8 @@ pub enum Symbol<'a> {
 
 /// Defines semantic resolver behavior.
 pub trait SemanticResolver<'a> {
+    /// Whether a language global remains unshadowed at this source position.
+    fn unshadowed_global(&self, _scope: &'a Node, _name: &str, _at: SourcePosition) -> bool { false }
     /// Returns the statically proven nominal target of a Rust dereference implementation.
     fn deref_target(&self, _receiver: &'a Node) -> Option<&'a Node> {
         None
@@ -288,17 +291,8 @@ pub trait SemanticResolver<'a> {
         false
     }
     /// Resolves a bounded property projection from effective receiver data or platform semantics.
-    fn property_type(&self, _scope: &'a Node, receiver: &str, member: &str) -> Option<String> {
-        #[cfg(feature = "lang-typescript")]
-        {
-            crate::languages::typescript::dom::typed_dom_property(receiver, member)
-                .map(str::to_owned)
-        }
-        #[cfg(not(feature = "lang-typescript"))]
-        {
-            let _ = (receiver, member);
-            None
-        }
+    fn property_type(&self, _scope: &'a Node, _receiver: &str, _member: &str) -> Option<String> {
+        None
     }
     fn value_flow(&self, _node: &'a Node) -> Option<&'a ValueFlowFacts> {
         None
@@ -363,7 +357,7 @@ pub trait SemanticResolver<'a> {
         None
     }
     /// Resolves a Python `super().member` lookup for `owner`'s enclosing class.
-    fn resolve_python_super_member(&self, _owner: &'a Node, _member: &str) -> Symbol<'a> {
+    fn resolve_super_member(&self, _owner: &'a Node, _member: &str) -> Symbol<'a> {
         Symbol::Unknown
     }
     /// Returns the typed callable signature for `node`, when extracted.
@@ -429,7 +423,7 @@ impl Default for SemanticLimits {
     }
 }
 
-pub(in crate::linker) struct Binding<'a> {
+pub(crate) struct Binding<'a> {
     pub(super) position: SourcePosition,
     pub(in crate::linker) target: TypeTarget<'a>,
     pub(super) valid_until: Option<SourcePosition>,
@@ -520,7 +514,7 @@ impl<'a> ValueFlowIndex<'a> {
     }
 
     pub(in crate::linker) fn constant_type(&self, node: &Node) -> Option<&TypeTarget<'a>> {
-        (node.kind == "constant")
+        (node.kind == crate::models::tags::NodeKind::Constant)
             .then(|| self.returns.get(node.id.as_str()))
             .flatten()
     }
@@ -592,7 +586,7 @@ impl<'a, 'b> ReadTrace<'a, 'b> {
         }
     }
 
-    pub(super) fn returned(&self, id: &'a str) {
+    pub(in crate::linker) fn returned(&self, id: &'a str) {
         let mut reads = self.reads.borrow_mut();
         if !reads.returns.iter().any(|(read, _)| *read == id) {
             reads
@@ -618,7 +612,7 @@ impl<'a, 'b> ReadTrace<'a, 'b> {
 pub(in crate::linker) fn node_position(node: &Node) -> SourcePosition {
     SourcePosition {
         line: node.line,
-        column: node.details["column"].as_u64().unwrap_or(0) as usize,
+        column: node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
     }
 }
 
@@ -658,267 +652,6 @@ pub(super) fn duplicate_position(writes: &[Binding<'_>], index: usize) -> bool {
         || writes
             .get(index + 1)
             .is_some_and(|next| next.position == position)
-}
-
-pub(in crate::linker) fn resolve_reference<'a>(
-    owner: &'a Node,
-    mutable: bool,
-    target: &TypeExpr,
-    at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
-    limits: SemanticLimits,
-) -> TypeTarget<'a> {
-    if owner.language != "rust" {
-        return TypeTarget::Unknown;
-    }
-    let inner = resolve_type(owner, target, at, resolver, limits);
-    if matches!(inner, TypeTarget::External { .. }) {
-        return inner;
-    }
-    TypeTarget::RustReference {
-        mutable,
-        target: Box::new(inner),
-    }
-}
-
-pub(in crate::linker) fn resolve_reference_expr<'a>(
-    owner: &'a Node,
-    base: &str,
-    args: &[TypeExpr],
-    at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
-    limits: SemanticLimits,
-) -> Option<TypeTarget<'a>> {
-    if owner.language != "rust" {
-        return None;
-    }
-    if base == "()" {
-        return Some(TypeTarget::RustTuple(
-            args.iter()
-                .map(|item| resolve_type(owner, item, at, resolver, limits))
-                .collect(),
-        ));
-    }
-    if !matches!(base, "&" | "&mut") {
-        return None;
-    }
-    Some(match args {
-        [target] => resolve_reference(owner, base == "&mut", target, at, resolver, limits),
-        _ => TypeTarget::Unknown,
-    })
-}
-
-pub(in crate::linker) fn typed_dict_class<'a>(
-    node: &'a Node,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
-) -> bool {
-    let Some(bases) = node.details["bases"]
-        .as_str()
-        .and_then(|bases| bases.strip_prefix('('))
-        .and_then(|bases| bases.strip_suffix(')'))
-    else {
-        return false;
-    };
-    let (base, options) = bases
-        .split_once(',')
-        .map_or((bases, ""), |(base, options)| (base, options));
-    if !options.is_empty()
-        && !options.split_once('=').is_some_and(|(key, value)| {
-            key.trim() == "total" && matches!(value.trim(), "False" | "True")
-        })
-    {
-        return false;
-    }
-    let base = base.trim();
-    if !matches!(
-        base,
-        "TypedDict" | "typing.TypedDict" | "typing_extensions.TypedDict"
-    ) {
-        return false;
-    }
-    matches!(
-        resolver.resolve_symbol(node, base, node_position(node), SymbolRole::Type),
-        Symbol::Type(TypeTarget::External { module, .. })
-            if matches!(module.as_str(), "typing" | "typing_extensions")
-    )
-}
-
-pub(in crate::linker) fn resolve_type<'a>(
-    scope: &'a Node,
-    expression: &TypeExpr,
-    at: SourcePosition,
-    resolver: &(impl SemanticResolver<'a> + ?Sized),
-    limits: SemanticLimits,
-) -> TypeTarget<'a> {
-    let mut scope = scope;
-    let mut expression = Cow::Borrowed(expression);
-    let mut at = at;
-    let mut visited = Vec::new();
-    for _ in 0..limits.alias_depth {
-        if let TypeExpr::Applied { base, args } = &*expression {
-            return if valid_type(&expression, limits, 0) {
-                resolve_reference_expr(scope, base, args, at, resolver, limits)
-                    .unwrap_or_else(|| resolver.resolve_applied(scope, base, args, at))
-            } else {
-                TypeTarget::Unknown
-            };
-        }
-        let TypeExpr::Named { name } = &*expression else {
-            return TypeTarget::Unknown;
-        };
-        if name.is_empty() || name.len() > limits.name_bytes {
-            return TypeTarget::Unknown;
-        }
-        let target = symbol_type(resolver.resolve_symbol(scope, name, at, SymbolRole::Type));
-        let TypeTarget::Local(node) = &target else {
-            return target;
-        };
-        if node.language == "python"
-            && node.kind == "class"
-            && typed_dict_class(node, resolver)
-        {
-            return TypeTarget::Builtin("Mapping".to_owned());
-        }
-        let alias = if let Some(alias) = resolver
-            .value_flow(node)
-            .and_then(|facts| facts.alias_type.as_ref())
-        {
-            Cow::Borrowed(alias)
-        } else {
-            let encoded = match resolver.raw_value_flow(node) {
-                Some(raw) => &raw["alias_type"],
-                None if resolver.has_typed_flows() => return target,
-                None => &node.details["value_flow"]["alias_type"],
-            };
-            if encoded.is_null() {
-                return target;
-            }
-            let Ok(alias) = TypeExpr::deserialize(encoded) else {
-                return TypeTarget::Unknown;
-            };
-            Cow::Owned(alias)
-        };
-        if visited.contains(&node.id.as_str()) {
-            return TypeTarget::Unknown;
-        }
-        visited.push(node.id.as_str());
-        expression = alias;
-        scope = node;
-        at = node_position(node);
-    }
-    TypeTarget::Unknown
-}
-
-fn stored_python_type_argument(annotation: &str) -> TypeExpr {
-    let unparenthesized = crate::ast::syntax::strip_outer_parentheses(annotation.trim());
-    if unparenthesized.is_empty() {
-        return TypeExpr::Unknown;
-    }
-    stored_python_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
-        name: unparenthesized.to_owned(),
-    })
-}
-
-fn stored_python_type_expr(annotation: &str) -> Option<TypeExpr> {
-    let annotation = crate::ast::syntax::strip_outer_parentheses(annotation.trim());
-    #[cfg(feature = "lang-python")]
-    let pipe_parts = crate::languages::python::common::split_python_pipe_types(annotation);
-    #[cfg(not(feature = "lang-python"))]
-    let pipe_parts: Option<Vec<&str>> = None;
-    if let Some(parts) = pipe_parts {
-        if parts.len() >= 2 {
-            let args = parts
-                .into_iter()
-                .map(stored_python_type_argument)
-                .collect();
-            return Some(TypeExpr::Applied {
-                base: "Union".to_owned(),
-                args,
-            });
-        }
-    }
-    let (base, rest) = annotation.split_once('[')?;
-    let base = base.trim();
-    let arguments = rest.strip_suffix(']')?;
-    if base.is_empty() {
-        return Some(TypeExpr::Unknown);
-    }
-    let mut depth = 0_usize;
-    let mut start = 0_usize;
-    let mut args = Vec::new();
-    for (index, character) in arguments.char_indices() {
-        match character {
-            '[' => depth = depth.checked_add(1)?,
-            ']' => depth = depth.checked_sub(1)?,
-            ',' if depth == 0 => {
-                let argument = arguments[start..index].trim();
-                if argument.is_empty() {
-                    return None;
-                }
-                args.push(stored_python_type_argument(argument));
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 {
-        return None;
-    }
-    let argument = arguments[start..].trim();
-    if argument.is_empty() {
-        return None;
-    }
-    args.push(stored_python_type_argument(argument));
-    Some(TypeExpr::Applied {
-        base: base.to_owned(),
-        args,
-    })
-}
-
-pub(super) fn stored_type_expr(annotation: &str, language: &str) -> TypeExpr {
-    let annotation = annotation.trim();
-    if language == "rust" {
-        if let Some(rest) = annotation.strip_prefix('&') {
-            let mut rest = rest.trim_start();
-            if rest.starts_with('\'') {
-                let Some((_, target)) = rest.split_once(char::is_whitespace) else {
-                    return TypeExpr::Unknown;
-                };
-                rest = target.trim_start();
-            }
-            let mutable = rest.starts_with("mut ");
-            rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
-            return TypeExpr::Applied {
-                base: if mutable { "&mut" } else { "&" }.to_owned(),
-                args: vec![stored_type_expr(rest, language)],
-            };
-        }
-    }
-    if language == "python" {
-        if let Some(expression) = stored_python_type_expr(annotation) {
-            return expression;
-        }
-    }
-    if let Some((base, rest)) = annotation.split_once('[') {
-        if let Some(argument) = rest.strip_suffix(']') {
-            let base = base.trim();
-            let argument = argument.trim();
-            if matches!(base, "list" | "List" | "Sequence" | "Iterable")
-                && !argument.is_empty()
-                && !argument.contains(['[', ',', ']'])
-            {
-                return TypeExpr::Applied {
-                    base: base.to_owned(),
-                    args: vec![TypeExpr::Named {
-                        name: argument.to_owned(),
-                    }],
-                };
-            }
-        }
-    }
-    TypeExpr::Named {
-        name: annotation.to_owned(),
-    }
 }
 
 pub(in crate::linker) fn symbol_type(symbol: Symbol<'_>) -> TypeTarget<'_> {
@@ -1056,7 +789,7 @@ pub(super) fn same_fields(
         })
 }
 
-pub(super) fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
+pub(in crate::linker) fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
     match (left, right) {
         (
             TypeTarget::ConfiguredReceiver {
@@ -1195,7 +928,8 @@ pub(super) fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool
             TypeTarget::Collection { base: ab, item: ai },
             TypeTarget::Collection { base: bb, item: bi },
         ) => ab == bb && same_target(ai, bi),
-        (TypeTarget::Unknown, TypeTarget::Unknown)
+        (TypeTarget::RustClosure, TypeTarget::RustClosure)
+        | (TypeTarget::Unknown, TypeTarget::Unknown)
         | (TypeTarget::Ambiguous, TypeTarget::Ambiguous) => true,
         _ => false,
     }
@@ -1214,6 +948,8 @@ pub(super) fn flow_dependent(value: &ValueExpr) -> bool {
             | ValueExpr::Alias { .. }
             | ValueExpr::Field { .. }
             | ValueExpr::Project { .. }
+            | ValueExpr::RustField { .. }
+            | ValueExpr::RustProject { .. }
             | ValueExpr::LoopElement { .. }
             | ValueExpr::CallbackParam { .. }
     )
@@ -1302,7 +1038,7 @@ pub(super) fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize
     match expr {
         ValueExpr::Alias { name } => text(name),
         ValueExpr::Annotated { type_expr } => valid_type(type_expr, limits, 0),
-        ValueExpr::Unknown => true,
+        ValueExpr::Unknown | ValueExpr::RustClosure => true,
         ValueExpr::Construct { callee } => text(callee),
         ValueExpr::Call { callee, site } => {
             text(callee)
@@ -1312,7 +1048,7 @@ pub(super) fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize
                     .and_then(|site| site.receiver.as_deref())
                     .is_none_or(|receiver| valid_value(receiver, limits, depth + 1))
         }
-        ValueExpr::Await { value: inner } => valid_value(inner, limits, depth + 1),
+        ValueExpr::Await { value: inner } | ValueExpr::RustProject { value: inner, .. } => valid_value(inner, limits, depth + 1),
         ValueExpr::LoopElement { iterable, body_end } => text(iterable) && body_end.line > 0,
         ValueExpr::Scoped {
             value: inner,
@@ -1327,6 +1063,9 @@ pub(super) fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize
         }
         ValueExpr::Field { receiver, member } => text(receiver) && text(member),
         ValueExpr::Project {
+            value: inner,
+            member,
+        } | ValueExpr::RustField {
             value: inner,
             member,
         } => text(member) && valid_value(inner, limits, depth + 1),
@@ -1351,7 +1090,7 @@ pub(crate) fn valid_scope_facts(
         return false;
     }
     if facts.vue_slots().next().is_some()
-        && (node.kind != "module"
+        && (node.kind != crate::models::tags::NodeKind::Module
             || !facts
                 .component_macros()
                 .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots))
@@ -1388,6 +1127,8 @@ pub(super) fn valid_type(expression: &TypeExpr, limits: SemanticLimits, depth: u
                 && args.len() <= limits.facts_per_scope
                 && args.iter().all(|arg| valid_type(arg, limits, depth + 1))
         }
+        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => valid_type(item, limits, depth + 1),
+        TypeExpr::RustCallArguments { args } => args.len() <= limits.facts_per_scope && args.iter().all(|arg| valid_type(arg, limits, depth + 1)),
         TypeExpr::Unknown => true,
     }
 }

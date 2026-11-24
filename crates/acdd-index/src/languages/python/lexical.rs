@@ -166,7 +166,7 @@ impl MainGuardTracker {
             .filter_map(|r| r.alias.as_deref())
             .collect();
         for node in &mut facts.nodes {
-            if node.kind != "function"
+            if node.kind != crate::models::tags::NodeKind::Function
                 || node
                     .qualname
                     .strip_prefix(module)
@@ -179,9 +179,9 @@ impl MainGuardTracker {
                 continue;
             };
             if definitions.0 == 1 && definitions.2 {
-                node.details["entrypoint_direct_module"] = serde_json::json!(true);
+                node.set_detail(crate::models::details::NodeDetailKey::ENTRYPOINT_DIRECT_MODULE, serde_json::json!(true));
             }
-            if node.details.get("entrypoint_base").is_some()
+            if node.detail_get(crate::models::details::NodeDetailKey::ENTRYPOINT_BASE).is_some()
                 || !definitions.2
                 || rebound.contains(node.name.as_str())
                 || imported.contains(node.name.as_str())
@@ -193,7 +193,7 @@ impl MainGuardTracker {
                 continue;
             };
             if calls.0 == 1 && definitions.0 == 1 && definitions.1 < calls.1 {
-                node.details["entrypoint_base"] = serde_json::json!("main");
+                node.set_detail(crate::models::details::NodeDetailKey::ENTRYPOINT_BASE, serde_json::json!("main"));
             }
         }
     }

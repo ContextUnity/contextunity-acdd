@@ -17,7 +17,7 @@ pub(in crate::linker) fn is_builtin_promise_type(
 
 pub(in crate::linker) fn visible(owner: &Node, candidate: &Node) -> bool {
     matches!(owner.language.as_str(), "javascript" | "typescript" | "vue")
-        && candidate.kind == "function"
+        && candidate.kind == crate::models::tags::NodeKind::Function
 }
 
 pub(in crate::linker) fn admits_payload(
@@ -37,15 +37,15 @@ pub(in crate::linker) fn prototype_visible_at(
     line: usize,
     column: usize,
 ) -> bool {
-    if node.language != "javascript" || node.details["prototype"] != true || node.path != path {
+    if node.language != crate::models::tags::LanguageId::Javascript || *node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE) != true || node.path != path {
         return true;
     }
-    let assigned_line = node.details["prototype_assignment_line"]
+    let assigned_line = node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_LINE)
         .as_u64()
         .unwrap_or(node.line as u64) as usize;
-    let assigned_column = node.details["prototype_assignment_column"]
+    let assigned_column = node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_COLUMN)
         .as_u64()
-        .or_else(|| node.details["column"].as_u64())
+        .or_else(|| node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64())
         .unwrap_or(0) as usize;
     (assigned_line, assigned_column) <= (line, column)
 }

@@ -12,6 +12,7 @@ mod type_resolution;
 
 pub(in crate::linker) use context::{Context, Imported, LanguageMemberLookup, Member};
 
+use crate::languages::profile::ProfileLinker;
 use context::*;
 
 pub(in crate::linker) fn component_names(
@@ -77,43 +78,16 @@ impl<'a> Context<'a> {
         member: &str,
         caller: &'a Node,
     ) -> Member<'s> {
+        let language = match receiver {
+            TypeTarget::Local(class) => class.language,
+            _ => caller.language,
+        };
+        if let Some(result) = crate::languages::by_id(language.as_str())
+            .and_then(|profile| profile.linker().special_property_lookup(self, receiver, member, caller))
+        {
+            return result;
+        }
         match receiver {
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::Local(class) if class.language == "rust" => {
-                let mut current = *class;
-                for _ in 0..8 {
-                    let mut key = String::new();
-                    let mut fields = self
-                        .by_qual
-                        .get(crate::linker::types::qualified(&mut key, &current.qualname, member))
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .filter(|field| {
-                            field.kind == "field"
-                                && field.details["rust_declared_field"] == true
-                                && field.path == current.path
-                                && super::rust::forwarding::field_visible(
-                                    field,
-                                    current,
-                                    &caller.qualname,
-                                )
-                        });
-                    match (fields.next(), fields.next()) {
-                        (Some(field), None) => return Member::Local(field),
-                        (Some(_), Some(_)) => return Member::Ambiguous,
-                        _ => {}
-                    }
-                    let Some(next) = self.member_state("rust").and_then(|rust| rust.deref_target(current)) else {
-                        break;
-                    };
-                    current = next;
-                }
-                Member::Unknown
-            }
-            TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => {
-                self.lookup_property(target, member, caller)
-            }
             TypeTarget::ConfiguredReceiver {
                 authority,
                 origin,
@@ -143,19 +117,6 @@ impl<'a> Context<'a> {
             {
                 Member::Builtin
             }
-            TypeTarget::External { .. }
-                if caller.language == "rust"
-                    && self
-                        .resolve_member_result(
-                            receiver,
-                            member,
-                            caller,
-                            super::value_flow::node_position(caller),
-                        )
-                        .is_some() =>
-            {
-                self.lookup_member(receiver, member, caller)
-            }
             TypeTarget::Local(_) => self.lookup_component_template_field(receiver, member),
             _ => Member::Unknown,
         }
@@ -168,12 +129,8 @@ impl<'a> Context<'a> {
         receiver: &str,
         member: &str,
     ) -> bool {
-        let normalized = if matches!(language, "typescript" | "javascript" | "vue") {
-            let unprefixed = receiver.strip_prefix("Web.").unwrap_or(receiver);
-            crate::linker::typescript::semantic_context::typed_dom_receiver(unprefixed).unwrap_or(unprefixed)
-        } else {
-            receiver
-        };
+        let normalized = crate::languages::by_id(language)
+            .map_or(receiver, |profile| profile.linker().normalize_builtin_receiver(receiver));
         if self
             .receiver_type(path, normalized)
             .is_some_and(|rule| rule.members.iter().any(|allowed| allowed == member))
@@ -218,35 +175,6 @@ impl<'a> Context<'a> {
         }
     }
 
-    #[cfg(feature = "lang-rust")]
-    fn lookup_rust_deref_member<'s>(
-        &'s self,
-        receiver: &'s TypeTarget<'a>,
-        wrapper: &str,
-        target: &'s TypeTarget<'a>,
-        member: &str,
-        caller: &'a Node,
-        associated: bool,
-    ) -> Member<'s> {
-        if associated {
-            return Member::Unknown;
-        }
-        if self.rayon_extension_base(receiver, member, caller).is_some() {
-            return Member::External("rayon", 0, None);
-        }
-        if crate::linker::rust::semantic_context::wrapper_value_member(wrapper, member) {
-            return Member::Builtin;
-        }
-        match target {
-            TypeTarget::External { module, .. }
-                if crate::linker::rust::semantic_context::standard_member(module, member) =>
-            {
-                Member::Builtin
-            }
-            _ => self.lookup_member_mode(target, member, caller, associated),
-        }
-    }
-
     fn indexed_member_candidates(
         &self,
         owner: SymbolId,
@@ -281,9 +209,8 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
-        if receiver.language != "python" {
-            if let Some(state) = self.member_state(receiver.language.as_str()) {
-                return match state.lookup_member(receiver, member, associated, caller) {
+        if let Some(state) = self.member_state(receiver.language.as_str()).filter(|state| state.handles_receiver(receiver)) {
+                return match state.lookup_local_member(receiver, member, associated, caller) {
                     crate::languages::profile::LanguageMemberResult::Local(node) => {
                         Member::Local(node)
                     }
@@ -295,19 +222,15 @@ impl<'a> Context<'a> {
                     crate::languages::profile::LanguageMemberResult::Candidates(nodes) => {
                         nodes.first().copied().map_or(Member::Unknown, Member::Local)
                     }
-                    _ if receiver.language == "rust"
-                        && !associated
-                        && member == "to_string"
-                        && state.has_display(receiver) =>
+                    crate::languages::profile::LanguageMemberResult::External { module, import_line, provider, .. } => Member::External(module, import_line, provider),
+                    crate::languages::profile::LanguageMemberResult::Ambiguous => Member::Ambiguous,
+                    _ if state.builtin_local_member(receiver, member, associated) =>
                     {
                         Member::Builtin
                     }
                     _ => Member::Unknown,
                 };
-            }
         }
-        #[cfg(not(feature = "lang-rust"))]
-        let _ = caller;
         let candidates = self
             .interner
             .lookup_symbol(&receiver.id)
@@ -323,13 +246,11 @@ impl<'a> Context<'a> {
                     .copied()
                     .filter(|n| {
                         let is_stub = n
-                            .details
-                            .get("is_stub")
+                            .detail_get(crate::models::details::NodeDetailKey::IS_STUB)
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         let is_overload = n
-                            .details
-                            .get("is_overload")
+                            .detail_get(crate::models::details::NodeDetailKey::IS_OVERLOAD)
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         !is_stub && !is_overload
@@ -358,32 +279,14 @@ impl<'a> Context<'a> {
             } else {
                 Member::Unknown
             }
-        } else if let Some(outcome) =
-            crate::linker::python::semantic_context::external_member(caller, module, member)
-        {
+        } else if let Some(outcome) = crate::languages::by_id(caller.language.as_str())
+            .and_then(|profile| profile.linker().external_member_policy(caller, module, import_line, member)) {
             match outcome {
-                crate::linker::python::semantic_context::ExternalMemberOutcome::Supported(origin) => {
-                    Member::External(module, import_line, Some(origin))
-                }
-                crate::linker::python::semantic_context::ExternalMemberOutcome::Unsupported => {
-                    Member::Unknown
-                }
+                crate::languages::profile::LanguageMemberResult::External { provider, .. } => Member::External(module, import_line, provider),
+                _ => Member::Unknown,
             }
         } else {
             Member::External(module, import_line, None)
-        }
-    }
-
-    fn lookup_python_class_member<'s>(&'s self, receiver: &Node, member: &str) -> Member<'s> {
-        match self.lookup_language_member("python", receiver, member, false, receiver) {
-            crate::languages::profile::LanguageMemberResult::Local(node) => {
-                Member::Local(node)
-            }
-            crate::languages::profile::LanguageMemberResult::External { module, import_line: line, provider, .. } => Member::External(module, line, provider),
-            crate::languages::profile::LanguageMemberResult::Ambiguous => {
-                Member::Ambiguous
-            }
-            _ => Member::Unknown,
         }
     }
 
@@ -398,7 +301,7 @@ impl<'a> Context<'a> {
                 }
             }
         }
-        if self.lookup_builtin_member(&caller.path, &caller.language, base, member) {
+        if self.lookup_builtin_member(&caller.path, caller.language.as_str(), base, member) {
             Member::Builtin
         } else {
             Member::Unknown
@@ -412,10 +315,13 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
-        if let Some(profile) = crate::languages::by_id(&caller.language) {
+        if let Some(profile) = crate::languages::by_id(caller.language.as_str()) {
             let target = profile.linker().unwrap_reference(receiver);
             if !std::ptr::eq(target, receiver) {
                 return self.lookup_member_mode(target, member, caller, associated);
+            }
+            if let Some(result) = profile.linker().special_member_lookup(self, receiver, member, caller, associated) {
+                return result;
             }
         }
         match receiver {
@@ -430,88 +336,8 @@ impl<'a> Context<'a> {
                 caller,
                 associated,
             ),
-            TypeTarget::Local(receiver)
-                if receiver.language == "python" && receiver.kind == "class" =>
-            {
-                self.lookup_python_class_member(receiver, member)
-            }
-            TypeTarget::ClassType(inner) if caller.language == "python" => {
+            TypeTarget::ClassType(inner) if crate::languages::by_id(caller.language.as_str()).is_some_and(|profile| profile.linker().class_type_uses_associated_lookup()) => {
                 self.lookup_member_mode(inner, member, caller, true)
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustCollection { .. } if caller.language == "rust" => {
-                if !associated && self.rayon_extension_base(receiver, member, caller).is_some() {
-                    return Member::External("rayon", 0, None);
-                }
-                let standard = !associated
-                    && crate::languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Vec", member));
-                self.lookup_rust_builtin_member("Vec", standard, member, associated, caller)
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustTypedContainer { base, .. } if caller.language == "rust" => {
-                if !associated && self.rayon_extension_base(receiver, member, caller).is_some() {
-                    return Member::External("rayon", 0, None);
-                }
-                let standard = !associated
-                    && crate::languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member(base, member));
-                self.lookup_rust_builtin_member(base, standard, member, associated, caller)
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustIterator { .. } if caller.language == "rust" => {
-                let standard = !associated
-                    && crate::languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Iterator", member));
-                if standard {
-                    Member::Builtin
-                } else {
-                    Member::Unknown
-                }
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustSlice { .. } if caller.language == "rust" => {
-                if !associated && self.rayon_extension_base(receiver, member, caller).is_some() {
-                    return Member::External("rayon", 0, None);
-                }
-                let standard = !associated
-                    && crate::languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Slice", member));
-                self.lookup_rust_builtin_member("Slice", standard, member, associated, caller)
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustTuple(_) if caller.language == "rust" => {
-                let standard = !associated
-                    && crate::languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Tuple", member));
-                self.lookup_rust_builtin_member("Tuple", standard, member, associated, caller)
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustWrapper { wrapper, ok, .. } if caller.language == "rust" => {
-                let name = match wrapper {
-                    crate::linker::value_flow::RustWrapperKind::Option => "Option",
-                    crate::linker::value_flow::RustWrapperKind::Result => "Result",
-                };
-                let standard = crate::languages::by_id("rust")
-                    .is_some_and(|profile| profile.builtin_member(name, member));
-                let adapter_shape = !matches!(member, "cloned" | "copied")
-                    || matches!(
-                        ok.as_ref(),
-                        TypeTarget::RustReference { mutable: false, .. }
-                    );
-                self.lookup_rust_builtin_member(
-                    name,
-                    !associated && standard && adapter_shape,
-                    member,
-                    associated,
-                    caller,
-                )
-            }
-            #[cfg(feature = "lang-rust")]
-            TypeTarget::RustDeref {
-                wrapper, target, ..
-            } if caller.language == "rust" => {
-                self.lookup_rust_deref_member(receiver, wrapper, target, member, caller, associated)
             }
             TypeTarget::Local(receiver) => {
                 self.lookup_local_member_mode(receiver, member, caller, associated)
@@ -524,7 +350,7 @@ impl<'a> Context<'a> {
                 import_line,
             } => self.lookup_external_member_mode(module, *import_line, member, caller),
             TypeTarget::Promise(_) => {
-                if self.lookup_builtin_member(&caller.path, &caller.language, "Promise", member) {
+                if self.lookup_builtin_member(&caller.path, caller.language.as_str(), "Promise", member) {
                     Member::Builtin
                 } else {
                     Member::Unknown
@@ -534,22 +360,7 @@ impl<'a> Context<'a> {
                 self.lookup_collection_member(base, member, caller)
             }
             TypeTarget::Builtin(name) => {
-                #[cfg(feature = "lang-rust")]
-                if caller.language == "rust"
-                    && !associated
-                    && self
-                        .rayon_extension_base(receiver, member, caller)
-                        .is_some()
-                {
-                    return Member::External("rayon", 0, None);
-                }
-                let standard = self.lookup_builtin_member(&caller.path, &caller.language, name, member);
-                #[cfg(feature = "lang-rust")]
-                if caller.language == "rust" {
-                    return self.lookup_rust_builtin_member(
-                        name, standard, member, associated, caller,
-                    );
-                }
+                let standard = self.lookup_builtin_member(&caller.path, caller.language.as_str(), name, member);
                 if standard {
                     Member::Builtin
                 } else {
@@ -561,22 +372,4 @@ impl<'a> Context<'a> {
         }
     }
 
-    #[cfg(feature = "lang-rust")]
-    fn lookup_rust_builtin_member<'s>(
-        &'s self,
-        receiver_key: &str,
-        standard: bool,
-        member: &str,
-        associated: bool,
-        caller: &Node,
-    ) -> Member<'s> {
-        if standard {
-            return Member::Builtin;
-        }
-        match self.lookup_language_builtin("rust", receiver_key, member, associated, caller) {
-            crate::languages::profile::LanguageMemberResult::Local(node) => Member::Local(node),
-            crate::languages::profile::LanguageMemberResult::Candidates(nodes) if nodes.len() > 1 => Member::Ambiguous,
-            _ => Member::Unknown,
-        }
-    }
 }

@@ -2,11 +2,7 @@ use super::flow_store::{FlowState, FlowStore};
 use super::semantic_store::{SemanticState, SemanticStateView};
 use crate::models::semantic::NodeSemanticDto;
 use crate::models::types::Node;
-use crate::semantic::types::{
-    BindingFact, BranchJoinFact, CallableSignature, FieldFact, FrameworkFactCollectionsDto,
-    NamedDefinitionUncertainty, ObjectOwnershipFact, SourcePosition, TypeExpr, ValueExpr,
-    ValueFlowFacts,
-};
+use crate::semantic::types::{NamedDefinitionUncertainty, ValueFlowFacts};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 
@@ -22,45 +18,13 @@ macro_rules! serde_dto {
 enum FlowStateView<'a> {
     Raw(&'a Value),
     Facts(&'a ValueFlowFacts),
-    FieldsFirst(ClassicFieldsFirstDto<'a>),
-    BindingsFirst(ClassicBindingsFirstDto<'a>),
 }
 
 impl<'a> From<&'a FlowState> for FlowStateView<'a> {
     fn from(state: &'a FlowState) -> Self {
         match state {
-            FlowState::Valid {
-                original: Some(value),
-                ..
-            }
-            | FlowState::Invalid(value) => Self::Raw(value),
-            FlowState::Valid {
-                facts,
-                original: None,
-                classic_fields_first: Some(fields_first),
-            } => {
-                let fields = (!facts.fields.is_empty()).then_some(facts.fields.as_slice());
-                let bindings = (!facts.bindings.is_empty()).then_some(facts.bindings.as_slice());
-                let rest = ClassicFlowRestDto::from(facts.as_ref());
-                if *fields_first {
-                    Self::FieldsFirst(ClassicFieldsFirstDto {
-                        fields,
-                        bindings,
-                        rest,
-                    })
-                } else {
-                    Self::BindingsFirst(ClassicBindingsFirstDto {
-                        bindings,
-                        fields,
-                        rest,
-                    })
-                }
-            }
-            FlowState::Valid {
-                facts,
-                original: None,
-                classic_fields_first: None,
-            } => Self::Facts(facts),
+            FlowState::Invalid(value) => Self::Raw(value),
+            FlowState::Valid { facts } => Self::Facts(facts),
         }
     }
 }
@@ -70,44 +34,6 @@ impl FlowState {
         FlowStateView::from(self)
     }
 }
-
-serde_dto!(ClassicFlowRestDto<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")] immutable_initializers: Option<&'a Vec<SourcePosition>>, #[serde(skip_serializing_if = "Option::is_none")] branch_joins: Option<&'a Vec<BranchJoinFact>>,
-    #[serde(flatten)] framework_facts: Option<FrameworkFactCollectionsDto<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")] object_ownership: Option<&'a ObjectOwnershipFact>,
-    #[serde(skip_serializing_if = "Option::is_none")] return_type: Option<&'a TypeExpr>, #[serde(skip_serializing_if = "Option::is_none")] async_return_type: Option<&'a TypeExpr>,
-    #[serde(skip_serializing_if = "Option::is_none")] return_value: Option<&'a ValueExpr>, #[serde(skip_serializing_if = "Option::is_none")] return_position: Option<&'a SourcePosition>,
-    #[serde(skip_serializing_if = "Option::is_none")] alias_type: Option<&'a TypeExpr>, #[serde(skip_serializing_if = "Option::is_none")] callable_signature: Option<&'a CallableSignature>, #[serde(skip_serializing_if = "Option::is_none")] fact_limit_exceeded: Option<bool>,
-});
-
-impl<'a> From<&'a ValueFlowFacts> for ClassicFlowRestDto<'a> {
-    fn from(facts: &'a ValueFlowFacts) -> Self {
-        let framework = facts.framework.as_deref();
-        Self {
-            immutable_initializers: (!facts.immutable_initializers.is_empty())
-                .then_some(&facts.immutable_initializers),
-            branch_joins: (!facts.branch_joins.is_empty()).then_some(&facts.branch_joins),
-            framework_facts: framework.map(FrameworkFactCollectionsDto::from),
-            object_ownership: framework.and_then(|scope| scope.object_ownership.as_ref()),
-            return_type: facts.return_type.as_ref(),
-            async_return_type: framework.and_then(|scope| scope.async_return_type.as_ref()),
-            return_value: framework.and_then(|scope| scope.return_value.as_ref()),
-            return_position: framework.and_then(|scope| scope.return_position.as_ref()),
-            alias_type: framework.and_then(|scope| scope.alias_type.as_ref()),
-            callable_signature: framework.and_then(|scope| scope.callable_signature.as_ref()),
-            fact_limit_exceeded: framework
-                .filter(|scope| scope.fact_limit_exceeded)
-                .map(|_| true),
-        }
-    }
-}
-
-serde_dto!(ClassicFieldsFirstDto<'a> {
-    fields: Option<&'a [FieldFact]>, bindings: Option<&'a [BindingFact]>, #[serde(flatten)] rest: ClassicFlowRestDto<'a>,
-});
-serde_dto!(ClassicBindingsFirstDto<'a> {
-    bindings: Option<&'a [BindingFact]>, fields: Option<&'a [FieldFact]>, #[serde(flatten)] rest: ClassicFlowRestDto<'a>,
-});
 
 serde_dto!(pub NodeView<'node, 'flow> {
     id: &'node str, kind: &'node str, name: &'node str, qualname: &'node str,
@@ -130,14 +56,14 @@ impl<'node, 'flow> NodeView<'node, 'flow> {
     ) -> Self {
         Self {
             id: &node.id,
-            kind: &node.kind,
+            kind: node.kind.as_str(),
             name: &node.name,
             qualname: &node.qualname,
             path: &node.path,
             line: node.line,
             end_line: node.end_line,
             is_test: node.is_test,
-            language: &node.language,
+            language: node.language.as_str(),
             generated: node.generated,
             details: NodeDetailsInput {
                 node,

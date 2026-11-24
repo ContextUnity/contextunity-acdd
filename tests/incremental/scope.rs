@@ -287,7 +287,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -313,7 +313,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -390,7 +390,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -449,7 +449,7 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -495,7 +495,7 @@ fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -630,7 +630,7 @@ fn python_import_frontier_uses_semicolon_and_continuation_facts() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -667,7 +667,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -688,7 +688,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -726,7 +726,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -749,7 +749,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -792,7 +792,7 @@ fn component_representative_mutations_match_cold_builds() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -812,7 +812,7 @@ fn component_representative_mutations_match_cold_builds() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -833,7 +833,7 @@ fn component_representative_mutations_match_cold_builds() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -919,7 +919,7 @@ fn assert_cold_parity_and_local_facts(w: &Workspace) {
     assert_eq!(dangling, 0);
     for (path, facts_blob) in facts {
         assert!(
-            facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+            facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
             "{path}: newly written local facts use the typed binary format"
         );
         crate::common::decode_local_facts(&facts_blob).unwrap();
@@ -1138,7 +1138,7 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"),
                 "{path}: newly written local facts use the typed binary format"
             );
             crate::common::decode_local_facts(&facts_blob).unwrap();

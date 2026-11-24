@@ -260,9 +260,9 @@ impl ModuleVisibility {
             .values_facts()
             .flat_map(|facts| &facts.nodes)
             .filter(|node| {
-                node.language == "rust"
-                    && node.kind == "module_declaration"
-                    && node.details["is_public"] != true
+                node.language == crate::models::tags::LanguageId::Rust
+                    && node.kind == crate::models::tags::NodeKind::ModuleDeclaration
+                    && node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) != true
             })
         {
             let Some((owner, _)) = declaration.qualname.rsplit_once('.') else {
@@ -270,7 +270,7 @@ impl ModuleVisibility {
             };
             let crate_root = crate_namespace(&declaration.path);
             let owner = canonical_namespace(owner, &crate_root);
-            let scope = declaration.details["signature"]
+            let scope = declaration.detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
                 .as_str()
                 .and_then(|signature| restricted_scope(signature, &owner, &declaration.path))
                 .unwrap_or_else(|| owner.into_owned());
@@ -360,7 +360,7 @@ fn extend_visible_members<'a>(
 }
 
 pub(super) fn is_public_export(module: &Node, name: &str) -> bool {
-    module.details["exports"].as_array().is_some_and(|exports| {
+    module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|exports| {
         exports
             .iter()
             .any(|export| export["name"].as_str() == Some(name))
@@ -368,7 +368,7 @@ pub(super) fn is_public_export(module: &Node, name: &str) -> bool {
 }
 
 pub(super) fn is_public_glob(module: &Node, target: &str) -> bool {
-    module.details["exports"].as_array().is_some_and(|exports| {
+    module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|exports| {
         exports
             .iter()
             .any(|export| export["star"] == true && export["module"].as_str() == Some(target))
@@ -376,7 +376,7 @@ pub(super) fn is_public_glob(module: &Node, target: &str) -> bool {
 }
 
 pub(super) fn has_any_public_glob(module: &Node) -> bool {
-    module.details["exports"]
+    module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
         .as_array()
         .is_some_and(|exports| exports.iter().any(|export| export["star"] == true))
 }
@@ -457,16 +457,16 @@ pub(crate) fn field_visible(field: &Node, receiver: &Node, requester: &str) -> b
         .rsplit_once('.')
         .map_or("", |(module, _)| module);
     within(requester, module)
-        || field.details["is_public"] == true
-        || field.details["signature"]
+        || field.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true
+        || field.detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
             .as_str()
             .and_then(|signature| restricted_scope(signature, module, &field.path))
             .is_some_and(|scope| within(requester, &scope))
 }
 
 pub(super) fn is_crate_visible(node: &Node, requester: &str) -> bool {
-    node.details["is_public"] == true
-        || node.details["signature"]
+    node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true
+        || node.detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
             .as_str()
             .and_then(|signature| {
                 restricted_scope(
@@ -530,8 +530,8 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         public_only: bool,
     ) -> Option<(Option<AliasTargets<'a>>, bool)> {
         let mut direct = direct_members(self.all, module, name);
-        let module_declaration = direct.iter().any(|node| node.kind == "module_declaration");
-        direct.retain(|node| node.kind != "module_declaration");
+        let module_declaration = direct.iter().any(|node| node.kind == crate::models::tags::NodeKind::ModuleDeclaration);
+        direct.retain(|node| node.kind != crate::models::tags::NodeKind::ModuleDeclaration);
         if direct.is_empty() {
             return Some((None, module_declaration));
         }
@@ -543,8 +543,8 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
             scope: None,
         };
         for node in result.nodes.clone() {
-            if node.details["is_public"] != true {
-                let scope = node.details["signature"]
+            if node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) != true {
+                let scope = node.detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
                     .as_str()
                     .and_then(|signature| restricted_scope(signature, &module.qualname, &node.path))
                     .unwrap_or_else(|| module_namespace(&module.qualname).to_owned());
@@ -683,7 +683,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         }
         let mut ok = false;
         for mid in mid_candidates {
-            if mid.kind == "module" {
+            if mid.kind == crate::models::tags::NodeKind::Module {
                 let mid_public = step.public_only
                     || (step.module.qualname != mid.qualname
                         && !is_descendant_module(&step.module.qualname, mid));
@@ -971,7 +971,7 @@ impl<'a> RustForwarding<'a> {
             .flat_map(|facts| {
                 facts.nodes.iter().filter(|node| {
                     matches!(node.kind.as_str(), "module" | "module_declaration")
-                        && node.language == "rust"
+                        && node.language == crate::models::tags::LanguageId::Rust
                 })
             })
             .collect();
@@ -1055,7 +1055,7 @@ impl<'a> RustForwarding<'a> {
             let Some(module) = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "rust")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
             else {
                 continue;
             };
@@ -1105,7 +1105,7 @@ impl<'a> RustForwarding<'a> {
             .iter()
             .copied()
             .filter(|node| {
-                node.kind == "module"
+                node.kind == crate::models::tags::NodeKind::Module
                     && (node.path == "src/lib.rs" || node.path.ends_with("/src/lib.rs"))
             })
             .collect();
@@ -1233,7 +1233,7 @@ impl<'a> RustForwarding<'a> {
             let rest = &segments[idx..];
             let mut next = Vec::new();
             for candidate in current {
-                if candidate.kind == "module" {
+                if candidate.kind == crate::models::tags::NodeKind::Module {
                     let hits = if via_reexport {
                         self.targets_in_accessible_module(candidate, segment, requester)
                     } else {
@@ -1242,7 +1242,7 @@ impl<'a> RustForwarding<'a> {
                     next.extend_from_slice(hits);
                 }
                 if let Some(by_qual) =
-                    by_qual.filter(|_| via_reexport || candidate.kind != "module")
+                    by_qual.filter(|_| via_reexport || candidate.kind != crate::models::tags::NodeKind::Module)
                 {
                     let qual = format!("{}.{}", candidate.qualname, rest.join("."));
                     if let Some(nodes) = by_qual.get(qual.as_str()) {
@@ -1351,11 +1351,11 @@ pub(super) fn declared_exports<'a>(
         let Some(module) = facts
             .nodes
             .iter()
-            .find(|node| node.kind == "module" && node.language == "rust")
+            .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
         else {
             continue;
         };
-        let Some(bindings) = module.details["exports"].as_array() else {
+        let Some(bindings) = module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array() else {
             continue;
         };
         for name in bindings

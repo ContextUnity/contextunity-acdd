@@ -1,8 +1,8 @@
 use super::super::semantic_context::{Context, Imported};
 use super::super::types::NodeBindingIndex;
+use super::super::value_flow::resolve_type;
 use super::super::value_flow::types::{
-    collect_candidate_join, resolve_type, SemanticLimits, SemanticResolver, Symbol, SymbolRole,
-    TypeTarget,
+    collect_candidate_join, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
 };
 use crate::models::{Facts, Node, Reference};
 use crate::semantic::{SourcePosition, TypeExpr};
@@ -25,9 +25,9 @@ pub(in crate::linker) fn canonical_pathlib_class(class: &str) -> Option<&'static
 }
 
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
-    (owner.language == "python"
+    (owner.language == crate::models::tags::LanguageId::Python
         && matches!(head, "self" | "cls")
-        && owner.details["receiver_name"].as_str() == Some(head))
+        && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some(head))
     .then_some((false, false))
 }
 
@@ -113,7 +113,7 @@ pub(in crate::linker) fn external_factory_result<'a>(
     callee: &str,
     at: SourcePosition,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     let (head, member) = callee.split_once('.').unwrap_or((callee, ""));
@@ -169,7 +169,7 @@ pub(in crate::linker) fn external_member(
     module: &str,
     member: &str,
 ) -> Option<ExternalMemberOutcome> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
 
@@ -197,7 +197,7 @@ pub(in crate::linker) fn is_nullable_generic(
     clean_base: &str,
     nominal: &Symbol<'_>,
 ) -> bool {
-    owner.language == "python"
+    owner.language == crate::models::tags::LanguageId::Python
         && match nominal {
             Symbol::Type(TypeTarget::Builtin(wrapper)) => {
                 matches!(wrapper.as_str(), "Optional" | "Union")
@@ -233,7 +233,7 @@ pub(in crate::linker) fn external_import_type<'a>(
     role: SymbolRole,
     import_line: usize,
 ) -> Option<Symbol<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     if matches!(role, SymbolRole::Constructor) {
@@ -339,12 +339,12 @@ pub(in crate::linker) fn resolve_applied<'a>(
     nominal: &Symbol<'a>,
     at: SourcePosition,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "python" {
+    if owner.language != crate::models::tags::LanguageId::Python {
         return None;
     }
     let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
     if is_nullable_generic(owner, clean_base, nominal) {
-        if owner.kind == "type" {
+        if owner.kind == crate::models::tags::NodeKind::Type {
             return Some(TypeTarget::Unknown);
         }
         if clean_base == "Optional" && args.len() != 1 {
@@ -413,8 +413,8 @@ pub(in crate::linker) fn resolve_applied<'a>(
         return Some(TypeTarget::Unknown);
     }
     if let Symbol::Type(TypeTarget::Local(node)) = nominal {
-        let is_generic = node.kind == "class"
-            && node.details["bases"].as_str().is_some_and(|bases| {
+        let is_generic = node.kind == crate::models::tags::NodeKind::Class
+            && node.detail_entry(crate::models::details::NodeDetailKey::BASES).as_str().is_some_and(|bases| {
                 bases.contains("Generic") || bases.contains("Protocol") || bases.contains('[')
             });
         if is_generic {
@@ -437,7 +437,7 @@ pub(in crate::linker) fn has_proven_type_checking(
     let rebound = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module" && node.path == path)
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.path == path)
         .is_some_and(|module| {
             module.rebinding_names().any(|name| name == "TYPE_CHECKING")
                 || super::super::typescript::resolution::has_indexed_name(
@@ -518,10 +518,10 @@ pub(in crate::linker) fn logging_factory_import_is_safe(
     alias: &str,
     position: SourcePosition,
 ) -> bool {
-    if module.language != "python" {
+    if module.language != crate::models::tags::LanguageId::Python {
         return false;
     }
-    module.details["python_logging_factories"]
+    module.detail_entry(crate::models::details::NodeDetailKey::PYTHON_LOGGING_FACTORIES)
         .as_array()
         .is_some_and(|entries| {
             let mut matching = entries.iter().filter(|entry| {
@@ -534,4 +534,31 @@ pub(in crate::linker) fn logging_factory_import_is_safe(
                     && entry["safe"].as_bool() == Some(true)
             }) && matching.next().is_none()
         })
+}
+impl<'a> crate::linker::semantic_context::context::Context<'a> {
+    pub(in crate::linker) fn python_super_member(&self, owner: &Node, member: &str) -> crate::linker::value_flow::Symbol<'a> {
+        use crate::linker::value_flow::Symbol;
+        if owner.language != crate::models::tags::LanguageId::Python
+            || !owner.detail_get(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+                .and_then(|value| value.as_str()).is_some_and(|name| matches!(name, "self" | "cls"))
+        {
+            return Symbol::Unknown;
+        }
+        let Some((class_qual, _)) = owner.qualname.rsplit_once('.') else { return Symbol::Unknown; };
+        let Some(class) = self.nodes_in_path(class_qual, &owner.path)
+            .find(|node| node.kind == crate::models::tags::NodeKind::Class) else { return Symbol::Unknown; };
+        let mut scope = owner.qualname.as_str();
+        while !scope.is_empty() {
+            if self.nodes_in_path(scope, &owner.path).any(|node| {
+                node.binding_names().any(|name| name == "super")
+                    || self.node_has_rebinding(node, "super")
+                    || self.imported_alias(node, "super").is_some()
+            }) { return Symbol::Unknown; }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        match self.lookup_language_member("python", class, member, true, owner) {
+            crate::languages::profile::LanguageMemberResult::Local(node) => Symbol::Callable(node),
+            _ => Symbol::Unknown,
+        }
+    }
 }

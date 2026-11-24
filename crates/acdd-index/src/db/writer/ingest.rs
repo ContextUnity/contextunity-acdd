@@ -160,17 +160,15 @@ impl<'a> PreparedCoverage<'a> {
             html_islands: hashbrown::HashMap::new(),
         };
         for (path, file_facts) in facts {
-            if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == "module") {
-                if !module.language.is_empty() {
-                    prepared
-                        .file_languages
-                        .insert(path.as_str(), module.language.as_str());
-                }
+            if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) {
+                prepared
+                    .file_languages
+                    .insert(path.as_str(), module.language.as_str());
             }
             if !file_facts
                 .nodes
                 .iter()
-                .any(|node| node.kind == "module" && node.language == "html")
+                .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
             {
                 continue;
             }
@@ -182,7 +180,7 @@ impl<'a> PreparedCoverage<'a> {
             let islands: Vec<_> = file_facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == "island_scope" && node.language == "javascript")
+                .filter(|node| node.kind == crate::models::tags::NodeKind::IslandScope && node.language == crate::models::tags::LanguageId::Javascript)
                 .map(|node| (node.line, node.end_line))
                 .collect();
             let mut owners = hashbrown::HashMap::new();
@@ -487,7 +485,7 @@ fn prepare_chunk_node_details(
                         None
                     };
                     let entrypoint_base =
-                        navigation_node.details.get(NodeDetailKey::ENTRYPOINT_BASE);
+                        navigation_node.detail_get(NodeDetailKey::ENTRYPOINT_BASE);
                     let intrinsic = entrypoint_base
                         .and_then(Value::as_str)
                         .and_then(super::entrypoints::rank);
@@ -705,7 +703,7 @@ impl<'a, 'data, 'tx> ChunkPersistSink<'a, 'data, 'tx> {
             ]);
         }
         for n in &f.nodes {
-            if n.details[NodeDetailKey::DEFAULT_EXPORT] == true {
+            if *n.detail_entry(NodeDetailKey::DEFAULT_EXPORT) == true {
                 let key_hash = self.shared_key_cache.get_or_insert(&n.id)?;
                 self.shared_owner_rows.push([
                     commitments::SharedOwnerKind::DefaultExport as i64,
@@ -974,8 +972,7 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &T
 
 pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
     let doc = node
-        .details
-        .get(NodeDetailKey::DOC)
+        .detail_get(NodeDetailKey::DOC)
         .and_then(Value::as_str)
         .unwrap_or("");
     search.reserve(node.name.len() + node.qualname.len() + node.path.len() + doc.len() + 16);
@@ -1005,8 +1002,7 @@ pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &
         }
     }
     if let Some(decorators) = node
-        .details
-        .get(NodeDetailKey::DECORATORS)
+        .detail_get(NodeDetailKey::DECORATORS)
         .and_then(Value::as_array)
     {
         for decorator in decorators.iter().filter_map(Value::as_str) {
@@ -1014,7 +1010,7 @@ pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &
             search.push_str(decorator);
         }
     }
-    if node.kind == "module" {
+    if node.kind == crate::models::tags::NodeKind::Module {
         let mut expressions: Vec<_> = facts
             .references
             .iter()
@@ -1074,11 +1070,10 @@ fn signature_return_annotation<'a>(signature: &'a str, language: &str) -> Option
 
 fn declared_return_type<'a>(node: &'a Node, facts: &TypedFacts) -> Option<Cow<'a, str>> {
     if let Some(signature) = node
-        .details
-        .get(NodeDetailKey::SIGNATURE)
+        .detail_get(NodeDetailKey::SIGNATURE)
         .and_then(Value::as_str)
     {
-        if let Some(annotation) = signature_return_annotation(signature, &node.language) {
+        if let Some(annotation) = signature_return_annotation(signature, node.language.as_str()) {
             return Some(Cow::Borrowed(annotation));
         }
     }
@@ -1097,6 +1092,10 @@ fn write_return_type(output: &mut String, ty: &crate::semantic::TypeExpr) {
     match ty {
         TypeExpr::Named { name } | TypeExpr::Applied { base: name, .. } => {
             output.push_str(name);
+        }
+        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => write_return_type(output, item),
+        TypeExpr::RustCallArguments { args } => {
+            for arg in args { write_return_type(output, arg); }
         }
         TypeExpr::Unknown => {}
     }
@@ -1245,7 +1244,7 @@ fn prepare_dependencies<'a>(
             continue;
         }
         for node in file.nodes.iter().filter(|node| {
-            node.language == "python"
+            node.language == crate::models::tags::LanguageId::Python
                 && matches!(node.kind.as_str(), "module" | "function" | "method")
         }) {
             let Some(flow) = file.flows.get(node) else {

@@ -51,9 +51,9 @@ pub(in crate::linker) fn admits_static_receiver_candidate(
     candidate: &Node,
     expression: &str,
 ) -> bool {
-    if !crate::linker::types::receiver_language_requires_static(candidate)
-        || candidate.kind != "method"
-        || candidate.details["is_static"] == true
+    if !crate::linker::traits::receiver_language_requires_static(candidate)
+        || candidate.kind != crate::models::tags::NodeKind::Method
+        || *candidate.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true
     {
         return true;
     }
@@ -94,9 +94,9 @@ pub(in crate::linker) fn lexical_this_calls<'facts, 'references>(
     object_ownership: impl Fn(&Node) -> Option<&'facts ObjectOwnershipFact>,
 ) -> HashSet<(&'references str, usize, usize, &'references str)> {
     if !facts.nodes.iter().any(|node| {
-        (node.kind == "function"
-            && node.details["receiver_name"] == "this"
-            && node.details["receiver_type"].is_string())
+        (node.kind == crate::models::tags::NodeKind::Function
+            && *node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == "this"
+            && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).is_string())
             || object_ownership(node).is_some()
     }) {
         return HashSet::new();
@@ -135,7 +135,7 @@ pub(in crate::linker) fn property_reference<'a>(
     let candidate = !matches!(receiver, "this" | "self" | "cls")
         && !member.contains('.')
         && matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
-        && owner.kind != "template_scope"
+        && owner.kind != crate::models::tags::NodeKind::TemplateScope
         && !prior_grammar
         && input
             .interner
@@ -196,17 +196,17 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         .interner
         .lookup_node(input.by_id, reference.source.as_str())
         .filter(|owner| {
-            (owner.kind == "function"
+            (owner.kind == crate::models::tags::NodeKind::Function
                 && matches!(owner.language.as_str(), "typescript" | "javascript")
-                || owner.kind == "method"
-                    && owner.language == "javascript"
-                    && owner.details["prototype_valid"] == true)
-                && owner.details["receiver_name"] == "this"
+                || owner.kind == crate::models::tags::NodeKind::Method
+                    && owner.language == crate::models::tags::LanguageId::Javascript
+                    && *owner.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_VALID) == true)
+                && *owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == "this"
         })
     else {
         return false;
     };
-    let Some(receiver_type) = owner.details["receiver_type"].as_str() else {
+    let Some(receiver_type) = owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str() else {
         return false;
     };
 
@@ -219,7 +219,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         if let Some(candidates) = input.by_qual.get(scope) {
             let mut local = candidates.iter().copied().filter(|candidate| {
                 candidate.path == *path
-                    && candidate.kind == "class"
+                    && candidate.kind == crate::models::tags::NodeKind::Class
                     && candidate.name == receiver_type
             });
             if let Some(candidate) = local.next().filter(|_| local.next().is_none()) {
@@ -230,9 +230,9 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
     }
     if class.is_none()
-        && owner.language == "javascript"
-        && (owner.details["prototype_valid"] == true
-            || owner.details["prototype_lexical_this"] == true)
+        && owner.language == crate::models::tags::LanguageId::Javascript
+        && (*owner.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_VALID) == true
+            || *owner.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_LEXICAL_THIS) == true)
     {
         let at = reference.position();
         if let Symbol::Type(TypeTarget::Local(candidate)) =
@@ -246,9 +246,9 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         {
             if candidate.path == *path
                 && candidate.name == receiver_type
-                && (candidate.kind == "class"
-                    || candidate.kind == "function"
-                        && candidate.details["prototype_constructor"] == true)
+                && (candidate.kind == crate::models::tags::NodeKind::Class
+                    || candidate.kind == crate::models::tags::NodeKind::Function
+                        && *candidate.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_CONSTRUCTOR) == true)
             {
                 class = Some(candidate);
             }
@@ -258,7 +258,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         return false;
     };
 
-    let associated = owner.details["is_static"] == true;
+    let associated = *owner.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
     let member_lookup = LanguageMemberLookup::new(input.semantic_context);
     let methods = member_lookup
         .lookup_member("typescript", class, member_name, associated, class)
@@ -288,8 +288,8 @@ pub(in crate::linker) fn lexical_this_member<'a>(
         .copied()
         .filter(|field| {
             field.path == *path
-                && field.kind == "field"
-                && (field.details["is_static"] == true) == associated
+                && field.kind == crate::models::tags::NodeKind::Field
+                && (*field.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true) == associated
         });
     let field = fields.next();
     let ambiguous =
@@ -313,8 +313,8 @@ pub(in crate::linker) fn lexical_this_member<'a>(
             path,
             reference,
             target.id.clone(),
-            reference.kind.as_str(),
-            "exact",
+            crate::models::tags::EdgeKind::parse(&reference.kind),
+            crate::models::tags::EdgeConfidence::Exact,
         );
         graph.reference_coverage(
             path,
@@ -331,7 +331,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
             reference.column,
             reference.expression.as_str(),
         )) {
-            graph.reference_edge(path, reference, method.id.clone(), "references", "exact");
+            graph.reference_edge(path, reference, method.id.clone(), crate::models::tags::EdgeKind::References, crate::models::tags::EdgeConfidence::Exact);
         }
         graph.reference_coverage(
             path,

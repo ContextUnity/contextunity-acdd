@@ -84,7 +84,7 @@ fn typed_receiver_linker_contract() {
                     graph.edges.iter().any(|edge| edge.kind == "calls"
                         && edge.evidence == expression
                         && graph.facts.nodes.iter().any(|node| node.id == edge.dst
-                            && node.kind == "method"
+                            && node.kind == acdd_index::models::tags::NodeKind::Method
                             && node.name == "querySelectorAll")),
                     "{graph:#?}"
                 );

@@ -139,7 +139,7 @@ fn assert_inferred(facts: &BTreeMap<String, Facts>, graph: &Graph, expression: &
     let target = facts
         .values()
         .flat_map(|facts| &facts.nodes)
-        .find(|node| node.kind == "method" && node.name == method)
+        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == method)
         .unwrap();
     assert!(graph.edges.iter().any(|edge| edge.kind == "calls"
         && edge.dst == target.id

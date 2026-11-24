@@ -37,7 +37,7 @@ fn operand<'a>(
     }?;
     Ok(target.filter(|node| match role {
         SymbolRole::Callable => matches!(node.kind.as_str(), "function" | "method"),
-        SymbolRole::Type | SymbolRole::Constructor => node.kind == "class",
+        SymbolRole::Type | SymbolRole::Constructor => node.kind == crate::models::tags::NodeKind::Class,
     }))
 }
 
@@ -45,7 +45,7 @@ fn emit(
     graph: &mut CompactGraph,
     owner: &Node,
     target: Result<Option<&Node>, ()>,
-    kind: &str,
+    kind: crate::models::tags::EdgeKind,
     line: usize,
     expression: String,
 ) {
@@ -58,7 +58,7 @@ fn emit(
                 kind,
                 line,
                 expression.as_str(),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
             "resolved"
         }
@@ -110,8 +110,8 @@ pub(super) fn compose<'a>(
             _ => "configured attachment".into(),
         };
         let kind = match fact.relation {
-            crate::semantic::AttachmentRelation::UsesModel => "uses_model",
-            crate::semantic::AttachmentRelation::References => "references",
+            crate::semantic::AttachmentRelation::UsesModel => crate::models::tags::EdgeKind::UsesModel,
+            crate::semantic::AttachmentRelation::References => crate::models::tags::EdgeKind::References,
         };
         match (source, target) {
             (Ok(Some(source)), target) => {
@@ -142,7 +142,7 @@ pub(super) fn compose<'a>(
             graph,
             owner,
             target,
-            "references",
+            crate::models::tags::EdgeKind::References,
             fact.position.line,
             expression,
         );
@@ -166,7 +166,7 @@ pub(super) fn compose<'a>(
             graph,
             owner,
             Ok(None),
-            "calls_endpoint",
+            crate::models::tags::EdgeKind::CallsEndpoint,
             fact.position.line,
             expression,
         );

@@ -171,7 +171,7 @@ impl LanguageProfile for Php {
         })
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
-        name == "this" && owner.details["receiver_name"] == "this"
+        name == "this" && *owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == "this"
     }
     fn metadata(
         &self,
@@ -277,7 +277,7 @@ impl LanguageProfile for Php {
                             .iter()
                             .find(|n| n.id == ctx.owner)
                             .is_some_and(|n| {
-                                n.kind == "method" && n.details["receiver_name"] == "this"
+                                n.kind == crate::models::tags::NodeKind::Method && *n.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == "this"
                             });
                     let expression = format!(
                         "{}.{}",

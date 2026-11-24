@@ -1,11 +1,12 @@
+use crate::languages::profile::ProfileLinker;
 use super::context::*;
-use crate::languages::{self, LanguageFamily, LanguageProfile};
+use crate::languages::{LanguageFamily, LanguageProfile};
 use crate::linker::{
     semantic_context,
-    traits::{import_provider_modules, ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER},
+    traits::{import_provider_modules, ImportContext, ImportResolution, ImportScopeState, LanguageLinker, GENERIC_LINKER},
     types::qualified,
 };
-use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind};
+use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, NodeKind};
 use crate::models::{Node, ReceiverHint, Reference};
 use std::borrow::Cow;
 
@@ -28,193 +29,37 @@ struct ImportItem<'a, 'file, 'norm> {
     unproven_guard: bool,
 }
 
-#[cfg(feature = "lang-rust")]
-fn apply_rust_parent_wildcard<'a, 'file>(
-    resolver: &mut FileResolver<'a, 'file>,
-    r: &Reference,
-    profile: Option<&'static dyn LanguageProfile>,
-    scope: &'file str,
-    target_module: &'a Node,
-) where
-    'a: 'file,
-{
-    let input = resolver.input;
-    let path = resolver.path;
-    let file_module = resolver.file_module;
-    let Some(target_facts) = input.all.get_facts(&target_module.path) else {
-        return;
-    };
-    let workspace = languages::workspace_path(path).0;
-    for parent_import in target_facts.references.iter().filter(|import| {
-        import.kind == "imports"
-            && import.source == target_module.id
-            && import.alias.as_deref().is_some_and(|alias| alias != "*")
-    }) {
-        let module = parent_import
-            .module
-            .as_deref()
-            .unwrap_or(&parent_import.expression);
-        let Some(provider) = input
-            .normalized_imports
-            .get(&(target_module.path.as_str(), module))
-            .and_then(Option::as_ref)
-        else {
-            continue;
-        };
-        let alias = parent_import.alias.as_deref().unwrap_or_default();
-        if input
-            .interner
-            .lookup_node(input.by_id, r.source.as_str())
-            .is_some_and(|owner| owner.kind != "module")
-            && (resolver.references.iter().any(|reference| {
-                reference.kind == "imports"
-                    && reference.source == r.source
-                    && reference.alias.as_deref() == Some(alias)
-            }) || input
-                .by_qual
-                .get(qualified(&mut resolver.lookup_key, scope, alias))
-                .is_some_and(|nodes| nodes.iter().any(|node| node.path == *path)))
-        {
-            continue;
-        }
-        if target_facts
-            .references
-            .iter()
-            .filter(|import| {
-                import.kind == "imports"
-                    && import.source == target_module.id
-                    && import.alias.as_deref() == Some(alias)
-            })
-            .count()
-            != 1
-        {
-            continue;
-        }
-        let mut local_providers: Vec<&Node> = input
-            .by_qual
-            .get(provider.namespace.as_str())
-            .into_iter()
-            .flatten()
-            .copied()
-            .filter(|node| {
-                node.language == "rust" && languages::workspace_path(&node.path).0 == workspace
-            })
-            .collect();
-        if local_providers.is_empty() {
-            if let Some(state) = input.semantic_context.import_state("rust") {
-                local_providers.extend(
-                    state
-                        .targets(target_module, alias, file_module)
-                        .iter()
-                        .copied(),
-                );
-            }
-        }
-        if !local_providers.is_empty() {
-            resolver
-                .aliases
-                .entry(scope)
-                .or_default()
-                .entry(alias)
-                .or_default()
-                .extend(local_providers);
-        } else if !provider.relative
-            && !resolver
-                .aliases
-                .get(scope)
-                .is_some_and(|entries| entries.contains_key(alias))
-            && profile
-                .and_then(|p| {
-                    input.dependency_registry.classification_for_path(
-                        p,
-                        module,
-                        &target_module.path,
-                    )
-                })
-                .is_some()
-        {
-            resolver.aliases.entry(scope).or_default().entry(alias).or_default();
-            resolver
-                .external_aliases
-                .entry(scope)
-                .or_default()
-                .insert(alias, Some((provider.namespace.clone(), r.line)));
-        }
-    }
-}
-
-#[cfg(feature = "lang-rust")]
-fn apply_rust_scope_wildcard_bindings<'a, 'file>(
-    resolver: &mut FileResolver<'a, 'file>,
-    r: &Reference,
-    scope: &'file str,
-    target_module: &'a Node,
-) where
-    'a: 'file,
-{
-    let input = resolver.input;
-    let Some(state) = input.semantic_context.import_state("rust") else {
-        return;
-    };
-    for (name, targets) in state.visible_bindings(target_module, resolver.file_module) {
-        if resolver.references.iter().any(|reference| {
-            reference.kind == "imports"
-                && reference.source == r.source
-                && reference.alias.as_deref() == Some(name)
-        }) {
-            continue;
-        }
-        if input
-            .by_qual
-            .get(qualified(&mut resolver.lookup_key, scope, name))
-            .is_some_and(|nodes| nodes.iter().any(|node| node.path == *resolver.path))
-        {
-            resolver.aliases.entry(scope).or_default().remove(name);
-            continue;
-        }
-        use hashbrown::hash_map::Entry;
-        match resolver.aliases.entry(scope).or_default().entry(name) {
-            Entry::Vacant(entry) => {
-                entry.insert(targets.to_vec());
-            }
-            Entry::Occupied(mut entry) => {
-                if entry.get().is_empty() || targets.is_empty() {
-                    entry.get_mut().clear();
-                } else {
-                    entry.get_mut().extend_from_slice(targets);
-                    entry.get_mut().sort_by_key(|node| node.id.as_str());
-                    entry.get_mut().dedup_by_key(|node| node.id.as_str());
-                }
-                if !targets.is_empty() {
-                    if let Some(origin) = resolver
-                        .external_aliases
-                        .get_mut(scope)
-                        .and_then(|bindings| bindings.get_mut(name))
-                    {
-                        *origin = None;
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn apply_wildcard_import<'a, 'file>(
     resolver: &mut FileResolver<'a, 'file>,
+    language_linker: &dyn LanguageLinker,
     item: &ImportItem<'a, 'file, '_>,
 ) where
     'a: 'file,
 {
+    let mut state = ImportScopeState {
+        input: resolver.input,
+        path: resolver.path,
+        file_module: resolver.file_module,
+        facts: resolver.facts,
+        references: resolver.references,
+        aliases: &mut resolver.aliases,
+        external_aliases: &mut resolver.external_aliases,
+        lookup_key: &mut resolver.lookup_key,
+    };
+    if language_linker.apply_wildcard_import(
+        &mut state,
+        item.r,
+        item.profile,
+        item.scope,
+        &item.modules,
+    ) {
+        return;
+    }
     let input = resolver.input;
-    let is_rust = item.profile.is_some_and(|profile| profile.id() == "rust");
     for &target_module in &item.modules {
-        if let Some(module_nodes) = input
-            .by_module
-            .get(target_module.path.as_str())
-            .filter(|_| !is_rust)
-        {
+        if let Some(module_nodes) = input.by_module.get(target_module.path.as_str()) {
             for n in module_nodes {
-                if n.kind != "module" && !n.name.is_empty() {
+                if n.kind != crate::models::tags::NodeKind::Module && !n.name.is_empty() {
                     resolver
                         .aliases
                         .entry(item.scope)
@@ -225,79 +70,56 @@ fn apply_wildcard_import<'a, 'file>(
                 }
             }
         }
-        if !is_rust {
-            if let Some(target_facts) = input.all.get_facts(&target_module.path) {
-                for import_ref in target_facts.references.iter().filter(|import| {
-                    import.kind == EdgeKind::Imports.as_str() && import.source == target_module.id
-                }) {
-                    let Some(name) = import_ref.alias.as_deref().filter(|alias| *alias != "*")
-                    else {
-                        continue;
-                    };
-                    let locally_declared = input
-                        .by_qual
-                        .get(qualified(&mut resolver.lookup_key, item.scope, name))
-                        .is_some_and(|nodes| {
-                            nodes
-                                .iter()
-                                .any(|n| n.path == *resolver.path && n.kind != "module_declaration")
-                        });
-                    let already_bound = locally_declared
-                        || resolver
-                            .aliases
-                            .get(item.scope)
-                            .is_some_and(|entries| entries.contains_key(name))
-                        || resolver.references.iter().any(|reference| {
-                            reference.kind == EdgeKind::Imports.as_str()
-                                && reference.source == item.r.source
-                                && reference.alias.as_deref() == Some(name)
-                        });
-                    if already_bound {
-                        continue;
-                    }
-                    if let Some(target_ext) = external_origin_at(
-                        input,
-                        target_module,
-                        name,
-                        item.scope,
-                        item.r.line,
-                        true,
-                    ) {
-                        resolver
-                            .aliases
-                            .entry(item.scope)
-                            .or_default()
-                            .entry(name)
-                            .or_default();
-                        resolver
-                            .external_aliases
-                            .entry(item.scope)
-                            .or_default()
-                            .insert(name, Some(target_ext));
-                    }
+        if let Some(target_facts) = input.all.get_facts(&target_module.path) {
+            for import_ref in target_facts.references.iter().filter(|import| {
+                import.kind == EdgeKind::Imports.as_str() && import.source == target_module.id
+            }) {
+                let Some(name) = import_ref.alias.as_deref().filter(|alias| *alias != "*") else {
+                    continue;
+                };
+                let locally_declared = input
+                    .by_qual
+                    .get(qualified(&mut resolver.lookup_key, item.scope, name))
+                    .is_some_and(|nodes| {
+                        nodes
+                            .iter()
+                            .any(|n| n.path == *resolver.path && n.kind != crate::models::tags::NodeKind::ModuleDeclaration)
+                    });
+                let already_bound = locally_declared
+                    || resolver
+                        .aliases
+                        .get(item.scope)
+                        .is_some_and(|entries| entries.contains_key(name))
+                    || resolver.references.iter().any(|reference| {
+                        reference.kind == EdgeKind::Imports.as_str()
+                            && reference.source == item.r.source
+                            && reference.alias.as_deref() == Some(name)
+                    });
+                if already_bound {
+                    continue;
+                }
+                if let Some(target_ext) = external_origin_at(
+                    input,
+                    target_module,
+                    name,
+                    item.scope,
+                    item.r.line,
+                    true,
+                ) {
+                    resolver
+                        .aliases
+                        .entry(item.scope)
+                        .or_default()
+                        .entry(name)
+                        .or_default();
+                    resolver
+                        .external_aliases
+                        .entry(item.scope)
+                        .or_default()
+                        .insert(name, Some(target_ext));
                 }
             }
         }
-        #[cfg(feature = "lang-rust")]
-        if item.modules.len() == 1
-            && is_rust
-            && resolver
-                .file_module
-                .strip_prefix(&target_module.qualname)
-                .is_some_and(|suffix| suffix.starts_with('.'))
-        {
-            apply_rust_parent_wildcard(resolver, item.r, item.profile, item.scope, target_module);
-        }
-    }
-    #[cfg(feature = "lang-rust")]
-    if is_rust
-        && item.modules.len() == 1
-        && input
-            .interner
-            .lookup_node(input.by_id, item.r.source.as_str())
-            .is_some_and(|owner| owner.kind != "module")
-    {
-        apply_rust_scope_wildcard_bindings(resolver, item.r, item.scope, item.modules[0]);
     }
 }
 
@@ -312,7 +134,7 @@ fn external_origin_at<'a>(
     match input.semantic_context.imported_alias(module, name) {
         Some(semantic_context::Imported::External(origin, _, reference, _)) => {
             if enforce_visibility
-                && input.semantic_context.import_state(&module.language).is_some_and(|state| {
+                && input.semantic_context.import_state(module.language.as_str()).is_some_and(|state| {
                     !state.external_binding_visible(
                         module,
                         name,
@@ -331,6 +153,7 @@ fn external_origin_at<'a>(
 
 fn apply_aliased_import<'a, 'file>(
     resolver: &mut FileResolver<'a, 'file>,
+    language_linker: &dyn LanguageLinker,
     item: &mut ImportItem<'a, 'file, '_>,
     alias: &'a str,
 ) where
@@ -343,7 +166,7 @@ fn apply_aliased_import<'a, 'file>(
         .is_some_and(|nodes| {
             nodes
                 .iter()
-                .any(|n| n.path == *resolver.path && n.kind != "module_declaration")
+                .any(|n| n.path == *resolver.path && n.kind != crate::models::tags::NodeKind::ModuleDeclaration)
         });
     let mut targets = if local_declaration {
         Vec::new()
@@ -399,29 +222,24 @@ fn apply_aliased_import<'a, 'file>(
             }
         }
     }
-    #[cfg(feature = "lang-rust")]
-    if item.profile.is_some_and(|profile| profile.id() == "rust")
-        && targets.is_empty()
-        && !local_declaration
-        && item.normalized.is_some_and(|import| import.relative)
-    {
-        if let Some(semantic_context::Imported::External(origin, position, _, _)) = input
-            .interner
-            .lookup_symbol(&item.r.source)
-            .and_then(|owner| input.semantic_context.imports.get(&owner))
-            .and_then(|bindings| {
-                input
-                    .interner
-                    .lookup_symbol(alias)
-                    .and_then(|name| bindings.get(&name))
-            })
-        {
-            resolver
-                .external_aliases
-                .entry(item.scope)
-                .or_default()
-                .insert(alias, Some((origin.replace("::", "."), position.line)));
-        }
+    if targets.is_empty() && !local_declaration {
+        let mut state = ImportScopeState {
+            input: resolver.input,
+            path: resolver.path,
+            file_module: resolver.file_module,
+            facts: resolver.facts,
+            references: resolver.references,
+            aliases: &mut resolver.aliases,
+            external_aliases: &mut resolver.external_aliases,
+            lookup_key: &mut resolver.lookup_key,
+        };
+        language_linker.apply_aliased_external_fallback(
+            &mut state,
+            item.r,
+            item.normalized,
+            item.scope,
+            alias,
+        );
     }
     let alias_taken = resolver
         .aliases
@@ -545,6 +363,7 @@ where
 
 fn emit_import_edges<'a, 'file>(
     resolver: &mut FileResolver<'a, 'file>,
+    language_linker: &dyn LanguageLinker,
     multi_file_allowed: bool,
     resolved: bool,
     item: &ImportItem<'a, 'file, '_>,
@@ -557,18 +376,8 @@ fn emit_import_edges<'a, 'file>(
     let import_owner = input
         .interner
         .lookup_node(input.by_id, r.source.as_str())
-        .filter(|owner| {
-            owner.language == LanguageId::Html.as_str()
-                || (owner.kind == NodeKind::TemplateScope.as_str()
-                    && owner.details["embedded_language"] == LanguageId::Javascript.as_str())
-        })
-        .and_then(|owner| owner.details["html_import_owner"].as_str())
-        .filter(|id| {
-            input.interner.lookup_node(input.by_id, id).is_some_and(|node| {
-                node.kind == NodeKind::Module.as_str()
-                    && node.language == LanguageId::Html.as_str()
-                    && node.path == *path
-            })
+        .and_then(|owner| {
+            language_linker.import_edge_owner(owner, input.by_id, input.interner, path)
         })
         .unwrap_or(r.source.as_str());
     if item.modules.len() == 1 {
@@ -576,31 +385,22 @@ fn emit_import_edges<'a, 'file>(
             path,
             import_owner,
             &item.modules[0].id,
-            EdgeKind::Imports.as_str(),
+            EdgeKind::Imports,
             r.line,
             r.expression.as_str(),
-            EdgeConfidence::Exact.as_str(),
+            EdgeConfidence::Exact,
         );
-        if item
-            .profile
-            .is_some_and(|profile| profile.id() == LanguageId::Typescript.as_str())
-        {
-            if let [declaration] = item.candidates.as_slice() {
-                if matches!(
-                    declaration.kind.as_str(),
-                    k if k == NodeKind::Type.as_str() || k == NodeKind::Interface.as_str()
-                ) && declaration.path == item.modules[0].path
-                {
-                    resolver.graph.push_edge(
-                        path,
-                        import_owner,
-                        &declaration.id,
-                        EdgeKind::Imports.as_str(),
-                        r.line,
-                        r.expression.as_str(),
-                        EdgeConfidence::Exact.as_str(),
-                    );
-                }
+        if let [declaration] = item.candidates.as_slice() {
+            if language_linker.admits_imported_declaration_edge(declaration, item.modules[0]) {
+                resolver.graph.push_edge(
+                    path,
+                    import_owner,
+                    &declaration.id,
+                    EdgeKind::Imports,
+                    r.line,
+                    r.expression.as_str(),
+                    EdgeConfidence::Exact,
+                );
             }
         }
     } else if multi_file_allowed && resolved {
@@ -618,10 +418,10 @@ fn emit_import_edges<'a, 'file>(
                 path,
                 import_owner,
                 &target_module.id,
-                EdgeKind::Imports.as_str(),
+                EdgeKind::Imports,
                 r.line,
                 r.expression.as_str(),
-                EdgeConfidence::Exact.as_str(),
+                EdgeConfidence::Exact,
             );
         }
     }
@@ -631,10 +431,10 @@ fn emit_import_edges<'a, 'file>(
                 path,
                 import_owner,
                 &item.candidates[0].id,
-                "imports",
+                crate::models::tags::EdgeKind::Imports,
                 r.line,
                 r.expression.as_str(),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
         }
         if item.stub_symbol {
@@ -643,10 +443,10 @@ fn emit_import_edges<'a, 'file>(
                     path,
                     import_owner,
                     &stub.id,
-                    "imports",
+                    crate::models::tags::EdgeKind::Imports,
                     r.line,
                     r.expression.as_str(),
-                    "exact",
+                    crate::models::tags::EdgeConfidence::Exact,
                 );
             }
         }
@@ -655,12 +455,12 @@ fn emit_import_edges<'a, 'file>(
                 path,
                 import_owner,
                 &item.candidates[0].id,
-                EdgeKind::Imports.as_str(),
+                EdgeKind::Imports,
                 r.line,
                 r.expression.as_str(),
-                EdgeConfidence::Exact.as_str(),
+            EdgeConfidence::Exact,
             );
-        } else if item.profile.is_some_and(|profile| profile.id() == "python")
+        } else if language_linker.emits_single_imported_target_edge()
             && !item.child_module
             && !item.stub_symbol
             && item.imported_targets.len() == 1
@@ -669,72 +469,11 @@ fn emit_import_edges<'a, 'file>(
                 path,
                 import_owner,
                 &item.imported_targets[0].id,
-                "imports",
+                crate::models::tags::EdgeKind::Imports,
                 r.line,
                 r.expression.as_str(),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
-        }
-    }
-}
-
-#[cfg(feature = "lang-rust")]
-fn apply_rust_module_star_reexports<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
-where
-    'a: 'file,
-{
-    let input = resolver.input;
-    let Some(module) = resolver
-        .facts
-        .nodes
-        .iter()
-        .find(|node| node.kind == "module" && node.language == "rust")
-    else {
-        return;
-    };
-    if resolver.references.iter().any(|reference| {
-        reference.kind == "imports"
-            && reference.source == module.id
-            && reference.alias.as_deref() == Some("*")
-    }) {
-        if let Some(state) = input.semantic_context.import_state("rust") {
-            let bindings = resolver.aliases.entry(module.qualname.as_str()).or_default();
-            for (name, targets) in state.visible_bindings(module, &module.qualname) {
-                if input
-                    .by_qual
-                    .get(qualified(&mut resolver.lookup_key, &module.qualname, name))
-                    .is_some_and(|nodes| {
-                        nodes
-                            .iter()
-                            .any(|node| node.path == *resolver.path && node.kind != "module_declaration")
-                    })
-                {
-                    bindings.remove(name);
-                } else {
-                    bindings.insert(name, targets.to_vec());
-                }
-            }
-        }
-    }
-    let bindings = resolver.aliases.entry(module.qualname.as_str()).or_default();
-    if let Some(imports) = input
-        .interner
-        .lookup_symbol(&module.id)
-        .and_then(|id| input.semantic_context.imports.get(&id))
-    {
-        for imported in imports.values() {
-            if let semantic_context::Imported::External(origin, position, reference, _) = imported {
-                if let Some(name) = reference.alias.as_deref() {
-                    if bindings.get(name).is_none_or(Vec::is_empty) {
-                        resolver
-                            .external_aliases
-                            .entry(module.qualname.as_str())
-                            .or_default()
-                            .entry(name)
-                            .or_insert_with(|| Some((origin.replace("::", "."), position.line)));
-                    }
-                }
-            }
         }
     }
 }
@@ -803,7 +542,7 @@ where
         });
         candidates.sort_by(|a, b| a.id.cmp(&b.id));
         candidates.dedup_by_key(|n| &n.id);
-        candidates.retain(|n| n.kind != NodeKind::Impl.as_str());
+        candidates.retain(|n| n.kind != NodeKind::Impl);
         crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
         let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
             profile.and_then(|p| {
@@ -826,7 +565,7 @@ where
                 .as_deref()
                 .is_some_and(|m| m.ends_with(".*") || m.ends_with("::*"));
         let export_type_only = modules.first().is_some_and(|m| {
-            m.details["exports"].as_array().is_some_and(|bindings| {
+            m.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|bindings| {
                 bindings.iter().any(|b| {
                     b["name"].as_str() == Some(r.expression.as_str()) && b["type_only"] == true
                 })
@@ -835,16 +574,17 @@ where
         let is_type_only = matches!(r.receiver_hint.as_ref(), Some(ReceiverHint::TypeOnlyImport))
             || export_type_only;
         let unproven_guard = is_type_only
-            && profile.is_some_and(|p| p.id() == "python")
-            && !super::super::python::semantic_context::has_proven_type_checking(
-                path,
-                facts,
-                input.modules_by_namespace,
-                input.dependency_registry,
-                profile.unwrap().family(),
-                input.interner,
-                input.node_rebindings,
-            );
+            && profile.is_some_and(|profile| {
+                language_linker.type_only_import_is_unproven(
+                    profile,
+                    path,
+                    facts,
+                    input.modules_by_namespace,
+                    input.dependency_registry,
+                    input.interner,
+                    input.node_rebindings,
+                )
+            });
         let mut item = ImportItem {
             r,
             profile,
@@ -864,14 +604,23 @@ where
             unproven_guard,
         };
         if item.is_wildcard {
-            apply_wildcard_import(resolver, &item);
+            apply_wildcard_import(resolver, language_linker, &item);
         } else if let Some(alias) = r.alias.as_deref() {
-            apply_aliased_import(resolver, &mut item, alias);
+            apply_aliased_import(resolver, language_linker, &mut item, alias);
         }
         let multi_file_allowed = language_linker.allows_multi_file_modules();
         let resolved = emit_import_coverage(resolver, multi_file_allowed, &item);
-        emit_import_edges(resolver, multi_file_allowed, resolved, &item);
+        emit_import_edges(resolver, language_linker, multi_file_allowed, resolved, &item);
     }
-    #[cfg(feature = "lang-rust")]
-    apply_rust_module_star_reexports(resolver);
+    let mut state = ImportScopeState {
+        input: resolver.input,
+        path: resolver.path,
+        file_module: resolver.file_module,
+        facts: resolver.facts,
+        references: resolver.references,
+        aliases: &mut resolver.aliases,
+        external_aliases: &mut resolver.external_aliases,
+        lookup_key: &mut resolver.lookup_key,
+    };
+    language_linker.apply_module_star_reexports(&mut state);
 }

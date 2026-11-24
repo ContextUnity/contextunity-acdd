@@ -98,7 +98,7 @@ fn commonjs_provenance_matrix() {
         let source = format!("{prefix}{declaration}{body}");
         let facts = FrameworkHarness::extract("origin.cjs", "javascript", &source).unwrap();
         assert!(facts.errors.is_empty(), "{source}: {:?}", facts.errors);
-        let module = facts.nodes.iter().find(|node| node.kind == "module").unwrap();
+        let module = facts.nodes.iter().find(|node| node.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
         let provenance = module.details["commonjs_bindings"].as_array().unwrap();
         assert_eq!(provenance.len(), 1, "{source}");
         assert_eq!(provenance[0]["alias"], "assert");
@@ -116,7 +116,7 @@ fn commonjs_provenance_matrix() {
                 let module = facts
                     .nodes
                     .iter()
-                    .find(|node| node.kind == "module")
+                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
                     .unwrap();
                 assert_eq!(module.details["commonjs_bindings"][0]["invalidated"], false);
                 let graph = FrameworkHarness::link(&BTreeMap::from([("chain.cjs".into(), facts)]));
@@ -138,7 +138,7 @@ fn commonjs_provenance_matrix() {
         let module = facts
             .nodes
             .iter()
-            .find(|node| node.kind == "module")
+            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
             .unwrap();
         assert_eq!(module.details["commonjs_bindings"], serde_json::json!([]));
         let graph = FrameworkHarness::link(&BTreeMap::from([("scope.cjs".into(), facts)]));
@@ -257,7 +257,7 @@ fn commonjs_delta_matrix() {
                         .unwrap()
                         .nodes
                         .into_iter()
-                        .find(|node| node.kind == "module")
+                        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
                         .unwrap()
                         .details["commonjs_bindings"]
                         .clone()

@@ -386,7 +386,7 @@ impl<'rules> Proof<'_, 'rules> {
                         self.facts
                             .nodes
                             .iter()
-                            .find(|node| node.kind == "module")
+                            .find(|node| node.kind == crate::models::tags::NodeKind::Module)
                             .map(|node| node.id.as_str())
                     })
                     .flatten()

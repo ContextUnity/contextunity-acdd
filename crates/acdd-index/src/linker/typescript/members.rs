@@ -145,9 +145,9 @@ fn collect_type_script_classes(all: &dyn crate::models::FactsLookup) -> Vec<&Nod
         .filter(|node| {
             matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
                 && (matches!(node.kind.as_str(), "class" | "interface" | "enum")
-                    || (node.language == "javascript"
-                        && node.kind == "function"
-                        && node.details["prototype_constructor"] == true))
+                    || (node.language == crate::models::tags::LanguageId::Javascript
+                        && node.kind == crate::models::tags::NodeKind::Function
+                        && *node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_CONSTRUCTOR) == true))
         })
         .collect()
 }
@@ -157,18 +157,18 @@ fn is_valid_prototype_method<'a>(
     method: &'a Node,
     resolver: &impl SemanticResolver<'a>,
 ) -> bool {
-    if method.details["prototype"] != true {
+    if *method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE) != true {
         return true;
     }
-    if method.details["prototype_valid"] != true {
+    if *method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_VALID) != true {
         return false;
     }
-    let assignment_line = method.details["prototype_assignment_line"]
+    let assignment_line = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_LINE)
         .as_u64()
         .unwrap_or(method.line as u64) as usize;
-    let assignment_column = method.details["prototype_assignment_column"]
+    let assignment_column = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_COLUMN)
         .as_u64()
-        .or_else(|| method.details["column"].as_u64())
+        .or_else(|| method.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64())
         .unwrap_or(0) as usize;
     let lexical_class = resolver.resolve_symbol(
         method,
@@ -181,10 +181,10 @@ fn is_valid_prototype_method<'a>(
     );
     let exact_owner =
         matches!(lexical_class, Symbol::Type(TypeTarget::Local(node)) if node.id == class.id);
-    let class_visible = class.kind == "function"
+    let class_visible = class.kind == crate::models::tags::NodeKind::Function
         || class.line < assignment_line
         || (class.line == assignment_line
-            && class.details["column"].as_u64().unwrap_or(0) < assignment_column as u64);
+            && class.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) < assignment_column as u64);
     exact_owner && class_visible
 }
 
@@ -199,12 +199,12 @@ fn collect_own_class_members<'a>(
     let methods = own.entry(class.id.as_str()).or_default();
     for method in &facts.nodes {
         let is_method = matches!(method.kind.as_str(), "method" | "function")
-            || (matches!(class.kind.as_str(), "enum" | "interface") && method.kind == "field");
-        let is_field = method.kind == "field";
+            || (matches!(class.kind.as_str(), "enum" | "interface") && method.kind == crate::models::tags::NodeKind::Field);
+        let is_field = method.kind == crate::models::tags::NodeKind::Field;
         if !is_method && !is_field {
             continue;
         }
-        let Some(name) = method.details["prototype_member"].as_str().or_else(|| {
+        let Some(name) = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_MEMBER).as_str().or_else(|| {
             method
                 .qualname
                 .strip_prefix(&prefix)
@@ -219,20 +219,20 @@ fn collect_own_class_members<'a>(
             own_fields
                 .entry(class.id.as_str())
                 .or_default()
-                .entry((name, method.details["is_static"] == true))
+                .entry((name, *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true))
                 .or_default()
                 .push(method);
         }
         if is_method {
             methods
-                .entry((name, method.details["is_static"] == true))
+                .entry((name, *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true))
                 .or_default()
                 .push(method);
         }
     }
     for candidates in methods.values_mut() {
-        if candidates.iter().any(|node| node.details["is_stub"] != true) {
-            candidates.retain(|node| node.details["is_stub"] != true);
+        if candidates.iter().any(|node| *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true) {
+            candidates.retain(|node| *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true);
         }
         candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
     }
@@ -281,7 +281,7 @@ fn collect_class_bases<'a>(
             _ => {}
         }
     }
-    if class.kind == "class" && bases.len() > 1 {
+    if class.kind == crate::models::tags::NodeKind::Class && bases.len() > 1 {
         invalid = true;
     }
     (bases, invalid)
@@ -293,7 +293,7 @@ fn record_concrete_implementors<'a>(
     parents: &HashMap<&'a str, Option<Vec<&'a Node>>>,
     implementors: &mut HashMap<&'a str, Vec<&'a Node>>,
 ) {
-    if class.kind != "class" || class.details["is_abstract"] == true {
+    if class.kind != crate::models::tags::NodeKind::Class || *class.detail_entry(crate::models::details::NodeDetailKey::IS_ABSTRACT) == true {
         return;
     }
     for base in implements_targets

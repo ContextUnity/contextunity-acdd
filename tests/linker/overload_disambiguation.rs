@@ -21,7 +21,7 @@ class Category:
     let move_fields: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|n| n.kind == "field" && n.name == "move")
+        .filter(|n| n.kind == acdd_index::models::tags::NodeKind::Field && n.name == "move")
         .collect();
     assert_eq!(
         move_fields.len(),
@@ -32,7 +32,7 @@ class Category:
     let real_field = facts
         .nodes
         .iter()
-        .find(|n| n.kind == "field" && n.name == "real_field");
+        .find(|n| n.kind == acdd_index::models::tags::NodeKind::Field && n.name == "real_field");
     assert!(real_field.is_some(), "Real assignment must create a field");
 }
 

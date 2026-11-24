@@ -1,8 +1,9 @@
+use crate::languages::profile::ProfileLinker;
 use super::input::ResolutionInput;
 use crate::languages::{
     self, LanguageProfile,
 };
-use crate::linker::{html, semantic_context, value_flow};
+use crate::linker::{semantic_context, value_flow};
 use crate::models::{
     compact_graph::CompactGraph as Graph,
     Facts, Node, Reference,
@@ -64,17 +65,21 @@ pub(in crate::linker) fn emit_inferred(
         }
         semantic_context::Member::External(module, line, Some(provider)) => {
             let member = reference.expression.rsplit('.').next().unwrap_or_default();
-            let diagnostic_marker = if languages::for_path(Path::new(path))
-                .is_some_and(|profile| profile.id() == "python" && !profile.is_stdlib(module))
-            {
+            let profile = languages::for_path(Path::new(path));
+            let diagnostic_marker = if profile.is_some_and(|profile| {
+                profile.linker().framework_magic_diagnostic(profile, module)
+            }) {
                 "; diagnostic_reason=framework_magic"
             } else {
                 ""
             };
+            let label = profile.map_or("finite framework member", |profile| {
+                profile.linker().framework_member_label()
+            });
             (
                 "external",
                 format!(
-                    "finite Python framework member from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred{diagnostic_marker}"
+                    "{label} from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred{diagnostic_marker}"
                 )
                 .into(),
             )
@@ -108,13 +113,13 @@ pub(in crate::linker) fn emit_inferred(
             path,
             reference,
             node.id.clone(),
-            reference.kind.as_str(),
-            "inferred",
+            crate::models::tags::EdgeKind::parse(&reference.kind),
+            crate::models::tags::EdgeConfidence::Inferred,
         );
     }
 }
 
-pub(super) type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
+pub(crate) type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
 
 pub(super) fn chained_member_receiver<'a, 'idx>(
     receiver: &'idx value_flow::TypeTarget<'a>,
@@ -132,25 +137,6 @@ pub(super) fn chained_member_receiver<'a, 'idx>(
         receiver = match receiver.as_ref() {
             value_flow::TypeTarget::Local(class) => {
                 value_flow.field_type(class, field).map(Cow::Borrowed)
-            }
-            value_flow::TypeTarget::RustDeref { .. }
-            | value_flow::TypeTarget::RustReference { .. } => {
-                profile
-                    .and_then(|profile| profile.linker().local_receiver_class(receiver.as_ref()))
-                    .and_then(|class| value_flow.field_type(class, field))
-                    .map(Cow::Borrowed)
-                    .or_else(|| {
-                        match value_flow::SemanticResolver::resolve_member(
-                            semantic_context,
-                            receiver.as_ref(),
-                            field,
-                            owner,
-                            at,
-                        ) {
-                            value_flow::Symbol::Type(target) => Some(Cow::Owned(target)),
-                            _ => None,
-                        }
-                    })
             }
             value_flow::TypeTarget::ConfiguredReceiver { .. }
             | value_flow::TypeTarget::Collection { .. } => {
@@ -176,17 +162,35 @@ pub(super) fn chained_member_receiver<'a, 'idx>(
                 })
                 .map(Cow::Owned)
             }
-            _ => None,
+            other => profile
+                .and_then(|profile| profile.linker().local_receiver_class(other))
+                .and_then(|class| {
+                    value_flow
+                        .field_type(class, field)
+                        .map(Cow::Borrowed)
+                        .or_else(|| {
+                            match value_flow::SemanticResolver::resolve_member(
+                                semantic_context,
+                                receiver.as_ref(),
+                                field,
+                                owner,
+                                at,
+                            ) {
+                                value_flow::Symbol::Type(target) => Some(Cow::Owned(target)),
+                                _ => None,
+                            }
+                        })
+                }),
         }?;
     }
     Some(receiver)
 }
 
 pub(in crate::linker) fn reference_scope<'a>(owner: &'a Node, path: &str) -> &'a str {
-    if owner.details["included_from"].is_string()
-        && owner.details["source_path"].as_str() == Some(path)
+    if owner.detail_entry(crate::models::details::NodeDetailKey::INCLUDED_FROM).is_string()
+        && owner.detail_entry(crate::models::details::NodeDetailKey::SOURCE_PATH).as_str() == Some(path)
     {
-        owner.details["source_qualname"]
+        owner.detail_entry(crate::models::details::NodeDetailKey::SOURCE_QUALNAME)
             .as_str()
             .filter(|scope| !scope.is_empty())
             .unwrap_or(owner.qualname.as_str())
@@ -239,12 +243,6 @@ pub(super) fn document_symbol_candidates<'a>(
 
 pub(super) struct LinkerContext<'a> {
     pub(super) member_lookup: semantic_context::LanguageMemberLookup<'a, 'a>,
-    #[cfg(feature = "lang-html")]
-    pub(super) html_templates: html::templates::TemplateRegistry<'a>,
-    #[cfg(feature = "lang-html")]
-    pub(super) template_roots: html::templates::TemplateRootRegistry<'a>,
-    #[cfg(feature = "lang-html")]
-    pub(super) html_scripts: html::scripts::ScriptRegistry<'a>,
 }
 
 pub(super) struct FileResolver<'a, 'file> {
@@ -261,12 +259,7 @@ pub(super) struct FileResolver<'a, 'file> {
     pub(super) external_aliases: HashMap<&'file str, ExternalAliases<'a>>,
     pub(super) type_only_aliases: HashMap<&'file str, HashSet<&'a str>>,
     pub(super) lookup_key: String,
-    #[cfg(feature = "lang-html")]
-    pub(super) template_loads: Vec<&'file Reference>,
-    #[cfg(feature = "lang-html")]
-    pub(super) template_registry_rules: Vec<&'file languages::manifests::syntax::SyntaxRule>,
-    #[cfg(feature = "lang-html")]
-    pub(super) template_rules: Vec<&'file languages::manifests::syntax::SyntaxRule>,
+    pub(super) reference_extension: Option<Box<dyn crate::linker::traits::ReferenceExtension + 'file>>,
 }
 
 impl<'a, 'file> FileResolver<'a, 'file>
@@ -292,7 +285,7 @@ where
             evidence_pool: HashSet::new(),
         };
         for edge in &facts.edges {
-            graph.push_public_edge(edge);
+            graph.try_push_public_edge(edge).expect("invalid edge tag in linker facts");
         }
         Self {
             input,
@@ -308,12 +301,7 @@ where
             external_aliases: HashMap::new(),
             type_only_aliases: HashMap::new(),
             lookup_key: String::new(),
-            #[cfg(feature = "lang-html")]
-            template_loads: Vec::new(),
-            #[cfg(feature = "lang-html")]
-            template_registry_rules: Vec::new(),
-            #[cfg(feature = "lang-html")]
-            template_rules: Vec::new(),
+            reference_extension: None,
         }
     }
 }

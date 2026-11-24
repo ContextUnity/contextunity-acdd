@@ -63,7 +63,7 @@ impl<'a> Contracts<'a> {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(_, node)| node.kind != "component")
+            .filter(|(_, node)| node.kind != crate::models::tags::NodeKind::Component)
         {
             let mut hasher = ResolutionHasher::default();
             serde_json::to_writer(
@@ -102,7 +102,7 @@ impl<'a> Contracts<'a> {
                 if let Some(flow) = store.get(node) {
                     flows.insert(node.id.as_str(), Cow::Borrowed(flow));
                 }
-            } else if let Some(value) = node.details.get("value_flow") {
+            } else if let Some(value) = node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW) {
                 if let Ok(flow) = ValueFlowFacts::deserialize(value) {
                     flows.insert(node.id.as_str(), Cow::Owned(flow));
                 }
@@ -229,23 +229,20 @@ impl<'a> Contracts<'a> {
         if let Some(store) = self.typed_flows {
             store.state(node).is_none()
         } else {
-            node.details.get("value_flow").is_none_or(Value::is_null)
+            node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW).is_none_or(Value::is_null)
         }
     }
 
     fn raw_details(&self, node: &Node, mut details: Value) -> Value {
         if let Some(state) = self.typed_flows.and_then(|store| store.state(node)) {
             let value = match state {
-                FlowState::Valid {
-                    facts,
-                    original: None,
-                    ..
-                } if facts.is_empty() => None,
-                FlowState::Valid {
-                    facts,
-                    original: None,
-                    ..
-                } if node.kind == "module" && node.language == "vue" => {
+                FlowState::Valid { facts } if facts.is_empty() => None,
+                FlowState::Valid { facts }
+                    if crate::languages::by_id(node.language.as_str()).is_some_and(|profile| {
+                        crate::languages::profile::ProfileLinker::linker(profile)
+                            .strips_component_macro_raw_details(node)
+                    }) =>
+                {
                     let mut stripped = facts.clone();
                     stripped.facts.retain(|f| {
                         !matches!(f, crate::semantic::FrameworkFact::ComponentMacro(_))
@@ -256,26 +253,8 @@ impl<'a> Contracts<'a> {
                         Some(json!(stripped))
                     }
                 }
-                FlowState::Valid {
-                    original: Some(value),
-                    ..
-                } if node.kind == "module" && node.language == "vue" => {
-                    let mut stripped = value.clone();
-                    if let Some(obj) = stripped.as_object_mut() {
-                        obj.remove("component_macros");
-                    }
-                    Some(stripped)
-                }
-                FlowState::Valid {
-                    original: Some(value),
-                    ..
-                }
-                | FlowState::Invalid(value) => Some(value.clone()),
-                FlowState::Valid {
-                    facts,
-                    original: None,
-                    ..
-                } => Some(json!(facts)),
+                FlowState::Invalid(value) => Some(value.clone()),
+                FlowState::Valid { facts } => Some(json!(facts)),
             };
             if let Some(value) = value {
                 if !details.is_object() {
@@ -329,6 +308,9 @@ impl<'a> Contracts<'a> {
         }
         match ty {
             TypeExpr::Unknown => json!({"kind": "unknown"}),
+            TypeExpr::RustRange { item } => json!({"rust_range": self.type_contract(owner, item, stack, depth + 1)}),
+            TypeExpr::RustArray { item } => json!({"rust_array": self.type_contract(owner, item, stack, depth + 1)}),
+            TypeExpr::RustCallArguments { args } => json!({"rust_call_arguments": args.iter().map(|arg| self.type_contract(owner, arg, stack, depth + 1)).collect::<Vec<_>>()}),
             TypeExpr::Applied { base, args } => json!({"applied": base, "args": args.iter()
                 .map(|arg| self.type_contract(owner, arg, stack, depth + 1)).collect::<Vec<_>>()}),
             TypeExpr::Named { name } => {
@@ -339,7 +321,7 @@ impl<'a> Contracts<'a> {
                     ) {
                         return nominal(node);
                     }
-                    if node.kind == "type" && !stack.contains(&node.id.as_str()) {
+                    if node.kind == crate::models::tags::NodeKind::Type && !stack.contains(&node.id.as_str()) {
                         if let Some(alias) = self
                             .flows
                             .get(node.id.as_str())
@@ -353,7 +335,7 @@ impl<'a> Contracts<'a> {
                     }
                 }
                 if self.builtin_unshadowed(owner, name)
-                    && languages::by_id(&owner.language)
+                    && languages::by_id(owner.language.as_str())
                         .is_some_and(|profile| profile.builtin_type(name))
                 {
                     json!({"builtin": name})
@@ -378,6 +360,7 @@ impl<'a> Contracts<'a> {
         }
         match value {
             ValueExpr::Unknown => json!({"kind": "unknown"}),
+            ValueExpr::RustClosure => json!({"kind": "rust_closure"}),
             ValueExpr::LoopElement { .. } | ValueExpr::CallbackParam { .. } => {
                 json!({"opaque_value": value})
             }
@@ -468,7 +451,7 @@ impl<'a> Contracts<'a> {
                 let Some(target) = self.local(owner, callee, at) else {
                     if matches!(value, ValueExpr::Construct { .. })
                         && self.builtin_unshadowed(owner, callee)
-                        && languages::by_id(&owner.language)
+                        && languages::by_id(owner.language.as_str())
                             .is_some_and(|profile| profile.builtin_type(callee))
                     {
                         return json!({"builtin": callee});
@@ -478,7 +461,11 @@ impl<'a> Contracts<'a> {
                 if matches!(
                     target.kind.as_str(),
                     "class" | "struct" | "enum" | "interface"
-                ) && (matches!(value, ValueExpr::Construct { .. }) || owner.language == "python")
+                ) && (matches!(value, ValueExpr::Construct { .. })
+                    || crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                        crate::languages::profile::ProfileLinker::linker(profile)
+                            .prefers_construct_contract()
+                    }))
                 {
                     nominal(target)
                 } else if matches!(value, ValueExpr::Call { .. })
@@ -522,7 +509,7 @@ impl<'a> Contracts<'a> {
             }
             ValueExpr::Field { receiver, .. } => json!({"opaque_value": value, "receiver":
                 self.value_contract(owner, flow, &ValueExpr::Alias { name: receiver.clone() }, at, stack, depth + 1)}),
-            ValueExpr::Project { value: source, .. } => json!({"opaque_value": value, "source":
+            ValueExpr::Project { value: source, .. } | ValueExpr::RustField { value: source, .. } | ValueExpr::RustProject { value: source, .. } => json!({"opaque_value": value, "source":
                 self.value_contract(owner, flow, source, at, stack, depth + 1)}),
         }
     }
@@ -544,11 +531,14 @@ impl<'a> Contracts<'a> {
                 owner.path.as_str(),
                 crate::linker::types::qualified(&mut lookup_key, scope, name),
             )) {
+                let enforces_position = crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| {
+                        crate::languages::profile::ProfileLinker::linker(profile)
+                            .enforces_local_contract_position()
+                    });
                 let mut visible = nodes.iter().copied().filter(|node| {
                     node.language == owner.language
-                        && (owner.language != "python"
-                            || !scope.contains('.')
-                            || position(node) <= at)
+                        && (!enforces_position || !scope.contains('.') || position(node) <= at)
                 });
                 let node = visible.next()?;
                 return visible.next().is_none().then_some(node);
@@ -614,7 +604,7 @@ impl<'a> Contracts<'a> {
 fn position(node: &Node) -> SourcePosition {
     SourcePosition {
         line: node.line,
-        column: node.details["column"].as_u64().unwrap_or(0) as usize,
+        column: node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
     }
 }
 
@@ -644,14 +634,14 @@ mod resolution_digest_tests {
         Node {
             native_semantic: None,
             id: "module:src/lib.py".into(),
-            kind: "module".into(),
+            kind: crate::models::tags::NodeKind::Module,
             name: "lib.py".into(),
             qualname: "lib".into(),
             path: "src/lib.py".into(),
             line,
             end_line: line,
             is_test: false,
-            language: "python".into(),
+            language: crate::models::tags::LanguageId::Python,
             generated: false,
             details,
         }
@@ -661,14 +651,14 @@ mod resolution_digest_tests {
         Node {
             native_semantic: None,
             id: "component:src".into(),
-            kind: "component".into(),
+            kind: crate::models::tags::NodeKind::Component,
             name: "src".into(),
             qualname: "src".into(),
             path: "src".into(),
             line: 0,
             end_line: 0,
             is_test: false,
-            language: "unknown".into(),
+            language: crate::models::tags::LanguageId::Workspace,
             generated: false,
             details: serde_json::Value::Null,
         }
@@ -731,7 +721,7 @@ mod resolution_digest_tests {
             let callable = |fact| {
                 let mut node = module(2, json!({"value_flow":{vector:[fact]}}));
                 node.id = "function:src/lib.py:callback".into();
-                node.kind = "function".into();
+                node.kind = crate::models::tags::NodeKind::Function;
                 node.name = "callback".into();
                 node.qualname = "lib.callback".into();
                 node

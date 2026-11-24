@@ -22,7 +22,7 @@ pub(crate) fn compact_node_details(facts: &mut Facts, path: &str) {
     for node in facts
         .nodes
         .iter()
-        .filter(|node| node.path == path && node.kind != NodeKind::Module.as_str())
+        .filter(|node| node.path == path && node.kind != NodeKind::Module)
     {
         *declarations_per_line.entry(node.line).or_insert(0usize) += 1;
     }
@@ -156,11 +156,20 @@ fn parser_slot(profile_id: &'static str, path: &str) -> &'static str {
     }
 }
 
+fn validate_profile(profile: &dyn LanguageProfile) -> Result<()> {
+    anyhow::ensure!(
+        crate::models::tags::LanguageId::parse(profile.id()).is_some(),
+        "unsupported language profile: {}", profile.id()
+    );
+    Ok(())
+}
+
 pub(super) fn parse_tree(
     profile: &dyn LanguageProfile,
     path: &str,
     source: &str,
 ) -> Result<Tree> {
+    validate_profile(profile)?;
     let grammar = profile.grammar(path);
     if let Some(spec) = profile.syntax_grammar_spec() {
         spec.compile_cached(&grammar)?;
@@ -179,6 +188,7 @@ pub fn parse_file(
     module: &str,
     facts: &mut Facts,
 ) -> Result<()> {
+    validate_profile(profile)?;
     match profile.id() {
         #[cfg(feature = "lang-html")]
         "html" => parse_embedded_file(

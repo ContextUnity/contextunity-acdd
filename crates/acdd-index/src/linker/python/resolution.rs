@@ -117,8 +117,6 @@ pub(in crate::linker) fn is_dynamic_typing_annotation<'scope>(
         && (member == "Any" || is_dynamic_type_alias(name, owner, aliases, dynamic_aliases))
 }
 
-pub(in crate::linker) use super::receivers::has_protocol_or_abc_base;
-
 pub(in crate::linker) fn path_constructor_aliases<'ctx, 'refs: 'ctx, 'nodes: 'ctx>(
     profile: Option<&dyn LanguageProfile>,
     references: &'refs [Reference],
@@ -180,8 +178,8 @@ pub(in crate::linker) fn imported_module_member<'a>(
     member_lookup: &LanguageMemberLookup<'_, 'a>,
 ) -> Option<receivers::PythonReceiverMember<'a>> {
     if !profile.is_some_and(|profile| profile.id() == "python")
-        || module.kind != "module"
-        || module.language != "python"
+        || module.kind != crate::models::tags::NodeKind::Module
+        || module.language != crate::models::tags::LanguageId::Python
     {
         return None;
     }
@@ -203,7 +201,7 @@ pub(in crate::linker) fn imported_module_member<'a>(
     let (Some(class), None) = (declarations.next(), declarations.next()) else {
         return None;
     };
-    (class.kind == "class").then(|| python_member(member_lookup, class, member, false))
+    (class.kind == crate::models::tags::NodeKind::Class).then(|| python_member(member_lookup, class, member, false))
 }
 
 fn python_member<'a>(
@@ -391,7 +389,7 @@ where
     candidates.sort_by_key(|node| &node.id);
     candidates.dedup_by_key(|node| &node.id);
     if let [class] = candidates.as_slice() {
-        if class.kind == "class" {
+        if class.kind == crate::models::tags::NodeKind::Class {
             return python_member(context.member_lookup, class, member, false);
         }
     }
@@ -481,7 +479,7 @@ where
         Some(ReceiverHint::Super { member }) => {
             if !is_super_shadowed(input, path, owner, aliases) {
                 if let Some((owner_id, owner)) = owner_id.zip(owner).filter(|&(owner_id, owner)| {
-                    owner.details["receiver_name"].as_str().is_some_and(|name| {
+                    owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str().is_some_and(|name| {
                         matches!(name, "self" | "cls")
                             && !input.interner.lookup_symbol(name).is_some_and(|name_id| {
                                 has_indexed_symbol_id(node_rebindings, owner_id, name_id)
@@ -491,7 +489,7 @@ where
                     let _ = owner_id;
                     if let Some((scope, _)) = owner.qualname.rsplit_once('.') {
                         if let Some([class]) = by_qual.get(scope).map(Vec::as_slice) {
-                            if class.kind == "class" && class.path == path {
+                            if class.kind == crate::models::tags::NodeKind::Class && class.path == path {
                                 computed = python_member(member_lookup, class, member, true);
                             }
                         }
@@ -529,7 +527,7 @@ where
 /// Returns whether the first visible Python import is available at this reference position.
 /// Non-Python references and scopes with no matching import retain the shared resolver's fallthrough.
 pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys>(
-    context: &PythonResolutionView<'ctx, 'a, 'keys>,
+    context: &crate::linker::traits::ImportVisibility<'a, 'ctx, 'keys>,
     reference: &Reference,
     definition_scope: bool,
 ) -> bool {
@@ -625,7 +623,7 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
                         let mut classes = nodes
                             .iter()
                             .copied()
-                            .filter(|node| node.path == path && node.kind == "class");
+                            .filter(|node| node.path == path && node.kind == crate::models::tags::NodeKind::Class);
                         let class = classes.next()?;
                         classes.next().is_none().then_some(class)
                     })
@@ -637,7 +635,7 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
                         .unwrap_or_default()
                 });
                 match classes {
-                    [class] if class.kind == "class" => Some(*class),
+                    [class] if class.kind == crate::models::tags::NodeKind::Class => Some(*class),
                     _ => None,
                 }
             } else {

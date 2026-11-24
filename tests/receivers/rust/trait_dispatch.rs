@@ -77,7 +77,7 @@ fn visible_trait_dispatch_matrix() {
                 let default_method = facts["src/traits.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "work" && node.kind == "method")
+                    .find(|node| node.name == "work" && node.kind == acdd_index::models::tags::NodeKind::Method)
                     .unwrap();
                 let implementations = &facts["src/operations.rs"].nodes;
                 for (expression, target) in [
@@ -86,14 +86,14 @@ fn visible_trait_dispatch_matrix() {
                         "client.overridden",
                         implementations
                             .iter()
-                            .find(|node| node.name == "overridden" && node.kind == "method")
+                            .find(|node| node.name == "overridden" && node.kind == acdd_index::models::tags::NodeKind::Method)
                             .unwrap(),
                     ),
                     (
                         "client.required",
                         implementations
                             .iter()
-                            .find(|node| node.name == "required" && node.kind == "method")
+                            .find(|node| node.name == "required" && node.kind == acdd_index::models::tags::NodeKind::Method)
                             .unwrap(),
                     ),
                 ] {

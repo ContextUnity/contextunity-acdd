@@ -164,8 +164,7 @@ pub(super) fn project(conn: &Connection) -> Result<BTreeSet<String>> {
                     .nodes
                     .into_iter()
                     .filter_map(|node| {
-                        node.details
-                            .get("entrypoint_base")
+                        node.detail_get(crate::models::details::NodeDetailKey::ENTRYPOINT_BASE)
                             .and_then(Value::as_str)
                             .and_then(rank)
                             .map(|value| (node.id, value))

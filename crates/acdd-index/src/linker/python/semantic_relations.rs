@@ -120,7 +120,7 @@ pub(in crate::linker) fn compose_file_relations<'a>(
             .lookup_symbol(&fact.occurrence.owner_id)
             .expect("semantic owner");
         if !by_id.get(&owner).is_some_and(|owner| {
-            owner.path == path && owner.language == "python" && owner.kind == "class"
+            owner.path == path && owner.language == crate::models::tags::LanguageId::Python && owner.kind == crate::models::tags::NodeKind::Class
         }) {
             continue;
         }
@@ -181,10 +181,10 @@ fn import_scope_distance(caller: &Node, importer: &Node) -> Option<usize> {
     if caller.id == importer.id {
         return Some(0);
     }
-    if importer.kind == "module" {
+    if importer.kind == crate::models::tags::NodeKind::Module {
         return Some(usize::MAX);
     }
-    if importer.kind == "class" {
+    if importer.kind == crate::models::tags::NodeKind::Class {
         return None;
     }
     caller
@@ -368,8 +368,8 @@ fn imported_type_targets<'a>(
             .flatten()
             .chain(by_module.get(package_file.as_str()).into_iter().flatten())
             .filter(|target| {
-                target.kind == "class"
-                    && target.language == "python"
+                target.kind == crate::models::tags::NodeKind::Class
+                    && target.language == crate::models::tags::LanguageId::Python
                     && target.name == expression
                     && (target.path == module_file || target.path == package_file)
             });
@@ -436,7 +436,7 @@ fn emit_di_injection_relations<'a>(
         {
             let Some(caller) = interner
                 .lookup_node(by_id, injection.source.as_str())
-                .filter(|owner| owner.path == path && owner.language == *language)
+                .filter(|owner| owner.path == path && owner.language.as_str() == language)
             else {
                 continue;
             };
@@ -523,7 +523,7 @@ fn emit_di_injection_relations<'a>(
                 },
                 SymbolRole::Callable,
             ) {
-                Symbol::Callable(target) if target.language == *target_language => {
+                Symbol::Callable(target) if target.language.as_str() == target_language => {
                     entry
                         .1
                         .insert(interner.lookup_symbol(&target.id).expect("catalog target"));
@@ -636,7 +636,7 @@ pub(crate) fn compose_symbol_relations<'a>(
             .lookup_symbol(&fact.occurrence.owner_id)
             .expect("semantic owner");
         let Some(caller) = by_id.get(&owner).copied().filter(|owner| {
-            owner.path == path && owner.language == "python" && owner.kind == "class"
+            owner.path == path && owner.language == crate::models::tags::LanguageId::Python && owner.kind == crate::models::tags::NodeKind::Class
         }) else {
             continue;
         };
@@ -677,7 +677,7 @@ pub(crate) fn compose_symbol_relations<'a>(
             },
             SymbolRole::Type,
         ) {
-            Symbol::Type(TypeTarget::Local(target)) if target.language == "python" => {
+            Symbol::Type(TypeTarget::Local(target)) if target.language == crate::models::tags::LanguageId::Python => {
                 entry
                     .1
                     .insert(interner.lookup_symbol(&target.id).expect("catalog target"));
@@ -687,7 +687,7 @@ pub(crate) fn compose_symbol_relations<'a>(
                 complete,
                 exhausted,
             }) => {
-                if targets.iter().all(|target| target.language == "python") {
+                if targets.iter().all(|target| target.language == crate::models::tags::LanguageId::Python) {
                     if targets.len() > 1 {
                         entry.2 = true;
                     } else if complete && !exhausted {

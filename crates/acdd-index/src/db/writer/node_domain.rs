@@ -30,14 +30,14 @@ impl<'a> NodeDomain<'a> {
             i64::try_from(node.end_line).context("node end line exceeds SQLite range")?;
         let hasher = row_hasher(&mut self.hashers, "nodes", owner);
         encode_text(hasher, &node.id);
-        encode_text(hasher, &node.kind);
+        encode_text(hasher, node.kind.as_str());
         encode_text(hasher, &node.name);
         encode_text(hasher, &node.qualname);
         encode_text(hasher, &node.path);
         encode_integer(hasher, line);
         encode_integer(hasher, end_line);
         encode_integer(hasher, i64::from(node.is_test));
-        encode_text(hasher, &node.language);
+        encode_text(hasher, node.language.as_str());
         encode_integer(hasher, i64::from(node.generated));
         encode_text_bytes(hasher, details);
         encode_integer(hasher, stable_hash64(&node.id));

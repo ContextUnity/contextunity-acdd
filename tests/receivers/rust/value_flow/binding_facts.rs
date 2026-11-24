@@ -16,7 +16,7 @@ fn binding_fact_matrix() {
             Case::AliasesAndExplicitFlowPreserveTypesWithoutLifetimeNoise => {
                 let facts = ast::extract("src/service.rs", "rust", "type ServiceId = u64;\nstruct Service;\nfn run<'a, T>(client: &'a Service, ignored: T, hole: _) -> Service {\n    let direct: Service = Service {};\n    let made = Service {};\n    let next = make();\n    let copied = made;\n    direct.work();\n    Service {}\n}\n").unwrap();
                 assert!(facts.nodes.iter().any(|node| node.name == "ServiceId"
-                    && node.kind == "type"
+                    && node.kind == acdd_index::models::tags::NodeKind::Type
                     && node.id.starts_with("type:")));
                 assert!(
                     !facts.references.iter().any(|reference| matches!(
@@ -79,7 +79,7 @@ fn binding_position_and_pattern_matrix() {
                 let method = facts["src/service.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.kind == "method" && node.name == "len")
+                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "len")
                     .unwrap();
                 assert_eq!(
                     graph

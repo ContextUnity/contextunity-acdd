@@ -56,14 +56,14 @@ fn callback_param_callable_signature_and_compact_graph_contracts() {
 
     let node = Node {
         id: "fn:src/lib.rs:1:apply".into(),
-        kind: "function".into(),
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "apply".into(),
         qualname: "lib.apply".into(),
         path: "src/lib.rs".into(),
         line: 1,
         end_line: 3,
         is_test: false,
-        language: "rust".into(),
+        language: acdd_index::models::tags::LanguageId::Rust,
         generated: false,
         details: serde_json::Value::Null,
         native_semantic: None,
@@ -169,7 +169,7 @@ pub fn drive(r: &Runner, mut item: Item) {
         .facts
         .nodes
         .iter()
-        .find(|n| n.kind == "function" && n.name == "drive")
+        .find(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "drive")
         .expect("missing drive node");
     let drive_flow = typed.flows.get(drive_node).expect("missing drive value_flow");
     fn unwrap_scoped(v: &ValueExpr) -> &ValueExpr {

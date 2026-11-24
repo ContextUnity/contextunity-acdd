@@ -124,7 +124,7 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         let extracted =
             ast::extract_typed_with_registry(path, language, source, &registry).unwrap();
         let encoded = encode_facts(&extracted).unwrap();
-        assert!(encoded.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
+        assert!(encoded.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));
         let decoded = decode_facts(&encoded).unwrap();
         assert_eq!(
             serde_json::to_value(&extracted.facts).unwrap(),
@@ -258,14 +258,14 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
     let make_node = |id: &str, kind: &str, details| acdd_index::models::Node {
         native_semantic: None,
         id: id.into(),
-        kind: kind.into(),
+        kind: acdd_index::models::tags::NodeKind::parse(kind).expect("valid node kind"),
         name: id.into(),
         qualname: id.into(),
         path: path.into(),
         line: 1,
         end_line: 5,
         is_test: false,
-        language: "markdown".into(),
+        language: acdd_index::models::tags::LanguageId::Markdown,
         generated: false,
         details,
     };

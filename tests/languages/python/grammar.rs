@@ -24,11 +24,11 @@ def standalone_helper(x: int) -> int:
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "class" && n.name == "ServiceClient"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Class && n.name == "ServiceClient"));
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "method" && n.name == "fetch"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.name == "fetch"));
     let fetch = facts
         .nodes
         .iter()
@@ -40,7 +40,7 @@ def standalone_helper(x: int) -> int:
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "function" && n.name == "standalone_helper"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "standalone_helper"));
 
     let cases = [
         ("def run(): pass\nif __name__ == '__main__':\n    run()\n", true),
@@ -68,7 +68,7 @@ def standalone_helper(x: int) -> int:
                         .nodes
                         .iter()
                         .filter(|n| {
-                            n.kind == "function"
+                            n.kind == acdd_index::models::tags::NodeKind::Function
                                 && n.name == "run"
                                 && n.details["entrypoint_base"] == "main"
                         })

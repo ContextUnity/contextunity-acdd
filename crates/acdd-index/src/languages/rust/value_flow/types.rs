@@ -100,14 +100,11 @@ fn array_slice_type_expr(
         return TypeExpr::Unknown;
     };
     let fixed_array = node.kind() == "array_type" && node.child_by_field_name("length").is_some();
-    TypeExpr::Applied {
-        base: if fixed_array {
-            "__rust_array_type"
-        } else {
-            "[]"
-        }
-        .to_owned(),
-        args: vec![type_expr_inner(element, source, generic_names, depth + 1)],
+    let item = type_expr_inner(element, source, generic_names, depth + 1);
+    if fixed_array {
+        TypeExpr::RustArray { item: Box::new(item) }
+    } else {
+        TypeExpr::Applied { base: "[]".to_owned(), args: vec![item] }
     }
 }
 
@@ -302,7 +299,8 @@ pub(super) fn type_expr_has_unknown(ty: &TypeExpr) -> bool {
     match ty {
         TypeExpr::Unknown => true,
         TypeExpr::Named { .. } => false,
-        TypeExpr::Applied { args, .. } => args.iter().any(type_expr_has_unknown),
+        TypeExpr::Applied { args, .. } | TypeExpr::RustCallArguments { args } => args.iter().any(type_expr_has_unknown),
+        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => type_expr_has_unknown(item),
     }
 }
 

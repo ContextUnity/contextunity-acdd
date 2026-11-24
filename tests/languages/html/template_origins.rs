@@ -101,7 +101,7 @@ fn template_targets_require_indexed_local_providers_even_with_framework_dependen
     let local_module = facts[local_path]
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
         .unwrap();
     assert!(
         local_graph.edges.iter().any(|edge| {

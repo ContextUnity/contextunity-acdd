@@ -103,7 +103,7 @@ fn builtin_receiver_key(raw: &str) -> Option<&'static str> {
 fn finalize_member_list(methods: &mut Vec<&Node>) {
     methods.sort_by_key(|method| &method.id);
     methods.dedup_by_key(|method| method.id.as_str());
-    crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
+    super::linker_impl::disambiguate_rust_cfg_siblings(methods);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -131,7 +131,7 @@ fn resolve_visible_macro<'a>(
         for provider in modules_by_ns.get(mod_qual).into_iter().flatten() {
             for (name, targets) in forwarding.visible_bindings(provider, &owner_mod.qualname) {
                 if name == mac_name {
-                    out.extend(targets.iter().filter(|n| n.kind == "macro"));
+                    out.extend(targets.iter().filter(|n| n.kind == crate::models::tags::NodeKind::Macro));
                 }
             }
         }
@@ -149,7 +149,7 @@ fn resolve_visible_macro<'a>(
             .into_iter()
             .flatten()
             .copied()
-            .filter(|n| n.kind == "macro")
+            .filter(|n| n.kind == crate::models::tags::NodeKind::Macro)
         {
             if cand.path == owner_mod.path || is_crate_visible(cand, &owner_mod.qualname) {
                 out.push(cand);
@@ -187,7 +187,7 @@ fn resolve_visible_macro<'a>(
                     .into_iter()
                     .flatten()
                     .copied()
-                    .filter(|n| n.kind == "macro" && n.path == owner_mod.path),
+                    .filter(|n| n.kind == crate::models::tags::NodeKind::Macro && n.path == owner_mod.path),
             );
             scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
         }
@@ -240,7 +240,7 @@ fn resolve_type<'a>(
         .iter()
         .filter(|node| {
             node.path == scope.path
-                && node.language == "rust"
+                && node.language == crate::models::tags::LanguageId::Rust
                 && matches!(node.kind.as_str(), "module" | "module_declaration")
                 && (scope.qualname == node.qualname
                     || scope
@@ -253,7 +253,7 @@ fn resolve_type<'a>(
             facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "rust")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
         })?;
     let workspace = languages::workspace_path(&scope.path).0;
     fn pick_unique_slice<'a>(nodes: &[&'a Node], workspace: &str) -> Option<&'a Node> {
@@ -273,8 +273,8 @@ fn resolve_type<'a>(
 
     let is_inline_submodule = facts.nodes.iter().any(|node| {
         node.path == scope.path
-            && node.language == "rust"
-            && node.kind == "module"
+            && node.language == crate::models::tags::LanguageId::Rust
+            && node.kind == crate::models::tags::NodeKind::Module
             && node.id != module.id
             && module.qualname.starts_with(&format!("{}.", node.qualname))
     });
@@ -284,7 +284,7 @@ fn resolve_type<'a>(
         if !is_inline_submodule {
             let mut forwarded = Vec::new();
             for provider in forwarding.targets(module, head, &module.qualname) {
-                if provider.kind == "module" {
+                if provider.kind == crate::models::tags::NodeKind::Module {
                     forwarded.extend(forwarding.resolve_path(
                         provider,
                         &tail_dotted,
@@ -425,11 +425,11 @@ fn collect_rust_member_tables<'a>(all: &'a dyn crate::FactsLookup) -> RustMember
     for node in all
         .values_facts()
         .flat_map(|facts| &facts.nodes)
-        .filter(|node| node.language == "rust")
+        .filter(|node| node.language == crate::models::tags::LanguageId::Rust)
     {
         by_qual.entry(&node.qualname).or_default().push(node);
         by_id.insert(node.id.as_str(), node);
-        if node.kind == "module" {
+        if node.kind == crate::models::tags::NodeKind::Module {
             modules_by_ns.entry(&node.qualname).or_default().push(node);
             let stripped = node
                 .qualname
@@ -439,7 +439,7 @@ fn collect_rust_member_tables<'a>(all: &'a dyn crate::FactsLookup) -> RustMember
             if let Some(stripped) = stripped {
                 modules_by_ns.entry(stripped).or_default().push(node);
             }
-        } else if node.kind == "trait" {
+        } else if node.kind == crate::models::tags::NodeKind::Trait {
             if let Some((parent_qual, _)) = node.qualname.rsplit_once('.') {
                 traits_by_parent_qual
                     .entry(parent_qual)
@@ -487,20 +487,20 @@ fn collect_trait_decl_tables<'a>(
             ) else {
                 continue;
             };
-            if owner.kind == "trait" && method.kind == "method" {
-                if method.details["unproven_bounds"] != true {
+            if owner.kind == crate::models::tags::NodeKind::Trait && method.kind == crate::models::tags::NodeKind::Method {
+                if method.detail_entry(crate::models::details::NodeDetailKey::UNPROVEN_BOUNDS) != true {
                     trait_methods
                         .entry(owner.id.as_str())
                         .or_default()
                         .push(method);
-                    if method.details["trait_default"] == true {
+                    if method.detail_entry(crate::models::details::NodeDetailKey::TRAIT_DEFAULT) == true {
                         trait_defaults
                             .entry(owner.id.as_str())
                             .or_default()
                             .push(method);
                     }
                 }
-                if method.details["is_static"] == true {
+                if method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true {
                     index
                         .trait_associated
                         .insert((owner.id.as_str(), method.name.as_str()), method);
@@ -527,7 +527,7 @@ fn resolve_deref_impl_target<'a>(
         forwarding,
         dependencies,
     } = *env;
-    let trait_name = owner.details["impl_trait"].as_str()?;
+    let trait_name = owner.detail_entry(crate::models::details::NodeDetailKey::IMPL_TRAIT).as_str()?;
     let mut absolute_trait = trait_name.starts_with("::");
     let bare_trait_name = !trait_name.contains("::");
     let trait_name = trait_name.trim_start_matches("::");
@@ -563,10 +563,10 @@ fn resolve_deref_impl_target<'a>(
     } else {
         return None;
     };
-    let receiver = owner.details["receiver_type"]
+    let receiver = owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
         .as_str()
         .and_then(|name| resolve_type(facts, owner, name, tables, forwarding, dependencies))
-        .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true)?;
+        .filter(|node| node.kind == crate::models::tags::NodeKind::Struct && node.detail_entry(crate::models::details::NodeDetailKey::DEREF_UNPROVEN) != true)?;
     let head = trait_name.split("::").next().unwrap_or_default();
     let shadowed = forwarding
         .visible_bindings(module, &module.qualname)
@@ -581,8 +581,8 @@ fn resolve_deref_impl_target<'a>(
                 && (reference.source == module.id || reference.source == owner.id)
         });
     if !((!shadowed || absolute_trait)
-        && owner.details["generic_impl"] != true
-        && owner.details["deref_unproven"] != true)
+        && owner.detail_entry(crate::models::details::NodeDetailKey::GENERIC_IMPL) != true
+        && owner.detail_entry(crate::models::details::NodeDetailKey::DEREF_UNPROVEN) != true)
     {
         return Some((receiver, None));
     }
@@ -591,12 +591,12 @@ fn resolve_deref_impl_target<'a>(
         .iter()
         .filter(|edge| edge.kind == "contains" && edge.src == owner.id)
         .filter_map(|edge| tables.by_id.get(edge.dst.as_str()).copied())
-        .filter(|node| node.kind == "type" && node.name == "Target")
+        .filter(|node| node.kind == crate::models::tags::NodeKind::Type && node.name == "Target")
         .collect();
     let [target] = targets.as_slice() else {
         return Some((receiver, None));
     };
-    let alias = if target.details["deref_unproven"] == true {
+    let alias = if target.detail_entry(crate::models::details::NodeDetailKey::DEREF_UNPROVEN) == true {
         None
     } else if let Some(flows) = flows {
         let state = interner
@@ -607,14 +607,14 @@ fn resolve_deref_impl_target<'a>(
             _ => None,
         }
     } else {
-        crate::semantic::ValueFlowFacts::deserialize_for_scope(&target.details["value_flow"], false)
+        crate::semantic::ValueFlowFacts::deserialize_for_scope(target.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW), false)
             .ok()
             .and_then(|facts| facts.alias_type.clone())
     };
     let resolved = match alias {
         Some(crate::semantic::TypeExpr::Named { name }) => {
             resolve_type(facts, target, &name, tables, forwarding, dependencies)
-                .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true)
+                .filter(|node| node.kind == crate::models::tags::NodeKind::Struct && node.detail_entry(crate::models::details::NodeDetailKey::DEREF_UNPROVEN) != true)
         }
         _ => None,
     };
@@ -631,11 +631,11 @@ fn populate_deref_targets<'a>(
         let Some(module) = facts
             .nodes
             .iter()
-            .find(|node| node.kind == "module" && node.language == "rust")
+            .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
         else {
             continue;
         };
-        for owner in facts.nodes.iter().filter(|node| node.kind == "impl") {
+        for owner in facts.nodes.iter().filter(|node| node.kind == crate::models::tags::NodeKind::Impl) {
             if let Some((receiver, target)) = resolve_deref_impl_target(facts, module, owner, env) {
                 deref_candidates
                     .entry(receiver.id.as_str())
@@ -695,7 +695,7 @@ fn collect_glob_visible_traits<'a>(
                 entry.extend(
                     targets
                         .iter()
-                        .filter(|target| target.kind == "trait")
+                        .filter(|target| target.kind == crate::models::tags::NodeKind::Trait)
                         .map(|target| target.id.as_str()),
                 );
             }
@@ -708,7 +708,7 @@ fn collect_glob_visible_traits<'a>(
     entry.extend(
         traits_in_ns
             .iter()
-            .filter(|target| target.path == module.path || target.details["is_public"] == true)
+            .filter(|target| target.path == module.path || target.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true)
             .map(|target| target.id.as_str()),
     );
 }
@@ -748,7 +748,7 @@ fn collect_file_visible_traits<'a>(
             continue;
         };
         if let Some(target) = resolve_type(facts, import_scope, name, tables, forwarding, dependencies)
-            .filter(|node| node.kind == "trait")
+            .filter(|node| node.kind == crate::models::tags::NodeKind::Trait)
         {
             visible_traits
                 .entry(&module.path)
@@ -757,7 +757,7 @@ fn collect_file_visible_traits<'a>(
         }
     }
     for node in &facts.nodes {
-        if node.kind == "trait"
+        if node.kind == crate::models::tags::NodeKind::Trait
             && node
                 .qualname
                 .rsplit_once('.')
@@ -781,13 +781,13 @@ fn collect_file_impl_receivers<'a>(
     let mut impl_receivers = HashMap::new();
     let mut builtin_impl_receivers = HashMap::new();
     for owner in facts.nodes.iter().filter(|node| {
-        node.kind == "impl"
-            && (node.details["generic_impl"] != true || node.details["uniform_generic_impl"] == true)
+        node.kind == crate::models::tags::NodeKind::Impl
+            && (node.detail_entry(crate::models::details::NodeDetailKey::GENERIC_IMPL) != true || node.detail_entry(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL) == true)
     }) {
-        let raw_receiver = owner.details["receiver_type"].as_str();
+        let raw_receiver = owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str();
         let local_receiver = raw_receiver
             .and_then(|name| {
-                let nominal = if owner.details["uniform_generic_impl"] == true {
+                let nominal = if owner.detail_entry(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL) == true {
                     name.split_once('<').map_or(name, |(base, _)| base)
                 } else {
                     name
@@ -795,11 +795,11 @@ fn collect_file_impl_receivers<'a>(
                 resolve_type(facts, owner, nominal, tables, forwarding, dependencies)
             })
             .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"));
-        let impl_trait = owner.details["impl_trait"].as_str();
+        let impl_trait = owner.detail_entry(crate::models::details::NodeDetailKey::IMPL_TRAIT).as_str();
         let trait_node = impl_trait.and_then(|name| {
             let clean_trait = name.split('<').next().unwrap_or(name).trim();
             resolve_type(facts, owner, clean_trait, tables, forwarding, dependencies)
-                .filter(|node| node.kind == "trait")
+                .filter(|node| node.kind == crate::models::tags::NodeKind::Trait)
         });
         let Some(receiver) = local_receiver else {
             if let (Some(builtin_key), Some(trait_node)) =
@@ -848,24 +848,24 @@ fn collect_file_impl_members<'a>(
         ) else {
             continue;
         };
-        let is_member_owner = (owner.kind == "impl"
+        let is_member_owner = (owner.kind == crate::models::tags::NodeKind::Impl
             && matches!(method.kind.as_str(), "method" | "constant" | "type"))
             || (matches!(owner.kind.as_str(), "struct" | "enum")
                 && matches!(method.kind.as_str(), "method" | "constant"))
-            || (owner.kind == "trait" && method.kind == "method");
+            || (owner.kind == crate::models::tags::NodeKind::Trait && method.kind == crate::models::tags::NodeKind::Method);
         if !is_member_owner {
             continue;
         }
-        if owner.kind == "trait" {
+        if owner.kind == crate::models::tags::NodeKind::Trait {
             index.receivers_by_method.insert(&method.id, *owner);
             continue;
         }
-        if owner.kind == "impl" {
+        if owner.kind == crate::models::tags::NodeKind::Impl {
             if let Some(&(builtin_key, trait_node)) =
                 builtin_impl_receivers.get(owner.id.as_str())
             {
                 let associated = matches!(method.kind.as_str(), "constant" | "type")
-                    || method.details["is_static"] == true;
+                    || method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
                 builtin_traits
                     .entry((builtin_key, method.name.as_str(), associated))
                     .or_default()
@@ -873,7 +873,7 @@ fn collect_file_impl_members<'a>(
                 continue;
             }
         }
-        let (receiver, has_impl_trait, trait_node) = if owner.kind == "impl" {
+        let (receiver, has_impl_trait, trait_node) = if owner.kind == crate::models::tags::NodeKind::Impl {
             let Some(&(receiver, has_impl_trait, trait_node)) =
                 impl_receivers.get(owner.id.as_str())
             else {
@@ -885,8 +885,8 @@ fn collect_file_impl_members<'a>(
         };
         index.receivers_by_method.insert(&method.id, receiver);
         let associated = matches!(method.kind.as_str(), "constant" | "type")
-            || method.details["is_static"] == true;
-        if method.details["unproven_bounds"] == true {
+            || method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
+        if method.detail_entry(crate::models::details::NodeDetailKey::UNPROVEN_BOUNDS) == true {
             let deref_wrapper = index.deref_targets.contains_key(receiver.id.as_str());
             if deref_wrapper {
                 if let Some(trait_node) = trait_node {
@@ -899,7 +899,7 @@ fn collect_file_impl_members<'a>(
                 }
                 continue;
             }
-            if has_impl_trait || owner.details["generic_impl"] == true {
+            if has_impl_trait || owner.detail_entry(crate::models::details::NodeDetailKey::GENERIC_IMPL) == true {
                 continue;
             }
         }
@@ -926,7 +926,7 @@ fn collect_file_impl_members<'a>(
             .into_iter()
             .flatten()
         {
-            let associated = method.details["is_static"] == true;
+            let associated = method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
             if implemented
                 .get(owner_id)
                 .is_some_and(|methods| methods.contains(&(method.name.as_str(), associated)))
@@ -959,9 +959,9 @@ fn apply_macro_type_invocations<'a>(
     for node in all
         .values_facts()
         .flat_map(|facts| &facts.nodes)
-        .filter(|node| node.language == "rust" && node.kind == "macro")
+        .filter(|node| node.language == crate::models::tags::LanguageId::Rust && node.kind == crate::models::tags::NodeKind::Macro)
     {
-        if node.details["is_public"] == true {
+        if node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true {
             let crate_root = node
                 .path
                 .split_once("/src/")
@@ -971,7 +971,7 @@ fn apply_macro_type_invocations<'a>(
                 .or_default()
                 .push(node);
         }
-        let Some(impl_traits) = node.details["rust_macro_impl_traits"].as_array() else {
+        let Some(impl_traits) = node.detail_entry(crate::models::details::NodeDetailKey::RUST_MACRO_IMPL_TRAITS).as_array() else {
             continue;
         };
         let mod_qual = node.qualname.rsplit_once('.').map_or("", |(q, _)| q);
@@ -991,7 +991,7 @@ fn apply_macro_type_invocations<'a>(
                 &tables.profile_paths,
             );
             if let Some(candidates) = tables.by_qual.get(qual.as_str()) {
-                for cand in candidates.iter().copied().filter(|n| n.kind == "trait") {
+                for cand in candidates.iter().copied().filter(|n| n.kind == crate::models::tags::NodeKind::Trait) {
                     macro_traits.entry(node.id.as_str()).or_default().push(cand);
                 }
             }
@@ -1003,7 +1003,7 @@ fn apply_macro_type_invocations<'a>(
             .iter()
             .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
         {
-            let Some(invocations) = owner_mod.details["rust_macro_type_invocations"].as_array()
+            let Some(invocations) = owner_mod.detail_entry(crate::models::details::NodeDetailKey::RUST_MACRO_TYPE_INVOCATIONS).as_array()
             else {
                 continue;
             };
@@ -1042,7 +1042,7 @@ fn apply_macro_type_invocations<'a>(
                         .into_iter()
                         .flatten()
                     {
-                        let associated = method.details["is_static"] == true;
+                        let associated = method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
                         traits
                             .entry((receiver.id.as_str(), method.name.as_str(), associated))
                             .or_default()
@@ -1064,10 +1064,10 @@ fn finalize_rust_members<'a>(
     for methods in index.inherent.values_mut() {
         methods.sort_by_key(|method| &method.id);
         methods.dedup_by_key(|method| method.id.as_str());
-        if methods.iter().any(|method| method.details["synthesized"] != true) {
-            methods.retain(|method| method.details["synthesized"] != true);
+        if methods.iter().any(|method| method.detail_entry(crate::models::details::NodeDetailKey::SYNTHESIZED) != true) {
+            methods.retain(|method| method.detail_entry(crate::models::details::NodeDetailKey::SYNTHESIZED) != true);
         }
-        crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
+        super::linker_impl::disambiguate_rust_cfg_siblings(methods);
     }
     for methods in traits.values_mut() {
         methods.sort_by_key(|(method, _)| &method.id);
@@ -1192,7 +1192,7 @@ impl<'a> RustMembers<'a> {
             let Some(module) = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "rust")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
             else {
                 continue;
             };
@@ -1234,7 +1234,7 @@ impl<'a> RustMembers<'a> {
         associated: bool,
         caller: &Node,
     ) -> &[&'a Node] {
-        if receiver.kind == "trait" {
+        if receiver.kind == crate::models::tags::NodeKind::Trait {
             let map = if associated {
                 &self.trait_associated
             } else {
@@ -1372,8 +1372,8 @@ impl LanguageMemberIndex for RustMembers<'_> {
         RustMembers::is_inherent_member(self, method)
     }
 
-    fn has_display(&self, receiver: &Node) -> bool {
-        RustMembers::has_display(self, receiver)
+    fn builtin_local_member(&self, receiver: &Node, member: &str, associated: bool) -> bool {
+        !associated && member == "to_string" && RustMembers::has_display(self, receiver)
     }
 
     fn dynamic_dispatch(
@@ -1395,7 +1395,7 @@ pub(super) fn required_full_facts(
         .iter_facts()
         .filter(|(path, facts)| {
             affected.contains(*path)
-                && facts.nodes.iter().any(|node| node.language == "rust")
+                && facts.nodes.iter().any(|node| node.language == crate::models::tags::LanguageId::Rust)
                 && facts.references.iter().any(|reference| {
                     reference.kind == "calls"
                         && (reference.expression.contains('.')

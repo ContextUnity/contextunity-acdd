@@ -97,14 +97,14 @@ pub(super) fn finalize_file_visibility(
         .collect::<HashSet<_>>();
     if exported_locals.is_empty() {
         for node in &mut facts.nodes {
-            node.details["is_public"] = serde_json::json!(false);
+            node.set_detail(crate::models::details::NodeDetailKey::IS_PUBLIC, serde_json::json!(false));
         }
         return;
     }
     let module_line = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
         .map(|node| node.line)
         .unwrap_or(1);
     let line_offset = module_line.saturating_sub(root.start_position().row + 1);
@@ -135,29 +135,27 @@ pub(super) fn finalize_file_visibility(
     }
     if exported_declarations.is_empty() {
         for node in &mut facts.nodes {
-            node.details["is_public"] = serde_json::json!(false);
+            node.set_detail(crate::models::details::NodeDetailKey::IS_PUBLIC, serde_json::json!(false));
         }
         return;
     }
     for node in &mut facts.nodes {
         let position = node
-            .details
-            .get("column")
+            .detail_get(crate::models::details::NodeDetailKey::COLUMN)
             .and_then(serde_json::Value::as_u64)
             .map(|column| (node.line, column as usize));
         let is_public = match node.kind.as_str() {
             "class" => position.is_some_and(|position| exported_declarations.contains(&position)),
             "method" | "field" => node
-                .details
-                .get("column")
+                .detail_get(crate::models::details::NodeDetailKey::COLUMN)
                 .and_then(serde_json::Value::as_u64)
                 .map(|column| (node.line, column as usize))
                 .is_some_and(|position| {
                     exported_class_members.contains(&position)
-                        && node.details["is_public"] != serde_json::Value::Bool(false)
+                        && *node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) != serde_json::Value::Bool(false)
                 }),
             _ => position.is_some_and(|position| exported_declarations.contains(&position)),
         };
-        node.details["is_public"] = serde_json::json!(is_public);
+        node.set_detail(crate::models::details::NodeDetailKey::IS_PUBLIC, serde_json::json!(is_public));
     }
 }

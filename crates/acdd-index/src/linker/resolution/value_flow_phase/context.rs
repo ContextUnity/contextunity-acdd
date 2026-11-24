@@ -1,35 +1,20 @@
+use crate::languages::profile::ProfileLinker;
 use super::super::context::*;
 use super::super::input::ResolutionInput;
 use crate::languages::{self, LanguageProfile};
 use crate::linker::{
-    html, javascript, python,
     traits::{LanguageLinker, GENERIC_LINKER},
-    types::{NodeBindingIndex, PackageExports},
-    typescript,
+    types::PackageExports,
 };
 use crate::models::{
     compact_graph::CompactGraph as Graph,
-    details::NodeDetailKey,
-    tags::{EdgeKind, LanguageId, NodeKind},
+    tags::{EdgeKind, NodeKind},
     Facts, Node, Reference,
 };
 use crate::typed_facts::FlowState;
 use hashbrown::{HashMap, HashSet};
 
-pub(super) fn has_node_binding(
-    interner: &crate::interner::LinkerInterner<'_>,
-    bindings: &NodeBindingIndex,
-    owner: &str,
-    name: &str,
-) -> bool {
-    let (Some(owner), Some(name)) = (interner.lookup_symbol(owner), interner.lookup_symbol(name))
-    else {
-        return false;
-    };
-    bindings
-        .get(&owner)
-        .is_some_and(|bindings| bindings.binary_search(&name).is_ok())
-}
+pub(super) use crate::linker::types::has_node_binding;
 
 pub(super) struct PhaseContext<'a, 'file, 'res> {
     pub(super) input: &'file ResolutionInput<'a>,
@@ -42,18 +27,11 @@ pub(super) struct PhaseContext<'a, 'file, 'res> {
     pub(super) aliases: &'res HashMap<&'file str, HashMap<&'a str, Vec<&'a Node>>>,
     pub(super) external_aliases: &'res HashMap<&'file str, ExternalAliases<'a>>,
     pub(super) type_only_aliases: &'res HashMap<&'file str, HashSet<&'a str>>,
-    #[cfg(feature = "lang-html")]
-    pub(super) template_loads: &'res [&'file Reference],
-    #[cfg(feature = "lang-html")]
-    pub(super) template_registry_rules: &'res [&'file languages::manifests::syntax::SyntaxRule],
-    #[cfg(feature = "lang-html")]
-    pub(super) template_rules: &'res [&'file languages::manifests::syntax::SyntaxRule],
+    reference_extension: Option<&'res dyn crate::linker::traits::ReferenceExtension>,
     pub(super) profile: Option<&'a dyn LanguageProfile>,
     pub(super) language_linker: &'static dyn LanguageLinker,
     pub(super) value_queries: HashSet<(crate::interner::SymbolId, &'a str, usize, usize)>,
-    #[cfg(feature = "lang-typescript")]
     pub(super) returned_object_field_writes: HashSet<(&'file str, &'file str)>,
-    #[cfg(feature = "lang-typescript")]
     pub(super) lexical_this_calls: HashSet<(&'file str, usize, usize, &'file str)>,
     pub(super) component_module: Option<&'a Node>,
     pub(super) commonjs_module: Option<&'a Node>,
@@ -64,11 +42,28 @@ pub(super) struct PhaseContext<'a, 'file, 'res> {
     pub(super) ordinary_member_receivers: HashSet<&'file str>,
 }
 
+impl<'a, 'file, 'res> crate::linker::traits::DynamicAliasResolver<'a> for PhaseContext<'a, 'file, 'res>
+where 'a: 'file, 'file: 'res {
+    fn alias_for(&self, name: &str, owner: Option<&Node>, definition_scope: bool) -> Option<&Vec<&'a Node>> {
+        PhaseContext::alias_for(self, name, owner, definition_scope)
+    }
+    fn external_for(&self, name: &str, owner: Option<&Node>, definition_scope: bool) -> Option<&(String, usize)> {
+        PhaseContext::external_for(self, name, owner, definition_scope)
+    }
+}
+
 impl<'a, 'file, 'res> PhaseContext<'a, 'file, 'res>
 where
     'a: 'file,
     'file: 'res,
 {
+    pub(super) fn reference_phase<'b>(&'b self, graph: &'b mut Graph, reference: &'b Reference, owner: Option<&'a Node>, profile: Option<&'a dyn LanguageProfile>) -> crate::linker::traits::ReferencePhase<'a, 'b> {
+        crate::linker::traits::ReferencePhase {
+            input: self.input, reference, profile, owner, path: self.path,
+            file_module: self.file_module, ordinary_receivers: &self.ordinary_member_receivers, graph,
+            extension: self.reference_extension,
+        }
+    }
     pub(super) fn from_resolver(
         resolver: &'res mut FileResolver<'a, 'file>,
     ) -> (Self, &'res mut Graph) {
@@ -82,12 +77,7 @@ where
         let aliases = &resolver.aliases;
         let external_aliases = &resolver.external_aliases;
         let type_only_aliases = &resolver.type_only_aliases;
-        #[cfg(feature = "lang-html")]
-        let template_loads = resolver.template_loads.as_slice();
-        #[cfg(feature = "lang-html")]
-        let template_registry_rules = resolver.template_registry_rules.as_slice();
-        #[cfg(feature = "lang-html")]
-        let template_rules = resolver.template_rules.as_slice();
+        let reference_extension = resolver.reference_extension.as_deref();
         let interner = input.interner;
         let flows = input.flows;
         let by_id = input.by_id;
@@ -95,23 +85,16 @@ where
         let language_linker =
             profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| profile.linker());
         let value_queries = collect_value_queries(facts, flows, interner);
-        #[cfg(feature = "lang-typescript")]
-        let returned_object_field_writes =
-            javascript::resolution::returned_object_field_writes(
-                profile, references, by_id, interner,
-            );
+        let returned_object_field_writes = profile.map_or_else(HashSet::new, |profile|
+            language_linker.returned_object_field_writes(profile, references, by_id, interner));
         let component_module = facts
             .nodes
             .iter()
-            .find(|node| node.kind == NodeKind::Module.as_str());
+            .find(|node| node.kind == NodeKind::Module);
         let commonjs_module = facts.nodes.iter().find(|node| {
-            node.kind == NodeKind::Module.as_str()
-                && matches!(
-                    node.language.as_str(),
-                    l if l == LanguageId::Javascript.as_str()
-                        || l == LanguageId::Typescript.as_str()
-                        || l == LanguageId::Vue.as_str()
-                )
+            node.kind == NodeKind::Module
+                && crate::languages::by_id(node.language.as_str())
+                    .is_some_and(|profile| profile.linker().commonjs_module(node))
         });
         let mut alias_import_positions: HashMap<
             (&'file str, &'file str),
@@ -131,37 +114,19 @@ where
                     .or_insert_with(|| reference.position());
             }
         }
-        let path_constructor_aliases = python::resolution::path_constructor_aliases(
-            profile,
-            references,
-            by_id,
-            interner,
-            file_module,
-        );
-        let dynamic_type_aliases = python::resolution::dynamic_type_aliases(
-            profile,
-            references,
-            by_id,
-            interner,
-            file_module,
-        );
-        #[cfg(feature = "lang-typescript")]
-        let lexical_this_calls = typescript::resolution::lexical_this_calls(
-            facts,
-            references,
-            |node| {
-                typescript::resolution::object_ownership(
-                    node,
-                    flows,
-                    interner,
-                    &language_context.syntax_rules,
-                )
-            },
+        let path_constructor_aliases = profile.map_or_else(HashMap::new, |profile| {
+            language_linker.path_constructor_aliases(profile, references, by_id, interner, file_module)
+        });
+        let dynamic_type_aliases = profile.map_or_else(HashMap::new, |profile| {
+            language_linker.dynamic_type_aliases(profile, references, by_id, interner, file_module)
+        });
+        let lexical_this_calls = language_linker.lexical_this_calls(
+            facts, references, flows, interner, &language_context.syntax_rules,
         );
         let ordinary_member_receivers: HashSet<&'file str> = facts
             .nodes
             .iter()
-            .filter(|node| node.kind == NodeKind::Enum.as_str())
+            .filter(|node| node.kind == NodeKind::Enum)
             .map(|node| node.name.as_str())
             .chain(
                 references
@@ -183,18 +148,11 @@ where
                 aliases,
                 external_aliases,
                 type_only_aliases,
-                #[cfg(feature = "lang-html")]
-                template_loads,
-                #[cfg(feature = "lang-html")]
-                template_registry_rules,
-                #[cfg(feature = "lang-html")]
-                template_rules,
+                reference_extension,
                 profile,
                 language_linker,
                 value_queries,
-                #[cfg(feature = "lang-typescript")]
                 returned_object_field_writes,
-                #[cfg(feature = "lang-typescript")]
                 lexical_this_calls,
                 component_module,
                 commonjs_module,
@@ -207,25 +165,16 @@ where
         )
     }
 
-    pub(super) fn python_resolution(
-        &self,
-    ) -> python::resolution::PythonResolutionView<'_, 'res, 'file> {
-        python::resolution::PythonResolutionView {
-            input: self.input,
-            path: self.path,
-            file_module: self.file_module,
-            aliases: self.aliases,
-            alias_import_positions: &self.alias_import_positions,
-            member_lookup: &self.linker.member_lookup,
-        }
-    }
-
     pub(super) fn lookup(&self, name: &str) -> &[&'a Node] {
         self.input
             .by_qual
             .get(name)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(super) fn reference_extension(&self) -> Option<&dyn crate::linker::traits::ReferenceExtension> {
+        self.reference_extension
     }
 
     pub(super) fn language_package_exports(&self) -> &'a PackageExports<'a> {
@@ -236,32 +185,18 @@ where
     }
 
     pub(super) fn reference_profile(&self, reference: &Reference) -> Option<&'a dyn LanguageProfile> {
-        #[cfg(feature = "lang-html")]
-        {
-            html::scripts::reference_profile(
-                self.profile,
-                reference,
-                self.input.by_id,
-                self.input.interner,
-            )
-        }
-        #[cfg(not(feature = "lang-html"))]
-        {
-            let _ = reference;
-            self.profile
-        }
+        self.profile.map(|profile| profile.linker().reference_profile(profile, reference, self.input.by_id, self.input.interner))
     }
 
     pub(super) fn configured_autoimport(&self, name: &str) -> bool {
         self.input.semantic_context.autoimport(self.path, name)
     }
 
-    #[cfg(feature = "lang-typescript")]
     pub(super) fn object_ownership(
         &self,
         node: &Node,
     ) -> Option<&'a crate::semantic::ObjectOwnershipFact> {
-        typescript::resolution::object_ownership(
+        self.language_linker.object_ownership(
             node,
             self.input.flows,
             self.input.interner,
@@ -312,19 +247,13 @@ where
             return true;
         }
         let active_profile = self.reference_profile(reference);
-        #[cfg(feature = "lang-html")]
-        if let Some(is_builtin) = html::templates::builtin_in_scope(
-            expression,
-            reference,
-            active_profile,
-            self.template_loads,
-            self.template_rules,
-        ) {
+        if let Some(is_builtin) = self.reference_extension()
+            .and_then(|extension| extension.builtin_in_scope(expression, reference, active_profile)) {
             return is_builtin;
         }
         active_profile.is_some_and(|profile| {
             profile.builtin(expression)
-                || (profile.id() == LanguageId::Python.as_str()
+                || (profile.linker().builtin_type_members()
                     && expression
                         .split_once('.')
                         .is_some_and(|(receiver, member)| {
@@ -336,7 +265,7 @@ where
                                     member,
                                 )
                         }))
-                || typescript::resolution::builtin_property_chain(
+                || profile.linker().builtin_property_chain(
                     expression,
                     profile,
                     self.path,
@@ -448,21 +377,15 @@ where
             .flatten()
     }
 
-    pub(super) fn python_nullable_parameter_wrapper(
+    pub(super) fn nullable_parameter_wrapper(
         &self,
         raw_annotation: &str,
         node: &Node,
     ) -> bool {
-        python::resolution::nullable_parameter_wrapper(
-            self.profile,
-            raw_annotation,
-            node,
-            self.references,
-            |head, node| {
-                self.external_for(head, Some(node), true)
-                    .map(|(_, line)| *line)
-            },
-        )
+        self.profile.is_some_and(|profile| profile.linker().nullable_parameter_wrapper(
+            profile, raw_annotation, node, self.references, &|head, node| {
+                self.external_for(head, Some(node), true).map(|(_, line)| *line)
+            }))
     }
 
     pub(super) fn is_type_only(
@@ -499,11 +422,6 @@ where
             })
     }
 
-    pub(super) fn is_default_export_vue_module(node: &Node) -> bool {
-        node.kind == NodeKind::Module.as_str()
-            && node.language == LanguageId::Vue.as_str()
-            && node.details[NodeDetailKey::DEFAULT_EXPORT] == true
-    }
 }
 
 fn collect_value_queries<'a>(

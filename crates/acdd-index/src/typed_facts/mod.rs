@@ -15,7 +15,7 @@ pub use semantic_store::SemanticState;
 #[doc(hidden)]
 pub use crate::models::semantic::NodeSemanticEntry;
 
-pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x05";
+pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x06";
 
 pub(crate) fn compressed_facts_payload(blob: &[u8]) -> Option<&[u8]> {
     blob.strip_prefix(LOCAL_FACTS_BINARY_MAGIC)

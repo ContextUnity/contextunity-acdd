@@ -39,9 +39,6 @@ impl LanguageProfile for Vue {
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")
     }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER
-    }
     fn extensions(&self) -> &'static [&'static str] {
         &["vue"]
     }
@@ -89,10 +86,10 @@ impl LanguageProfile for Vue {
         if !facts
             .nodes
             .iter()
-            .any(|node| node.details["default_export"] == true)
+            .any(|node| *node.detail_entry(crate::models::details::NodeDetailKey::DEFAULT_EXPORT) == true)
         {
-            if let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") {
-                module.details["default_export"] = serde_json::json!(true);
+            if let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == crate::models::tags::NodeKind::Module) {
+                module.set_detail(crate::models::details::NodeDetailKey::DEFAULT_EXPORT, serde_json::json!(true));
             }
         }
     }
@@ -294,7 +291,7 @@ fn enrich_vue_module_flows(
     let Some(module_node) = facts
         .nodes
         .iter_mut()
-        .find(|node| node.kind == "module" && node.path == path)
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.path == path)
     else {
         return;
     };
@@ -340,16 +337,15 @@ fn enrich_vue_module_flows(
             let mut flow = store.take(&module_node.id).unwrap_or_default();
             enrich(&mut flow);
             store.insert(module_node.id.clone(), flow);
-            module_node.details["value_flow"] = serde_json::Value::Null;
+            module_node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, serde_json::Value::Null);
         }
     } else {
         let mut flow = module_node
-            .details
-            .get("value_flow")
+            .detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW)
             .and_then(|value| serde_json::from_value::<ValueFlowFacts>(value.clone()).ok())
             .unwrap_or_default();
         enrich(&mut flow);
-        module_node.details["value_flow"] = serde_json::to_value(flow).expect("valid component flow");
+        module_node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, serde_json::to_value(flow).expect("valid component flow"));
     }
 }
 
@@ -448,7 +444,7 @@ fn collect_typed_prop_fields<'a>(
             }
             let mut matches = nodes.iter().filter(|node| {
                 node.path == path
-                    && node.kind == "field"
+                    && node.kind == crate::models::tags::NodeKind::Field
                     && node.name == member
                     && node.line == position.line
             });
@@ -495,7 +491,7 @@ fn annotate_vue_setup_references(
     let template_scopes: HashSet<&str> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "template_scope")
+        .filter(|node| node.kind == crate::models::tags::NodeKind::TemplateScope)
         .map(|node| node.id.as_str())
         .collect();
     for reference in &mut facts.references {
@@ -505,7 +501,7 @@ fn annotate_vue_setup_references(
                 column: reference.column,
             };
             let owner = nodes_by_id.get(reference.source.as_str()).copied();
-            let in_template = owner.is_some_and(|node| node.kind == "template_scope");
+            let in_template = owner.is_some_and(|node| node.kind == crate::models::tags::NodeKind::TemplateScope);
             let in_setup = setup_positions
                 .iter()
                 .any(|(start, end)| *start <= at && at < *end);
@@ -601,9 +597,9 @@ fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &Lang
         facts.pending_flow_nodes.push(facts.nodes.len());
         facts.nodes.push(Node {
     native_semantic: None,
-            id: id.clone(), kind: "route".into(), name: name.clone(),
+            id: id.clone(), kind: crate::models::tags::NodeKind::Route, name: name.clone(),
             qualname: format!("{module}.{name}"), path: path.into(), line: 1, end_line: 1,
-            is_test: crate::models::is_test(path), language: "vue".into(), generated: false,
+            is_test: crate::models::is_test(path), language: crate::models::tags::LanguageId::Vue, generated: false,
             details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(origin)], ..Default::default() })), ..Default::default() }}),
         });
         facts.edges.push(crate::models::Edge {
@@ -626,7 +622,7 @@ fn setup_callable_shadowed(owner: Option<&Node>, name: &str, nodes: &[Node]) -> 
     while !scope.is_empty() {
         if nodes.iter().any(|node| {
             node.path == owner.path
-                && node.kind != "module"
+                && node.kind != crate::models::tags::NodeKind::Module
                 && node.qualname == scope
                 && node.binding_names().any(|candidate| candidate == name)
         }) {

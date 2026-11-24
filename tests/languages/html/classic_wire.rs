@@ -11,7 +11,7 @@ fn class_method(facts: &acdd_index::models::Facts, class: &str) -> String {
         .nodes
         .iter()
         .find(|node| {
-            node.kind == "method"
+            node.kind == acdd_index::models::tags::NodeKind::Method
                 && node.name == "work"
                 && node.qualname.ends_with(&format!(".{class}.work"))
         })
@@ -65,10 +65,8 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
         .iter()
         .find(|node| node["details"]["classic_global"] == true)
         .unwrap();
-    let details = serde_json::to_string(&scope["details"]).unwrap();
-    let flow = details.split("\"value_flow\":").nth(1).unwrap();
-    assert!(flow.starts_with("{\"bindings\":["), "{details}");
-    assert!(flow.contains("],\"fields\":null"), "{details}");
+    let flow = &scope["details"]["value_flow"];
+    assert!(flow["bindings"].is_array(), "{flow}");
 
     let expected_alpha: i64 = conn.query_row(
         "SELECT count(*) FROM edges WHERE (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)='index.html' AND kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='worker.work' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)=?1",
@@ -162,7 +160,7 @@ fn inline_provider_rebinding() {
                 extracted.nodes.iter().any(|node| {
                     let details =
                         crate::common::assertions::projected_node_details(&extracted, node);
-                    node.kind == "module"
+                    node.kind == acdd_index::models::tags::NodeKind::Module
                         && details["rebindings"].as_array().is_some_and(|bindings| {
                             bindings.iter().any(|binding| binding == "openCart")
                         })

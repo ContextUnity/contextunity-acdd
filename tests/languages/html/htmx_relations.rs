@@ -116,7 +116,7 @@ fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
                     );
                 }
             }
-            let contexts: usize = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='page.html' AND n.kind='htmx_request' AND json_extract(n.details,'$.target')='#result' AND json_extract(n.details,'$.swap')='outerHTML'", [], |r|r.get(0)).unwrap();
+            let contexts: usize = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='page.html' AND n.kind='html_request' AND json_extract(n.details,'$.target')='#result' AND json_extract(n.details,'$.swap')='outerHTML'", [], |r|r.get(0)).unwrap();
             assert_eq!(contexts, 5, "target/swap remain context on actual requests");
         }
         let edge_count = |source: &str,

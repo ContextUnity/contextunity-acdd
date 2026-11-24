@@ -70,7 +70,7 @@ fn rust_standard_collection_adapters_preserve_element_receivers() {
         .nodes
         .iter()
         .find(|node| {
-            node.kind == "method" && node.name == "work" && !node.qualname.contains("custom")
+            node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "work" && !node.qualname.contains("custom")
         })
         .unwrap();
     let work_id = work.id.clone();

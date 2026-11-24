@@ -1,6 +1,6 @@
 use super::expr::{
     callee_name, sanitize_binding_value, strip_pattern_wrappers, unwrap_option_result_member,
-    value_depth,
+    value_depth, PatternProjection,
 };
 use super::macros::{
     collect_ancestor_shadows, file_macro_facts, parse_thread_local_statics, FileMacroFacts,
@@ -312,14 +312,15 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
                         || (is_tuple && rest_idx.is_some_and(|r| idx > r))
                     {
                         ValueExpr::Unknown
-                    } else {
-                        ValueExpr::Project {
+                    } else if is_tuple {
+                        ValueExpr::RustField {
                             value: Box::new(base_val.clone()),
-                            member: if is_tuple {
-                                format!("__rust_field:{idx}")
-                            } else {
-                                "__rust_elem_index".to_owned()
-                            },
+                            member: idx.to_string(),
+                        }
+                    } else {
+                        ValueExpr::RustProject {
+                            value: Box::new(base_val.clone()),
+                            operation: crate::semantic::types::RustProjection::ElementIndex,
                         }
                     };
                     self.bind_rust_pattern(elem, elem_val, opts);
@@ -365,19 +366,22 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
         for (idx, child) in payloads.into_iter().enumerate() {
             let child_val = if matches!(base_val, ValueExpr::Unknown) {
                 ValueExpr::Unknown
-            } else if let Some(member) = unwrap_member {
-                if member.is_empty() {
-                    base_val.clone()
-                } else {
-                    ValueExpr::Project {
+            } else if let Some(projection) = unwrap_member {
+                match projection {
+                    PatternProjection::Identity => base_val.clone(),
+                    PatternProjection::Error => ValueExpr::RustProject {
                         value: Box::new(base_val.clone()),
-                        member: member.to_owned(),
-                    }
+                        operation: crate::semantic::types::RustProjection::ErrorPayload,
+                    },
+                    PatternProjection::Payload => ValueExpr::Project {
+                        value: Box::new(base_val.clone()),
+                        member: "unwrap".to_owned(),
+                    },
                 }
             } else {
-                ValueExpr::Project {
+                ValueExpr::RustField {
                     value: Box::new(base_val.clone()),
-                    member: format!("__rust_field:{idx}"),
+                    member: idx.to_string(),
                 }
             };
             self.bind_rust_pattern(child, child_val, opts);
@@ -440,9 +444,9 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
         if matches!(base_val, ValueExpr::Unknown) {
             ValueExpr::Unknown
         } else {
-            ValueExpr::Project {
+            ValueExpr::RustField {
                 value: Box::new(base_val.clone()),
-                member: format!("__rust_field:{field_name}"),
+                member: field_name.to_string(),
             }
         }
     }
@@ -567,24 +571,24 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
         };
         let iter_expr = value_depth(iterable, self.source, 0, &self.current_shadows());
         let iter_item = match iter_expr {
-            ValueExpr::Project { value, member } if member == "__rust_closure_flat_map" => {
-                ValueExpr::Project {
+            ValueExpr::RustProject { value, operation: crate::semantic::types::RustProjection::ClosureFlatMap } => {
+                ValueExpr::RustProject {
                     value,
-                    member: "__rust_flat_map_item".to_owned(),
+                    operation: crate::semantic::types::RustProjection::FlatMapItem,
                 }
             }
-            ValueExpr::Project { ref member, .. } if member == "__rust_closure_filter_map" => {
-                ValueExpr::Project {
+            ValueExpr::RustProject { operation: crate::semantic::types::RustProjection::ClosureFilterMap, .. } => {
+                ValueExpr::RustProject {
                     value: Box::new(iter_expr),
-                    member: "__rust_iter_item".to_owned(),
+                    operation: crate::semantic::types::RustProjection::IteratorItem,
                 }
             }
-            other => ValueExpr::Project {
+            other => ValueExpr::RustProject {
                 value: Box::new(ValueExpr::Project {
                     value: Box::new(other),
                     member: "into_iter".to_owned(),
                 }),
-                member: "__rust_iter_item".to_owned(),
+                operation: crate::semantic::types::RustProjection::IteratorItem,
             },
         };
         self.bind_rust_pattern(
@@ -847,9 +851,9 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
                 if matches!(base, ValueExpr::Unknown) {
                     ValueExpr::Unknown
                 } else {
-                    ValueExpr::Project {
+                    ValueExpr::RustField {
                         value: Box::new(base.clone()),
-                        member: format!("__rust_field:{i}"),
+                        member: i.to_string(),
                     }
                 }
             } else {
@@ -898,7 +902,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
         };
         let shadows = self.current_shadows();
         let expr = value_depth(val, self.source, 0, &shadows);
-        if matches!(expr, ValueExpr::Project { .. } | ValueExpr::Alias { .. })
+        if matches!(expr, ValueExpr::Project { .. } | ValueExpr::RustField { .. } | ValueExpr::RustProject { .. } | ValueExpr::Alias { .. })
             || matches!(
                 &expr,
                 ValueExpr::Call { callee, .. }
@@ -1085,73 +1089,45 @@ fn push_builtin_closure_projections(
     recv_val: Option<&ValueExpr>,
     inferred: &mut Vec<Option<ValueExpr>>,
 ) -> bool {
-    let simple_proj = match method_name {
-        "query_map" | "query_row" | "query_and_then" | "query_row_and_then" => {
-            Some("__rust_closure_row")
-        }
-        "map"
-        | "filter"
-        | "find"
-        | "position"
-        | "rposition"
-        | "any"
-        | "all"
-        | "for_each"
-        | "flat_map"
-        | "filter_map"
-        | "inspect"
-        | "is_some_and"
-        | "is_none_or"
-        | "is_ok_and"
-        | "is_err_and"
-        | "and_then"
-        | "find_map"
-        | "try_for_each"
-        | "skip_while"
-        | "take_while"
-        | "partition"
-        | "max_by_key"
-        | "min_by_key"
-        | "sort_by_key"
-        | "sort_unstable_by_key" => Some("__rust_iter_item"),
-        "map_or" | "map_or_else" if parent.named_child(1) == Some(arg_node) => {
-            Some("__rust_iter_item")
-        }
-        "filter_entry" => Some("__rust_filter_entry_item"),
-        "with" | "try_with" => Some("__rust_local_key"),
-        "map_err" | "inspect_err" | "unwrap_or_else" | "ok_or_else" | "or_else" => {
-            Some("__rust_err")
-        }
+    use crate::semantic::types::RustProjection;
+    let special = match method_name {
+        "query_map" | "query_row" | "query_and_then" | "query_row_and_then" => Some(RustProjection::ClosureRow),
+        "filter_entry" => Some(RustProjection::FilterEntryItem),
+        "with" | "try_with" => Some(RustProjection::LocalKey),
+        "map_err" | "inspect_err" | "unwrap_or_else" | "ok_or_else" | "or_else" => Some(RustProjection::ErrorPayload),
+        "map" | "filter" | "find" | "position" | "rposition" | "any" | "all" | "for_each"
+        | "flat_map" | "filter_map" | "inspect" | "is_some_and" | "is_none_or" | "is_ok_and"
+        | "is_err_and" | "and_then" | "find_map" | "try_for_each" | "skip_while" | "take_while"
+        | "partition" | "max_by_key" | "min_by_key" | "sort_by_key" | "sort_unstable_by_key" => Some(RustProjection::IteratorItem),
+        "map_or" | "map_or_else" if parent.named_child(1) == Some(arg_node) => Some(RustProjection::IteratorItem),
         _ => None,
     };
-    let Some(recv_val) = recv_val else {
-        return simple_proj.is_some()
-            || matches!(
-                method_name,
-                "retain" | "sort_by" | "max_by" | "min_by" | "reduce" | "fold" | "try_fold"
-            );
-    };
-    if let Some(member) = simple_proj {
-        inferred.push(Some(ValueExpr::Project {
-            value: Box::new(recv_val.clone()),
-            member: member.to_owned(),
-        }));
+    if let Some(operation) = special {
+        if let Some(recv_val) = recv_val {
+            inferred.push(Some(ValueExpr::RustProject {
+                value: Box::new(recv_val.clone()),
+                operation,
+            }));
+        }
         return true;
     }
-    let item = ValueExpr::Project {
+    let Some(recv_val) = recv_val else {
+        return matches!(method_name, "retain" | "sort_by" | "max_by" | "min_by" | "reduce" | "fold" | "try_fold");
+    };
+    let item = ValueExpr::RustProject {
         value: Box::new(recv_val.clone()),
-        member: "__rust_iter_item".to_owned(),
+        operation: RustProjection::IteratorItem,
     };
     match method_name {
         "retain" => {
             if param_count.max(1) >= 2 {
-                inferred.push(Some(ValueExpr::Project {
+                inferred.push(Some(ValueExpr::RustField {
                     value: Box::new(item.clone()),
-                    member: "__rust_field:0".to_owned(),
+                    member: "0".to_owned(),
                 }));
-                inferred.push(Some(ValueExpr::Project {
+                inferred.push(Some(ValueExpr::RustField {
                     value: Box::new(item),
-                    member: "__rust_field:1".to_owned(),
+                    member: "1".to_owned(),
                 }));
             } else {
                 inferred.push(Some(item));

@@ -31,7 +31,7 @@ fn materialize_composed_route(
         .filter(|_| workspace_path(&source_path).0 == workspace_path(owner_path).0)
         .and_then(|source_facts| {
             source_facts.facts.nodes.iter().find(|node| {
-                node.id == source_id && node.kind == "route" && node.path == source_path
+                node.id == source_id && node.kind == crate::models::tags::NodeKind::Route && node.path == source_path
             })
         });
     let source_qualname = origin.map(|node| node.qualname.clone());
@@ -42,7 +42,7 @@ fn materialize_composed_route(
     route.end_line = include.end_line;
     let parent_module = all
         .get(owner_path)
-        .and_then(|typed| typed.facts.nodes.iter().find(|node| node.kind == "module"))
+        .and_then(|typed| typed.facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module))
         .map_or(owner_path, |module| module.qualname.as_str());
     route.qualname = format!("{parent_module}.{name}");
     route.set_detail(NodeDetailKey::ROUTE_PATH, json!(route_path));
@@ -115,7 +115,7 @@ fn apply_composed_route_addition(
         .filter(|_| workspace_path(&source_path).0 == workspace_path(&owner_path).0)
         .filter(|source_facts| {
             source_facts.facts.nodes.iter().any(|node| {
-                node.id == source_id && node.kind == "route" && node.path == source_path
+                node.id == source_id && node.kind == crate::models::tags::NodeKind::Route && node.path == source_path
             })
         })
         .map(|source_facts| {
@@ -215,7 +215,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 .facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == "module" && node.language == "python")
+                .filter(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
                 .map(move |node| ((workspace.clone(), node.qualname.clone()), path.clone()))
         })
         .collect();
@@ -232,7 +232,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                     .nodes
                     .iter()
                     .filter(|node| {
-                        node.kind == "route"
+                        node.kind == crate::models::tags::NodeKind::Route
                             && node.detail_str(NodeDetailKey::INCLUDE_MODULE).is_some()
                             && node.detail_u64(NodeDetailKey::INCLUDE_DEPTH).unwrap_or(0)
                                 < MAX_INCLUDE_DEPTH as u64
@@ -257,7 +257,7 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 .into_iter()
                 .flat_map(|typed| typed.facts.nodes.iter())
                 .filter(|node| {
-                    node.kind == "route" && node.detail_str(NodeDetailKey::INCLUDE_MODULE).is_none()
+                    node.kind == crate::models::tags::NodeKind::Route && node.detail_str(NodeDetailKey::INCLUDE_MODULE).is_none()
                 })
                 .cloned()
                 .collect();

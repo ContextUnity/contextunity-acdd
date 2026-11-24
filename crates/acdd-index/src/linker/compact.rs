@@ -5,7 +5,8 @@ use hashbrown::HashSet;
 use std::sync::Arc;
 
 pub(super) fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {
-    (&a.path, a.line, &a.src, &a.dst, &a.kind).cmp(&(&b.path, b.line, &b.src, &b.dst, &b.kind))
+    (&a.path, a.line, &a.src, &a.dst, a.kind.as_str())
+        .cmp(&(&b.path, b.line, &b.src, &b.dst, b.kind.as_str()))
 }
 
 pub(super) fn compare_coverage(a: &Coverage, b: &Coverage) -> std::cmp::Ordering {
@@ -171,10 +172,12 @@ impl GraphPart {
                     .map(|_| {
                         let src = intern_arc_str(&mut node_id_pool, read_str(&mut cursor));
                         let dst = intern_arc_str(&mut node_id_pool, read_str(&mut cursor));
-                        let kind = read_str(&mut cursor).into();
+                        let kind = crate::models::tags::EdgeKind::parse(read_str(&mut cursor))
+                            .expect("internally encoded edge kind");
                         let path = intern_arc_str(&mut path_pool, read_str(&mut cursor));
                         let evidence = read_str(&mut cursor).into();
-                        let confidence = read_str(&mut cursor).into();
+                        let confidence = crate::models::tags::EdgeConfidence::parse(read_str(&mut cursor))
+                            .expect("internally encoded edge confidence");
                         let line = read_number(&mut cursor);
                         Edge {
                             src,
@@ -261,8 +264,8 @@ mod tests {
         assert!(empty.coverage.is_empty());
 
         let mut first = Graph::default();
-        first.push_edge("src/a.rs", "fn:a", "fn:b", "calls", 10, "b()", "exact");
-        first.push_edge("src/a.rs", "fn:a", "fn:b", "calls", 12, "b()", "exact");
+        first.push_edge("src/a.rs", "fn:a", "fn:b", crate::models::tags::EdgeKind::Calls, 10, "b()", crate::models::tags::EdgeConfidence::Exact);
+        first.push_edge("src/a.rs", "fn:a", "fn:b", crate::models::tags::EdgeKind::Calls, 12, "b()", crate::models::tags::EdgeConfidence::Exact);
         first.push_coverage(
             "src/a.rs",
             10,
@@ -289,7 +292,7 @@ mod tests {
         ));
 
         let mut second = Graph::default();
-        second.push_edge("src/a.rs", "fn:b", "fn:a", "calls", 20, "a()", "exact");
+        second.push_edge("src/a.rs", "fn:b", "fn:a", crate::models::tags::EdgeKind::Calls, 20, "a()", crate::models::tags::EdgeConfidence::Exact);
         second.push_coverage("src/a.rs", 22, "d()", "unresolved", "custom diagnostic");
         second.push_coverage(
             "src/a.rs",

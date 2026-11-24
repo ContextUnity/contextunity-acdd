@@ -464,7 +464,7 @@ fn project_shared_owner_entries<'a>(
         }
         if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
-                if projected.node.details[NodeDetailKey::DEFAULT_EXPORT] == true {
+                if *projected.node.detail_entry(NodeDetailKey::DEFAULT_EXPORT) == true {
                     let key_hash = register_shared_key(&mut key_by_hash, &projected.node.id)?;
                     owner_rows.push((owner, SharedOwnerKind::DefaultExport, key_hash, 0));
                 }

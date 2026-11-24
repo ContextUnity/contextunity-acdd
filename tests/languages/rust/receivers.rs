@@ -238,14 +238,14 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
         facts
             .nodes
             .iter()
-            .any(|n| n.kind == "constant" && n.name == "GLOBAL_CFG"),
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Constant && n.name == "GLOBAL_CFG"),
         "{facts:#?}"
     );
     assert!(
         facts
             .nodes
             .iter()
-            .any(|n| n.kind == "type" && n.name == "Item"),
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Type && n.name == "Item"),
         "expected associated_type indexed as NodeKind::Type: {facts:#?}"
     );
     assert!(

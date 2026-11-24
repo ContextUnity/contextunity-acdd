@@ -250,7 +250,7 @@ fn extract((combined, flow_return, prepared): Case) -> (Facts, Vec<&'static str>
     let mut facts: Facts =
         serde_json::from_value(serde_json::to_value(extracted).expect("public facts serialize"))
             .expect("public facts round-trip");
-    let module = facts.nodes.iter_mut().find(|n| n.kind == "module").unwrap();
+    let module = facts.nodes.iter_mut().find(|n| n.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
     module.details["bindings"] = json!(["existing_binding"]);
     module.details["rebindings"] = json!(["existing_rebound"]);
     acdd_index::ast::parse::parse_file(profile, PATH, SOURCE, "legacy", &mut facts).unwrap();
@@ -291,7 +291,7 @@ fn declaration_hook_modes() {
         {
             // exact_prepared_root_bindings_merge_with_existing_public_bindings
 
-            let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+            let module = facts.nodes.iter().find(|n| n.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
             let details = crate::common::assertions::projected_node_details(&facts, module);
             let matching = matches!(case.2, Prepared::Matching);
             assert_eq!(

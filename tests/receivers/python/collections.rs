@@ -65,7 +65,7 @@ fn collection_type_proof_matrix() {
 let module = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
         .unwrap();
     let details = crate::common::assertions::projected_node_details(&facts, module);
     let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();

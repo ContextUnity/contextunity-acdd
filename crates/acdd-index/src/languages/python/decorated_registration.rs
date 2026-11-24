@@ -107,7 +107,7 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
     });
     if !candidates.is_empty() {
         if let Some(function) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-            function.details["decorated_registrations"] = json!(candidates);
+            function.set_detail(crate::models::details::NodeDetailKey::DECORATED_REGISTRATIONS, json!(candidates));
         }
     }
 }
@@ -141,15 +141,15 @@ pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) 
     let module_id: String = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
         .map(|m| m.id.clone())
         .unwrap_or_else(|| ctx.owner.to_owned());
     if let Some(module) = facts.nodes.iter_mut().find(|node| node.id == module_id) {
-        let events = module.details["assignment_events"].as_array_mut();
+        let events = module.detail_entry_mut(crate::models::details::NodeDetailKey::ASSIGNMENT_EVENTS).as_array_mut();
         if let Some(events) = events {
             events.push(json!({"name":name,"callee":callee,"line":ctx.line()}));
         } else {
-            module.details["assignment_events"] =
+            *module.detail_entry_mut(crate::models::details::NodeDetailKey::ASSIGNMENT_EVENTS) =
                 json!([{"name":name,"callee":callee,"line":ctx.line()}]);
         }
     }
@@ -199,7 +199,7 @@ fn imported_constructor(
         .nodes
         .iter()
         .find(|node| node.id == module_id)
-        .and_then(|module| module.details["assignment_events"].as_array())
+        .and_then(|module| module.detail_entry(crate::models::details::NodeDetailKey::ASSIGNMENT_EVENTS).as_array())
         .is_some_and(|events| {
             events.iter().any(|event| {
                 event["name"] == alias
@@ -218,7 +218,7 @@ fn confirmed_instance(
     modules: &[String],
     constructor: &str,
 ) -> bool {
-    let Some(events) = module.details["assignment_events"].as_array() else {
+    let Some(events) = module.detail_entry(crate::models::details::NodeDetailKey::ASSIGNMENT_EVENTS).as_array() else {
         return false;
     };
     let mut bindings = events.iter().filter(|event| {
@@ -257,7 +257,7 @@ fn registrations_with_rules(facts: &mut Facts, rules: &[SyntaxRule]) {
     let Some(module) = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
         .cloned()
     else {
         return;
@@ -266,7 +266,7 @@ fn registrations_with_rules(facts: &mut Facts, rules: &[SyntaxRule]) {
         .nodes
         .iter()
         .filter(|node| {
-            node.kind == "function" && node.details["decorated_registrations"].is_array()
+            node.kind == crate::models::tags::NodeKind::Function && node.detail_entry(crate::models::details::NodeDetailKey::DECORATED_REGISTRATIONS).is_array()
         })
         .cloned()
         .collect();
@@ -277,11 +277,11 @@ fn registrations_with_rules(facts: &mut Facts, rules: &[SyntaxRule]) {
                 && facts
                     .nodes
                     .iter()
-                    .any(|node| node.id == edge.src && node.kind == "class")
+                    .any(|node| node.id == edge.src && node.kind == crate::models::tags::NodeKind::Class)
         }) {
             continue;
         }
-        let Some(candidates) = function.details["decorated_registrations"].as_array() else {
+        let Some(candidates) = function.detail_entry(crate::models::details::NodeDetailKey::DECORATED_REGISTRATIONS).as_array() else {
             continue;
         };
         for candidate in candidates {
@@ -343,12 +343,15 @@ fn registrations_with_rules(facts: &mut Facts, rules: &[SyntaxRule]) {
                 "{id_prefix}:{}:{line}:{}",
                 function.path, function.name
             );
+            let Some(registration_kind_tag) = crate::models::tags::NodeKind::parse(registration_kind) else {
+                continue;
+            };
             facts.pending_flow_nodes.push(facts.nodes.len());
             facts.nodes.push(Node {
     native_semantic: None,
-                id: id.clone(), kind: registration_kind.into(), name: name.clone(),
+                id: id.clone(), kind: registration_kind_tag, name: name.clone(),
                 qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
-                line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
+                line, end_line: line, is_test: function.is_test, language: crate::models::tags::LanguageId::Python, generated: false,
                 details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
             });
             facts.edges.push(Edge {

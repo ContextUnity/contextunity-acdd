@@ -1,5 +1,6 @@
 //! Read-only lookup and call-resolution helpers on [`ValueFlowIndex`].
 
+use crate::languages::profile::ProfileLinker;
 use super::types::{
     normalize_dotted_expression, reaching, ComputedKey, ReadTrace,
     SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex, ValueFlowLookup,
@@ -33,11 +34,11 @@ impl<'a> ValueFlowIndex<'a> {
                 return Some(&self.unknown);
             }
             if let Some(writes) = scope.bindings.get(name) {
+                let linker = crate::languages::by_id(owner.language.as_str()).map(|p| p.linker());
                 let setup_complete = is_parent
-                    && super::super::vue::value_flow::setup_scope_complete(owner, scope.module);
+                    && linker.is_some_and(|l| l.setup_scope_complete(owner, scope.module));
                 let immutable_capture = is_parent
-                    && matches!(owner.language.as_str(), "javascript" | "typescript")
-                    && super::super::javascript::value_flow::stable_immutable_capture(writes);
+                    && linker.is_some_and(|l| l.stable_immutable_capture(writes));
                 let uniform_capture = is_parent
                     && writes.first().is_some_and(|first| {
                         !matches!(first.target, TypeTarget::Unknown | TypeTarget::Ambiguous)
@@ -210,23 +211,12 @@ impl<'a> ValueFlowIndex<'a> {
         ))
     }
 
-    /// Resolves the type of dotted or chained `expression` within `owner` at `at`.
-    pub fn type_of_expression(
-        &self,
-        owner: &'a Node,
-        expression: &str,
-        at: SourcePosition,
-        resolver: &impl SemanticResolver<'a>,
-    ) -> Option<&TypeTarget<'a>> {
-        self.type_of_expression_tracked(owner, expression, at, resolver, None)
-    }
-
     pub(in crate::linker) fn type_of_expression_tracked(
         &self,
         owner: &'a Node,
         expression: &str,
         at: SourcePosition,
-        resolver: &(impl SemanticResolver<'a> + ?Sized),
+        resolver: &dyn SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Option<&TypeTarget<'a>> {
         let expression = normalize_dotted_expression(expression);
@@ -236,16 +226,23 @@ impl<'a> ValueFlowIndex<'a> {
         {
             return Some(&self.unknown);
         }
+        let linker = crate::languages::by_id(owner.language.as_str()).map(|p| p.linker());
         if let Some(target) = self.lookup_tracked(owner, expression, at, trace) {
-            if let Some(returned) = super::super::python::value_flow::callable_target_return(
-                self, target, owner, at, resolver, trace,
-            ) {
+            let returned = match target {
+                TypeTarget::Callable(callable) => self.return_type_tracked(callable, trace),
+                TypeTarget::CallableReturn(ret) => Some(ret.as_ref()),
+                TypeTarget::ClassType(inner) => Some(inner.as_ref()),
+                other => linker.and_then(|l| {
+                    l.callable_target_return(self, other, owner, at, resolver, trace)
+                }),
+            };
+            if let Some(returned) = returned {
                 return Some(returned);
             }
         }
-        if let Some(constructor) =
-            super::super::python::value_flow::constructor_symbol(owner, expression, at, resolver)
-        {
+        if let Some(constructor) = linker.and_then(|l| {
+            l.constructor_symbol(owner, expression, at, resolver)
+        }) {
             if let Some(target) = self.borrow_symbol(constructor, trace) {
                 return Some(target);
             }
@@ -261,7 +258,7 @@ impl<'a> ValueFlowIndex<'a> {
         owner: &'a Node,
         expression: &str,
         at: SourcePosition,
-        resolver: &(impl SemanticResolver<'a> + ?Sized),
+        resolver: &dyn SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Option<&'a Node> {
         let expression = normalize_dotted_expression(expression);
@@ -282,7 +279,7 @@ impl<'a> ValueFlowIndex<'a> {
         owner: &'a Node,
         expression: &str,
         at: SourcePosition,
-        resolver: &(impl SemanticResolver<'a> + ?Sized),
+        resolver: &dyn SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Symbol<'a> {
         if let Some(TypeTarget::Callable(callable)) =
@@ -315,14 +312,14 @@ impl<'a> ValueFlowIndex<'a> {
         owner: &'a Node,
         expression: &str,
         at: SourcePosition,
-        resolver: &(impl SemanticResolver<'a> + ?Sized),
+        resolver: &dyn SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Option<&TypeTarget<'a>> {
         if let Some(target) = self.lookup_tracked(owner, expression, at, trace) {
             return Some(target);
         }
         if let Some((receiver, member)) = expression.rsplit_once('.') {
-            let linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
+            let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
             if let Some(class) = self
                 .value_expression(owner, receiver, at, resolver, trace)
                 .and_then(|target| linker.and_then(|l| l.local_receiver_class(target)))
@@ -360,6 +357,113 @@ impl<'a> ValueFlowIndex<'a> {
             Symbol::Ambiguous => Some(&self.ambiguous),
             _ => None,
         }
+    }
+}
+
+pub(in crate::linker) fn resolve_type<'a>(
+    scope: &'a Node,
+    expression: &crate::semantic::TypeExpr,
+    at: SourcePosition,
+    resolver: &dyn SemanticResolver<'a>,
+    limits: super::types::SemanticLimits,
+) -> TypeTarget<'a> {
+    use super::types::{node_position, symbol_type, valid_type};
+    use crate::semantic::TypeExpr;
+    use serde::Deserialize;
+    use std::borrow::Cow;
+
+    let mut scope = scope;
+    let mut expression = Cow::Borrowed(expression);
+    let mut at = at;
+    let mut visited = Vec::new();
+    for _ in 0..limits.alias_depth {
+        let linker = crate::languages::by_id(scope.language.as_str()).map(|p| p.linker());
+        if valid_type(&expression, limits, 0) {
+            if let Some(resolved) = linker.and_then(|l| {
+                l.resolve_special_type_expr(scope, &expression, at, resolver, limits)
+            }) {
+                return resolved;
+            }
+        }
+        if let TypeExpr::Applied { base, args } = &*expression {
+            return if valid_type(&expression, limits, 0) {
+                resolver.resolve_applied(scope, base, args, at)
+            } else {
+                TypeTarget::Unknown
+            };
+        }
+        let TypeExpr::Named { name } = &*expression else {
+            return TypeTarget::Unknown;
+        };
+        if name.is_empty() || name.len() > limits.name_bytes {
+            return TypeTarget::Unknown;
+        }
+        let target = symbol_type(resolver.resolve_symbol(scope, name, at, SymbolRole::Type));
+        let TypeTarget::Local(node) = &target else {
+            return target;
+        };
+        if let Some(special) = crate::languages::by_id(node.language.as_str())
+            .and_then(|profile| profile.linker().special_type_alias_target(node, resolver))
+        {
+            return special;
+        }
+        let alias = if let Some(alias) = resolver
+            .value_flow(node)
+            .and_then(|facts| facts.alias_type.as_ref())
+        {
+            Cow::Borrowed(alias)
+        } else {
+            let encoded = match resolver.raw_value_flow(node) {
+                Some(raw) => &raw["alias_type"],
+                None if resolver.has_typed_flows() => return target,
+                None => &node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["alias_type"],
+            };
+            if encoded.is_null() {
+                return target;
+            }
+            let Ok(alias) = TypeExpr::deserialize(encoded) else {
+                return TypeTarget::Unknown;
+            };
+            Cow::Owned(alias)
+        };
+        if visited.contains(&node.id.as_str()) {
+            return TypeTarget::Unknown;
+        }
+        visited.push(node.id.as_str());
+        expression = alias;
+        scope = node;
+        at = node_position(node);
+    }
+    TypeTarget::Unknown
+}
+
+pub(crate) fn stored_type_expr(annotation: &str, language: &str) -> crate::semantic::TypeExpr {
+    use crate::semantic::TypeExpr;
+    let annotation = annotation.trim();
+    if let Some(expression) = crate::languages::by_id(language)
+        .and_then(|profile| profile.linker().stored_type_expr(annotation))
+    {
+        return expression;
+    }
+    if let Some((base, rest)) = annotation.split_once('[') {
+        if let Some(argument) = rest.strip_suffix(']') {
+            let base = base.trim();
+            let argument = argument.trim();
+            if matches!(base, "list" | "List" | "Sequence" | "Iterable")
+                && !argument.is_empty()
+                && !argument.contains(['[', ',', ']'])
+            {
+                return TypeExpr::Applied {
+                    base: base.to_owned(),
+                    args: vec![TypeExpr::Named {
+                        name: argument.to_owned(),
+                    }],
+                };
+            }
+        }
+    }
+    TypeExpr::Named {
+        name: annotation.to_owned(),
     }
 }
 

@@ -33,7 +33,7 @@ service AuthService {
         .extract(&fs::read_to_string(w.root().join("protos/auth.proto")).unwrap());
 
     // Verify module qualname is package
-    let module_node = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+    let module_node = facts.nodes.iter().find(|n| n.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
     assert_eq!(module_node.qualname, "mycompany.auth");
 
     // Verify field references was extracted
@@ -125,21 +125,21 @@ service RouterService {
         .iter()
         .find(|n| n.name == "ContextUnit")
         .unwrap();
-    assert_eq!(cu.kind, "class");
+    assert_eq!(cu.kind, acdd_index::models::tags::NodeKind::Class);
 
     let svc = facts
         .nodes
         .iter()
         .find(|n| n.name == "RouterService")
         .unwrap();
-    assert_eq!(svc.kind, "service");
+    assert_eq!(svc.kind, acdd_index::models::tags::NodeKind::Service);
 
     let rpc = facts
         .nodes
         .iter()
         .find(|n| n.name == "ExecuteAgent")
         .unwrap();
-    assert_eq!(rpc.kind, "function");
+    assert_eq!(rpc.kind, acdd_index::models::tags::NodeKind::Function);
 
     // Check imports
     let imports: Vec<&str> = facts

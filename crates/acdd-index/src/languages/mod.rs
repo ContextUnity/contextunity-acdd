@@ -432,8 +432,13 @@ mod tests {
 
     #[test]
     fn registry_profiles_validate_and_reject_duplicates() {
+        use super::profile::ProfileLinker;
         let all: Vec<_> = profiles().collect();
         validate_profiles(all.iter().copied()).unwrap();
+        for profile in &all {
+            let expected = !matches!(profile.id(), "python" | "rust" | "typescript" | "javascript" | "vue");
+            assert_eq!(profile.linker().allows_multi_file_modules(), expected, "{}", profile.id());
+        }
         if let Some(first) = all.first() {
             assert!(validate_profiles([*first, *first]).is_err());
         }

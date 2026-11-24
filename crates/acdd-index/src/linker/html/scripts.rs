@@ -2,7 +2,7 @@ use crate::languages::{self, ImportPath, LanguageFamily};
 use crate::models::{Node, ReceiverHint, Reference};
 use hashbrown::{HashMap, HashSet};
 
-pub(in crate::linker) fn reference_profile<'a>(
+pub(crate) fn reference_profile<'a>(
     profile: Option<&'a dyn languages::LanguageProfile>,
     reference: &Reference,
     by_id: &HashMap<crate::interner::SymbolId, &Node>,
@@ -11,7 +11,7 @@ pub(in crate::linker) fn reference_profile<'a>(
     if profile.is_some_and(|profile| profile.id() == "html")
         && interner
             .lookup_node(by_id, reference.source.as_str())
-            .is_some_and(|owner| owner.language == "javascript")
+            .is_some_and(|owner| owner.language == crate::models::tags::LanguageId::Javascript)
     {
         languages::by_id("javascript")
     } else {
@@ -48,7 +48,7 @@ impl<'a> ScriptRegistry<'a> {
             if !facts
                 .nodes
                 .iter()
-                .any(|node| node.kind == "module" && node.language == "html")
+                .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
             {
                 continue;
             }
@@ -72,7 +72,7 @@ impl<'a> ScriptRegistry<'a> {
                 if !target_facts
                     .nodes
                     .iter()
-                    .any(|node| node.kind == "module" && node.language == "html")
+                    .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
                     || languages::workspace_path(target_path).0 != workspace
                     || dependencies
                         .nearest_manifest_scope_for_path(LanguageFamily("javascript"), target_path)
@@ -110,7 +110,7 @@ impl<'a> ScriptRegistry<'a> {
                     continue;
                 };
                 let mut matching = candidates.iter().copied().filter(|candidate| {
-                    candidate.language == "javascript"
+                    candidate.language == crate::models::tags::LanguageId::Javascript
                         && languages::workspace_path(&candidate.path).0 == workspace
                         && dependencies.nearest_manifest_scope_for_path(
                             LanguageFamily("javascript"),
@@ -124,7 +124,7 @@ impl<'a> ScriptRegistry<'a> {
                     continue;
                 };
                 for function in provider_facts.nodes.iter().filter(|node| {
-                    node.kind == "function"
+                    node.kind == crate::models::tags::NodeKind::Function
                         && node.qualname.rsplit_once('.').is_some_and(|(owner, name)| {
                             owner == provider.qualname && name == node.name
                         })

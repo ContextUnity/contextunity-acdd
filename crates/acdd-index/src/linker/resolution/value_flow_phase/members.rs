@@ -1,3 +1,4 @@
+use crate::languages::profile::ProfileLinker;
 use super::super::context::*;
 use super::super::input::ResolutionInput;
 use crate::languages::LanguageProfile;
@@ -77,7 +78,7 @@ pub(super) fn resolve_computed_call(
                 }
                 let result = match result {
                     semantic_context::Member::Local(node)
-                        if crate::languages::by_id(&node.language).is_some_and(|profile| {
+                        if crate::languages::by_id(node.language.as_str()).is_some_and(|profile| {
                             !profile.linker().member_visible_at(
                                 node,
                                 path,
@@ -160,8 +161,8 @@ pub(super) fn resolve_candidate_join(
                 false,
             ) {
                 semantic_context::Member::Local(method)
-                    if method.kind == "method"
-                        && crate::languages::by_id(&method.language).is_none_or(|profile| {
+                    if method.kind == crate::models::tags::NodeKind::Method
+                        && crate::languages::by_id(method.language.as_str()).is_none_or(|profile| {
                             profile.linker().member_visible_at(
                                 method,
                                 path,
@@ -222,7 +223,7 @@ pub(super) fn resolve_candidate_join(
     };
     graph.reference_coverage(path, reference, status, evidence);
     for target in candidates {
-        graph.reference_edge(path, reference, target, "possible_calls", "possible");
+        graph.reference_edge(path, reference, target, crate::models::tags::EdgeKind::PossibleCalls, crate::models::tags::EdgeConfidence::Possible);
     }
     true
 }

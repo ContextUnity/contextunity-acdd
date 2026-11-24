@@ -171,14 +171,14 @@ mod tests {
                     nodes: vec![Node {
                         native_semantic: None,
                         id: format!("function:{path}"),
-                        kind: "function".into(),
+                        kind: crate::models::tags::NodeKind::Function,
                         name: format!("function_{index}"),
                         qualname: format!("function_{index}"),
                         path,
                         line: 1,
                         end_line: 1,
                         is_test: false,
-                        language: "rust".into(),
+                        language: crate::models::tags::LanguageId::Rust,
                         generated: false,
                         details: serde_json::Value::Null,
                     }],
@@ -433,11 +433,11 @@ mod tests {
             graph.edges.push(CompactEdge {
                 src: f.nodes[0].id.as_str().into(),
                 dst: format!("function:{}", entries[(index + 1) % entries.len()].path).into(),
-                kind: "calls".into(),
+                kind: crate::models::tags::EdgeKind::Calls,
                 path: file.path.clone().into(),
                 line: 2,
                 evidence: "cross-file call λ'\0".into(),
-                confidence: "exact".into(),
+                confidence: crate::models::tags::EdgeConfidence::Exact,
             });
             for status in [
                 "resolved",

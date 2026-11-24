@@ -706,7 +706,7 @@ fn extract_configured(
             let module = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "python")?;
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)?;
             static_path(
                 single_argument(loader)?,
                 root,
@@ -727,7 +727,7 @@ fn extract_configured(
     let Some(module) = facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module" && node.language == "python")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
     else {
         return;
     };
@@ -735,14 +735,14 @@ fn extract_configured(
     facts.nodes.push(IndexedNode {
         native_semantic: None,
         id: format!("py:{}:{}:template_loader_root:{}", module.path, ctx.line(), path),
-        kind: "template_loader_root".into(),
+        kind: crate::models::tags::NodeKind::TemplateLoaderRoot,
         name: path.clone(),
         qualname: format!("{}.template_loader_root", module.qualname),
         path: module.path.clone(),
         line: ctx.line(),
         end_line: ctx.line(),
         is_test: false,
-        language: "python".into(),
+        language: crate::models::tags::LanguageId::Python,
         generated: false,
         details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() })], ..Default::default() })), ..Default::default() }}),
     });

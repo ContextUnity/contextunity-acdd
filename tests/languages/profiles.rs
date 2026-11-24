@@ -104,7 +104,7 @@ fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
 #[test]
 fn declarative_grammar_types_and_profile_linker_matrix() {
     use acdd_index::languages::{
-        self, CallForm, DeclarationRole, ImportKind, SyntaxGrammarSpec, Visibility,
+        CallForm, DeclarationRole, ImportKind, SyntaxGrammarSpec, Visibility,
     };
     use acdd_index::models::tags::NodeKind;
 
@@ -150,14 +150,6 @@ fn declarative_grammar_types_and_profile_linker_matrix() {
     assert_eq!(spec.import_forms[0].1, ImportKind::Static);
     assert_eq!(spec.visibility_modifiers[0].1, Visibility::Public);
 
-    for profile in languages::profiles() {
-        let multi_file = profile.linker().allows_multi_file_modules();
-        let expected_multi = !matches!(
-            profile.id(),
-            "python" | "rust" | "typescript" | "javascript" | "vue"
-        );
-        assert_eq!(multi_file, expected_multi, "profile {}", profile.id());
-    }
 }
 
 #[cfg(feature = "lang-go")]
@@ -308,8 +300,8 @@ fn file_activation_signals_persist_binary_v4_and_gate_link_time_implicit_receive
     // Round-trip both files through binary v5 encode_facts / decode_facts before linking.
     let active_blob = encode_facts(&TypedFacts::from_public(active_facts)).unwrap();
     let inactive_blob = encode_facts(&TypedFacts::from_public(inactive_facts)).unwrap();
-    assert!(active_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
-    assert!(inactive_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
+    assert!(active_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));
+    assert!(inactive_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));
 
     let mut facts_map: BTreeMap<String, Facts> = BTreeMap::new();
     facts_map.insert(

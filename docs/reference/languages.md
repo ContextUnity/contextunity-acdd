@@ -113,9 +113,9 @@ ACDD collects declared dependencies and `ModulePrefix` records from workspace ma
 ## HTML and configuration files
 
 - **HTML**: shares one HTML Tree-sitter grammar and profile (`app.html` stays distinct from `app.js`), resolving local `script src` / `link href` targets and inline `<script>` AST facts (when `lang-typescript` is enabled; `<script src=...>` inline bodies and non-JS data blocks are skipped).
-- **HTMX requests (`htmx_request` / `htmx_context`)**:
-  - `hx-get`, `hx-post`, `hx-put`, `hx-patch`, `hx-delete`, and `data-hx-*` attributes emit `htmx_request` nodes (trigger, target, swap, include, and `hx-vals` metadata shown in `detail="full"`).
-  - Elements with only supporting HTMX attributes emit `htmx_context` nodes; `local_unverified` marks local route paths awaiting server handler proof (see [HTMX attributes](https://htmx.org/reference/)).
+- **HTMX requests (`html_request` / `html_context`)**:
+  - `hx-get`, `hx-post`, `hx-put`, `hx-patch`, `hx-delete`, and `data-hx-*` attributes emit `html_request` nodes (trigger, target, swap, include, and `hx-vals` metadata shown in `detail="full"`).
+  - Elements with only supporting HTMX attributes emit `html_context` nodes; `request_node_role` retains the manifest role, and `local_unverified` marks local route paths awaiting server handler proof (see [HTMX attributes](https://htmx.org/reference/)).
 - **YAML & TOML**: YAML indexes block/flow mapping keys; TOML indexes tables and array tables as namespaces and key/value pairs as variables (disambiguate repeated names by path and line).
 
 These profiles use the same index, selectors, snippets, and incremental update path as other languages. Diagnostics describe syntax accepted by the grammar, not complete HTML, YAML, or TOML specification validation.

@@ -98,7 +98,7 @@ fn module_provider_matrix() {
                     let target = facts[target_path]
                         .nodes
                         .iter()
-                        .find(|node| node.name == target_name && node.kind == target_kind)
+                        .find(|node| node.name == target_name && node.kind.as_str() == target_kind)
                         .unwrap();
                     assert!(
                         graph
@@ -166,7 +166,7 @@ fn module_provider_matrix() {
                         let provider = facts[&provider_path]
                             .nodes
                             .iter()
-                            .find(|node| node.name == expression && node.kind == "function")
+                            .find(|node| node.name == expression && node.kind == acdd_index::models::tags::NodeKind::Function)
                             .unwrap();
                         assert!(
                             graph.edges.iter().any(|edge| edge.path == child_path
@@ -214,7 +214,7 @@ fn module_provider_matrix() {
                 let verify = facts["src/api/mod.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "verify" && node.kind == "method")
+                    .find(|node| node.name == "verify" && node.kind == acdd_index::models::tags::NodeKind::Method)
                     .unwrap();
                 for (expression, target) in [
                     ("render", function),

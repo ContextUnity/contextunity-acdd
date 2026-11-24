@@ -1,5 +1,6 @@
 use super::context::*;
 use crate::models::Node;
+use crate::models::tags::{EdgeConfidence, EdgeKind};
 use hashbrown::HashMap;
 use std::borrow::Cow;
 
@@ -38,10 +39,10 @@ fn emit_doc_citations(
             .collect::<Vec<_>>();
         if let [target_doc] = matching_sections.as_slice() {
             for (src, dst, kind) in [
-                (doc_id, target_doc.doc_id.as_str(), "cites_doc"),
-                (target_doc.doc_id.as_str(), doc_id, "cited_by_doc"),
+                (doc_id, target_doc.doc_id.as_str(), EdgeKind::CitesDoc),
+                (target_doc.doc_id.as_str(), doc_id, EdgeKind::CitedByDoc),
             ] {
-                graph.push_edge(path, src, dst, kind, line, target, "exact");
+                graph.push_edge(path, src, dst, kind, line, target, EdgeConfidence::Exact);
             }
         }
     }
@@ -86,13 +87,13 @@ fn emit_doc_invariant_claims(
         };
         let claim_line = claim["line"].as_u64().unwrap_or(1) as usize;
         for invariant in facts.nodes.iter().filter(|node| {
-            node.kind == "invariant"
+            node.kind == crate::models::tags::NodeKind::Invariant
                 && claim_line >= node.line
                 && claim_line <= node.end_line.max(node.line)
         }) {
             for (src, dst, kind) in [
-                (&invariant.id, &target_node.id, "governs"),
-                (&target_node.id, &invariant.id, "governed_by"),
+                (&invariant.id, &target_node.id, EdgeKind::Governs),
+                (&target_node.id, &invariant.id, EdgeKind::GovernedBy),
             ] {
                 graph.push_edge(
                     path,
@@ -101,7 +102,7 @@ fn emit_doc_invariant_claims(
                     kind,
                     claim_line,
                     name,
-                    "exact",
+                    crate::models::tags::EdgeConfidence::Exact,
                 );
             }
         }
@@ -183,8 +184,8 @@ where
             };
             if let [node] = candidates.as_slice() {
                 for (src, dst, kind) in [
-                    (&doc.doc_id, &node.id, "documents"),
-                    (&node.id, &doc.doc_id, "references_doc"),
+                    (&doc.doc_id, &node.id, EdgeKind::Documents),
+                    (&node.id, &doc.doc_id, EdgeKind::ReferencesDoc),
                 ] {
                     graph.push_edge(
                         path,
@@ -193,7 +194,7 @@ where
                         kind,
                         occurrence_line,
                         symbol.clone(),
-                        "exact",
+                        crate::models::tags::EdgeConfidence::Exact,
                     );
                 }
             }

@@ -403,7 +403,7 @@ fn wire_value_expr_callbacks<F: FnMut(&str, &str, i64)>(
 ) {
     match expr {
         ValueExpr::Alias { name } => wire(owner_id, name, line),
-        ValueExpr::Await { value } | ValueExpr::Scoped { value, .. } => {
+        ValueExpr::Await { value } | ValueExpr::Scoped { value, .. } | ValueExpr::RustField { value, .. } | ValueExpr::RustProject { value, .. } => {
             wire_value_expr_callbacks(owner_id, value, line, wire);
         }
         ValueExpr::BranchJoin { alternatives } => {

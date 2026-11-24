@@ -175,8 +175,8 @@ fn load_composed_sources(
     let source_paths = facts
         .values()
         .flat_map(|facts| &facts.nodes)
-        .filter(|node| node.details.get(NodeDetailKey::INCLUDED_FROM).is_some())
-        .filter_map(|node| node.details[NodeDetailKey::SOURCE_PATH].as_str())
+        .filter(|node| node.detail_get(NodeDetailKey::INCLUDED_FROM).is_some())
+        .filter_map(|node| node.detail_entry(NodeDetailKey::SOURCE_PATH).as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut sources = BTreeMap::new();
     if source_paths.is_empty() {
@@ -561,8 +561,8 @@ fn restore_catalog_file(
     let mut full = lean.clone();
     catalog_payload(&file.path, encoded)?.restore(&mut full);
     for node in &mut full.nodes {
-        if node.details.get(NodeDetailKey::INCLUDED_FROM).is_some() {
-            if let Some(source) = node.details[NodeDetailKey::SOURCE_PATH].as_str() {
+        if node.detail_get(NodeDetailKey::INCLUDED_FROM).is_some() {
+            if let Some(source) = node.detail_entry(NodeDetailKey::SOURCE_PATH).as_str() {
                 let payload = composed_sources
                     .get(source)
                     .context("missing composed source")?;
@@ -582,7 +582,7 @@ fn prune_facts_for_stage(facts: &mut TypedFacts, keep_node_navigation_data: bool
     let html = facts
         .nodes
         .iter()
-        .any(|node| node.kind == "module" && node.language == "html");
+        .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html);
     facts.flows.retain_persistence_facts(keep_node_navigation_data);
     facts.facts.edges = Vec::new();
     facts.facts.semantic = Default::default();

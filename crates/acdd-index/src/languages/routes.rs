@@ -715,7 +715,7 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
     );
     if let Some(existing) = facts.nodes.iter_mut().find(|n| n.id == id) {
         if let (Some(handler), Some(handlers)) =
-            (route.handler, existing.details["handlers"].as_array_mut())
+            (route.handler, existing.detail_entry_mut(crate::models::details::NodeDetailKey::HANDLERS).as_array_mut())
         {
             handlers.push(json!(handler));
         }
@@ -724,14 +724,14 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
         facts.nodes.push(Node {
     native_semantic: None,
         id: id.clone(),
-        kind: "route".into(),
+        kind: crate::models::tags::NodeKind::Route,
         name: name.clone(),
         qualname: format!("{}.{name}", parent.qualname),
         path: parent.path.clone(),
         line,
         end_line: route.syntax.end_position().row + offset + 1,
         is_test: parent.is_test,
-        language: parent.language.clone(),
+        language: parent.language,
         generated: false,
         details: json!({"method":route.method,"route_path":route.path,"handler":route.handler,"handlers":route.handler.into_iter().collect::<Vec<_>>(),"route_name":route.route_name,"include_module":route.include_module,"include_namespace":route.include_namespace,"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: route.origins.into_iter().map(crate::semantic::FrameworkFact::RuleOrigin).collect(), ..Default::default() })), ..Default::default() }}),
     });

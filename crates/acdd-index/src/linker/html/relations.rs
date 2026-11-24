@@ -12,7 +12,7 @@ fn is_html_file(facts: &Facts) -> bool {
     facts
         .nodes
         .iter()
-        .any(|node| node.kind == "module" && node.language == "html")
+        .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
 }
 
 fn is_request_with_rules(
@@ -20,7 +20,8 @@ fn is_request_with_rules(
     flow: &ValueFlowFacts,
     syntax_rules: &[languages::manifests::syntax::SyntaxRule],
 ) -> bool {
-    node.language == "html"
+    node.language == crate::models::tags::LanguageId::Html
+        && node.kind == crate::models::tags::NodeKind::HtmlRequest
         && !flow.fact_limit_exceeded
         && flow.rule_origins().any(|origin| {
             syntax_rules.iter().any(|rule| {
@@ -30,19 +31,20 @@ fn is_request_with_rules(
                         &rule.operation,
                         languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes {
                             request_node, ..
-                        } if node.kind == *request_node
+                        } if node.detail_str(crate::models::details::NodeDetailKey::REQUEST_NODE_ROLE)
+                            == Some(request_node.as_str())
                     )
             })
         })
 }
 
-pub(in crate::linker) fn is_request(
+pub(crate) fn is_request(
     node: &Node,
     flow: &ValueFlowFacts,
     path: &str,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> bool {
-    node.language == "html"
+    node.language == crate::models::tags::LanguageId::Html
         && !flow.fact_limit_exceeded
         && is_request_with_rules(
             node,
@@ -61,13 +63,13 @@ pub(in crate::linker) fn emit_render_targets(
             path,
             provider.source.id.clone(),
             target.id.clone(),
-            "renders",
+            crate::models::tags::EdgeKind::Renders,
             provider.context.position.line,
             format!(
                 "render target: {} from {}",
                 target.path, provider.source.path
             ),
-            "exact",
+            crate::models::tags::EdgeConfidence::Exact,
         );
     }
 }
@@ -84,7 +86,7 @@ fn has_client_route_mismatch(client_url: &str, route_node: &Node) -> bool {
         .next()
         .unwrap_or(client_url)
         .trim_matches('/');
-    let route_path = route_node.details["route_path"]
+    let route_path = route_node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH)
         .as_str()
         .unwrap_or("")
         .trim_start_matches('^')
@@ -145,7 +147,7 @@ pub(in crate::linker) fn emit_request_routes(
         is_request_with_rules(node, facts, &context.syntax_rules)
     }) {
         let (method, url) = node.name.split_once(' ').unwrap_or(("GET", &node.name));
-        let status = node.details["url_status"].as_str().unwrap_or("");
+        let status = node.detail_entry(crate::models::details::NodeDetailKey::URL_STATUS).as_str().unwrap_or("");
         match status {
             "remote" => graph.push_coverage(
                 path,
@@ -210,10 +212,10 @@ pub(in crate::linker) fn emit_template_references(
                     path,
                     reference.source.clone(),
                     symbol.id.clone(),
-                    "references",
+                    crate::models::tags::EdgeKind::References,
                     reference.line,
                     format!("template binding from {} via {}", symbol.path, module.path),
-                    "exact",
+                    crate::models::tags::EdgeConfidence::Exact,
                 );
                 graph.reference_coverage(
                     path,
@@ -242,10 +244,10 @@ pub(in crate::linker) fn emit_template_references(
                                 path,
                                 reference.source.clone(),
                                 provider.source.id.clone(),
-                                "context_provider",
+                                crate::models::tags::EdgeKind::ContextProvider,
                                 reference.line,
                                 format!("render context: {}", provider.source.path),
-                                "exact",
+                                crate::models::tags::EdgeConfidence::Exact,
                             );
                             (
                                 "resolved",

@@ -687,10 +687,10 @@ fn collect_changed_resolution_names(
                 .as_ref()
                 .is_some_and(|(id, qualname, language)| {
                     f.nodes.iter().any(|n| {
-                        n.kind == "module"
+                        n.kind == acdd_index::models::tags::NodeKind::Module
                             && &n.id == id
                             && &n.qualname == qualname
-                            && &n.language == language
+                            && n.language.as_str() == language
                     })
                 });
             for n in &f.nodes {
@@ -698,7 +698,7 @@ fn collect_changed_resolution_names(
                     &mut names,
                     &n.name,
                     &n.qualname,
-                    &n.kind,
+                    n.kind.as_str(),
                     &mod_name,
                     &local_module,
                     src_module.as_deref(),
@@ -969,7 +969,7 @@ fn expand_html_include_targets(
             for node in provider_facts
                 .nodes
                 .iter()
-                .filter(|node| node.language == "python")
+                .filter(|node| node.language == acdd_index::models::tags::LanguageId::Python)
             {
                 let Some(flow) = provider_facts.flows.get(node) else {
                     continue;
@@ -1139,7 +1139,7 @@ fn expand_template_and_named_frontiers(
             for node in file_facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == "template_loader_root")
+                .filter(|node| node.kind == acdd_index::models::tags::NodeKind::TemplateLoaderRoot)
             {
                 changed_roots.push((provider.as_str(), node.name.as_str()));
             }
@@ -1298,14 +1298,14 @@ fn hydrate_and_link_delta(
                     Ok(Node {
                         native_semantic: None,
                         id: row.get(0)?,
-                        kind: "route".into(),
+                        kind: acdd_index::models::tags::NodeKind::Route,
                         name: row.get(1)?,
                         qualname: row.get(2)?,
                         path: row.get(3)?,
                         line: row.get(4)?,
                         end_line: row.get(5)?,
                         is_test: row.get(6)?,
-                        language: row.get(7)?,
+                        language: acdd_index::models::tags::LanguageId::parse(&row.get::<_, String>(7)?).ok_or(rusqlite::Error::InvalidQuery)?,
                         generated: row.get(8)?,
                         details: serde_json::from_str(&details).map_err(|error| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -1462,14 +1462,14 @@ fn hydrate_and_link_delta(
             Ok(Node {
                 native_semantic: None,
                 id: r.get(0)?,
-                kind: r.get(1)?,
+                kind: acdd_index::models::tags::NodeKind::parse(&r.get::<_, String>(1)?).ok_or(rusqlite::Error::InvalidQuery)?,
                 name: r.get(2)?,
                 qualname: r.get(3)?,
                 path: r.get(4)?,
                 line: r.get(5)?,
                 end_line: r.get(6)?,
                 is_test: r.get(7)?,
-                language: r.get(8)?,
+                language: acdd_index::models::tags::LanguageId::parse(&r.get::<_, String>(8)?).ok_or(rusqlite::Error::InvalidQuery)?,
                 generated: r.get(9)?,
                 details: serde_json::from_str(&r.get::<_, String>(10)?).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(

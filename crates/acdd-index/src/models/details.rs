@@ -38,13 +38,12 @@ impl NodeDetailKey {
     pub const BINDINGS: &'static str = "bindings";
     pub const REBINDINGS: &'static str = "rebindings";
     pub const PARAM_TYPES: &'static str = "param_types";
-    #[cfg(test)]
     pub(crate) const RECEIVER: &'static str = "receiver";
-    #[cfg(test)]
     pub(crate) const RECEIVER_TYPE: &'static str = "receiver_type";
     #[cfg(test)]
     pub(crate) const RECEIVER_HINT: &'static str = "receiver_hint";
     pub const VALUE_FLOW: &'static str = "value_flow";
+    pub const REQUEST_NODE_ROLE: &'static str = "request_node_role";
     pub const ROUTE_PATH: &'static str = "route_path";
     pub const ROUTE_NAMESPACE: &'static str = "route_namespace";
     pub const INCLUDE_NAMESPACE: &'static str = "include_namespace";
@@ -64,13 +63,56 @@ impl NodeDetailKey {
     pub const COLUMN: &'static str = "column";
     pub const ENTRYPOINT_DIRECT_MODULE: &'static str = "entrypoint_direct_module";
     pub const NAMED_DEFINITION_UNCERTAINTIES: &'static str = "named_definition_uncertainties";
-    #[cfg(test)]
     pub(crate) const IS_STATIC: &'static str = "is_static";
     pub const NAMED_DEFINITION_UNCERTAINTY_FAULT: &'static str =
         "named_definition_uncertainty_fault";
     pub const CLASSIC_GLOBAL: &'static str = "classic_global";
     pub(crate) const IS_PUBLIC: &'static str = "is_public";
     pub(crate) const RUST_DERIVE_TRAIT: &'static str = "rust_derive_trait";
+    pub(crate) const URL_STATUS: &'static str = "url_status";
+    pub(crate) const IMPORT_MODULES: &'static str = "import_modules";
+    pub(crate) const TEMPLATE_BINDING: &'static str = "template_binding";
+    pub(crate) const COMMONJS_DEFAULT_CALLABLE: &'static str = "commonjs_default_callable";
+    pub(crate) const RECEIVER_NAME: &'static str = "receiver_name";
+    pub(crate) const MANIFEST_ORIGIN: &'static str = "manifest_origin";
+    pub(crate) const MANIFEST_NAME: &'static str = "manifest_name";
+    pub(crate) const CALLABLE: &'static str = "callable";
+    pub(crate) const DIRECT_MODULE: &'static str = "direct_module";
+    pub(crate) const IS_CONDITIONAL: &'static str = "is_conditional";
+    pub(crate) const BASES: &'static str = "bases";
+    pub(crate) const EMBEDDED_LANGUAGE: &'static str = "embedded_language";
+    pub(crate) const HTML_IMPORT_OWNER: &'static str = "html_import_owner";
+    pub(crate) const HTML_HANDLER: &'static str = "html_handler";
+    pub(crate) const ROUTE_NAME: &'static str = "route_name";
+    pub(crate) const RUST_ENUM_VARIANT: &'static str = "rust_enum_variant";
+    pub(crate) const UNPROVEN_BOUNDS: &'static str = "unproven_bounds";
+    pub(crate) const DEREF_UNPROVEN: &'static str = "deref_unproven";
+    pub(crate) const GENERIC_IMPL: &'static str = "generic_impl";
+    pub(crate) const UNIFORM_GENERIC_IMPL: &'static str = "uniform_generic_impl";
+    pub(crate) const RUST_MACRO_IMPL_TRAITS: &'static str = "rust_macro_impl_traits";
+    pub(crate) const RUST_MACRO_TYPE_INVOCATIONS: &'static str = "rust_macro_type_invocations";
+    pub(crate) const SYNTHESIZED: &'static str = "synthesized";
+    pub(crate) const RUST_MACRO_PROJECTED: &'static str = "rust_macro_projected";
+    pub(crate) const RUST_SYNTH_RETURN: &'static str = "rust_synth_return";
+    pub(crate) const PROTOTYPE: &'static str = "prototype";
+    pub(crate) const REQUIRE_IMPORTS: &'static str = "require_imports";
+    pub(crate) const DECORATED_REGISTRATIONS: &'static str = "decorated_registrations";
+    pub(crate) const ASSIGNMENT_EVENTS: &'static str = "assignment_events";
+    pub(crate) const HANDLERS: &'static str = "handlers";
+    pub(crate) const RUST_RESTRICTED_EXPORTS: &'static str = "rust_restricted_exports";
+    pub(crate) const CONVERSION_BOUNDS_ONLY: &'static str = "conversion_bounds_only";
+    pub(crate) const ALIAS_TARGET: &'static str = "alias_target";
+    pub(crate) const PROTOTYPE_MEMBER: &'static str = "prototype_member";
+    pub(crate) const PROTOTYPE_ASSIGNMENT_LINE: &'static str = "prototype_assignment_line";
+    pub(crate) const PROTOTYPE_ASSIGNMENT_COLUMN: &'static str = "prototype_assignment_column";
+    pub(crate) const PROTOTYPE_VALID: &'static str = "prototype_valid";
+    pub(crate) const PROTOTYPE_CONSTRUCTOR: &'static str = "prototype_constructor";
+    pub(crate) const PROTOTYPE_LEXICAL_THIS: &'static str = "prototype_lexical_this";
+    pub(crate) const VUE_SLOT: &'static str = "vue_slot";
+    pub(crate) const RUST_DECLARED_FIELD: &'static str = "rust_declared_field";
+    pub(crate) const IS_ABSTRACT: &'static str = "is_abstract";
+    pub(crate) const IS_METHOD: &'static str = "is_method";
+    pub(crate) const SYMBOL_CLAIMS: &'static str = "symbol_claims";
 }
 
 /// Boolean properties projected from node details.

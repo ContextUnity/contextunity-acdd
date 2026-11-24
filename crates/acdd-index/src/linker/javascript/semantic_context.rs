@@ -9,7 +9,7 @@ pub(in crate::linker) fn external_factory_result<'a>(
     callee: &str,
     at: SourcePosition,
 ) -> Option<TypeTarget<'a>> {
-    let profile = crate::languages::by_id(&owner.language)?;
+    let profile = crate::languages::by_id(owner.language.as_str())?;
     (callee == "await fetch"
         && profile.builtin("fetch")
         && profile.builtin_member("Web.Response", "json")
@@ -20,6 +20,6 @@ pub(in crate::linker) fn external_factory_result<'a>(
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
     (matches!(owner.language.as_str(), "javascript" | "typescript")
         && head == "this"
-        && owner.details["receiver_name"].as_str() == Some(head))
-    .then_some((owner.details["is_static"] == true, true))
+        && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some(head))
+    .then_some((owner.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true, true))
 }

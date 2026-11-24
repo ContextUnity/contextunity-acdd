@@ -1,17 +1,17 @@
+use crate::languages::profile::{LanguageMemberResult, ProfileLinker};
 use super::super::context::*;
 use super::context::PhaseContext;
 use super::members;
 use crate::languages::LanguageProfile;
 use crate::linker::{
-    javascript,
-    python::{self, receivers},
-    rust, semantic_context,
-    types::{qualified, receiver_language_requires_static, ReceiverType},
-    value_flow, vue,
+    semantic_context,
+    traits::receiver_language_requires_static,
+    types::{qualified, ReceiverType},
+    value_flow,
 };
 use crate::models::{
     compact_graph::CompactGraph as Graph,
-    tags::{CoverageStatus, EdgeKind, LanguageId, NodeKind},
+    tags::{CoverageStatus, EdgeKind, NodeKind},
     Node, Reference,
 };
 
@@ -24,9 +24,8 @@ pub(super) struct RefQuery<'a, 'q> {
     pub(super) expression: &'q str,
     pub(super) first: &'q str,
     pub(super) tail: &'q str,
-    pub(super) rust_keyword_explicit: bool,
-    #[cfg(feature = "lang-rust")]
-    pub(super) rust_module_target: Option<&'q rust::resolution::RustExplicitTarget>,
+    pub(super) keyword_explicit: bool,
+    pub(super) module_target: Option<&'q crate::linker::traits::ExplicitModuleTarget>,
 }
 
 pub(super) struct ReferenceState<'res> {
@@ -36,8 +35,8 @@ pub(super) struct ReferenceState<'res> {
     pub(super) known_receiver: bool,
     pub(super) imported: Option<&'res Vec<&'res Node>>,
     pub(super) definition_scope: bool,
-    pub(super) receiver_member: Option<receivers::PythonReceiverMember<'res>>,
-    pub(super) rust_explicit_address: bool,
+    pub(super) receiver_member: Option<LanguageMemberResult<'res>>,
+    pub(super) explicit_address: bool,
     pub(super) scope: &'res str,
 }
 
@@ -77,8 +76,8 @@ pub(super) fn emit_resolved_with_polymorphism(
                         path,
                         reference,
                         contract_decl.id.clone(),
-                        reference.kind.as_str(),
-                        "inferred",
+                        crate::models::tags::EdgeKind::parse(&reference.kind),
+                        crate::models::tags::EdgeConfidence::Inferred,
                     );
                     return;
                 }
@@ -88,8 +87,8 @@ pub(super) fn emit_resolved_with_polymorphism(
                         path,
                         reference,
                         target.id.clone(),
-                        "possible_calls",
-                        "possible",
+                        crate::models::tags::EdgeKind::PossibleCalls,
+                        crate::models::tags::EdgeConfidence::Possible,
                     );
                 }
                 return;
@@ -135,7 +134,7 @@ where
         }
     }
     if let value_flow::TypeTarget::Callable(callable) = receiver {
-        if callable.kind == NodeKind::Constant.as_str() {
+        if callable.kind == NodeKind::Constant {
             return false;
         }
         emit_inferred(
@@ -150,11 +149,8 @@ where
     if q.r.kind == EdgeKind::Calls.as_str()
         && matches!(receiver, value_flow::TypeTarget::CallableReturn(_))
     {
-        let evidence = if owner.language == LanguageId::Python.as_str() {
-            "invocation of a typed Python Callable binding"
-        } else {
-            "invocation of a typed Callable binding"
-        };
+        let evidence = crate::languages::by_id(owner.language.as_str())
+            .map_or("invocation of a typed Callable binding", |profile| profile.linker().typed_callable_evidence());
         graph.reference_coverage(
             ctx.path,
             q.r,
@@ -163,14 +159,17 @@ where
         );
         return true;
     }
-    if owner.language == LanguageId::Python.as_str() && q.r.kind == EdgeKind::Calls.as_str() {
+    if let Some((constructor_member, call_member)) = (q.r.kind == EdgeKind::Calls.as_str())
+        .then(|| crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().callable_members())).flatten()
+    {
         match receiver {
             value_flow::TypeTarget::ClassType(inner) => {
                 let result = match inner.as_ref() {
                     value_flow::TypeTarget::Local(class) => {
                         match ctx.input.semantic_context.lookup_member_mode(
                             inner.as_ref(),
-                            "__init__",
+                            constructor_member,
                             owner,
                             false,
                         ) {
@@ -191,11 +190,11 @@ where
                     return true;
                 }
             }
-            value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class.as_str() => {
+            value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class => {
                 let result = ctx
                     .input
                     .semantic_context
-                    .lookup_member_mode(receiver, "__call__", owner, false);
+                    .lookup_member_mode(receiver, call_member, owner, false);
                 if emit_resolved_member(graph, ctx, q, result) {
                     return true;
                 }
@@ -216,18 +215,12 @@ where
     'a: 'file,
     'file: 'res,
 {
-    let component_template_member =
-        vue::resolution::is_component_template_member(q.r, q.owner, q.tail);
+    let component_template_member = q.owner
+        .and_then(|owner| crate::languages::by_id(owner.language.as_str()))
+        .is_some_and(|profile| profile.linker().is_component_template_member(q.r, q.owner, q.tail));
     let typed_member_read = q.r.kind == EdgeKind::References.as_str()
         && !q.tail.is_empty()
-        && (!state.known_receiver
-            || ctx
-                .profile
-                .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str()))
-        && ctx.profile.is_some_and(|profile| {
-            matches!(profile.family().0, "typescript" | "javascript")
-                || profile.id() == LanguageId::Rust.as_str()
-        });
+        && ctx.profile.is_some_and(|profile| profile.linker().allows_typed_member_read(state.known_receiver));
     if !(matches!(
         q.r.kind.as_str(),
         k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
@@ -240,33 +233,22 @@ where
         return false;
     };
     let at = q.r.position();
-    #[cfg(feature = "lang-typescript")]
-    if component_template_member && !q.tail.contains('.') {
-        if let Some(result) = vue::resolution::component_slot_member(
-            ctx.input,
-            ctx.path,
-            owner,
-            q.first,
-            q.tail,
-            |n, o, d| ctx.alias_for(n, o, d),
-        ) {
-            emit_inferred(graph, ctx.path, q.r, result, q.builtin_origin);
-            return true;
-        }
+    if component_template_member && !q.tail.contains('.')
+        && ctx.language_linker.component_slot_reference(&mut crate::linker::traits::ComponentSlotReference {
+            phase: ctx.reference_phase(graph, q.r, Some(owner), q.active_profile), first: q.first, tail: q.tail,
+            builtin_origin: q.builtin_origin, alias_for: &|n, o, d| ctx.alias_for(n, o, d),
+        }) {
+        return true;
     }
     let implicit_receiver = if state.known_receiver {
-        #[cfg(feature = "lang-rust")]
-        let rust_receiver = ctx.linker.member_lookup.receiver_for("rust", owner);
-        #[cfg(not(feature = "lang-rust"))]
-        let rust_receiver: Option<&Node> = None;
-        rust_receiver
+        ctx.linker.member_lookup.receiver_for(owner.language.as_str(), owner)
             .or_else(|| ctx.local_receiver_class(owner))
             .map(value_flow::TypeTarget::Local)
     } else {
         None
     };
     let constant_receiver = (implicit_receiver.is_none()
-        && owner.language == LanguageId::Rust.as_str()
+        && crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().supports_constant_receiver())
         && !q.tail.is_empty()
         && ctx.profile.is_none_or(|p| p.value_binding_applies(q.r))
         && ctx.input.value_flow.lookup(owner, q.first, at).is_none())
@@ -291,11 +273,7 @@ where
                 return None;
             }
             let receiver = ctx.input.value_flow.lookup(owner, q.first, at)?;
-            let incomplete_reference = matches!(
-                receiver,
-                value_flow::TypeTarget::RustReference { target, .. }
-                    if matches!(target.as_ref(), value_flow::TypeTarget::Unknown)
-            );
+            let incomplete_reference = ctx.language_linker.incomplete_receiver(receiver);
             if incomplete_reference
                 && matches!(state.typed_receiver, Some(ReceiverType::External(..)))
             {
@@ -333,7 +311,7 @@ where
         ctx.input,
         ctx.profile,
     ) else {
-        if owner.language == LanguageId::Python.as_str() && !fields.is_empty() {
+        if !fields.is_empty() && crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().chained_member_fallback()) {
             let result = ctx
                 .input
                 .semantic_context
@@ -348,9 +326,10 @@ where
     let associated = implicit_receiver.is_some()
         && fields.is_empty()
         && receiver_language_requires_static(owner)
-        && owner.details["is_static"] == true;
-    let result = if owner.language == LanguageId::Rust.as_str()
-        && q.r.kind == EdgeKind::References.as_str()
+        && owner.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true;
+    let result = if q.r.kind == EdgeKind::References.as_str()
+        && crate::languages::by_id(owner.language.as_str())
+            .is_some_and(|profile| profile.linker().property_before_member())
     {
         ctx.input
             .semantic_context
@@ -362,10 +341,7 @@ where
     };
     let result =
         if q.r.kind == EdgeKind::References.as_str() && q.active_profile.is_some_and(|profile| {
-            matches!(
-                profile.id(),
-                p if p == LanguageId::Javascript.as_str() || p == LanguageId::Typescript.as_str()
-            )
+            profile.linker().property_after_unknown(profile)
         }) && matches!(result, semantic_context::Member::Unknown)
         {
             ctx.input
@@ -376,7 +352,7 @@ where
         };
     let result = match result {
         semantic_context::Member::Local(node)
-            if crate::languages::by_id(&node.language).is_some_and(|profile| {
+            if crate::languages::by_id(node.language.as_str()).is_some_and(|profile| {
                 !profile
                     .linker()
                     .member_visible_at(node, ctx.path, q.r.line, q.r.column)
@@ -388,12 +364,12 @@ where
     };
     let result = match (q.r.kind.as_str(), &result) {
         (k, semantic_context::Member::Local(node))
-            if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field.as_str() =>
+            if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field =>
         {
             semantic_context::Member::Unknown
         }
         (k, semantic_context::Member::Local(node))
-            if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method.as_str() =>
+            if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method =>
         {
             semantic_context::Member::Unknown
         }
@@ -434,16 +410,16 @@ where
                 .filter(|candidate| candidate.path == receiver.path),
         );
     }
-    if let Some(receivers::PythonReceiverMember::Local(method)) = state.receiver_member {
+    if let Some(LanguageMemberResult::Local(method)) = &state.receiver_member {
         candidates.clear();
-        candidates.push(method);
+        candidates.push(*method);
     }
     if matches!(
-        state.receiver_member,
+        &state.receiver_member,
         Some(
-            receivers::PythonReceiverMember::Unknown
-                | receivers::PythonReceiverMember::Ambiguous
-                | receivers::PythonReceiverMember::External(..)
+            LanguageMemberResult::Unknown
+                | LanguageMemberResult::Ambiguous
+                | LanguageMemberResult::External { .. }
         )
     ) {
         candidates.clear();
@@ -460,20 +436,15 @@ where
             resolve_lexical_fallback(ctx, q, state, candidates, lookup_key);
         }
     }
-    #[cfg(feature = "lang-rust")]
-    {
-        state.rust_explicit_address = resolve_rust_explicit_paths(
+    state.explicit_address = resolve_explicit_paths(
             ctx,
             q.owner,
-            q.rust_keyword_explicit,
-            q.rust_module_target,
+            q.keyword_explicit,
+            q.module_target,
             state,
             candidates,
             lookup_key,
         );
-    }
-    #[cfg(not(feature = "lang-rust"))]
-    let _ = q.rust_keyword_explicit;
     false
 }
 
@@ -490,19 +461,8 @@ where
     let (Some(owner), [receiver]) = (q.owner, imported) else {
         return false;
     };
-    if !matches!(
-        receiver.language.as_str(),
-        l if l == LanguageId::Rust.as_str()
-            || l == LanguageId::Typescript.as_str()
-            || l == LanguageId::Javascript.as_str()
-            || l == LanguageId::Vue.as_str()
-    ) || !matches!(
-        receiver.kind.as_str(),
-        k if k == NodeKind::Class.as_str()
-            || k == NodeKind::Struct.as_str()
-            || k == NodeKind::Enum.as_str()
-            || k == NodeKind::Interface.as_str()
-    ) {
+    if !crate::languages::by_id(receiver.language.as_str()).is_some_and(|profile| profile.linker().supports_static_import_receiver())
+        || !matches!(receiver.kind, NodeKind::Class | NodeKind::Struct | NodeKind::Enum | NodeKind::Interface) {
         return false;
     }
     let receiver_target = value_flow::TypeTarget::Local(receiver);
@@ -512,12 +472,12 @@ where
             .lookup_member_mode(&receiver_target, q.tail, owner, true);
     let member = match (q.r.kind.as_str(), &member) {
         (k, semantic_context::Member::Local(node))
-            if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field.as_str() =>
+            if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field =>
         {
             semantic_context::Member::Unknown
         }
         (k, semantic_context::Member::Local(node))
-            if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method.as_str() =>
+            if k == EdgeKind::Mutates.as_str() && node.kind == NodeKind::Method =>
         {
             semantic_context::Member::Unknown
         }
@@ -548,20 +508,9 @@ where
         return false;
     };
     if q.tail.is_empty() {
-        let commonjs_default = javascript::resolution::commonjs_default_callable(
-            q.r,
-            q.active_profile,
-            q.first,
-            q.owner,
-            ctx.facts,
-            imported,
-            ctx.input.semantic_context,
-            ctx.input.interner,
-            ctx.language_linker,
-            ctx.input.by_module,
-            ctx.input.by_qual,
-            ctx.language_package_exports(),
-            lookup_key,
+        let phase = ctx.reference_phase(graph, q.r, q.owner, q.active_profile);
+        let commonjs_default = ctx.language_linker.imported_default_callable(
+            &phase, q.first, ctx.facts, imported, ctx.language_package_exports(), lookup_key,
         );
         if let Some(callable) = commonjs_default {
             candidates.push(callable);
@@ -573,7 +522,7 @@ where
     if resolve_imported_static_type_member(ctx, graph, q, imported) {
         return true;
     }
-    fn resolve_imported_python_module_call<'a, 'file, 'res>(
+    fn resolve_imported_module_call<'a, 'file, 'res>(
         ctx: &'res PhaseContext<'a, 'file, 'res>,
         graph: &mut Graph,
         q: &RefQuery<'a, '_>,
@@ -598,17 +547,9 @@ where
         let [module] = imported else {
             return false;
         };
-        let Some(receivers::PythonReceiverMember::External(origin, line, provider, _)) =
-            python::resolution::imported_module_member(
-                ctx.profile,
-                module,
-                q.tail,
-                ctx.input.node_rebindings,
-                ctx.input.interner,
-                ctx.input.by_qual,
-                lookup_key,
-                &ctx.linker.member_lookup,
-            )
+        let phase = ctx.reference_phase(graph, q.r, q.owner, ctx.profile);
+        let Some((origin, line, provider)) = ctx.language_linker
+            .imported_external_member(&phase, module, q.tail, lookup_key)
         else {
             return false;
         };
@@ -622,17 +563,12 @@ where
         true
     }
 
-    if resolve_imported_python_module_call(ctx, graph, q, state, imported, lookup_key) {
+    if resolve_imported_module_call(ctx, graph, q, state, imported, lookup_key) {
         return true;
     }
     for n in imported {
-        if n.kind == NodeKind::Module.as_str()
-            && matches!(
-                n.language.as_str(),
-                l if l == LanguageId::Typescript.as_str()
-                    || l == LanguageId::Javascript.as_str()
-                    || l == LanguageId::Vue.as_str()
-            )
+        if n.kind == NodeKind::Module
+            && crate::languages::by_id(n.language.as_str()).is_some_and(|profile| profile.linker().imported_module_first())
         {
             candidates.extend(ctx.language_linker.resolve_imported_member(
                 ctx.input.interner,
@@ -645,21 +581,15 @@ where
             ));
             continue;
         }
-        #[cfg(feature = "lang-rust")]
-        if n.language == LanguageId::Rust.as_str()
-            && matches!(
-                n.kind.as_str(),
-                k if k == NodeKind::Struct.as_str()
-                    || k == NodeKind::Enum.as_str()
-                    || k == NodeKind::Trait.as_str()
-            )
+        if crate::languages::by_id(n.language.as_str())
+            .is_some_and(|profile| profile.linker().associated_member_owner(n))
             && !q.tail.contains('.')
         {
             if let Some(owner) = q.owner {
                 let targets = ctx
                     .linker
                     .member_lookup
-                    .lookup_member("rust", n, q.tail, true, owner)
+                    .lookup_member(n.language.as_str(), n, q.tail, true, owner)
                     .into_nodes();
                 if !targets.is_empty() {
                     candidates.extend(targets);
@@ -674,20 +604,19 @@ where
                 .copied()
                 .filter(|target| target.path == n.path),
         );
-        #[cfg(feature = "lang-rust")]
         if candidates.len() == before_len
-            && n.language == LanguageId::Rust.as_str()
-            && n.kind == NodeKind::Module.as_str()
+            && crate::languages::by_id(n.language.as_str()).is_some_and(|profile| profile.linker().associated_module_owner(n))
         {
             if let Some((ty_name, member_name)) = q.tail.split_once('.') {
                 if !member_name.contains('.') {
                     if let Some(owner) = q.owner {
-                        candidates.extend(lookup_rust_associated_member(
+                        candidates.extend(lookup_associated_member(
                             ctx.lookup(qualified(lookup_key, &n.qualname, ty_name)),
                             n.path.as_str(),
                             member_name,
                             owner,
                             &ctx.linker.member_lookup,
+                            ctx.language_linker,
                         ));
                     }
                 }
@@ -695,23 +624,12 @@ where
         }
     }
     if candidates.is_empty() {
-        #[cfg(feature = "lang-rust")]
-        if let Some(owner) = q.owner.filter(|o| o.language == LanguageId::Rust.as_str()) {
-            candidates.extend(
-                ctx.input
-                    .semantic_context
-                    .resolve_rust_imported_call(owner, imported, q.tail),
-            );
-        }
+        let phase = ctx.reference_phase(graph, q.r, q.owner, ctx.profile);
+        candidates.extend(ctx.language_linker.imported_callable(&phase, imported, q.tail));
         if candidates.is_empty() {
             if let [module] = imported.as_slice() {
-                if module.kind == NodeKind::Module.as_str()
-                    && !matches!(
-                        module.language.as_str(),
-                        l if l == LanguageId::Typescript.as_str()
-                            || l == LanguageId::Javascript.as_str()
-                            || l == LanguageId::Vue.as_str()
-                    )
+                if module.kind == NodeKind::Module
+                    && !crate::languages::by_id(module.language.as_str()).is_some_and(|profile| profile.linker().imported_module_first())
                 {
                     candidates.extend(ctx.language_linker.resolve_imported_member(
                         ctx.input.interner,
@@ -753,20 +671,11 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
         )));
     } else if state.known_receiver {
         if let Some(owner) = q.owner {
-            #[cfg(feature = "lang-rust")]
-            let receiver_scope = (owner.language == LanguageId::Rust.as_str())
-                .then(|| ctx.linker.member_lookup.receiver_for("rust", owner))
-                .flatten()
+            let receiver_scope = ctx.linker.member_lookup.receiver_for(owner.language.as_str(), owner)
                 .map(|receiver| receiver.qualname.as_str());
-            #[cfg(not(feature = "lang-rust"))]
-            let receiver_scope: Option<&str> = None;
             let scope = receiver_scope.unwrap_or_else(|| {
                 let scope = owner.qualname.rsplit_once('.').map_or("", |(p, _)| p);
-                if owner.language == LanguageId::Rust.as_str() {
-                    scope.split_once('<').map_or(scope, |(base, _)| base)
-                } else {
-                    scope
-                }
+                ctx.language_linker.member_owner_scope(scope)
             });
             candidates.extend_from_slice(ctx.lookup(qualified(lookup_key, scope, q.tail)));
         }
@@ -776,27 +685,21 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
             ctx.file_module,
             q.expression,
         )));
-        #[cfg(feature = "lang-rust")]
-        if candidates.is_empty()
-            && ctx
-                .profile
-                .is_some_and(|p| p.id() == LanguageId::Rust.as_str())
-            && !q.tail.contains('.')
-        {
+        if candidates.is_empty() && !q.tail.contains('.') {
             if let Some(owner) = q.owner {
-                candidates.extend(lookup_rust_associated_member(
+                candidates.extend(lookup_associated_member(
                     ctx.lookup(qualified(lookup_key, ctx.file_module, q.first)),
                     ctx.path,
                     q.tail,
                     owner,
                     &ctx.linker.member_lookup,
+                    ctx.language_linker,
                 ));
             }
         }
     }
 }
 
-#[cfg(feature = "lang-rust")]
 fn push_explicit_constant_member<'a, 'res>(
     ctx: &'res PhaseContext<'a, '_, 'res>,
     owner: Option<&'res Node>,
@@ -810,21 +713,18 @@ fn push_explicit_constant_member<'a, 'res>(
         ctx.lookup(const_qual)
             .iter()
             .copied()
-            .filter(|node| node.kind == "constant")
+            .filter(|node| node.kind == crate::models::tags::NodeKind::Constant)
             .filter_map(|node| {
-                ctx.input
-                    .semantic_context
-                    .resolve_rust_constant_member(node, member, owner)
+                ctx.language_linker.explicit_constant_member(node, member, owner, ctx.input.semantic_context)
             }),
     );
 }
 
-#[cfg(feature = "lang-rust")]
-fn resolve_rust_explicit_paths<'a, 'file, 'res>(
+fn resolve_explicit_paths<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
     owner: Option<&'res Node>,
-    rust_keyword_explicit: bool,
-    rust_module_target: Option<&rust::resolution::RustExplicitTarget>,
+    keyword_explicit: bool,
+    module_target: Option<&crate::linker::traits::ExplicitModuleTarget>,
     state: &ReferenceState<'res>,
     candidates: &mut Vec<&'res Node>,
     lookup_key: &mut String,
@@ -833,18 +733,15 @@ where
     'a: 'file,
     'file: 'res,
 {
-    let mut rust_explicit_address = rust_keyword_explicit;
-    if rust_keyword_explicit {
+    let mut explicit_address = keyword_explicit;
+    if keyword_explicit {
         candidates.clear();
-        if let Some(target) = rust_module_target {
+        if let Some(target) = module_target {
             candidates.extend_from_slice(ctx.lookup(target.namespace.as_str()));
             if candidates.is_empty() {
-                candidates.extend(rust::resolution::explicit_reexport_targets(
-                    ctx.input,
-                    ctx.file_module,
-                    target,
-                    lookup_key,
-                ));
+                candidates.extend(ctx.language_linker.explicit_reexport_targets(crate::linker::traits::ExplicitReexport {
+                    input: ctx.input, file_module: ctx.file_module, target, lookup_key,
+                }));
             }
             if candidates.is_empty() {
                 push_explicit_constant_member(ctx, owner, &target.namespace, candidates);
@@ -857,50 +754,38 @@ where
         && !state.lexical_head_declared
         && candidates.is_empty()
     {
-        if let Some(target) = rust_module_target {
+        if let Some(target) = module_target {
             candidates.extend(
                 ctx.lookup(target.namespace.as_str())
                     .iter()
                     .copied()
                     .filter(|n| {
-                        ctx.input
-                            .semantic_context
-                            .import_state("rust")
-                            .is_none_or(|state| {
-                                state.module_path_visible(&n.qualname, ctx.file_module)
-                            })
+                        ctx.language_linker.explicit_module_visible(&crate::linker::traits::ExplicitModuleVisibility {
+                            input: ctx.input, node: n, file_module: ctx.file_module,
+                        })
                     }),
             );
             if candidates.is_empty() {
-                candidates.extend(rust::resolution::explicit_reexport_targets(
-                    ctx.input,
-                    ctx.file_module,
-                    target,
-                    lookup_key,
-                ));
+                candidates.extend(ctx.language_linker.explicit_reexport_targets(crate::linker::traits::ExplicitReexport {
+                    input: ctx.input, file_module: ctx.file_module, target, lookup_key,
+                }));
             }
-            rust_explicit_address = !candidates.is_empty();
+            explicit_address = !candidates.is_empty();
         }
     }
-    rust_explicit_address
+    explicit_address
 }
 
-#[cfg(feature = "lang-rust")]
-fn lookup_rust_associated_member<'a>(
+fn lookup_associated_member<'a>(
     candidates: &[&'a Node],
     expected_path: &str,
     member_name: &str,
     owner: &Node,
     member_lookup: &semantic_context::LanguageMemberLookup<'_, 'a>,
+    linker: &dyn crate::languages::profile::LanguageLinker,
 ) -> Vec<&'a Node> {
     let mut matching = candidates.iter().copied().filter(|target| {
-        target.path == expected_path
-            && matches!(
-                target.kind.as_str(),
-                k if k == NodeKind::Struct.as_str()
-                    || k == NodeKind::Enum.as_str()
-                    || k == NodeKind::Trait.as_str()
-            )
+        target.path == expected_path && linker.associated_member_owner(target)
     });
     let Some(ty_node) = matching.next() else {
         return Vec::new();
@@ -909,6 +794,6 @@ fn lookup_rust_associated_member<'a>(
         return Vec::new();
     }
     member_lookup
-        .lookup_member("rust", ty_node, member_name, true, owner)
+        .lookup_member(owner.language.as_str(), ty_node, member_name, true, owner)
         .into_nodes()
 }

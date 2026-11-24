@@ -832,9 +832,9 @@ fn emit_named_binding(
                 }
                 let mut nodes = facts.nodes.iter().filter(|node| {
                     node.line == position.line
-                        && node.details["column"].as_u64().unwrap_or(0) == position.column as u64
+                        && node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) == position.column as u64
                         && match kind {
-                            NamedTargetKind::Object => node.kind == "object",
+                            NamedTargetKind::Object => node.kind == crate::models::tags::NodeKind::Object,
                             NamedTargetKind::Callable => {
                                 matches!(node.kind.as_str(), "function" | "method")
                             }
@@ -1122,7 +1122,7 @@ pub(crate) fn execute_class_attribute_rule(
             if !facts
                 .nodes
                 .iter()
-                .any(|node| node.id == req.owner && node.kind == "class" && node.name == *container)
+                .any(|node| node.id == req.owner && node.kind == crate::models::tags::NodeKind::Class && node.name == *container)
             {
                 return;
             }
@@ -1417,7 +1417,7 @@ fn has_name(node: &Node, field: &str, name: &str) -> bool {
     match field {
         "bindings" => node.binding_names().any(|binding| binding == name),
         "rebindings" => node.rebinding_names().any(|binding| binding == name),
-        _ => node.details[field]
+        _ => node.detail_entry(field)
             .as_array()
             .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name))),
     }
@@ -1429,7 +1429,7 @@ pub(crate) fn lexical_scopes<'a>(owner: &'a Node, facts: &'a Facts) -> Vec<&'a N
         .iter()
         .filter(|node| {
             node.id == owner.id
-                || node.kind == "module"
+                || node.kind == crate::models::tags::NodeKind::Module
                 || (owner
                     .qualname
                     .strip_prefix(&node.qualname)

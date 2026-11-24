@@ -92,7 +92,7 @@ fn merge_classic_island(
         public_flows.ingest(target);
         public_flows.merge_classic(&target.id, island_flows);
         if let Some(state) = public_flows.state(target) {
-            target.details["value_flow"] =
+            *target.detail_entry_mut(crate::models::details::NodeDetailKey::VALUE_FLOW) =
                 serde_json::to_value(state.view()).expect("parser-owned classic flow");
         }
     }
@@ -159,7 +159,7 @@ pub(super) fn extract_island(
         },
     ));
     if kind == "handler" {
-        facts.nodes[0].details["html_handler"] = json!(true);
+        facts.nodes[0].set_detail(crate::models::details::NodeDetailKey::HTML_HANDLER, json!(true));
     }
     if kind != "classic" {
         facts.edges.push(Edge {
@@ -194,7 +194,7 @@ pub(super) fn extract_island(
     }
     let require_imports = require_import_positions(root, context.source, start, end);
     if !require_imports.is_empty() {
-        facts.nodes[0].details["require_imports"] = Value::Array(require_imports);
+        facts.nodes[0].set_detail(crate::models::details::NodeDetailKey::REQUIRE_IMPORTS, Value::Array(require_imports));
     }
     if kind == "handler" {
         if let Some(scope) = facts.nodes.iter_mut().find(|node| node.id == owner) {
@@ -258,7 +258,7 @@ pub(super) fn extract_island(
     if context.flows.is_none() {
         for node in &mut facts.nodes {
             if let Some(state) = island_flows.state(node) {
-                node.details["value_flow"] =
+                *node.detail_entry_mut(crate::models::details::NodeDetailKey::VALUE_FLOW) =
                     serde_json::to_value(state.view()).expect("parser-owned embedded flow");
             }
         }
@@ -482,15 +482,14 @@ fn enrich_handler_named_bindings(
         if let Some(flow) = flows.get_mut(owner) {
             enrich(flow);
         } else {
-            node.details["value_flow"] = Value::Null;
+            node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, Value::Null);
             let mut flow = crate::semantic::ValueFlowFacts::default();
             enrich(&mut flow);
             flows.insert(owner.to_owned(), flow);
         }
     } else {
         let mut flow = node
-            .details
-            .get("value_flow")
+            .detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW)
             .filter(|value| !value.is_null())
             .map(|value| {
                 serde_json::from_value::<crate::semantic::ValueFlowFacts>(value.clone())
@@ -498,7 +497,7 @@ fn enrich_handler_named_bindings(
             })
             .unwrap_or_default();
         enrich(&mut flow);
-        node.details["value_flow"] = json!(flow);
+        node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, json!(flow));
     }
 }
 
@@ -589,11 +588,11 @@ fn ensure_global_scope(
         if (position.row + 1, position.column)
             < (
                 node.line,
-                node.details["column"].as_u64().unwrap_or(0) as usize,
+                node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
             )
         {
             node.line = position.row + 1;
-            node.details["column"] = json!(position.column);
+            node.set_detail(crate::models::details::NodeDetailKey::COLUMN, json!(position.column));
         }
         node.end_line = node.end_line.max(end_line);
         return index;
@@ -646,7 +645,7 @@ pub(super) fn finish(facts: &mut Facts) {
     let globals: std::collections::HashSet<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.details["classic_global"] == true)
+        .filter(|node| *node.detail_entry(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL) == true)
         .map(|node| node.id.as_str())
         .collect();
     let require_declarations: std::collections::HashSet<_> = facts
@@ -668,7 +667,7 @@ pub(super) fn finish(facts: &mut Facts) {
             .nodes
             .iter()
             .flat_map(|node| {
-                node.details["require_imports"]
+                node.detail_entry(crate::models::details::NodeDetailKey::REQUIRE_IMPORTS)
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -713,18 +712,17 @@ pub(super) fn finish(facts: &mut Facts) {
     for node in facts
         .nodes
         .iter_mut()
-        .filter(|node| node.details["classic_global"] == true)
+        .filter(|node| *node.detail_entry(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL) == true)
     {
         for key in ["bindings", "rebindings"] {
-            if let Some(values) = node.details[key].as_array_mut() {
+            if let Some(values) = node.detail_entry_mut(key).as_array_mut() {
                 values.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
                 values.dedup();
             }
         }
         for key in ["bindings", "fields"] {
             if let Some(values) = node
-                .details
-                .get_mut("value_flow")
+                .detail_get_mut(crate::models::details::NodeDetailKey::VALUE_FLOW)
                 .and_then(serde_json::Value::as_object_mut)
                 .and_then(|flow| flow.get_mut(key))
                 .and_then(serde_json::Value::as_array_mut)
@@ -744,8 +742,7 @@ pub(super) fn finish(facts: &mut Facts) {
             }
         }
         if let Some(values) = node
-            .details
-            .get_mut("value_flow")
+            .detail_get_mut(crate::models::details::NodeDetailKey::VALUE_FLOW)
             .and_then(serde_json::Value::as_object_mut)
             .and_then(|flow| flow.get_mut("immutable_initializers"))
             .and_then(serde_json::Value::as_array_mut)
@@ -763,7 +760,7 @@ pub(super) fn finish_typed(facts: &mut Facts, flows: &mut crate::typed_facts::Fl
     for node in facts
         .nodes
         .iter()
-        .filter(|node| node.details["classic_global"] == true)
+        .filter(|node| *node.detail_entry(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL) == true)
     {
         if let Some(flow) = flows.get_mut(&node.id) {
             flow.bindings.sort_by(|left, right| {

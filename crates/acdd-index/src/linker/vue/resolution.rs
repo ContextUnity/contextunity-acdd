@@ -20,7 +20,7 @@ pub(in crate::linker) fn component_macro_callable_origin(
         })
         .map(|(rule, _)| {
             format!(
-                "{}; rule:{}:{}",
+                "{}; rule:{}:{} callable from this file's Vue script setup binding",
                 rule.display
                     .builtin
                     .as_deref()
@@ -39,49 +39,8 @@ pub(in crate::linker) fn is_component_template_member(
     reference.kind == "references"
         && !tail.is_empty()
         && owner.is_some_and(|owner| {
-            owner.kind == "template_scope" && owner.details["vue_slot"].is_object()
+            owner.kind == crate::models::tags::NodeKind::TemplateScope && owner.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT).is_object()
         })
-}
-
-pub(in crate::linker) fn template_lexical_binding<'a>(
-    input: &ResolutionInput<'a>,
-    path: &str,
-    reference: &Reference,
-    owner: Option<&'a Node>,
-    first: &str,
-    component_module: Option<&'a Node>,
-) -> Option<&'a Node> {
-    let owner = owner?;
-    if let Some(first_id) = input.interner.lookup_symbol(first) {
-        let mut lexical_scope = owner.qualname.as_str();
-        while !lexical_scope.is_empty() {
-            let binding = input.by_qual.get(lexical_scope).and_then(|nodes| {
-                nodes.iter().copied().find(|node| {
-                    node.path == path
-                        && node.kind == "template_scope"
-                        && super::super::typescript::resolution::has_indexed_symbol(
-                            input.interner,
-                            input.node_bindings,
-                            node,
-                            first_id,
-                        )
-                })
-            });
-            if binding.is_some() {
-                return binding;
-            }
-            lexical_scope = lexical_scope
-                .rsplit_once('.')
-                .map_or("", |(parent, _)| parent);
-        }
-    }
-
-    component_module.filter(|_| {
-        matches!(
-            reference.receiver_hint.as_ref(),
-            Some(ReceiverHint::VueSetupBinding)
-        )
-    })
 }
 
 fn lookup_slot_template_member<'a, 'aliases, A>(
@@ -95,15 +54,15 @@ where
     'a: 'aliases,
     A: Fn(&str, Option<&'a Node>, bool) -> Option<&'aliases Vec<&'a Node>>,
 {
-    let component = binding_scope.details["vue_slot"]["component"].as_str()?;
-    let slot = binding_scope.details["vue_slot"]["slot"].as_str()?;
+    let component = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)["component"].as_str()?;
+    let slot = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)["slot"].as_str()?;
     let [module] = alias_for(component, Some(binding_scope), false)
         .map(Vec::as_slice)
         .filter(|targets| targets.len() == 1)?
     else {
         return None;
     };
-    if module.kind != "module" {
+    if module.kind != crate::models::tags::NodeKind::Module {
         return None;
     }
     let receiver = input.value_flow.component_slot_type(module, slot, first)?;
@@ -133,7 +92,7 @@ where
             .into_iter()
             .flatten()
             .copied()
-            .filter(|node| node.path == path && node.kind == "template_scope");
+            .filter(|node| node.path == path && node.kind == crate::models::tags::NodeKind::TemplateScope);
         if let (Some(binding_scope), None) = (scopes.next(), scopes.next()) {
             if binding_scope.binding_names().any(|name| name == first) {
                 return lookup_slot_template_member(input, binding_scope, first, tail, &alias_for);
@@ -152,7 +111,7 @@ pub(in crate::linker) fn resolve_component_tag<'a>(
     graph: &mut CompactGraph,
 ) -> bool {
     if reference.kind != "references"
-        || !owner.is_some_and(|owner| owner.kind == "template_scope")
+        || !owner.is_some_and(|owner| owner.kind == crate::models::tags::NodeKind::TemplateScope)
         || !matches!(
             reference.receiver_hint.as_ref(),
             Some(ReceiverHint::VueComponentTag)
@@ -167,7 +126,7 @@ pub(in crate::linker) fn resolve_component_tag<'a>(
         .as_slice()
     {
         [component] => {
-            graph.reference_edge(path, reference, component.id.clone(), "references", "exact");
+            graph.reference_edge(path, reference, component.id.clone(), crate::models::tags::EdgeKind::References, crate::models::tags::EdgeConfidence::Exact);
             graph.reference_coverage(
                 path,
                 reference,

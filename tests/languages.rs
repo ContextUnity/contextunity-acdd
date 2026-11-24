@@ -68,7 +68,6 @@ mod cognitive_and_statement_contracts {
 fn django_call_to_file_semantic_pack_replacement_contract() {
     use acdd_index::ast::extract_typed_with_registry;
     use acdd_index::languages::dependency_registry::DependencyRegistry;
-    use acdd_index::languages::LanguageFamily;
 
     let temporary = acdd_core::fs::ScopedTempDir::create("acdd-framework-packs-call-to-file").unwrap();
     let semantic_root = temporary.path().join("semantic-replacement");
@@ -90,10 +89,6 @@ fn django_call_to_file_semantic_pack_replacement_contract() {
             std::fs::remove_file(&replacement).unwrap();
         }
         let registry = DependencyRegistry::try_collect_with_paths(&semantic_root, None, &[]).unwrap();
-        let manifest = registry
-            .framework_manifest_for_path(LanguageFamily("python"), "views.py", "django", "django")
-            .expect("package/project pack remains available");
-        let _ = manifest;
         let extracted = extract_typed_with_registry(
             "views.py",
             "python",

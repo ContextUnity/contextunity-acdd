@@ -2,7 +2,7 @@ pub(super) use crate::common::Workspace;
 pub(super) use acdd_index::{
     ast,
     db::{commitments, writer},
-    languages::{self, dependency_registry::DependencyRegistry, LanguageFamily},
+    languages::{self, dependency_registry::DependencyRegistry},
     linker,
 };
 pub(super) use rusqlite::{params, Connection};

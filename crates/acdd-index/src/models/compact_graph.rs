@@ -201,72 +201,50 @@ impl SharedStr for Cow<'_, str> {
 pub struct CompactEdge {
     pub src: Arc<str>,
     pub dst: Arc<str>,
-    pub kind: CompactTag,
+    pub kind: EdgeKind,
     pub path: Arc<str>,
     pub line: usize,
     pub evidence: CompactTag,
-    pub confidence: CompactTag,
+    pub confidence: EdgeConfidence,
 }
 
-impl From<&PublicEdge> for CompactEdge {
-    fn from(edge: &PublicEdge) -> Self {
+impl TryFrom<&PublicEdge> for CompactEdge {
+    type Error = InvalidEdgeTag;
+
+    fn try_from(edge: &PublicEdge) -> Result<Self, Self::Error> {
         let path = Arc::from(edge.path.as_str());
         Self::with_path(edge, &path)
     }
 }
 
+/// An edge has an unrecognized kind or confidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidEdgeTag;
+
 impl CompactEdge {
-    /// Returns the closed edge kind represented by this compact tag.
-    pub fn kind_tag(&self) -> Option<EdgeKind> {
-        EdgeKind::parse(self.kind.as_str())
-    }
-
-    /// Returns the closed confidence represented by this compact tag.
-    pub fn confidence_tag(&self) -> Option<EdgeConfidence> {
-        EdgeConfidence::parse(self.confidence.as_str())
-    }
-
-    pub fn with_path(edge: &PublicEdge, path: &Arc<str>) -> Self {
-        let kind_tag = EdgeKind::parse(&edge.kind);
-        let confidence_tag = EdgeConfidence::parse(&edge.confidence);
-        Self {
+    fn with_path(edge: &PublicEdge, path: &Arc<str>) -> Result<Self, InvalidEdgeTag> {
+        Ok(Self {
             src: Arc::from(edge.src.as_str()),
             dst: Arc::from(edge.dst.as_str()),
-            kind: kind_tag.map_or_else(
-                || CompactTag::Owned(edge.kind.clone().into_boxed_str()),
-                |kind| CompactTag::Static(kind.as_str()),
-            ),
+            kind: EdgeKind::parse(&edge.kind).ok_or(InvalidEdgeTag)?,
             path: Arc::clone(path),
             line: edge.line,
             evidence: edge.evidence.as_str().into(),
-            confidence: confidence_tag.map_or_else(
-                || CompactTag::Owned(edge.confidence.clone().into_boxed_str()),
-                |confidence| CompactTag::Static(confidence.as_str()),
-            ),
-        }
+            confidence: EdgeConfidence::parse(&edge.confidence).ok_or(InvalidEdgeTag)?,
+        })
     }
 }
 
 impl From<CompactEdge> for PublicEdge {
     fn from(edge: CompactEdge) -> Self {
-        let kind_tag = edge.kind_tag();
-        let confidence_tag = edge.confidence_tag();
-        let kind = match kind_tag {
-            Some(kind) => kind.as_str().to_owned(),
-            None => edge.kind.into_string(),
-        };
-        let confidence = match confidence_tag {
-            Some(confidence) => confidence.as_str().to_owned(),
-            None => edge.confidence.into_string(),
-        };
         Self {
             src: edge.src.as_ref().to_owned(),
             dst: edge.dst.as_ref().to_owned(),
-            kind,
+            kind: edge.kind.as_str().to_owned(),
             path: edge.path.as_ref().to_owned(),
             line: edge.line,
             evidence: edge.evidence.into_string(),
-            confidence,
+            confidence: edge.confidence.as_str().to_owned(),
         }
     }
 }
@@ -334,19 +312,22 @@ impl CompactGraph {
         Self::shared_from_pool(&mut self.path_pool, path)
     }
 
-    pub fn push_public_edge(&mut self, edge: &PublicEdge) {
+    pub fn try_push_public_edge(&mut self, edge: &PublicEdge) -> Result<(), InvalidEdgeTag> {
+        let kind = EdgeKind::parse(&edge.kind).ok_or(InvalidEdgeTag)?;
+        let confidence = EdgeConfidence::parse(&edge.confidence).ok_or(InvalidEdgeTag)?;
         let path = self.shared_path(&edge.path);
         let src = Self::shared_from_pool(&mut self.node_id_pool, edge.src.as_str());
         let dst = Self::shared_from_pool(&mut self.node_id_pool, edge.dst.as_str());
         self.edges.push(CompactEdge {
             src,
             dst,
-            kind: edge.kind.as_str().into(),
+            kind,
             path,
             line: edge.line,
             evidence: edge.evidence.as_str().into(),
-            confidence: edge.confidence.as_str().into(),
+            confidence,
         });
+        Ok(())
     }
 
     pub fn merge(&mut self, other: CompactGraph) {
@@ -373,7 +354,7 @@ impl CompactGraph {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn push_edge<S, D, K, E, C>(
+    pub(crate) fn push_edge<S, D, E, K>(
         &mut self,
         path: &str,
         src: S,
@@ -381,25 +362,27 @@ impl CompactGraph {
         kind: K,
         line: usize,
         evidence: E,
-        confidence: C,
+        confidence: EdgeConfidence,
     ) where
         S: SharedStr,
         D: SharedStr,
-        K: Into<CompactTag>,
         E: Into<CompactTag>,
-        C: Into<CompactTag>,
+        K: Into<Option<EdgeKind>>,
     {
+        let Some(kind) = kind.into() else {
+            return;
+        };
         let path = self.shared_path(path);
         let src = Self::shared_from_pool(&mut self.node_id_pool, src);
         let dst = Self::shared_from_pool(&mut self.node_id_pool, dst);
         self.edges.push(CompactEdge {
             src,
             dst,
-            kind: kind.into(),
+            kind,
             path,
             line,
             evidence: evidence.into(),
-            confidence: confidence.into(),
+            confidence,
         });
     }
 
@@ -426,13 +409,13 @@ impl CompactGraph {
         });
     }
 
-    pub(crate) fn reference_edge<D: SharedStr, K: Into<CompactTag>, C: Into<CompactTag>>(
+    pub(crate) fn reference_edge<D: SharedStr, K: Into<Option<EdgeKind>>>(
         &mut self,
         path: &str,
         reference: &Reference,
         target: D,
         kind: K,
-        confidence: C,
+        confidence: EdgeConfidence,
     ) {
         self.push_edge(
             path,
@@ -476,7 +459,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compact_edge_tag_helpers_keep_typed_and_unknown_tags() {
+    fn compact_edge_rejects_unknown_tags() {
         let edge = PublicEdge {
             src: "source".into(),
             dst: "target".into(),
@@ -486,23 +469,18 @@ mod tests {
             evidence: "call".into(),
             confidence: "exact".into(),
         };
-        let path: Arc<str> = Arc::from(edge.path.as_str());
-        let compact = CompactEdge::with_path(&edge, &path);
-        assert_eq!(compact.kind_tag(), Some(EdgeKind::Calls));
-        assert_eq!(compact.confidence_tag(), Some(EdgeConfidence::Exact));
-
-        let custom_edge = PublicEdge {
-            kind: "custom-kind-雪".into(),
-            confidence: "confidence-🧭".into(),
-            ..edge
-        };
-        let custom_path: Arc<str> = Arc::from(custom_edge.path.as_str());
-        let custom = CompactEdge::with_path(&custom_edge, &custom_path);
-        assert_eq!(custom.kind_tag(), None);
-        assert_eq!(custom.confidence_tag(), None);
-        let restored: PublicEdge = custom.into();
-        assert_eq!(restored.kind, custom_edge.kind);
-        assert_eq!(restored.confidence, custom_edge.confidence);
+        let compact = CompactEdge::try_from(&edge).unwrap();
+        assert_eq!(compact.kind, EdgeKind::Calls);
+        assert_eq!(compact.confidence, EdgeConfidence::Exact);
+        for custom in [
+            PublicEdge { kind: "custom-kind-雪".into(), ..edge.clone() },
+            PublicEdge { confidence: "confidence-🧭".into(), ..edge.clone() },
+        ] {
+            assert!(CompactEdge::try_from(&custom).is_err());
+            let mut graph = CompactGraph::default();
+            assert!(graph.try_push_public_edge(&custom).is_err());
+            assert!(graph.edges.is_empty());
+        }
     }
 
     #[test]
@@ -519,7 +497,10 @@ mod tests {
         );
         typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
         let mut wire_graph = CompactGraph::default();
-        wire_graph.push_edge("a.rs", "a", "b", "calls", 1, "call", "exact");
+        wire_graph.try_push_public_edge(&PublicEdge {
+            src: "a".into(), dst: "b".into(), kind: "calls".into(),
+            path: "a.rs".into(), line: 1, evidence: "call".into(), confidence: "exact".into(),
+        }).unwrap();
         wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
         assert_eq!(typed_graph.edges.len(), 1);
         assert_eq!(typed_graph.edges[0].dst.as_ref(), "b");

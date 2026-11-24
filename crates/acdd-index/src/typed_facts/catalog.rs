@@ -83,7 +83,7 @@ impl SymbolCatalog {
             facts.facts.statement_fingerprints.clear();
         }
         if facts.nodes.iter().any(|node| {
-            node.kind == NodeKind::Module.as_str() && node.language == LanguageId::Python.as_str()
+            node.kind == NodeKind::Module && node.language == LanguageId::Python
         }) {
             thread_local! {
                 static COMPRESSOR: std::cell::RefCell<(zstd::bulk::Compressor<'static>, Vec<u8>)> =
@@ -112,17 +112,6 @@ impl SymbolCatalog {
                         || kind == EdgeKind::References.as_str()
                 ) || reference.receiver_hint.is_some()
             });
-        }
-        for node in &facts.facts.nodes {
-            if matches!(
-                facts.flows.state(node),
-                Some(crate::typed_facts::flow_store::FlowState::Valid {
-                    original: Some(_),
-                    ..
-                })
-            ) {
-                facts.flows.get_mut(&node.id);
-            }
         }
         for node in &mut facts.nodes {
             if !retain_storage {

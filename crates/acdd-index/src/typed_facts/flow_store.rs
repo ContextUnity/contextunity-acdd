@@ -8,6 +8,10 @@ use crate::{
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// A named uncertainty carrier is malformed or explicitly marked faulty.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InvalidNamedUncertaintyCarrier;
+
 pub(crate) fn remap_identifier(
     value: &mut String,
     ids: &HashMap<String, String>,
@@ -23,8 +27,6 @@ pub(crate) fn remap_identifier(
 pub enum FlowState {
     Valid {
         facts: Box<ValueFlowFacts>,
-        original: Option<Value>,
-        classic_fields_first: Option<bool>,
     },
     Invalid(Value),
 }
@@ -108,16 +110,19 @@ impl FlowStore {
     pub fn has_invalid_named_uncertainty_carriers(&self) -> bool {
         !self.invalid_uncertainty_carriers.is_empty()
     }
-    #[allow(clippy::result_unit_err)]
-    pub fn read_named_uncertainties(
+    pub(crate) fn read_named_uncertainties(
         node: &Node,
-    ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
-        let markers = Self::read_named_uncertainty_carrier(node)?;
+    ) -> Result<
+        Vec<crate::semantic::types::NamedDefinitionUncertainty>,
+        InvalidNamedUncertaintyCarrier,
+    > {
+        let markers = Self::read_named_uncertainty_carrier(node)
+            .map_err(|()| InvalidNamedUncertaintyCarrier)?;
         if node
             .detail_bool(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT)
             == Some(true)
         {
-            Err(())
+            Err(InvalidNamedUncertaintyCarrier)
         } else {
             Ok(markers)
         }
@@ -126,14 +131,12 @@ impl FlowStore {
         node: &Node,
     ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
         let fault = node
-            .details
-            .get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT);
+            .detail_get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT);
         if fault.is_some_and(|value| !value.is_boolean()) {
             return Err(());
         }
         let Some(raw) = node
-            .details
-            .get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES)
+            .detail_get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES)
         else {
             return Ok(Vec::new());
         };
@@ -256,7 +259,7 @@ impl FlowStore {
 
     pub fn raw(&self, node: &Node) -> Option<&Value> {
         match self.state(node) {
-            Some(FlowState::Valid { original, .. }) => original.as_ref(),
+            Some(FlowState::Valid { .. }) => None,
             Some(FlowState::Invalid(value)) => Some(value),
             None => None,
         }
@@ -264,12 +267,7 @@ impl FlowStore {
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut ValueFlowFacts> {
         match self.entries.get_mut(id) {
-            Some(FlowState::Valid {
-                facts, original, ..
-            }) => {
-                *original = None;
-                Some(facts)
-            }
+            Some(FlowState::Valid { facts }) => Some(facts),
             _ => None,
         }
     }
@@ -293,16 +291,16 @@ impl FlowStore {
     }
 
     pub fn insert(&mut self, id: String, facts: ValueFlowFacts) {
-        self.insert_with_mode(id, Box::new(facts), false);
+        self.insert_boxed(id, Box::new(facts));
     }
     pub fn insert_boxed(&mut self, id: String, facts: Box<ValueFlowFacts>) {
-        self.insert_with_mode(id, facts, false);
+        self.insert_with_mode(id, facts);
     }
     pub fn insert_classic(&mut self, id: String, facts: ValueFlowFacts) {
-        self.insert_with_mode(id, Box::new(facts), true);
+        self.insert_with_mode(id, Box::new(facts));
     }
 
-    fn insert_with_mode(&mut self, id: String, facts: Box<ValueFlowFacts>, classic: bool) {
+    fn insert_with_mode(&mut self, id: String, facts: Box<ValueFlowFacts>) {
         self.uncertainties.remove(&id);
         self.uncertainty_faults.remove(&id);
         self.invalid_uncertainty_carriers.remove(&id);
@@ -313,16 +311,7 @@ impl FlowStore {
             self.entries.insert(id, Self::invalid_overflow(original));
             return;
         }
-        let classic_fields_first =
-            classic.then_some(facts.bindings.is_empty() && !facts.fields.is_empty());
-        self.entries.insert(
-            id,
-            FlowState::Valid {
-                facts,
-                original: None,
-                classic_fields_first,
-            },
-        );
+        self.entries.insert(id, FlowState::Valid { facts });
     }
 
     pub fn ingest(&mut self, node: &mut Node) {
@@ -352,8 +341,8 @@ impl FlowStore {
                 crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT,
             );
         }
-        let classic = node.kind == "template_scope"
-            && node.language == "javascript"
+        let classic = node.kind == crate::models::tags::NodeKind::TemplateScope
+            && node.language == crate::models::tags::LanguageId::Javascript
             && node.detail_bool(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL)
                 == Some(true);
         let Some(details) = node.details.as_object_mut() else {
@@ -373,17 +362,9 @@ impl FlowStore {
                 .insert(node.id.clone(), Self::invalid_overflow(original));
             return;
         }
-        let classic_fields_first = classic.then(|| {
-            original
-                .as_object()
-                .and_then(|object| object.keys().next())
-                .is_some_and(|key| key == "fields")
-        });
         let state = match ValueFlowFacts::deserialize_for_scope(&original, classic) {
             Ok(facts) => FlowState::Valid {
                 facts: Box::new(facts),
-                original: Some(original),
-                classic_fields_first,
             },
             Err(_) => FlowState::Invalid(original),
         };
@@ -414,13 +395,10 @@ impl FlowStore {
             }
         };
         for state in self.entries.values_mut() {
-            let FlowState::Valid {
-                facts, original, ..
-            } = state
+            let FlowState::Valid { facts } = state
             else {
                 continue;
             };
-            *original = None;
             let Some(framework) = facts.framework.as_mut() else {
                 continue;
             };
@@ -498,11 +476,7 @@ impl FlowStore {
         let merged = match (previous, incoming) {
             (FlowState::Invalid(raw), _) | (_, FlowState::Invalid(raw)) => FlowState::Invalid(raw),
             (
-                FlowState::Valid {
-                    mut facts,
-                    classic_fields_first,
-                    ..
-                },
+                FlowState::Valid { mut facts },
                 FlowState::Valid {
                     facts: incoming, ..
                 },
@@ -528,11 +502,7 @@ impl FlowStore {
                         serde_json::to_value(facts).expect("serializable classic flow"),
                     )
                 } else {
-                    FlowState::Valid {
-                        facts,
-                        original: None,
-                        classic_fields_first,
-                    }
+                    FlowState::Valid { facts }
                 }
             }
         };
@@ -571,13 +541,10 @@ impl FlowStore {
         self.uncertainty_faults.clear();
         self.invalid_uncertainty_carriers.clear();
         self.entries.retain(|_, state| {
-            let FlowState::Valid {
-                facts, original, ..
-            } = state
+            let FlowState::Valid { facts } = state
             else {
                 return false;
             };
-            *original = None;
             facts.bindings = Vec::new();
             facts.branch_joins = Vec::new();
             facts.immutable_initializers = Vec::new();

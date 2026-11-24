@@ -1,4 +1,5 @@
 use super::context::*;
+use crate::languages::profile::ProfileLinker;
 
 impl<'a> Context<'a> {
     pub(super) fn prepare_factory_bindings(&mut self, all: &'a dyn crate::FactsLookup) {
@@ -7,7 +8,8 @@ impl<'a> Context<'a> {
             .values_facts()
             .flat_map(|facts| &facts.nodes)
             .filter(|owner| {
-                matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
+                crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().tracks_factory_results())
                     && (matches!(owner.kind.as_str(), "function" | "method" | "module")
                         || owner.binding_count() > 0
                         || owner.rebinding_count() > 0)

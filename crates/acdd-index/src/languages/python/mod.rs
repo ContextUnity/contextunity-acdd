@@ -316,9 +316,6 @@ impl LanguageProfile for Python {
     fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
         Some(&PYTHON_SPEC)
     }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &crate::linker::python::profile_linker::PYTHON_LINKER
-    }
     fn scope_analysis<'source, 'tree>(
         &self,
         node: Syntax<'tree>,
@@ -714,7 +711,7 @@ impl LanguageProfile for Python {
         syntax::doc_comment(node, source)
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
-        matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
+        matches!(name, "self" | "cls") && *owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == name
     }
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
@@ -960,13 +957,13 @@ impl LanguageProfile for Python {
             let module_id = facts
                 .nodes
                 .first()
-                .filter(|node| node.kind == "module")
+                .filter(|node| node.kind == crate::models::tags::NodeKind::Module)
                 .map(|node| node.id.clone())
                 .or_else(|| {
                     facts
                         .nodes
                         .iter()
-                        .find(|node| node.kind == "module")
+                        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
                         .map(|node| node.id.clone())
                 });
             if let Some(module_id) = module_id {

@@ -817,7 +817,7 @@ impl LanguageProfile for TypeScript {
         }
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
-        name == "this" && owner.details["receiver_name"].as_str() == Some("this")
+        name == "this" && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some("this")
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
         &[
@@ -905,9 +905,6 @@ impl LanguageProfile for TypeScript {
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")
-    }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER
     }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
         match k {
@@ -1905,7 +1902,7 @@ fn finish_ts_identifier_candidates(facts: &mut Facts, candidates: Vec<TsCandidat
     let enums: HashSet<&str> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "enum")
+        .filter(|node| node.kind == crate::models::tags::NodeKind::Enum)
         .map(|node| node.name.as_str())
         .collect();
     let imports: HashSet<String> = facts
@@ -2004,12 +2001,12 @@ fn finish_js_prototypes(facts: &mut Facts) {
         && !facts
             .nodes
             .iter()
-            .any(|node| node.details["prototype"] == true)
+            .any(|node| *node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE) == true)
     {
         relations::implicit_fields(facts);
         return;
     }
-    let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") else {
+    let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
         return;
     };
     let module_id = module.id.clone();
@@ -2053,9 +2050,9 @@ fn finish_js_prototypes(facts: &mut Facts) {
     for method in facts
         .nodes
         .iter()
-        .filter(|node| node.details["prototype"] == true)
+        .filter(|node| *node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE) == true)
     {
-        let Some(owner) = method.details["receiver_type"].as_str() else {
+        let Some(owner) = method.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str() else {
             continue;
         };
         let key = format!("{owner}.{}", method.name);
@@ -2074,16 +2071,16 @@ fn finish_js_prototypes(facts: &mut Facts) {
         else {
             continue;
         };
-        if constructor.kind == "class"
+        if constructor.kind == crate::models::tags::NodeKind::Class
             && (constructor.line > method.line
                 || (constructor.line == method.line
-                    && constructor.details["column"].as_u64().unwrap_or(0)
-                        >= method.details["column"].as_u64().unwrap_or(0)))
+                    && constructor.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0)
+                        >= method.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0)))
         {
             continue;
         }
         methods.insert(method.id.clone());
-        if constructor.kind == "function" {
+        if constructor.kind == crate::models::tags::NodeKind::Function {
             constructor_ids.insert(constructor.id.clone());
         }
     }
@@ -2105,7 +2102,7 @@ fn finish_js_prototypes(facts: &mut Facts) {
         .iter()
         .filter(|node| methods.contains(&node.id))
         .filter_map(|node| {
-            node.details["receiver_type"]
+            node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
                 .as_str()
                 .map(|owner| (node.id.clone(), owner.to_owned()))
         })
@@ -2114,20 +2111,20 @@ fn finish_js_prototypes(facts: &mut Facts) {
         if let Some((_, owner, member, line, column)) =
             valid_aliases.iter().find(|(id, ..)| *id == node.id)
         {
-            node.details["prototype"] = serde_json::json!(true);
-            node.details["prototype_member"] = serde_json::json!(member);
-            node.details["receiver_type"] = serde_json::json!(owner);
-            node.details["prototype_assignment_line"] = serde_json::json!(line);
-            node.details["prototype_assignment_column"] = serde_json::json!(column);
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE, serde_json::json!(true));
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_MEMBER, serde_json::json!(member));
+            node.set_detail(crate::models::details::NodeDetailKey::RECEIVER_TYPE, serde_json::json!(owner));
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_LINE, serde_json::json!(line));
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_COLUMN, serde_json::json!(column));
         }
         if methods.contains(&node.id) {
-            node.details["prototype_valid"] = serde_json::json!(true);
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_VALID, serde_json::json!(true));
         }
         if constructor_ids.contains(&node.id) {
-            node.details["prototype_constructor"] = serde_json::json!(true);
+            node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_CONSTRUCTOR, serde_json::json!(true));
         }
-        if node.kind == "function" && node.details["receiver_name"] == "this" {
-            let receiver = node.details["receiver_type"].as_str();
+        if node.kind == crate::models::tags::NodeKind::Function && *node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME) == "this" {
+            let receiver = node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str();
             let mut ancestor = node.id.as_str();
             for _ in 0..16 {
                 let Some(parent) = parents.get(ancestor).copied() else {
@@ -2137,7 +2134,7 @@ fn finish_js_prototypes(facts: &mut Facts) {
                     .get(parent)
                     .is_some_and(|owner| Some(owner.as_str()) == receiver)
                 {
-                    node.details["prototype_lexical_this"] = serde_json::json!(true);
+                    node.set_detail(crate::models::details::NodeDetailKey::PROTOTYPE_LEXICAL_THIS, serde_json::json!(true));
                     break;
                 }
                 ancestor = parent;
@@ -2187,20 +2184,20 @@ fn collect_valid_prototype_aliases(
         ) else {
             continue;
         };
-        if function.kind != "function"
+        if function.kind != crate::models::tags::NodeKind::Function
             || (
                 function.line,
-                function.details["column"].as_u64().unwrap_or(0),
+                function.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0),
             ) >= (alias.line, alias.column as u64)
             || (
                 constructor.line,
-                constructor.details["column"].as_u64().unwrap_or(0),
+                constructor.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0),
             ) >= (alias.line, alias.column as u64)
         {
             continue;
         }
         methods.insert(function.id.clone());
-        if constructor.kind == "function" {
+        if constructor.kind == crate::models::tags::NodeKind::Function {
             constructor_ids.insert(constructor.id.clone());
         }
         valid_aliases.push((
@@ -2303,7 +2300,7 @@ fn record_js_mutation_target(ctx: &SyntaxContext<'_, '_>, facts: &Facts) {
         || !facts
             .nodes
             .first()
-            .is_some_and(|node| node.kind == "module")
+            .is_some_and(|node| node.kind == crate::models::tags::NodeKind::Module)
     {
         return;
     }
@@ -2378,9 +2375,9 @@ fn mark_static_ts_field(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let qualname = format!("{}.{}", owner.qualname, name);
         let path = owner.path.clone();
         if let Some(field) = facts.nodes.iter_mut().find(|node| {
-            node.path == path && node.kind == "field" && node.qualname == qualname
+            node.path == path && node.kind == crate::models::tags::NodeKind::Field && node.qualname == qualname
         }) {
-            field.details["is_static"] = serde_json::json!(true);
+            field.set_detail(crate::models::details::NodeDetailKey::IS_STATIC, serde_json::json!(true));
         }
     }
 }

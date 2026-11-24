@@ -65,7 +65,7 @@ fn htmx_request_identity_and_bounds() {
         let requests: Vec<_> = facts
             .nodes
             .iter()
-            .filter(|node| node.kind == "htmx_request")
+            .filter(|node| node.kind == acdd_index::models::tags::NodeKind::HtmlRequest)
             .collect();
         assert_eq!(requests.len(), case.count, "{}", case.case_id);
         assert_eq!(facts.references.len(), case.references, "{}", case.case_id);
@@ -96,7 +96,7 @@ fn htmx_request_identity_and_bounds() {
                 facts
                     .nodes
                     .iter()
-                    .filter(|node| node.kind == "htmx_context")
+                    .filter(|node| node.kind == acdd_index::models::tags::NodeKind::HtmlContext)
                     .count(),
                 count
             );
@@ -144,7 +144,7 @@ fn htmx_request_identity_and_bounds() {
                 &conn,
                 "orders",
                 &symbols::SearchOptions {
-                    kind: Some("htmx_request"),
+                    kind: Some("html_request"),
                     path: None,
                     include_docs: false,
                     exact: false,
@@ -195,7 +195,7 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
     let rebuilt = reader::open(&cold, workspace.root()).unwrap();
     let rows = |conn: &rusqlite::Connection| {
         conn.prepare(
-            "SELECT id,name,line,details FROM nodes WHERE kind='htmx_request' ORDER BY line,id",
+            "SELECT id,name,line,details FROM nodes WHERE kind='html_request' ORDER BY line,id",
         )
         .unwrap()
         .query_map([], |row| {
@@ -229,7 +229,7 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         &delta,
         "route",
         &symbols::SearchOptions {
-            kind: Some("htmx_request"),
+            kind: Some("html_request"),
             path: None,
             include_docs: false,
             exact: false,
@@ -254,7 +254,7 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         &delta,
         "route",
         &symbols::SearchOptions {
-            kind: Some("htmx_request"),
+            kind: Some("html_request"),
             path: None,
             include_docs: false,
             exact: false,

@@ -1,3 +1,4 @@
+use crate::languages::profile::ProfileLinker;
 use super::context::*;
 use crate::linker::traits::ImportContext;
 
@@ -100,12 +101,12 @@ impl<'a> Context<'a> {
         > = HashMap::new();
         let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
+            let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
                 continue;
             };
             let rules = dependencies.language_context_for_path(path);
             let rules_ptr = std::sync::Arc::as_ptr(&rules) as usize;
-            if languages::by_id(&module.language)
+            if languages::by_id(module.language.as_str())
                 .is_some_and(|profile| profile.linker().uses_hierarchy_rules())
             {
                 self.cache_hierarchy_rules(
@@ -120,7 +121,7 @@ impl<'a> Context<'a> {
             }
             self.cache_receiver_rules(
                 path,
-                &module.language,
+                module.language.as_str(),
                 &rules,
                 rules_ptr,
                 &mut pinned_rules,
@@ -258,10 +259,10 @@ impl<'a> Context<'a> {
     ) -> Vec<PendingExternalImport<'a>> {
         let mut pending_cross_module = Vec::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
+            let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
                 continue;
             };
-            let Some(profile) = languages::by_id(&module.language) else {
+            let Some(profile) = languages::by_id(module.language.as_str()) else {
                 continue;
             };
             let linker = profile.linker();
@@ -359,7 +360,7 @@ impl<'a> Context<'a> {
             Some(ReceiverHint::TypeOnlyImport)
         );
         let unproven_guard = is_type_only
-            && super::super::python::semantic_context::type_only_import_is_unproven(
+            && profile.linker().type_only_import_is_unproven(
                 profile,
                 path,
                 facts,
@@ -391,17 +392,12 @@ impl<'a> Context<'a> {
             Imported::Nodes(candidates, position, is_type_only)
         } else if providers.is_empty() && !normalized.relative {
             let module_name = reference.module.as_deref().unwrap_or(&reference.expression);
-            if super::super::python::semantic_context::dynamic_type_alias(
-                &module.language,
-                module_name,
-                &reference.expression,
-            ) {
+            if profile.linker().is_dynamic_type_alias(module_name, &reference.expression) {
                 Imported::Unknown
             } else {
-                let factory_safe =
-                    super::super::python::semantic_context::logging_factory_import_is_safe(
-                        module, alias, position,
-                    );
+                let factory_safe = profile
+                    .linker()
+                    .external_factory_import_is_safe(module, alias, position);
                 Imported::External(module_name.to_owned(), position, reference, factory_safe)
             }
         } else {
@@ -429,10 +425,9 @@ impl<'a> Context<'a> {
                     provider_module: providers[0],
                     symbol_name,
                     reference,
-                    factory_safe:
-                        super::super::python::semantic_context::logging_factory_import_is_safe(
-                            module, alias, position,
-                        ),
+                    factory_safe: profile
+                        .linker()
+                        .external_factory_import_is_safe(module, alias, position),
                 });
             }
             aliases.insert(alias_id, target);
@@ -461,7 +456,7 @@ impl<'a> Context<'a> {
                     continue;
                 };
                 if self
-                    .import_state(&item.provider_module.language)
+                    .import_state(item.provider_module.language.as_str())
                     .is_some_and(|state| {
                         !state.external_binding_visible(
                             item.provider_module,
@@ -503,12 +498,11 @@ impl<'a> Context<'a> {
             .values_facts()
             .flat_map(|facts| &facts.nodes)
             .filter(|node| {
-                languages::by_id(&node.language)
+                languages::by_id(node.language.as_str())
                     .is_none_or(|profile| profile.linker().uses_shared_class_members())
-                    && (node.kind == "method"
+                    && (node.kind == crate::models::tags::NodeKind::Method
                         || node
-                            .details
-                            .get("is_method")
+                            .detail_get(crate::models::details::NodeDetailKey::IS_METHOD)
                             .and_then(serde_json::Value::as_bool)
                             == Some(true))
             })
@@ -517,8 +511,7 @@ impl<'a> Context<'a> {
                 continue;
             };
             let receiver_type = node
-                .details
-                .get("receiver_type")
+                .detail_get(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
                 .and_then(serde_json::Value::as_str)
                 .map(|name| name.trim_start_matches('*'));
             let receiver_qual = receiver_type.map(|name| format!("{parent}.{name}"));
@@ -550,7 +543,7 @@ impl<'a> Context<'a> {
                         self.interner
                             .lookup_symbol(&node.name)
                             .expect("catalog member"),
-                        node.details["is_static"] == true,
+                        *node.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true,
                     ))
                     .or_default()
                     .push(node);
@@ -572,7 +565,7 @@ impl<'a> Context<'a> {
                 let Some(owner) = self.by_id.get(&owner_id).copied() else {
                     continue;
                 };
-                if languages::by_id(&owner.language)
+                if languages::by_id(owner.language.as_str())
                     .is_some_and(|profile| !profile.linker().uses_shared_class_members())
                     || !matches!(owner.kind.as_str(), "class" | "struct" | "interface")
                 {
@@ -671,14 +664,18 @@ impl<'a> Context<'a> {
             normalized_imports,
             dependencies,
         );
-        #[cfg(feature = "lang-rust")]
-        super::super::rust::semantic_context::import_globs(
-            &mut context,
+        let prep = crate::linker::traits::SemanticContextPrep {
             all,
             by_id,
             normalized_imports,
             modules,
-        );
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for profile in languages::profiles() {
+            if seen.insert(profile.id()) {
+                profile.linker().prepare_semantic_context(&mut context, &prep);
+            }
+        }
         context.propagate_cross_module_external_imports(&pending_cross_module);
         context.populate_class_members(all, by_qual);
         context
@@ -706,7 +703,7 @@ fn collect_receiver_type_and_factory_rules(
             continue;
         }
         indices.push(index);
-        if !matches!(module_language, "javascript" | "typescript")
+        if !profile.linker().collects_argument_factory_rules(module_language)
             || rule.language != module_language
         {
             continue;

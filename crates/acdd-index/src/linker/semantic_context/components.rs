@@ -41,7 +41,7 @@ fn scoped_matching_provider_module<'a, 'e>(
             dependencies,
         )
     })?;
-    let module = facts.nodes.iter().find(|node| node.kind == "module")?;
+    let module = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module)?;
     Some((module, selector))
 }
 
@@ -196,7 +196,7 @@ impl<'a> super::Context<'a> {
         catalog_incomplete: &mut bool,
     ) -> HashMap<SymbolId, CallableCandidates<'a>> {
         let mut exported = HashMap::<SymbolId, CallableCandidates<'a>>::new();
-        for binding in provider.details["exports"].as_array().into_iter().flatten() {
+        for binding in provider.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
             if binding["type_only"] == true || binding["name"] == "default" {
                 continue;
             }
@@ -222,7 +222,7 @@ impl<'a> super::Context<'a> {
                         .filter(|node| {
                             node.path == *provider_path
                                 && node.name == local
-                                && node.kind == "function"
+                                && node.kind == crate::models::tags::NodeKind::Function
                         })
                 });
             if let Some(target) = target {
@@ -259,7 +259,7 @@ impl<'a> super::Context<'a> {
             ) else {
                 continue;
             };
-            for binding in provider.details["exports"].as_array().into_iter().flatten() {
+            for binding in provider.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
                 if binding["type_only"] == true || binding["module"].as_str().is_some() {
                     continue;
                 }
@@ -367,11 +367,17 @@ impl<'a> super::Context<'a> {
             else {
                 continue;
             };
-            let Some(provider_module) = (dependencies
-                .nearest_manifest_scope_for_path(languages::LanguageFamily("javascript"), provider_path)
-                == Some(scope))
-            .then(|| provider.nodes.iter().find(|node| node.kind == "module"))
-            .flatten() else {
+            let Some(provider_module) = provider
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+                .filter(|module| {
+                    languages::by_id(module.language.as_str()).is_some_and(|profile| {
+                        dependencies.nearest_manifest_scope_for_path(profile.family(), provider_path)
+                            == Some(scope)
+                    })
+                })
+            else {
                 continue;
             };
             for name in [pascal, kebab] {
@@ -429,7 +435,7 @@ impl<'a> super::Context<'a> {
         };
         let config = all
             .get_facts(&config_path)
-            .and_then(|facts| facts.nodes.iter().find(|node| node.kind == "module"));
+            .and_then(|facts| facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module));
         if rule.language == module_language && config.is_some() {
             self.autoimports.entry(path_id).or_default().extend(
                 autoimports.iter().filter_map(|name| {
@@ -591,7 +597,7 @@ impl<'a> super::Context<'a> {
         let mut callable_catalog: HashMap<ComponentRuleKey, std::sync::Arc<CallableScope<'a>>> =
             HashMap::new();
         for (path, source) in all.iter_facts() {
-            let Some(module) = source.nodes.iter().find(|node| node.kind == "module") else {
+            let Some(module) = source.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
                 continue;
             };
             let path_id = self
@@ -600,14 +606,14 @@ impl<'a> super::Context<'a> {
                 .expect("component catalog path is interned");
             let language = self
                 .interner
-                .lookup_symbol(&module.language)
+                .lookup_symbol(module.language.as_str())
                 .expect("component language is interned");
             let rules = dependencies.language_context_for_path(path);
             let rules_key = (std::sync::Arc::as_ptr(&rules) as usize, language);
             let (implicit, has_component_env) =
                 implicit_builtins_cache.entry(rules_key).or_insert_with(|| {
                     pinned_rules.push(std::sync::Arc::clone(&rules));
-                    self.collect_implicit_builtins(&rules, &module.language)
+                    self.collect_implicit_builtins(&rules, module.language.as_str())
                 });
             if !implicit.is_empty() {
                 self.implicit_builtins
@@ -616,9 +622,9 @@ impl<'a> super::Context<'a> {
             if !*has_component_env {
                 continue;
             }
-            let Some(scope) = dependencies
-                .nearest_manifest_scope_for_path(languages::LanguageFamily("javascript"), path)
-            else {
+            let Some(scope) = languages::by_id(module.language.as_str()).and_then(|profile| {
+                dependencies.nearest_manifest_scope_for_path(profile.family(), path)
+            }) else {
                 continue;
             };
             for rule in &rules.syntax_rules {
@@ -626,7 +632,7 @@ impl<'a> super::Context<'a> {
                     all,
                     path,
                     path_id,
-                    &module.language,
+                    module.language.as_str(),
                     scope,
                     rule,
                     dependencies,

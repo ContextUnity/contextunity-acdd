@@ -143,7 +143,7 @@ fn configured_component_modules<'a>(
                     .into_iter()
                     .flatten()
                     .copied()
-                    .filter(|node| node.kind == "module" && node.language == "vue"),
+                    .filter(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Vue),
             );
         }
     }
@@ -153,6 +153,145 @@ fn configured_component_modules<'a>(
 }
 
 impl LanguageLinker for TypeScriptLinker {
+    fn tracks_factory_results(&self) -> bool { true }
+    fn uses_module_exports(&self) -> bool { true }
+    fn builtin_field_projection(&self, owner: &Node) -> bool {
+        matches!(owner.language, crate::models::tags::LanguageId::Javascript | crate::models::tags::LanguageId::Typescript)
+    }
+    fn payload_uses_async_return(&self) -> bool { true }
+    fn reaching_payload_wrapper(&self, target: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
+        matches!(target, crate::linker::value_flow::TypeTarget::Promise(_))
+            || matches!(target, crate::linker::value_flow::TypeTarget::Builtin(name) if name == "Promise")
+    }
+    fn classic_global_scope(&self, node: &Node) -> bool {
+        node.kind == crate::models::tags::NodeKind::TemplateScope
+            && node.language == crate::models::tags::LanguageId::Javascript
+            && *node.detail_entry(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL) == true
+    }
+    fn commonjs_module(&self, node: &Node) -> bool {
+        matches!(node.language, crate::models::tags::LanguageId::Javascript | crate::models::tags::LanguageId::Typescript | crate::models::tags::LanguageId::Vue)
+    }
+    fn component_default_export(&self, node: &Node) -> bool {
+        node.kind == crate::models::tags::NodeKind::Module
+            && node.language == crate::models::tags::LanguageId::Vue
+            && node.detail_entry(crate::models::details::NodeDetailKey::DEFAULT_EXPORT) == true
+    }
+    fn is_implicit_self(&self, first: &str) -> bool { first == "this" }
+    fn implicit_receiver_evidence<'a>(&self, first: &'a str, tail: &'a str, context: &crate::languages::LanguageContext, path: &str, signals: &crate::languages::manifests::semantic::FileActivationSignals) -> Option<(&'a str, String)> {
+        let receiver = if first == "this" { tail } else if tail.is_empty() { first } else { "" };
+        if receiver.is_empty() { return None; }
+        context.syntax_rules.iter().find_map(|rule| {
+            let manifests::syntax::SyntaxOperation::ImplicitReceivers { names } = &rule.operation else { return None; };
+            (context.is_syntax_rule_active(rule, path, signals) && names.iter().any(|name| name == receiver)).then(||
+                (receiver, format!("{}; rule:{}:{}", rule.display.builtin.as_deref().unwrap_or("framework builtin: configured implicit receiver"), rule.pack, rule.id)))
+        })
+    }
+    fn object_ownership<'a>(&self, node: &Node, flows: Option<&HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>>, interner: &LinkerInterner<'_>, rules: &[manifests::syntax::SyntaxRule]) -> Option<&'a crate::semantic::ObjectOwnershipFact> {
+        super::resolution::object_ownership(node, flows, interner, rules)
+    }
+    fn lexical_this_calls<'a, 'b>(&self, facts: &'a Facts, references: &'b [crate::models::Reference], flows: Option<&HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>>, interner: &LinkerInterner<'_>, rules: &[manifests::syntax::SyntaxRule]) -> HashSet<(&'b str, usize, usize, &'b str)> {
+        super::resolution::lexical_this_calls(facts, references, |node| self.object_ownership(node, flows, interner, rules))
+    }
+    fn returned_object_field_writes<'a, 'b>(&self, profile: &dyn LanguageProfile, references: &'b [crate::models::Reference], by_id: &HashMap<crate::interner::SymbolId, &'a Node>, interner: &LinkerInterner<'_>) -> HashSet<(&'a str, &'b str)> {
+        crate::linker::javascript::resolution::returned_object_field_writes(Some(profile), references, by_id, interner)
+    }
+    fn builtin_property_chain(&self, expression: &str, profile: &dyn crate::languages::LanguageProfile, path: &str, context: &crate::linker::semantic_context::context::Context<'_>) -> bool {
+        super::resolution::builtin_property_chain(expression, profile, path, context)
+    }
+    fn template_lexical_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, first: &str, component: Option<&Node>) -> bool {
+        phase.resolve_lexical_binding(first, component, self, "Vue template lexical binding in")
+    }
+    fn import_visible_before_position(&self, owner: &Node) -> bool {
+        crate::linker::vue::semantic_context::template_import_visible(owner)
+    }
+    fn external_factory_result<'a>(&self, context: &crate::linker::semantic_context::context::Context<'a>, owner: &'a Node, callee: &str, at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> {
+        crate::linker::javascript::semantic_context::external_factory_result(context, owner, callee, at)
+    }
+    fn receiver_access(&self, owner: &Node, head: &str) -> Option<(bool, bool)> {
+        crate::linker::javascript::semantic_context::receiver_access(owner, head)
+    }
+    fn builtin_type_symbol(&self, owner: &Node, profile: &dyn crate::languages::LanguageProfile, name: &str, role: crate::linker::value_flow::SymbolRole) -> bool {
+        super::semantic_context::is_builtin_promise_type(owner, profile, name, role)
+    }
+    fn resolve_applied_type<'a>(&self, _context: &crate::linker::semantic_context::context::Context<'a>, owner: &'a Node, (_base, args): (&str, &[crate::semantic::TypeExpr]), nominal: &crate::linker::value_flow::Symbol<'a>, _at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> {
+        super::semantic_context::resolve_applied(owner, args, nominal)
+    }
+    fn admits_type_payload<'a>(&self, owner: &Node, wrapper: &TypeTarget<'a>, count: usize) -> bool {
+        super::semantic_context::admits_payload(owner, wrapper, count)
+    }
+    fn normalize_builtin_receiver<'a>(&self, receiver: &'a str) -> &'a str {
+        let receiver = receiver.strip_prefix("Web.").unwrap_or(receiver);
+        super::semantic_context::typed_dom_receiver(receiver).unwrap_or(receiver)
+    }
+    fn supports_async_return(&self, owner: &Node) -> bool {
+        matches!(owner.kind, crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method)
+    }
+    fn external_builtin_evidence(&self, profile: &dyn crate::languages::LanguageProfile, module: &str, expression: &str) -> Option<String> {
+        (matches!(profile.id(), "javascript" | "typescript") && profile.is_stdlib(module))
+            .then(|| format!("builtin:node import {module}: {expression}"))
+    }
+    fn supports_static_import_receiver(&self) -> bool { true }
+    fn imported_module_first(&self) -> bool { true }
+    fn configured_template_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, context: &crate::languages::LanguageContext, signals: &crate::languages::manifests::semantic::FileActivationSignals) -> bool {
+        use crate::models::{ReceiverHint, tags::{NodeKind, EdgeKind, EdgeConfidence, CoverageStatus}};
+        let reference = phase.reference;
+        if reference.kind != EdgeKind::References.as_str() || !phase.owner.is_some_and(|owner| owner.kind == NodeKind::TemplateScope) { return false; }
+        let Some(ReceiverHint::ConfiguredTypedMember { field_id, origin }) = &reference.receiver_hint else { return false; };
+        if !context.syntax_rules.iter().any(|rule| rule.pack == origin.pack && rule.id == origin.rule
+            && context.is_syntax_rule_active(rule, phase.path, signals)
+            && matches!(rule.operation, crate::languages::manifests::syntax::SyntaxOperation::ComponentMacros { .. })) { return false; }
+        let Some(field) = phase.input.interner.lookup_node(phase.input.by_id, field_id.as_str()).filter(|field| {
+            field.path == *phase.path && field.kind == NodeKind::Field
+                && field.name == reference.expression.rsplit('.').next().unwrap_or(reference.expression.as_str())
+        }) else { return false; };
+        phase.graph.reference_edge(phase.path, reference, field.id.clone(), EdgeKind::References, EdgeConfidence::Exact);
+        phase.graph.reference_coverage(phase.path, reference, CoverageStatus::Resolved.as_str(),
+            format!("script setup typed macro field {}; rule:{}:{}", field.qualname, origin.pack, origin.rule).into());
+        true
+    }
+    fn template_setup_binding<'a>(&self, reference: &crate::models::Reference, component: Option<&'a Node>) -> Option<&'a Node> {
+        component.filter(|_| matches!(reference.receiver_hint, Some(crate::models::ReceiverHint::VueSetupBinding)))
+    }
+    fn component_slot_reference(&self, context: &mut crate::linker::traits::ComponentSlotReference<'_, '_>) -> bool {
+        let Some(owner) = context.phase.owner else { return false; };
+        let Some(result) = crate::linker::vue::resolution::component_slot_member(context.phase.input, context.phase.path, owner, context.first, context.tail, context.alias_for) else { return false; };
+        crate::linker::resolution::context::emit_inferred(context.phase.graph, context.phase.path, context.phase.reference, result, context.builtin_origin);
+        true
+    }
+    fn object_reference(&self, context: &mut crate::linker::traits::ObjectReference<'_, '_, '_>) -> bool {
+        crate::linker::javascript::resolution::object_factory_this_member(context.phase.input, context.phase.path, context.phase.reference, context.aliases, context.ownership, context.calls, context.language_context, context.activation_signals, context.phase.graph)
+    }
+    fn lexical_this_member(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, expression: &str, calls: &hashbrown::HashSet<(&str, usize, usize, &str)>) -> bool {
+        super::resolution::lexical_this_member(phase.input, phase.path, phase.reference, expression, calls, &mut String::new(), phase.graph)
+    }
+    fn builtin_this_member(&self, phase: &crate::linker::traits::ReferencePhase<'_, '_>, expression: &str, writes: &hashbrown::HashSet<(&str, &str)>) -> bool {
+        crate::linker::javascript::resolution::has_returned_object_builtin_this_member(phase.input, phase.path, phase.reference, expression, phase.profile, writes)
+    }
+    fn imported_default_callable<'a>(&self, phase: &crate::linker::traits::ReferencePhase<'a, '_>, first: &str, facts: &crate::models::Facts, imported: &[&'a Node], exports: &crate::linker::traits::PackageExports<'a>, lookup: &mut String) -> Option<&'a Node> {
+        crate::linker::javascript::resolution::commonjs_default_callable(phase.reference, phase.profile, first, phase.owner, facts, imported, phase.input.semantic_context, phase.input.interner, self, phase.input.by_module, phase.input.by_qual, exports, lookup)
+    }
+    fn template_tag_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+        crate::linker::vue::resolution::resolve_component_tag(phase.input, phase.path, phase.reference, phase.owner, phase.graph)
+    }
+    fn macro_callable_origin(&self, reference: &crate::models::Reference, context: &crate::languages::LanguageContext) -> Option<String> {
+        crate::linker::vue::resolution::component_macro_callable_origin(reference, context)
+    }
+    fn allows_typed_member_read(&self, known_receiver: bool) -> bool { !known_receiver }
+    fn owns_module_fields(&self, node: &Node) -> bool {
+        crate::linker::vue::value_flow::owns_module_fields(node)
+    }
+    fn is_component_template_member(&self, reference: &crate::models::Reference, owner: Option<&Node>, tail: &str) -> bool {
+        crate::linker::vue::resolution::is_component_template_member(reference, owner, tail)
+    }
+
+    fn property_after_unknown(&self, profile: &dyn crate::languages::LanguageProfile) -> bool {
+        matches!(profile.id(), "javascript" | "typescript")
+    }
+
+    fn admits_static_receiver_candidate(&self, candidate: &Node, expression: &str) -> bool {
+        crate::linker::typescript::resolution::admits_static_receiver_candidate(candidate, expression)
+    }
+
     fn property_reference(
         &self,
         phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
@@ -299,9 +438,6 @@ impl LanguageLinker for TypeScriptLinker {
         }
     }
 
-    fn tracks_external_aliases(&self) -> bool {
-        true
-    }
     fn resolve_import<'ctx, 'a, 'input>(
         &self,
         context: &mut ImportContext<'ctx, 'a, 'input>,
@@ -339,7 +475,7 @@ impl LanguageLinker for TypeScriptLinker {
                 let direct_type_export = typescript_source
                     && exported.is_none()
                     && matches!(context.candidates.as_slice(), [node] if matches!(node.kind.as_str(), "type" | "interface")
-                    && module.details["exports"].as_array().is_some_and(|bindings| bindings.iter().any(|binding| {
+                    && module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|bindings| bindings.iter().any(|binding| {
                         binding["type_only"] == true
                             && binding["name"].as_str() == Some(name.as_str())
                             && binding["local"].as_str() == Some(node.name.as_str())
@@ -401,13 +537,48 @@ impl LanguageLinker for TypeScriptLinker {
         };
         imports(old) != imports(new)
     }
-    fn required_full_facts(
-        &self,
-        facts: &dyn crate::models::FactsLookup,
-        _affected: &BTreeSet<String>,
-        catalog: &[(&str, &str)],
-    ) -> BTreeSet<String> {
-        required_full_facts(facts, _affected, catalog)
+    fn required_full_facts(&self, facts: &dyn crate::models::FactsLookup, affected: &BTreeSet<String>, catalog: &[(&str, &str)]) -> BTreeSet<String> {
+        required_full_facts(facts, affected, catalog)
+    }
+    fn admits_imported_declaration_edge(&self, declaration: &Node, target_module: &Node) -> bool {
+        use crate::models::tags::{LanguageId, NodeKind};
+        declaration.language == LanguageId::Typescript && matches!(declaration.kind, NodeKind::Type | NodeKind::Interface) && declaration.path == target_module.path
+    }
+    fn normalize_dom_receiver<'a>(&self, receiver: &'a str) -> &'a str {
+        #[cfg(feature = "lang-typescript")] { crate::languages::typescript::typed_dom_receiver(receiver).unwrap_or(receiver) }
+        #[cfg(not(feature = "lang-typescript"))] { receiver }
+    }
+    fn dom_property_type(&self, receiver: &str, member: &str) -> Option<&'static str> {
+        #[cfg(feature = "lang-typescript")] { crate::languages::typescript::typed_dom_property(receiver, member) }
+        #[cfg(not(feature = "lang-typescript"))] { let _ = (receiver, member); None }
+    }
+    fn symbol_visible(&self, owner: &Node, candidate: &Node) -> Option<bool> {
+        super::semantic_context::visible(owner, candidate).then_some(true)
+    }
+    fn admits_classified_node(&self, node: &Node) -> bool {
+        use crate::models::{details::NodeDetailKey, tags::LanguageId};
+        node.language != LanguageId::Javascript || node.detail_entry(NodeDetailKey::PROTOTYPE) != true || *node.detail_entry(NodeDetailKey::PROTOTYPE_VALID) == true
+    }
+    fn is_constructor_symbol(&self, node: &Node) -> bool {
+        use crate::models::{details::NodeDetailKey, tags::{LanguageId, NodeKind}};
+        node.language == LanguageId::Javascript && node.kind == NodeKind::Function && *node.detail_entry(NodeDetailKey::PROTOTYPE_CONSTRUCTOR) == true
+    }
+    fn admits_component_template_field(&self, receiver: &Node) -> bool {
+        matches!(receiver.kind, crate::models::tags::NodeKind::Class | crate::models::tags::NodeKind::Interface)
+    }
+    fn collects_argument_factory_rules(&self, language_id: &str) -> bool { matches!(language_id, "javascript" | "typescript") }
+    fn setup_scope_complete(&self, owner: &Node, parent_is_module: bool) -> bool {
+        crate::linker::vue::value_flow::setup_scope_complete(owner, parent_is_module)
+    }
+    fn stable_immutable_capture(&self, writes: &[crate::linker::value_flow::Binding<'_>]) -> bool {
+        crate::linker::javascript::value_flow::stable_immutable_capture(writes)
+    }
+    fn receiver_requires_static(&self) -> bool { true }
+    fn required_configuration_facts(&self, facts: &BTreeMap<String, crate::typed_facts::TypedFacts>, catalog: &[(&str, &str)], dependencies: &dependency_registry::DependencyRegistry) -> BTreeSet<String> {
+        required_configuration_facts(facts, catalog, dependencies)
+    }
+    fn strips_component_macro_raw_details(&self, node: &Node) -> bool {
+        node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Vue
     }
 }
 
@@ -600,10 +771,10 @@ fn package_exports<'a>(
             .or_insert_with(|| provider(path, source, modules, root))
     };
     for file in all.into_iter().filter(|file| javascript(file)) {
-        let Some(module) = file.nodes.iter().find(|node| node.kind == "module") else {
+        let Some(module) = file.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
             continue;
         };
-        let Some(bindings) = module.details["exports"].as_array() else {
+        let Some(bindings) = module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array() else {
             continue;
         };
         for binding in bindings {
@@ -673,7 +844,7 @@ fn collect_rule_configuration_exports(
         .facts
         .nodes
         .iter()
-        .find(|node| node.kind == "module")
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
         .and_then(|node| config.flows.get(node))
         .map(|flow| flow.component_configurations());
     for configuration in configurations
@@ -799,8 +970,8 @@ fn required_full_facts(
         let exports = file
             .nodes
             .iter()
-            .filter(|node| node.kind == "module")
-            .flat_map(|module| module.details["exports"].as_array().into_iter().flatten())
+            .filter(|node| node.kind == crate::models::tags::NodeKind::Module)
+            .flat_map(|module| module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten())
             .filter_map(|binding| binding["module"].as_str());
         for import in imports.chain(exports) {
             if let Some(import) = normalize_ts_import(path, import) {

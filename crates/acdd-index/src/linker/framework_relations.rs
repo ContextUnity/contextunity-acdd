@@ -88,7 +88,7 @@ fn compose_file_framework_relations<'a>(
                 .filter(|reference| reference.kind == "imports")
                 .filter_map(|reference| reference.alias.as_deref()),
         );
-        for node in facts.nodes.iter().filter(|node| node.kind == "struct") {
+        for node in facts.nodes.iter().filter(|node| node.kind == crate::models::tags::NodeKind::Struct) {
             local_types
                 .entry(node.name.as_str())
                 .and_modify(|entry| *entry = None)
@@ -109,10 +109,10 @@ fn compose_file_framework_relations<'a>(
                 path,
                 &reference.source,
                 &target.id,
-                reference.kind.as_str(),
+                crate::models::tags::EdgeKind::parse(&reference.kind),
                 reference.line,
                 reference.expression.as_str(),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
         }
     }
@@ -145,10 +145,10 @@ fn compose_file_framework_relations<'a>(
                 path,
                 &model.id,
                 &target.id,
-                "queries_table",
+                crate::models::tags::EdgeKind::QueriesTable,
                 reference.line,
                 reference.expression.as_str(),
-                "exact",
+                crate::models::tags::EdgeConfidence::Exact,
             );
         }
     }
@@ -386,13 +386,13 @@ pub(super) fn compose<'a>(
         for fact in decoded {
             if let SemanticFactRole::FileProvider { target } = &fact.role {
                 if let Some(node) = interner.lookup_node(by_id, target.as_str()).filter(|node| {
-                    node.kind == "module"
+                    node.kind == crate::models::tags::NodeKind::Module
                         && node.path == path
                         && fact.occurrence.owner_id == node.id
                         && fact
                             .identity
                             .target
-                            .paths(path, &node.language)
+                            .paths(path, node.language.as_str())
                             .contains(&fact.identity.path)
                 }) {
                     semantic_targets

@@ -130,6 +130,10 @@ pub(super) fn extract_request_attributes(
         let id = format!("{namespace}:{path}:{}:{method}", tag.start_byte());
         let mut details = context.clone();
         details.insert(
+            crate::models::details::NodeDetailKey::REQUEST_NODE_ROLE.into(),
+            json!(request_node),
+        );
+        details.insert(
             "url_status".into(),
             json!(request_url_status(attribute.value, namespace)),
         );
@@ -139,7 +143,7 @@ pub(super) fn extract_request_attributes(
             "html",
             NodeFields {
                 id: id.clone(),
-                kind: request_node.clone(),
+                kind: crate::models::tags::NodeKind::HtmlRequest.as_str().into(),
                 name: format!("{} {}", verb, bounded_expression(attribute.value)),
                 qualname: format!("{module}.{namespace}.{}.{method}", tag.start_byte()),
                 line: attribute.line,
@@ -160,13 +164,17 @@ pub(super) fn extract_request_attributes(
     if !found_request {
         let id = format!("{namespace}:{path}:{}:context", tag.start_byte());
         let line = tag.start_position().row + 1;
+        context.insert(
+            crate::models::details::NodeDetailKey::REQUEST_NODE_ROLE.into(),
+            json!(context_node),
+        );
         facts.pending_flow_nodes.push(facts.nodes.len());
         facts.nodes.push(source_node(
             path,
             "html",
             NodeFields {
                 id: id.clone(),
-                kind: context_node.clone(),
+                kind: crate::models::tags::NodeKind::HtmlContext.as_str().into(),
                 name: context_label.clone(),
                 qualname: format!("{module}.{namespace}.{}.context", tag.start_byte()),
                 line,

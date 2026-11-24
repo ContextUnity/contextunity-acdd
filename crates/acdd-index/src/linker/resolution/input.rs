@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
-pub(in crate::linker) struct ResolutionInput<'a> {
+pub(crate) struct ResolutionInput<'a> {
     pub(in crate::linker) all: &'a (dyn crate::FactsLookup + Sync),
     pub(in crate::linker) interner: &'a crate::interner::LinkerInterner<'a>,
     pub(in crate::linker) owners: Option<&'a std::collections::BTreeSet<String>>,

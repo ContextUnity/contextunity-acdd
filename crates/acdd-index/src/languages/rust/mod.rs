@@ -355,13 +355,12 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<(ReceiverHint, boo
         || matches!(&value, crate::semantic::ValueExpr::Call { callee, site: None } if callee.contains("::"))
         || matches!(
             &value,
-            crate::semantic::ValueExpr::Project { member, .. }
-                if matches!(
-                    member.as_str(),
-                    "__rust_range_slice" | "__rust_elem_index" | "__rust_index"
-                )
+            crate::semantic::ValueExpr::RustProject { operation:
+                crate::semantic::types::RustProjection::RangeSlice
+                | crate::semantic::types::RustProjection::ElementIndex
+                | crate::semantic::types::RustProjection::Index, .. }
         );
-    let non_opaque = clear_dynamic || matches!(value, crate::semantic::ValueExpr::Project { .. });
+    let non_opaque = clear_dynamic || matches!(value, crate::semantic::ValueExpr::Project { .. } | crate::semantic::ValueExpr::RustField { .. } | crate::semantic::ValueExpr::RustProject { .. });
     if non_opaque {
         if let Ok(serialized) = serde_json::to_string(&value) {
             return Some((
@@ -390,7 +389,7 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<(ReceiverHint, boo
 
 fn set_owner_flag(facts: &mut Facts, owner_id: &str, key: &str) {
     if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == owner_id) {
-        owner.details[key] = serde_json::json!(true);
+        *owner.detail_entry_mut(key) = serde_json::json!(true);
     }
 }
 
@@ -761,9 +760,6 @@ impl LanguageProfile for Rust {
     fn is_stdlib(&self, module: &str) -> bool {
         visibility::is_rust_stdlib(module)
     }
-    fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
-        &crate::linker::rust::linker_impl::RUST_LINKER
-    }
     fn extensions(&self) -> &'static [&'static str] {
         &["rs"]
     }
@@ -927,7 +923,7 @@ impl LanguageProfile for Rust {
                 .nodes
                 .iter()
                 .find(|node| node.id == ctx.owner)
-                .is_some_and(|owner| owner.kind == "module" && !owner.is_test)
+                .is_some_and(|owner| owner.kind == crate::models::tags::NodeKind::Module && !owner.is_test)
         {
             return;
         }
@@ -941,8 +937,7 @@ impl LanguageProfile for Rust {
                     let mut imports = Vec::new();
                     collect_use(argument, ctx.source, "", &mut imports);
                     let mut exports: Vec<visibility::RestrictedExport> = owner
-                        .details
-                        .get("rust_restricted_exports")
+                        .detail_get(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS)
                         .and_then(|value| serde_json::from_value(value.clone()).ok())
                         .unwrap_or_default();
                     exports.extend(imports.into_iter().map(|(target, name)| {
@@ -952,7 +947,7 @@ impl LanguageProfile for Rust {
                             scope: scope.clone(),
                         }
                     }));
-                    owner.details["rust_restricted_exports"] = serde_json::to_value(exports)
+                    *owner.detail_entry_mut(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS) = serde_json::to_value(exports)
                         .expect("Rust export visibility serializes");
                 }
             }
@@ -1300,7 +1295,7 @@ impl LanguageProfile for Rust {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 if let Some(owner) = facts.nodes.iter().find(|owner| owner.id == ctx.owner) {
                     let qualified = format!("{}.{}", owner.qualname, text(name, ctx.source));
-                    if let Some(field) = facts.nodes.iter_mut().find(|field| field.kind == "field" && field.qualname == qualified) {
+                    if let Some(field) = facts.nodes.iter_mut().find(|field| field.kind == crate::models::tags::NodeKind::Field && field.qualname == qualified) {
                         field.details = serde_json::json!({
                             "signature": text(ctx.node, ctx.source),
                             "is_public": unrestricted_public(ctx.node, ctx.source),
@@ -1535,8 +1530,7 @@ fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
             &parent_node.path,
         ) {
             let mut exports: Vec<visibility::RestrictedExport> = parent_node
-                .details
-                .get("rust_restricted_exports")
+                .detail_get(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS)
                 .and_then(|value| serde_json::from_value(value.clone()).ok())
                 .unwrap_or_default();
             exports.push(visibility::RestrictedExport {
@@ -1544,7 +1538,7 @@ fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                 name: declaration.name.clone(),
                 scope,
             });
-            parent_node.details["rust_restricted_exports"] =
+            *parent_node.detail_entry_mut(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS) =
                 serde_json::to_value(exports).expect("Rust export visibility serializes");
         }
     }
@@ -1571,13 +1565,13 @@ fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 
 fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-        owner.details["generic_impl"] =
+        *owner.detail_entry_mut(crate::models::details::NodeDetailKey::GENERIC_IMPL) =
             serde_json::json!(has_non_lifetime_type_params(ctx.node, ctx.source));
         if uniform_generic_impl(ctx.node, ctx.source) {
-            owner.details["uniform_generic_impl"] = serde_json::json!(true);
+            owner.set_detail(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL, serde_json::json!(true));
         }
         if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
-            owner.details["impl_trait"] = serde_json::json!(trait_name);
+            owner.set_detail(crate::models::details::NodeDetailKey::IMPL_TRAIT, serde_json::json!(trait_name));
             if matches!(
                 trait_name.trim_start_matches("::"),
                 "std::ops::Deref" | "core::ops::Deref"
@@ -1592,12 +1586,12 @@ fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                     ancestor = node.parent();
                 }
                 if attributed || ctx.node.has_error() || has_unproven_bounds(ctx.node, ctx.source) {
-                    owner.details["deref_unproven"] = serde_json::json!(true);
+                    owner.set_detail(crate::models::details::NodeDetailKey::DEREF_UNPROVEN, serde_json::json!(true));
                 }
             }
         }
         if let Some(receiver) = field(ctx.node, ctx.source, "type") {
-            owner.details["receiver_type"] = serde_json::json!(receiver);
+            owner.set_detail(crate::models::details::NodeDetailKey::RECEIVER_TYPE, serde_json::json!(receiver));
         }
     }
     if let Some(tr) = ctx.node.child_by_field_name("trait") {
@@ -1617,13 +1611,13 @@ fn relate_function_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if unproven || trait_default {
         if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
             if unproven {
-                method.details["unproven_bounds"] = serde_json::json!(true);
+                method.set_detail(crate::models::details::NodeDetailKey::UNPROVEN_BOUNDS, serde_json::json!(true));
             }
             if conversion_bounds_only {
-                method.details["conversion_bounds_only"] = serde_json::json!(true);
+                method.set_detail(crate::models::details::NodeDetailKey::CONVERSION_BOUNDS_ONLY, serde_json::json!(true));
             }
             if trait_default {
-                method.details["trait_default"] = serde_json::json!(true);
+                method.set_detail(crate::models::details::NodeDetailKey::TRAIT_DEFAULT, serde_json::json!(true));
             }
         }
     }
@@ -1659,10 +1653,10 @@ fn relate_macro_definition(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if let Some(macro_node) = facts
             .nodes
             .iter_mut()
-            .find(|node| node.kind == "macro" && node.line == macro_line)
+            .find(|node| node.kind == crate::models::tags::NodeKind::Macro && node.line == macro_line)
         {
-            macro_node.details["rust_macro_impl_traits"] = serde_json::json!(impl_traits);
-            macro_node.details["rust_macro_projected"] = serde_json::json!(true);
+            macro_node.set_detail(crate::models::details::NodeDetailKey::RUST_MACRO_IMPL_TRAITS, serde_json::json!(impl_traits));
+            macro_node.set_detail(crate::models::details::NodeDetailKey::RUST_MACRO_PROJECTED, serde_json::json!(true));
         }
     }
 }
@@ -1679,7 +1673,7 @@ fn relate_type_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     }
     if let Some(ty) = ctx.node.child_by_field_name("type") {
         if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-            owner.details["alias_target"] = serde_json::json!(text(ty, ctx.source).trim());
+            owner.set_detail(crate::models::details::NodeDetailKey::ALIAS_TARGET, serde_json::json!(text(ty, ctx.source).trim()));
         }
         value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
     }
@@ -1836,7 +1830,7 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
             path: &owner.path,
             line: ctx.line(),
             end_line: ctx.line(),
-            is_public: owner.details["is_public"] == true,
+            is_public: *owner.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true,
             is_test: owner.is_test,
         };
         macros::synthesize_derive_methods(&synth_owner, &derives, facts);

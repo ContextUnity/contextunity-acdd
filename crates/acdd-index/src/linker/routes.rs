@@ -120,9 +120,9 @@ impl<'a> RouteIndex<'a> {
         let mut entries = Vec::new();
         let mut entries_by_len = HashMap::<usize, Vec<usize>>::new();
         let mut names = HashMap::<&'a str, Vec<&'a Node>>::new();
-        for node in nodes.iter().copied().filter(|node| node.kind == "route") {
-            let method = node.details["method"].as_str().unwrap_or("ANY");
-            let path = node.details["route_path"].as_str().unwrap_or("");
+        for node in nodes.iter().copied().filter(|node| node.kind == crate::models::tags::NodeKind::Route) {
+            let method = node.detail_entry(crate::models::details::NodeDetailKey::METHOD).as_str().unwrap_or("ANY");
+            let path = node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH).as_str().unwrap_or("");
             let segments = normalize_route_segments(path);
             let idx = entries.len();
             entries_by_len.entry(segments.len()).or_default().push(idx);
@@ -131,7 +131,7 @@ impl<'a> RouteIndex<'a> {
                 method,
                 segments,
             });
-            if let Some(name) = node.details["route_name"]
+            if let Some(name) = node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_NAME)
                 .as_str()
                 .filter(|name| !name.is_empty())
             {

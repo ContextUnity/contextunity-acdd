@@ -31,10 +31,10 @@ impl<'a> ResolvedCommonJsBindings<'a> {
         let mut result = Self::default();
         for facts in all.values_facts() {
             for owner in facts.nodes.iter().filter(|node| {
-                node.kind == "module"
+                node.kind == crate::models::tags::NodeKind::Module
                     && matches!(node.language.as_str(), "javascript" | "typescript" | "vue")
             }) {
-                let Some(records) = owner.details["commonjs_bindings"].as_array() else {
+                let Some(records) = owner.detail_entry(crate::models::details::NodeDetailKey::COMMONJS_BINDINGS).as_array() else {
                     continue;
                 };
                 if records.is_empty() {
@@ -101,7 +101,7 @@ impl<'a> ResolvedCommonJsBindings<'a> {
         owner: &Node,
         at: SourcePosition,
     ) -> bool {
-        if scope.kind != "module"
+        if scope.kind != crate::models::tags::NodeKind::Module
             || scope.path != owner.path
             || !matches!(scope.language.as_str(), "javascript" | "typescript" | "vue")
         {

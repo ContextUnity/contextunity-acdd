@@ -523,8 +523,8 @@ fn decode_entry_for_build(
             true
         }
     });
-    let has_component_node = facts.nodes.iter().any(|node| node.kind == "component");
-    facts.facts.retain_nodes(|node| node.kind != "component");
+    let has_component_node = facts.nodes.iter().any(|node| node.kind == crate::models::tags::NodeKind::Component);
+    facts.facts.retain_nodes(|node| node.kind != crate::models::tags::NodeKind::Component);
     Some((
         facts,
         v5.then(|| payload.to_vec()),

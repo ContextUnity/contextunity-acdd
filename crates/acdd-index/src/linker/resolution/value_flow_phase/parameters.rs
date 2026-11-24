@@ -1,19 +1,14 @@
 use super::context::{has_node_binding, PhaseContext};
-use crate::linker::{
-    python, rust,
-    types::{qualified, receiver_head, receiver_type_name, ReceiverType},
-};
-use crate::models::{
-    tags::{LanguageId, NodeKind},
-    Node,
-};
+use crate::languages::profile::LanguageLinker;
+use crate::linker::types::{qualified, receiver_head, receiver_type_name, ReceiverType};
+use crate::models::{tags::NodeKind, Node};
 use hashbrown::HashMap;
 
 fn resolve_parameter_annotation_receiver<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
     node: &'a Node,
     raw_annotation: &'a str,
-    is_rust: bool,
+    language_linker: &dyn LanguageLinker,
     type_candidates: &mut Vec<&'a Node>,
     lookup_key: &mut String,
 ) -> Option<ReceiverType<'res>>
@@ -23,6 +18,8 @@ where
     let annotation = receiver_type_name(raw_annotation)?;
     let raw_head = receiver_head(raw_annotation);
     let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
+    let check_binding_shadowing = language_linker.checks_annotation_binding_shadowing();
+    let module_shadows = language_linker.module_shadows_annotation();
     type_candidates.clear();
     let mut scope = node
         .qualname
@@ -30,7 +27,7 @@ where
         .map_or("", |(parent, _)| parent);
     let mut annotation_shadowed = false;
     while !scope.is_empty() {
-        if !is_rust
+        if check_binding_shadowing
             && ctx
                 .input
                 .by_qual
@@ -74,7 +71,7 @@ where
         if !type_candidates.is_empty() {
             break;
         }
-        if is_rust
+        if module_shadows
             && !ctx
                 .aliases
                 .get(scope)
@@ -93,7 +90,7 @@ where
             annotation_shadowed = true;
             break;
         }
-        if !is_rust
+        if check_binding_shadowing
             && ctx
                 .input
                 .by_qual
@@ -146,7 +143,7 @@ where
     if type_candidates.is_empty()
         && imported_type.is_some_and(Vec::is_empty)
         && !annotation_shadowed
-        && ctx.python_nullable_parameter_wrapper(raw_annotation, node)
+        && ctx.nullable_parameter_wrapper(raw_annotation, node)
     {
         return None;
     }
@@ -171,7 +168,7 @@ where
             raw_head,
             head,
             member,
-            is_rust,
+            language_linker,
             annotation_shadowed,
             imported_type,
         },
@@ -189,9 +186,6 @@ where
     let mut typed_parameters: HashMap<&'a str, HashMap<&'a str, ReceiverType<'res>>> =
         HashMap::new();
     let mut type_candidates = Vec::new();
-    let is_rust = ctx
-        .profile
-        .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str());
     for node in &ctx.facts.nodes {
         for (parameter, annotation) in node.parameter_types() {
             if has_node_binding(
@@ -209,7 +203,7 @@ where
                 ctx,
                 node,
                 raw_annotation,
-                is_rust,
+                ctx.language_linker,
                 &mut type_candidates,
                 lookup_key,
             ) else {
@@ -233,7 +227,7 @@ struct ParameterAnnotationSpec<'a, 'res, 'p> {
     raw_head: &'a str,
     head: &'p str,
     member: &'p str,
-    is_rust: bool,
+    language_linker: &'p dyn LanguageLinker,
     annotation_shadowed: bool,
     imported_type: Option<&'res Vec<&'a Node>>,
 }
@@ -246,31 +240,6 @@ fn resolve_parameter_receiver<'a, 'file, 'res>(
 where
     'a: 'file,
 {
-    #[cfg(feature = "lang-rust")]
-    let qualified_external_annotation = || {
-        rust::semantic_context::qualified_external_annotation(
-            ctx.profile,
-            spec.raw_annotation,
-            spec.head,
-            ctx.path,
-            ctx.input.dependency_registry,
-        )
-    };
-    #[cfg(not(feature = "lang-rust"))]
-    let qualified_external_annotation = || None;
-    #[cfg(feature = "lang-rust")]
-    let external_annotation = || {
-        rust::semantic_context::external_annotation_type(
-            ctx.profile,
-            spec.raw_head,
-            spec.head,
-            ctx.path,
-            ctx.input.dependency_registry,
-        )
-    };
-    #[cfg(not(feature = "lang-rust"))]
-    let external_annotation = || None;
-
     match type_candidates {
         [target] => ReceiverType::Local(target),
         [] => {
@@ -280,59 +249,41 @@ where
                 ctx.external_for(spec.head, Some(spec.node), true)
                     .filter(|(module, import_line)| {
                         *import_line <= spec.node.line
-                            && !python::resolution::is_dynamic_typing_annotation(
+                            && !spec.language_linker.is_dynamic_typing_annotation(
                                 spec.head,
                                 spec.member,
                                 spec.node,
                                 ctx.aliases,
                                 &ctx.dynamic_type_aliases,
                             )
-                            && !(spec.is_rust
-                                && rust_has_non_lifetime_generics(spec.raw_annotation)
-                                && !matches!(
-                                    module.split("::").next(),
-                                    Some("std" | "core" | "alloc")
-                                )
-                                && !ctx.profile.is_some_and(|p| p.builtin_generic(spec.head)))
+                            && spec.language_linker.admits_external_generic_annotation(
+                                ctx.profile,
+                                spec.raw_annotation,
+                                spec.head,
+                                module,
+                            )
                     })
                     .map(|(module, line)| ReceiverType::External(module.as_str(), *line))
                     .unwrap_or(ReceiverType::Unknown)
-            } else if matches!(spec.head, "std" | "core" | "alloc") {
-                match spec.head {
-                    "std" => ReceiverType::External("std", 0),
-                    "core" => ReceiverType::External("core", 0),
-                    "alloc" => ReceiverType::External("alloc", 0),
-                    _ => ReceiverType::Unknown,
-                }
-            } else if !spec.annotation_shadowed
-                && spec.imported_type.is_none()
-                && !spec.member.is_empty()
-                && ctx.input.by_qual.get(spec.annotation).is_none()
-            {
-                qualified_external_annotation()
-                    .or_else(external_annotation)
-                    .unwrap_or(ReceiverType::Unknown)
             } else {
-                external_annotation().unwrap_or(ReceiverType::Unknown)
+                let try_qualified = !spec.annotation_shadowed
+                    && spec.imported_type.is_none()
+                    && !spec.member.is_empty()
+                    && ctx.input.by_qual.get(spec.annotation).is_none();
+                spec.language_linker
+                    .external_parameter_annotation(
+                        ctx.profile,
+                        spec.raw_annotation,
+                        spec.raw_head,
+                        spec.head,
+                        spec.member,
+                        ctx.path,
+                        ctx.input.dependency_registry,
+                        try_qualified,
+                    )
+                    .unwrap_or(ReceiverType::Unknown)
             }
         }
         _ => ReceiverType::Ambiguous,
     }
-}
-
-fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
-    let Some(name) = crate::linker::types::strip_rust_references(annotation, true) else {
-        return false;
-    };
-    let Some((_, rest)) = name.split_once('<') else {
-        return false;
-    };
-    let Some(inner) = rest.strip_suffix('>') else {
-        return false;
-    };
-    inner
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .any(|part| !part.starts_with('\''))
 }

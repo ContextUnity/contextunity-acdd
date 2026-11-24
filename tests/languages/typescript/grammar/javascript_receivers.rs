@@ -97,7 +97,7 @@ function use() { const receiver = new Legacy(); receiver.run(); }
                 assert!(
                     targets
                         .iter()
-                        .any(|node| node.kind == kind && node.name == name && node.path == path),
+                        .any(|node| node.kind.as_str() == kind && node.name == name && node.path == path),
                     "{path}:{expression}: {graph:#?}"
                 );
             }
@@ -182,7 +182,7 @@ function branch(flag) { if (flag) return { count: 0 }; return { count: 1, inc() 
                     && edge.evidence == "this.count"
                     && facts.nodes.iter().any(|node| {
                         node.id == edge.dst
-                            && node.kind == "field"
+                            && node.kind == acdd_index::models::tags::NodeKind::Field
                             && node.name == "count"
                             && node.line == 3
                     })
@@ -296,7 +296,7 @@ function branch(flag) { if (flag) return { count: 0 }; return { count: 1, inc() 
         let translate = facts
             .nodes
             .iter()
-            .find(|node| node.name == "translate" && node.kind == "function")
+            .find(|node| node.name == "translate" && node.kind == acdd_index::models::tags::NodeKind::Function)
             .unwrap()
             .id
             .clone();

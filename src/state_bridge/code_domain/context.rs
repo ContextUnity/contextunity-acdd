@@ -195,7 +195,7 @@ impl CodeDomainProvider {
                 .facts
                 .nodes
                 .iter()
-                .filter(|n| !is_non_symbol_container(&n.kind) && !n.is_test)
+                .filter(|n| !is_non_symbol_container(n.kind.as_str()) && !n.is_test)
                 .collect();
             let keep_private = file_nodes.len() <= CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD;
             let mut file_candidates = Vec::new();
@@ -204,7 +204,7 @@ impl CodeDomainProvider {
                 let compact_sig = truncate_single_line(raw_sig, CODE_SYMBOLS_MAX_SIG_CHARS);
                 let is_exported = compact_sig.starts_with("pub")
                     || compact_sig.starts_with("export ")
-                    || is_interface_like_kind(&node.kind);
+                    || is_interface_like_kind(node.kind.as_str());
                 let target_hit = !target_text.is_empty()
                     && (target_text.contains(&node.name) || target_text.contains(&node.qualname));
                 if !keep_private && !is_exported && !target_hit {
@@ -290,7 +290,7 @@ impl CodeDomainProvider {
                 .iter()
                 .map(|n| {
                     (
-                        (n.kind.clone(), n.qualname.clone()),
+                        (n.kind.as_str().to_owned(), n.qualname.clone()),
                         normalize_sig(n.details["signature"].as_str().unwrap_or_default()),
                     )
                 })
@@ -299,11 +299,11 @@ impl CodeDomainProvider {
             let mut cur_keys: BTreeSet<(String, String)> = BTreeSet::new();
             if let Some(parsed) = snapshot.parsed.get(rel) {
                 for node in public_callable_nodes(&parsed.facts) {
-                    cur_keys.insert((node.kind.clone(), node.qualname.clone()));
+                    cur_keys.insert((node.kind.as_str().to_owned(), node.qualname.clone()));
                     let cur_sig =
                         normalize_sig(node.details["signature"].as_str().unwrap_or_default());
                     let signature_changed = head_sigs
-                        .get(&(node.kind.clone(), node.qualname.clone()))
+                        .get(&(node.kind.as_str().to_owned(), node.qualname.clone()))
                         .is_some_and(|head_sig| head_sig != &cur_sig);
 
                     let callers = super::signature_scope::find_external_callers(
@@ -326,7 +326,7 @@ impl CodeDomainProvider {
             }
 
             for head_node in head_nodes {
-                if cur_keys.contains(&(head_node.kind.clone(), head_node.qualname.clone())) {
+                if cur_keys.contains(&(head_node.kind.as_str().to_owned(), head_node.qualname.clone())) {
                     continue;
                 }
                 let callers = super::signature_scope::find_external_callers(

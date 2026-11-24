@@ -208,7 +208,7 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(
                 facts.nodes.iter().any(|node| {
                     if fixture.id == "html" {
-                        node.id == "module:sample.html" && node.kind == "module"
+                        node.id == "module:sample.html" && node.kind == acdd_index::models::tags::NodeKind::Module
                     } else {
                         node.name == "marker"
                     }

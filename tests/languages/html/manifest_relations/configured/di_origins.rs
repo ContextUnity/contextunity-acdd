@@ -101,7 +101,7 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             let path = facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module")
+                .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
                 .unwrap()
                 .path
                 .clone();

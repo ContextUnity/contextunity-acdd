@@ -126,7 +126,7 @@ pub(super) fn delta_components(
         facts.iter().filter_map(|(path, f)| {
             f.nodes
                 .iter()
-                .any(|n| n.kind == "module")
+                .any(|n| n.kind == acdd_index::models::tags::NodeKind::Module)
                 .then_some(path.as_str())
         }),
     ));
@@ -160,7 +160,7 @@ pub(super) fn rust_impl_shapes(facts: &Facts) -> Result<RustImplShapes> {
         .collect();
     let mut shapes = RustImplShapes::new();
     let mut implementation_keys = std::collections::HashMap::new();
-    for implementation in facts.nodes.iter().filter(|node| node.kind == "impl") {
+    for implementation in facts.nodes.iter().filter(|node| node.kind == acdd_index::models::tags::NodeKind::Impl) {
         let identity = serde_json::json!({
             "receiver_type": implementation.details["receiver_type"],
             "impl_trait": implementation.details["impl_trait"],
@@ -184,7 +184,7 @@ pub(super) fn rust_impl_shapes(facts: &Facts) -> Result<RustImplShapes> {
         ) else {
             continue;
         };
-        if method.kind != "method" {
+        if method.kind != acdd_index::models::tags::NodeKind::Method {
             continue;
         }
         let signature = serde_json::json!({
@@ -296,7 +296,7 @@ pub(super) fn route_include_closure(
             .facts
             .nodes
             .iter()
-            .filter(|node| node.kind == "module" && node.language == "python")
+            .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Module && node.language == acdd_index::models::tags::LanguageId::Python)
         {
             module_paths.insert((workspace.clone(), module.qualname.clone()), path.clone());
         }
@@ -321,7 +321,7 @@ pub(super) fn route_include_closure(
         }
     }
     for (path, typed) in facts {
-        for route in typed.facts.nodes.iter().filter(|node| node.kind == "route") {
+        for route in typed.facts.nodes.iter().filter(|node| node.kind == acdd_index::models::tags::NodeKind::Route) {
             if let Some(module) = route.details["include_module"].as_str() {
                 include_rows.push((path.clone(), module.to_owned()));
             }
@@ -646,7 +646,7 @@ pub(super) fn module_exposes_provider_contract(
         *loaded_fact_files += 1;
     }
     let typed = facts.get(owner).expect("module facts were loaded");
-    let Some(module) = typed.facts.nodes.iter().find(|node| node.kind == "module") else {
+    let Some(module) = typed.facts.nodes.iter().find(|node| node.kind == acdd_index::models::tags::NodeKind::Module) else {
         return Ok(true);
     };
     let mut statement = conn.prepare(
@@ -698,7 +698,7 @@ pub(super) fn module_exposes_provider_contract(
         let is_typescript_namespace_import =
             reference.expression == "*" && alias != "*" && targets.module && !targets.non_module;
         let is_python_module_import =
-            module.language == "python" && targets.module && !targets.non_module;
+            module.language == acdd_index::models::tags::LanguageId::Python && targets.module && !targets.non_module;
         if is_typescript_namespace_import || is_python_module_import {
             qualified_aliases.insert(alias.to_owned());
         }
@@ -730,7 +730,7 @@ pub(super) fn module_exposes_provider_contract(
         .iter()
         .filter(|node| matches!(node.kind.as_str(), "function" | "method"))
     {
-        let exported = if module.language == "python" {
+        let exported = if module.language == acdd_index::models::tags::LanguageId::Python {
             !node.name.starts_with('_')
         } else {
             exports.iter().any(|export| {

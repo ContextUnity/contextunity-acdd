@@ -80,14 +80,14 @@ impl CodeDomainProvider {
                 let cur_facts = extract_typed(rel, lang.id(), &current_src)?.into_public();
                 for node in public_callable_nodes(&cur_facts) {
                     let sig = normalize_sig(node.details["signature"].as_str().unwrap_or_default());
-                    cur_sigs.insert((node.kind.clone(), node.qualname.clone()), sig);
+                    cur_sigs.insert((node.kind.as_str().to_owned(), node.qualname.clone()), sig);
                 }
             }
 
             for head_node in public_callable_nodes(&head_facts) {
                 let head_sig =
                     normalize_sig(head_node.details["signature"].as_str().unwrap_or_default());
-                let cur_sig = cur_sigs.get(&(head_node.kind.clone(), head_node.qualname.clone()));
+                let cur_sig = cur_sigs.get(&(head_node.kind.as_str().to_owned(), head_node.qualname.clone()));
                 if cur_sig.is_some_and(|s| s == &head_sig) {
                     continue;
                 }
@@ -148,7 +148,7 @@ fn find_external_callers_in_index(
                 JOIN path_dictionary tp ON tp.path_id = target.path_id
                 WHERE tp.path = ?1 AND target.kind = ?2 AND target.name = ?3 AND target.qualname = ?4
             )",
-            params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+            params![symbol.path, symbol.kind.as_str(), symbol.name, symbol.qualname],
             |row| row.get(0),
         )
         .unwrap_or(false);
@@ -167,7 +167,7 @@ fn find_external_callers_in_index(
          ORDER BY cp.path",
     )?;
     let rows = stmt.query_map(
-        params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+        params![symbol.path, symbol.kind.as_str(), symbol.name, symbol.qualname],
         |row| row.get::<_, String>(0),
     )?;
     let mut external = BTreeSet::new();

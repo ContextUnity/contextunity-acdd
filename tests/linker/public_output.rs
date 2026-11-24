@@ -2,16 +2,30 @@ use acdd_index::models::{Edge, Facts};
 use std::collections::BTreeMap;
 
 #[test]
-fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
+fn public_linker_preserves_edge_data_and_orders_edges_stably() {
     let unusual = Edge {
         src: "source-α".into(),
         dst: "target-β".into(),
-        kind: "custom-kind-雪".into(),
+        kind: "calls".into(),
         path: "z/文件.rs".into(),
         line: 17,
         evidence: "evidence-дані".into(),
-        confidence: "confidence-🧭".into(),
+        confidence: "exact".into(),
     };
+    use acdd_index::models::compact_graph::{CompactEdge, CompactGraph};
+    for invalid in [
+        Edge { kind: "custom-kind-雪".into(), ..unusual.clone() },
+        Edge { confidence: "confidence-🧭".into(), ..unusual.clone() },
+    ] {
+        assert!(CompactEdge::try_from(&invalid).is_err());
+        let mut graph = CompactGraph::default();
+        assert!(graph.try_push_public_edge(&invalid).is_err());
+        assert!(graph.edges.is_empty());
+        let invalid_facts = BTreeMap::from([("input.rs".to_owned(), Facts {
+            edges: vec![invalid], ..Facts::default()
+        })]);
+        assert!(std::panic::catch_unwind(|| crate::common::link_facts(&invalid_facts)).is_err());
+    }
     let earlier = Edge {
         path: "a/файл.rs".into(),
         ..unusual.clone()
@@ -44,8 +58,8 @@ fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
         native_semantic: None,
         id: "func:a.rs:alpha".into(),
         path: "a.rs".into(),
-        language: "rust".into(),
-        kind: "function".into(),
+        language: acdd_index::models::tags::LanguageId::Rust,
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "alpha".into(),
         qualname: "alpha".into(),
         line: 1,
@@ -58,8 +72,8 @@ fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
         native_semantic: None,
         id: "func:b.rs:beta".into(),
         path: "b.rs".into(),
-        language: "rust".into(),
-        kind: "function".into(),
+        language: acdd_index::models::tags::LanguageId::Rust,
+        kind: acdd_index::models::tags::NodeKind::Function,
         name: "beta".into(),
         qualname: "beta".into(),
         line: 1,

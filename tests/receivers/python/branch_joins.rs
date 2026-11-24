@@ -44,7 +44,7 @@ fn branch_join_transfer_matrix() {
                 let expected_targets: std::collections::BTreeSet<_> = facts
                     .nodes
                     .iter()
-                    .filter(|node| node.kind == "method" && node.name == "execute")
+                    .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
                     .map(|node| node.id.clone())
                     .collect();
                 let graph = linker::link(&BTreeMap::from([(
@@ -151,7 +151,7 @@ fn branch_join_transfer_matrix() {
                     let mut expected_targets: Vec<_> = facts
                         .nodes
                         .iter()
-                        .filter(|node| node.kind == "method" && node.name == "execute")
+                        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
                         .map(|node| node.id.clone())
                         .collect();
                     expected_targets.sort();
@@ -213,7 +213,7 @@ fn complete_python_branch_join_emits_possible_targets_without_exact_calls() {
     let mut expected_targets: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "method" && node.name == "execute")
+        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
         .map(|node| node.id.clone())
         .collect();
     expected_targets.sort();

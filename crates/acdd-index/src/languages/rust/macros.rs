@@ -240,7 +240,7 @@ pub(super) fn synthesize_derive_methods(
         .nodes
         .iter()
         .filter(|node| {
-            node.kind == "method"
+            node.kind == crate::models::tags::NodeKind::Method
                 && node
                     .qualname
                     .rsplit_once('.')
@@ -297,14 +297,14 @@ fn push_synthetic_method(
     facts.nodes.push(Node {
         native_semantic: None,
         id: id.clone(),
-        kind: "method".into(),
+        kind: crate::models::tags::NodeKind::Method,
         name: method_name.into(),
         qualname: format!("{}.{method_name}", owner.qualname),
         path: owner.path.into(),
         line: owner.line,
         end_line: owner.line,
         is_test: owner.is_test,
-        language: "rust".into(),
+        language: crate::models::tags::LanguageId::Rust,
         generated: true,
         details: serde_json::Value::Object(details),
     });
@@ -339,14 +339,14 @@ fn push_synthetic_constant(
     facts.nodes.push(Node {
         native_semantic: None,
         id: const_id.clone(),
-        kind: "constant".into(),
+        kind: crate::models::tags::NodeKind::Constant,
         name: name.to_owned(),
         qualname: format!("{}.{name}", owner.qualname),
         path: owner.path.to_owned(),
         line: owner.line,
         end_line: owner.end_line,
         is_test: owner.is_test,
-        language: "rust".into(),
+        language: crate::models::tags::LanguageId::Rust,
         generated: true,
         details,
     });
@@ -1123,7 +1123,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     if facts
         .nodes
         .iter()
-        .any(|node| node.qualname == item_qualname && node.kind == item_kind)
+        .any(|node| node.qualname == item_qualname && node.kind.as_str() == item_kind)
     {
         return;
     }
@@ -1137,14 +1137,14 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     facts.nodes.push(Node {
         native_semantic: None,
         id: item_id.clone(),
-        kind: item_kind.into(),
+        kind: crate::models::tags::NodeKind::parse(item_kind).expect("recognized macro item kind"),
         name: item_name.clone(),
         qualname: item_qualname.clone(),
         path: owner.path.clone(),
         line,
         end_line,
         is_test: owner.is_test,
-        language: "rust".into(),
+        language: crate::models::tags::LanguageId::Rust,
         generated: true,
         details: json!({
             "is_public": item_public,
@@ -1214,8 +1214,8 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     if let Some(macro_def) = facts
         .nodes
         .iter_mut()
-        .find(|node| node.kind == "macro" && node.name == template.name)
+        .find(|node| node.kind == crate::models::tags::NodeKind::Macro && node.name == template.name)
     {
-        macro_def.details["rust_macro_projected"] = json!(true);
+        macro_def.set_detail(crate::models::details::NodeDetailKey::RUST_MACRO_PROJECTED, json!(true));
     }
 }

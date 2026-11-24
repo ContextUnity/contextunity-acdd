@@ -15,6 +15,323 @@ use super::super::semantic_context::LanguageMemberLookup;
 #[cfg(feature = "lang-rust")]
 use super::super::semantic_context::{Context, Imported};
 
+#[cfg(feature = "lang-rust")]
+impl<'a> Context<'a> {
+    fn rayon_extension_base(&self, receiver: &TypeTarget<'_>, member: &str, caller: &Node) -> Option<&'static str> {
+        let receiver = super::value_flow::reference_target(receiver).unwrap_or(receiver);
+        let container_base = |name: &str| -> Option<&'static str> {
+            match name {
+                "HashMap" => Some("HashMap"),
+                "BTreeMap" => Some("BTreeMap"),
+                "HashSet" => Some("HashSet"),
+                "BTreeSet" => Some("BTreeSet"),
+                _ => None,
+            }
+        };
+        let base = match receiver {
+            TypeTarget::RustCollection { .. } => "Vec",
+            TypeTarget::RustSlice { .. } => "Slice",
+            TypeTarget::RustTypedContainer { base, .. } => container_base(base)?,
+            TypeTarget::RustDeref { wrapper, .. } => container_base(wrapper)?,
+            TypeTarget::Builtin(name) if name == "Vec" => "Vec",
+            TypeTarget::Builtin(name) => container_base(name.as_str())?,
+            _ => return None,
+        };
+        if !self.dependencies.declares_for_path(languages::LanguageFamily("rust"), &caller.path, "rayon") {
+            return None;
+        }
+        let mut scope = caller.qualname.as_str();
+        let mut imported = false;
+        loop {
+            let module_boundary = self.nodes_in_path(scope, &caller.path)
+                .any(|owner| matches!(owner.kind.as_str(), "module" | "module_declaration"));
+            imported |= self.nodes_in_path(scope, &caller.path).any(|owner| {
+                self.symbol_id(&owner.id).and_then(|id| self.imports.get(&id)).is_some_and(|aliases| {
+                    aliases.values().any(|import| matches!(import, Imported::External(origin, _, reference, _)
+                        if reference.alias.as_deref() == Some("*") && origin.trim_end_matches("::*") == "rayon::prelude"))
+                })
+            });
+            if imported || module_boundary { break; }
+            let Some((parent, _)) = scope.rsplit_once('.') else { break; };
+            scope = parent;
+        }
+        if !imported { return None; }
+        let lookup_base = if matches!(base, "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") { "Vec" } else { base };
+        let (_, rule) = self.dependencies.class_hierarchy_authority_for_path(&caller.path, lookup_base, Some("rust-cargo"))?;
+        (rule.provider == "rayon" && rule.members.iter().any(|allowed| allowed == member)).then_some(base)
+    }
+    pub(in crate::linker) fn rust_alias_member(&self, owner: &'a Node, reference: &crate::models::Reference) -> Option<Symbol<'a>> {
+        let (base, member) = reference.expression.rsplit_once("::")?;
+        let TypeTarget::Local(target) = self.rust_alias_target(owner, base, reference.position())? else { return None; };
+        Some(self.member(target, member, true, owner))
+    }
+
+    pub(in crate::linker) fn resolve_rust_symbol(
+        &self, owner: &'a Node, name: &str, at: crate::semantic::SourcePosition,
+        role: crate::linker::value_flow::SymbolRole,
+    ) -> Option<Symbol<'a>> {
+        use crate::linker::value_flow::SymbolRole;
+        if let Some((base, member)) = name.rsplit_once("::").or_else(|| name.rsplit_once('.')) {
+            if let Some(TypeTarget::Local(node)) = self.rust_alias_target(owner, base, at).or_else(|| {
+                match self.resolve_symbol_raw(owner, base, at, SymbolRole::Type) {
+                    Symbol::Type(target) => Some(target),
+                    _ => None,
+                }
+            }) {
+                if matches!(node.kind.as_str(), "struct" | "enum" | "trait" | "type") {
+                    let resolved = self.member(node, member, true, owner);
+                    if !matches!(resolved, Symbol::Unknown) { return Some(resolved); }
+                }
+            }
+        }
+        if matches!(role, SymbolRole::Type | SymbolRole::Constructor) {
+            if let Some(target) = self.rust_alias_target(owner, name, at) { return Some(Symbol::Type(target)); }
+        }
+        None
+    }
+
+    fn rust_alias_target(&self, owner: &'a Node, name: &str, at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> {
+        use crate::linker::value_flow::SymbolRole;
+        let mut symbol = self.resolve_symbol_raw(owner, name, at, SymbolRole::Type);
+        let mut visited = Vec::new();
+        for _ in 0..16 {
+            match symbol {
+                Symbol::Type(TypeTarget::Local(alias)) if alias.language == crate::models::tags::LanguageId::Rust && alias.kind == crate::models::tags::NodeKind::Type => {
+                    if *alias.detail_entry(crate::models::details::NodeDetailKey::DEREF_UNPROVEN) == true { return None; }
+                    if visited.contains(&alias.id.as_str()) { return Some(TypeTarget::Unknown); }
+                    let Some(target) = alias.detail_entry(crate::models::details::NodeDetailKey::ALIAS_TARGET).as_str() else { return Some(TypeTarget::Unknown); };
+                    visited.push(alias.id.as_str());
+                    symbol = self.resolve_symbol_raw(alias, target, crate::linker::value_flow::node_position(alias), SymbolRole::Type);
+                }
+                Symbol::Type(target) if !visited.is_empty() => return Some(target),
+                _ => return (!visited.is_empty()).then_some(TypeTarget::Unknown),
+            }
+        }
+        Some(TypeTarget::Unknown)
+    }
+    pub(in crate::linker) fn resolve_rust_external_or_crate_symbol(
+        &self, owner: &'a Node, name: &str, role: crate::linker::value_flow::SymbolRole,
+    ) -> Option<Symbol<'a>> {
+        if let Some((crate_name, tail)) = name.split_once('.') {
+            if let Some(root_module) = self.import_state("rust")
+                .and_then(|state| state.workspace_crate_root(self.dependencies, &owner.path, crate_name))
+            {
+                if tail.is_empty() { return Some(self.classify(std::iter::once(root_module), role)); }
+                let resolved = self.resolve_rust_member_path(owner, &[root_module], tail, role);
+                if !matches!(resolved, Symbol::Unknown) { return Some(resolved); }
+            }
+        }
+        let canonical = name.replace('.', "::");
+        let crate_name = canonical.split("::").next().unwrap_or("");
+        if ((canonical.contains("::") && matches!(crate_name, "std" | "core" | "alloc"))
+            || self.dependencies.declares_for_path(languages::LanguageFamily("rust"), &owner.path, crate_name))
+            && self.dependencies.class_hierarchy_authority_for_path(&owner.path, &canonical, None).is_some()
+        {
+            return Some(Symbol::Type(TypeTarget::External { module: canonical, import_line: 0 }));
+        }
+        None
+    }
+    pub(in crate::linker) fn resolve_rust_imported_call(
+        &self, owner: &'a Node, targets: &[&'a Node], member: &str,
+    ) -> Vec<&'a Node> {
+        match self.resolve_rust_member_path(owner, targets, member, crate::linker::value_flow::SymbolRole::Callable) {
+            Symbol::Callable(node) => vec![node],
+            _ => Vec::new(),
+        }
+    }
+
+    fn step_rust_module_member(&self, owner: &'a Node, target: &'a Node, segment: &str, next: &mut Vec<&'a Node>) {
+        if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+            if imported.iter().all(|node| node.kind == crate::models::tags::NodeKind::Module) {
+                next.extend(imported.iter().copied().filter(|node| {
+                    self.import_state("rust").is_none_or(|state| state.module_path_visible(&node.qualname, &owner.qualname))
+                }));
+                return;
+            }
+        }
+        let visible = self.import_state("rust").map_or(&[][..], |state| state.targets(target, segment, &owner.qualname));
+        if visible.is_empty() {
+            let sub_qual = format!("{}.{}", target.qualname, segment);
+            let target_pkg = target.path.split_once("/src/").map_or("", |(p, _)| p);
+            if let Some(candidates) = self.by_qual.get(sub_qual.as_str()) {
+                next.extend(candidates.iter().copied().filter(|node| {
+                    node.language == crate::models::tags::LanguageId::Rust
+                        && node.kind == crate::models::tags::NodeKind::Module
+                        && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
+                        && self.import_state("rust").is_none_or(|state| state.module_path_visible(&node.qualname, &owner.qualname))
+                }));
+            }
+            return;
+        }
+        if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+            next.extend(imported.iter().copied());
+        } else {
+            next.extend_from_slice(visible);
+        }
+    }
+
+    pub(in crate::linker) fn resolve_rust_member_path(
+        &self, owner: &'a Node, targets: &[&'a Node], member: &str,
+        role: crate::linker::value_flow::SymbolRole,
+    ) -> Symbol<'a> {
+        use crate::languages::profile::ProfileLinker;
+        use crate::linker::value_flow::SymbolRole;
+        let mut current = targets.to_vec();
+        let segment_count = member.split('.').count();
+        for (index, segment) in member.split('.').enumerate() {
+            if index >= 64 { return Symbol::Unknown; }
+            let mut next = Vec::new();
+            for target in &current {
+                if target.kind == crate::models::tags::NodeKind::Module {
+                    self.step_rust_module_member(owner, target, segment, &mut next);
+                } else if segment_count == index + 1 && matches!(role, SymbolRole::Callable) {
+                    if target.kind == crate::models::tags::NodeKind::Constant {
+                        if let Some(method) = languages::by_id(owner.language.as_str())
+                            .and_then(|profile| profile.linker().explicit_constant_member(target, segment, owner, self))
+                        { next.push(method); }
+                    } else if let Symbol::Callable(method) = self.member(target, segment, true, owner) {
+                        next.push(method);
+                    }
+                }
+            }
+            next.sort_by_key(|node| node.id.as_str());
+            next.dedup_by_key(|node| node.id.as_str());
+            current = next;
+        }
+        self.classify(current.into_iter(), role)
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+pub(in crate::linker) fn special_member_result<'a>(
+    context: &Context<'a>,
+    receiver: &TypeTarget<'a>,
+    member: &str,
+    owner: &'a Node,
+) -> Option<Option<TypeTarget<'a>>> {
+    let extension = context.rayon_extension_base(receiver, member, owner);
+    let extension_receiver = extension.map(|base| TypeTarget::External {
+        module: base.to_owned(),
+        import_line: 0,
+    });
+    let receiver = extension_receiver.as_ref().unwrap_or(receiver);
+    let TypeTarget::External { module, import_line } = receiver else { return None; };
+    Some((|| {
+        let base = module.replace('.', "::");
+        let (pack, rule) = context.dependencies.class_hierarchy_authority_for_path(
+            &owner.path, &base, extension.map(|_| "rust-cargo"),
+        )?;
+        if !rule.members.iter().any(|allowed| allowed == member) { return None; }
+        context.project_hierarchy_policy(owner, receiver, pack, rule.returns.get(member)?, *import_line)
+    })())
+}
+
+#[cfg(feature = "lang-rust")]
+pub(in crate::linker) fn special_property_lookup<'s, 'a>(
+    context: &'s Context<'a>,
+    receiver: &'s TypeTarget<'a>,
+    member: &str,
+    caller: &'a Node,
+) -> Option<super::super::semantic_context::Member<'s>> {
+    use crate::linker::semantic_context::Member;
+    use crate::linker::value_flow::SemanticResolver;
+    match receiver {
+        TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => {
+            Some(context.lookup_property(target, member, caller))
+        }
+        TypeTarget::Local(class) => {
+            let mut current = *class;
+            for _ in 0..8 {
+                let mut key = String::new();
+                let mut fields = context.by_qual
+                    .get(crate::linker::types::qualified(&mut key, &current.qualname, member))
+                    .into_iter().flatten().copied().filter(|field| {
+                        field.kind == crate::models::tags::NodeKind::Field
+                            && *field.detail_entry(crate::models::details::NodeDetailKey::RUST_DECLARED_FIELD) == true
+                            && field.path == current.path
+                            && super::forwarding::field_visible(field, current, &caller.qualname)
+                    });
+                match (fields.next(), fields.next()) {
+                    (Some(field), None) => return Some(Member::Local(field)),
+                    (Some(_), Some(_)) => return Some(Member::Ambiguous),
+                    _ => {}
+                }
+                let Some(next) = context.member_state("rust").and_then(|state| state.deref_target(current)) else { break; };
+                current = next;
+            }
+            Some(Member::Unknown)
+        }
+        TypeTarget::External { .. } if context.resolve_member_result(receiver, member, caller, crate::linker::value_flow::node_position(caller)).is_some() => {
+            Some(context.lookup_member(receiver, member, caller))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+pub(in crate::linker) fn special_member_lookup<'s, 'a>(
+    context: &'s Context<'a>,
+    receiver: &'s TypeTarget<'a>,
+    member: &str,
+    caller: &'a Node,
+    associated: bool,
+) -> Option<super::super::semantic_context::Member<'s>> {
+    use crate::languages::profile::{LanguageMemberResult, ProfileLinker};
+    use crate::linker::semantic_context::Member;
+    use crate::linker::value_flow::RustWrapperKind;
+
+    let (name, standard) = match receiver {
+        TypeTarget::RustCollection { .. } => ("Vec", !associated),
+        TypeTarget::RustTypedContainer { base, .. } => (*base, !associated),
+        TypeTarget::RustSlice { .. } => ("Slice", !associated),
+        TypeTarget::RustTuple(_) => ("Tuple", !associated),
+        TypeTarget::RustIterator { .. } => {
+            return Some(if !associated && languages::by_id("rust").is_some_and(|p| p.builtin_member("Iterator", member)) {
+                Member::Builtin
+            } else {
+                Member::Unknown
+            });
+        }
+        TypeTarget::RustWrapper { wrapper, ok, .. } => {
+            let name = match wrapper { RustWrapperKind::Option => "Option", RustWrapperKind::Result => "Result" };
+            let shape = !matches!(member, "cloned" | "copied") || matches!(ok.as_ref(), TypeTarget::RustReference { mutable: false, .. });
+            (name, !associated && shape)
+        }
+        TypeTarget::RustDeref { wrapper, target, .. } => {
+            if associated { return Some(Member::Unknown); }
+            if context.rayon_extension_base(receiver, member, caller).is_some() {
+                return Some(Member::External("rayon", 0, None));
+            }
+            let linker = languages::by_id(caller.language.as_str()).map(|profile| profile.linker());
+            if linker.is_some_and(|linker| linker.wrapper_value_member(wrapper, member))
+                || matches!(target.as_ref(), TypeTarget::External { module, .. } if linker.is_some_and(|linker| linker.standard_external_member(module, member)))
+            {
+                return Some(Member::Builtin);
+            }
+            return Some(context.lookup_member_mode(target, member, caller, associated));
+        }
+        TypeTarget::Builtin(name) => (name.as_str(), true),
+        _ => return None,
+    };
+    if !associated && context.rayon_extension_base(receiver, member, caller).is_some() {
+        return Some(Member::External("rayon", 0, None));
+    }
+    let standard = standard && if matches!(receiver, TypeTarget::Builtin(_)) {
+        context.lookup_builtin_member(&caller.path, caller.language.as_str(), name, member)
+    } else {
+        languages::by_id("rust").is_some_and(|p| p.builtin_member(name, member))
+    };
+    Some(if standard {
+        Member::Builtin
+    } else {
+        match context.lookup_language_builtin("rust", name, member, associated, caller) {
+            LanguageMemberResult::Local(node) => Member::Local(node),
+            LanguageMemberResult::Candidates(nodes) if nodes.len() > 1 => Member::Ambiguous,
+            _ => Member::Unknown,
+        }
+    })
+}
+
 pub(in crate::linker) fn receiver_symbol<'a>(
     lookup: Option<&LanguageMemberLookup<'_, 'a>>,
     owner: &'a Node,
@@ -26,7 +343,7 @@ pub(in crate::linker) fn receiver_symbol<'a>(
         if let Some(receiver) = lookup.and_then(|lookup| lookup.receiver_for("rust", owner)) {
             return Some(Symbol::Type(TypeTarget::Local(receiver)));
         }
-        if let Some(receiver_type) = owner.details["receiver_type"]
+        if let Some(receiver_type) = owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
             .as_str()
             .filter(|name| *name != "Self")
         {
@@ -183,7 +500,7 @@ fn register_rust_crate_anchors<'a>(
 #[cfg(feature = "lang-rust")]
 fn has_local_scope_member(facts: &Facts, scope_qualname: &str, name: &str, skip_mod_decl: bool) -> bool {
     facts.nodes.iter().any(|node| {
-        (!skip_mod_decl || node.kind != "module_declaration")
+        (!skip_mod_decl || node.kind != crate::models::tags::NodeKind::ModuleDeclaration)
             && node
                 .qualname
                 .rsplit_once('.')
@@ -310,7 +627,7 @@ fn resolve_single_glob_provider<'a>(
         .rust_forwarding
         .resolve_path(provider, prefix, &module.qualname, None)
         .into_iter()
-        .filter(|node| node.kind == "module")
+        .filter(|node| node.kind == crate::models::tags::NodeKind::Module)
         .collect();
     match mods.as_slice() {
         [target_mod] => Some((*target_mod, resolved_tail.to_owned())),
@@ -378,7 +695,7 @@ fn apply_registered_cargo_aliases<'a>(context: &mut Context<'a>, all: &'a dyn cr
             let expr = reference.module.as_deref().unwrap_or(&reference.expression);
             let first = expr.split("::").next().unwrap_or(expr);
             let has_local_module = facts.nodes.iter().any(|node| {
-                (node.kind == "module" || node.kind == "module_declaration")
+                (node.kind == crate::models::tags::NodeKind::Module || node.kind == crate::models::tags::NodeKind::ModuleDeclaration)
                     && (node.name == first
                         || node
                             .qualname
@@ -409,7 +726,7 @@ pub(in crate::linker) fn import_globs<'a>(
             facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == "module" && node.language == "rust")
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Rust)
                 .map(|module| (facts, module))
         })
         .collect();
@@ -540,8 +857,8 @@ fn has_conflicting_local_binding(
             && candidate.source == reference.source
             && candidate.alias.as_deref() == Some(name)
     }) || facts.nodes.iter().any(|node| {
-        node.kind != "module_declaration"
-            && node.kind != "impl"
+        node.kind != crate::models::tags::NodeKind::ModuleDeclaration
+            && node.kind != crate::models::tags::NodeKind::Impl
             && node
                 .qualname
                 .rsplit_once('.')
@@ -584,7 +901,7 @@ fn collect_super_glob_additions<'a>(
             let Some(module) = find_owner_module(context, owner) else {
                 continue;
             };
-            let namespace = if module.kind == "module" {
+            let namespace = if module.kind == crate::models::tags::NodeKind::Module {
                 module
                     .qualname
                     .strip_suffix(".lib")
@@ -782,7 +1099,7 @@ pub(in crate::linker) fn nominal_application<'a>(
     owner: &Node,
     nominal: &Symbol<'a>,
 ) -> Option<TypeTarget<'a>> {
-    if owner.language != "rust" {
+    if owner.language != crate::models::tags::LanguageId::Rust {
         return None;
     }
     match nominal {
@@ -800,7 +1117,7 @@ pub(in crate::linker) fn admits_payload(
     wrapper: &TypeTarget<'_>,
     argument_count: usize,
 ) -> bool {
-    owner.language == "rust"
+    owner.language == crate::models::tags::LanguageId::Rust
         && matches!(wrapper, TypeTarget::Builtin(name)
             if (name == "Option" && argument_count == 1)
                 || (name == "Result" && argument_count <= 2))

@@ -76,6 +76,21 @@ impl BinaryDecode for String {
         Some(value)
     }
 }
+macro_rules! wire_tag_codec {
+    ($($tag:ty),+ $(,)?) => {$(
+        impl BinaryEncode for $tag {
+            fn encode(&self, buf: &mut Vec<u8>) {
+                self.as_str().encode(buf);
+            }
+        }
+        impl BinaryDecode for $tag {
+            fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
+                Self::parse(&String::decode(bytes, cursor)?)
+            }
+        }
+    )+};
+}
+wire_tag_codec!(crate::models::tags::NodeKind, crate::models::tags::LanguageId);
 impl<T: BinaryEncode> BinaryEncode for Option<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
         self.is_some().encode(buf);
@@ -432,14 +447,18 @@ validated_struct_codec!(crate::semantic::types::CallableSignature {
     has_receiver, params, return_type
 } => validate_callable_signature);
 
-enum_codec!(crate::semantic::types::TypeExpr { 0 => Named { name }, 1 => Applied { base, args }, 2 => Unknown });
+enum_codec!(crate::semantic::types::TypeExpr { 0 => Named { name }, 1 => Applied { base, args }, 2 => Unknown, 3 => RustRange { item }, 4 => RustArray { item }, 5 => RustCallArguments { args } });
 enum_codec!(crate::semantic::types::StaticArgument { 0 => String { value }, 1 => Unknown });
+enum_codec!(crate::semantic::types::RustProjection { 0 => GenericCall, 1 => Array, 2 => Tuple, 3 => BranchJoin, 4 => Reference { mutable }, 5 => Dereference, 6 => Vector, 7 => Some, 8 => Ok, 9 => ClosureMap, 10 => ClosureAndThen, 11 => ClosureFilterMap, 12 => ClosureFlatMap, 13 => FlatMapItem, 14 => ClosureMapOr, 15 => ClosureRow, 16 => FilterEntryItem, 17 => IteratorItem, 18 => LocalKey, 19 => ErrorPayload, 20 => Index, 21 => ElementIndex, 22 => RangeSlice, 23 => GetRange, 24 => MapTrim, 25 => MapString, 26 => UnwrapOrStr, 27 => MapOrStr, 28 => MapAsStr, 29 => MapU64, 30 => MapI64, 31 => MapBool, 32 => MapPathStr, 33 => MapPathBuf, 34 => MapCloned, 35 => FilterMapOk, 36 => MapArray, 37 => MapObject, 38 => MapTomlTable, 39 => IdentitySome });
 enum_codec!(crate::semantic::types::ValueExpr, validate_value_expr {
     0 => Annotated { type_expr }, 1 => Construct { callee }, 2 => Alias { name }, 3 => Call { callee, site },
     4 => Await { value }, 5 => LoopElement { iterable, body_end }, 6 => Scoped { value, body_end },
     7 => BranchJoin { alternatives }, 8 => Field { receiver, member }, 9 => Project { value, member },
     10 => Object { members, builtin_guard }, 11 => Unknown,
     12 => CallbackParam { callee, arg_index, param_index },
+    13 => RustField { value, member },
+    14 => RustProject { value, operation },
+    15 => RustClosure,
 });
 enum_codec!(crate::semantic::types::ObjectMemberTarget { 0 => SameName, 1 => Alias { name } });
 enum_codec!(crate::semantic::types::ComponentMacroRole { 0 => Props, 1 => Emits, 2 => Slots, 3 => Marker });
@@ -506,14 +525,11 @@ fn validate_value_flow_facts(
 }
 
 tagged_state_codec!(FlowState, buf, bytes, cursor {
-    0 => (FlowState::Valid { facts, classic_fields_first, .. }) => {
+    0 => (FlowState::Valid { facts }) => {
         facts.encode(buf);
-        classic_fields_first.encode(buf);
     } => {
         Some(FlowState::Valid {
             facts: Box::decode(bytes, cursor)?,
-            original: None,
-            classic_fields_first: Option::decode(bytes, cursor)?,
         })
     },
     1 => (FlowState::Invalid(value)) => { value.encode(buf); } => {
@@ -694,14 +710,14 @@ impl TypedFacts {
         (self.facts.nodes.len() as u32).encode(&mut body);
         for node in &self.facts.nodes {
             table.intern(&node.id, &mut body);
-            table.intern(&node.kind, &mut body);
+            table.intern(node.kind.as_str(), &mut body);
             table.intern(&node.name, &mut body);
             table.intern(&node.qualname, &mut body);
             table.intern(&node.path, &mut body);
             node.line.encode(&mut body);
             node.end_line.encode(&mut body);
             node.is_test.encode(&mut body);
-            table.intern(&node.language, &mut body);
+            table.intern(node.language.as_str(), &mut body);
             node.generated.encode(&mut body);
             node.details.encode(&mut body);
             node.native_semantic.encode(&mut body);
@@ -824,14 +840,14 @@ impl TypedFacts {
         for _ in 0..node_count {
             nodes.push(Node {
                 id: decode_string_from_table(&table, bytes, cursor)?,
-                kind: decode_string_from_table(&table, bytes, cursor)?,
+                kind: crate::models::tags::NodeKind::parse(&decode_string_from_table(&table, bytes, cursor)?)?,
                 name: decode_string_from_table(&table, bytes, cursor)?,
                 qualname: decode_string_from_table(&table, bytes, cursor)?,
                 path: decode_string_from_table(&table, bytes, cursor)?,
                 line: usize::decode(bytes, cursor)?,
                 end_line: usize::decode(bytes, cursor)?,
                 is_test: bool::decode(bytes, cursor)?,
-                language: decode_string_from_table(&table, bytes, cursor)?,
+                language: crate::models::tags::LanguageId::parse(&decode_string_from_table(&table, bytes, cursor)?)?,
                 generated: bool::decode(bytes, cursor)?,
                 details: serde_json::Value::decode(bytes, cursor)?,
                 native_semantic: Option::decode(bytes, cursor)?,
@@ -969,6 +985,57 @@ mod tests {
     use crate::typed_facts::{decode_facts, encode_facts};
 
     #[test]
+    fn rust_type_variants_roundtrip_through_binary_and_json() {
+        use crate::semantic::TypeExpr;
+        let item = TypeExpr::Named { name: "Item".into() };
+        for expected in [
+            TypeExpr::RustRange { item: Box::new(item.clone()) },
+            TypeExpr::RustArray { item: Box::new(item.clone()) },
+            TypeExpr::RustCallArguments { args: vec![item] },
+        ] {
+            let mut encoded = Vec::new();
+            expected.encode(&mut encoded);
+            assert_eq!(TypeExpr::decode(&encoded, &mut 0), Some(expected.clone()));
+            let json = serde_json::to_value(&expected).unwrap();
+            assert_eq!(serde_json::from_value::<TypeExpr>(json).unwrap(), expected);
+        }
+        let source = crate::semantic::ValueExpr::Alias { name: "receiver".into() };
+        for value in [
+            crate::semantic::ValueExpr::RustField {
+                value: Box::new(source.clone()), member: "field".into(),
+            },
+            crate::semantic::ValueExpr::RustProject {
+                value: Box::new(source),
+                operation: crate::semantic::types::RustProjection::Reference { mutable: true },
+            },
+        ] {
+            let mut encoded = Vec::new();
+            value.encode(&mut encoded);
+            assert_eq!(crate::semantic::ValueExpr::decode(&encoded, &mut 0), Some(value.clone()));
+            let json = serde_json::to_value(&value).unwrap();
+            assert_eq!(serde_json::from_value::<crate::semantic::ValueExpr>(json).unwrap(), value);
+        }
+        use crate::semantic::types::RustProjection;
+        for operation in [RustProjection::ClosureMap, RustProjection::ClosureAndThen,
+            RustProjection::ClosureFilterMap, RustProjection::ClosureFlatMap,
+            RustProjection::FlatMapItem, RustProjection::ClosureMapOr, RustProjection::ClosureRow,
+            RustProjection::FilterEntryItem, RustProjection::IteratorItem, RustProjection::LocalKey,
+            RustProjection::ErrorPayload, RustProjection::Index, RustProjection::ElementIndex,
+            RustProjection::RangeSlice, RustProjection::GetRange, RustProjection::MapTrim, RustProjection::MapString,
+            RustProjection::UnwrapOrStr, RustProjection::MapOrStr, RustProjection::MapAsStr,
+            RustProjection::MapU64, RustProjection::MapI64, RustProjection::MapBool, RustProjection::MapPathStr,
+            RustProjection::MapPathBuf, RustProjection::MapCloned, RustProjection::FilterMapOk,
+            RustProjection::MapArray, RustProjection::MapObject, RustProjection::MapTomlTable,
+            RustProjection::IdentitySome] {
+            let mut encoded = Vec::new();
+            operation.encode(&mut encoded);
+            assert_eq!(RustProjection::decode(&encoded, &mut 0), Some(operation));
+            let json = serde_json::to_value(operation).unwrap();
+            assert_eq!(serde_json::from_value::<RustProjection>(json).unwrap(), operation);
+        }
+    }
+
+    #[test]
     fn activation_signals_roundtrip_both_tabled_and_untabled_binary_codecs() {
         let mut facts = Facts::default();
         facts
@@ -989,7 +1056,7 @@ mod tests {
         let decoded_raw = TypedFacts::decode(&raw, &mut raw_cursor).expect("decode untabled");
         assert_eq!(decoded_raw.facts.activation_signals, expected);
 
-        // String-tabled encode_facts / decode_facts codec (ACDD-LOCAL-FACTS\0\x05).
+        // String-tabled encode_facts / decode_facts codec.
         let encoded = encode_facts(&typed).expect("encode_facts");
         let decoded_tabled = decode_facts(&encoded).expect("decode_facts");
         assert_eq!(decoded_tabled.facts.activation_signals, expected);

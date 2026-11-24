@@ -22,12 +22,37 @@ use serde_json::{json, Value};
 
 struct Html;
 static HTML: Html = Html;
-struct HtmlLinker;
-static HTML_LINKER: HtmlLinker = HtmlLinker;
+pub(crate) struct HtmlLinker;
+pub(crate) static HTML_LINKER: HtmlLinker = HtmlLinker;
 
 impl LanguageLinker for HtmlLinker {
+    fn reference_extension_factory<'a>(
+        &self,
+        input: &crate::linker::traits::ReferenceWorkspace<'a>,
+    ) -> Option<Box<dyn crate::linker::traits::ReferenceExtensionFactory<'a> + 'a>> {
+        Some(Box::new(crate::linker::html::reference_phase::WorkspaceReferences::new(input)))
+    }
+    #[cfg(feature = "lang-typescript")]
+    fn object_ownership<'a>(&self, node: &crate::models::Node, flows: Option<&hashbrown::HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>>, interner: &crate::interner::LinkerInterner<'_>, rules: &[crate::languages::manifests::syntax::SyntaxRule]) -> Option<&'a crate::semantic::ObjectOwnershipFact> {
+        crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER.object_ownership(node, flows, interner, rules)
+    }
+    #[cfg(feature = "lang-typescript")]
+    fn lexical_this_calls<'a, 'b>(&self, facts: &'a crate::models::Facts, references: &'b [crate::models::Reference], flows: Option<&hashbrown::HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>>, interner: &crate::interner::LinkerInterner<'_>, rules: &[crate::languages::manifests::syntax::SyntaxRule]) -> hashbrown::HashSet<(&'b str, usize, usize, &'b str)> {
+        crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER.lexical_this_calls(facts, references, flows, interner, rules)
+    }
+    #[cfg(feature = "lang-typescript")]
+    fn returned_object_field_writes<'a, 'b>(&self, profile: &dyn LanguageProfile, references: &'b [crate::models::Reference], by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a crate::models::Node>, interner: &crate::interner::LinkerInterner<'_>) -> hashbrown::HashSet<(&'a str, &'b str)> {
+        crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER.returned_object_field_writes(profile, references, by_id, interner)
+    }
+    fn template_lexical_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, first: &str, component: Option<&crate::models::Node>) -> bool {
+        phase.resolve_lexical_binding(first, component, self, "Vue template lexical binding in")
+    }
+    fn reference_profile<'a>(&self, profile: &'a dyn LanguageProfile, reference: &crate::models::Reference, by_id: &hashbrown::HashMap<crate::interner::SymbolId, &crate::models::Node>, interner: &crate::interner::LinkerInterner<'_>) -> &'a dyn LanguageProfile {
+        crate::linker::html::scripts::reference_profile(Some(profile), reference, by_id, interner).unwrap_or(profile)
+    }
+    fn allows_typed_member_read(&self, known_receiver: bool) -> bool { !known_receiver }
     fn special_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
-        crate::linker::html::special_reference(phase)
+        phase.resolve_extension()
     }
 
     fn template_builtin(&self, expression: &str, rules: &[&crate::languages::manifests::syntax::SyntaxRule]) -> Option<String> {
@@ -50,14 +75,33 @@ impl LanguageLinker for HtmlLinker {
     fn allows_multi_file_modules(&self) -> bool {
         true
     }
-    fn tracks_external_aliases(&self) -> bool {
-        true
-    }
     fn module_namespaces(&self, profile: &dyn LanguageProfile, node: &crate::models::Node, dependencies: &crate::languages::dependency_registry::DependencyRegistry, out: &mut Vec<String>) {
         GENERIC_LINKER.module_namespaces(profile, node, dependencies, out);
     }
     fn resolve_import<'ctx, 'a, 'input>(&self, context: &mut crate::languages::profile::ImportContext<'ctx, 'a, 'input>) -> crate::languages::profile::ImportResolution<'a> {
         GENERIC_LINKER.resolve_import(context)
+    }
+
+    fn import_edge_owner<'a>(&self, owner: &'a crate::models::Node, by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a crate::models::Node>, interner: &crate::interner::LinkerInterner<'a>, path: &str) -> Option<&'a str> {
+        use crate::models::{details::NodeDetailKey, tags::{LanguageId, NodeKind}};
+        let delegates = owner.language == LanguageId::Html || (owner.kind == NodeKind::TemplateScope && owner.detail_entry(NodeDetailKey::EMBEDDED_LANGUAGE) == LanguageId::Javascript.as_str());
+        delegates.then(|| owner.detail_entry(NodeDetailKey::HTML_IMPORT_OWNER).as_str()).flatten().filter(|id| {
+            interner.lookup_node(by_id, id).is_some_and(|n| n.kind == NodeKind::Module && n.language == LanguageId::Html && n.path == path)
+        })
+    }
+    fn normalize_dom_receiver<'a>(&self, receiver: &'a str) -> &'a str {
+        #[cfg(feature = "lang-typescript")] { crate::languages::typescript::typed_dom_receiver(receiver).unwrap_or(receiver) }
+        #[cfg(not(feature = "lang-typescript"))] { receiver }
+    }
+    fn dom_property_type(&self, receiver: &str, member: &str) -> Option<&'static str> {
+        #[cfg(feature = "lang-typescript")] { crate::languages::typescript::typed_dom_property(receiver, member) }
+        #[cfg(not(feature = "lang-typescript"))] { let _ = (receiver, member); None }
+    }
+    fn is_local_unverified_request(&self, node: &crate::models::Node, flow: &crate::semantic::ValueFlowFacts, path: &str, dependencies: &crate::languages::dependency_registry::DependencyRegistry) -> bool {
+        crate::linker::html::relations::is_request(node, flow, path, dependencies)
+    }
+    fn required_configuration_facts(&self, facts: &std::collections::BTreeMap<String, crate::typed_facts::TypedFacts>, catalog: &[(&str, &str)], dependencies: &crate::languages::dependency_registry::DependencyRegistry) -> std::collections::BTreeSet<String> {
+        crate::linker::html::templates::required_full_facts(facts, catalog, dependencies)
     }
 }
 /// Language profiles provided by this module.
@@ -75,9 +119,6 @@ fn javascript_profile() -> Option<&'static dyn LanguageProfile> {
 }
 
 impl LanguageProfile for Html {
-    fn linker(&self) -> &'static dyn LanguageLinker {
-        &HTML_LINKER
-    }
     fn id(&self) -> &'static str {
         "html"
     }
@@ -744,7 +785,7 @@ fn preprocess_template<'a>(
                     .pending_flow_nodes
                     .extend(first_node..facts.nodes.len());
                 for node in &mut facts.nodes[first_node..] {
-                    node.details["value_flow"] = json!(crate::semantic::ValueFlowFacts {
+                    *node.detail_entry_mut(crate::models::details::NodeDetailKey::VALUE_FLOW) = json!(crate::semantic::ValueFlowFacts {
                         framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                             facts: vec![crate::semantic::FrameworkFact::RuleOrigin(origin.clone())],
                             ..Default::default()

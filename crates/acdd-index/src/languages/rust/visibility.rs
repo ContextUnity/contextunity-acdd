@@ -77,8 +77,7 @@ pub(crate) fn restricted_scope(signature: &str, module: &str, path: &str) -> Opt
 
 pub(crate) fn restricted_exports(module: &Node) -> Vec<RestrictedExport> {
     module
-        .details
-        .get("rust_restricted_exports")
+        .detail_get(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS)
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_default()
 }
