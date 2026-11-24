@@ -6,9 +6,7 @@ use super::types::{
 use crate::ast::syntax::ScopeBindings;
 use crate::models::Facts;
 use tree_sitter::Node as Syntax;
-/// Language profile for c source files.
 struct CProfile;
-/// Shared c language profile.
 static C: CProfile = CProfile;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

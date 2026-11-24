@@ -81,7 +81,7 @@ impl ScopeFrameFlags {
         self.bits & Self::TRY_CONDITIONAL != 0
     }
 
-    /// Reports whether branch or try conditionality applies.
+    /// Returns `true` when this scope frame executes inside a conditional branch or `try` block.
     pub const fn is_conditional(self) -> bool {
         self.is_branch_conditional() || self.is_try_conditional()
     }

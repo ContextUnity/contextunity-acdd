@@ -1,4 +1,5 @@
 use crate::models::{Node, Reference};
+use crate::languages::profile::{LanguageMemberIndex, LanguageMemberResult};
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
@@ -435,6 +436,41 @@ impl<'a> PythonReceivers<'a> {
             return None;
         };
         Some((pack, rule, rule.returns.get(member)?))
+    }
+}
+
+impl LanguageMemberIndex for PythonReceivers<'_> {
+    fn language_ids(&self) -> &'static [&'static str] {
+        &["python"]
+    }
+
+    fn lookup_member<'a>(
+        &'a self,
+        receiver: &Node,
+        member: &str,
+        super_call: bool,
+        _caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        match self.lookup(receiver, member, super_call) {
+            PythonReceiverMember::Local(node) => LanguageMemberResult::Local(node),
+            PythonReceiverMember::External(module, import_line, provider, hierarchy) => {
+                LanguageMemberResult::External { module, import_line, provider, hierarchy }
+            }
+            PythonReceiverMember::Ambiguous => LanguageMemberResult::Ambiguous,
+            PythonReceiverMember::Unknown => LanguageMemberResult::Unknown,
+        }
+    }
+
+    fn implementors(&self, base: &Node) -> Option<&[&Node]> {
+        Some(PythonReceivers::implementors(self, base.id.as_str()))
+    }
+
+    fn return_policy(
+        &self,
+        receiver: &Node,
+        member: &str,
+    ) -> Option<(&str, &crate::languages::manifests::ClassHierarchyReceiverRule, &crate::languages::manifests::ReturnPolicy)> {
+        PythonReceivers::return_policy(self, receiver, member)
     }
 }
 

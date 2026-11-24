@@ -7,9 +7,7 @@ use super::types::{
 use crate::ast::syntax::{field, text, ScopeBindings};
 use crate::models::{Facts, Node};
 use tree_sitter::Node as Syntax;
-/// Language profile for ruby source files.
 struct Ruby;
-/// Shared ruby language profile.
 static RUBY: Ruby = Ruby;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

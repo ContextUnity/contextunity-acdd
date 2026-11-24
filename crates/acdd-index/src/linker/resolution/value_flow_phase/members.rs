@@ -64,11 +64,15 @@ pub(super) fn resolve_computed_call(
                 } else {
                     result
                 };
-                if owner.language == "rust" && reference.dynamic {
-                    if let semantic_context::Member::Local(node) = &result {
-                        if !input.semantic_context.is_rust_inherent_member(node) {
-                            return false;
-                        }
+                if let (Some(profile), semantic_context::Member::Local(node)) =
+                    (active_profile, &result)
+                {
+                    if !profile.linker().admits_dynamic_member(
+                        input.semantic_context.member_state(profile.id()),
+                        reference.dynamic,
+                        node,
+                    ) {
+                        return false;
                     }
                 }
                 let result = match result {

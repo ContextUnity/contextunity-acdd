@@ -9,9 +9,7 @@ use super::types::{
 use crate::ast::syntax::{text, ScopeBindings};
 use crate::models::{Facts, Node};
 use tree_sitter::Node as Syntax;
-/// Language profile for php source files.
 struct Php;
-/// Shared php language profile.
 static PHP: Php = Php;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

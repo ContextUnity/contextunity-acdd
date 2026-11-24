@@ -1,11 +1,11 @@
 use crate::ast::syntax::{field, symbol_name as syntax_symbol_name, text, Syntax};
 
-/// Performs language.
+/// Returns the compiled Tree-sitter grammar for Python source files.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }
 
-/// Performs kind.
+/// Maps a Tree-sitter Python syntax node kind to its indexed symbol category.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_definition" | "lambda" => Some("function"),

@@ -94,7 +94,6 @@ pub(crate) fn finalize_configured_projections(
 ) {
     projections::finalize_projections(facts, flows, file);
 }
-/// Performs language.
 fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
         || path.ends_with(".js")
@@ -115,9 +114,7 @@ pub(crate) struct TypeScript {
     /// Enables JavaScript syntax and file extensions when true.
     pub javascript: bool,
 }
-/// Shared typescript language profile.
 pub(crate) static TYPESCRIPT: TypeScript = TypeScript { javascript: false };
-/// Shared javascript language profile.
 pub(crate) static JAVASCRIPT: TypeScript = TypeScript { javascript: true };
 
 #[derive(Default)]

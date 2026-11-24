@@ -113,3 +113,19 @@ impl<'a> ResolvedCommonJsBindings<'a> {
         at >= binding.completed && (scope.id == owner.id || binding.captured_safe)
     }
 }
+
+impl crate::languages::profile::LanguageImportState for ResolvedCommonJsBindings<'_> {
+    fn tracks_binding(&self, scope: &Node, alias: &str) -> bool {
+        self.tracks(scope, alias)
+    }
+
+    fn admits_binding(
+        &self,
+        scope: &Node,
+        alias: &str,
+        owner: &Node,
+        at: SourcePosition,
+    ) -> bool {
+        self.admits(scope, alias, owner, at)
+    }
+}

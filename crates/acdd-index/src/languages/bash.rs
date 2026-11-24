@@ -5,9 +5,7 @@ use crate::ast::syntax::{field, text};
 use crate::models::Facts;
 use tree_sitter::Node as Syntax;
 
-/// Language profile for Bash and POSIX shell scripts.
 struct Bash;
-/// Shared Bash language profile.
 static BASH: Bash = Bash;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

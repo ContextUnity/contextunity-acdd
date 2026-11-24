@@ -290,9 +290,7 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
     })
 }
 
-/// Represents python data.
 struct Python;
-/// Shared python language profile.
 static PYTHON: Python = Python;
 static PYTHON_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[

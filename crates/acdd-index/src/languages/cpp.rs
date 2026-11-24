@@ -10,9 +10,7 @@ use crate::ast::relations;
 use crate::ast::syntax::{text, ScopeBindings};
 use crate::models::{Facts, Node};
 use tree_sitter::Node as Syntax;
-/// Language profile for cpp source files.
 struct Cpp;
-/// Shared cpp language profile.
 static CPP: Cpp = Cpp;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

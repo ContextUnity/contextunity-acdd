@@ -252,9 +252,6 @@ impl<'a> Context<'a> {
         by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
         exports: &'a HashMap<&'a str, PackageExports<'a>>,
         normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
-        #[cfg(feature = "lang-rust")] rust_forwarding: &'a super::super::rust::forwarding::RustForwarding<
-            'a,
-        >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Vec<PendingExternalImport<'a>> {
         let mut pending_cross_module = Vec::new();
@@ -292,8 +289,6 @@ impl<'a> Context<'a> {
                     by_module,
                     by_qual,
                     normalized_imports,
-                    #[cfg(feature = "lang-rust")]
-                    rust_forwarding,
                     dependencies,
                 ) {
                     pending_cross_module.push(pending);
@@ -318,9 +313,6 @@ impl<'a> Context<'a> {
         by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
         by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
         normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
-        #[cfg(feature = "lang-rust")] rust_forwarding: &'a super::super::rust::forwarding::RustForwarding<
-            'a,
-        >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Option<PendingExternalImport<'a>> {
         let alias = reference.alias.as_deref().filter(|alias| *alias != "*")?;
@@ -339,8 +331,7 @@ impl<'a> Context<'a> {
             interner: self.interner,
             dependencies,
             reference,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding: Some(rust_forwarding),
+            language_state: self.import_state(profile.id()),
             normalized: Some(normalized),
             selected_namespace: selected,
             family: profile.family(),
@@ -468,12 +459,14 @@ impl<'a> Context<'a> {
                 let _ = original;
                 #[cfg(feature = "lang-rust")]
                 if item.provider_module.language == "rust"
-                    && !self.rust_forwarding.external_binding_visible(
-                        item.provider_module,
-                        item.symbol_name,
-                        item.owner_qual,
-                        original.source == item.provider_module.id,
-                    )
+                    && self.import_state("rust").is_some_and(|state| {
+                        !state.external_binding_visible(
+                            item.provider_module,
+                            item.symbol_name,
+                            item.owner_qual,
+                            original.source == item.provider_module.id,
+                        )
+                    })
                 {
                     continue;
                 }
@@ -506,15 +499,35 @@ impl<'a> Context<'a> {
         for node in all
             .values_facts()
             .flat_map(|facts| &facts.nodes)
-            .filter(|node| node.kind == "method")
+            .filter(|node| {
+                !matches!(
+                    node.language.as_str(),
+                    "rust" | "typescript" | "javascript" | "vue"
+                ) && (node.kind == "method"
+                    || node.details.get("is_method").and_then(serde_json::Value::as_bool)
+                        == Some(true))
+            })
         {
             let Some((parent, _)) = node.qualname.rsplit_once('.') else {
                 continue;
             };
+            let receiver_type = node
+                .details
+                .get("receiver_type")
+                .and_then(serde_json::Value::as_str)
+                .map(|name| name.trim_start_matches('*'));
+            let receiver_qual = receiver_type.map(|name| format!("{parent}.{name}"));
             let mut classes = by_qual
                 .get(parent)
                 .into_iter()
                 .flatten()
+                .chain(
+                    receiver_qual
+                        .as_deref()
+                        .and_then(|name| by_qual.get(name))
+                        .into_iter()
+                        .flatten(),
+                )
                 .copied()
                 .filter(|class| {
                     class.path == node.path
@@ -536,6 +549,58 @@ impl<'a> Context<'a> {
                     .push(node);
             }
         }
+        for facts in all.values_facts() {
+            for reference in facts.references.iter().filter(|reference| {
+                matches!(reference.kind.as_str(), "inherits" | "bases" | "implements")
+            }) {
+                let Some(owner_id) = self.interner.lookup_symbol(&reference.source) else {
+                    continue;
+                };
+                let Some(owner) = self.by_id.get(&owner_id).copied() else {
+                    continue;
+                };
+                if matches!(
+                    owner.language.as_str(),
+                    "rust" | "typescript" | "javascript" | "vue"
+                ) || !matches!(owner.kind.as_str(), "class" | "struct" | "interface")
+                {
+                    continue;
+                }
+                let base_qual = if reference.expression.contains('.') {
+                    None
+                } else {
+                    owner
+                        .qualname
+                        .rsplit_once('.')
+                        .map(|(parent, _)| format!("{parent}.{}", reference.expression))
+                };
+                let mut candidates = self
+                    .by_qual
+                    .get(reference.expression.as_str())
+                    .or_else(|| base_qual.as_deref().and_then(|name| self.by_qual.get(name)))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|candidate| {
+                        candidate.path == owner.path
+                            && matches!(candidate.kind.as_str(), "class" | "struct" | "interface")
+                    });
+                let Some(base) = candidates.next() else {
+                    continue;
+                };
+                if candidates.next().is_some() {
+                    continue;
+                }
+                let Some(base_id) = self.interner.lookup_symbol(&base.id) else {
+                    continue;
+                };
+                self.member_bases.entry(owner_id).or_default().push(base_id);
+            }
+        }
+        for bases in self.member_bases.values_mut() {
+            bases.sort_unstable();
+            bases.dedup();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -550,9 +615,7 @@ impl<'a> Context<'a> {
         node_rebindings: &'a super::super::NodeBindingIndex,
         exports: &'a HashMap<&'a str, PackageExports<'a>>,
         normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
-        #[cfg(feature = "lang-rust")] rust_forwarding: &'a super::super::rust::forwarding::RustForwarding<
-            'a,
-        >,
+        import_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut context = Self {
@@ -582,15 +645,10 @@ impl<'a> Context<'a> {
             autoimports: HashMap::new(),
             result_scopes: HashMap::new(),
             callable_scopes: HashMap::new(),
-            commonjs: super::super::javascript::commonjs_bindings::ResolvedCommonJsBindings::build(all),
             members: HashMap::new(),
-            python: None,
-            #[cfg(feature = "lang-rust")]
-            rust: None,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding,
-            #[cfg(feature = "lang-typescript")]
-            typescript: None,
+            member_bases: HashMap::new(),
+            member_states: HashMap::new(),
+            import_states,
         };
         context.build_rule_caches_for_paths(all, dependencies);
         let pending_cross_module = context.populate_file_imports(
@@ -600,8 +658,6 @@ impl<'a> Context<'a> {
             by_qual,
             exports,
             normalized_imports,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding,
             dependencies,
         );
         #[cfg(feature = "lang-rust")]
@@ -611,7 +667,6 @@ impl<'a> Context<'a> {
             by_id,
             normalized_imports,
             modules,
-            rust_forwarding,
         );
         context.propagate_cross_module_external_imports(&pending_cross_module);
         context.populate_class_members(all, by_qual);

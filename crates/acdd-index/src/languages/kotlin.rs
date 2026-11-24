@@ -7,9 +7,7 @@ use crate::ast::relations;
 use crate::ast::syntax::{text, ScopeBindings};
 use crate::models::{Facts, Node};
 use tree_sitter::Node as Syntax;
-/// Language profile for kotlin source files.
 struct Kotlin;
-/// Shared kotlin language profile.
 static KOTLIN: Kotlin = Kotlin;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

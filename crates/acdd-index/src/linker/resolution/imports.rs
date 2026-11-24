@@ -101,13 +101,14 @@ fn apply_rust_parent_wildcard<'a, 'file>(
             })
             .collect();
         if local_providers.is_empty() {
-            local_providers.extend(
-                input
-                    .rust_forwarding
-                    .targets(target_module, alias, file_module)
-                    .iter()
-                    .copied(),
-            );
+            if let Some(state) = input.semantic_context.import_state("rust") {
+                local_providers.extend(
+                    state
+                        .targets(target_module, alias, file_module)
+                        .iter()
+                        .copied(),
+                );
+            }
         }
         if !local_providers.is_empty() {
             resolver
@@ -152,10 +153,10 @@ fn apply_rust_scope_wildcard_bindings<'a, 'file>(
     'a: 'file,
 {
     let input = resolver.input;
-    for (name, targets) in input
-        .rust_forwarding
-        .visible_bindings(target_module, resolver.file_module)
-    {
+    let Some(state) = input.semantic_context.import_state("rust") else {
+        return;
+    };
+    for (name, targets) in state.visible_bindings(target_module, resolver.file_module) {
         if resolver.references.iter().any(|reference| {
             reference.kind == "imports"
                 && reference.source == r.source
@@ -313,12 +314,14 @@ fn external_origin_at<'a>(
             #[cfg(feature = "lang-rust")]
             if enforce_visibility
                 && module.language == "rust"
-                && !input.rust_forwarding.external_binding_visible(
-                    module,
-                    name,
-                    requester_qual,
-                    reference.source == module.id,
-                )
+                && input.semantic_context.import_state("rust").is_some_and(|state| {
+                    !state.external_binding_visible(
+                        module,
+                        name,
+                        requester_qual,
+                        reference.source == module.id,
+                    )
+                })
             {
                 return None;
             }
@@ -697,23 +700,22 @@ where
             && reference.source == module.id
             && reference.alias.as_deref() == Some("*")
     }) {
-        let bindings = resolver.aliases.entry(module.qualname.as_str()).or_default();
-        for (name, targets) in input
-            .rust_forwarding
-            .visible_bindings(module, &module.qualname)
-        {
-            if input
-                .by_qual
-                .get(qualified(&mut resolver.lookup_key, &module.qualname, name))
-                .is_some_and(|nodes| {
-                    nodes
-                        .iter()
-                        .any(|node| node.path == *resolver.path && node.kind != "module_declaration")
-                })
-            {
-                bindings.remove(name);
-            } else {
-                bindings.insert(name, targets.to_vec());
+        if let Some(state) = input.semantic_context.import_state("rust") {
+            let bindings = resolver.aliases.entry(module.qualname.as_str()).or_default();
+            for (name, targets) in state.visible_bindings(module, &module.qualname) {
+                if input
+                    .by_qual
+                    .get(qualified(&mut resolver.lookup_key, &module.qualname, name))
+                    .is_some_and(|nodes| {
+                        nodes
+                            .iter()
+                            .any(|node| node.path == *resolver.path && node.kind != "module_declaration")
+                    })
+                {
+                    bindings.remove(name);
+                } else {
+                    bindings.insert(name, targets.to_vec());
+                }
             }
         }
     }
@@ -790,8 +792,7 @@ where
             interner: input.interner,
             dependencies: input.dependency_registry,
             reference: r,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding: Some(input.rust_forwarding),
+            language_state: input.semantic_context.import_state(profile.map_or("", LanguageProfile::id)),
             normalized,
             selected_namespace,
             family: profile.map_or(LanguageFamily(""), |profile| profile.family()),

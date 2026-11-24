@@ -34,6 +34,76 @@ fn call<'a>(graph: &'a Graph, expression: &str) -> &'a acdd_index::models::types
         .unwrap()
 }
 
+#[cfg(all(
+    feature = "lang-go",
+    feature = "lang-java",
+    feature = "lang-kotlin",
+    feature = "lang-csharp",
+    feature = "lang-cpp",
+    feature = "lang-php",
+    feature = "lang-ruby"
+))]
+#[test]
+fn tier_two_profiles_resolve_declared_class_methods() {
+    let cases = [
+        (
+            "go",
+            "service.go",
+            "package service\ntype Worker struct {}\nfunc (w *Worker) Run() {}\nfunc Call(w Worker) { w.Run() }\n",
+            "w.Run",
+        ),
+        (
+            "java",
+            "Service.java",
+            "class Worker { void run() {} } class Service { void call(Worker w) { w.run(); } }",
+            "w.run",
+        ),
+        (
+            "kotlin",
+            "Service.kt",
+            "class Worker {\n    fun run() {}\n}\nfun call(w: Worker) { w.run() }\n",
+            "w.run",
+        ),
+        (
+            "csharp",
+            "Service.cs",
+            "class Worker { void Run() {} } class Service { void Call(Worker w) { w.Run(); } }",
+            "w.Run",
+        ),
+        (
+            "cpp",
+            "service.cpp",
+            "class Worker {\npublic:\n    void run() {}\n};\nvoid call(Worker w) { w.run(); }\n",
+            "w.run",
+        ),
+        (
+            "php",
+            "service.php",
+            "<?php class Worker { public function run() {} } function call(Worker $w) { $w->run(); }",
+            "$w.run",
+        ),
+        (
+            "ruby",
+            "service.rb",
+            "class Worker\n  def run; end\n  def call; self.run; end\nend\n",
+            "self.run",
+        ),
+    ];
+    for (language, path, source, expression) in cases {
+        let (_, graph) = linked(&[(path, language, source)]);
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|coverage| coverage.expression == expression)
+            .unwrap_or_else(|| panic!("{language}: missing `{expression}` coverage: {graph:#?}"));
+        assert_eq!(
+            coverage.status,
+            "resolved",
+            "{language}: {graph:#?}"
+        );
+    }
+}
+
 fn assert_inferred(facts: &BTreeMap<String, Facts>, graph: &Graph, expression: &str, method: &str) {
     assert_eq!(
         call(graph, expression).status,
@@ -156,6 +226,17 @@ fn non_typing_vendor_any_name_retains_external_provenance() {
         "from unknown_vendor import Any\ndef run(client: Any): return client.get()\n",
     )]);
     assert_eq!(call(&graph, "client.get").status, "external");
+}
+
+#[cfg(feature = "lang-java")]
+#[test]
+fn tier2_java_inheritance_resolves_parent_method_with_inferred_confidence() {
+    let (facts, graph) = linked(&[(
+        "Worker.java",
+        "java",
+        "class Base { void get() {} }\nclass Child extends Base {}\nclass Runner { void run(Child client) { client.get(); } }\n",
+    )]);
+    assert_inferred(&facts, &graph, "client.get", "get");
 }
 
 #[cfg(feature = "lang-python")]

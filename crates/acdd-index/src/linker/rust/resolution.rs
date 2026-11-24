@@ -64,7 +64,10 @@ pub(in crate::linker) fn dynamic_receiver_member<'a>(
         if matches!(
             node.kind.as_str(),
             "method" | "function" | "function_item" | "function_signature_item"
-        ) && !input.semantic_context.is_rust_inherent_member(node)
+        ) && !input
+            .semantic_context
+            .member_state("rust")
+            .is_some_and(|state| state.is_inherent_member(node))
         {
             return false;
         }
@@ -79,15 +82,39 @@ pub(in crate::linker) fn dynamic_receiver_member<'a>(
     true
 }
 
+fn strip_unary_ops<'a>(mut segment: &'a str, unary_ops: &mut [u8; 4]) -> (&'a str, usize) {
+    let mut len = 0;
+    loop {
+        let trimmed = segment.trim();
+        if let Some(inner) = trimmed
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .filter(|inner| !inner.contains('(') && !inner.contains(')'))
+        {
+            segment = inner.trim();
+            continue;
+        }
+        let op = [("*", b'*'), ("&mut ", b'm'), ("&", b'&')]
+            .into_iter()
+            .find_map(|(prefix, code)| trimmed.strip_prefix(prefix).map(|rest| (rest, code)));
+        if let Some((inner, code)) = op.filter(|_| len < 4) {
+            unary_ops[len] = code;
+            len += 1;
+            segment = inner.trim_start();
+            continue;
+        }
+        return (trimmed, len);
+    }
+}
+
 fn fallback_receiver_value(
     expression: &str,
     at: crate::semantic::SourcePosition,
 ) -> Option<crate::semantic::ValueExpr> {
     use crate::semantic::{CallSiteEvidence, TypeExpr, ValueExpr};
-    if expression.len() > 512 {
-        return None;
-    }
-    if !expression.contains('.') && !expression.contains("::") && expression.ends_with("()") {
+    if expression.len() > 512
+        || (!expression.contains('.') && !expression.contains("::") && expression.ends_with("()"))
+    {
         return None;
     }
     let mut value = None;
@@ -95,48 +122,14 @@ fn fallback_receiver_value(
         if index > 6 {
             return None;
         }
-        let mut segment = raw_segment;
         let mut unary_ops = [0u8; 4];
-        let mut unary_len = 0usize;
-        if index == 0 {
-            loop {
-                let trimmed = segment.trim();
-                if let Some(inner) = trimmed
-                    .strip_prefix('(')
-                    .and_then(|s| s.strip_suffix(')'))
-                    .filter(|inner| !inner.contains('(') && !inner.contains(')'))
-                {
-                    segment = inner.trim();
-                    continue;
-                }
-                if let Some(inner) = trimmed.strip_prefix("*").filter(|_| unary_len < 4) {
-                    unary_ops[unary_len] = b'*';
-                    unary_len += 1;
-                    segment = inner.trim_start();
-                    continue;
-                }
-                if let Some(inner) = trimmed.strip_prefix("&mut ").filter(|_| unary_len < 4) {
-                    unary_ops[unary_len] = b'm';
-                    unary_len += 1;
-                    segment = inner.trim_start();
-                    continue;
-                }
-                if let Some(inner) = trimmed.strip_prefix('&').filter(|_| unary_len < 4) {
-                    unary_ops[unary_len] = b'&';
-                    unary_len += 1;
-                    segment = inner.trim_start();
-                    continue;
-                }
-                segment = trimmed;
-                break;
-            }
-        }
-        let (segment, try_result) = segment
-            .strip_suffix('?')
-            .map_or((segment, false), |s| (s, true));
-        let (name, called) = segment
-            .strip_suffix("()")
-            .map_or((segment, false), |s| (s, true));
+        let (segment, unary_len) = if index == 0 {
+            strip_unary_ops(raw_segment, &mut unary_ops)
+        } else {
+            (raw_segment, 0)
+        };
+        let (segment, try_result) = segment.strip_suffix('?').map_or((segment, false), |s| (s, true));
+        let (name, called) = segment.strip_suffix("()").map_or((segment, false), |s| (s, true));
         let is_str_literal = index == 0 && segment.starts_with('"') && segment.ends_with('"');
         if !is_str_literal
             && (name.is_empty()
@@ -148,17 +141,10 @@ fn fallback_receiver_value(
         }
         let mut next = match value {
             None if is_str_literal => ValueExpr::Annotated {
-                type_expr: TypeExpr::Named {
-                    name: "str".to_owned(),
-                },
+                type_expr: TypeExpr::Named { name: "str".to_owned() },
             },
-            None if called => ValueExpr::Call {
-                callee: name.to_owned(),
-                site: None,
-            },
-            None => ValueExpr::Alias {
-                name: name.to_owned(),
-            },
+            None if called => ValueExpr::Call { callee: name.to_owned(), site: None },
+            None => ValueExpr::Alias { name: name.to_owned() },
             Some(inner) if called && super::value_flow::is_adapter(name) => ValueExpr::Project {
                 value: Box::new(inner),
                 member: name.to_owned(),
@@ -182,16 +168,10 @@ fn fallback_receiver_value(
                 b'm' => "__rust_ref_mut",
                 _ => "__rust_ref",
             };
-            next = ValueExpr::Project {
-                value: Box::new(next),
-                member: member.to_owned(),
-            };
+            next = ValueExpr::Project { value: Box::new(next), member: member.to_owned() };
         }
         value = Some(if try_result {
-            ValueExpr::Project {
-                value: Box::new(next),
-                member: "?".to_owned(),
-            }
+            ValueExpr::Project { value: Box::new(next), member: "?".to_owned() }
         } else {
             next
         });
@@ -206,38 +186,6 @@ pub(in crate::linker) struct RustExplicitTarget {
 }
 
 #[cfg(feature = "lang-rust")]
-fn explicit_target_from_sibling_crate(
-    input: &super::super::resolution::input::ResolutionInput<'_>,
-    path: &str,
-    first: &str,
-    tail: &str,
-) -> Option<RustExplicitTarget> {
-    let (pkg_scope, own_lib) = input
-        .dependency_registry
-        .sibling_rust_package_library_for_path(path)?;
-    if own_lib != first {
-        return None;
-    }
-    let lib_path = if pkg_scope.is_empty() {
-        std::borrow::Cow::Borrowed("src/lib.rs")
-    } else {
-        std::borrow::Cow::Owned(format!("{pkg_scope}/src/lib.rs"))
-    };
-    if !input.profiles.contains_key(lib_path.as_ref()) {
-        return None;
-    }
-    let base_namespace = if pkg_scope.is_empty() {
-        "src".to_owned()
-    } else {
-        format!("{}.src", pkg_scope.replace('/', "."))
-    };
-    Some(RustExplicitTarget {
-        namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
-        workspace: crate::languages::workspace_path(&lib_path).0.to_owned(),
-    })
-}
-
-#[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(
     input: &super::super::resolution::input::ResolutionInput<'_>,
     profile: Option<&dyn LanguageProfile>,
@@ -245,98 +193,37 @@ pub(in crate::linker) fn rust_explicit_module_target(
     file_module: &str,
     expression: &str,
 ) -> Option<RustExplicitTarget> {
-    let profile = profile.filter(|profile| profile.id() == "rust")?;
+    if profile.is_none_or(|profile| profile.id() != "rust") {
+        return None;
+    }
     let local_workspace = crate::languages::workspace_path(path).0;
-    if let Some(mut tail) = expression.strip_prefix("super::") {
-        let mut module = file_module.rsplit_once('.')?.0;
-        while let Some(rest) = tail.strip_prefix("super::") {
-            module = module.rsplit_once('.')?.0;
-            tail = rest;
-        }
+    if let Some(namespace) =
+        super::forwarding::resolve_relative_module_prefix(path, file_module, expression)
+    {
         return Some(RustExplicitTarget {
-            namespace: format!("{module}.{}", tail.replace("::", ".")),
+            namespace,
             workspace: local_workspace.to_owned(),
         });
-    }
-    if let Some(tail) = expression.strip_prefix("self::") {
-        return Some(RustExplicitTarget {
-            namespace: format!("{file_module}.{}", tail.replace("::", ".")),
-            workspace: local_workspace.to_owned(),
-        });
-    }
-    if expression.starts_with("crate::") {
-        return profile
-            .normalize_import(path, expression)
-            .map(|module| RustExplicitTarget {
-                namespace: module.namespace,
-                workspace: local_workspace.to_owned(),
-            });
     }
     let (first, tail) = expression.split_once("::")?;
     if tail.is_empty() || first == "Self" {
         return None;
     }
-    if let Some(target) = explicit_target_from_sibling_crate(input, path, first, tail) {
-        return Some(target);
-    }
-    let mut targets = input
-        .rust_library_modules
-        .iter()
-        .filter(|(_, (library, _))| *library == first);
-    if let Some((target_workspace, (library, _))) = targets.next() {
-        if targets.next().is_none()
-            && (input.dependency_registry.sibling_rust_library_for_path(path) == Some(*library)
-                || input.dependency_registry.declares_for_path(
-                    crate::languages::LanguageFamily("rust"),
-                    path,
-                    first,
-                ))
-        {
-            let base_namespace = if target_workspace.is_empty() {
-                "src".to_owned()
-            } else {
-                format!("{}.src", target_workspace.replace('/', "."))
-            };
-            return Some(RustExplicitTarget {
-                namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
-                workspace: (*target_workspace).to_owned(),
-            });
-        }
-    }
-    if let Some((namespace, workspace)) =
-        super::forwarding::resolve_workspace_crate_namespace(
+    let super::forwarding::WorkspaceCrateMatch::Resolved(namespace, workspace) =
+        super::forwarding::resolve_crate_namespace(
             input.profiles.keys().copied(),
+            |candidate| input.profiles.contains_key(candidate),
             input.dependency_registry,
             path,
             first,
             tail,
         )
-    {
-        return Some(RustExplicitTarget {
-            namespace,
-            workspace,
-        });
-    }
-    let root_crate = input.dependency_registry.root_rust_crate_for_path(path)?;
-    if first != root_crate {
+    else {
         return None;
-    }
-    let lib_path = if local_workspace.is_empty() {
-        std::borrow::Cow::Borrowed("src/lib.rs")
-    } else {
-        std::borrow::Cow::Owned(format!("{local_workspace}/src/lib.rs"))
-    };
-    if !input.profiles.contains_key(lib_path.as_ref()) {
-        return None;
-    }
-    let base_namespace = if local_workspace.is_empty() {
-        "src".to_owned()
-    } else {
-        format!("{local_workspace}.src")
     };
     Some(RustExplicitTarget {
-        namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
-        workspace: local_workspace.to_owned(),
+        namespace,
+        workspace,
     })
 }
 
@@ -353,6 +240,9 @@ pub(in crate::linker) fn explicit_reexport_targets<'a>(
     else {
         return Vec::new();
     };
+    let Some(forwarding) = input.semantic_context.import_state("rust") else {
+        return Vec::new();
+    };
     let _ = lookup_key;
     let mut split = target.namespace.len();
     let mut out = Vec::new();
@@ -364,7 +254,7 @@ pub(in crate::linker) fn explicit_reexport_targets<'a>(
                 .iter()
                 .filter(|m| crate::languages::workspace_path(&m.path).0 == target.workspace)
             {
-                out.extend(input.rust_forwarding.resolve_path(
+                out.extend(forwarding.resolve_path(
                     module,
                     rest,
                     file_module,
@@ -413,7 +303,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
 ) -> bool {
     if profile.is_some_and(|profile| profile.id() == "rust") && reference.kind == "calls" {
         if let Some(crate::linker::value_flow::Symbol::Callable(target)) =
-            owner.and_then(|owner| member_lookup.rust_alias_member(owner, reference))
+            owner.and_then(|owner| member_lookup.context().rust_alias_member(owner, reference))
         {
             graph.reference_edge(path, reference, target.id.clone(), "calls", "exact");
             graph.reference_coverage(
@@ -435,7 +325,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
     let Some(owner) = owner else {
         return emit_self_unresolved(graph, path, reference);
     };
-    let Some(receiver) = member_lookup.rust_receiver(owner) else {
+    let Some(receiver) = member_lookup.receiver_for("rust", owner) else {
         if let Some(recv_ty) = owner
             .details
             .get("receiver_type")
@@ -472,8 +362,10 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
         .strip_prefix("Self::")
         .or_else(|| reference.expression.strip_prefix("Self."));
     if let Some(member) = member {
-        let targets = member_lookup.rust(receiver, member, true, owner);
-        match targets {
+        let targets = member_lookup
+            .lookup_member("rust", receiver, member, true, owner)
+            .into_nodes();
+        match targets.as_slice() {
             [target] => {
                 graph.reference_edge(
                     path,
@@ -613,7 +505,7 @@ fn resolve_module_scoped_constant<'a>(
 
 fn resolve_qualified_rust_constant<'a>(
     reference: &Reference,
-    owner: &Node,
+    owner: &'a Node,
     path: &str,
     semantic_context: &super::super::semantic_context::Context<'a>,
     graph: &mut CompactGraph,
@@ -664,7 +556,7 @@ fn resolve_qualified_rust_constant<'a>(
 
 pub(super) fn resolve_rust_constant<'a>(
     reference: &Reference,
-    owner: Option<&Node>,
+    owner: Option<&'a Node>,
     path: &str,
     value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
     semantic_context: &super::super::semantic_context::Context<'a>,
@@ -933,12 +825,12 @@ fn find_imported_macro<'a>(
     None
 }
 
-fn resolve_local_macro_call(
+fn resolve_local_macro_call<'a>(
     profile: Option<&dyn LanguageProfile>,
     reference: &Reference,
-    owner: Option<&Node>,
+    owner: Option<&'a Node>,
     path: &str,
-    semantic_context: &super::super::semantic_context::Context<'_>,
+    semantic_context: &super::super::semantic_context::Context<'a>,
     graph: &mut CompactGraph,
 ) -> bool {
     let clean = reference.expression.replace("::", ".");
@@ -988,7 +880,7 @@ fn extract_flow_trait_object<'a>(
 pub(in crate::linker) fn trait_object_call<'a>(
     profile: Option<&dyn LanguageProfile>,
     reference: &Reference,
-    owner: Option<&Node>,
+    owner: Option<&'a Node>,
     path: &str,
     value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
     semantic_context: &super::super::semantic_context::Context<'a>,
@@ -1050,7 +942,7 @@ pub(in crate::linker) fn trait_object_call<'a>(
     });
     let dispatched =
         trait_node.and_then(|trait_node| semantic_context.dynamic_dispatch(trait_node, member));
-    let bounded_resolved = dispatched.is_some_and(|(_, implementors)| {
+    let bounded_resolved = dispatched.as_ref().is_some_and(|(_, implementors)| {
         !implementors.is_empty()
             && implementors.len() <= crate::linker::value_flow::types::MAX_CANDIDATE_BRANCH_JOINS
     });

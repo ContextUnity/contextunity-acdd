@@ -1,7 +1,5 @@
 use crate::languages::{dependency_registry::DependencyRegistry, ImportPath, LanguageProfile};
 use crate::linker::{semantic_context, semantic_facts, traits, types, value_flow};
-#[cfg(feature = "lang-rust")]
-use crate::linker::rust::forwarding;
 use crate::models::Node;
 use crate::typed_facts::FlowState;
 use hashbrown::HashMap;
@@ -27,9 +25,6 @@ pub(in crate::linker) struct ResolutionInput<'a> {
     pub(in crate::linker) profiles: &'a HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(in crate::linker) normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(in crate::linker) modules_by_namespace: &'a traits::ModulesByNamespace<'a>,
-    pub(in crate::linker) rust_library_modules: &'a HashMap<&'a str, (&'a str, &'a Node)>,
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) rust_forwarding: &'a forwarding::RustForwarding<'a>,
     pub(in crate::linker) package_exports: &'a HashMap<&'static str, traits::PackageExports<'a>>,
     pub(in crate::linker) semantic_context: &'a semantic_context::Context<'a>,
     pub(in crate::linker) prepared_semantic_facts: &'a semantic_facts::PreparedSemanticFacts<'a>,

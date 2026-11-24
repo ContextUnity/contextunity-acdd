@@ -48,7 +48,7 @@ pub(in crate::linker) fn constructor_symbol<'a>(
 }
 
 pub(in crate::linker) fn dotted_member_result<'a>(
-    index: &impl ValueFlowLookup<'a>,
+    index: &(impl ValueFlowLookup<'a> + ?Sized),
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
@@ -104,7 +104,7 @@ fn is_pathlib_target(target: &TypeTarget<'_>) -> bool {
 }
 
 pub(in crate::linker) fn callable_target_return<'s, 'a>(
-    index: &'s impl ValueFlowLookup<'a>,
+    index: &'s (impl ValueFlowLookup<'a> + ?Sized),
     target: &'s TypeTarget<'a>,
     owner: &'a Node,
     at: SourcePosition,
@@ -182,7 +182,7 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
 }
 
 pub(in crate::linker) fn synthetic_member_result<'a>(
-    index: &impl ValueFlowLookup<'a>,
+    index: &(impl ValueFlowLookup<'a> + ?Sized),
     owner: &'a Node,
     receiver: &TypeTarget<'a>,
     callee: &str,

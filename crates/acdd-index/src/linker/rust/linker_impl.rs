@@ -1,6 +1,6 @@
 use super::forwarding::{
-    crate_namespace, declared_exports, module_namespace, resolve_workspace_crate_namespace,
-    within, is_crate_visible,
+    crate_namespace, declared_exports, is_crate_visible, module_namespace,
+    resolve_crate_namespace, within, WorkspaceCrateMatch,
 };
 use crate::interner::LinkerInterner;
 use crate::languages::{
@@ -26,14 +26,6 @@ fn relative_import(namespace: String) -> Option<ImportPath> {
         relative: true,
         symbol_path: true,
     })
-}
-
-fn format_namespace(base: &str, tail: &str) -> String {
-    if tail.is_empty() || tail == "*" {
-        base.to_owned()
-    } else {
-        format!("{base}.{}", tail.replace("::", "."))
-    }
 }
 
 fn normalize_declared_child_module(
@@ -105,55 +97,17 @@ fn normalize_single_rust_import(
         return Some(child_import);
     }
     let (first, tail) = module.split_once("::").unwrap_or((module, ""));
-    if let Some((pkg_scope, own_lib)) = ctx.dependencies.sibling_rust_package_library_for_path(path)
-    {
-        if own_lib == first {
-            let lib_path = if pkg_scope.is_empty() {
-                std::borrow::Cow::Borrowed("src/lib.rs")
-            } else {
-                std::borrow::Cow::Owned(format!("{pkg_scope}/src/lib.rs"))
-            };
-            if ctx.profiles.contains_key(lib_path.as_ref()) {
-                let base_namespace = if pkg_scope.is_empty() {
-                    "src".to_owned()
-                } else {
-                    format!("{}.src", pkg_scope.replace('/', "."))
-                };
-                return relative_import(format_namespace(&base_namespace, tail));
-            }
-        }
-    }
-    let mut targets = ctx
-        .rust_library_modules
-        .iter()
-        .filter(|(_, (library, _))| *library == first);
-    if let Some((target_workspace, (library, _))) = targets.next() {
-        if targets.next().is_some() {
-            return None;
-        }
-        if !ctx
-            .dependencies
-            .declares_for_path(LanguageFamily(LanguageId::Rust.as_str()), path, first)
-            && (ctx.dependencies.sibling_rust_library_for_path(path) != Some(*library)
-                || *target_workspace != languages::workspace_path(path).0)
-        {
-            return None;
-        }
-        let base_namespace = if target_workspace.is_empty() {
-            "src".to_owned()
-        } else {
-            format!("{}.src", target_workspace.replace('/', "."))
-        };
-        return relative_import(format_namespace(&base_namespace, tail));
-    }
-    if let Some((namespace, _)) = resolve_workspace_crate_namespace(
+    match resolve_crate_namespace(
         ctx.profiles.keys().copied(),
+        |candidate| ctx.profiles.contains_key(candidate),
         ctx.dependencies,
         path,
         first,
         tail,
     ) {
-        return relative_import(namespace);
+        WorkspaceCrateMatch::Resolved(namespace, _) => return relative_import(namespace),
+        WorkspaceCrateMatch::Isolated => return None,
+        WorkspaceCrateMatch::Missing => {}
     }
     if ctx
         .dependencies
@@ -179,6 +133,104 @@ fn normalize_single_rust_import(
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
+    fn callable_marker_evidence(
+        &self,
+        receiver: &crate::linker::value_flow::TypeTarget<'_>,
+    ) -> Option<&'static str> {
+        matches!(receiver, crate::linker::value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
+            .then_some("invocation of a lexically proven Rust closure")
+    }
+
+    fn identity_call_global(&self, callee: &str) -> Option<&'static str> {
+        (callee == "__rust_identity_some").then_some("Some")
+    }
+
+    fn filter_call_candidates(
+        &self,
+        member_state: Option<&dyn crate::languages::profile::LanguageMemberIndex>,
+        edge_kind: &str,
+        candidates: &mut Vec<&Node>,
+    ) {
+        let Some(state) = member_state else {
+            return;
+        };
+        if candidates.len() > 1
+            && (edge_kind == EdgeKind::Calls.as_str() || edge_kind == EdgeKind::Handles.as_str())
+            && candidates.iter().any(|node| state.is_inherent_member(node))
+            && candidates.iter().any(|node| !state.is_inherent_member(node))
+        {
+            candidates.retain(|node| state.is_inherent_member(node));
+        }
+    }
+
+    fn admits_dynamic_member(
+        &self,
+        member_state: Option<&dyn crate::languages::profile::LanguageMemberIndex>,
+        dynamic: bool,
+        node: &Node,
+    ) -> bool {
+        !dynamic || member_state.is_some_and(|state| state.is_inherent_member(node))
+    }
+
+    fn value_projection(
+        &self,
+        member: &str,
+    ) -> Option<crate::languages::profile::LanguageValueProjection> {
+        use crate::languages::profile::LanguageValueProjection as Projection;
+        Some(match member {
+            "__rust_generic_call" => Projection::GenericCall,
+            "__rust_array" => Projection::Array,
+            "__rust_tuple" => Projection::Tuple,
+            "__rust_if_join" => Projection::BranchJoin,
+            "__rust_ref" => Projection::Reference { mutable: false },
+            "__rust_ref_mut" => Projection::Reference { mutable: true },
+            field if field.starts_with("__rust_field:") => {
+                Projection::Field(field["__rust_field:".len()..].to_owned())
+            }
+            adapter if super::value_flow::is_adapter(adapter) => Projection::Adapter,
+            _ => return None,
+        })
+    }
+
+    fn construct_value<'a>(
+        &self,
+        _owner: &'a Node,
+        callee: &str,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+        (callee == "__rust_closure!")
+            .then(|| crate::linker::value_flow::TypeTarget::Builtin("__rust_closure".to_owned()))
+    }
+
+    fn evaluate_call_fallback<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        callee: &str,
+        _site: Option<&crate::semantic::CallSiteEvidence>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+        super::value_flow::constructor_result(
+            eval.index,
+            eval.owner,
+            callee,
+            eval.at,
+            eval.resolver,
+            eval.trace,
+        )
+    }
+
+    fn local_receiver_class<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+    ) -> Option<&'a Node> {
+        super::value_flow::local_class(target)
+    }
+
+    fn unwrap_reference<'t, 'a>(
+        &self,
+        target: &'t crate::linker::value_flow::TypeTarget<'a>,
+    ) -> &'t crate::linker::value_flow::TypeTarget<'a> {
+        super::value_flow::referent(target).0
+    }
+
     fn normalize_file_imports<'a>(
         &self,
         profile: &dyn LanguageProfile,
@@ -278,9 +330,9 @@ impl LanguageLinker for RustLinker {
                     .find(|node| node.kind == "module")
             })
             .map_or("", |node| node.qualname.as_str());
-        if context.rust_forwarding.is_some_and(|forwarding| {
+        if context.language_state.is_some_and(|state| {
             context.normalized.is_some_and(|normalized| {
-                !forwarding.module_path_visible(&normalized.namespace, requester)
+                !state.module_path_visible(&normalized.namespace, requester)
             })
         }) {
             context.modules.clear();
@@ -291,8 +343,8 @@ impl LanguageLinker for RustLinker {
         context.candidates.retain(|node| {
             node.kind != "impl"
                 && (node.kind == "module"
-                    && context.rust_forwarding.is_none_or(|forwarding| {
-                        forwarding.module_path_visible(&node.qualname, requester)
+                    && context.language_state.is_none_or(|state| {
+                        state.module_path_visible(&node.qualname, requester)
                     })
                     || is_crate_visible(node, requester)
                     || node
@@ -337,7 +389,7 @@ impl LanguageLinker for RustLinker {
                 }
             }
         }
-        let Some(forwarding) = context.rust_forwarding else {
+        let Some(forwarding) = context.language_state else {
             return resolution;
         };
         let requester_node = context

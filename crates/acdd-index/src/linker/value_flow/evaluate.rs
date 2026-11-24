@@ -8,7 +8,6 @@ use hashbrown::HashMap;
 use std::{borrow::Cow, sync::Arc};
 
 impl<'a> ValueFlowIndex<'a> {
-    /// Resolves value.
     pub fn resolve_value(
         &self,
         owner: &'a Node,
@@ -43,14 +42,8 @@ impl<'a> ValueFlowIndex<'a> {
                 resolve_type(owner, type_expr, at, resolver, self.limits)
             }
             ValueExpr::Construct { callee } => {
-                if owner.language == "rust" && callee == "__rust_closure!" {
-                    return TypeTarget::Builtin("__rust_closure".to_owned());
-                }
-                if let Some(target) = super::super::python::value_flow::literal_type(owner, callee)
-                {
-                    return target;
-                }
-                if let Some(target) = super::super::javascript::value_flow::construct(owner, callee)
+                if let Some(target) = crate::languages::by_id(&owner.language)
+                    .and_then(|profile| profile.linker().construct_value(owner, callee))
                 {
                     return target;
                 }
@@ -162,11 +155,16 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        if owner.language == "rust"
-            && matches!(
-                self.lookup_tracked(owner, callee, at, trace),
-                Some(TypeTarget::Builtin(name)) if name == "__rust_closure"
-            )
+        if self
+            .lookup_tracked(owner, callee, at, trace)
+            .is_some_and(|receiver| {
+                crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                    profile
+                        .linker()
+                        .callable_marker_evidence(receiver)
+                        .is_some()
+                })
+            })
         {
             return TypeTarget::Unknown;
         }
@@ -185,11 +183,11 @@ impl<'a> ValueFlowIndex<'a> {
         if let Some(target) = resolver.resolve_factory_result(owner, callee, at) {
             return target;
         }
-        if let Some(target) =
-            super::super::python::value_flow::constructor_result(owner, callee, at, resolver)
-        {
+        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        if let Some(target) = linker.and_then(|l| l.constructor_result(owner, callee, at, resolver)) {
             return target;
-        } else if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
+        }
+        if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
             if self
                 .callable_expression_tracked(owner, callee, at, resolver, trace)
                 .is_some_and(|callable| self.async_returns.contains_key(callable.id.as_str()))
@@ -208,16 +206,15 @@ impl<'a> ValueFlowIndex<'a> {
                     }
                 }
             }
-            if let Some(target) = super::super::javascript::value_flow::evaluate_call(
-                self, owner, callee, at, resolver, trace,
-            ) {
-                return resolver
-                    .resolve_call_result(owner, callee, site, at, Some(target.clone()))
-                    .unwrap_or(target);
-            }
-        } else if let Some(target) = super::super::rust::value_flow::constructor_result(
-            self, owner, callee, at, resolver, trace,
-        ) {
+        }
+        let eval = crate::languages::profile::CallEvalContext {
+            index: self,
+            owner,
+            at,
+            resolver,
+            trace,
+        };
+        if let Some(target) = linker.and_then(|l| l.evaluate_call_fallback(&eval, callee, site)) {
             return target;
         }
         let existing = self
@@ -229,9 +226,7 @@ impl<'a> ValueFlowIndex<'a> {
         {
             return existing.unwrap();
         }
-        if let Some(target) = super::super::python::value_flow::dotted_member_result(
-            self, owner, callee, at, resolver, trace,
-        ) {
+        if let Some(target) = linker.and_then(|l| l.evaluate_dotted_call(&eval, callee)) {
             return target;
         }
         resolver
@@ -284,14 +279,16 @@ impl<'a> ValueFlowIndex<'a> {
         if let Some(target) = member_result {
             return target;
         }
-        if let Some(target) =
-            super::super::javascript::value_flow::platform_member_return(owner, &receiver, callee)
+        let eval = crate::languages::profile::CallEvalContext {
+            index: self,
+            owner,
+            at,
+            resolver,
+            trace,
+        };
+        if let Some(target) = crate::languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().evaluate_member_call_fallback(&eval, &receiver, callee))
         {
-            return target;
-        }
-        if let Some(target) = super::super::python::value_flow::synthetic_member_result(
-            self, owner, &receiver, callee, at, resolver, trace,
-        ) {
             return target;
         }
         TypeTarget::Unknown
@@ -306,12 +303,14 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
+        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
         if owner.language == "rust"
             && receiver == "self"
             && owner.details["receiver_name"].as_str() == Some("self")
         {
             let target = symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type));
-            return super::super::rust::value_flow::local_class(&target)
+            return linker
+                .and_then(|l| l.local_receiver_class(&target))
                 .and_then(|class| self.field_type_tracked(class, member, trace))
                 .cloned()
                 .unwrap_or(TypeTarget::Unknown);
@@ -333,7 +332,7 @@ impl<'a> ValueFlowIndex<'a> {
                 _ => TypeTarget::Unknown,
             };
         }
-        if let Some(class) = super::super::rust::value_flow::local_class(&receiver_type) {
+        if let Some(class) = linker.and_then(|l| l.local_receiver_class(&receiver_type)) {
             if let Some(target) = self.field_type_tracked(class, member, trace) {
                 return target.clone();
             }
@@ -368,7 +367,9 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        if owner.language == "rust" {
+        let language_linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
+        let operation = language_linker.and_then(|linker| linker.value_projection(member));
+        if operation.is_some() {
             if let Some(target) = self.evaluate_rust_project(
                 owner,
                 value,
@@ -380,7 +381,10 @@ impl<'a> ValueFlowIndex<'a> {
             ) {
                 return target;
             }
-            if super::super::rust::value_flow::is_adapter(member) {
+            if matches!(
+                operation.as_ref(),
+                Some(crate::languages::profile::LanguageValueProjection::Adapter)
+            ) {
                 return self.evaluate_rust_adapter(
                     owner,
                     value,
@@ -392,7 +396,10 @@ impl<'a> ValueFlowIndex<'a> {
                 );
             }
         }
-        let source = if owner.language == "rust"
+        let source = if matches!(
+            operation.as_ref(),
+            Some(crate::languages::profile::LanguageValueProjection::Field(_))
+        )
             && matches!(value, ValueExpr::Alias { name } if name == "self")
             && owner.details["receiver_name"].as_str() == Some("self")
         {
@@ -401,7 +408,7 @@ impl<'a> ValueFlowIndex<'a> {
             self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
         };
         if let Some(index_str) = member.strip_prefix("__index:") {
-            return self.project_index(&source, index_str);
+            return self.project_index(owner, &source, index_str);
         }
         if let Some(field) = member.strip_prefix("__field:") {
             return self.project_field(owner, &source, field, at, resolver, trace);
@@ -411,23 +418,23 @@ impl<'a> ValueFlowIndex<'a> {
                 return items.get(index).cloned().unwrap_or(TypeTarget::Unknown);
             }
         }
-        if let Some(target) = super::super::rust::value_flow::local_class(&source)
+        if let Some(target) = language_linker
+            .and_then(|l| l.local_receiver_class(&source))
             .and_then(|class| self.field_type_tracked(class, member, trace))
         {
             return target.clone();
         }
-        if owner.language == "python" {
-            if let Some(target) =
-                super::super::python::value_flow::synthetic_property_result(owner, &source, member)
-            {
-                return target;
-            }
+        if let Some(target) =
+            language_linker.and_then(|l| l.synthetic_property_result(owner, &source, member))
+        {
+            return target;
         }
         self.project_field(owner, &source, member, at, resolver, trace)
     }
 
-    fn project_index(&self, source: &TypeTarget<'a>, index_str: &str) -> TypeTarget<'a> {
-        let base = super::super::rust::value_flow::referent(source).0;
+    fn project_index(&self, owner: &Node, source: &TypeTarget<'a>, index_str: &str) -> TypeTarget<'a> {
+        let base = crate::languages::by_id(owner.language.as_str())
+            .map_or(source, |profile| profile.linker().unwrap_reference(source));
         match base {
             TypeTarget::Tuple(items) | TypeTarget::RustTuple(items) => index_str
                 .parse::<usize>()
@@ -525,7 +532,11 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Option<TypeTarget<'a>> {
-        if member == "__rust_generic_call" {
+        use crate::languages::profile::LanguageValueProjection as Projection;
+        let operation = crate::languages::by_id(&owner.language)?
+            .linker()
+            .value_projection(member)?;
+        if matches!(operation, Projection::GenericCall) {
             let ValueExpr::BranchJoin { alternatives } = value else {
                 return Some(TypeTarget::Unknown);
             };
@@ -548,11 +559,14 @@ impl<'a> ValueFlowIndex<'a> {
                 }),
             );
         }
-        if matches!(member, "__rust_array" | "__rust_tuple" | "__rust_if_join") {
+        if matches!(
+            operation,
+            Projection::Array | Projection::Tuple | Projection::BranchJoin
+        ) {
             let ValueExpr::BranchJoin { alternatives } = value else {
                 return Some(TypeTarget::Unknown);
             };
-            if member == "__rust_tuple" {
+            if matches!(operation, Projection::Tuple) {
                 return Some(TypeTarget::RustTuple(
                     alternatives
                         .iter()
@@ -562,7 +576,7 @@ impl<'a> ValueFlowIndex<'a> {
                         .collect(),
                 ));
             }
-            if member == "__rust_if_join" {
+            if matches!(operation, Projection::BranchJoin) {
                 return Some(join_branch_targets(
                     alternatives
                         .iter()
@@ -586,7 +600,7 @@ impl<'a> ValueFlowIndex<'a> {
                 item: Box::new(item),
             });
         }
-        if matches!(member, "__rust_ref" | "__rust_ref_mut") {
+        if let Projection::Reference { mutable } = &operation {
             return Some(TypeTarget::RustReference {
                 target: Box::new(self.evaluate_tracked(
                     owner,
@@ -596,10 +610,12 @@ impl<'a> ValueFlowIndex<'a> {
                     definitions,
                     trace,
                 )),
-                mutable: member == "__rust_ref_mut",
+                mutable: *mutable,
             });
         }
-        let field = member.strip_prefix("__rust_field:")?;
+        let Projection::Field(field) = operation else {
+            return None;
+        };
         let source = if matches!(value, ValueExpr::Alias { name } if name == "self")
             && owner.details["receiver_name"].as_str() == Some("self")
         {
@@ -607,7 +623,8 @@ impl<'a> ValueFlowIndex<'a> {
         } else {
             self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
         };
-        if let TypeTarget::RustTuple(items) = super::super::rust::value_flow::referent(&source).0 {
+        let linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
+        if let TypeTarget::RustTuple(items) = linker.map_or(&source, |l| l.unwrap_reference(&source)) {
             return Some(
                 field
                     .parse::<usize>()
@@ -618,15 +635,16 @@ impl<'a> ValueFlowIndex<'a> {
             );
         }
         Some(
-            super::super::rust::value_flow::local_class(&source)
-                .and_then(|class| self.field_type_tracked(class, field, trace))
+            linker
+                .and_then(|l| l.local_receiver_class(&source))
+                .and_then(|class| self.field_type_tracked(class, &field, trace))
                 .cloned()
                 .or_else(|| {
                     if matches!(
                         &source,
                         TypeTarget::External { .. } | TypeTarget::Builtin(_)
                     ) {
-                        resolver.resolve_member_result(&source, field, owner, at)
+                        resolver.resolve_member_result(&source, &field, owner, at)
                     } else {
                         None
                     }

@@ -1,3 +1,4 @@
+use crate::languages::profile::{LanguageMemberIndex, LanguageMemberResult};
 use crate::linker::value_flow::types::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use crate::models::Node;
 use crate::semantic::SourcePosition;
@@ -93,6 +94,48 @@ impl<'a> TypeScriptMembers<'a> {
             .raw_entry()
             .from_hash(hash, |(name, is_static)| *name == member && !*is_static)
             .map_or(&[], |(_, nodes)| nodes.as_slice())
+    }
+}
+
+impl LanguageMemberIndex for TypeScriptMembers<'_> {
+    fn language_ids(&self) -> &'static [&'static str] {
+        &["typescript", "javascript", "vue"]
+    }
+
+    fn lookup_member<'a>(
+        &'a self,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        _caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        let candidates = self.lookup(receiver, member, associated);
+        if candidates.is_empty() {
+            LanguageMemberResult::Unknown
+        } else if let [node] = candidates {
+            LanguageMemberResult::Local(node)
+        } else {
+            LanguageMemberResult::Candidates(candidates.to_vec())
+        }
+    }
+
+    fn lookup_property<'a>(
+        &'a self,
+        receiver: &Node,
+        member: &str,
+    ) -> LanguageMemberResult<'a> {
+        let candidates = self.lookup_field(receiver, member);
+        if candidates.is_empty() {
+            LanguageMemberResult::Unknown
+        } else if let [node] = candidates {
+            LanguageMemberResult::Local(node)
+        } else {
+            LanguageMemberResult::Candidates(candidates.to_vec())
+        }
+    }
+
+    fn implementors(&self, base: &Node) -> Option<&[&Node]> {
+        Some(TypeScriptMembers::implementors(self, base.id.as_str()))
     }
 }
 

@@ -97,7 +97,7 @@ impl hashbrown::Equivalent<(&str, SourcePosition, &str, &str)> for ComputedKey<'
 }
 
 #[derive(Clone, Debug)]
-/// Enumerates the supported type target values.
+/// Resolved receiver, callable, or nominal type target tracked during value-flow analysis.
 pub enum TypeTarget<'a> {
     /// Finite rule result; missing members never acquire unrestricted external authority.
     ConfiguredReceiver {
@@ -110,9 +110,9 @@ pub enum TypeTarget<'a> {
         /// Effective configuration identity.
         evidence: String,
     },
-    /// Represents the local case.
+    /// Declaration node belonging to the indexed workspace.
     Local(&'a Node),
-    /// Represents the callable case.
+    /// Callable declaration node referenced directly as a first-class value.
     Callable(&'a Node),
     /// Type supplied by a dependency outside the indexed workspace.
     External {
@@ -168,9 +168,9 @@ pub enum TypeTarget<'a> {
     },
     /// Rust tuple retaining the independently resolved type of each field.
     RustTuple(Vec<TypeTarget<'a>>),
-    /// Represents the builtin case.
+    /// Language built-in primitive, stdlib, or synthetic runtime type name.
     Builtin(String),
-    /// Represents the object case.
+    /// Inline object/map literal mapping member names to declaration nodes.
     Object(Arc<HashMap<String, &'a Node>>),
     /// A finite external result object, never a local declaration.
     ResultObject(Arc<ConfiguredCallResult>),
@@ -209,14 +209,14 @@ pub enum TypeTarget<'a> {
         /// Element/item type.
         item: Box<TypeTarget<'a>>,
     },
-    /// Represents the ambiguous case.
+    /// Multiple mutually conflicting declarations or types.
     Ambiguous,
-    /// Represents the unknown case.
+    /// Unresolved or dynamic value with no statically proven target.
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Enumerates standard Rust result wrapper constructors.
+/// Standard Rust result-wrapper constructors with dedicated unwrapping propagation.
 pub enum RustWrapperKind {
     /// The `Option<T>` wrapper.
     Option,
@@ -225,25 +225,25 @@ pub enum RustWrapperKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-/// Enumerates the supported symbol role values.
+/// Role distinguishing how a referenced symbol identifier is used.
 pub enum SymbolRole {
-    /// Represents the type case.
+    /// Static type annotation or nominal type position.
     Type,
-    /// Represents the constructor case.
+    /// Direct instantiation / class construction position.
     Constructor,
-    /// Represents the callable case.
+    /// Callable or method invocation position.
     Callable,
 }
 
-/// Enumerates the supported symbol values.
+/// Outcome of resolving a symbol reference in a value-flow scope.
 pub enum Symbol<'a> {
-    /// Represents the type case.
+    /// Resolved statically to a value or nominal type target.
     Type(TypeTarget<'a>),
-    /// Represents the callable case.
+    /// Resolved to a local callable declaration.
     Callable(&'a Node),
-    /// Represents the ambiguous case.
+    /// Multiple distinct declarations matched with equal specificity.
     Ambiguous,
-    /// Represents the unknown case.
+    /// No declaration or external type matched.
     Unknown,
 }
 
@@ -300,23 +300,18 @@ pub trait SemanticResolver<'a> {
             None
         }
     }
-    /// Performs value flow.
     fn value_flow(&self, _node: &'a Node) -> Option<&'a ValueFlowFacts> {
         None
     }
-    /// Performs invalid value flow.
     fn invalid_value_flow(&self, _node: &'a Node) -> bool {
         false
     }
-    /// Performs raw value flow.
     fn raw_value_flow(&self, _node: &'a Node) -> Option<&'a serde_json::Value> {
         None
     }
-    /// Reports whether typed flows applies.
     fn has_typed_flows(&self) -> bool {
         false
     }
-    /// Resolves symbol.
     fn resolve_symbol(
         &self,
         scope: &'a Node,
@@ -324,7 +319,6 @@ pub trait SemanticResolver<'a> {
         at: SourcePosition,
         role: SymbolRole,
     ) -> Symbol<'a>;
-    /// Resolves external factory.
     fn resolve_external_factory(
         &self,
         _scope: &'a Node,
@@ -333,7 +327,6 @@ pub trait SemanticResolver<'a> {
     ) -> Option<TypeTarget<'a>> {
         None
     }
-    /// Resolves member.
     fn resolve_member(
         &self,
         _receiver: &TypeTarget<'a>,
@@ -343,7 +336,6 @@ pub trait SemanticResolver<'a> {
     ) -> Symbol<'a> {
         Symbol::Unknown
     }
-    /// Resolves applied.
     fn resolve_applied(
         &self,
         _scope: &'a Node,
@@ -362,7 +354,6 @@ pub trait SemanticResolver<'a> {
     ) -> TypeTarget<'a> {
         TypeTarget::Unknown
     }
-    /// Resolves imported module.
     fn resolve_import_module(
         &self,
         _scope: &'a Node,
@@ -382,7 +373,8 @@ pub trait SemanticResolver<'a> {
 }
 
 /// Read-only interface for language value-flow helpers without depending on evaluation orchestration.
-pub(in crate::linker) trait ValueFlowLookup<'a> {
+// Public until Wave 2a narrows LanguageLinker to pub(crate).
+pub trait ValueFlowLookup<'a> {
     fn lookup_tracked(
         &self,
         owner: &Node,
@@ -417,13 +409,13 @@ pub(in crate::linker) trait ValueFlowLookup<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-/// Represents semantic limits data.
+/// Bounded resource limits enforced while decoding and evaluating value-flow scopes.
 pub struct SemanticLimits {
-    /// The facts per scope value.
+    /// Maximum value-flow facts evaluated for a single scope before marking it oversized.
     pub facts_per_scope: usize,
-    /// The name bytes value.
+    /// Maximum byte length allowed for resolved type or alias names.
     pub name_bytes: usize,
-    /// The alias depth value.
+    /// Maximum parent/alias indirection depth traversed during lookup.
     pub alias_depth: usize,
 }
 
@@ -501,7 +493,7 @@ pub(super) struct Scope<'a> {
     pub(super) module: bool,
 }
 
-/// Represents value flow index data.
+/// Per-file summary of inferred variable bindings, field types, and return targets.
 pub struct ValueFlowIndex<'a> {
     pub(super) scopes: HashMap<&'a str, Scope<'a>>,
     pub(super) returns: HashMap<&'a str, TypeTarget<'a>>,
@@ -519,7 +511,7 @@ pub struct ValueFlowIndex<'a> {
 }
 
 impl<'a> ValueFlowIndex<'a> {
-    /// Performs object member.
+    /// Returns the declaration bound to `name` when `target` is an inline object literal.
     pub fn object_member(target: &TypeTarget<'a>, name: &str) -> Option<&'a Node> {
         match target {
             TypeTarget::Object(members) => members.get(name).copied(),
@@ -556,14 +548,14 @@ pub(super) static EMPTY_SCOPE_FACTS: std::sync::LazyLock<ValueFlowFacts> =
 pub(super) type InitializedScope<'a> = (&'a Node, ScopeFacts<'a>, Scope<'a>, TypeTarget<'a>);
 
 #[derive(Default)]
-pub(super) struct Epochs<'a> {
+pub(crate) struct Epochs<'a> {
     pub(super) returns: HashMap<&'a str, u64>,
     pub(super) scopes: HashMap<&'a str, u64>,
     pub(super) fields: u64,
 }
 
 #[derive(Default)]
-pub(super) struct ReadEpochs<'a> {
+pub(crate) struct ReadEpochs<'a> {
     pub(super) returns: Vec<(&'a str, u64)>,
     pub(super) scopes: Vec<(&'a str, u64)>,
     pub(super) fields: Option<u64>,
@@ -582,7 +574,9 @@ impl ReadEpochs<'_> {
     }
 }
 
-pub(in crate::linker) struct ReadTrace<'a, 'b> {
+/// Dependency epoch recorder captured while evaluating memoized value-flow queries.
+// Public until Wave 2a narrows LanguageLinker to pub(crate).
+pub struct ReadTrace<'a, 'b> {
     epochs: &'b Epochs<'a>,
     pub(super) reads: RefCell<ReadEpochs<'a>>,
 }

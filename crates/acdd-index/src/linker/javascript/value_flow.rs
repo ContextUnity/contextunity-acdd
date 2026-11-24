@@ -25,7 +25,7 @@ pub(in crate::linker) fn construct<'a>(owner: &Node, callee: &str) -> Option<Typ
 }
 
 pub(in crate::linker) fn evaluate_call<'a>(
-    index: &impl ValueFlowLookup<'a>,
+    index: &(impl ValueFlowLookup<'a> + ?Sized),
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,

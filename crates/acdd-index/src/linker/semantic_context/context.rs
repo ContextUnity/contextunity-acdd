@@ -159,24 +159,14 @@ pub(crate) struct Context<'a> {
     pub(super) autoimports: HashMap<PathId, HashMap<SymbolId, String>>,
     pub(super) result_scopes: HashMap<PathId, Vec<std::sync::Arc<ResultScope<'a>>>>,
     pub(super) callable_scopes: HashMap<PathId, Vec<std::sync::Arc<CallableScope<'a>>>>,
-    pub(super) commonjs: crate::linker::javascript::commonjs_bindings::ResolvedCommonJsBindings<'a>,
     pub(super) members: HashMap<(SymbolId, SymbolId, bool), Vec<&'a Node>>,
-    pub(super) python: Option<&'a crate::linker::python::receivers::PythonReceivers<'a>>,
-    #[cfg(feature = "lang-rust")]
-    pub(super) rust: Option<&'a crate::linker::rust::profile_linker::RustMembers<'a>>,
-    #[cfg(feature = "lang-rust")]
-    pub(super) rust_forwarding: &'a crate::linker::rust::forwarding::RustForwarding<'a>,
-    #[cfg(feature = "lang-typescript")]
-    pub(super) typescript: Option<&'a crate::linker::typescript::members::TypeScriptMembers<'a>>,
+    pub(super) member_bases: HashMap<SymbolId, Vec<SymbolId>>,
+    pub(super) member_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageMemberIndex + 'a)>,
+    pub(super) import_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
 }
 
-/// Borrowed read-only access to the language-owned member indexes.
-///
-/// The shared linker depends on this lookup seam instead of carrying one
-/// language-specific index field per profile. Each index remains built and
-/// owned by its language resolver; lookups only borrow that precomputed state.
 pub(in crate::linker) struct LanguageMemberLookup<'ctx, 'a> {
-    pub(super) context: &'ctx Context<'a>,
+    context: &'ctx Context<'a>,
 }
 
 impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
@@ -184,56 +174,84 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
         Self { context }
     }
 
-    pub(in crate::linker) fn python(
+    pub(in crate::linker) fn context(&self) -> &'ctx Context<'a> {
+        self.context
+    }
+
+    fn member_state(&self, language_id: &str) -> Option<&'a (dyn languages::profile::LanguageMemberIndex + 'a)> {
+        self.context.member_state(language_id)
+    }
+
+    pub(in crate::linker) fn lookup_member(
         &self,
-        class: &Node,
-        member: &str,
-        associated: bool,
-    ) -> crate::linker::python::receivers::PythonReceiverMember<'a> {
-        self.context
-            .python
-            .map_or(crate::linker::python::receivers::PythonReceiverMember::Unknown, |index| {
-                index.lookup(class, member, associated)
-            })
-    }
-
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) fn rust_receiver(&self, owner: &Node) -> Option<&'a Node> {
-        self.context
-            .rust
-            .and_then(|index| index.receiver_for(owner))
-    }
-
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) fn rust_deref_target(&self, receiver: &Node) -> Option<&'a Node> {
-        self.context
-            .rust
-            .and_then(|index| index.deref_target(receiver))
-    }
-
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) fn rust<'lookup>(
-        &'lookup self,
+        language_id: &str,
         receiver: &Node,
         member: &str,
         associated: bool,
         caller: &Node,
-    ) -> &'lookup [&'a Node] {
-        self.context.rust.map_or(&[], |index| {
-            index.lookup(receiver, member, associated, caller)
+    ) -> languages::profile::LanguageMemberResult<'a> {
+        self.context
+            .lookup_language_member(language_id, receiver, member, associated, caller)
+    }
+
+    pub(in crate::linker) fn receiver_for(&self, language_id: &str, method: &Node) -> Option<&'a Node> {
+        self.member_state(language_id)?.receiver_for(method)
+    }
+
+    pub(in crate::linker) fn deref_target(&self, language_id: &str, receiver: &Node) -> Option<&'a Node> {
+        self.member_state(language_id)?.deref_target(receiver)
+    }
+}
+
+impl<'a> Context<'a> {
+    pub(in crate::linker) fn import_state(
+        &self,
+        language_id: &str,
+    ) -> Option<&'a (dyn languages::profile::LanguageImportState + 'a)> {
+        self.import_states.get(language_id).copied()
+    }
+
+    pub(in crate::linker) fn member_state(
+        &self,
+        language_id: &str,
+    ) -> Option<&'a (dyn languages::profile::LanguageMemberIndex + 'a)> {
+        self.member_states.get(language_id).copied()
+    }
+
+    pub(super) fn lookup_language_member(
+        &self,
+        language_id: &str,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> languages::profile::LanguageMemberResult<'a> {
+        languages::by_id(language_id).map_or(languages::profile::LanguageMemberResult::Unknown, |profile| {
+            profile.linker().lookup_member(&self.member_states, language_id, receiver, member, associated, caller)
         })
     }
 
-    #[cfg(feature = "lang-typescript")]
-    pub(in crate::linker) fn typescript<'lookup>(
-        &'lookup self,
-        class: &Node,
+    pub(super) fn lookup_language_property(
+        &self,
+        language_id: &str,
+        receiver: &Node,
+        member: &str,
+    ) -> languages::profile::LanguageMemberResult<'a> {
+        self.member_state(language_id)
+            .map_or(languages::profile::LanguageMemberResult::Unknown, |state| state.lookup_property(receiver, member))
+    }
+
+    pub(super) fn lookup_language_builtin(
+        &self,
+        language_id: &str,
+        receiver: &str,
         member: &str,
         associated: bool,
-    ) -> &'lookup [&'a Node] {
-        self.context
-            .typescript
-            .map_or(&[], |index| index.lookup(class, member, associated))
+        caller: &Node,
+    ) -> languages::profile::LanguageMemberResult<'a> {
+        languages::by_id(language_id).map_or(languages::profile::LanguageMemberResult::Unknown, |profile| {
+            profile.linker().lookup_builtin(&self.member_states, language_id, receiver, member, associated, caller)
+        })
     }
 }
 
@@ -341,7 +359,7 @@ impl<'a> Context<'a> {
             None => false,
         }
     }
-    pub(super) fn configured_unshadowed(&self, owner: &'a Node, name: &str) -> bool {
+    pub(super) fn configured_unshadowed(&self, owner: &Node, name: &str) -> bool {
         let mut scope = owner.qualname.as_str();
         let mut key = String::new();
         for _ in 0..crate::linker::value_flow::SemanticLimits::default().alias_depth {
@@ -382,7 +400,7 @@ impl<'a> Context<'a> {
         false
     }
 
-    pub(super) fn implicit_factory_result(&self, owner: &'a Node, callee: &str) -> Option<TypeTarget<'a>> {
+    pub(super) fn implicit_factory_result(&self, owner: &Node, callee: &str) -> Option<TypeTarget<'a>> {
         let callee_id = self.symbol_id(callee)?;
         let mut providers = self
             .result_scopes
@@ -510,53 +528,29 @@ impl<'a> Context<'a> {
 
     pub(in crate::linker) fn polymorphic_implementors(
         &self,
-        abstract_type: &'a Node,
+        abstract_type: &Node,
         member: &str,
-        contract_decl: &'a Node,
+        contract_decl: &Node,
     ) -> Option<Vec<&'a Node>> {
-        #[cfg(feature = "lang-typescript")]
-        if matches!(
-            abstract_type.language.as_str(),
-            "typescript" | "javascript" | "vue"
-        ) && (abstract_type.kind == "interface"
-            || abstract_type.details["is_abstract"] == true)
-        {
-            let index = self.typescript?;
-            let impls = index.implementors(abstract_type.id.as_str());
-            if impls.is_empty() {
-                return None;
-            }
-            let methods: Vec<_> = impls
-                .iter()
-                .filter_map(|impl_class| {
-                    match index.lookup(impl_class, member, false) {
-                        [node] if node.id != contract_decl.id => Some(*node),
-                        _ => None,
-                    }
-                })
-                .collect();
-            return (!methods.is_empty()).then_some(methods);
-        }
-        if abstract_type.language == "python"
-            && crate::linker::python::resolution::has_protocol_or_abc_base(abstract_type)
-        {
-            let index = self.python?;
-            let impls = index.implementors(abstract_type.id.as_str());
-            if impls.is_empty() {
-                return None;
-            }
-            let methods: Vec<_> = impls
-                .iter()
-                .filter_map(|impl_class| match index.lookup(impl_class, member, false) {
-                    crate::linker::python::receivers::PythonReceiverMember::Local(node) if node.id != contract_decl.id => {
-                        Some(node)
-                    }
+        let state = self.member_state(abstract_type.language.as_str())?;
+        let impls = state.implementors(abstract_type)?;
+        let methods: Vec<_> = impls
+            .iter()
+            .filter_map(|implementor| {
+                match self.lookup_language_member(
+                    abstract_type.language.as_str(),
+                    implementor,
+                    member,
+                    false,
+                    contract_decl,
+                ) {
+                    languages::profile::LanguageMemberResult::Local(node)
+                        if node.id != contract_decl.id => Some(node),
                     _ => None,
-                })
-                .collect();
-            return (!methods.is_empty()).then_some(methods);
-        }
-        None
+                }
+            })
+            .collect();
+        (!methods.is_empty()).then_some(methods)
     }
     pub(in crate::linker) fn hierarchy_authority_for_base(
         &self,
@@ -594,7 +588,7 @@ impl<'a> Context<'a> {
     pub(in crate::linker) fn dependencies_digest(&self) -> String {
         self.dependencies.digest().to_string()
     }
-    pub(super) fn python_super_member(&self, owner: &'a Node, member: &str) -> Symbol<'a> {
+    pub(super) fn python_super_member(&self, owner: &Node, member: &str) -> Symbol<'a> {
         if owner.language != "python"
             || !owner
                 .details
@@ -624,8 +618,8 @@ impl<'a> Context<'a> {
             }
             scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
         }
-        match self.python.map(|index| index.lookup(class, member, true)) {
-            Some(crate::linker::python::receivers::PythonReceiverMember::Local(node)) => Symbol::Callable(node),
+        match self.lookup_language_member("python", class, member, true, owner) {
+            languages::profile::LanguageMemberResult::Local(node) => Symbol::Callable(node),
             _ => Symbol::Unknown,
         }
     }
@@ -713,7 +707,7 @@ impl<'a> Context<'a> {
     }
 
     /// Only configured, complete exported callables supplement ordinary lexical calls.
-    pub(in crate::linker) fn implicit_callables(&self, owner: &'a Node, name: &str) -> Vec<&'a Node> {
+    pub(in crate::linker) fn implicit_callables(&self, owner: &Node, name: &str) -> Vec<&'a Node> {
         let mut candidates = Vec::new();
         let Some(name_id) = self.symbol_id(name) else {
             return candidates;
@@ -881,7 +875,8 @@ impl<'a> Context<'a> {
     }
 
     pub(in crate::linker) fn tracks_commonjs_binding(&self, scope: &Node, alias: &str) -> bool {
-        self.commonjs.tracks(scope, alias)
+        self.import_state("javascript")
+            .is_some_and(|state| state.tracks_binding(scope, alias))
     }
 
     pub(in crate::linker) fn node_has_rebinding(&self, owner: &Node, alias: &str) -> bool {
@@ -901,7 +896,8 @@ impl<'a> Context<'a> {
         owner: &Node,
         at: SourcePosition,
     ) -> bool {
-        self.commonjs.admits(scope, alias, owner, at)
+        self.import_state("javascript")
+            .is_some_and(|state| state.admits_binding(scope, alias, owner, at))
     }
     pub(super) fn visible(owner: &Node, candidate: &Node, at: SourcePosition, role: SymbolRole) -> bool {
         if let Some(visible) = crate::linker::rust::value_flow::visible(owner, candidate) {
@@ -1275,29 +1271,13 @@ impl<'a> Context<'a> {
         None
     }
 
-    pub(in crate::linker) fn with_python(
+    pub(in crate::linker) fn with_member_state(
         mut self,
-        members: &'a crate::linker::python::receivers::PythonReceivers<'a>,
+        state: &'a (dyn languages::profile::LanguageMemberIndex + 'a),
     ) -> Self {
-        self.python = Some(members);
-        self
-    }
-
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) fn with_rust(
-        mut self,
-        members: &'a crate::linker::rust::profile_linker::RustMembers<'a>,
-    ) -> Self {
-        self.rust = Some(members);
-        self
-    }
-
-    #[cfg(feature = "lang-typescript")]
-    pub(in crate::linker) fn with_typescript(
-        mut self,
-        members: &'a crate::linker::typescript::members::TypeScriptMembers<'a>,
-    ) -> Self {
-        self.typescript = Some(members);
+        for &language_id in state.language_ids() {
+            self.member_states.insert(language_id, state);
+        }
         self
     }
 
@@ -1370,48 +1350,19 @@ impl<'a> Context<'a> {
 
     pub(super) fn member(
         &self,
-        receiver: &'a Node,
+        receiver: &Node,
         member: &str,
         associated: bool,
-        caller: &'a Node,
+        caller: &Node,
     ) -> Symbol<'a> {
-        #[cfg(feature = "lang-typescript")]
-        if matches!(
-            receiver.language.as_str(),
-            "typescript" | "javascript" | "vue"
-        ) {
-            if let Some(index) = self.typescript {
-                return self.classify(
-                    index.lookup(receiver, member, associated).iter().copied(),
-                    SymbolRole::Callable,
-                );
+        if receiver.language != "python" || receiver.kind == "class" {
+            if let Some(state) = self.member_state(receiver.language.as_str()) {
+                return match state.lookup_member(receiver, member, associated, caller) {
+                    languages::profile::LanguageMemberResult::Ambiguous => Symbol::Ambiguous,
+                    result => self.classify(result.into_nodes().into_iter(), SymbolRole::Callable),
+                };
             }
         }
-        if receiver.language == "python" && receiver.kind == "class" {
-            return match self
-                .python
-                .map(|index| index.lookup(receiver, member, false))
-            {
-                Some(crate::linker::python::receivers::PythonReceiverMember::Local(node)) => {
-                    self.classify(std::iter::once(node), SymbolRole::Callable)
-                }
-                Some(crate::linker::python::receivers::PythonReceiverMember::Ambiguous) => Symbol::Ambiguous,
-                _ => Symbol::Unknown,
-            };
-        }
-        #[cfg(feature = "lang-rust")]
-        if receiver.language == "rust" {
-            return self.rust.map_or(Symbol::Unknown, |index| {
-                self.classify(
-                    index
-                        .lookup(receiver, member, associated, caller)
-                        .iter()
-                        .copied(),
-                    SymbolRole::Callable,
-                )
-            });
-        }
-        let _ = (associated, caller);
         let mut lookup_key = String::with_capacity(128);
         self.classify(
             self.by_qual
@@ -1442,19 +1393,9 @@ impl<'a> Context<'a> {
         &'s self,
         receiver: &'s Node,
         member: &'s str,
-    ) -> Option<(&'a Node, &'s [&'a Node])> {
-        self.rust?.dynamic_dispatch(receiver, member)
-    }
-
-    #[cfg(feature = "lang-rust")]
-    pub(in crate::linker) fn is_rust_inherent_member(&self, method: &Node) -> bool {
-        self.rust
-            .is_some_and(|rust| rust.is_inherent_member(method))
-    }
-
-    #[cfg(not(feature = "lang-rust"))]
-    pub(in crate::linker) fn is_rust_inherent_member(&self, _method: &Node) -> bool {
-        false
+    ) -> Option<(&'a Node, Vec<&'a Node>)> {
+        self.member_state(receiver.language.as_str())?
+            .dynamic_dispatch(receiver, member)
     }
 
     #[cfg(feature = "lang-typescript")]
@@ -1473,12 +1414,9 @@ impl<'a> Context<'a> {
         {
             return Member::Unknown;
         }
-        match self
-            .typescript
-            .map(|index| index.lookup_field(receiver, member))
-        {
-            Some([field]) => Member::Local(field),
-            Some(fields) if fields.len() > 1 => Member::Ambiguous,
+        match self.lookup_language_property(receiver.language.as_str(), receiver, member) {
+            languages::profile::LanguageMemberResult::Local(field) => Member::Local(field),
+            languages::profile::LanguageMemberResult::Candidates(fields) if fields.len() > 1 => Member::Ambiguous,
             _ => Member::Unknown,
         }
     }

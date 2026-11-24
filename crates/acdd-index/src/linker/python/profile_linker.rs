@@ -5,7 +5,6 @@ use crate::languages::{
     python::common::normalize_python_import,
     types::{self as languages, ImportPath, LanguageFamily},
 };
-use crate::linker::rust::forwarding::RustForwarding;
 use crate::linker::traits::{
     insert_package_export, package_export, resolve_default_import, BuiltinPropertyLookup,
     ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
@@ -47,7 +46,65 @@ fn prefer_live_declaration(candidates: &mut Vec<&Node>) -> bool {
 }
 
 impl LanguageLinker for PythonLinker {
-    #[allow(private_interfaces)]
+    fn constructor_result<'a>(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::python::value_flow::constructor_result(owner, callee, at, resolver)
+    }
+
+    fn construct_value<'a>(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::python::value_flow::literal_type(owner, callee)
+    }
+
+    fn evaluate_dotted_call<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::python::value_flow::dotted_member_result(
+            eval.index,
+            eval.owner,
+            callee,
+            eval.at,
+            eval.resolver,
+            eval.trace,
+        )
+    }
+
+    fn evaluate_member_call_fallback<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        receiver: &TypeTarget<'a>,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::python::value_flow::synthetic_member_result(
+            eval.index,
+            eval.owner,
+            receiver,
+            callee,
+            eval.at,
+            eval.resolver,
+            eval.trace,
+        )
+    }
+
+    fn synthetic_property_result<'a>(
+        &self,
+        owner: &'a Node,
+        receiver: &TypeTarget<'a>,
+        member: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::python::value_flow::synthetic_property_result(owner, receiver, member)
+    }
+
     fn resolve_builtin_property<'a>(
         &self,
         _path: &str,
@@ -523,8 +580,6 @@ struct PythonBaseLookupCtx<'index, 'a> {
     profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
     normalized_imports: &'index HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules_by_namespace: &'index ModulesByNamespace<'a>,
-    #[cfg(feature = "lang-rust")]
-    rust_forwarding: &'index RustForwarding<'a>,
     package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
     dependency_registry: &'a DependencyRegistry,
     inheritance_imports: &'index HashMap<(&'a str, &'a str, &'a str), Vec<&'a Reference>>,
@@ -574,8 +629,7 @@ fn resolve_python_imported_base<'a>(
         interner: ctx.interner,
         dependencies: ctx.dependency_registry,
         reference: import,
-        #[cfg(feature = "lang-rust")]
-        rust_forwarding: Some(ctx.rust_forwarding),
+        language_state: None,
         normalized: Some(normalized),
         selected_namespace: &normalized.namespace,
         family: LanguageFamily("python"),
@@ -716,7 +770,6 @@ pub(crate) fn build_python_receivers<'index, 'a>(
     profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
     normalized_imports: &'index HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules_by_namespace: &'index ModulesByNamespace<'a>,
-    #[cfg(feature = "lang-rust")] rust_forwarding: &'index RustForwarding<'a>,
     package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
     dependency_registry: &'a DependencyRegistry,
 ) -> crate::linker::python::receivers::PythonReceivers<'a> {
@@ -732,8 +785,6 @@ pub(crate) fn build_python_receivers<'index, 'a>(
         profiles,
         normalized_imports,
         modules_by_namespace,
-        #[cfg(feature = "lang-rust")]
-        rust_forwarding,
         package_exports,
         dependency_registry,
         inheritance_imports: &inheritance_imports,

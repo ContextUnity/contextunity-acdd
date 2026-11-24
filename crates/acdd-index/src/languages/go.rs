@@ -7,11 +7,11 @@ use super::types::{
 use crate::ast::syntax::{field, text};
 use crate::models::Facts;
 use tree_sitter::Node as Syntax;
-/// Performs language.
+
 fn language() -> tree_sitter::Language {
     tree_sitter_go::language()
 }
-/// Performs kind.
+
 fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration" => Some("function"),
@@ -25,9 +25,7 @@ fn parse_package_name(source: &str) -> Option<&str> {
     parse_package_declaration(source, false)
 }
 
-/// Language profile for go source files.
 struct Go;
-/// Shared go language profile.
 static GO: Go = Go;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

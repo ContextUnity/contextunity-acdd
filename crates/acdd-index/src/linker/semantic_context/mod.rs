@@ -104,7 +104,7 @@ impl<'a> Context<'a> {
                         (Some(_), Some(_)) => return Member::Ambiguous,
                         _ => {}
                     }
-                    let Some(next) = self.rust.and_then(|rust| rust.deref_target(current)) else {
+                    let Some(next) = self.member_state("rust").and_then(|rust| rust.deref_target(current)) else {
                         break;
                     };
                     current = next;
@@ -247,6 +247,33 @@ impl<'a> Context<'a> {
         }
     }
 
+    fn indexed_member_candidates(
+        &self,
+        owner: SymbolId,
+        member: SymbolId,
+        associated: bool,
+        visited: &mut Vec<SymbolId>,
+    ) -> Vec<&'a Node> {
+        if visited.contains(&owner) {
+            return Vec::new();
+        }
+        visited.push(owner);
+        if let Some(candidates) = self.members.get(&(owner, member, associated)) {
+            let candidates = candidates.clone();
+            visited.pop();
+            return candidates;
+        }
+        let inherited = self
+            .member_bases
+            .get(&owner)
+            .into_iter()
+            .flatten()
+            .flat_map(|base| self.indexed_member_candidates(*base, member, associated, visited))
+            .collect();
+        visited.pop();
+        inherited
+    }
+
     fn lookup_local_member_mode<'s>(
         &'s self,
         receiver: &'a Node,
@@ -254,47 +281,43 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
-        #[cfg(feature = "lang-rust")]
-        if receiver.language == "rust" {
-            return match self
-                .rust
-                .map(|index| index.lookup(receiver, member, associated, caller))
-            {
-                Some([node]) => Member::Local(node),
-                Some(nodes) if nodes.len() > 1 => Member::Ambiguous,
-                _ if !associated
-                    && member == "to_string"
-                    && self.rust.is_some_and(|index| index.has_display(receiver)) =>
-                {
-                    Member::Builtin
-                }
-                _ => Member::Unknown,
-            };
-        }
-        #[cfg(not(feature = "lang-rust"))]
-        let _ = caller;
-        #[cfg(feature = "lang-typescript")]
-        if matches!(
-            receiver.language.as_str(),
-            "typescript" | "javascript" | "vue"
-        ) {
-            if let Some(index) = self.typescript {
-                return match index.lookup(receiver, member, associated) {
-                    [node] => Member::Local(node),
-                    nodes if nodes.len() > 1 => Member::Ambiguous,
+        if receiver.language != "python" {
+            if let Some(state) = self.member_state(receiver.language.as_str()) {
+                return match state.lookup_member(receiver, member, associated, caller) {
+                    crate::languages::profile::LanguageMemberResult::Local(node) => {
+                        Member::Local(node)
+                    }
+                    crate::languages::profile::LanguageMemberResult::Candidates(nodes)
+                        if nodes.len() > 1 =>
+                    {
+                        Member::Ambiguous
+                    }
+                    crate::languages::profile::LanguageMemberResult::Candidates(nodes) => {
+                        nodes.first().copied().map_or(Member::Unknown, Member::Local)
+                    }
+                    _ if receiver.language == "rust"
+                        && !associated
+                        && member == "to_string"
+                        && state.has_display(receiver) =>
+                    {
+                        Member::Builtin
+                    }
                     _ => Member::Unknown,
                 };
             }
         }
-        match self
+        #[cfg(not(feature = "lang-rust"))]
+        let _ = caller;
+        let candidates = self
             .interner
             .lookup_symbol(&receiver.id)
             .zip(self.interner.lookup_symbol(member))
-            .and_then(|(receiver, member)| self.members.get(&(receiver, member, associated)))
-            .map(Vec::as_slice)
-        {
-            Some([node]) => Member::Local(node),
-            Some(nodes) if nodes.len() > 1 => {
+            .map_or_else(Vec::new, |(receiver, member)| {
+                self.indexed_member_candidates(receiver, member, associated, &mut Vec::new())
+            });
+        match candidates.as_slice() {
+            [node] => Member::Local(node),
+            nodes if nodes.len() > 1 => {
                 let non_stubs: Vec<&Node> = nodes
                     .iter()
                     .copied()
@@ -352,17 +375,12 @@ impl<'a> Context<'a> {
     }
 
     fn lookup_python_class_member<'s>(&'s self, receiver: &Node, member: &str) -> Member<'s> {
-        match self.python.map(|index| index.lookup(receiver, member, false)) {
-            Some(crate::linker::python::receivers::PythonReceiverMember::Local(node)) => {
+        match self.lookup_language_member("python", receiver, member, false, receiver) {
+            crate::languages::profile::LanguageMemberResult::Local(node) => {
                 Member::Local(node)
             }
-            Some(crate::linker::python::receivers::PythonReceiverMember::External(
-                module,
-                line,
-                provider,
-                _,
-            )) => Member::External(module, line, provider),
-            Some(crate::linker::python::receivers::PythonReceiverMember::Ambiguous) => {
+            crate::languages::profile::LanguageMemberResult::External { module, import_line: line, provider, .. } => Member::External(module, line, provider),
+            crate::languages::profile::LanguageMemberResult::Ambiguous => {
                 Member::Ambiguous
             }
             _ => Member::Unknown,
@@ -555,12 +573,9 @@ impl<'a> Context<'a> {
         if standard {
             return Member::Builtin;
         }
-        match self
-            .rust
-            .map(|index| index.lookup_builtin(receiver_key, member, associated, caller))
-        {
-            Some([node]) => Member::Local(node),
-            Some(nodes) if nodes.len() > 1 => Member::Ambiguous,
+        match self.lookup_language_builtin("rust", receiver_key, member, associated, caller) {
+            crate::languages::profile::LanguageMemberResult::Local(node) => Member::Local(node),
+            crate::languages::profile::LanguageMemberResult::Candidates(nodes) if nodes.len() > 1 => Member::Ambiguous,
             _ => Member::Unknown,
         }
     }

@@ -1,6 +1,6 @@
 use super::context::*;
 
-impl<'a> LanguageMemberLookup<'_, 'a> {
+impl<'a> Context<'a> {
     pub(in crate::linker) fn rust_alias_member(
         &self,
         owner: &'a Node,
@@ -8,12 +8,11 @@ impl<'a> LanguageMemberLookup<'_, 'a> {
     ) -> Option<Symbol<'a>> {
         let (base, member) = reference.expression.rsplit_once("::")?;
         let TypeTarget::Local(target) =
-            self.context
-                .rust_alias_target(owner, base, reference.position())?
+            self.rust_alias_target(owner, base, reference.position())?
         else {
             return None;
         };
-        Some(self.context.member(target, member, true, owner))
+        Some(self.member(target, member, true, owner))
     }
 }
 
@@ -204,9 +203,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 }
             }
             TypeTarget::Local(class) if class.language == "python" => {
-                let (pack, _row, policy) = self.python?.return_policy(class, member)?;
-                let super::super::receivers::PythonReceiverMember::External(module, line, _, _) =
-                    self.python?.lookup(class, member, false)
+                let (pack, _row, policy) = self.member_state("python")?.return_policy(class, member)?;
+                let crate::languages::profile::LanguageMemberResult::External { module, import_line: line, .. } =
+                    self.lookup_language_member("python", class, member, false, owner)
                 else {
                     return None;
                 };
@@ -230,8 +229,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         at: SourcePosition,
         fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
-        if owner.language == "rust" && callee == "__rust_identity_some" {
-            return Some(if self.unshadowed_global(owner, "Some", at) {
+        if let Some(global) = crate::languages::by_id(&owner.language)
+            .and_then(|profile| profile.linker().identity_call_global(callee))
+        {
+            return Some(if self.unshadowed_global(owner, global, at) {
                 fallback.unwrap_or(TypeTarget::Unknown)
             } else {
                 TypeTarget::Unknown
@@ -609,8 +610,8 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                         ));
                     }
                 }
-                if let Some(target) =
-                    super::super::python::value_flow::synthetic_property_result(owner, receiver, member)
+                if let Some(target) = languages::by_id(&owner.language)
+                    .and_then(|profile| profile.linker().synthetic_property_result(owner, receiver, member))
                 {
                     return Symbol::Type(target);
                 }
@@ -1464,9 +1465,9 @@ impl<'a> Context<'a> {
         }
         #[cfg(feature = "lang-rust")]
         if let Some((crate_name, tail)) = name.split_once('.') {
-            if let Some(root_module) =
-                self.rust_forwarding
-                    .workspace_crate_root(self.dependencies, &owner.path, crate_name)
+            if let Some(root_module) = self
+                .import_state("rust")
+                .and_then(|state| state.workspace_crate_root(self.dependencies, &owner.path, crate_name))
             {
                 if tail.is_empty() {
                     return Some(self.classify(std::iter::once(root_module), role));
@@ -1511,7 +1512,9 @@ impl<'a> Context<'a> {
         role: SymbolRole,
         lookup_key: &mut String,
     ) -> Option<Symbol<'a>> {
-        if self.commonjs.tracks(node, head) && !self.admits_commonjs_binding(node, head, owner, at) {
+        if self.import_state("javascript").is_some_and(|state| {
+            state.tracks_binding(node, head) && !state.admits_binding(node, head, owner, at)
+        }) {
             return Some(Symbol::Unknown);
         }
         if (node.rebinding_names().any(|n| n == head) || self.node_has_rebinding(node, head))
@@ -1690,13 +1693,15 @@ impl<'a> Context<'a> {
         if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
             if imported.iter().all(|node| node.kind == "module") {
                 next.extend(imported.iter().copied().filter(|node| {
-                    self.rust_forwarding
-                        .module_path_visible(&node.qualname, &owner.qualname)
+                    self.import_state("rust")
+                        .is_none_or(|state| state.module_path_visible(&node.qualname, &owner.qualname))
                 }));
                 return;
             }
         }
-        let visible = self.rust_forwarding.targets(target, segment, &owner.qualname);
+        let visible = self
+            .import_state("rust")
+            .map_or(&[][..], |state| state.targets(target, segment, &owner.qualname));
         if visible.is_empty() {
             let sub_qual = format!("{}.{}", target.qualname, segment);
             let target_pkg = target.path.split_once("/src/").map_or("", |(p, _)| p);
@@ -1705,9 +1710,9 @@ impl<'a> Context<'a> {
                     node.language == "rust"
                         && node.kind == "module"
                         && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
-                        && self
-                            .rust_forwarding
-                            .module_path_visible(&node.qualname, &owner.qualname)
+                        && self.import_state("rust").is_none_or(|state| {
+                            state.module_path_visible(&node.qualname, &owner.qualname)
+                        })
                 }));
             }
             return;

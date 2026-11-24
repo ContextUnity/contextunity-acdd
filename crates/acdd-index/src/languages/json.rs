@@ -5,9 +5,7 @@ use crate::ast::syntax::{symbol_name, text};
 use crate::models::Facts;
 use tree_sitter::Node as Syntax;
 
-/// Language profile for JSON documents and JSON Schema files.
 struct Json;
-/// Shared JSON language profile.
 static JSON: Json = Json;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

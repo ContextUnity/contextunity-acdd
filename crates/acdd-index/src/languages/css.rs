@@ -5,9 +5,7 @@ use crate::ast::syntax::{symbol_name, text};
 use crate::models::Facts;
 use tree_sitter::Node as Syntax;
 
-/// Language profile for CSS stylesheets.
 struct Css;
-/// Shared CSS language profile.
 static CSS: Css = Css;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

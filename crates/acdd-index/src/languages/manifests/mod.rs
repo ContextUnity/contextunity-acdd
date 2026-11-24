@@ -8,7 +8,7 @@ pub use framework::{
     RouteDecoratorRule, RuleCoverageCode, RuleCoverageDiagnostic, RuleDomain, RuleIdentity,
 };
 
-/// Manifest projections support.
+/// Manifest node projection rules mapping syntax captures onto graph edges.
 pub mod projections;
 /// Manifest semantic rule engine.
 pub mod semantic;

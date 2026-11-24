@@ -203,7 +203,35 @@ pub(in crate::linker) fn imported_module_member<'a>(
     let (Some(class), None) = (declarations.next(), declarations.next()) else {
         return None;
     };
-    (class.kind == "class").then(|| member_lookup.python(class, member, false))
+    (class.kind == "class").then(|| python_member(member_lookup, class, member, false))
+}
+
+fn python_member<'a>(
+    member_lookup: &LanguageMemberLookup<'_, 'a>,
+    class: &Node,
+    member: &str,
+    super_call: bool,
+) -> super::receivers::PythonReceiverMember<'a> {
+    match member_lookup.lookup_member("python", class, member, super_call, class) {
+        crate::languages::profile::LanguageMemberResult::Local(node) => {
+            super::receivers::PythonReceiverMember::Local(node)
+        }
+        crate::languages::profile::LanguageMemberResult::External {
+            module,
+            import_line,
+            provider,
+            hierarchy,
+        } => super::receivers::PythonReceiverMember::External(
+            module,
+            import_line,
+            provider,
+            hierarchy,
+        ),
+        crate::languages::profile::LanguageMemberResult::Ambiguous => {
+            super::receivers::PythonReceiverMember::Ambiguous
+        }
+        _ => super::receivers::PythonReceiverMember::Unknown,
+    }
 }
 
 /// Borrowed Python view of the shared resolution inputs needed by Python member lookup.
@@ -364,7 +392,7 @@ where
     candidates.dedup_by_key(|node| &node.id);
     if let [class] = candidates.as_slice() {
         if class.kind == "class" {
-            return context.member_lookup.python(class, member, false);
+            return python_member(context.member_lookup, class, member, false);
         }
     }
     if candidates.is_empty() && !constructor_shadowed {
@@ -464,7 +492,7 @@ where
                     if let Some((scope, _)) = owner.qualname.rsplit_once('.') {
                         if let Some([class]) = by_qual.get(scope).map(Vec::as_slice) {
                             if class.kind == "class" && class.path == path {
-                                computed = member_lookup.python(class, member, true);
+                                computed = python_member(member_lookup, class, member, true);
                             }
                         }
                     }
@@ -620,5 +648,5 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
         };
     receiver_class
         .filter(|_| matches!(kind, "calls" | "handles" | "references"))
-        .map(|class| member_lookup.python(class, tail, false))
+        .map(|class| python_member(member_lookup, class, tail, false))
 }

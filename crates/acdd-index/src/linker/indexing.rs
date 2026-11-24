@@ -1,8 +1,5 @@
 use crate::interner::{LinkerInterner, SymbolId};
-use crate::models::{
-    tags::{LanguageId, NodeKind},
-    Facts, Node,
-};
+use crate::models::{tags::NodeKind, Facts, Node};
 use crate::{
     languages::{
         self, dependency_registry::DependencyRegistry, ImportPath, LanguageFamily, LanguageProfile,
@@ -19,9 +16,6 @@ pub(super) struct NamespaceIndexes<'a> {
     pub(super) profiles: HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(super) normalized_imports: HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(super) modules_by_namespace: ModulesByNamespace<'a>,
-    pub(super) rust_library_modules: HashMap<&'a str, (&'a str, &'a Node)>,
-    #[cfg(feature = "lang-rust")]
-    pub(super) rust_forwarding: super::rust::forwarding::RustForwarding<'a>,
 }
 
 impl<'a> NamespaceIndexes<'a> {
@@ -83,7 +77,6 @@ impl<'a> NamespaceIndexes<'a> {
         nodes: &[&'a Node],
         root: Option<&Path>,
         dependency_registry: &'a DependencyRegistry,
-        interner: &mut LinkerInterner<'a>,
     ) -> Self {
         let profiles: HashMap<&str, &'static dyn LanguageProfile> = all
             .iter_facts()
@@ -106,29 +99,12 @@ impl<'a> NamespaceIndexes<'a> {
                     .insert(languages::module_stem(path).trim_end_matches("/index"));
             }
         }
-        let rust_library_modules: HashMap<&str, (&str, &Node)> = all
-            .iter_facts()
-            .filter_map(|(path, facts)| {
-                let (workspace, local_path) = languages::workspace_path(path);
-                if local_path != "src/lib.rs" {
-                    return None;
-                }
-                let module = facts.nodes.iter().find(|node| {
-                    node.kind == NodeKind::Module.as_str()
-                        && node.language == LanguageId::Rust.as_str()
-                })?;
-                let name = dependency_registry.rust_library_for_path(path)?;
-                Some((workspace, (name, module)))
-            })
-            .collect();
         let files: Vec<_> = all.iter_facts().collect();
         let norm_ctx = ImportNormalizationContext {
             root,
             dependencies: dependency_registry,
             profiles: &profiles,
             family_module_stems: &family_module_stems,
-            #[cfg(feature = "lang-rust")]
-            rust_library_modules: &rust_library_modules,
         };
         let normalize_file = |file: &(&'a str, &'a Facts)| {
             let (path, facts) = *file;
@@ -159,26 +135,14 @@ impl<'a> NamespaceIndexes<'a> {
                 (build_imports(), build_modules())
             };
 
-        #[cfg(feature = "lang-rust")]
-        let rust_forwarding = super::rust::forwarding::RustForwarding::build(
-            all,
-            &modules_by_namespace,
-            &normalized_imports,
-            interner,
-        );
-
         Self {
             profiles,
             normalized_imports,
             modules_by_namespace,
-            rust_library_modules,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding,
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn package_exports<'index, 'a>(
     profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
     modules_by_namespace: &'index ModulesByNamespace<'a>,
@@ -187,16 +151,11 @@ pub(super) fn package_exports<'index, 'a>(
     all: &'a dyn crate::FactsLookup,
     root: Option<&Path>,
     interner: &mut LinkerInterner<'a>,
-    #[cfg(feature = "lang-rust")] rust_forwarding: &'index super::rust::forwarding::RustForwarding<
-        'a,
-    >,
 ) -> HashMap<&'static str, PackageExports<'a>> {
-    let mut language_profiles: HashMap<&'static str, &'static dyn LanguageProfile> = profiles
+    let language_profiles: HashMap<&'static str, &'static dyn LanguageProfile> = profiles
         .values()
         .map(|profile| (profile.id(), *profile))
         .collect();
-    #[cfg(feature = "lang-rust")]
-    language_profiles.remove(LanguageId::Rust.as_str());
     let mut package_exports: HashMap<&'static str, PackageExports<'a>> = language_profiles
         .into_iter()
         .map(|(id, profile)| {
@@ -214,11 +173,6 @@ pub(super) fn package_exports<'index, 'a>(
         })
         .collect();
     package_exports.insert("", HashMap::new());
-    #[cfg(feature = "lang-rust")]
-    package_exports.insert(
-        LanguageId::Rust.as_str(),
-        rust_forwarding.package_exports().clone(),
-    );
     package_exports
 }
 
@@ -244,6 +198,7 @@ impl<'a> InheritanceIndexes<'a> {
         namespaces: &'index NamespaceIndexes<'a>,
         package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
         dependency_registry: &'a DependencyRegistry,
+        #[cfg(feature = "lang-rust")] rust_forwarding: &'index super::rust::forwarding::RustForwarding<'a>,
     ) -> Self {
         let build_python = || {
             #[cfg(feature = "lang-python")]
@@ -259,8 +214,6 @@ impl<'a> InheritanceIndexes<'a> {
                     &namespaces.profiles,
                     &namespaces.normalized_imports,
                     &namespaces.modules_by_namespace,
-                    #[cfg(feature = "lang-rust")]
-                    &namespaces.rust_forwarding,
                     package_exports,
                     dependency_registry,
                 )
@@ -281,7 +234,7 @@ impl<'a> InheritanceIndexes<'a> {
                 all,
                 interner,
                 flows,
-                &namespaces.rust_forwarding,
+                rust_forwarding,
                 dependency_registry,
             )
         });

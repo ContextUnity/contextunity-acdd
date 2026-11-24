@@ -154,6 +154,46 @@ fn configured_component_modules<'a>(
 }
 
 impl LanguageLinker for TypeScriptLinker {
+    fn construct_value<'a>(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::javascript::value_flow::construct(owner, callee)
+    }
+
+    fn evaluate_call_fallback<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        callee: &str,
+        site: Option<&crate::semantic::CallSiteEvidence>,
+    ) -> Option<TypeTarget<'a>> {
+        let target = crate::linker::javascript::value_flow::evaluate_call(
+            eval.index,
+            eval.owner,
+            callee,
+            eval.at,
+            eval.resolver,
+            eval.trace,
+        )?;
+        Some(
+            eval.resolver
+                .resolve_call_result(eval.owner, callee, site, eval.at, Some(target.clone()))
+                .unwrap_or(target),
+        )
+    }
+
+    fn evaluate_member_call_fallback<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        receiver: &TypeTarget<'a>,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        crate::linker::javascript::value_flow::platform_member_return(
+            eval.owner, receiver, callee,
+        )
+    }
+
     fn needs_family_module_stems(&self) -> bool {
         true
     }

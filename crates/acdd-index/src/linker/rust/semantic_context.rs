@@ -21,7 +21,7 @@ pub(in crate::linker) fn deref_target<'a>(
 ) -> Option<&'a Node> {
     #[cfg(feature = "lang-rust")]
     {
-        lookup.rust_deref_target(receiver)
+        lookup.deref_target("rust", receiver)
     }
     #[cfg(not(feature = "lang-rust"))]
     {
@@ -38,7 +38,7 @@ pub(in crate::linker) fn receiver_symbol<'a>(
 ) -> Option<Symbol<'a>> {
     if name == "Self" {
         #[cfg(feature = "lang-rust")]
-        if let Some(receiver) = lookup.and_then(|lookup| lookup.rust_receiver(owner)) {
+        if let Some(receiver) = lookup.and_then(|lookup| lookup.receiver_for("rust", owner)) {
             return Some(Symbol::Type(TypeTarget::Local(receiver)));
         }
         if let Some(receiver_type) = owner.details["receiver_type"]
@@ -75,11 +75,13 @@ pub(in crate::linker) fn receiver_symbol<'a>(
         let Some(lookup) = lookup else {
             return Some(Symbol::Unknown);
         };
-        let Some(receiver) = lookup.rust_receiver(owner) else {
+        let Some(receiver) = lookup.receiver_for("rust", owner) else {
             return Some(Symbol::Unknown);
         };
-        let methods = lookup.rust(receiver, member, true, owner);
-        match methods {
+        let methods = lookup
+            .lookup_member("rust", receiver, member, true, owner)
+            .into_nodes();
+        match methods.as_slice() {
             [target] => Some(Symbol::Callable(target)),
             [] => Some(Symbol::Unknown),
             _ => Some(Symbol::Ambiguous),
@@ -207,7 +209,7 @@ fn has_local_scope_member(facts: &Facts, scope_qualname: &str, name: &str, skip_
 #[cfg(feature = "lang-rust")]
 fn apply_forwarded_module_globs<'a>(
     context: &mut Context<'a>,
-    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
+    rust_forwarding: &'a (dyn crate::languages::profile::LanguageImportState + 'a),
     rust_modules: &[(&'a Facts, &'a Node)],
 ) {
     for &(facts, module) in rust_modules {
@@ -412,8 +414,10 @@ pub(in crate::linker) fn import_globs<'a>(
     by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
-    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
 ) {
+    let Some(rust_forwarding) = context.import_state("rust") else {
+        return;
+    };
     let rust_modules: Vec<_> = all
         .values_facts()
         .filter_map(|facts| {
@@ -451,7 +455,7 @@ struct RustGlobImports<'a, 'b> {
     by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
-    rust_forwarding: &'a super::forwarding::RustForwarding<'a>,
+    rust_forwarding: &'a (dyn crate::languages::profile::LanguageImportState + 'a),
     rust_modules: &'b [(&'a Facts, &'a Node)],
 }
 

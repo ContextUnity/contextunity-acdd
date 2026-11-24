@@ -863,33 +863,33 @@ pub struct LazyExport {
 #[derive(Default)]
 /// Compact semantic metadata projected into an indexed symbol.
 pub struct SymbolMetadata {
-    /// Optional return type value.
+    /// Extracted return type expression, when annotated or inferred by syntax rules.
     pub return_type: Option<crate::semantic::TypeExpr>,
-    /// The param types value.
+    /// Parameter annotations keyed by parameter identifier.
     pub param_types: BTreeMap<String, String>,
-    /// Optional receiver name value.
+    /// Explicit receiver parameter identifier (such as `self` or `cls`).
     pub receiver_name: Option<String>,
-    /// The decorators value.
+    /// Normalized decorator or attribute expressions attached to the symbol.
     pub decorators: Vec<String>,
-    /// Optional bases value.
+    /// Serialized base-class or interface list declared on a nominal type.
     pub bases: Option<String>,
-    /// Optional receiver value.
+    /// Target type name for external or out-of-line receiver methods.
     pub receiver: Option<String>,
     /// Optional manifest provenance for rule-caused object ownership.
     pub object_ownership: Option<crate::semantic::ObjectOwnershipFact>,
-    /// Optional receiver type value.
+    /// Normalized type annotation carried by a receiver or `impl` target.
     pub receiver_type: Option<String>,
-    /// Whether method applies.
+    /// Marks callable items extracted as receiver-bound methods.
     pub is_method: Option<bool>,
-    /// Whether static applies.
+    /// Marks members declared static or associated rather than instance-bound.
     pub is_static: Option<bool>,
-    /// Whether default export applies.
+    /// Marks default-exported JavaScript, TypeScript, or Vue declarations.
     pub default_export: bool,
-    /// Whether async applies.
+    /// Marks asynchronous functions or methods.
     pub is_async: bool,
-    /// Whether overload applies.
+    /// Marks declaration-only overload signatures paired with an implementation.
     pub is_overload: bool,
-    /// Whether stub applies.
+    /// Marks declaration-only stubs (such as `.pyi` or `.d.ts` entries).
     pub is_stub: bool,
     /// Whether a declaration is guarded by source control flow in its owner scope.
     pub is_conditional: bool,
@@ -899,13 +899,13 @@ pub struct SymbolMetadata {
 
 /// Borrowed syntax and source context passed to extraction hooks.
 pub struct SyntaxContext<'a, 'tree> {
-    /// The node value.
+    /// Current tree-sitter CST node being inspected.
     pub node: Syntax<'tree>,
-    /// The source value.
+    /// Full source text of the indexed file.
     pub source: &'a str,
-    /// The owner value.
+    /// Owning enclosing symbol identifier or qualified scope name.
     pub owner: &'a str,
-    /// The offset value.
+    /// Byte offset applied to extracted source coordinates.
     pub offset: usize,
     /// Borrowed typed per-language file state.
     pub file_state: &'a LanguageFileState,
@@ -979,7 +979,7 @@ pub struct AstSearchProbe {
     pub suffix: &'static str,
 }
 
-/// Performs module stem.
+/// Returns the workspace-relative path with its file extension removed.
 pub fn module_stem(path: &str) -> &str {
     let file_start = path.rfind('/').map_or(0, |index| index + 1);
     path[file_start..]
@@ -1051,7 +1051,7 @@ pub(crate) fn parse_package_declaration(source: &str, block_comments: bool) -> O
 
 pub use acdd_core::config::workspace_path;
 
-/// Performs relative namespace.
+/// Resolves a relative import path (`./`, `../`) against the importing module directory.
 pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     let (_, owner) = workspace_path(owner);
     let mut parts: Vec<_> = owner
@@ -1072,7 +1072,7 @@ pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     Some(parts.join("."))
 }
 
-/// Performs call.
+/// Extracts a function or macro call reference from the current syntax node.
 pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: bool) {
     let Some(callee) =
         field(ctx.node, ctx.source, "function").or_else(|| field(ctx.node, ctx.source, "macro"))

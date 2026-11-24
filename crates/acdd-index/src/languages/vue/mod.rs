@@ -18,9 +18,7 @@ mod template;
 use common::{source_position, Position};
 use setup_facts::{collect_setup_facts, RegisteredComponent, SetupFactOutputs};
 
-/// Represents vue data.
 struct Vue;
-/// Shared vue language profile.
 static VUE: Vue = Vue;
 impl LanguageProfile for Vue {
     fn id(&self) -> &'static str {

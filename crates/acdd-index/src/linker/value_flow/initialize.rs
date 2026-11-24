@@ -190,12 +190,12 @@ fn field_owner<'a>(
 }
 
 impl<'a> ValueFlowIndex<'a> {
-    /// Performs build.
+    /// Builds value-flow summaries across `all` using default semantic limits.
     pub fn build(all: &'a BTreeMap<String, Facts>, resolver: &impl SemanticResolver<'a>) -> Self {
         Self::build_with_limits(all, resolver, SemanticLimits::default())
     }
 
-    /// Builds with limits.
+    /// Builds value-flow summaries across `all` with caller-specified `limits`.
     pub fn build_with_limits(
         all: &'a BTreeMap<String, Facts>,
         resolver: &impl SemanticResolver<'a>,

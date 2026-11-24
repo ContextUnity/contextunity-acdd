@@ -8,7 +8,7 @@ use crate::models::{Node, Reference};
 use crate::semantic::SourcePosition;
 
 impl<'a> ValueFlowIndex<'a> {
-    /// Performs lookup.
+    /// Resolves the reaching type bound to `name` in `owner` at source position `at`.
     pub fn lookup(&self, owner: &Node, name: &str, at: SourcePosition) -> Option<&TypeTarget<'a>> {
         self.lookup_tracked(owner, name, at, None)
     }
@@ -127,7 +127,7 @@ impl<'a> ValueFlowIndex<'a> {
         TypeTarget::Unknown
     }
 
-    /// Performs return type.
+    /// Returns the inferred return type recorded for `callable`.
     pub fn return_type(&self, callable: &Node) -> Option<&TypeTarget<'a>> {
         self.return_type_tracked(callable, None)
     }
@@ -147,7 +147,7 @@ impl<'a> ValueFlowIndex<'a> {
             })
     }
 
-    /// Performs computed receiver.
+    /// Returns the precomputed receiver type recorded for call `reference`.
     pub fn computed_receiver(&self, reference: &Reference) -> Option<&TypeTarget<'a>> {
         self.computed.get(&ComputedKey {
             expression: reference.expression.as_str(),
@@ -157,7 +157,7 @@ impl<'a> ValueFlowIndex<'a> {
         })
     }
 
-    /// Performs field type.
+    /// Returns the inferred field type for `name` on declaration `class`.
     pub fn field_type(&self, class: &Node, name: &str) -> Option<&TypeTarget<'a>> {
         self.field_type_tracked(class, name, None)
     }
@@ -210,7 +210,7 @@ impl<'a> ValueFlowIndex<'a> {
         ))
     }
 
-    /// Performs type of expression.
+    /// Resolves the type of dotted or chained `expression` within `owner` at `at`.
     pub fn type_of_expression(
         &self,
         owner: &'a Node,
@@ -322,9 +322,10 @@ impl<'a> ValueFlowIndex<'a> {
             return Some(target);
         }
         if let Some((receiver, member)) = expression.rsplit_once('.') {
+            let linker = crate::languages::by_id(&owner.language).map(|profile| profile.linker());
             if let Some(class) = self
                 .value_expression(owner, receiver, at, resolver, trace)
-                .and_then(super::super::rust::value_flow::local_class)
+                .and_then(|target| linker.and_then(|l| l.local_receiver_class(target)))
             {
                 return self.field_type_tracked(class, member, trace);
             }

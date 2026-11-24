@@ -237,14 +237,14 @@ pub(super) const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive = DeclarativeRu
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::linker) fn emit_route_match(
+pub(in crate::linker) fn emit_route_match<E>(
     graph: &mut Graph,
     path: &str,
     src: &str,
     line: usize,
     primitive: DeclarativeRulePrimitive,
     expression: &str,
-    matched: Result<Option<&Node>, ()>,
+    matched: Result<Option<&Node>, E>,
     resolved_value: Option<&str>,
     error_value: &str,
 ) {
@@ -269,7 +269,7 @@ pub(in crate::linker) fn emit_route_match(
             )
         }
         Ok(None) => ("unresolved", format!("{unmatched_prefix}: {error_value}")),
-        Err(()) => ("ambiguous", format!("{ambiguous_prefix}: {error_value}")),
+        Err(_) => ("ambiguous", format!("{ambiguous_prefix}: {error_value}")),
     };
     graph.push_coverage(path, line, expression, status, evidence);
 }

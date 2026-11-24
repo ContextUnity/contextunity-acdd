@@ -4,9 +4,7 @@ use super::types::ImportPath;
 use crate::ast::syntax::{text, ScopeBindings};
 use tree_sitter::Node as Syntax;
 
-/// Represents toml data.
 struct Toml;
-/// Shared toml language profile.
 static TOML: Toml = Toml;
 /// Language profiles provided by this module.
 pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&TOML];

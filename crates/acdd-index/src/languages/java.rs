@@ -8,9 +8,7 @@ use super::types::{
 use crate::ast::syntax::{text, ScopeBindings};
 use crate::models::{Facts, Node, Reference};
 use tree_sitter::Node as Syntax;
-/// Language profile for java source files.
 struct Java;
-/// Shared java language profile.
 static JAVA: Java = Java;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

@@ -6,9 +6,7 @@ use super::types::{
 use crate::ast::syntax::{field, text, ScopeBindings};
 use crate::models::{Facts, Node};
 use tree_sitter::Node as Syntax;
-/// Represents csharp data.
 struct CSharp;
-/// Shared csharp language profile.
 static CSHARP: CSharp = CSharp;
 
 static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {

@@ -134,12 +134,12 @@ fn string_utf8_result(member: &str, owned: bool) -> Option<TypeTarget<'static>> 
 }
 
 fn constructor_local_result<'a>(
-    index: &impl ValueFlowLookup<'a>,
+    index: &(impl ValueFlowLookup<'a> + ?Sized),
     target: &TypeTarget<'a>,
     (member, callee_clean): (&str, &str),
     owner: &'a Node,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
     let TypeTarget::Local(node) = target else {
@@ -189,7 +189,7 @@ fn constructor_builtin_result<'a>(
     member: &str,
     owner: &'a Node,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
 ) -> Option<TypeTarget<'a>> {
     if matches!(member, "new" | "from" | "with_capacity" | "default") {
         return Some(target.clone());
@@ -216,11 +216,11 @@ fn constructor_builtin_result<'a>(
 }
 
 pub(in crate::linker) fn constructor_result<'a>(
-    index: &impl ValueFlowLookup<'a>,
+    index: &(impl ValueFlowLookup<'a> + ?Sized),
     owner: &'a Node,
     callee: &str,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &dyn SemanticResolver<'a>,
     trace: Option<&ReadTrace<'a, '_>>,
 ) -> Option<TypeTarget<'a>> {
     if owner.language != "rust" {
@@ -313,7 +313,7 @@ fn external_constructor_result<'a>(
     member: &str,
     owner: &'a Node,
     at: SourcePosition,
-    resolver: &impl SemanticResolver<'a>,
+    resolver: &(impl SemanticResolver<'a> + ?Sized),
 ) -> Option<Option<TypeTarget<'a>>> {
     let module_ref = import_path(module.trim_start_matches("::"));
     let Some(crate_name) = module_ref.split('.').next().filter(|s| !s.is_empty()) else {

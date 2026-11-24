@@ -17,7 +17,7 @@ impl<'a> TemplateRootRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
         dependencies: &languages::dependency_registry::DependencyRegistry,
-        flows: Option<&'a HashMap<crate::interner::SymbolId, &'a FlowState>>,
+        flows: Option<&HashMap<crate::interner::SymbolId, &'a FlowState>>,
         interner: &crate::interner::LinkerInterner<'a>,
     ) -> Self {
         let mut by_root: HashMap<&str, Vec<(&Node, &crate::semantic::ExtractionRuleOrigin)>> =
@@ -326,7 +326,7 @@ pub(in crate::linker) struct TemplateRegistry<'a> {
 impl<'a> TemplateRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
-        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
+        flows: Option<&HashMap<crate::interner::SymbolId, &'a FlowState>>,
         interner: &crate::interner::LinkerInterner<'_>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
@@ -740,7 +740,7 @@ impl<'a> RenderContextRegistry<'a> {
 
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
-        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
+        flows: Option<&HashMap<crate::interner::SymbolId, &'a FlowState>>,
         semantic_context: &semantic_context::Context<'a>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {

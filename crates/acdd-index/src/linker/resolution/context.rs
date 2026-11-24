@@ -2,7 +2,7 @@ use super::input::ResolutionInput;
 use crate::languages::{
     self, LanguageProfile,
 };
-use crate::linker::{html, rust, semantic_context, value_flow};
+use crate::linker::{html, semantic_context, value_flow};
 use crate::models::{
     compact_graph::CompactGraph as Graph,
     Facts, Node, Reference,
@@ -135,7 +135,8 @@ pub(super) fn chained_member_receiver<'a, 'idx>(
             }
             value_flow::TypeTarget::RustDeref { .. }
             | value_flow::TypeTarget::RustReference { .. } => {
-                rust::value_flow::local_class(receiver.as_ref())
+                profile
+                    .and_then(|profile| profile.linker().local_receiver_class(receiver.as_ref()))
                     .and_then(|class| value_flow.field_type(class, field))
                     .map(Cow::Borrowed)
                     .or_else(|| {

@@ -1,12 +1,13 @@
 use crate::interner::{LinkerInterner, SymbolId};
 use crate::languages::{
     dependency_registry::DependencyRegistry,
+    profile::{LanguageMemberIndex, LanguageMemberResult},
     types as languages,
 };
 use crate::models::{Facts, Node};
 use hashbrown::{HashMap, HashSet};
 
-use super::forwarding::{is_crate_visible, resolve_workspace_crate_namespace, RustForwarding};
+use super::forwarding::{is_crate_visible, resolve_qualified_path, RustForwarding};
 
 const RUST_ALIAS_DEPTH: usize = 64;
 
@@ -103,58 +104,6 @@ fn finalize_member_list(methods: &mut Vec<&Node>) {
     methods.sort_by_key(|method| &method.id);
     methods.dedup_by_key(|method| method.id.as_str());
     crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
-}
-
-fn namespace(path: &str, module: &str, name: &str) -> String {
-    let (_, path) = languages::workspace_path(path);
-    if let Some(tail) = name.strip_prefix("crate::") {
-        let root = path
-            .split_once("/src/")
-            .map(|(prefix, _)| format!("{}.src", prefix.replace('/', ".")))
-            .unwrap_or_else(|| "src".to_owned());
-        format!("{root}.{}", tail.replace("::", "."))
-    } else if let Some(tail) = name.strip_prefix("self::") {
-        format!("{module}.{}", tail.replace("::", "."))
-    } else if let Some(mut tail) = name.strip_prefix("super::") {
-        let mut module = module.rsplit_once('.').map_or("", |(parent, _)| parent);
-        while let Some(rest) = tail.strip_prefix("super::") {
-            module = module.rsplit_once('.').map_or("", |(parent, _)| parent);
-            tail = rest;
-        }
-        format!("{module}.{}", tail.replace("::", "."))
-    } else {
-        format!("{module}.{}", name.replace("::", "."))
-    }
-}
-
-fn resolve_qualified_path(
-    scope_path: &str,
-    module_qual: &str,
-    target: &str,
-    dependencies: &DependencyRegistry,
-    profile_paths: &[&str],
-) -> String {
-    if !target.starts_with("crate::")
-        && !target.starts_with("self::")
-        && !target.starts_with("super::")
-    {
-        let clean = target.trim_end_matches("::");
-        let (head, tail) = clean.split_once("::").unwrap_or((clean, ""));
-        if let Some((ns, _)) = resolve_workspace_crate_namespace(
-            profile_paths.iter().copied(),
-            dependencies,
-            scope_path,
-            head,
-            tail,
-        ) {
-            return ns;
-        }
-    }
-    let mut resolved = namespace(scope_path, module_qual, target);
-    while resolved.ends_with('.') {
-        resolved.pop();
-    }
-    resolved
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -279,9 +228,9 @@ fn resolve_type<'a>(
     facts: &'a Facts,
     scope: &Node,
     name: &str,
-    by_qual: &HashMap<&str, Vec<&'a Node>>,
+    tables: &RustMemberBuildTables<'a>,
+    forwarding: &RustForwarding<'a>,
     dependencies: &DependencyRegistry,
-    profile_paths: &[&str],
 ) -> Option<&'a Node> {
     if name.is_empty() || name.contains(['<', '>', '&', '[', '(', '!']) {
         return None;
@@ -306,100 +255,154 @@ fn resolve_type<'a>(
                 .iter()
                 .find(|node| node.kind == "module" && node.language == "rust")
         })?;
-    let (head, tail) = name.split_once("::").unwrap_or((name, ""));
-    let imports: Vec<_> = facts
-        .references
-        .iter()
-        .filter(|reference| {
-            reference.kind == "imports"
-                && reference.alias.as_deref() == Some(head)
-                && (reference.source == module.id || reference.source == scope.id)
-        })
-        .collect();
-    let qualified = match imports.as_slice() {
-        [] => resolve_qualified_path(
-            &scope.path,
-            &module.qualname,
-            name,
-            dependencies,
-            profile_paths,
-        ),
-        [import] => {
-            let target = import.module.as_deref()?;
-            let target = if tail.is_empty() {
-                target.to_owned()
-            } else {
-                format!("{target}::{tail}")
-            };
-            resolve_qualified_path(
-                &scope.path,
-                &module.qualname,
-                &target,
-                dependencies,
-                profile_paths,
-            )
-        }
-        _ => return None,
-    };
     let workspace = languages::workspace_path(&scope.path).0;
-    let pick_unique = |qualified: &str| -> Option<&'a Node> {
-        let candidates = by_qual.get(qualified)?;
-        let mut candidates = candidates.iter().copied().filter(|node| {
+    fn pick_unique_slice<'a>(nodes: &[&'a Node], workspace: &str) -> Option<&'a Node> {
+        let mut candidates = nodes.iter().copied().filter(|node| {
             languages::workspace_path(&node.path).0 == workspace
                 && matches!(node.kind.as_str(), "struct" | "enum" | "trait" | "type")
         });
         let candidate = candidates.next()?;
         candidates.next().is_none().then_some(candidate)
+    }
+    let pick_unique = |qualified: &str| -> Option<&'a Node> {
+        tables
+            .by_qual
+            .get(qualified)
+            .and_then(|nodes| pick_unique_slice(nodes, workspace))
     };
-    if let Some(found) = pick_unique(qualified.as_str()) {
-        return Some(found);
-    }
-    if imports.is_empty() && !name.contains("::") {
-        let mut ancestor = scope.qualname.as_str();
-        while let Some((parent, _)) = ancestor.rsplit_once('.') {
-            if parent.len() <= module.qualname.len() {
-                break;
-            }
-            if let Some(found) = pick_unique(&format!("{parent}.{name}")) {
-                return Some(found);
-            }
-            ancestor = parent;
-        }
-    }
-    if imports.is_empty() && !name.contains("::") {
-        let mut wildcard_matches = Vec::new();
-        for import in facts.references.iter().filter(|reference| {
-            reference.kind == "imports"
-                && reference.alias.as_deref() == Some("*")
-                && (reference.source == module.id || reference.source == scope.id)
-        }) {
-            let Some(target) = import
-                .module
-                .as_deref()
-                .or(Some(import.expression.as_str()))
-                .map(|m| m.trim_end_matches("::*"))
-                .filter(|m| !m.is_empty())
-            else {
-                continue;
-            };
-            let wc_qual = resolve_qualified_path(
-                &scope.path,
-                &module.qualname,
-                &format!("{target}::{name}"),
-                dependencies,
-                profile_paths,
-            );
-            if let Some(found) = pick_unique(&wc_qual) {
-                if !wildcard_matches
-                    .iter()
-                    .any(|existing: &&Node| existing.id == found.id)
-                {
-                    wildcard_matches.push(found);
+
+    let is_inline_submodule = facts.nodes.iter().any(|node| {
+        node.path == scope.path
+            && node.language == "rust"
+            && node.kind == "module"
+            && node.id != module.id
+            && module.qualname.starts_with(&format!("{}.", node.qualname))
+    });
+
+    if let Some((head, tail)) = name.split_once("::") {
+        let tail_dotted = tail.replace("::", ".");
+        if !is_inline_submodule {
+            let mut forwarded = Vec::new();
+            for provider in forwarding.targets(module, head, &module.qualname) {
+                if provider.kind == "module" {
+                    forwarded.extend(forwarding.resolve_path(
+                        provider,
+                        &tail_dotted,
+                        &module.qualname,
+                        Some(&tables.by_qual),
+                    ));
                 }
             }
+            forwarded.sort_by_key(|node| node.id.as_str());
+            forwarded.dedup_by_key(|node| node.id.as_str());
+            if let Some(found) = pick_unique_slice(&forwarded, workspace) {
+                return Some(found);
+            }
         }
-        if let [unique] = wildcard_matches.as_slice() {
-            return Some(*unique);
+        let local_imports: Vec<_> = if !is_inline_submodule && scope.id == module.id {
+            Vec::new()
+        } else {
+            facts
+                .references
+                .iter()
+                .filter(|reference| {
+                    reference.kind == "imports"
+                        && (reference.source == scope.id || reference.source == module.id)
+                        && reference.alias.as_deref() == Some(head)
+                })
+                .collect()
+        };
+        let qualified = match local_imports.as_slice() {
+            [] => resolve_qualified_path(
+                &scope.path,
+                &module.qualname,
+                name,
+                dependencies,
+                &tables.profile_paths,
+            ),
+            [import] => {
+                let target = import.module.as_deref()?;
+                resolve_qualified_path(
+                    &scope.path,
+                    &module.qualname,
+                    &format!("{target}::{tail}"),
+                    dependencies,
+                    &tables.profile_paths,
+                )
+            }
+            _ => return None,
+        };
+        if let Some(found) = pick_unique(&qualified) {
+            return Some(found);
+        }
+        let mut cursor = qualified.as_str();
+        while let Some((mod_ns, _)) = cursor.rsplit_once('.') {
+            let rel_tail = &qualified[mod_ns.len() + 1..];
+            if let Some(providers) = tables.modules_by_ns.get(mod_ns) {
+                let mut reexported = Vec::new();
+                for provider in providers {
+                    reexported.extend(forwarding.resolve_path(
+                        provider,
+                        rel_tail,
+                        &module.qualname,
+                        Some(&tables.by_qual),
+                    ));
+                }
+                reexported.sort_by_key(|node| node.id.as_str());
+                reexported.dedup_by_key(|node| node.id.as_str());
+                if let Some(found) = pick_unique_slice(&reexported, workspace) {
+                    return Some(found);
+                }
+            }
+            cursor = mod_ns;
+        }
+        return None;
+    }
+
+    if let Some(found) = pick_unique(&format!("{}.{name}", module.qualname)) {
+        return Some(found);
+    }
+    let mut ancestor = scope.qualname.as_str();
+    while let Some((parent, _)) = ancestor.rsplit_once('.') {
+        if parent.len() <= module.qualname.len() {
+            break;
+        }
+        if let Some(found) = pick_unique(&format!("{parent}.{name}")) {
+            return Some(found);
+        }
+        ancestor = parent;
+    }
+    if !is_inline_submodule {
+        if let Some(found) =
+            pick_unique_slice(forwarding.targets(module, name, &module.qualname), workspace)
+        {
+            return Some(found);
+        }
+    }
+    if scope.id != module.id || is_inline_submodule {
+        let local_imports: Vec<_> = facts
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.kind == "imports"
+                    && (reference.source == scope.id || reference.source == module.id)
+                    && reference.alias.as_deref() == Some(name)
+            })
+            .collect();
+        match local_imports.as_slice() {
+            [] => {}
+            [import] => {
+                let target = import.module.as_deref()?;
+                let qualified = resolve_qualified_path(
+                    &scope.path,
+                    &module.qualname,
+                    target,
+                    dependencies,
+                    &tables.profile_paths,
+                );
+                return pick_unique(&qualified);
+            }
+            _ => return None,
         }
     }
     None
@@ -454,16 +457,6 @@ fn collect_rust_member_tables<'a>(all: &'a dyn crate::FactsLookup) -> RustMember
     }
 }
 
-type MacroTraitTables<'a> = (
-    HashMap<&'a str, Vec<&'a Node>>,
-    HashMap<(&'a str, &'a str), Vec<&'a Node>>,
-);
-
-type TraitDeclTables<'a> = (
-    HashMap<&'a str, Vec<&'a Node>>,
-    HashMap<&'a str, Vec<&'a Node>>,
-);
-
 type ImplReceiverMap<'a> = HashMap<&'a str, (&'a Node, bool, Option<&'a Node>)>;
 type BuiltinImplReceiverMap<'a> = HashMap<&'a str, (&'static str, &'a Node)>;
 
@@ -475,64 +468,13 @@ struct RustMemberBuildEnv<'a, 'env> {
     dependencies: &'env DependencyRegistry,
 }
 
-fn collect_macro_trait_maps<'a>(
-    all: &'a dyn crate::FactsLookup,
-    tables: &RustMemberBuildTables<'a>,
-    dependencies: &DependencyRegistry,
-) -> MacroTraitTables<'a> {
-    let mut macro_traits = HashMap::<&str, Vec<&Node>>::new();
-    let mut crate_exported_macros = HashMap::<(&str, &str), Vec<&Node>>::new();
-    for node in all
-        .values_facts()
-        .flat_map(|facts| &facts.nodes)
-        .filter(|node| node.language == "rust" && node.kind == "macro")
-    {
-        if node.details["is_public"] == true {
-            let crate_root = node
-                .path
-                .split_once("/src/")
-                .map_or("", |(prefix, _)| prefix);
-            crate_exported_macros
-                .entry((crate_root, node.name.as_str()))
-                .or_default()
-                .push(node);
-        }
-        let Some(impl_traits) = node.details["rust_macro_impl_traits"].as_array() else {
-            continue;
-        };
-        let mod_qual = node.qualname.rsplit_once('.').map_or("", |(q, _)| q);
-        for trait_val in impl_traits {
-            let Some(clean) = trait_val.as_str() else {
-                continue;
-            };
-            let normalized_expr = clean
-                .strip_prefix("$crate::")
-                .map(|tail| format!("crate::{tail}"))
-                .unwrap_or_else(|| clean.to_owned());
-            let qual = resolve_qualified_path(
-                &node.path,
-                mod_qual,
-                &normalized_expr,
-                dependencies,
-                &tables.profile_paths,
-            );
-            if let Some(candidates) = tables.by_qual.get(qual.as_str()) {
-                for cand in candidates.iter().copied().filter(|n| n.kind == "trait") {
-                    macro_traits.entry(node.id.as_str()).or_default().push(cand);
-                }
-            }
-        }
-    }
-    (macro_traits, crate_exported_macros)
-}
-
 fn collect_trait_decl_tables<'a>(
     all: &'a dyn crate::FactsLookup,
     tables: &RustMemberBuildTables<'a>,
     index: &mut RustMembers<'a>,
-) -> TraitDeclTables<'a> {
-    let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
-    let mut trait_methods = HashMap::<&str, Vec<&Node>>::new();
+    trait_defaults: &mut HashMap<&'a str, Vec<&'a Node>>,
+    trait_methods: &mut HashMap<&'a str, Vec<&'a Node>>,
+) {
     for facts in all.values_facts() {
         for edge in facts
             .edges
@@ -570,7 +512,6 @@ fn collect_trait_decl_tables<'a>(
             }
         }
     }
-    (trait_defaults, trait_methods)
 }
 
 fn resolve_deref_impl_target<'a>(
@@ -624,16 +565,7 @@ fn resolve_deref_impl_target<'a>(
     };
     let receiver = owner.details["receiver_type"]
         .as_str()
-        .and_then(|name| {
-            resolve_type(
-                facts,
-                owner,
-                name,
-                &tables.by_qual,
-                dependencies,
-                &tables.profile_paths,
-            )
-        })
+        .and_then(|name| resolve_type(facts, owner, name, tables, forwarding, dependencies))
         .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true)?;
     let head = trait_name.split("::").next().unwrap_or_default();
     let shadowed = forwarding
@@ -680,15 +612,10 @@ fn resolve_deref_impl_target<'a>(
             .and_then(|facts| facts.alias_type.clone())
     };
     let resolved = match alias {
-        Some(crate::semantic::TypeExpr::Named { name }) => resolve_type(
-            facts,
-            target,
-            &name,
-            &tables.by_qual,
-            dependencies,
-            &tables.profile_paths,
-        )
-        .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true),
+        Some(crate::semantic::TypeExpr::Named { name }) => {
+            resolve_type(facts, target, &name, tables, forwarding, dependencies)
+                .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true)
+        }
         _ => None,
     };
     Some((receiver, resolved))
@@ -820,15 +747,8 @@ fn collect_file_visible_traits<'a>(
         let Some(name) = import.alias.as_deref() else {
             continue;
         };
-        if let Some(target) = resolve_type(
-            facts,
-            import_scope,
-            name,
-            &tables.by_qual,
-            dependencies,
-            &tables.profile_paths,
-        )
-        .filter(|node| node.kind == "trait")
+        if let Some(target) = resolve_type(facts, import_scope, name, tables, forwarding, dependencies)
+            .filter(|node| node.kind == "trait")
         {
             visible_traits
                 .entry(&module.path)
@@ -854,6 +774,7 @@ fn collect_file_visible_traits<'a>(
 fn collect_file_impl_receivers<'a>(
     facts: &'a Facts,
     tables: &RustMemberBuildTables<'a>,
+    forwarding: &RustForwarding<'a>,
     dependencies: &DependencyRegistry,
     index: &mut RustMembers<'a>,
 ) -> (ImplReceiverMap<'a>, BuiltinImplReceiverMap<'a>) {
@@ -871,28 +792,14 @@ fn collect_file_impl_receivers<'a>(
                 } else {
                     name
                 };
-                resolve_type(
-                    facts,
-                    owner,
-                    nominal,
-                    &tables.by_qual,
-                    dependencies,
-                    &tables.profile_paths,
-                )
+                resolve_type(facts, owner, nominal, tables, forwarding, dependencies)
             })
             .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"));
         let impl_trait = owner.details["impl_trait"].as_str();
         let trait_node = impl_trait.and_then(|name| {
             let clean_trait = name.split('<').next().unwrap_or(name).trim();
-            resolve_type(
-                facts,
-                owner,
-                clean_trait,
-                &tables.by_qual,
-                dependencies,
-                &tables.profile_paths,
-            )
-            .filter(|node| node.kind == "trait")
+            resolve_type(facts, owner, clean_trait, tables, forwarding, dependencies)
+                .filter(|node| node.kind == "trait")
         });
         let Some(receiver) = local_receiver else {
             if let (Some(builtin_key), Some(trait_node)) =
@@ -923,27 +830,16 @@ fn collect_file_impl_receivers<'a>(
     (impl_receivers, builtin_impl_receivers)
 }
 
-struct MemberAccumulator<'a, 'acc> {
-    index: &'acc mut RustMembers<'a>,
-    traits: &'acc mut TraitImplMap<'a>,
-    builtin_traits: &'acc mut BuiltinTraitImplMap<'a>,
-    unproven_deref_members: &'acc mut Vec<(&'a Node, &'a Node, &'a Node, bool)>,
-}
-
 fn collect_file_impl_members<'a>(
     facts: &'a Facts,
     tables: &RustMemberBuildTables<'a>,
-    impl_receivers: &ImplReceiverMap<'a>,
-    builtin_impl_receivers: &BuiltinImplReceiverMap<'a>,
+    (impl_receivers, builtin_impl_receivers): (&ImplReceiverMap<'a>, &BuiltinImplReceiverMap<'a>),
     trait_defaults: &HashMap<&'a str, Vec<&'a Node>>,
-    acc: &mut MemberAccumulator<'a, '_>,
-) {
-    let MemberAccumulator {
-        index,
-        traits,
-        builtin_traits,
-        unproven_deref_members,
-    } = acc;
+    index: &mut RustMembers<'a>,
+    traits: &mut TraitImplMap<'a>,
+    builtin_traits: &mut BuiltinTraitImplMap<'a>,
+) -> Vec<(&'a Node, &'a Node, &'a Node, bool)> {
+    let mut unproven_deref_members = Vec::new();
     let mut implemented = HashMap::<&str, HashSet<(&str, bool)>>::new();
     for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
         let (Some(owner), Some(method)) = (
@@ -965,7 +861,9 @@ fn collect_file_impl_members<'a>(
             continue;
         }
         if owner.kind == "impl" {
-            if let Some(&(builtin_key, trait_node)) = builtin_impl_receivers.get(owner.id.as_str()) {
+            if let Some(&(builtin_key, trait_node)) =
+                builtin_impl_receivers.get(owner.id.as_str())
+            {
                 let associated = matches!(method.kind.as_str(), "constant" | "type")
                     || method.details["is_static"] == true;
                 builtin_traits
@@ -986,13 +884,13 @@ fn collect_file_impl_members<'a>(
             (*owner, false, None)
         };
         index.receivers_by_method.insert(&method.id, receiver);
-        let associated =
-            matches!(method.kind.as_str(), "constant" | "type") || method.details["is_static"] == true;
+        let associated = matches!(method.kind.as_str(), "constant" | "type")
+            || method.details["is_static"] == true;
         if method.details["unproven_bounds"] == true {
             let deref_wrapper = index.deref_targets.contains_key(receiver.id.as_str());
             if deref_wrapper {
                 if let Some(trait_node) = trait_node {
-                    unproven_deref_members.push((receiver, method, trait_node, associated));
+                    unproven_deref_members.push((receiver, *method, trait_node, associated));
                 } else if !has_impl_trait {
                     index
                         .inherent
@@ -1041,12 +939,12 @@ fn collect_file_impl_members<'a>(
                 .push((method, *trait_node));
         }
     }
+    unproven_deref_members
 }
 
 fn apply_macro_type_invocations<'a>(
     all: &'a dyn crate::FactsLookup,
     env: &RustMemberBuildEnv<'a, '_>,
-    macro_tables: &MacroTraitTables<'a>,
     trait_methods: &HashMap<&'a str, Vec<&'a Node>>,
     traits: &mut TraitImplMap<'a>,
 ) {
@@ -1056,7 +954,49 @@ fn apply_macro_type_invocations<'a>(
         dependencies,
         ..
     } = *env;
-    let (macro_traits, crate_exported_macros) = macro_tables;
+    let mut macro_traits = HashMap::<&str, Vec<&Node>>::new();
+    let mut crate_exported_macros = HashMap::<(&str, &str), Vec<&Node>>::new();
+    for node in all
+        .values_facts()
+        .flat_map(|facts| &facts.nodes)
+        .filter(|node| node.language == "rust" && node.kind == "macro")
+    {
+        if node.details["is_public"] == true {
+            let crate_root = node
+                .path
+                .split_once("/src/")
+                .map_or("", |(prefix, _)| prefix);
+            crate_exported_macros
+                .entry((crate_root, node.name.as_str()))
+                .or_default()
+                .push(node);
+        }
+        let Some(impl_traits) = node.details["rust_macro_impl_traits"].as_array() else {
+            continue;
+        };
+        let mod_qual = node.qualname.rsplit_once('.').map_or("", |(q, _)| q);
+        for trait_val in impl_traits {
+            let Some(clean) = trait_val.as_str() else {
+                continue;
+            };
+            let normalized_expr = clean
+                .strip_prefix("$crate::")
+                .map(|tail| format!("crate::{tail}"))
+                .unwrap_or_else(|| clean.to_owned());
+            let qual = resolve_qualified_path(
+                &node.path,
+                mod_qual,
+                &normalized_expr,
+                dependencies,
+                &tables.profile_paths,
+            );
+            if let Some(candidates) = tables.by_qual.get(qual.as_str()) {
+                for cand in candidates.iter().copied().filter(|n| n.kind == "trait") {
+                    macro_traits.entry(node.id.as_str()).or_default().push(cand);
+                }
+            }
+        }
+    }
     for facts in all.values_facts() {
         for owner_mod in facts
             .nodes
@@ -1081,7 +1021,7 @@ fn apply_macro_type_invocations<'a>(
                     &tables.by_qual,
                     &tables.modules_by_ns,
                     forwarding,
-                    crate_exported_macros,
+                    &crate_exported_macros,
                     dependencies,
                     &tables.profile_paths,
                 ) else {
@@ -1090,15 +1030,10 @@ fn apply_macro_type_invocations<'a>(
                 let Some(trait_nodes) = macro_traits.get(macro_node.id.as_str()) else {
                     continue;
                 };
-                let Some(receiver) = resolve_type(
-                    facts,
-                    owner_mod,
-                    target_name,
-                    &tables.by_qual,
-                    dependencies,
-                    &tables.profile_paths,
-                )
-                .filter(|node| matches!(node.kind.as_str(), "struct" | "enum")) else {
+                let Some(receiver) =
+                    resolve_type(facts, owner_mod, target_name, tables, forwarding, dependencies)
+                        .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"))
+                else {
                     continue;
                 };
                 for &trait_node in trait_nodes {
@@ -1234,10 +1169,17 @@ impl<'a> RustMembers<'a> {
         };
         let mut traits: TraitImplMap<'a> = HashMap::new();
         let mut builtin_traits: BuiltinTraitImplMap<'a> = HashMap::new();
-        let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
         let mut unproven_deref_members = Vec::new();
-        let macro_tables = collect_macro_trait_maps(all, &tables, dependencies);
-        let (trait_defaults, trait_methods) = collect_trait_decl_tables(all, &tables, &mut index);
+        let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
+        let mut trait_defaults: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
+        let mut trait_methods: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
+        collect_trait_decl_tables(
+            all,
+            &tables,
+            &mut index,
+            &mut trait_defaults,
+            &mut trait_methods,
+        );
         let env = RustMemberBuildEnv {
             tables: &tables,
             interner,
@@ -1262,24 +1204,19 @@ impl<'a> RustMembers<'a> {
                 dependencies,
                 &mut visible_traits,
             );
-            let (impl_receivers, builtin_impl_receivers) =
-                collect_file_impl_receivers(facts, &tables, dependencies, &mut index);
-            let mut acc = MemberAccumulator {
-                index: &mut index,
-                traits: &mut traits,
-                builtin_traits: &mut builtin_traits,
-                unproven_deref_members: &mut unproven_deref_members,
-            };
-            collect_file_impl_members(
+            let receivers =
+                collect_file_impl_receivers(facts, &tables, forwarding, dependencies, &mut index);
+            unproven_deref_members.extend(collect_file_impl_members(
                 facts,
                 &tables,
-                &impl_receivers,
-                &builtin_impl_receivers,
+                (&receivers.0, &receivers.1),
                 &trait_defaults,
-                &mut acc,
-            );
+                &mut index,
+                &mut traits,
+                &mut builtin_traits,
+            ));
         }
-        apply_macro_type_invocations(all, &env, &macro_tables, &trait_methods, &mut traits);
+        apply_macro_type_invocations(all, &env, &trait_methods, &mut traits);
         finalize_rust_members(
             &visible_traits,
             &mut traits,
@@ -1381,6 +1318,71 @@ impl<'a> RustMembers<'a> {
                 .get(&key)
                 .map_or(&[], Vec::as_slice),
         ))
+    }
+}
+
+impl LanguageMemberIndex for RustMembers<'_> {
+    fn language_ids(&self) -> &'static [&'static str] {
+        &["rust"]
+    }
+
+    fn lookup_member<'a>(
+        &'a self,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        let candidates = self.lookup(receiver, member, associated, caller);
+        if candidates.is_empty() {
+            LanguageMemberResult::Unknown
+        } else if let [node] = candidates {
+            LanguageMemberResult::Local(node)
+        } else {
+            LanguageMemberResult::Candidates(candidates.to_vec())
+        }
+    }
+
+    fn lookup_builtin<'a>(
+        &'a self,
+        receiver: &str,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        let candidates = self.lookup_builtin(receiver, member, associated, caller);
+        if candidates.is_empty() {
+            LanguageMemberResult::Unknown
+        } else if let [node] = candidates {
+            LanguageMemberResult::Local(node)
+        } else {
+            LanguageMemberResult::Candidates(candidates.to_vec())
+        }
+    }
+
+    fn receiver_for(&self, method: &Node) -> Option<&Node> {
+        RustMembers::receiver_for(self, method)
+    }
+
+    fn deref_target(&self, receiver: &Node) -> Option<&Node> {
+        RustMembers::deref_target(self, receiver)
+    }
+
+    fn is_inherent_member(&self, method: &Node) -> bool {
+        RustMembers::is_inherent_member(self, method)
+    }
+
+    fn has_display(&self, receiver: &Node) -> bool {
+        RustMembers::has_display(self, receiver)
+    }
+
+    fn dynamic_dispatch(
+        &self,
+        receiver: &Node,
+        member: &str,
+    ) -> Option<(&Node, Vec<&Node>)> {
+        RustMembers::dynamic_dispatch(self, receiver, member)
+            .map(|(declaration, implementors)| (declaration, implementors.to_vec()))
     }
 }
 

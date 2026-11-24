@@ -31,15 +31,14 @@ pub(crate) mod semantic_facts;
 pub mod traits;
 pub(crate) mod types;
 pub(crate) mod typescript;
-/// Implements value flow support.
+/// Intra-procedural receiver and call value-flow inference engine.
 pub mod value_flow;
 mod vue;
 use crate::models::tags::NodeKind;
-use python::receivers;
 pub use types::NodeBindingIndex;
 pub(crate) use types::qualified;
 
-/// Performs needs reference identity.
+/// Reports whether reference identities in `facts` must be diffed for incremental relinking.
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
     let language = facts
         .nodes
@@ -52,7 +51,7 @@ pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
         })
         .needs_reference_identity(path, facts)
 }
-/// Performs reference identity changed.
+/// Reports whether stored reference identities differ between `old` and `new` facts.
 pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
     let language = new
         .nodes
@@ -398,7 +397,7 @@ pub fn link_compact_catalog_with_registry(
     )
 }
 
-/// Performs link with registry.
+/// Links cross-file symbol, import, and framework relations across `all` using `dependency_registry`.
 pub fn link_with_registry(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
@@ -1046,8 +1045,15 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             }
         }
         let namespace_indexes =
-            indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
-        let package_exports = indexing::package_exports(
+            indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry);
+        #[cfg(feature = "lang-rust")]
+        let rust_forwarding = rust::forwarding::RustForwarding::build(
+            all,
+            &namespace_indexes.modules_by_namespace,
+            &namespace_indexes.normalized_imports,
+            interner,
+        );
+        let mut package_exports = indexing::package_exports(
             &namespace_indexes.profiles,
             &namespace_indexes.modules_by_namespace,
             &by_module,
@@ -1055,8 +1061,11 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             all,
             root,
             interner,
-            #[cfg(feature = "lang-rust")]
-            &namespace_indexes.rust_forwarding,
+        );
+        #[cfg(feature = "lang-rust")]
+        package_exports.insert(
+            tags::LanguageId::Rust.as_str(),
+            rust_forwarding.package_exports().clone(),
         );
         mark("namespace indexes and exports");
         let inheritance_indexes = indexing::InheritanceIndexes::build(
@@ -1072,6 +1081,8 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             &namespace_indexes,
             &package_exports,
             dependency_registry,
+            #[cfg(feature = "lang-rust")]
+            &rust_forwarding,
         );
         let profiles = &namespace_indexes.profiles;
         let normalized_imports = &namespace_indexes.normalized_imports;
@@ -1080,6 +1091,14 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         #[cfg(feature = "lang-rust")]
         let rust_members = inheritance_indexes.rust_members;
         mark("inheritance indexes");
+        let commonjs_bindings =
+            javascript::commonjs_bindings::ResolvedCommonJsBindings::build(all);
+        let mut import_states: HashMap<
+            &'static str,
+            &'_ (dyn languages::profile::LanguageImportState + '_),
+        > = HashMap::from([("javascript", &commonjs_bindings as &dyn languages::profile::LanguageImportState)]);
+        #[cfg(feature = "lang-rust")]
+        import_states.insert("rust", &rust_forwarding);
         let semantic_context = semantic_context::Context::build(
             all,
             interner,
@@ -1091,19 +1110,18 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             &node_rebindings,
             &package_exports,
             normalized_imports,
-            #[cfg(feature = "lang-rust")]
-            &namespace_indexes.rust_forwarding,
+            import_states,
             dependency_registry,
         )
-        .with_python(&python_receivers)
+        .with_member_state(&python_receivers)
         .with_flows(flows, uncertainties, faults, all, dependency_registry);
         #[cfg(feature = "lang-rust")]
-        let semantic_context = semantic_context.with_rust(&rust_members);
+        let semantic_context = semantic_context.with_member_state(&rust_members);
         #[cfg(feature = "lang-typescript")]
         let typescript_members =
             typescript::members::TypeScriptMembers::build(all, &semantic_context);
         #[cfg(feature = "lang-typescript")]
-        let semantic_context = semantic_context.with_typescript(&typescript_members);
+        let semantic_context = semantic_context.with_member_state(&typescript_members);
         mark("semantic admission and members");
         // Preserve inventory order for path/suffix selection after value flow takes
         // the full inventory and sorts it by lexical ownership.
@@ -1142,9 +1160,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             profiles,
             normalized_imports,
             modules_by_namespace,
-            rust_library_modules: &namespace_indexes.rust_library_modules,
-            #[cfg(feature = "lang-rust")]
-            rust_forwarding: &namespace_indexes.rust_forwarding,
             package_exports: &package_exports,
             semantic_context: &semantic_context,
             prepared_semantic_facts: &prepared_semantic_facts,

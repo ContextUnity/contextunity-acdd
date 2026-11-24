@@ -80,11 +80,16 @@ pub(crate) struct RouteIndex<'a> {
     pub names: HashMap<&'a str, Vec<&'a Node>>,
 }
 
-fn single_candidate<'a>(candidates: &[&'a Node]) -> Result<Option<&'a Node>, ()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteMatchError {
+    Ambiguous,
+}
+
+fn single_candidate<'a>(candidates: &[&'a Node]) -> Result<Option<&'a Node>, RouteMatchError> {
     match candidates {
         [route] => Ok(Some(*route)),
         [] => Ok(None),
-        _ => Err(()),
+        _ => Err(RouteMatchError::Ambiguous),
     }
 }
 
@@ -140,19 +145,20 @@ impl<'a> RouteIndex<'a> {
         }
     }
 
-    #[allow(clippy::result_unit_err)]
-    pub fn match_route_name(&self, name: &str) -> Result<Option<&'a Node>, ()> {
+    pub fn match_route_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<&'a Node>, RouteMatchError> {
         single_candidate(self.names.get(name).map(Vec::as_slice).unwrap_or_default())
     }
 
-    #[allow(clippy::result_unit_err)]
     pub(crate) fn match_route_in_context(
         &self,
         client_method: &str,
         client_url: &str,
         context: Option<&PreparedHttpTargetContext>,
         request_owner: &str,
-    ) -> Result<Option<&'a Node>, ()> {
+    ) -> Result<Option<&'a Node>, RouteMatchError> {
         single_candidate(&self.matching_routes_in_context(
             client_method,
             client_url,

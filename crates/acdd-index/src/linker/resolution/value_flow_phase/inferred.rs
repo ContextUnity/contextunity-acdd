@@ -123,17 +123,16 @@ where
     'a: 'file,
     'file: 'res,
 {
-    if owner.language == LanguageId::Rust.as_str()
-        && q.r.kind == EdgeKind::Calls.as_str()
-        && matches!(receiver, value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
-    {
-        graph.reference_coverage(
-            ctx.path,
-            q.r,
-            CoverageStatus::Resolved.as_str(),
-            "invocation of a lexically proven Rust closure".into(),
-        );
-        return true;
+    if q.r.kind == EdgeKind::Calls.as_str() {
+        if let Some(evidence) = ctx.language_linker.callable_marker_evidence(receiver) {
+            graph.reference_coverage(
+                ctx.path,
+                q.r,
+                CoverageStatus::Resolved.as_str(),
+                evidence.into(),
+            );
+            return true;
+        }
     }
     if let value_flow::TypeTarget::Callable(callable) = receiver {
         if callable.kind == NodeKind::Constant.as_str() {
@@ -259,7 +258,7 @@ where
     }
     let implicit_receiver = if state.known_receiver {
         #[cfg(feature = "lang-rust")]
-        let rust_receiver = ctx.linker.member_lookup.rust_receiver(owner);
+        let rust_receiver = ctx.linker.member_lookup.receiver_for("rust", owner);
         #[cfg(not(feature = "lang-rust"))]
         let rust_receiver: Option<&Node> = None;
         rust_receiver
@@ -653,9 +652,13 @@ where
             && !q.tail.contains('.')
         {
             if let Some(owner) = q.owner {
-                let targets = ctx.linker.member_lookup.rust(n, q.tail, true, owner);
+                let targets = ctx
+                    .linker
+                    .member_lookup
+                    .lookup_member("rust", n, q.tail, true, owner)
+                    .into_nodes();
                 if !targets.is_empty() {
-                    candidates.extend_from_slice(targets);
+                    candidates.extend(targets);
                     continue;
                 }
             }
@@ -675,7 +678,7 @@ where
             if let Some((ty_name, member_name)) = q.tail.split_once('.') {
                 if !member_name.contains('.') {
                     if let Some(owner) = q.owner {
-                        candidates.extend_from_slice(lookup_rust_associated_member(
+                        candidates.extend(lookup_rust_associated_member(
                             ctx.lookup(qualified(lookup_key, &n.qualname, ty_name)),
                             n.path.as_str(),
                             member_name,
@@ -744,7 +747,7 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
         if let Some(owner) = q.owner {
             #[cfg(feature = "lang-rust")]
             let receiver_scope = (owner.language == LanguageId::Rust.as_str())
-                .then(|| ctx.linker.member_lookup.rust_receiver(owner))
+                .then(|| ctx.linker.member_lookup.receiver_for("rust", owner))
                 .flatten()
                 .map(|receiver| receiver.qualname.as_str());
             #[cfg(not(feature = "lang-rust"))]
@@ -769,7 +772,7 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
             && !q.tail.contains('.')
         {
             if let Some(owner) = q.owner {
-                candidates.extend_from_slice(lookup_rust_associated_member(
+                candidates.extend(lookup_rust_associated_member(
                     ctx.lookup(qualified(lookup_key, ctx.file_module, q.first)),
                     ctx.path,
                     q.tail,
@@ -849,8 +852,9 @@ where
                     .copied()
                     .filter(|n| {
                         ctx.input
-                            .rust_forwarding
-                            .module_path_visible(&n.qualname, ctx.file_module)
+                            .semantic_context
+                            .import_state("rust")
+                            .is_none_or(|state| state.module_path_visible(&n.qualname, ctx.file_module))
                     }),
             );
             if candidates.is_empty() {
@@ -868,13 +872,13 @@ where
 }
 
 #[cfg(feature = "lang-rust")]
-fn lookup_rust_associated_member<'lookup, 'a>(
+fn lookup_rust_associated_member<'a>(
     candidates: &[&'a Node],
     expected_path: &str,
     member_name: &str,
     owner: &Node,
-    member_lookup: &'lookup semantic_context::LanguageMemberLookup<'_, 'a>,
-) -> &'lookup [&'a Node] {
+    member_lookup: &semantic_context::LanguageMemberLookup<'_, 'a>,
+) -> Vec<&'a Node> {
     let mut matching = candidates.iter().copied().filter(|target| {
         target.path == expected_path
             && matches!(
@@ -885,10 +889,12 @@ fn lookup_rust_associated_member<'lookup, 'a>(
             )
     });
     let Some(ty_node) = matching.next() else {
-        return &[];
+        return Vec::new();
     };
     if matching.next().is_some() {
-        return &[];
+        return Vec::new();
     }
-    member_lookup.rust(ty_node, member_name, true, owner)
+    member_lookup
+        .lookup_member("rust", ty_node, member_name, true, owner)
+        .into_nodes()
 }

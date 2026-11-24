@@ -8,12 +8,10 @@ extern "C" {
     fn tree_sitter_proto() -> Language;
 }
 
-/// Performs language.
 fn language() -> Language {
     unsafe { tree_sitter_proto() }
 }
 
-/// Performs kind.
 fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "message" => Some("class"),
@@ -49,9 +47,7 @@ fn is_proto_primitive(name: &str) -> bool {
     )
 }
 
-/// Represents proto data.
 struct Proto;
-/// Shared proto language profile.
 static PROTO: Proto = Proto;
 impl LanguageProfile for Proto {
     fn id(&self) -> &'static str {

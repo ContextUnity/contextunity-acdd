@@ -167,23 +167,14 @@ fn disambiguate_candidates<'a, 'file, 'res>(
     candidates.sort_by(|a, b| a.id.cmp(&b.id));
     candidates.dedup_by_key(|n| &n.id);
     crate::linker::traits::filter_stubs_and_overloads(candidates);
-    #[cfg(feature = "lang-rust")]
-    if candidates.len() > 1
-        && ctx
-            .profile
-            .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
-        && matches!(
-            r.kind.as_str(),
-            k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
-        )
-        && candidates
-            .iter()
-            .any(|n| ctx.input.semantic_context.is_rust_inherent_member(n))
-        && candidates
-            .iter()
-            .any(|n| !ctx.input.semantic_context.is_rust_inherent_member(n))
-    {
-        candidates.retain(|n| ctx.input.semantic_context.is_rust_inherent_member(n));
+    if candidates.len() > 1 {
+        if let Some(profile) = ctx.profile {
+            profile.linker().filter_call_candidates(
+                ctx.input.semantic_context.member_state(profile.id()),
+                r.kind.as_str(),
+                candidates,
+            );
+        }
     }
     #[cfg(feature = "lang-rust")]
     rust::resolution::macro_analysis_gap(
@@ -197,18 +188,84 @@ fn disambiguate_candidates<'a, 'file, 'res>(
     let _ = (ctx, graph, r);
 }
 
-struct BuiltinResolutionFlags<'a> {
+fn builtin_origin_and_evidence<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    q: &RefQuery<'a, '_>,
     is_builtin: bool,
-    rust_stdlib_builtin: bool,
-    python_stdlib_builtin: bool,
-    html_template_builtin: bool,
-    html_builtin_origin: &'a str,
-    component_builtin_origin: Option<&'a str>,
-    js_builtin_origin: Option<&'a str>,
-    rust_external_import: bool,
-    base_status: &'static str,
-    source_present: bool,
-    source_heuristic: bool,
+) -> Option<(Cow<'res, str>, Cow<'static, str>)> {
+    if !is_builtin {
+        return None;
+    }
+    if ctx
+        .profile
+        .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
+        && q.first != "Self"
+    {
+        return Some((
+            Cow::Borrowed("Rust standard library"),
+            format!("Rust standard library prelude: {}", q.expression).into(),
+        ));
+    }
+    if ctx
+        .profile
+        .is_some_and(|profile| profile.id() == LanguageId::Python.as_str())
+    {
+        return Some((
+            Cow::Borrowed("Python standard library"),
+            format!("Python standard library built-in: {}", q.expression).into(),
+        ));
+    }
+    if q.expression.starts_with("template.")
+        && q.active_profile
+            .is_some_and(|profile| profile.id() == LanguageId::Html.as_str())
+    {
+        #[cfg(feature = "lang-html")]
+        let origin = html::templates::builtin_evidence(q.expression, ctx.template_rules);
+        #[cfg(not(feature = "lang-html"))]
+        let origin = "builtin:shared_template".to_owned();
+        let evidence = format!("{origin} {}", q.expression);
+        return Some((Cow::Owned(origin), evidence.into()));
+    }
+    if let Some(origin) = ctx
+        .language_context
+        .component_macro(q.expression)
+        .map(|(rule, _)| {
+            format!(
+                "{}; rule:{}:{}",
+                rule.display
+                    .builtin
+                    .as_deref()
+                    .unwrap_or("configured macro"),
+                rule.pack,
+                rule.id
+            )
+        })
+        .or_else(|| {
+            ctx.configured_autoimport(q.expression).then(|| {
+                ctx.input
+                    .semantic_context
+                    .autoimport_evidence(ctx.path, q.expression)
+                    .unwrap_or("configured runtime")
+                    .to_owned()
+            })
+        })
+    {
+        let evidence = format!("{origin} built-in: {}", q.expression);
+        return Some((Cow::Owned(origin), evidence.into()));
+    }
+    if let Some(origin) = javascript::resolution::builtin_origin(
+        q.first,
+        q.active_profile,
+        ctx.input
+            .semantic_context
+            .autoimport_evidence(ctx.path, q.first),
+    ) {
+        return Some((
+            Cow::Borrowed(origin),
+            format!("{origin} built-in: {}", q.expression).into(),
+        ));
+    }
+    None
 }
 
 fn determine_external_origin_and_evidence<'a, 'file, 'res>(
@@ -216,12 +273,34 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
     q: &RefQuery<'a, '_>,
     state: &ReferenceState<'res>,
     candidates: &[&'res Node],
-    flags: &BuiltinResolutionFlags<'_>,
+    is_builtin: bool,
+    source_present: bool,
+    source_heuristic: bool,
 ) -> (&'static str, Cow<'static, str>) {
     let r = q.r;
-    let base_status = flags.base_status;
-    let source_present = flags.source_present;
-    let source_heuristic = flags.source_heuristic;
+    let base_status = if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous))
+        || matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Ambiguous))
+    {
+        CoverageStatus::Ambiguous.as_str()
+    } else if (candidates.len() == 1 || is_builtin) && source_present && !source_heuristic {
+        CoverageStatus::Resolved.as_str()
+    } else if candidates.is_empty() || !source_present || source_heuristic {
+        CoverageStatus::Unresolved.as_str()
+    } else {
+        CoverageStatus::Ambiguous.as_str()
+    };
+    let builtin_classified = builtin_origin_and_evidence(ctx, q, is_builtin);
+    #[cfg(feature = "lang-rust")]
+    let rust_external_import = rust::semantic_context::external_annotation_type(
+        ctx.profile,
+        q.first,
+        q.first,
+        ctx.path,
+        ctx.input.dependency_registry,
+    )
+    .is_some();
+    #[cfg(not(feature = "lang-rust"))]
+    let rust_external_import = false;
     let external_origin = if let Some(receivers::PythonReceiverMember::External(
         module,
         import_line,
@@ -229,33 +308,25 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         _,
     )) = state.receiver_member
     {
-        Some((module, import_line))
+        Some((Cow::Borrowed(module), import_line))
     } else if let Some(ReceiverType::External(module, import_line)) = state.typed_receiver {
-        (import_line <= r.line).then_some((module, import_line))
-    } else if flags.rust_stdlib_builtin {
-        Some(("Rust standard library", 0))
-    } else if flags.python_stdlib_builtin {
-        Some(("Python standard library", 0))
-    } else if flags.html_template_builtin {
-        Some((flags.html_builtin_origin, 0))
-    } else if let Some(origin) = flags.component_builtin_origin {
-        Some((origin, 0))
-    } else if let Some(origin) = flags.js_builtin_origin {
-        Some((origin, 0))
+        (import_line <= r.line).then_some((Cow::Borrowed(module), import_line))
+    } else if let Some((origin, _)) = &builtin_classified {
+        Some((origin.clone(), 0))
     } else if base_status == CoverageStatus::Unresolved.as_str()
         && !state.shadowed
         && candidates.is_empty()
         && (state.imported.is_some_and(|targets| targets.is_empty())
-            || flags.rust_external_import
+            || rust_external_import
             || ctx.external_call_for(q.first, q.owner, r.position()).is_some())
     {
         if let Some(target) = ctx
             .external_call_for(q.first, q.owner, r.position())
             .filter(|(_, import_line)| *import_line <= r.line)
         {
-            Some((target.0.as_str(), target.1))
-        } else if flags.rust_external_import {
-            Some((q.first, 0))
+            Some((Cow::Borrowed(target.0.as_str()), target.1))
+        } else if rust_external_import {
+            Some((Cow::Borrowed(q.first), 0))
         } else {
             None
         }
@@ -279,17 +350,10 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
     };
     let evidence: Cow<'static, str> = if let Some(stub_path) = stub_target {
         format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed").into()
-    } else if flags.rust_stdlib_builtin {
-        format!("Rust standard library prelude: {}", q.expression).into()
-    } else if flags.python_stdlib_builtin {
-        format!("Python standard library built-in: {}", q.expression).into()
-    } else if flags.html_template_builtin {
-        format!("{} {}", flags.html_builtin_origin, q.expression).into()
-    } else if let Some(origin) = flags.component_builtin_origin {
-        format!("{origin} built-in: {}", q.expression).into()
-    } else if let Some(origin) = flags.js_builtin_origin {
-        format!("{origin} built-in: {}", q.expression).into()
+    } else if let Some((_, builtin_evidence)) = builtin_classified {
+        builtin_evidence
     } else if let Some((module, import_line)) = external_origin {
+        let module = module.as_ref();
         if let Some(provider) = framework_provider {
             let diagnostic_marker = if ctx.profile.is_some_and(|profile| {
                 profile.id() == LanguageId::Python.as_str() && !profile.is_stdlib(module)
@@ -328,7 +392,7 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         .into()
     } else if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous)) {
         "parameter receiver type has ambiguous declarations".into()
-    } else if flags.is_builtin {
+    } else if is_builtin {
         format!("standard library or built-in callee: {}", q.expression).into()
     } else {
         format!(
@@ -376,102 +440,14 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         && state.imported.is_none()
         && !state.lexical_head_declared
         && ctx.builtin_in_scope(q.expression, r);
-    let rust_stdlib_builtin = is_builtin
-        && ctx
-            .profile
-            .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
-        && q.first != "Self";
-    let python_stdlib_builtin = is_builtin
-        && ctx
-            .profile
-            .is_some_and(|profile| profile.id() == LanguageId::Python.as_str());
-    let html_template_builtin = is_builtin
-        && q.expression.starts_with("template.")
-        && q.active_profile
-            .is_some_and(|profile| profile.id() == LanguageId::Html.as_str());
-    let js_builtin_origin = is_builtin
-        .then(|| {
-            javascript::resolution::builtin_origin(
-                q.first,
-                q.active_profile,
-                ctx.input
-                    .semantic_context
-                    .autoimport_evidence(ctx.path, q.first),
-            )
-        })
-        .flatten();
-    #[cfg(feature = "lang-html")]
-    let html_builtin_evidence =
-        html_template_builtin.then(|| html::templates::builtin_evidence(q.expression, ctx.template_rules));
-    #[cfg(feature = "lang-html")]
-    let html_builtin_origin = html_builtin_evidence
-        .as_deref()
-        .unwrap_or("builtin:shared_template");
-    #[cfg(not(feature = "lang-html"))]
-    let html_builtin_origin = "builtin:shared_template";
-    let component_builtin_origin = is_builtin
-        .then(|| ctx.language_context.component_macro(q.expression))
-        .flatten()
-        .map(|(rule, _)| {
-            format!(
-                "{}; rule:{}:{}",
-                rule.display
-                    .builtin
-                    .as_deref()
-                    .unwrap_or("configured macro"),
-                rule.pack,
-                rule.id
-            )
-        })
-        .or_else(|| {
-            (is_builtin && ctx.configured_autoimport(q.expression)).then(|| {
-                ctx.input
-                    .semantic_context
-                    .autoimport_evidence(ctx.path, q.expression)
-                    .unwrap_or("configured runtime")
-                    .to_owned()
-            })
-        });
-    let base_status = if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous))
-        || matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Ambiguous))
-    {
-        CoverageStatus::Ambiguous.as_str()
-    } else if (candidates.len() == 1 || is_builtin) && source.is_some() && !source_heuristic {
-        CoverageStatus::Resolved.as_str()
-    } else if candidates.is_empty() || source.is_none() || source_heuristic {
-        CoverageStatus::Unresolved.as_str()
-    } else {
-        CoverageStatus::Ambiguous.as_str()
-    };
-    #[cfg(feature = "lang-rust")]
-    let rust_external_import = rust::semantic_context::external_annotation_type(
-        ctx.profile,
-        q.first,
-        q.first,
-        ctx.path,
-        ctx.input.dependency_registry,
-    )
-    .is_some();
-    #[cfg(not(feature = "lang-rust"))]
-    let rust_external_import = false;
     let (status, evidence) = determine_external_origin_and_evidence(
         ctx,
         q,
         state,
         candidates,
-        &BuiltinResolutionFlags {
-            is_builtin,
-            rust_stdlib_builtin,
-            python_stdlib_builtin,
-            html_template_builtin,
-            html_builtin_origin,
-            component_builtin_origin: component_builtin_origin.as_deref(),
-            js_builtin_origin,
-            rust_external_import,
-            base_status,
-            source_present: source.is_some(),
-            source_heuristic,
-        },
+        is_builtin,
+        source.is_some(),
+        source_heuristic,
     );
     graph.reference_coverage(ctx.path, r, status, evidence);
     if let (Some(source), [candidate]) = (source, candidates) {

@@ -260,8 +260,10 @@ pub(in crate::linker) fn lexical_this_member<'a>(
 
     let associated = owner.details["is_static"] == true;
     let member_lookup = LanguageMemberLookup::new(input.semantic_context);
-    let methods = member_lookup.typescript(class, member_name, associated);
-    let method = match methods {
+    let methods = member_lookup
+        .lookup_member("typescript", class, member_name, associated, class)
+        .into_nodes();
+    let method = match methods.as_slice() {
         [method]
             if super::super::typescript::semantic_context::prototype_visible_at(
                 method,

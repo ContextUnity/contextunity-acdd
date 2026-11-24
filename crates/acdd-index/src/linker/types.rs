@@ -16,7 +16,9 @@ pub type PackageExports<'a> = HashMap<PathId, HashMap<SymbolId, Option<&'a Node>
 pub type ModulesByNamespace<'a> = HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>;
 
 /// Read-only property lookup interface decoupled from full semantic context.
-pub(crate) trait BuiltinPropertyLookup {
+// Public until Wave 2a narrows LanguageLinker to pub(crate).
+pub trait BuiltinPropertyLookup {
+    /// Returns the configured property type name for `receiver.member` in `path`.
     fn property_type_for_path(&self, path: &str, receiver: &str, member: &str) -> Option<String>;
 }
 

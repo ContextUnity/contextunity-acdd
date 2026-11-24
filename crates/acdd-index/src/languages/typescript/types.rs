@@ -1,4 +1,4 @@
-/// Performs kind.
+/// Maps a TypeScript or JavaScript syntax node kind to its indexed symbol category.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration"

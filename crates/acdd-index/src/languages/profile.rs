@@ -15,11 +15,9 @@ use crate::languages::{
         SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
     },
 };
-#[cfg(feature = "lang-rust")]
-use crate::linker::rust::forwarding::RustForwarding;
 use crate::linker::{
     types::{BuiltinPropertyLookup, ModulesByNamespace, NodeBindingIndex, PackageExports},
-    value_flow::types::TypeTarget,
+    value_flow::types::{ReadTrace, SemanticResolver, TypeTarget, ValueFlowLookup},
 };
 use crate::models::{
     tags::{EdgeKind, NodeKind},
@@ -42,11 +40,10 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     pub interner: &'ctx LinkerInterner<'a>,
     /// Dependency data and framework manifests admitted for the indexed workspace.
     pub dependencies: &'ctx DependencyRegistry,
+    /// Opaque language-owned state used for visibility and path resolution.
+    pub language_state: Option<&'a (dyn LanguageImportState + 'a)>,
     /// Parsed import reference.
     pub reference: &'input Reference,
-    /// Rust's bounded canonical named-forwarding index, when Rust is enabled.
-    #[cfg(feature = "lang-rust")]
-    pub(crate) rust_forwarding: Option<&'ctx RustForwarding<'a>>,
     /// Normalized import path from the language profile.
     pub normalized: Option<&'input ImportPath>,
     /// Namespace prefix that selected the indexed module.
@@ -67,6 +64,64 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     pub package_exports: &'ctx PackageExports<'a>,
     /// Reusable buffer for qualified-name lookup.
     pub lookup_key: &'ctx mut String,
+}
+
+/// Opaque per-language import resolver state shared by import and semantic resolution hooks.
+pub trait LanguageImportState: Send + Sync {
+    fn module_path_visible(&self, _namespace: &str, _requester: &str) -> bool {
+        true
+    }
+
+    fn resolve_path<'a>(
+        &'a self,
+        _module: &Node,
+        _tail: &str,
+        _requester: &str,
+        _by_qual: Option<&HashMap<&'a str, Vec<&'a Node>>>,
+    ) -> Vec<&'a Node> {
+        Vec::new()
+    }
+
+    fn external_binding_visible(
+        &self,
+        _provider: &Node,
+        _binding_name: &str,
+        _requester: &str,
+        _direct_in_provider: bool,
+    ) -> bool {
+        true
+    }
+
+    fn targets(&self, _module: &Node, _name: &str, _requester: &str) -> &[&Node] {
+        &[]
+    }
+
+    fn visible_bindings(&self, _module: &Node, _requester: &str) -> Vec<(&str, &[&Node])> {
+        Vec::new()
+    }
+
+    fn workspace_crate_root(
+        &self,
+        _dependencies: &DependencyRegistry,
+        _path: &str,
+        _crate_name: &str,
+    ) -> Option<&Node> {
+        None
+    }
+
+    fn tracks_binding(&self, _scope: &Node, _alias: &str) -> bool {
+        false
+    }
+
+    fn admits_binding(
+        &self,
+        _scope: &Node,
+        _alias: &str,
+        _owner: &Node,
+        _at: crate::semantic::SourcePosition,
+    ) -> bool {
+        true
+    }
 }
 
 impl ImportContext<'_, '_, '_> {
@@ -112,9 +167,6 @@ pub struct ImportNormalizationContext<'ctx, 'a> {
     pub profiles: &'ctx HashMap<&'a str, &'static dyn LanguageProfile>,
     /// Indexed module stems keyed by [`LanguageFamily`].
     pub family_module_stems: &'ctx HashMap<LanguageFamily, std::collections::HashSet<&'a str>>,
-    /// Indexed Rust `src/lib.rs` root modules keyed by workspace scope.
-    #[cfg(feature = "lang-rust")]
-    pub rust_library_modules: &'ctx HashMap<&'a str, (&'a str, &'a Node)>,
 }
 
 /// Borrowed inputs passed to [`LanguageLinker::compose_file_relations`].
@@ -141,7 +193,265 @@ pub struct FileRelationContext<'ctx, 'a> {
 }
 
 /// Owns language-specific import, receiver, and incremental-linking rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LanguageValueProjection {
+    GenericCall,
+    Array,
+    Tuple,
+    BranchJoin,
+    Reference { mutable: bool },
+    Field(String),
+    Adapter,
+}
+
+/// Language-owned, borrowed index of members for one or more compiled profiles.
+pub trait LanguageMemberIndex: Send + Sync {
+    /// Returns every language profile ID served by this member index.
+    fn language_ids(&self) -> &'static [&'static str];
+
+    /// Looks up a local, trait, or framework member on `receiver`.
+    fn lookup_member<'a>(
+        &'a self,
+        _receiver: &Node,
+        _member: &str,
+        _associated: bool,
+        _caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        LanguageMemberResult::Unknown
+    }
+
+    /// Looks up a property/field declaration on `receiver`.
+    fn lookup_property<'a>(&'a self, _receiver: &Node, _member: &str) -> LanguageMemberResult<'a> {
+        LanguageMemberResult::Unknown
+    }
+
+    /// Looks up a member on a built-in/primitive receiver category.
+    fn lookup_builtin<'a>(
+        &'a self,
+        _receiver: &str,
+        _member: &str,
+        _associated: bool,
+        _caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        LanguageMemberResult::Unknown
+    }
+
+    /// Returns indexed concrete implementors for a trait or interface declaration.
+    fn implementors(&self, _base: &Node) -> Option<&[&Node]> {
+        None
+    }
+
+    /// Returns the `impl` / struct receiver node associated with `method`.
+    fn receiver_for(&self, _method: &Node) -> Option<&Node> {
+        None
+    }
+
+    /// Returns the `Deref::Target` node registered for `receiver`.
+    fn deref_target(&self, _receiver: &Node) -> Option<&Node> {
+        None
+    }
+
+    /// Reports whether `method` is an inherent method rather than a trait impl member.
+    fn is_inherent_member(&self, _method: &Node) -> bool {
+        false
+    }
+
+    /// Reports whether `receiver` implements `Display` / `ToString`.
+    fn has_display(&self, _receiver: &Node) -> bool {
+        false
+    }
+
+    /// Returns a configured hierarchy return policy for `receiver.member`.
+    fn return_policy(
+        &self,
+        _receiver: &Node,
+        _member: &str,
+    ) -> Option<(
+        &str,
+        &crate::languages::manifests::ClassHierarchyReceiverRule,
+        &crate::languages::manifests::ReturnPolicy,
+    )> {
+        None
+    }
+
+    /// Returns dynamic dispatch `(trait_method, implementors)` candidates for `receiver.member`.
+    fn dynamic_dispatch(&self, _receiver: &Node, _member: &str) -> Option<(&Node, Vec<&Node>)> {
+        None
+    }
+}
+
+/// Shared evaluation state passed to [`LanguageLinker`] value-flow hooks.
+pub struct CallEvalContext<'c, 'a, 't> {
+    /// Read-only view into scopes, fields, and returns computed so far.
+    pub index: &'c (dyn ValueFlowLookup<'a> + 'a),
+    /// Enclosing declaration whose body contains the expression.
+    pub owner: &'a Node,
+    /// Source coordinates of the call or projection site.
+    pub at: crate::semantic::SourcePosition,
+    /// Shared symbol and configured-rule resolver.
+    pub resolver: &'c dyn SemanticResolver<'a>,
+    /// Dependency epoch recorder for memoized fixed-point re-evaluation.
+    pub trace: Option<&'c ReadTrace<'a, 't>>,
+}
+
+/// Result of a language member-index query, independent of any profile's storage shape.
+pub enum LanguageMemberResult<'a> {
+    Local(&'a Node),
+    Candidates(Vec<&'a Node>),
+    DynamicDispatch(&'a Node, Vec<&'a Node>),
+    External {
+        module: &'a str,
+        import_line: usize,
+        provider: Option<&'a str>,
+        hierarchy: Option<(&'a str, &'a crate::languages::manifests::ClassHierarchyReceiverRule)>,
+    },
+    Ambiguous,
+    Unknown,
+}
+
+impl<'a> LanguageMemberResult<'a> {
+    /// Collects local candidate declarations from this member lookup result.
+    pub fn into_nodes(self) -> Vec<&'a Node> {
+        match self {
+            Self::Local(node) => vec![node],
+            Self::Candidates(nodes) => nodes,
+            _ => Vec::new(),
+        }
+    }
+}
+
 pub trait LanguageLinker: Send + Sync {
+    /// Resolves a member through this linker's opaque language-owned state.
+    fn lookup_member<'a>(
+        &self,
+        indexes: &HashMap<&'static str, &'a (dyn LanguageMemberIndex + 'a)>,
+        language_id: &str,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        indexes.get(language_id).map_or(LanguageMemberResult::Unknown, |index| {
+            index.lookup_member(receiver, member, associated, caller)
+        })
+    }
+
+    fn lookup_builtin<'a>(
+        &self,
+        indexes: &HashMap<&'static str, &'a (dyn LanguageMemberIndex + 'a)>,
+        language_id: &str,
+        receiver: &str,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> LanguageMemberResult<'a> {
+        indexes.get(language_id).map_or(LanguageMemberResult::Unknown, |index| {
+            index.lookup_builtin(receiver, member, associated, caller)
+        })
+    }
+
+    /// Resolves a language-specific constructor or direct call expression before fallback expression lookup.
+    fn evaluate_call_fallback<'a>(
+        &self,
+        _eval: &CallEvalContext<'_, 'a, '_>,
+        _callee: &str,
+        _site: Option<&crate::semantic::CallSiteEvidence>,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Resolves dotted/chained call targets after direct expression type lookup misses.
+    fn evaluate_dotted_call<'a>(
+        &self,
+        _eval: &CallEvalContext<'_, 'a, '_>,
+        _callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Resolves platform or synthetic member-call return types when standard lookup finds none.
+    fn evaluate_member_call_fallback<'a>(
+        &self,
+        _eval: &CallEvalContext<'_, 'a, '_>,
+        _receiver: &TypeTarget<'a>,
+        _callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Resolves a language-owned synthetic property type for `receiver.member`.
+    fn synthetic_property_result<'a>(
+        &self,
+        _owner: &'a Node,
+        _receiver: &TypeTarget<'a>,
+        _member: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Extracts a local class/struct declaration from a resolved receiver type.
+    fn local_receiver_class<'a>(&self, target: &TypeTarget<'a>) -> Option<&'a Node> {
+        match target {
+            TypeTarget::Local(node) => Some(*node),
+            _ => None,
+        }
+    }
+
+    /// Unwraps language reference wrappers (e.g., `&T` / `&mut T`) around a target type.
+    fn unwrap_reference<'t, 'a>(&self, target: &'t TypeTarget<'a>) -> &'t TypeTarget<'a> {
+        target
+    }
+
+    /// Resolves a language-specific constructor expression before lexical lookup.
+    fn construct_value<'a>(&self, _owner: &'a Node, _callee: &str) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Resolves a language-specific constructor result using the shared semantic resolver.
+    fn constructor_result<'a>(
+        &self,
+        _owner: &'a Node,
+        _callee: &str,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+
+    /// Identifies opaque callable marker values whose invocation is handled by this language.
+    fn callable_marker_evidence(&self, _receiver: &TypeTarget<'_>) -> Option<&'static str> {
+        None
+    }
+
+    /// Returns the unshadowed global type/constructor name guarded by an identity wrapper marker.
+    fn identity_call_global(&self, _callee: &str) -> Option<&'static str> {
+        None
+    }
+
+    /// Disambiguates candidate call/handler targets before language-specific gap diagnostics.
+    fn filter_call_candidates(
+        &self,
+        _member_state: Option<&dyn LanguageMemberIndex>,
+        _edge_kind: &str,
+        _candidates: &mut Vec<&Node>,
+    ) {
+    }
+
+    /// Reports whether a receiver member candidate is valid when invoked dynamically.
+    fn admits_dynamic_member(
+        &self,
+        _member_state: Option<&dyn LanguageMemberIndex>,
+        _dynamic: bool,
+        _node: &Node,
+    ) -> bool {
+        true
+    }
+
+    /// Classifies an opaque language projection for the shared value-flow reducer.
+    fn value_projection(&self, _member: &str) -> Option<LanguageValueProjection> {
+        None
+    }
+
     /// Reports whether multi-file packages/namespaces are admitted as single-package imports.
     fn allows_multi_file_modules(&self) -> bool {
         false
@@ -184,7 +494,6 @@ pub trait LanguageLinker: Send + Sync {
     }
 
     /// Resolves a builtin receiver property type when supported by the language's semantic context.
-    #[allow(private_interfaces)]
     fn resolve_builtin_property<'a>(
         &self,
         _path: &str,

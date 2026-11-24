@@ -18,11 +18,11 @@ pub(crate) mod patterns;
 pub(crate) mod value_flow;
 pub(crate) mod visibility;
 use patterns::collect_use;
-/// Performs language.
+
 fn language() -> tree_sitter::Language {
     tree_sitter_rust::language()
 }
-/// Performs kind.
+
 fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_item" => Some("function"),
@@ -401,9 +401,7 @@ fn is_non_prelude_stdlib_receiver(name: &str) -> bool {
     )
 }
 
-/// Represents rust data.
 pub(crate) struct Rust;
-/// Shared rust language profile.
 pub(crate) static RUST: Rust = Rust;
 
 pub(crate) fn cargo_manifest_metadata(content: &str) -> (Option<String>, Vec<String>) {

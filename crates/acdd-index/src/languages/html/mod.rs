@@ -18,9 +18,7 @@ use common::{attribute_value, for_each_tag_attribute, is_html_entity, source_nod
 use request_attributes::{extract_request_attributes, request_url_status};
 use serde_json::{json, Value};
 
-/// Represents html data.
 struct Html;
-/// Shared html language profile.
 static HTML: Html = Html;
 /// Language profiles provided by this module.
 pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&HTML];

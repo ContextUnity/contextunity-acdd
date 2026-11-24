@@ -13,13 +13,19 @@ use hashbrown::{HashMap, HashSet};
 
 const RUST_ALIAS_DEPTH: usize = 64;
 
-pub(crate) fn resolve_workspace_crate_namespace<'a>(
+pub(crate) enum WorkspaceCrateMatch {
+    Resolved(String, String),
+    Isolated,
+    Missing,
+}
+
+fn lookup_workspace_crate<'a>(
     profile_paths: impl Iterator<Item = &'a str>,
     dependencies: &DependencyRegistry,
     requester_path: &str,
     crate_name: &str,
     tail: &str,
-) -> Option<(String, String)> {
+) -> WorkspaceCrateMatch {
     let declared = dependencies.declares_for_path(
         LanguageFamily(LanguageId::Rust.as_str()),
         requester_path,
@@ -33,34 +39,181 @@ pub(crate) fn resolve_workspace_crate_namespace<'a>(
             .map(|(scope, _)| scope)
     })
     .flatten();
-    if !declared && sibling_scope.is_none() {
-        return None;
-    }
     let mut matches = profile_paths.filter_map(|candidate_path| {
         if !candidate_path.ends_with("/src/lib.rs") && candidate_path != "src/lib.rs" {
             return None;
         }
         let (pkg_scope, lib_name) = dependencies.rust_package_for_path(candidate_path)?;
-        (lib_name == crate_name && (declared || sibling_scope == Some(pkg_scope))).then_some((
-            pkg_scope,
-            types::workspace_path(candidate_path).0,
-        ))
+        let ws = types::workspace_path(candidate_path).0;
+        let workspace_lib = dependencies.rust_library_for_path(candidate_path).is_some();
+        (lib_name == crate_name).then_some((pkg_scope, ws, workspace_lib))
     });
-    let (pkg_scope, workspace) = matches.next()?;
+    let Some((pkg_scope, workspace, workspace_lib)) = matches.next() else {
+        return WorkspaceCrateMatch::Missing;
+    };
     if matches.next().is_some() {
-        return None;
+        return WorkspaceCrateMatch::Isolated;
     }
-    let base_namespace = if pkg_scope.is_empty() {
+    if !declared && sibling_scope != Some(pkg_scope) {
+        return if workspace_lib {
+            WorkspaceCrateMatch::Isolated
+        } else {
+            WorkspaceCrateMatch::Missing
+        };
+    }
+    WorkspaceCrateMatch::Resolved(format_crate_namespace(pkg_scope, tail), workspace.to_owned())
+}
+
+pub(crate) fn resolve_workspace_crate_namespace<'a>(
+    profile_paths: impl Iterator<Item = &'a str>,
+    dependencies: &DependencyRegistry,
+    requester_path: &str,
+    crate_name: &str,
+    tail: &str,
+) -> Option<(String, String)> {
+    match lookup_workspace_crate(profile_paths, dependencies, requester_path, crate_name, tail) {
+        WorkspaceCrateMatch::Resolved(ns, workspace) => Some((ns, workspace)),
+        WorkspaceCrateMatch::Isolated | WorkspaceCrateMatch::Missing => None,
+    }
+}
+
+pub(in crate::linker::rust) fn resolve_relative_module_prefix(
+    path: &str,
+    module_qual: &str,
+    expression: &str,
+) -> Option<String> {
+    let mut resolved = if let Some(tail) = expression.strip_prefix("crate::") {
+        let root_ns = crate_namespace(path);
+        let root_ns = root_ns.strip_suffix(".rs").unwrap_or(&root_ns);
+        if tail.is_empty() || tail == "*" {
+            root_ns.to_owned()
+        } else {
+            format!("{root_ns}.{}", tail.replace("::", "."))
+        }
+    } else if let Some(tail) = expression.strip_prefix("self::") {
+        if tail.is_empty() || tail == "*" {
+            module_qual.to_owned()
+        } else {
+            format!("{module_qual}.{}", tail.replace("::", "."))
+        }
+    } else {
+        let mut tail = expression.strip_prefix("super::")?;
+        let mut module = module_qual.rsplit_once('.')?.0;
+        while let Some(rest) = tail.strip_prefix("super::") {
+            module = module.rsplit_once('.')?.0;
+            tail = rest;
+        }
+        if tail.is_empty() || tail == "*" {
+            module.to_owned()
+        } else {
+            format!("{module}.{}", tail.replace("::", "."))
+        }
+    };
+    while resolved.ends_with('.') {
+        resolved.pop();
+    }
+    Some(resolved)
+}
+
+pub(in crate::linker::rust) fn resolve_qualified_path(
+    scope_path: &str,
+    module_qual: &str,
+    target: &str,
+    dependencies: &DependencyRegistry,
+    profile_paths: &[&str],
+) -> String {
+    if target.starts_with("crate::")
+        || target.starts_with("self::")
+        || target.starts_with("super::")
+    {
+        return resolve_relative_module_prefix(scope_path, module_qual, target).unwrap_or_default();
+    }
+    let clean = target.trim_end_matches("::");
+    let (head, tail) = clean.split_once("::").unwrap_or((clean, ""));
+    if let Some((ns, _)) = resolve_workspace_crate_namespace(
+        profile_paths.iter().copied(),
+        dependencies,
+        scope_path,
+        head,
+        tail,
+    ) {
+        return ns;
+    }
+    let mut resolved = format!("{module_qual}.{}", target.replace("::", "."));
+    while resolved.ends_with('.') {
+        resolved.pop();
+    }
+    resolved
+}
+
+fn format_crate_namespace(scope: &str, tail: &str) -> String {
+    let base = if scope.is_empty() {
         "src".to_owned()
     } else {
-        format!("{}.src", pkg_scope.replace('/', "."))
+        format!("{}.src", scope.replace('/', "."))
     };
-    let namespace = if tail.is_empty() || tail == "*" {
-        base_namespace
+    if tail.is_empty() || tail == "*" {
+        base
     } else {
-        format!("{base_namespace}.{}", tail.replace("::", "."))
+        format!("{base}.{}", tail.replace("::", "."))
+    }
+}
+
+fn scope_lib_namespace(
+    profiles_contains: impl Fn(&str) -> bool,
+    scope: &str,
+    workspace: Option<&str>,
+    tail: &str,
+) -> Option<(String, String)> {
+    let lib_path = if scope.is_empty() {
+        std::borrow::Cow::Borrowed("src/lib.rs")
+    } else {
+        std::borrow::Cow::Owned(format!("{scope}/src/lib.rs"))
     };
-    Some((namespace, workspace.to_owned()))
+    profiles_contains(lib_path.as_ref()).then(|| {
+        let ws = workspace.unwrap_or_else(|| types::workspace_path(&lib_path).0);
+        (format_crate_namespace(scope, tail), ws.to_owned())
+    })
+}
+
+pub(crate) fn resolve_crate_namespace<'a>(
+    profile_paths: impl Iterator<Item = &'a str> + Clone,
+    profiles_contains: impl Fn(&str) -> bool,
+    dependencies: &DependencyRegistry,
+    path: &str,
+    first: &str,
+    tail: &str,
+) -> WorkspaceCrateMatch {
+    if let Some((pkg_scope, own_lib)) = dependencies.sibling_rust_package_library_for_path(path) {
+        if own_lib == first {
+            if let Some((ns, ws)) = scope_lib_namespace(&profiles_contains, pkg_scope, None, tail) {
+                return WorkspaceCrateMatch::Resolved(ns, ws);
+            }
+        }
+    }
+    match lookup_workspace_crate(profile_paths, dependencies, path, first, tail) {
+        matched @ (WorkspaceCrateMatch::Resolved(..) | WorkspaceCrateMatch::Isolated) => {
+            return matched;
+        }
+        WorkspaceCrateMatch::Missing => {}
+    }
+    let local_workspace = types::workspace_path(path).0;
+    if dependencies
+        .rust_package_for_path(path)
+        .is_some_and(|(scope, _)| scope != local_workspace)
+    {
+        return WorkspaceCrateMatch::Missing;
+    }
+    let Some(root_crate) = dependencies.root_rust_crate_for_path(path) else {
+        return WorkspaceCrateMatch::Missing;
+    };
+    if first != root_crate {
+        return WorkspaceCrateMatch::Missing;
+    }
+    scope_lib_namespace(profiles_contains, local_workspace, Some(local_workspace), tail)
+        .map_or(WorkspaceCrateMatch::Missing, |(ns, ws)| {
+            WorkspaceCrateMatch::Resolved(ns, ws)
+        })
 }
 
 fn canonical_namespace<'n>(name: &'n str, crate_root: &str) -> std::borrow::Cow<'n, str> {
@@ -700,6 +853,55 @@ pub(crate) struct RustForwarding<'a> {
     lib_modules: Vec<&'a Node>,
 }
 
+impl crate::languages::profile::LanguageImportState for RustForwarding<'_> {
+    fn module_path_visible(&self, namespace: &str, requester: &str) -> bool {
+        RustForwarding::module_path_visible(self, namespace, requester)
+    }
+
+    fn resolve_path<'r>(
+        &'r self,
+        module: &Node,
+        tail: &str,
+        requester: &str,
+        by_qual: Option<&HashMap<&'r str, Vec<&'r Node>>>,
+    ) -> Vec<&'r Node> {
+        RustForwarding::resolve_path(self, module, tail, requester, by_qual)
+    }
+
+    fn external_binding_visible(
+        &self,
+        provider: &Node,
+        binding_name: &str,
+        requester: &str,
+        direct_in_provider: bool,
+    ) -> bool {
+        RustForwarding::external_binding_visible(
+            self,
+            provider,
+            binding_name,
+            requester,
+            direct_in_provider,
+        )
+    }
+
+    fn targets(&self, module: &Node, name: &str, requester: &str) -> &[&Node] {
+        RustForwarding::targets(self, module, name, requester)
+    }
+
+    fn visible_bindings(&self, module: &Node, requester: &str) -> Vec<(&str, &[&Node])> {
+        RustForwarding::visible_bindings(self, module, requester).collect()
+    }
+
+    fn workspace_crate_root(
+        &self,
+        dependencies: &DependencyRegistry,
+        path: &str,
+        crate_name: &str,
+    ) -> Option<&Node> {
+        RustForwarding::workspace_crate_root(self, dependencies, path, crate_name)
+    }
+}
+
 impl<'a> RustForwarding<'a> {
     pub(crate) fn build(
         all: &'a dyn crate::FactsLookup,
@@ -971,13 +1173,16 @@ impl<'a> RustForwarding<'a> {
         &[]
     }
 
-    pub(crate) fn resolve_path(
+    pub(crate) fn resolve_path<'q, 'n>(
         &self,
         module: &Node,
         tail: &str,
         requester: &str,
-        by_qual: Option<&HashMap<&'a str, Vec<&'a Node>>>,
-    ) -> Vec<&'a Node> {
+        by_qual: Option<&HashMap<&'q str, Vec<&'n Node>>>,
+    ) -> Vec<&'n Node>
+    where
+        'a: 'n,
+    {
         if !self.module_path_visible(&module.qualname, requester) {
             return Vec::new();
         }
