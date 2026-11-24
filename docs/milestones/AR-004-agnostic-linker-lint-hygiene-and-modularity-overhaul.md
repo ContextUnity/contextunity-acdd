@@ -68,9 +68,9 @@ The following zero-heuristic Rust extensions are already implemented and verifie
 
 1. **Macro `$vis:vis` visibility propagation** in [`extract_invocation_name_and_variants`](../../crates/acdd-index/src/languages/rust/macros.rs) (`MacroVisibility`, `collect_rule_metavars`).
 2. **Stdlib `Tuple` and `Range` manifests & projections** across `rust-std.toml`, [`wrapper_value_member`](../../crates/acdd-index/src/linker/rust/semantic_context.rs), `project_deref_wrapper`, and `TypeTarget::RustTuple`.
-3. **Local trait impls on primitives/builtins** via [`RustMembers`](../../crates/acdd-index/src/languages/rust/linker.rs) (`builtin_trait_members`, `lookup_builtin`) and [`lookup_rust_builtin_member`](../../crates/acdd-index/src/linker/semantic_context/mod.rs).
+3. **Local trait impls on primitives/builtins** via [`RustMembers`](../../crates/acdd-index/src/linker/rust/profile_linker.rs) (`builtin_trait_members`, `lookup_builtin`) and [`lookup_rust_builtin_member`](../../crates/acdd-index/src/linker/semantic_context/mod.rs).
 4. **External method projections & `rusqlite::Transaction`** in [`evaluate_tracked`](../../crates/acdd-index/src/linker/value_flow/mod.rs) and [`external_constructor_result`](../../crates/acdd-index/src/linker/rust/value_flow.rs) (preserving immediate `Some(None)` abort for unregistered Cargo crate homonyms).
-5. **Initial higher-order closure typing & contract matrix** (`rust_zero_heuristic_resolution_extensions_matrix` in `tests/linker/method_semantics.rs`, using [`parse_rust_type_text`](../../crates/acdd-index/src/languages/rust/value_flow.rs) — scheduled in Wave 0/Wave 1 below to be elevated from `__rust_fn_param` into the language-agnostic `ValueExpr::CallbackParam` contract).
+5. **Initial higher-order closure typing & contract matrix** (`rust_zero_heuristic_resolution_extensions_matrix` in `tests/linker/method_semantics.rs`, using [`parse_rust_type_text`](../../crates/acdd-index/src/languages/rust/value_flow/types.rs) — scheduled in Wave 0/Wave 1 below to be elevated from `__rust_fn_param` into the language-agnostic `ValueExpr::CallbackParam` contract).
 
 ---
 
@@ -280,4 +280,98 @@ subtasks:
     title: "Refactor remaining INV-BOUNDED-STRUCTURAL-COMPLEXITY outliers across acdd-state/acdd-index/src/, extract shared MCP tool dispatch and acdd-core/pipeline/state_bridge helpers to eliminate verified AST clones, and prune or #[cfg(test)]-gate proven dead_tails"
   - subtask_ref: daemon-binary-guard-docs-and-profile-ratchet
     title: "Add executable identity drift detection/reload for acdd serve, align docs/reference/ and skills/acdd/ with ComplexityLimits and new syntax rules, and ratchet .acdd/profile.yaml check_full_repo to enforce all 6 lint categories"
+```
+
+### task: lint-engine-soundness-perf-and-rule-hygiene
+
+```yaml
+task_ref: lint-engine-soundness-perf-and-rule-hygiene
+target: "Fix all linter soundness/performance pitfalls: single-parse fail-closed ast_pattern evaluation, possible_calls confidence matching, allow_only_dependencies external checks, seen_in_coverage test/prod separation, forbid_cycles zone specificity + INV-WORKSPACE-BOUNDARIES deduplication, public-only must_implement, docs.stale_symbol_range out-of-bounds checks, Type-2 duplicate normalization, dead_tails raw-scanner removal + opt-in unused_public_api, and noisy acdd.yaml rule cleanup"
+contract_revision: 1
+depends_on:
+  - workspace-cycle-breaking-dedup-and-gate-ratchet
+tags:
+  - default
+scope:
+  - crates/acdd-core/src/lint.rs
+  - crates/acdd-index/src/ast/fingerprints.rs
+  - crates/acdd-index/src/db/cycles.rs
+  - crates/acdd-index/src/db/lint/
+  - acdd.yaml
+  - .acdd/profile.yaml
+  - docs/architecture/
+  - docs/adr/
+  - docs/reference/
+  - skills/acdd/
+  - tests/core/arch_lint.rs
+  - tests/core/ast_contracts.rs
+invariants:
+  - 'INV-AR004-SOUND-LINT-ENGINE: ast_pattern parses each file once per language and fails closed on work_limited or timeout; edge_matches_rule checks possible_calls; allow_only_dependencies checks externals when configured; dead_tails uses zero raw .rs disk scanning; and duplicates normalization handles Type-2 local variable renames.'
+acceptance_criteria:
+  - 'AC-1: db/lint/arch.rs batches Tree-sitter parsing once per file/language and returns explicit diagnostics/errors when search_page hits work_limited or incomplete; db/lint/rules.rs admits possible confidence for possible_calls; allow_only_dependencies checks externals without silent bypass; seen_in_coverage tracks test vs production lines accurately; forbid_cycles selects the most specific zone; duplicate INV-WORKSPACE-BOUNDARIES is removed from docs/architecture/performance.md; ARCH-INDEX-DB-BOUNDARY-ENTRY is retired in favor of Rust module visibility + ARCH-INDEX-DB-ISOLATION; and qualified Command::new / Connection::open / #![allow(dead_code)] / #[expect(dead_code)] bypasses are closed.'
+  - 'AC-2: must_implement skips private serde/helper structs, matches enums/cross-file impls, and removes line-span external heuristics; docs_lint.rs flags end > source_lines and multi-match stale_symbol_range and retires unreachable docs.broken_doc_link from run_lint; syntax.intra_crate_type_homonym uses DependencyRegistry package roots and ComplexityLimits severity; ast/fingerprints.rs + db/lint/duplicates.rs perform Type-2 identifier-normalized and LCS/Jaccard clone detection excluding tests by default; db/lint/dead_tails.rs deletes its remaining raw .rs callback scanner and handles unresolved receiver methods conservatively; db/lint/unused_public_api.rs becomes opt-in via ArchitectureConfig (enabled in acdd.yaml, off by default for libraries); and db/cycles.rs filters test/archive imports.'
+status: planned
+subtasks:
+  - subtask_ref: harden-arch-ast-pattern-confidences-and-rules
+    title: "Fix ast_pattern single-parse fail-closed execution, possible_calls confidence matching, allow_only externals, seen_in_coverage test masking, forbid_cycles zone specificity, must_implement noise, and clean up acdd.yaml/docs/architecture rules"
+  - subtask_ref: harden-docs-syntax-duplicates-dead-tails-and-cycles
+    title: "Fix docs_lint out-of-bounds #L anchors, syntax package boundaries, Type-2 duplicate fingerprints/similarity, opt-in unused_public_api config, dead_tails raw-scanner removal, and cycles test filtering with matrix tests in tests/core/arch_lint.rs"
+```
+
+### task: rust-extractor-and-rust-linker-coverage-recovery
+
+```yaml
+task_ref: rust-extractor-and-rust-linker-coverage-recovery
+target: "Eliminate post-AR-004 Rust unresolved regressions (~2,450+ entries): skip enum_variant attribute_item tokens, propagate external re-exports (Syntax) via RustForwarding, align trait_object_call with bounded polymorphic resolved status and trait-node member registration, admit generic-bounded inherent methods in RustMembers, emit serde callback references, and resolve intermediate module re-exports in multi-segment paths"
+contract_revision: 1
+depends_on:
+  - workspace-cycle-breaking-dedup-and-gate-ratchet
+tags:
+  - default
+scope:
+  - crates/acdd-index/src/languages/rust/
+  - crates/acdd-index/src/linker/rust/
+  - tests/languages/rust/
+invariants:
+  - 'INV-AR004-RUST-RECOVERY-NO-HEURISTICS: Every recovered Rust resolution edge derives from AST attribute/type extraction, explicit RustForwarding re-exports, inherent/trait definitions, or bounded dynamic dispatch (<= K=8) with zero name-only guessing.'
+acceptance_criteria:
+  - 'AC-1: languages/rust/mod.rs relate_nominal_item skips attribute_item and comments inside enum_variant bodies (~400 bogus unresolved refs removed) and emits References for #[serde(default, skip_serializing_if, serialize_with, deserialize_with, with)] callable paths.'
+  - 'AC-2: linker/rust/semantic_context.rs propagates visible external Cargo re-exports (e.g. pub(crate) use tree_sitter::Node as Syntax) across importing modules (~1,450+ unresolved refs recovered); linker/rust/resolution.rs + profile_linker.rs register trait methods in RustMembers for ValueFlow return propagation and record trait_object_call as resolved when trait implementors <= MAX_CANDIDATE_BRANCH_JOINS (~504 unresolved refs recovered); inherent methods with generic bounds (e.g. CompactGraph) are admitted in RustMembers (~106+ unresolved refs recovered); and multi-segment paths traverse intermediate RustForwarding re-exports.'
+status: planned
+subtasks:
+  - subtask_ref: fix-rust-enum-attr-bug-and-serde-callback-refs
+    title: "Fix enum_variant attribute_item type extraction bug and extract #[serde(...)] callback references in languages/rust/"
+  - subtask_ref: recover-rust-reexports-trait-objects-and-inherent-bounds
+    title: "Propagate external re-exports (Syntax), align trait_object_call + trait member registration with polymorphic bounds, admit generic inherent methods in RustMembers, and resolve intermediate module re-exports with regression tests in tests/languages/rust/"
+```
+
+### task: universal-value-flow-branch-joins-and-manifest-returns
+
+```yaml
+task_ref: universal-value-flow-branch-joins-and-manifest-returns
+target: "Fix universal cross-language resolution gaps: unlock ReceiverTypeRule.call_returns across all compiled languages, perform element-wise Tuple/Option BranchJoin without collapsing known tuple elements to Unknown, preserve monotonic static types across loop/branch reassignments (let mut scope), propagate cross-module external_aliases universally, and classify typed CallbackParam calls accurately"
+contract_revision: 1
+depends_on:
+  - workspace-cycle-breaking-dedup-and-gate-ratchet
+tags:
+  - default
+scope:
+  - crates/acdd-index/src/languages/support/value_flow_core.rs
+  - crates/acdd-index/src/linker/value_flow/
+  - crates/acdd-index/src/linker/semantic_context/
+  - crates/acdd-index/src/linker/resolution/
+  - crates/acdd-index/src/languages/dependency_registry/frameworks/
+  - tests/linker/method_semantics.rs
+  - tests/linker/callback_contracts.rs
+invariants:
+  - 'INV-AR004-UNIVERSAL-VALUE-FLOW-PARITY: Declarative call_returns rules, element-wise Tuple/Option BranchJoin, monotonic loop variable typing, and external_aliases inheritance apply uniformly across all supported language profiles rather than hardcoded JS/TS/Vue or Rust branches.'
+acceptance_criteria:
+  - 'AC-1: linker/semantic_context/type_resolution.rs resolve_call_result evaluates declarative ReceiverTypeRule.call_returns across all languages (removing the js/ts/vue-only gate) and resolves common external type wrappers cleanly.'
+  - 'AC-2: linker/value_flow/evaluate.rs performs element-wise BranchJoin over Tuple/RustTuple and Option<T>/Unknown (preserving known fields such as match { None => (Default, None), Some => (Val, Some(x)) }); ValueFlowCollectorCore/value_flow preserve monotonic static types for reassigned mutables in loops/branches (e.g. scope = scope.rsplit_once(...)); linker/resolution/imports.rs propagates external_aliases across indexed modules universally; and regression tests pass in tests/linker/{method_semantics,callback_contracts}.rs.'
+status: planned
+subtasks:
+  - subtask_ref: unlock-manifest-call-returns-and-universal-external-aliases
+    title: "Enable ReceiverTypeRule.call_returns for all languages in semantic_context and propagate cross-module external_aliases in resolution/imports.rs"
+  - subtask_ref: elementwise-tuple-branch-join-and-monotonic-loop-typing
+    title: "Implement element-wise Tuple/Option BranchJoin in value_flow/evaluate.rs, monotonic mutable reassignment preservation in ValueFlowCollectorCore, and add tests in tests/linker/{method_semantics,callback_contracts}.rs"
 ```
