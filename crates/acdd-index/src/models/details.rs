@@ -30,12 +30,45 @@ impl NodeDetailKey {
     pub const DECORATORS: &'static str = "decorators";
     pub(crate) const IS_STUB: &'static str = "is_stub";
     pub(crate) const IS_OVERLOAD: &'static str = "is_overload";
-    pub const INCLUDED_FROM: &'static str = "included_from";
     pub const SOURCE_PATH: &'static str = "source_path";
     pub const ARCH_RULES: &'static str = "arch_rules";
     pub const COGNITIVE_COMPLEXITY: &'static str = "cognitive_complexity";
     pub const MAX_NESTING_DEPTH: &'static str = "max_nesting_depth";
     pub const FACT_LIMIT_EXCEEDED: &'static str = "fact_limit_exceeded";
+    pub const BINDINGS: &'static str = "bindings";
+    pub const REBINDINGS: &'static str = "rebindings";
+    pub const PARAM_TYPES: &'static str = "param_types";
+    #[cfg(test)]
+    pub(crate) const RECEIVER: &'static str = "receiver";
+    #[cfg(test)]
+    pub(crate) const RECEIVER_TYPE: &'static str = "receiver_type";
+    #[cfg(test)]
+    pub(crate) const RECEIVER_HINT: &'static str = "receiver_hint";
+    pub const VALUE_FLOW: &'static str = "value_flow";
+    pub const ROUTE_PATH: &'static str = "route_path";
+    pub const ROUTE_NAMESPACE: &'static str = "route_namespace";
+    pub const INCLUDE_NAMESPACE: &'static str = "include_namespace";
+    pub const INCLUDE_MODULE: &'static str = "include_module";
+    pub const INCLUDE_DEPTH: &'static str = "include_depth";
+    pub const SOURCE_ID: &'static str = "source_id";
+    pub const SOURCE_LINE: &'static str = "source_line";
+    pub const SOURCE_QUALNAME: &'static str = "source_qualname";
+    pub const METHOD: &'static str = "method";
+    pub const NAME: &'static str = "name";
+    pub const INCLUDED_FROM: &'static str = "included_from";
+    pub const PYTHON_LOGGING_FACTORIES: &'static str = "python_logging_factories";
+    pub const COMMONJS_BINDINGS: &'static str = "commonjs_bindings";
+    pub const LAZY_EXPORTS: &'static str = "lazy_exports";
+    pub const EXPORTS: &'static str = "exports";
+    pub const SEMANTIC_FACTS: &'static str = "semantic_facts";
+    pub const COLUMN: &'static str = "column";
+    pub const ENTRYPOINT_DIRECT_MODULE: &'static str = "entrypoint_direct_module";
+    pub const NAMED_DEFINITION_UNCERTAINTIES: &'static str = "named_definition_uncertainties";
+    #[cfg(test)]
+    pub(crate) const IS_STATIC: &'static str = "is_static";
+    pub const NAMED_DEFINITION_UNCERTAINTY_FAULT: &'static str =
+        "named_definition_uncertainty_fault";
+    pub const CLASSIC_GLOBAL: &'static str = "classic_global";
     pub(crate) const IS_PUBLIC: &'static str = "is_public";
     pub(crate) const RUST_DERIVE_TRAIT: &'static str = "rust_derive_trait";
 }

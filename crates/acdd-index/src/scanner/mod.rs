@@ -19,15 +19,15 @@ pub use walk::dependency_manifests_for_build;
 use walk::{error, language, walk_candidate_paths, WatchedEntries};
 
 #[derive(Debug, Clone, Serialize)]
-/// Represents scan report data.
+/// Inventory counts, selected entries, and watched-path observations from a scan.
 pub struct ScanReport {
-    /// The files value.
+    /// Number of files selected for indexing.
     pub files: usize,
-    /// The bytes value.
+    /// Combined byte size of the selected files.
     pub bytes: u64,
-    /// The elapsed ms value.
+    /// Time spent producing the scan report, in milliseconds.
     pub elapsed_ms: u128,
-    /// The entries value.
+    /// File metadata records selected for indexing.
     pub entries: Vec<FileEntry>,
     /// Dependency manifest paths discovered during the same inventory walk.
     pub dependency_manifests: Vec<PathBuf>,
@@ -88,19 +88,19 @@ pub struct ColdScanResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-/// Represents build report data.
+/// Counts and output location recorded after a completed index build.
 pub struct BuildReport {
-    /// The output value.
+    /// Path to the generated index database.
     pub output: String,
-    /// The files value.
+    /// Number of files included in the build.
     pub files: usize,
-    /// The nodes value.
+    /// Number of graph nodes written to the index.
     pub nodes: usize,
-    /// The doc sections value.
+    /// Number of documentation sections written to the index.
     pub doc_sections: usize,
-    /// The elapsed ms value.
+    /// Total build duration, in milliseconds.
     pub elapsed_ms: u128,
-    /// The engine schema version value.
+    /// Schema version used by the engine to create the database.
     pub engine_schema_version: &'static str,
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn bounded_batch_size(
         .min(max_items.max(1) as u64)) as usize
 }
 
-/// Performs digest.
+/// Computes the SHA-256 digest of file bytes.
 pub fn digest(bytes: &[u8]) -> String {
     acdd_core::format::sha256_hex(bytes)
 }
@@ -229,7 +229,7 @@ fn is_symlink_open_error(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::InvalidInput && err.to_string().contains("symlink")
 }
 
-/// Performs entry with rel.
+/// Reads a confined file entry and skips files that cannot be indexed.
 pub(crate) fn entry_with_rel(
     path: &Path,
     relative: String,
@@ -337,13 +337,13 @@ fn cached_entry(
     entry_with_rel(full_path, rel_path.to_owned(), max_file_bytes)
 }
 
-/// Performs scan with adapter.
+/// Scans a workspace using the supplied adapter configuration.
 pub fn scan_with_adapter(root: &Path, adapter: &Adapter) -> std::io::Result<ScanReport> {
     check_root_scope(root, adapter.limits.allow_broad_root)?;
     scan_reusing(root, adapter, &[])
 }
 
-/// Performs scan reusing.
+/// Scans a workspace while reusing metadata from previous file entries.
 pub fn scan_reusing(
     root: &Path,
     adapter: &Adapter,

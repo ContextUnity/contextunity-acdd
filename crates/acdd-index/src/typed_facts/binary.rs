@@ -264,8 +264,6 @@ macro_rules! struct_codecs {
         $(
             impl $crate::typed_facts::binary::BinaryEncode for $ty {
                 fn encode(&self, buf: &mut Vec<u8>) {
-                    #[allow(unused_imports)]
-                    use $crate::typed_facts::binary::BinaryEncode;
                     $(self.$field.encode(buf);)+
                 }
             }

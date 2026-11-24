@@ -5,7 +5,7 @@
 //! masks for rapid single-cycle import matching against declarative framework rules.
 
 use acdd_core::format::stable_hash64;
-use crate::models::{Facts, Node};
+use crate::models::{Facts, Node, NodeDetailKey};
 use hashbrown::{HashMap, HashSet};
 use std::{
     borrow::Borrow,
@@ -316,7 +316,7 @@ impl<'a> LinkerInterner<'a> {
                 self.intern_symbol(name);
             }
             if !facts.semantic.is_complete() && facts.semantic.state(index).is_none() {
-                for fact in node.details["semantic_facts"].as_array().into_iter().flatten() {
+                for fact in node.detail_entry(NodeDetailKey::SEMANTIC_FACTS).as_array().into_iter().flatten() {
                     if let Some(expression) = fact["expression"].as_str() {
                         self.intern_symbol(expression);
                     }
@@ -325,7 +325,7 @@ impl<'a> LinkerInterner<'a> {
                     }
                 }
             }
-            for export in node.details["exports"].as_array().into_iter().flatten() {
+            for export in node.detail_entry(NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
                 for key in ["name", "local", "module"] {
                     if let Some(value) = export.get(key).and_then(serde_json::Value::as_str) {
                         self.intern_symbol(value);

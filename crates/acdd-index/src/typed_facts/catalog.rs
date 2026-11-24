@@ -182,7 +182,7 @@ pub(crate) struct CatalogStoragePayload {
 
 impl CatalogStoragePayload {
     pub fn restore_composed_node(&self, node: &mut Node) {
-        let Some(source_id) = node.details["source_id"].as_str() else {
+        let Some(source_id) = node.detail_str(crate::models::details::NodeDetailKey::SOURCE_ID) else {
             return;
         };
         if let Some((_, original)) = self.node_details.iter().find(|(id, _)| id == source_id) {

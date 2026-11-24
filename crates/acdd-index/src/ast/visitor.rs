@@ -458,7 +458,7 @@ impl SinglePassExtractor<'_> {
                 .as_array()
                 .is_some_and(|entries| !entries.is_empty())
             {
-                module.details["python_logging_factories"] = factories;
+                module.set_detail(NodeDetailKey::PYTHON_LOGGING_FACTORIES, factories);
             }
         }
         #[cfg(feature = "lang-typescript")]
@@ -469,29 +469,35 @@ impl SinglePassExtractor<'_> {
                 .state
                 .typescript()
                 .map_or(&empty_shadows, |state| &*state.shadowed_require_scopes);
-            module.details["commonjs_bindings"] =
+            module.set_detail(
+                NodeDetailKey::COMMONJS_BINDINGS,
                 json!(crate::languages::typescript::commonjs_bindings(
                     node,
                     context.source,
                     context.offset,
                     shadowed,
-                ));
+                )),
+            );
         }
         if context.language == "python" {
-            module.details["lazy_exports"] = serde_json::Value::Null;
+            module.set_detail(NodeDetailKey::LAZY_EXPORTS, serde_json::Value::Null);
         }
-        module.details["exports"] = serde_json::Value::Null;
+        module.set_detail(NodeDetailKey::EXPORTS, serde_json::Value::Null);
         let details = module
             .details
             .as_object_mut()
             .expect("module details object");
         let frame = traversal.frames.last_mut().expect("module frame entered");
-        frame.reserved_flow_slot = !details.contains_key("value_flow");
+        frame.reserved_flow_slot = !details.contains_key(NodeDetailKey::VALUE_FLOW);
         details
-            .entry("value_flow")
+            .entry(NodeDetailKey::VALUE_FLOW)
             .or_insert(serde_json::Value::Null);
-        details.entry("bindings").or_insert_with(|| json!([]));
-        details.entry("rebindings").or_insert_with(|| json!([]));
+        details
+            .entry(NodeDetailKey::BINDINGS)
+            .or_insert_with(|| json!([]));
+        details
+            .entry(NodeDetailKey::REBINDINGS)
+            .or_insert_with(|| json!([]));
     }
 
     fn record_syntax_diagnostic<'a>(
@@ -1296,7 +1302,7 @@ fn merge_scope_projections(
     if context.profile.typed_scope_projections() {
         return;
     }
-    let raw_flow = &node.details["value_flow"];
+    let raw_flow = node.detail_entry(NodeDetailKey::VALUE_FLOW);
     merge_legacy_framework_array(
         flow,
         raw_flow,
@@ -1334,11 +1340,11 @@ fn merge_scope_projections(
     }
 }
 
-fn set_optional_json_detail(node: &mut Node, key: &str, value: Option<serde_json::Value>) {
+fn set_optional_json_detail(node: &mut Node, key: &'static str, value: Option<serde_json::Value>) {
     if let Some(value) = value {
-        node.details[key] = value;
-    } else if let Some(details) = node.details.as_object_mut() {
-        details.shift_remove(key);
+        node.set_detail(key, value);
+    } else {
+        node.remove_detail(key);
     }
 }
 
@@ -1357,7 +1363,7 @@ fn take_previous_scope_flow(
         }
         return flows.take(&node.id);
     }
-    let raw = &node.details["value_flow"];
+    let raw = node.detail_entry(NodeDetailKey::VALUE_FLOW);
     if raw.is_null() {
         return None;
     }
@@ -1428,12 +1434,12 @@ fn write_scope_bindings(
     }
     set_optional_json_detail(
         node,
-        "bindings",
+        NodeDetailKey::BINDINGS,
         (!bindings.all.is_empty()).then(|| json!(bindings.all)),
     );
     set_optional_json_detail(
         node,
-        "rebindings",
+        NodeDetailKey::REBINDINGS,
         (!bindings.rebindings.is_empty()).then(|| json!(bindings.rebindings)),
     );
 }
@@ -1452,17 +1458,19 @@ fn write_scope_flow(
     };
     let mut fact_limit_exceeded = boxed.fact_limit_exceeded;
     if let Some(flows) = state.flows.as_mut() {
-        set_optional_json_detail(node, "value_flow", None);
+        set_optional_json_detail(node, NodeDetailKey::VALUE_FLOW, None);
         flows.insert_boxed(node.id.clone(), boxed);
         fact_limit_exceeded |= is_overflow(flows.state(node));
     } else if context.profile.typed_scope_projections() {
         let mut validated = FlowStore::default();
         validated.insert_boxed(node.id.clone(), boxed);
         fact_limit_exceeded |= is_overflow(validated.state(node));
-        node.details["value_flow"] =
-            json!(validated.state(node).expect("published scope flow").view());
+        node.set_detail(
+            NodeDetailKey::VALUE_FLOW,
+            json!(validated.state(node).expect("published scope flow").view()),
+        );
     } else {
-        node.details["value_flow"] = json!(boxed.as_ref());
+        node.set_detail(NodeDetailKey::VALUE_FLOW, json!(boxed.as_ref()));
     }
     fact_limit_exceeded
 }
@@ -1503,7 +1511,7 @@ impl ScopePublication<'_> {
                     let has_lazy = lazy_exports
                         .as_array()
                         .is_some_and(|entries| !entries.is_empty());
-                    set_optional_json_detail(node, "lazy_exports", has_lazy.then_some(lazy_exports));
+                    set_optional_json_detail(node, NodeDetailKey::LAZY_EXPORTS, has_lazy.then_some(lazy_exports));
                     Some(exports)
                 }
                 None => context
@@ -1513,7 +1521,7 @@ impl ScopePublication<'_> {
             visibility_exports = exports.clone();
             set_optional_json_detail(
                 node,
-                "exports",
+                NodeDetailKey::EXPORTS,
                 exports.filter(|e| !e.is_empty()).map(|e| json!(e)),
             );
             state.root_summary = Some(ScopeBindings {
@@ -1538,7 +1546,7 @@ impl ScopePublication<'_> {
             let boxed = prepared_flow.unwrap_or_else(|| Box::new(empty_flow));
             fact_limit_exceeded = write_scope_flow(node, context, state, boxed);
         } else if !preserve_invalid && reserved_flow_slot {
-            set_optional_json_detail(node, "value_flow", None);
+            set_optional_json_detail(node, NodeDetailKey::VALUE_FLOW, None);
         }
 
         if !node.details.is_object() {
@@ -1546,10 +1554,10 @@ impl ScopePublication<'_> {
         }
         if let Some((cognitive_complexity, max_nesting_depth, statements)) = metrics {
             if cognitive_complexity > 0 {
-                node.details[NodeDetailKey::COGNITIVE_COMPLEXITY] = json!(cognitive_complexity);
+                node.set_detail(NodeDetailKey::COGNITIVE_COMPLEXITY, json!(cognitive_complexity));
             }
             if max_nesting_depth > 0 {
-                node.details[NodeDetailKey::MAX_NESTING_DEPTH] = json!(max_nesting_depth);
+                node.set_detail(NodeDetailKey::MAX_NESTING_DEPTH, json!(max_nesting_depth));
             }
             if !statements.is_empty() {
                 facts.statement_fingerprints.push(CallableFingerprints {
@@ -1559,7 +1567,7 @@ impl ScopePublication<'_> {
             }
         }
         if fact_limit_exceeded {
-            node.details[NodeDetailKey::FACT_LIMIT_EXCEEDED] = json!(true);
+            node.set_detail(NodeDetailKey::FACT_LIMIT_EXCEEDED, json!(true));
         }
         if let Some(exports) = visibility_exports.as_deref() {
             context

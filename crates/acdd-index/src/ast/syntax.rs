@@ -88,12 +88,12 @@ pub fn bounded_expression(value: &str) -> String {
     )
 }
 
-/// Represents scope bindings data.
+/// Names visible at a scope boundary and names rebound within that scope.
 #[derive(Debug)]
 pub struct ScopeBindings {
-    /// The all value.
+    /// All bindings visible after processing the scope.
     pub all: Vec<String>,
-    /// The rebindings value.
+    /// Names assigned or otherwise rebound in this scope.
     pub rebindings: Vec<String>,
 }
 

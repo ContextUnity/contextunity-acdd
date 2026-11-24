@@ -113,7 +113,10 @@ impl FlowStore {
         node: &Node,
     ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
         let markers = Self::read_named_uncertainty_carrier(node)?;
-        if node.details["named_definition_uncertainty_fault"] == true {
+        if node
+            .detail_bool(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT)
+            == Some(true)
+        {
             Err(())
         } else {
             Ok(markers)
@@ -122,11 +125,16 @@ impl FlowStore {
     fn read_named_uncertainty_carrier(
         node: &Node,
     ) -> Result<Vec<crate::semantic::types::NamedDefinitionUncertainty>, ()> {
-        let fault = node.details.get("named_definition_uncertainty_fault");
+        let fault = node
+            .details
+            .get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT);
         if fault.is_some_and(|value| !value.is_boolean()) {
             return Err(());
         }
-        let Some(raw) = node.details.get("named_definition_uncertainties") else {
+        let Some(raw) = node
+            .details
+            .get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES)
+        else {
             return Ok(Vec::new());
         };
         let values = raw.as_array().ok_or(())?;
@@ -324,7 +332,9 @@ impl FlowStore {
                 self.merge_uncertainties(&node.id, markers);
                 if has_markers {
                     if let Some(details) = node.details.as_object_mut() {
-                        details.remove("named_definition_uncertainties");
+                        details.remove(
+                            crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES,
+                        );
                     }
                 }
             }
@@ -333,19 +343,24 @@ impl FlowStore {
                 self.invalid_uncertainty_carriers.insert(node.id.clone());
             }
         }
-        if node.details["named_definition_uncertainty_fault"] == true {
+        if node
+            .detail_bool(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT)
+            == Some(true)
+        {
             self.uncertainty_faults.insert(node.id.clone());
-            if let Some(details) = node.details.as_object_mut() {
-                details.remove("named_definition_uncertainty_fault");
-            }
+            node.remove_detail(
+                crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT,
+            );
         }
         let classic = node.kind == "template_scope"
             && node.language == "javascript"
-            && node.details["classic_global"] == true;
+            && node.detail_bool(crate::models::details::NodeDetailKey::CLASSIC_GLOBAL)
+                == Some(true);
         let Some(details) = node.details.as_object_mut() else {
             return;
         };
-        let Some(original) = details.remove("value_flow") else {
+        let Some(original) = details.remove(crate::models::details::NodeDetailKey::VALUE_FLOW)
+        else {
             return;
         };
         if original.is_null() {

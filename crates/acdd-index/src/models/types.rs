@@ -2,6 +2,7 @@ use super::details::NodeDetailKey;
 use super::semantic::{
     take_string_pairs, take_strings, NodeSemanticDto, NodeSemanticEntry, ParameterTypesView,
 };
+use super::tags::{LanguageId, NodeKind};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,7 @@ pub struct FileEntry {
 
 static EMPTY_NODE_DETAILS: std::sync::LazyLock<serde_json::Map<String, Value>> =
     std::sync::LazyLock::new(serde_json::Map::new);
+static JSON_NULL: Value = Value::Null;
 
 #[derive(Serialize)]
 struct NodeDto<'a> {
@@ -138,14 +140,16 @@ impl Serialize for Node {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         NodeDto {
             id: &self.id,
-            kind: &self.kind,
+            kind: self.kind_tag().map_or(&self.kind, |kind| kind.as_str()),
             name: &self.name,
             qualname: &self.qualname,
             path: &self.path,
             line: self.line,
             end_line: self.end_line,
             is_test: self.is_test,
-            language: &self.language,
+            language: self
+                .language_tag()
+                .map_or(&self.language, |language| language.as_str()),
             generated: self.generated,
             details: self,
         }
@@ -171,8 +175,10 @@ impl NodeSemanticEntry {
                 continue;
             }
             let valid = match (key, &value) {
-                ("param_types", Value::Object(fields)) => fields.values().all(Value::is_string),
-                ("bindings" | "rebindings", Value::Array(values)) => {
+                (NodeDetailKey::PARAM_TYPES, Value::Object(fields)) => {
+                    fields.values().all(Value::is_string)
+                }
+                (NodeDetailKey::BINDINGS | NodeDetailKey::REBINDINGS, Value::Array(values)) => {
                     values.iter().all(Value::is_string)
                 }
                 _ => false,
@@ -182,8 +188,8 @@ impl NodeSemanticEntry {
                 if let Some(entry) = node.native_semantic.as_mut() {
                     entry.admitted &= !bit;
                     match key {
-                        "bindings" => entry.bindings.clear(),
-                        "rebindings" => entry.rebindings.clear(),
+                        NodeDetailKey::BINDINGS => entry.bindings.clear(),
+                        NodeDetailKey::REBINDINGS => entry.rebindings.clear(),
                         _ => entry.param_types.clear(),
                     }
                 }
@@ -198,11 +204,15 @@ impl NodeSemanticEntry {
             let entry = node.native_semantic.get_or_insert_with(Default::default);
             entry.admitted |= bit;
             match (key, value) {
-                ("param_types", Value::Object(fields)) => {
+                (NodeDetailKey::PARAM_TYPES, Value::Object(fields)) => {
                     entry.param_types = take_string_pairs(fields)
                 }
-                ("bindings", Value::Array(values)) => entry.bindings = take_strings(values),
-                ("rebindings", Value::Array(values)) => entry.rebindings = take_strings(values),
+                (NodeDetailKey::BINDINGS, Value::Array(values)) => {
+                    entry.bindings = take_strings(values)
+                }
+                (NodeDetailKey::REBINDINGS, Value::Array(values)) => {
+                    entry.rebindings = take_strings(values)
+                }
                 _ => unreachable!(),
             }
         }
@@ -219,8 +229,8 @@ impl NodeSemanticEntry {
         Self::ingest(node);
         if bindings.is_empty() && rebindings.is_empty() && node.native_semantic.is_none() {
             if let Some(details) = node.details.as_object_mut() {
-                details.remove("bindings");
-                details.remove("rebindings");
+                details.remove(NodeDetailKey::BINDINGS);
+                details.remove(NodeDetailKey::REBINDINGS);
             }
             return;
         }
@@ -231,7 +241,10 @@ impl NodeSemanticEntry {
         entry.rebindings = rebindings;
         entry.admitted |= 3;
         if let Some(details) = node.details.as_object_mut() {
-            for (key, present) in [("bindings", has_bindings), ("rebindings", has_rebindings)] {
+            for (key, present) in [
+                (NodeDetailKey::BINDINGS, has_bindings),
+                (NodeDetailKey::REBINDINGS, has_rebindings),
+            ] {
                 if present
                     && details
                         .get(key)
@@ -245,6 +258,67 @@ impl NodeSemanticEntry {
 }
 
 impl Node {
+    /// Returns the closed node kind when the persisted tag is recognized.
+    pub fn kind_tag(&self) -> Option<NodeKind> {
+        NodeKind::parse(&self.kind)
+    }
+
+    /// Sets the persisted node kind from its closed tag.
+    pub fn with_kind_tag(mut self, kind: NodeKind) -> Self {
+        self.kind = kind.as_str().to_owned();
+        self
+    }
+
+    /// Returns the closed language identifier when the persisted tag is recognized.
+    pub fn language_tag(&self) -> Option<LanguageId> {
+        LanguageId::parse(&self.language)
+    }
+
+    /// Sets the persisted language identifier from its closed tag.
+    pub fn with_language_tag(mut self, language: LanguageId) -> Self {
+        self.language = language.as_str().to_owned();
+        self
+    }
+
+    /// Returns a persisted detail entry using its canonical key.
+    pub fn detail_entry(&self, key: &'static str) -> &Value {
+        self.details.get(key).unwrap_or(&JSON_NULL)
+    }
+
+    /// Stores a detail entry using its canonical key.
+    pub fn set_detail(&mut self, key: &'static str, value: Value) {
+        if !self.details.is_object() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        let details = self
+            .details
+            .as_object_mut()
+            .expect("node details must be a JSON object");
+        details.insert(key.to_owned(), value);
+    }
+
+    /// Removes a detail entry using its canonical key.
+    pub fn remove_detail(&mut self, key: &'static str) {
+        if let Some(details) = self.details.as_object_mut() {
+            details.shift_remove(key);
+        }
+    }
+
+    /// Returns a string detail when the stored value has the expected shape.
+    pub fn detail_str(&self, key: &'static str) -> Option<&str> {
+        self.details.get(key).and_then(Value::as_str)
+    }
+
+    /// Returns a boolean detail when the stored value has the expected shape.
+    pub fn detail_bool(&self, key: &'static str) -> Option<bool> {
+        self.details.get(key).and_then(Value::as_bool)
+    }
+
+    /// Returns an unsigned integer detail when the stored value has the expected shape.
+    pub fn detail_u64(&self, key: &'static str) -> Option<u64> {
+        self.details.get(key).and_then(Value::as_u64)
+    }
+
     fn semantic_entry(&self, key: &str) -> Option<&NodeSemanticEntry> {
         self.native_semantic
             .as_deref()
@@ -252,42 +326,58 @@ impl Node {
     }
 
     pub fn has_binding_names(&self) -> bool {
-        self.semantic_entry("bindings").is_some() || self.details["bindings"].is_array()
+        self.semantic_entry(NodeDetailKey::BINDINGS).is_some()
+            || self.detail_entry(NodeDetailKey::BINDINGS).is_array()
     }
     pub fn binding_count(&self) -> usize {
-        self.semantic_entry("bindings").map_or_else(
-            || self.details["bindings"].as_array().map_or(0, Vec::len),
-            |entry| entry.bindings.len(),
+        self.semantic_entry(NodeDetailKey::BINDINGS).map_or_else(
+            || self
+                .detail_entry(NodeDetailKey::BINDINGS)
+                .as_array()
+                .map_or(0, Vec::len),
+            |entry| entry.binding_names().map_or(0, <[String]>::len),
         )
     }
     pub fn rebinding_count(&self) -> usize {
-        self.semantic_entry("rebindings").map_or_else(
-            || self.details["rebindings"].as_array().map_or(0, Vec::len),
-            |entry| entry.rebindings.len(),
+        self.semantic_entry(NodeDetailKey::REBINDINGS).map_or_else(
+            || self
+                .detail_entry(NodeDetailKey::REBINDINGS)
+                .as_array()
+                .map_or(0, Vec::len),
+            |entry| entry.rebinding_names().map_or(0, <[String]>::len),
         )
     }
     pub fn parameter_count(&self) -> usize {
-        self.semantic_entry("param_types").map_or_else(
+        self.semantic_entry(NodeDetailKey::PARAM_TYPES).map_or_else(
             || {
-                self.details["param_types"]
+                self.detail_entry(NodeDetailKey::PARAM_TYPES)
                     .as_object()
                     .map_or(0, serde_json::Map::len)
             },
-            |entry| entry.param_types.len(),
+            |entry| entry.parameter_types().map_or(0, <[(String, String)]>::len),
         )
     }
     pub fn has_parameter(&self, name: &str) -> bool {
-        self.semantic_entry("param_types").map_or_else(
-            || self.details["param_types"].get(name).is_some(),
+        self.semantic_entry(NodeDetailKey::PARAM_TYPES).map_or_else(
+            || self
+                .detail_entry(NodeDetailKey::PARAM_TYPES)
+                .get(name)
+                .is_some(),
             |entry| entry.param_types.iter().any(|(key, _)| key == name),
         )
     }
     pub fn binding_names(&self) -> impl Iterator<Item = &str> {
-        self.semantic_entry("bindings")
+        self.semantic_entry(NodeDetailKey::BINDINGS)
             .into_iter()
-            .flat_map(|entry| entry.bindings.iter().map(String::as_str))
+            .flat_map(|entry| {
+                entry
+                    .binding_names()
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+            })
             .chain(
-                self.details["bindings"]
+                self.detail_entry(NodeDetailKey::BINDINGS)
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -295,11 +385,17 @@ impl Node {
             )
     }
     pub fn rebinding_names(&self) -> impl Iterator<Item = &str> {
-        self.semantic_entry("rebindings")
+        self.semantic_entry(NodeDetailKey::REBINDINGS)
             .into_iter()
-            .flat_map(|entry| entry.rebindings.iter().map(String::as_str))
+            .flat_map(|entry| {
+                entry
+                    .rebinding_names()
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+            })
             .chain(
-                self.details["rebindings"]
+                self.detail_entry(NodeDetailKey::REBINDINGS)
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -307,11 +403,17 @@ impl Node {
             )
     }
     pub fn parameter_types(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
-        self.semantic_entry("param_types")
+        self.semantic_entry(NodeDetailKey::PARAM_TYPES)
             .into_iter()
-            .flat_map(|entry| entry.parameters().map(|(name, ty)| (name, Some(ty))))
+            .flat_map(|entry| {
+                entry
+                    .parameter_types()
+                    .into_iter()
+                    .flatten()
+                    .map(|(name, ty)| (name.as_str(), Some(ty.as_str())))
+            })
             .chain(
-                self.details["param_types"]
+                self.detail_entry(NodeDetailKey::PARAM_TYPES)
                     .as_object()
                     .into_iter()
                     .flatten()
@@ -319,21 +421,21 @@ impl Node {
             )
     }
     pub fn parameter_type(&self, name: &str) -> Option<&str> {
-        if let Some(entry) = self.semantic_entry("param_types") {
+        if let Some(entry) = self.semantic_entry(NodeDetailKey::PARAM_TYPES) {
             entry
                 .parameters()
                 .find_map(|(key, ty)| (key == name).then_some(ty))
         } else {
-            self.details["param_types"]
+            self.detail_entry(NodeDetailKey::PARAM_TYPES)
                 .get(name)
                 .and_then(Value::as_str)
         }
     }
     pub fn parameter_types_value(&self) -> Value {
-        if let Some(entry) = self.semantic_entry("param_types") {
+        if let Some(entry) = self.semantic_entry(NodeDetailKey::PARAM_TYPES) {
             serde_json::to_value(ParameterTypesView(entry)).expect("typed parameters serialize")
         } else {
-            self.details["param_types"].clone()
+            self.detail_entry(NodeDetailKey::PARAM_TYPES).clone()
         }
     }
 }
@@ -390,29 +492,29 @@ impl Node {
     #[cfg(test)]
     pub(crate) fn semantic_meta(&self) -> NodeSemanticMeta {
         let bindings = self
-            .semantic_entry("bindings")
+            .semantic_entry(NodeDetailKey::BINDINGS)
             .map(|entry| entry.bindings.clone())
-            .unwrap_or_else(|| self.semantic_field("bindings"));
+            .unwrap_or_else(|| self.semantic_field(NodeDetailKey::BINDINGS));
         let rebindings = self
-            .semantic_entry("rebindings")
+            .semantic_entry(NodeDetailKey::REBINDINGS)
             .map(|entry| entry.rebindings.clone())
-            .unwrap_or_else(|| self.semantic_field("rebindings"));
+            .unwrap_or_else(|| self.semantic_field(NodeDetailKey::REBINDINGS));
         let receiver = self
             .details
-            .get("receiver")
+            .get(NodeDetailKey::RECEIVER)
             .and_then(|v| v.as_str().map(str::to_owned));
         let receiver_type = self
             .details
-            .get("receiver_type")
+            .get(NodeDetailKey::RECEIVER_TYPE)
             .and_then(|v| v.as_str().map(str::to_owned));
         let receiver_hint = self
             .details
-            .get("receiver_hint")
+            .get(NodeDetailKey::RECEIVER_HINT)
             .and_then(|v| v.as_str().map(str::to_owned));
         let param_types = self
-            .semantic_entry("param_types")
+            .semantic_entry(NodeDetailKey::PARAM_TYPES)
             .map(|entry| entry.param_types.iter().cloned().collect())
-            .unwrap_or_else(|| self.semantic_field("param_types"));
+            .unwrap_or_else(|| self.semantic_field(NodeDetailKey::PARAM_TYPES));
         NodeSemanticMeta {
             bindings,
             rebindings,
@@ -433,20 +535,20 @@ impl Node {
         if let Some(details) = self.details.as_object_mut() {
             for (key, value) in [
                 (
-                    "bindings",
+                    NodeDetailKey::BINDINGS,
                     (!meta.bindings.is_empty()).then(|| serde_json::json!(meta.bindings)),
                 ),
                 (
-                    "rebindings",
+                    NodeDetailKey::REBINDINGS,
                     (!meta.rebindings.is_empty()).then(|| serde_json::json!(meta.rebindings)),
                 ),
                 (
-                    "param_types",
+                    NodeDetailKey::PARAM_TYPES,
                     (!meta.param_types.is_empty()).then(|| serde_json::json!(meta.param_types)),
                 ),
-                ("receiver", meta.receiver.map(Value::String)),
-                ("receiver_type", meta.receiver_type.map(Value::String)),
-                ("receiver_hint", meta.receiver_hint.map(Value::String)),
+                (NodeDetailKey::RECEIVER, meta.receiver.map(Value::String)),
+                (NodeDetailKey::RECEIVER_TYPE, meta.receiver_type.map(Value::String)),
+                (NodeDetailKey::RECEIVER_HINT, meta.receiver_hint.map(Value::String)),
             ] {
                 if let Some(value) = value {
                     details.insert(key.into(), value);
@@ -501,7 +603,12 @@ impl NavigationDetails<'_> {
                         key.as_str(),
                         NodeDetailKey::DOC | NodeDetailKey::DOCSTRING
                     ))
-                || (!matches!(key.as_str(), "bindings" | "rebindings" | "param_types")
+                || (!matches!(
+                    key.as_str(),
+                    NodeDetailKey::BINDINGS
+                        | NodeDetailKey::REBINDINGS
+                        | NodeDetailKey::PARAM_TYPES
+                )
                     && !include_navigation_detail(key, value))
             {
                 continue;
@@ -553,14 +660,16 @@ impl Serialize for NavigationDetails<'_> {
         };
         if let Some(semantic) = semantic {
             let has_detail = |key: &str| details.is_some_and(|details| details.contains_key(key));
-            if semantic.has("bindings") && !has_detail("bindings") {
-                map.serialize_entry("bindings", &semantic.bindings)?;
+            if semantic.has(NodeDetailKey::BINDINGS) && !has_detail(NodeDetailKey::BINDINGS) {
+                map.serialize_entry(NodeDetailKey::BINDINGS, &semantic.bindings)?;
             }
-            if semantic.has("rebindings") && !has_detail("rebindings") {
-                map.serialize_entry("rebindings", &semantic.rebindings)?;
+            if semantic.has(NodeDetailKey::REBINDINGS) && !has_detail(NodeDetailKey::REBINDINGS) {
+                map.serialize_entry(NodeDetailKey::REBINDINGS, &semantic.rebindings)?;
             }
-            if semantic.has("param_types") && !has_detail("param_types") {
-                map.serialize_entry("param_types", &ParameterTypesView(semantic))?;
+            if semantic.has(NodeDetailKey::PARAM_TYPES)
+                && !has_detail(NodeDetailKey::PARAM_TYPES)
+            {
+                map.serialize_entry(NodeDetailKey::PARAM_TYPES, &ParameterTypesView(semantic))?;
             }
         }
         for (key, value) in [
@@ -584,14 +693,14 @@ impl Serialize for NavigationDetails<'_> {
 fn include_navigation_detail(key: &str, value: &Value) -> bool {
     !matches!(
         key,
-        "value_flow"
-            | "bindings"
-            | "rebindings"
-            | "param_types"
-            | "column"
-            | "semantic_facts"
-            | "named_definition_uncertainties"
-            | "named_definition_uncertainty_fault"
+        NodeDetailKey::VALUE_FLOW
+            | NodeDetailKey::BINDINGS
+            | NodeDetailKey::REBINDINGS
+            | NodeDetailKey::PARAM_TYPES
+            | NodeDetailKey::COLUMN
+            | NodeDetailKey::SEMANTIC_FACTS
+            | NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES
+            | NodeDetailKey::NAMED_DEFINITION_UNCERTAINTY_FAULT
     ) && !value.is_null()
         && !value.as_str().is_some_and(str::is_empty)
         && !value.as_array().is_some_and(Vec::is_empty)
@@ -873,12 +982,12 @@ mod tests {
         node.apply_semantic_meta(NodeSemanticMeta::default());
         assert_eq!(node.semantic_meta(), NodeSemanticMeta::default());
         for key in [
-            "bindings",
-            "rebindings",
-            "receiver",
-            "receiver_type",
-            "receiver_hint",
-            "param_types",
+            NodeDetailKey::BINDINGS,
+            NodeDetailKey::REBINDINGS,
+            NodeDetailKey::RECEIVER,
+            NodeDetailKey::RECEIVER_TYPE,
+            NodeDetailKey::RECEIVER_HINT,
+            NodeDetailKey::PARAM_TYPES,
         ] {
             assert!(node.details.get(key).is_none());
         }

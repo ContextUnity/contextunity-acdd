@@ -1,3 +1,4 @@
+use super::details::NodeDetailKey;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 
@@ -49,6 +50,21 @@ pub(crate) fn take_string_pairs(fields: serde_json::Map<String, Value>) -> Vec<(
 
 impl NodeSemanticEntry {
     semantic_fields!("bindings" => 1 => bindings, "rebindings" => 2 => rebindings, "param_types" => 4 => param_types);
+
+    pub fn binding_names(&self) -> Option<&[String]> {
+        self.has(NodeDetailKey::BINDINGS)
+            .then_some(self.bindings.as_slice())
+    }
+
+    pub fn rebinding_names(&self) -> Option<&[String]> {
+        self.has(NodeDetailKey::REBINDINGS)
+            .then_some(self.rebindings.as_slice())
+    }
+
+    pub fn parameter_types(&self) -> Option<&[(String, String)]> {
+        self.has(NodeDetailKey::PARAM_TYPES)
+            .then_some(self.param_types.as_slice())
+    }
 
     pub fn with_parameters(param_types: std::collections::BTreeMap<String, String>) -> Self {
         Self {

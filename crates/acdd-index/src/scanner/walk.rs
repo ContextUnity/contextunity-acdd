@@ -35,7 +35,7 @@ pub(super) fn is_spec_collection_path(rel_str: &str, adapter: &Adapter) -> bool 
             .any(|spec| spec.matches_rel_path(rel_str))
 }
 
-/// Performs language.
+/// Detects a file's language and whether it should be treated as documentation.
 pub(crate) fn language(path: &Path) -> Option<(&'static str, bool)> {
     // ACDD verification receipt sidecars (`<db>.verified.json`) live next to caches
     // (sometimes inside test or workspace roots) and must never be indexed as JSON source.
@@ -89,103 +89,120 @@ impl WatchedEntries {
     }
 }
 
-struct WalkContext<'a, F> {
+struct CandidateWalker<'a, F> {
     adapter: &'a Adapter,
-    code_enabled: bool,
-    docs_enabled: bool,
+    watch: Option<&'a std::sync::Arc<WatchedEntries>>,
     include_sources: bool,
-    configuration_paths: Option<&'a BTreeSet<PathBuf>>,
-    candidate_count: &'a mut usize,
-    seen_rel_paths: &'a mut BTreeSet<String>,
-    dependency_manifests: &'a mut BTreeSet<PathBuf>,
-    visit: &'a mut F,
+    candidate_count: usize,
+    seen_rel_paths: BTreeSet<String>,
+    dependency_manifests: BTreeSet<PathBuf>,
+    visit: F,
 }
 
-fn walk_roots<F>(
-    roots: &[PathBuf],
-    ignored_names: &BTreeSet<String>,
-    strip_base: &Path,
-    rel_prefix: &str,
-    watch: Option<&std::sync::Arc<WatchedEntries>>,
-    watch_root: &Path,
-    ctx: &mut WalkContext<'_, F>,
-) -> std::io::Result<()>
+impl<F> CandidateWalker<'_, F>
 where
     F: FnMut(PathBuf, String) -> std::io::Result<()>,
 {
-    for source_root in roots {
-        if !source_root.exists() {
-            continue;
+    fn walk_roots(
+        &mut self,
+        roots: &[PathBuf],
+        ignored_names: &BTreeSet<String>,
+        base: &Path,
+        rel_prefix: &str,
+        configuration_paths: Option<&BTreeSet<PathBuf>>,
+    ) -> std::io::Result<()> {
+        let code_enabled = self.adapter.modules.is_enabled("code");
+        let docs_enabled = self.adapter.modules.is_enabled("docs");
+        for source_root in roots {
+            if !source_root.exists() {
+                continue;
+            }
+            let mut builder = WalkBuilder::new(source_root);
+            builder
+                .hidden(false)
+                .follow_links(false)
+                .same_file_system(true)
+                .git_ignore(true)
+                .require_git(false);
+            let ignored = ignored_names.clone();
+            let watch_entry = self.watch.cloned();
+            let watch_root = base.to_path_buf();
+            let watch_prefix = rel_prefix.to_owned();
+            builder.filter_entry(move |item| {
+                if let Some(watch) = &watch_entry {
+                    watch.observe(item, &watch_root, &watch_prefix);
+                }
+                !item.path_is_symlink()
+                    && !ignored.contains(&item.file_name().to_string_lossy().to_string())
+            });
+            for result in builder.build() {
+                let item = result.map_err(|e| error(e.to_string()))?;
+                if item.path_is_symlink()
+                    || ignored_names.contains(&item.file_name().to_string_lossy().to_string())
+                    || !item.file_type().is_some_and(|kind| kind.is_file())
+                {
+                    continue;
+                }
+                let full = item.into_path();
+                if configuration_paths.is_some_and(|paths| paths.contains(&full)) {
+                    continue;
+                }
+                let filename = full
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                let is_manifest = code_enabled
+                    && crate::languages::dependency_registry::is_dependency_manifest_filename(
+                        filename,
+                    );
+                let file_language = self.include_sources.then(|| language(&full)).flatten();
+                let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
+                let is_source = file_language.is_some()
+                    && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
+                if !is_manifest && !is_source {
+                    continue;
+                }
+                let Ok(relative) = full.strip_prefix(base) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if !is_doc && is_spec_collection_path(&relative, self.adapter) {
+                    continue;
+                }
+                if is_manifest {
+                    self.dependency_manifests.insert(full.clone());
+                }
+                if is_source {
+                    visit_candidate(
+                        &mut self.candidate_count,
+                        &mut self.seen_rel_paths,
+                        full,
+                        format!("{rel_prefix}{relative}"),
+                        self.adapter.limits.max_files,
+                        &mut self.visit,
+                    )?;
+                }
+            }
         }
-        let mut builder = WalkBuilder::new(source_root);
-        builder
-            .hidden(false)
-            .follow_links(false)
-            .same_file_system(true)
-            .git_ignore(true)
-            .require_git(false);
-        let ignored = ignored_names.clone();
-        let watch_entry = watch.cloned();
-        let w_root = watch_root.to_path_buf();
-        let w_prefix = rel_prefix.to_owned();
-        builder.filter_entry(move |item| {
-            if let Some(watch) = &watch_entry {
-                watch.observe(item, &w_root, &w_prefix);
-            }
-            !item.path_is_symlink()
-                && !ignored.contains(&item.file_name().to_string_lossy().to_string())
-        });
-        for result in builder.build() {
-            let item = result.map_err(|e| error(e.to_string()))?;
-            if item.path_is_symlink()
-                || ignored_names.contains(&item.file_name().to_string_lossy().to_string())
-                || !item.file_type().is_some_and(|kind| kind.is_file())
-            {
-                continue;
-            }
-            let full = item.into_path();
-            if ctx
-                .configuration_paths
-                .is_some_and(|paths| paths.contains(&full))
-            {
-                continue;
-            }
-            let filename = full
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            let is_manifest = ctx.code_enabled
-                && crate::languages::dependency_registry::is_dependency_manifest_filename(filename);
-            let file_language = ctx.include_sources.then(|| language(&full)).flatten();
-            let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
-            let is_source = file_language.is_some()
-                && ((is_doc && ctx.docs_enabled) || (!is_doc && ctx.code_enabled));
-            if !is_manifest && !is_source {
-                continue;
-            }
-            let Ok(relative) = full.strip_prefix(strip_base) else {
-                continue;
-            };
-            let relative = relative.to_string_lossy().replace('\\', "/");
-            if !is_doc && is_spec_collection_path(&relative, ctx.adapter) {
-                continue;
-            }
-            if is_manifest {
-                ctx.dependency_manifests.insert(full.clone());
-            }
-            if is_source {
-                visit_candidate(
-                    ctx.candidate_count,
-                    ctx.seen_rel_paths,
-                    full,
-                    format!("{rel_prefix}{relative}"),
-                    ctx.adapter.limits.max_files,
-                    ctx.visit,
-                )?;
-            }
-        }
+        Ok(())
     }
-    Ok(())
+
+    fn collect_documentation_paths(
+        &mut self,
+        workspace_root: &Path,
+        prefix: &str,
+        ignored_names: &BTreeSet<String>,
+    ) -> std::io::Result<()> {
+        collect_documentation_paths(
+            workspace_root,
+            prefix,
+            (ignored_names, self.watch),
+            self.adapter.limits.max_files,
+            &mut self.candidate_count,
+            &mut self.seen_rel_paths,
+            &mut self.visit,
+        )
+    }
 }
 
 pub(super) fn walk_candidate_paths(
@@ -193,7 +210,7 @@ pub(super) fn walk_candidate_paths(
     adapter: &Adapter,
     watch: Option<&std::sync::Arc<WatchedEntries>>,
     include_sources: bool,
-    mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
+    visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let code_enabled = adapter.modules.is_enabled("code");
     let docs_enabled = adapter.modules.is_enabled("docs");
@@ -201,77 +218,51 @@ pub(super) fn walk_candidate_paths(
         return Ok(Vec::new());
     }
 
-    let mut candidate_count = 0usize;
-    let mut seen_rel_paths = BTreeSet::new();
-    let mut dependency_manifests = BTreeSet::new();
     let configuration_paths: BTreeSet<_> = [root.join("acdd.yaml")]
         .into_iter()
         .chain(adapter.adapter_path.iter().cloned())
         .collect();
+    let mut walker = CandidateWalker {
+        adapter,
+        watch,
+        include_sources,
+        candidate_count: 0,
+        seen_rel_paths: BTreeSet::new(),
+        dependency_manifests: BTreeSet::new(),
+        visit,
+    };
 
     if docs_enabled && include_sources {
-        collect_documentation_paths(
-            root,
-            "",
-            (&adapter.ignored_names, watch),
-            adapter.limits.max_files,
-            &mut candidate_count,
-            &mut seen_rel_paths,
-            &mut visit,
-        )?;
+        walker.collect_documentation_paths(root, "", &adapter.ignored_names)?;
     }
 
-    let mut ctx = WalkContext {
-        adapter,
-        code_enabled,
-        docs_enabled,
-        include_sources,
-        configuration_paths: Some(&configuration_paths),
-        candidate_count: &mut candidate_count,
-        seen_rel_paths: &mut seen_rel_paths,
-        dependency_manifests: &mut dependency_manifests,
-        visit: &mut visit,
-    };
-    walk_roots(
+    walker.walk_roots(
         &adapter.roots,
         &adapter.ignored_names,
         root,
         "",
-        watch,
-        root,
-        &mut ctx,
+        Some(&configuration_paths),
     )?;
 
     for workspace in &adapter.linked_workspaces {
         let prefix = format!("[{}]/", workspace.name);
-        ctx.configuration_paths = None;
-        walk_roots(
+        walker.walk_roots(
             &workspace.roots,
             &workspace.ignored_names,
             &workspace.path,
             &prefix,
-            watch,
-            &workspace.path,
-            &mut ctx,
+            None,
         )?;
         if code_enabled {
             collect_source_root_manifests(
                 &workspace.path,
                 &workspace.roots,
                 &workspace.ignored_names,
-                ctx.dependency_manifests,
+                &mut walker.dependency_manifests,
             )?;
         }
         if docs_enabled && include_sources {
-            collect_documentation_paths(
-                &workspace.path,
-                &prefix,
-                (&workspace.ignored_names, watch),
-                adapter.limits.max_files,
-                ctx.candidate_count,
-                ctx.seen_rel_paths,
-                ctx.visit,
-            )?;
+            walker.collect_documentation_paths(&workspace.path, &prefix, &workspace.ignored_names)?;
         }
     }
     if code_enabled {
@@ -279,10 +270,10 @@ pub(super) fn walk_candidate_paths(
             root,
             &adapter.roots,
             &adapter.ignored_names,
-            &mut dependency_manifests,
+            &mut walker.dependency_manifests,
         )?;
     }
-    Ok(dependency_manifests.into_iter().collect())
+    Ok(walker.dependency_manifests.into_iter().collect())
 }
 
 fn collect_documentation_paths(

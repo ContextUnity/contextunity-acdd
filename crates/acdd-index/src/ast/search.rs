@@ -6,7 +6,7 @@ use serde_json::json;
 use std::{fmt, ops::Range};
 use tree_sitter::{Node as Syntax, Parser, Tree};
 
-/// The search match horizon value.
+/// Maximum number of AST matches accepted in a search page or offset window.
 pub const SEARCH_MATCH_HORIZON: usize = 10_000;
 
 struct SearchBudget {
@@ -283,15 +283,15 @@ fn structural_match(
     sequence(&p, &t, ps, source, captures, budget, options.capabilities)
 }
 
-/// Represents search page data.
+/// A page of AST matches together with the traversal and work-limit status.
 pub struct SearchPage {
-    /// The items value.
+    /// Match records returned for this page.
     pub items: Vec<serde_json::Value>,
-    /// The matched value.
+    /// Number of matching syntax nodes observed while producing the page.
     pub matched: usize,
-    /// Whether complete applies.
+    /// Whether the syntax tree was fully traversed for this query.
     pub complete: bool,
-    /// Whether work limited applies.
+    /// Whether a parser or traversal budget stopped the search early.
     pub work_limited: bool,
 }
 

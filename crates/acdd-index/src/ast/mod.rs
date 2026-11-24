@@ -17,7 +17,16 @@ use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
 pub use search::{pattern_symbol_name, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON};
 
-/// Performs extract.
+fn with_language_str(mut node: Node, language: &str) -> Node {
+    if let Some(language_tag) = LanguageId::parse(language) {
+        node.with_language_tag(language_tag)
+    } else {
+        node.language = language.to_owned();
+        node
+    }
+}
+
+/// Extracts language facts for a source file and returns their public projection.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
     Ok(extract_typed(path, language, source)?.into_public())
 }
@@ -109,23 +118,27 @@ fn manifest_entrypoint_candidates(
             let Some(target) = targets.next() else {
                 return false;
             };
-            target.details["entrypoint_direct_module"] == true && targets.next().is_none()
+            target.detail_bool(NodeDetailKey::ENTRYPOINT_DIRECT_MODULE) == Some(true)
+                && targets.next().is_none()
         });
         let id = format!("main-registration:{}:{}:{}", entry.origin, entry.name, path);
-        facts.nodes.push(Node {
+        let registration = Node {
             native_semantic: None,
             id,
-            kind: NodeKind::MainRegistration.as_str().into(),
+            kind: String::new(),
             name: entry.name.clone(),
             qualname: entry.target.clone(),
             path: path.to_owned(),
             line: 1,
             end_line: 1,
             is_test: is_test(path),
-            language: language.into(),
+            language: String::new(),
             generated: false,
             details: serde_json::json!({"manifest_origin": entry.origin, "manifest_name": entry.name, "callable": callable, "direct_module": direct_module}),
-        });
+        }
+        .with_kind_tag(NodeKind::MainRegistration);
+        let registration = with_language_str(registration, language);
+        facts.nodes.push(registration);
     }
     if language == LanguageId::Python.as_str() {
         clear_direct_module_markers(facts);
@@ -143,20 +156,23 @@ pub fn extract_typed_with_registry(
     let profile = languages::require(language)?;
     let module = profile.module_name_for_source(path, source);
     let mut facts = Facts::default();
-    facts.nodes.push(Node {
+    let module_node = Node {
         native_semantic: None,
         id: format!("module:{path}"),
-        kind: NodeKind::Module.as_str().into(),
+        kind: String::new(),
         name: path.rsplit('/').next().unwrap_or(path).into(),
         qualname: module.clone(),
         path: path.into(),
         line: 1,
         end_line: source.lines().count().max(1),
         is_test: is_test(path),
-        language: language.into(),
+        language: String::new(),
         generated: false,
         details: serde_json::Value::Null,
-    });
+    }
+    .with_kind_tag(NodeKind::Module);
+    let module_node = with_language_str(module_node, language);
+    facts.nodes.push(module_node);
 
     let bytes = source.len();
     if bytes > 1024 {
@@ -515,7 +531,9 @@ mod legacy_hook_tests {
                 .iter()
                 .find(|n| n.name == "sample")
                 .unwrap();
-            if symbol.details["is_static"] != true || symbol.line != offset + 1 {
+            if symbol.detail_bool(crate::models::details::NodeDetailKey::IS_STATIC) != Some(true)
+                || symbol.line != offset + 1
+            {
                 failures.push(format!("offset={offset}: metadata and owner position"));
             }
             let flow = typed
@@ -534,7 +552,10 @@ mod legacy_hook_tests {
             {
                 failures.push(format!("offset={offset}: typed flow/return/offset"));
             }
-            if !symbol.details["value_flow"].is_null() {
+            if !symbol
+                .detail_entry(crate::models::NodeDetailKey::VALUE_FLOW)
+                .is_null()
+            {
                 failures.push(format!("offset={offset}: typed composition must own flow"));
             }
             let module = typed
