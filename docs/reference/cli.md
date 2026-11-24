@@ -15,7 +15,7 @@ title: CLI reference
 | `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.acdd/code-map.sqlite`; `ACDD_DB` can set it. Does not select the state store. |
 | `--state-db <PATH>` | State SQLite database path override (`ACDD_STATE_DB`). Defaults to `state_db` in `acdd.yaml` (`.acdd/state.sqlite` under the primary Git worktree). |
 | `--config <PATH>` | Root-confined ACDD YAML configuration; `ACDD_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/acdd.yaml` when present. |
-| `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
+| `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation \| spec_planning`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
 - **Positional root**: `build`, `scan`, and `delta` also accept a positional workspace path (when combined with `--root`, both must resolve to the same directory).

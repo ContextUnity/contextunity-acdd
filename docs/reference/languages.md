@@ -87,7 +87,7 @@ ACDD collects declared dependencies and `ModulePrefix` records from workspace ma
 - **Python receiver hints**: tracks string literals, f-strings, slices, `Path /`, `with ... as`, constructors, chained calls, and `super()`. Unsupported computed receivers or reassigned bindings retain explicit uncertainty.
 - **Hierarchy return & DOM literal factories**: bundled Django QuerySet chains (`all`, `filter`, `exclude`, `order_by`, `select_related`, `prefetch_related`) and JS/TS literal-factory rules (`document.createElement('input').value`, `script.src`) resolve only via manifest declarations without inventing dynamic properties (see [framework manifests](framework-manifests.md#typed-extraction-rules)).
 - **Python explicit exports**: follows module/package exports including static PEP 562 literal names; incremental delta hydrates required import chains and preserves both `src`-qualified and package-root names across linked workspaces.
-- **Shared value-flow analysis**: Python, JS/TS, and Rust track source-ordered assignments, aliases, return types, fields, and simple complete factory returns while leaving reassignments, unawaited async, and generators unresolved.
+- **Shared value-flow analysis**: Python, JS/TS, and Rust track source-ordered assignments, aliases, return types, fields, and simple complete factory returns while leaving reassignments, unawaited async, and generators unresolved. Cross-module external aliases propagate uniformly across indexed profiles alongside compound generic `call_returns` rules and element-wise tuple/`Option`/`Result` branch joins.
 - **Wrapper unwrapping**:
   - **Rust**: `?`, `.unwrap()`, `.expect()` project inner types from `Option<T>`, `Result<T, E>`, `anyhow::Result<T>` (custom `unwrap` keeps its declared signature).
   - **TypeScript / JavaScript**: `await` unwraps Promise annotations and async constructors (`await promise` resolves, raw `promise` does not).
@@ -96,9 +96,9 @@ ACDD collects declared dependencies and `ModulePrefix` records from workspace ma
   - Complete `if`/`elif`/`else` joins with 1 proven declaration remain `exact`.
   - 2–8 distinct targets emit bounded `possible_calls` edges separate from exact calls; >8 widens to `Unknown/Incomplete` (see [ADR 0010](../adr/0010-static-value-flow-and-receiver-resolution.md)).
 - **Trait objects, inheritance & macros**:
-  - Rust trait-object dispatch and Python `abc.ABC` methods navigate to the base declaration (`inferred`) plus up to 8 concrete `possible_calls` targets (with explicit `trait_object_dispatch` gaps); >8 suppresses concrete fan-out.
-  - Declarative `macro_rules!` struct/enum exports (`rust/macros.rs`) are indexed while macro invocations record `macro_expansion_not_analyzed` without arbitrary expansion.
-- **Rust chains & `Deref`**: tracks multi-segment calls (<=8 segments, 512B), `#[derive(...)]`, nominal `Deref` targets, and `.as_ref()`/`.as_mut()`/`.ok()` transformations.
+  - Rust trait-object dispatch and Python `abc.ABC` methods navigate to the base declaration (`inferred`) plus up to 8 concrete `possible_calls` targets (with explicit `trait_object_dispatch` gaps: `resolved` when `1..=8` indexed implementations exist, `unresolved` when `0` or `> 8`); >8 suppresses concrete fan-out.
+  - Declarative `macro_rules!` struct/enum exports (`rust/macros.rs`) and `impl Trait for $ty` expansions are indexed, while macro invocations record `macro_expansion_not_analyzed` without arbitrary expansion.
+- **Rust chains & `Deref`**: tracks multi-segment calls (<=8 segments, 512B), `#[derive(...)]`, `#[derive(clap::Parser)]` `Self` constructors, `#[serde(...)]` callbacks, generic-bounded inherent methods, external Cargo re-exports (`RustForwarding`), nominal `Deref` targets, and `.as_ref()`/`.as_mut()`/`.ok()` transformations.
 
 - **Vue & web packs**:
   - **Vue templates**: uses HTML boundaries + JS expression parsing for component imports, event handlers, qualified members, `v-for` bindings, Pinia `defineStore` auto-imports (`nuxt.toml`), slot bindings, and arrow parameters while preserving original coordinates.

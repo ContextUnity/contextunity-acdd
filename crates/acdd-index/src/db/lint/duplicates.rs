@@ -553,7 +553,7 @@ pub(crate) fn collect_symbol_duplicates(
     let mut stmt_index: HashMap<(u64, usize), Vec<usize>> = HashMap::new();
     let mut similar_pool: Vec<usize> = Vec::new();
     for (idx, p) in prepared.iter().enumerate() {
-        if p.body_hash.is_some() && !whole_symbol_duplicate_members.contains(&idx) {
+        if p.body_hash.is_some() {
             similar_pool.push(idx);
             let mut seen_stmt = HashSet::new();
             for s in &p.statements {
@@ -599,7 +599,10 @@ pub(crate) fn collect_symbol_duplicates(
                 group.push(cand_idx);
             }
         }
-        if group.len() >= 2 {
+        let rep_hash = prepared[rep_idx].body_hash;
+        if group.len() >= 2
+            && group.iter().any(|&m| prepared[m].body_hash != rep_hash)
+        {
             for &m in &group {
                 clustered.insert(m);
             }

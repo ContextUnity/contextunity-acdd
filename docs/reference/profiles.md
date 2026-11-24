@@ -125,7 +125,7 @@ gates_patch: []                # Patch inherited gates by id/cursor/after/before
 
 - `inherit: none` (or omitted): Compiles a standalone profile from scratch with no
   inherited roles, commands, proofs, guidance, contours, or gates.
-- `inherit: base | code | audit | documentation | <path>[:<sha256_prefix>]`:
+- `inherit: base | code | audit | documentation | spec_planning | <path>[:<sha256_prefix>]`:
   - `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`, `contours`,
     `gate_templates`, `limits`, and `modules` merge field-wise / by key
     (supporting `PatchField` null-clearing on nullable fields).
@@ -245,5 +245,5 @@ Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`cr
 ## Reference Examples
 
 - See the starter overlay template in [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlink into `skills/acdd/references/`) and the complete field guide in [`skills/acdd/references/profile-reference.md`](../../skills/acdd/references/profile-reference.md).
-- Embedded profiles: [`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), [`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml), and [`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml).
+- Embedded profiles: [`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), [`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml), [`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml), and [`spec_planning.yaml`](../../crates/acdd-state/src/profile/embedded/spec_planning.yaml).
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for loading precedence and `acdd.yaml` adapter settings.

@@ -10,7 +10,7 @@ owners:
   - crates/acdd-index/src/db/writer/cache.rs
   - crates/acdd-index/src/db/writer/seal.rs
   - crates/acdd-index/src/ast/mod.rs
-  - crates/acdd-index/src/ast/routes.rs
+  - crates/acdd-index/src/languages/routes.rs
   - crates/acdd-index/src/ast/visitor.rs
   - crates/acdd-index/src/languages/dependency_registry/mod.rs
   - crates/acdd-index/src/languages/mod.rs
@@ -128,8 +128,8 @@ Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed c
 - **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`crates/acdd-core/src/config/`) or the `ACDD_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `crates/acdd-index/src/db/writer/`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
 
 ### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
-- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic/catalog.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
-- **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(..., false)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
+- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` (`crates/acdd-index/src/typed_facts/catalog.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
+- **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(...)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
 - **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`crates/acdd-index/src/db/writer/`).
 - **Bounded Chunk Hydration**: In `populate_owned` (`crates/acdd-index/src/db/writer/mod.rs`, `crates/acdd-index/src/db/writer/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
 
@@ -175,12 +175,12 @@ better request latency.
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache (`V5` / `V4`)**: `crates/acdd-index/src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
 - **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `crates/acdd-index/src/languages/dependency_registry/mod.rs`).
-- **Direct Binary Codecs**: [`BinaryEncode`](../../crates/acdd-index/src/typed_facts/binary.rs) and [`BinaryDecode`](../../crates/acdd-index/src/typed_facts/binary.rs) encode borrowed record fields without intermediate cloned DTOs. V5 cache frames store the extraction key, compressed/uncompressed payload lengths, checksum, and canonical `ACDD-LOCAL-FACTS\0\x04` payload (V4 frames remain readable); unsupported or corrupt entries are cache misses and are re-extracted.
+- **Direct Binary Codecs**: [`BinaryEncode`](../../crates/acdd-index/src/typed_facts/binary.rs) and [`BinaryDecode`](../../crates/acdd-index/src/typed_facts/binary.rs) encode borrowed record fields without intermediate cloned DTOs. V5 cache frames store the extraction key, compressed/uncompressed payload lengths, checksum, and canonical `ACDD-LOCAL-FACTS\0\x05` payload (earlier frames remain readable via `ExtractionCache`); unsupported or corrupt entries are cache misses and are re-extracted.
 - **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
 
 ### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
 - **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../crates/acdd-index/src/languages/routes.rs) and [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
-- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic/relations.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/typed_facts/catalog.rs) linking. The local extraction cache stores typed facts directly in its binary frame (`ACDD-LOCAL-FACTS\0\x04`); public JSON projection remains a separate storage boundary.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic/relations.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/typed_facts/catalog.rs) linking. The local extraction cache stores typed facts directly in its binary frame (`ACDD-LOCAL-FACTS\0\x05`); public JSON projection remains a separate storage boundary.
 - **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic/types.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/models/semantic.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
 - **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
@@ -232,7 +232,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Symbol Catalog Fact Stripping
 >
-> In `src/engine/pipeline/mod.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
+> In `src/engine/pipeline/cold.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/typed_facts/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Call `insert_typed` (`retain_storage = false`) for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
 - INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/cold.rs) [`SymbolCatalog`](../../crates/acdd-index/src/typed_facts/catalog.rs).
 

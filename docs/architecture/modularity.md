@@ -115,6 +115,21 @@ The shared body traversal replaces recursive declaration-body binding, value-flo
 > - INV-AR003-CANONICAL-INVARIANT-AUTHORITY: Every architectural invariant has one canonical `INV-*` declaration in `docs/architecture/*.md` or `docs/adr/*.md` with verified symbol links (and `acdd-rule` blocks for machine-enforceable boundaries), while `**/AGENTS.md` files stay concise operational routers. [`enforced_invariant_ids`](../../crates/acdd-index/src/db/lint/rules.rs)
 
 ```acdd-rule
+id: INV-SINGLE-OWNER-NO-INLINE-TEMP-DIR
+invariant: INV-SINGLE-OWNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/acdd-index/src/**", "crates/acdd-state/src/**"]
+  exclude_paths:
+    - "crates/acdd-state/src/harness.rs"
+  languages: ["rust"]
+ast_pattern: "std::env::temp_dir()"
+include_tests: true
+message: "Do not use raw std::env::temp_dir() inside src/ or inline crate tests; place FS tests in canonical tests/<domain>.rs via RunHarness/Workspace/ScopedTempDir"
+```
+
+```acdd-rule
 id: INV-GIT-SINGLE-OWNER
 invariant: INV-GIT-SINGLE-OWNER
 severity: error

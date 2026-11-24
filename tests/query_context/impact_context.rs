@@ -595,6 +595,27 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
         )?;
     }
 
+    let mut crate_b_facts = acdd_index::typed_facts::TypedFacts::default();
+    for (line, expr) in [(11, "decode_row"), (12, "apply_v2")] {
+        crate_b_facts.facts.references.push(acdd_index::models::Reference {
+            source: "b_cross_live".to_owned(),
+            line,
+            column: 0,
+            expression: expr.to_owned(),
+            kind: "references".to_owned(),
+            alias: None,
+            module: None,
+            dynamic: false,
+            receiver_hint: None,
+        });
+    }
+    let facts_blob = acdd_index::typed_facts::encode_facts(&crate_b_facts)?;
+    conn.execute(
+        "INSERT INTO local_facts(path,source_digest,language,is_test,generated,facts_blob)
+         VALUES('crates/b/src/lib.rs','fixture-digest','rust',0,0,?1)",
+        params![facts_blob],
+    )?;
+
     let names = |page: &serde_json::Value| -> Vec<String> {
         page["items"]
             .as_array()

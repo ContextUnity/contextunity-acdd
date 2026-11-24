@@ -136,10 +136,12 @@ default `min_lines` (minimum AST statement count) to **5** when the argument is 
 `acdd query run duplicates --min-lines` flag still defaults to **10** unless set
 explicitly. **`exact`** whole-symbol groups hash the callable's normalized AST
 statement fingerprint sequence (`StatementFingerprint` extracted in
-`crates/acdd-index/src/ast/fingerprints.rs`, skipping pure delimiter/comment trivia
-and collapsing multi-line formatting within a statement). **`similar`** near-clones
-cluster same-named callables with `>= 0.80` AST statement similarity. **`block`**
-windows hash each `>= min_lines` contiguous AST statement slice across symbols/files
+`crates/acdd-index/src/ast/fingerprints.rs`, skipping pure delimiter/comment trivia,
+normalizing local identifiers for Type-2 clones, and collapsing multi-line formatting
+within a statement; tests are excluded by default unless the target scope is a test
+path). **`similar`** near-clones cluster callables across names with `>= 0.80`
+LCS/Jaccard AST statement similarity. **`block`** windows hash each `>= min_lines`
+contiguous AST statement slice across symbols/files
 or at non-overlapping positions within one function and coalesce overlapping
 adjacent window matches into maximal clone spans. Block
 groups that only repeat an already-reported whole-symbol **`exact`** or

@@ -1,6 +1,16 @@
 use super::context::*;
 use crate::linker::traits::ImportContext;
 
+pub(super) struct PendingExternalImport<'a> {
+    owner_id: SymbolId,
+    owner_qual: &'a str,
+    alias_id: SymbolId,
+    provider_module: &'a Node,
+    symbol_name: &'a str,
+    reference: &'a Reference,
+    factory_safe: bool,
+}
+
 impl<'a> Context<'a> {
     pub(super) fn prepare_callable_aliases(&mut self, all: &'a dyn crate::FactsLookup) {
         let mut updates = Vec::new();
@@ -246,7 +256,7 @@ impl<'a> Context<'a> {
             'a,
         >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
-    ) -> Vec<(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)> {
+    ) -> Vec<PendingExternalImport<'a>> {
         let mut pending_cross_module = Vec::new();
         for (path, facts) in all.iter_facts() {
             let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
@@ -312,7 +322,7 @@ impl<'a> Context<'a> {
             'a,
         >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
-    ) -> Option<(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)> {
+    ) -> Option<PendingExternalImport<'a>> {
         let alias = reference.alias.as_deref().filter(|alias| *alias != "*")?;
         let owner = owners.get(reference.source.as_str()).copied()?;
         let key = (
@@ -417,57 +427,66 @@ impl<'a> Context<'a> {
                     .rsplit_once("::")
                     .or_else(|| reference.expression.rsplit_once('.'))
                     .map_or(reference.expression.as_str(), |(_, name)| name);
-                pending = Some((
+                pending = Some(PendingExternalImport {
                     owner_id,
+                    owner_qual: owner.qualname.as_str(),
                     alias_id,
-                    providers[0],
+                    provider_module: providers[0],
                     symbol_name,
                     reference,
-                    super::super::python::semantic_context::logging_factory_import_is_safe(
-                        module, alias, position,
-                    ),
-                ));
+                    factory_safe:
+                        super::super::python::semantic_context::logging_factory_import_is_safe(
+                            module, alias, position,
+                        ),
+                });
             }
             aliases.insert(alias_id, target);
         }
         pending
     }
 
-    fn propagate_cross_module_external_imports(
-        &mut self,
-        pending: &[(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)],
-    ) {
+    fn propagate_cross_module_external_imports(&mut self, pending: &[PendingExternalImport<'a>]) {
         if pending.is_empty() {
             return;
         }
         for _ in 0..8 {
             let mut changed = false;
-            for &(owner_id, alias_id, provider_module, symbol_name, reference, factory_safe) in
-                pending
-            {
+            for item in pending {
                 if !matches!(
                     self.imports
-                        .get(&owner_id)
-                        .and_then(|aliases| aliases.get(&alias_id)),
+                        .get(&item.owner_id)
+                        .and_then(|aliases| aliases.get(&item.alias_id)),
                     Some(Imported::Unknown)
                 ) {
                     continue;
                 }
-                let Some(Imported::External(origin, _, _, parent_safe)) =
-                    self.imported_alias(provider_module, symbol_name)
+                let Some(Imported::External(origin, _, original, parent_safe)) =
+                    self.imported_alias(item.provider_module, item.symbol_name)
                 else {
                     continue;
                 };
+                let _ = original;
+                #[cfg(feature = "lang-rust")]
+                if item.provider_module.language == "rust"
+                    && !self.rust_forwarding.external_binding_visible(
+                        item.provider_module,
+                        item.symbol_name,
+                        item.owner_qual,
+                        original.source == item.provider_module.id,
+                    )
+                {
+                    continue;
+                }
                 let propagated = Imported::External(
                     origin.clone(),
-                    reference.position(),
-                    reference,
-                    factory_safe && *parent_safe,
+                    item.reference.position(),
+                    item.reference,
+                    item.factory_safe && *parent_safe,
                 );
                 if let Some(slot) = self
                     .imports
-                    .get_mut(&owner_id)
-                    .and_then(|aliases| aliases.get_mut(&alias_id))
+                    .get_mut(&item.owner_id)
+                    .and_then(|aliases| aliases.get_mut(&item.alias_id))
                 {
                     *slot = propagated;
                     changed = true;

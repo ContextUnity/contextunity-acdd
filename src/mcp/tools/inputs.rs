@@ -468,7 +468,7 @@ pub struct Query {
     pub target: Option<String>,
     /// Duplicate search granularity for duplicates operation: 'symbol' (default) or 'file'.
     pub level: Option<String>,
-    /// Minimum function/method line count for duplicates operation (default: 10).
+    /// Minimum function/method statement count for duplicates operation (default: 5).
     pub min_lines: Option<usize>,
     /// Restrict selector resolution to a workspace-relative file or directory.
     pub path: Option<String>,

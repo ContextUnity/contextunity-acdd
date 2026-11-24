@@ -254,9 +254,14 @@ fn apply_wildcard_import<'a, 'file>(
                     if already_bound {
                         continue;
                     }
-                    if let Some(target_ext) =
-                        external_origin_at(input.semantic_context, target_module, name, item.r.line)
-                    {
+                    if let Some(target_ext) = external_origin_at(
+                        input,
+                        target_module,
+                        name,
+                        item.scope,
+                        item.r.line,
+                        true,
+                    ) {
                         resolver
                             .aliases
                             .entry(item.scope)
@@ -296,13 +301,28 @@ fn apply_wildcard_import<'a, 'file>(
 }
 
 fn external_origin_at<'a>(
-    ctx: &semantic_context::Context<'a>,
+    input: &super::ResolutionInput<'a>,
     module: &'a Node,
     name: &str,
+    requester_qual: &str,
     line: usize,
+    enforce_visibility: bool,
 ) -> Option<(String, usize)> {
-    match ctx.imported_alias(module, name) {
-        Some(semantic_context::Imported::External(origin, _, _, _)) => {
+    match input.semantic_context.imported_alias(module, name) {
+        Some(semantic_context::Imported::External(origin, _, reference, _)) => {
+            #[cfg(feature = "lang-rust")]
+            if enforce_visibility
+                && module.language == "rust"
+                && !input.rust_forwarding.external_binding_visible(
+                    module,
+                    name,
+                    requester_qual,
+                    reference.source == module.id,
+                )
+            {
+                return None;
+            }
+            let _ = (requester_qual, enforce_visibility);
             Some((origin.replace("::", "."), line))
         }
         _ => None,
@@ -349,14 +369,25 @@ fn apply_aliased_import<'a, 'file>(
                     .and_then(|entries| entries.get(symbol_name))
                     .and_then(Option::as_ref)
                     .cloned()
-                    .or_else(|| external_origin_at(input.semantic_context, target_module, symbol_name, item.r.line));
+                    .or_else(|| {
+                        external_origin_at(
+                            input,
+                            target_module,
+                            symbol_name,
+                            item.scope,
+                            item.r.line,
+                            true,
+                        )
+                    });
             }
         }
         if targets.is_empty() && inherited_ext.is_none() {
             inherited_ext = input
                 .interner
                 .lookup_node(input.by_id, item.r.source.as_str())
-                .and_then(|owner| external_origin_at(input.semantic_context, owner, alias, item.r.line));
+                .and_then(|owner| {
+                    external_origin_at(input, owner, alias, item.scope, item.r.line, false)
+                });
         }
         if targets.is_empty() {
             if let Some(target_ext) = inherited_ext {

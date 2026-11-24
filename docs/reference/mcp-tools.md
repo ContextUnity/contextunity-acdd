@@ -244,7 +244,7 @@ breadcrumb. JSON continues to return the structured semantic result.
 - **Query operations (`untested`, `implementations`, `duplicates`, `dead_tails`)**:
   - **`untested`**: pages production functions/methods with no inbound `test_case` `calls` edge inside `target`/`selector` (static signal, not runtime coverage; rejects conflicting `target`+`selector`).
   - **`implementations`**: recursively pages subclasses and trait implementors of `selector` (excluding the base type).
-  - **`duplicates`**: finds exact body-SHA-256 or near line-similar clones at `level="symbol"` (default) or `level="file"`, bounded by `min_lines` (`5` default in MCP; `10` in CLI unless set), with actionable refactoring `suggestion` entries.
+  - **`duplicates`**: identifies duplicate functions/methods (`level="symbol"`, default) or identical files (`level="file"`), bounded by `min_lines` (`5` AST statements by default in MCP; `10` in CLI unless set), with `target`/`path` excluding test paths by default unless scoped to tests. Computes `exact` clones (SHA-256 of Type-2 normalized `StatementFingerprint` sequences), `similar` near-clones (`>= 0.80` LCS/Jaccard statement similarity), and `block` coalesced spans alongside actionable refactoring `suggestion` entries.
   - **`dead_tails`**: evaluates workspace-wide liveness first and returns scoped `phantom_tested`, `dead_tails`, and `dangling_calls` alongside `summary` counts.
 
 - **Directory boundary slices (`code_map_query(operation="slice", selector="src/db")`)**:

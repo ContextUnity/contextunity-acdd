@@ -61,10 +61,12 @@ guidance:
       - "Model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, `&dyn Trait`, and non-generic inner fns (no mirror `Mcp*` structs or magic strings)."
       - "Borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`); hash via `acdd_core::format::sha256_serde_json` and bind codecs with `struct_codecs!`."
       - "Batch Git/SQLite/spec reads (`git cat-file --batch`, single `ls-tree`, preloaded `BTreeMap`); prove `Ok(None) => slow_path` non-fallbacks and benchmark CLI hot paths (`index`, `query`, `roadmap`, `validate`) on `--release`."
+      - "STOP before adding language-name checks in universal `linker/{value_flow,resolution,semantic_context}/` or `db/lint/` modules or writing a parallel parser/lexer when upstream extractor/manifest metadata is missing: extend the language extractor/profile instead or escalate."
   repo.tests:
     description: "REPOSITORY TEST BUDGETS"
     criteria:
       - "Keep `RunHarness::in_memory()`/unit tests `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s` (`tests/AGENTS.md`, `docs/architecture/test-harness.md`)."
+      - "STOP before writing FS/`temp_dir`/`Workspace` tests inside `crates/**/src/**` `#[cfg(test)]`: add matrix rows to existing canonical integration binaries (`tests/<domain>.rs`)."
       - "Set `commit.gpgsign=false` in fixture Git setups and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
   repo.memory_synthesis:
     description: "PRE-HANDOFF MILESTONE MEMORY & TELEMETRY SYNTHESIS"

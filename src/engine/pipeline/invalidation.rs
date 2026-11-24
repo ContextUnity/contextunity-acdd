@@ -553,7 +553,7 @@ pub(super) fn unchanged_trait_dispatch_owners(
     )?;
     let mut owners = BTreeSet::new();
     let mut statement = conn.prepare(
-        "SELECT DISTINCT owner.path FROM edge_occurrences call JOIN nodes declaration ON declaration.node_hash=call.dst_hash JOIN path_dictionary owner ON owner.path_id=call.owner_id WHERE call.kind='calls' AND declaration.kind='method' AND declaration.name IN(SELECT key FROM temp.delta_frontier_text) AND EXISTS(SELECT 1 FROM resolution_coverage coverage JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE coverage.path_id=call.owner_id AND coverage.line=call.line AND coverage.status='unresolved' AND expression.expression='trait_object_dispatch')",
+        "SELECT DISTINCT owner.path FROM edge_occurrences call JOIN nodes declaration ON declaration.node_hash=call.dst_hash JOIN path_dictionary owner ON owner.path_id=call.owner_id WHERE call.kind='calls' AND declaration.kind='method' AND declaration.name IN(SELECT key FROM temp.delta_frontier_text) AND EXISTS(SELECT 1 FROM resolution_coverage coverage JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE coverage.path_id=call.owner_id AND coverage.line=call.line AND expression.expression='trait_object_dispatch')",
     )?;
     for row in statement.query_map([], |row| row.get::<_, String>(0))? {
         owners.insert(row?);

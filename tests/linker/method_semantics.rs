@@ -920,19 +920,26 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                     "dyn Work/{implementors}: expected {expected} bounded candidates, got {possible:#?}"
                 ));
             }
+            let expected_status = if implementors <= 8 {
+                "resolved"
+            } else {
+                "unresolved"
+            };
             let has_dispatch_gap: bool = dyn_conn
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM resolution_coverage r \
                      JOIN coverage_expressions x ON x.expression_id=r.expression_id \
-                     WHERE x.expression='trait_object_dispatch' AND r.status='unresolved' \
+                     JOIN coverage_evidence v ON v.evidence_id=r.evidence_id \
+                     WHERE x.expression='trait_object_dispatch' AND r.status=?3 \
+                     AND v.evidence LIKE 'analysis gap:%' \
                      AND r.line BETWEEN ?1 AND ?2)",
-                    [caller_line, caller_end_line],
+                    rusqlite::params![caller_line, caller_end_line, expected_status],
                     |row| row.get(0),
                 )
                 .unwrap();
             if !has_dispatch_gap {
                 failures.push(format!(
-                    "dyn Work/{implementors}: dispatch analysis gap disappeared"
+                    "dyn Work/{implementors}: dispatch analysis gap with status={expected_status} disappeared"
                 ));
             }
         }
@@ -1926,14 +1933,16 @@ members = ["ping"]
         "py_consumer.py",
         "from py_reexport import ExtHelper\n\ndef run_py():\n    ExtHelper.run()\n    client = py_connect()\n    client.ping()\n",
     );
-    workspace.write(
-        "ts_reexport.ts",
-        "import { ExtWidget } from 'ext-ui';\nexport { ExtWidget };\n",
-    );
-    workspace.write(
-        "ts_consumer.ts",
-        "import { ExtWidget } from './ts_reexport';\nexport async function runTs() {\n    ExtWidget.render();\n    const tsClient = await ts_connect();\n    tsClient.ping();\n}\n",
-    );
+    if cfg!(feature = "lang-typescript") {
+        workspace.write(
+            "ts_reexport.ts",
+            "import { ExtWidget } from 'ext-ui';\nexport { ExtWidget };\n",
+        );
+        workspace.write(
+            "ts_consumer.ts",
+            "import { ExtWidget } from './ts_reexport';\nexport async function runTs() {\n    ExtWidget.render();\n    const tsClient = await ts_connect();\n    tsClient.ping();\n}\n",
+        );
+    }
     workspace.write(
         "src/reexport.rs",
         "pub use ext_crate::ExtService;\npub use tokio::probe::Factory;\n",
@@ -2017,8 +2026,6 @@ pub fn tuple_option_join_and_monotonic_loop(
     for (path, expr, expected) in [
         ("py_consumer.py", "ExtHelper.run", "external"),
         ("py_consumer.py", "client.ping", "external"),
-        ("ts_consumer.ts", "ExtWidget.render", "external"),
-        ("ts_consumer.ts", "tsClient.ping", "external"),
         ("src/lib.rs", "same_item.default_work", "resolved"),
         ("src/lib.rs", "p.payload_work", "resolved"),
         ("src/lib.rs", "mixed_item.shared_work", "ambiguous"),
@@ -2030,6 +2037,15 @@ pub fn tuple_option_join_and_monotonic_loop(
     ] {
         let (status, evidence) = status_for(path, expr);
         assert_eq!(status, expected, "{path} `{expr}` ({evidence})");
+    }
+    if cfg!(feature = "lang-typescript") {
+        for (path, expr, expected) in [
+            ("ts_consumer.ts", "ExtWidget.render", "external"),
+            ("ts_consumer.ts", "tsClient.ping", "external"),
+        ] {
+            let (status, evidence) = status_for(path, expr);
+            assert_eq!(status, expected, "{path} `{expr}` ({evidence})");
+        }
     }
 
     let mixed_possible: i64 = conn

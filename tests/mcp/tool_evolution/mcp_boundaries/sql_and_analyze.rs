@@ -432,15 +432,15 @@ fn duplicates_query_discovers_identical_files_and_function_clones_with_actionabl
     let fixture = AnalysisFixture::indexed_files(&[
         (
             "src/module_a.py",
-            "def shared_worker():\n    val = 10\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n    return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1   \nline 2\"\"\"\n    return s\n",
+            "def shared_worker():\n    val = 10\n    total = 0\n    step = 1\n    for i in range(val):\n        total += i\n    total += step\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n    return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1   \nline 2\"\"\"\n    return s\n",
         ),
         (
             "src/module_b.py",
-            "def shared_worker():\n    val = 10\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n        return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1\nline 2\"\"\"\n    return s\n",
+            "def shared_worker():\n    val = 10\n    total = 0\n    step = 1\n    for i in range(val):\n        total += i\n    total += step\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n        return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1\nline 2\"\"\"\n    return s\n",
         ),
         (
             "src/module_c.py",
-            "def shared_worker():\n    val = 20\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n",
+            "def shared_worker():\n    val = 20\n    total = 0\n    step = 1\n    for i in range(val):\n        total += i\n    total += step\n    return total\n",
         ),
         (
             "src/copy_1.py",
@@ -572,8 +572,8 @@ fn duplicates_query_discovers_identical_files_and_function_clones_with_actionabl
     // Overlapping groups must not double-count duplicate lines in aggregate accounting
     let total_dup_lines = sym_dups["total_duplicated_lines"].as_u64().unwrap();
     assert_eq!(
-        total_dup_lines, 12,
-        "shared_worker (6 exact + 6 near) = 12 lines under AST-statement min_lines=5 window without double-counting overlapping locations"
+        total_dup_lines, 16,
+        "shared_worker (8 exact + 8 near) = 16 lines under AST-statement LCS/Jaccard >= 0.80 without double-counting overlapping locations"
     );
 
     // 3. Stale generation rejection on offset > 0
