@@ -337,7 +337,41 @@ impl LanguageLinker for RustLinker {
                 }
             }
         }
-        let Some(name) = context.tail().filter(|name| !name.is_empty()) else {
+        let Some(forwarding) = context.rust_forwarding else {
+            return resolution;
+        };
+        let requester_node = context
+            .by_module
+            .get(context.path)
+            .into_iter()
+            .flatten()
+            .find(|node| node.kind == "module");
+        if context.modules.is_empty() && context.normalized.is_none() {
+            let raw = context
+                .reference
+                .module
+                .as_deref()
+                .unwrap_or(&context.reference.expression);
+            if let Some(req_mod) = requester_node.filter(|_| raw.contains("::")) {
+                let resolved = forwarding.resolve_path(
+                    req_mod,
+                    &raw.replace("::", "."),
+                    requester,
+                    Some(context.by_qual),
+                );
+                if !resolved.is_empty() {
+                    context.modules.push(req_mod);
+                    context.candidates.extend(resolved);
+                    resolution.reexport_symbol = true;
+                }
+            }
+            return resolution;
+        }
+        let Some(name) = context
+            .tail()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+        else {
             return resolution;
         };
         if context.modules.len() != 1 {
@@ -347,19 +381,13 @@ impl LanguageLinker for RustLinker {
         if module.language != "rust" {
             return resolution;
         }
-        let Some(forwarding) = context.rust_forwarding else {
-            return resolution;
-        };
-        let requester = context
-            .by_module
-            .get(context.path)
-            .into_iter()
-            .flatten()
-            .find(|node| node.kind == "module")
-            .map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
-        context
-            .candidates
-            .extend(forwarding.targets(module, name, requester).iter().copied());
+        let requester = requester_node.map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
+        context.candidates.extend(forwarding.resolve_path(
+            module,
+            &name,
+            requester,
+            Some(context.by_qual),
+        ));
         if !context.candidates.is_empty()
             && context
                 .candidates

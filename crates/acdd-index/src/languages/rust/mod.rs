@@ -1687,14 +1687,111 @@ fn relate_type_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     }
 }
 
+fn unquote_rust_string<'a>(node: Syntax<'_>, source: &'a str) -> Option<std::borrow::Cow<'a, str>> {
+    let raw = text(node, source);
+    if node.kind() == "raw_string_literal" {
+        let rest = raw.strip_prefix('r')?;
+        let hashes = rest.bytes().take_while(|&b| b == b'#').count();
+        let inner = rest[hashes..].strip_prefix('"')?;
+        let tail = &inner[inner.len().checked_sub(1 + hashes)?..];
+        return (tail.starts_with('"') && tail[1..].bytes().all(|b| b == b'#'))
+            .then(|| std::borrow::Cow::Borrowed(&inner[..inner.len() - 1 - hashes]));
+    }
+    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+    if !inner.contains('\\') {
+        return Some(std::borrow::Cow::Borrowed(inner));
+    }
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next()? {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '0' => out.push('\0'),
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    Some(std::borrow::Cow::Owned(out))
+}
+
+fn extract_serde_callable_references(
+    attr: Syntax<'_>,
+    source: &str,
+    owner: &str,
+    facts: &mut Facts,
+) {
+    let Some(attr_node) = attr.named_child(0).filter(|n| n.kind() == "attribute") else {
+        return;
+    };
+    let mut cursor = attr_node.walk();
+    let mut named = attr_node.named_children(&mut cursor);
+    let Some(path_node) = named.next() else {
+        return;
+    };
+    let attr_name = text(path_node, source).trim();
+    if attr_name != "serde" && !attr_name.ends_with("::serde") {
+        return;
+    }
+    let Some(token_tree) = attr_node
+        .child_by_field_name("arguments")
+        .or_else(|| named.find(|n| n.kind() == "token_tree"))
+        .filter(|n| n.kind() == "token_tree")
+    else {
+        return;
+    };
+    let mut tree_cursor = token_tree.walk();
+    let tokens: Vec<_> = token_tree
+        .children(&mut tree_cursor)
+        .filter(|n| !matches!(n.kind(), "line_comment" | "block_comment"))
+        .collect();
+    let line = attr.start_position().row + 1;
+    for window in tokens.windows(3) {
+        let [key_node, eq_node, val_node] = window else {
+            continue;
+        };
+        if !matches!(key_node.kind(), "identifier" | "default")
+            || text(*eq_node, source) != "="
+            || !matches!(val_node.kind(), "string_literal" | "raw_string_literal")
+            || !matches!(
+                text(*key_node, source),
+                "default" | "skip_serializing_if" | "serialize_with" | "deserialize_with" | "with"
+            )
+        {
+            continue;
+        }
+        if let Some(path) = unquote_rust_string(*val_node, source) {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                relations::reference(facts, owner, trimmed, "calls", line);
+            }
+        }
+    }
+}
+
 fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if ctx.node.kind() == "struct_item" && has_non_lifetime_type_params(ctx.node, ctx.source) {
         set_owner_flag(facts, ctx.owner, "deref_unproven");
     }
+    macros::for_each_preceding_attribute(ctx.node, |attr| {
+        extract_serde_callable_references(attr, ctx.source, ctx.owner, facts);
+    });
     if let Some(body) = ctx.node.child_by_field_name("body") {
         let mut cursor = body.walk();
         for child in body.named_children(&mut cursor) {
-            if child.kind() == "field_declaration" {
+            if child.kind() == "attribute_item" {
+                extract_serde_callable_references(child, ctx.source, ctx.owner, facts);
+            } else if child.kind() == "field_declaration" {
                 if let Some(ty) = child.child_by_field_name("type") {
                     value_flow::type_references(facts, ctx.owner, ty, ctx.source, child.start_position().row + 1);
                 }
@@ -1702,6 +1799,20 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                 if let Some(vbody) = child.child_by_field_name("body") {
                     let mut vcursor = vbody.walk();
                     for vchild in vbody.named_children(&mut vcursor) {
+                        if vchild.kind() == "attribute_item" {
+                            extract_serde_callable_references(vchild, ctx.source, ctx.owner, facts);
+                            continue;
+                        }
+                        if matches!(vchild.kind(), "line_comment" | "block_comment") {
+                            continue;
+                        }
+                        let mut inner_cursor = vchild.walk();
+                        for attr in vchild
+                            .named_children(&mut inner_cursor)
+                            .filter(|n| n.kind() == "attribute_item")
+                        {
+                            extract_serde_callable_references(attr, ctx.source, ctx.owner, facts);
+                        }
                         if let Some(ty) = vchild.child_by_field_name("type").or_else(|| (vchild.kind() != "field_declaration").then_some(vchild)) {
                             value_flow::type_references(facts, ctx.owner, ty, ctx.source, vchild.start_position().row + 1);
                         }

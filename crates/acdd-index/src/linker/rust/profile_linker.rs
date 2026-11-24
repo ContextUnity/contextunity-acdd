@@ -44,6 +44,7 @@ pub(crate) struct RustMembers<'a> {
     builtin_trait_members: HashMap<BuiltinTraitLookup<'a>, Vec<&'a Node>>,
     receivers_by_method: HashMap<&'a str, &'a Node>,
     dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
+    trait_associated: HashMap<(&'a str, &'a str), &'a Node>,
     dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
     display_impls: HashSet<&'a str>,
 }
@@ -544,21 +545,24 @@ fn collect_trait_decl_tables<'a>(
             ) else {
                 continue;
             };
-            if owner.kind == "trait"
-                && method.kind == "method"
-                && method.details["unproven_bounds"] != true
-            {
-                trait_methods
-                    .entry(owner.id.as_str())
-                    .or_default()
-                    .push(method);
-                if method.details["trait_default"] == true {
-                    trait_defaults
+            if owner.kind == "trait" && method.kind == "method" {
+                if method.details["unproven_bounds"] != true {
+                    trait_methods
                         .entry(owner.id.as_str())
                         .or_default()
                         .push(method);
+                    if method.details["trait_default"] == true {
+                        trait_defaults
+                            .entry(owner.id.as_str())
+                            .or_default()
+                            .push(method);
+                    }
                 }
-                if method.details["is_static"] != true {
+                if method.details["is_static"] == true {
+                    index
+                        .trait_associated
+                        .insert((owner.id.as_str(), method.name.as_str()), method);
+                } else {
                     index
                         .dynamic_declarations
                         .insert((owner.id.as_str(), method.name.as_str()), method);
@@ -995,8 +999,11 @@ fn collect_file_impl_members<'a>(
                         .entry((receiver.id.as_str(), method.name.as_str(), associated))
                         .or_default();
                 }
+                continue;
             }
-            continue;
+            if has_impl_trait || owner.details["generic_impl"] == true {
+                continue;
+            }
         }
         if has_impl_trait && trait_node.is_none() {
             continue;
@@ -1221,6 +1228,7 @@ impl<'a> RustMembers<'a> {
             builtin_trait_members: HashMap::new(),
             receivers_by_method: HashMap::new(),
             dynamic_declarations: HashMap::new(),
+            trait_associated: HashMap::new(),
             dynamic_implementors: HashMap::new(),
             display_impls: HashSet::new(),
         };
@@ -1289,9 +1297,13 @@ impl<'a> RustMembers<'a> {
         associated: bool,
         caller: &Node,
     ) -> &[&'a Node] {
-        if receiver.kind == "trait" && !associated {
-            return self
-                .dynamic_declarations
+        if receiver.kind == "trait" {
+            let map = if associated {
+                &self.trait_associated
+            } else {
+                &self.dynamic_declarations
+            };
+            return map
                 .get(&DynamicLookup(receiver.id.as_str(), member))
                 .map_or(&[], std::slice::from_ref);
         }

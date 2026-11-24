@@ -360,7 +360,7 @@ pub(in super::super) fn type_references(
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
         match node.kind() {
-            "lifetime" | "lifetime_parameter" => {}
+            "lifetime" | "lifetime_parameter" | "attribute_item" | "line_comment" | "block_comment" => {}
             "scoped_type_identifier" => {
                 let raw = text(node, source);
                 let head = raw.split("::").next().unwrap_or("");

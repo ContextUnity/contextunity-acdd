@@ -714,3 +714,170 @@ fn rust_compound_manifest_returns_tuple_option_result_and_sha2() {
         assert_eq!(entry.status, "external", "{entry:#?}");
     }
 }
+
+#[test]
+fn rust_recovery_reexports_trait_dispatch_and_bounded_inherents_matrix() {
+    let mut files: Vec<(&str, String)> = vec![
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/core\", \"crates/consumer\"]\n".to_owned(),
+        ),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core_pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\ntree-sitter = \"0.24\"\n".to_owned(),
+        ),
+        (
+            "crates/consumer/Cargo.toml",
+            "[package]\nname = \"consumer_pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\ncore_pkg = { path = \"../core\" }\n".to_owned(),
+        ),
+        (
+            "crates/core/src/lib.rs",
+            "pub mod syntax;\npub mod facade;\nmod internal;\npub mod graph;\n".to_owned(),
+        ),
+        (
+            "crates/core/src/syntax.rs",
+            "pub(crate) use tree_sitter::Node as Syntax;\nuse tree_sitter::Parser as PrivateParser;\n".to_owned(),
+        ),
+        (
+            "crates/core/src/internal.rs",
+            "pub mod deep;\n".to_owned(),
+        ),
+        (
+            "crates/core/src/internal/deep.rs",
+            "pub struct Target;\nimpl Target { pub fn build() -> Self { Self } pub fn ping(&self) {} }\n".to_owned(),
+        ),
+        (
+            "crates/core/src/facade.rs",
+            "pub use crate::internal::deep as sub;\n".to_owned(),
+        ),
+        (
+            "crates/core/src/graph.rs",
+            concat!(
+                "pub trait SharedStr { fn as_str(&self) -> &str; }\n",
+                "impl SharedStr for &str { fn as_str(&self) -> &str { self } }\n",
+                "pub struct CompactGraph;\n",
+                "impl CompactGraph {\n",
+                "    pub fn push_edge<S: SharedStr>(&mut self, s: S) { let _ = Self::shared(s); }\n",
+                "    fn shared<S: SharedStr>(s: S) -> &str { s.as_str() }\n",
+                "}\n",
+                "pub struct GenericBox<T>(T);\n",
+                "impl<T> GenericBox<T> { pub fn bounded<U: Clone>(&self, _u: U) {} }\n",
+                "pub struct Product;\n",
+                "impl Product { pub fn finish(&self) {} }\n",
+                "pub trait Factory { fn make(&self) -> Product; }\n",
+                "pub struct AlphaFactory;\n",
+                "impl Factory for AlphaFactory { fn make(&self) -> Product { Product } }\n",
+                "pub struct BetaFactory;\n",
+                "impl Factory for BetaFactory { fn make(&self) -> Product { Product } }\n",
+                "pub trait EmptyTrait { fn empty_run(&self); }\n",
+                "pub trait CrowdedTrait { fn crowd_run(&self); }\n",
+                "pub struct C0; impl CrowdedTrait for C0 { fn crowd_run(&self) {} }\n",
+                "pub struct C1; impl CrowdedTrait for C1 { fn crowd_run(&self) {} }\n",
+                "pub struct C2; impl CrowdedTrait for C2 { fn crowd_run(&self) {} }\n",
+                "pub struct C3; impl CrowdedTrait for C3 { fn crowd_run(&self) {} }\n",
+                "pub struct C4; impl CrowdedTrait for C4 { fn crowd_run(&self) {} }\n",
+                "pub struct C5; impl CrowdedTrait for C5 { fn crowd_run(&self) {} }\n",
+                "pub struct C6; impl CrowdedTrait for C6 { fn crowd_run(&self) {} }\n",
+                "pub struct C7; impl CrowdedTrait for C7 { fn crowd_run(&self) {} }\n",
+                "pub struct C8; impl CrowdedTrait for C8 { fn crowd_run(&self) {} }\n",
+            ).to_owned(),
+        ),
+        (
+            "crates/core/src/sibling.rs",
+            concat!(
+                "use crate::syntax::Syntax;\n",
+                "use crate::facade::sub::Target;\n",
+                "use crate::graph::{CompactGraph, GenericBox, Factory, EmptyTrait, CrowdedTrait};\n",
+                "fn probe(\n",
+                "    node: Syntax<'_>,\n",
+                "    g: &mut CompactGraph,\n",
+                "    gb: &GenericBox<u8>,\n",
+                "    factory: &dyn Factory,\n",
+                "    empty: &dyn EmptyTrait,\n",
+                "    crowded: &dyn CrowdedTrait,\n",
+                ") {\n",
+                "    let _ = node.kind();\n",
+                "    let _ = Target::build();\n",
+                "    g.push_edge(\"a\");\n",
+                "    gb.bounded(1u8);\n",
+                "    let prod = factory.make();\n",
+                "    prod.finish();\n",
+                "    factory.make().finish();\n",
+                "    empty.empty_run();\n",
+                "    crowded.crowd_run();\n",
+                "}\n",
+            ).to_owned(),
+        ),
+        (
+            "crates/consumer/src/lib.rs",
+            concat!(
+                "use core_pkg::syntax::Syntax;\n",
+                "use core_pkg::syntax::PrivateParser;\n",
+                "use core_pkg::facade::sub::Target;\n",
+                "fn probe_foreign(node: Syntax<'_>, parser: PrivateParser) {\n",
+                "    let _ = node.kind();\n",
+                "    let _ = parser;\n",
+                "    let _ = Target::build();\n",
+                "}\n",
+            ).to_owned(),
+        ),
+    ];
+    let core_lib = files
+        .iter_mut()
+        .find(|(p, _)| *p == "crates/core/src/lib.rs")
+        .unwrap();
+    core_lib.1.push_str("mod sibling;\n");
+
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    for (path, source) in &files {
+        workspace.write(path, source);
+    }
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, s)| (*p, s.as_str())).collect();
+    let graph = ExtractorHarness::linked_with_root("rust", &borrowed, Some(workspace.root())).graph;
+
+    let cases = [
+        ("crates/core/src/sibling.rs", "crate::syntax::Syntax", "external"),
+        ("crates/core/src/sibling.rs", "node.kind", "external"),
+        ("crates/core/src/sibling.rs", "Target::build", "resolved"),
+        ("crates/core/src/sibling.rs", "g.push_edge", "resolved"),
+        ("crates/core/src/graph.rs", "Self::shared", "resolved"),
+        ("crates/core/src/sibling.rs", "gb.bounded", "unresolved"),
+        ("crates/core/src/sibling.rs", "prod.finish", "resolved"),
+        ("crates/core/src/sibling.rs", "factory.make().finish", "resolved"),
+        ("crates/consumer/src/lib.rs", "core_pkg::syntax::Syntax", "unresolved"),
+        ("crates/consumer/src/lib.rs", "core_pkg::syntax::PrivateParser", "unresolved"),
+        ("crates/consumer/src/lib.rs", "Target::build", "resolved"),
+    ];
+    for (path, expr, expected) in cases {
+        let row = graph
+            .coverage
+            .iter()
+            .find(|c| c.path == path && c.expression == expr)
+            .unwrap_or_else(|| panic!("missing coverage for {path} `{expr}`: {:#?}", graph.coverage));
+        assert_eq!(row.status, expected, "{path} `{expr}`: {row:#?}");
+    }
+
+    let trait_dispatch_rows: Vec<_> = graph
+        .coverage
+        .iter()
+        .filter(|c| c.path == "crates/core/src/sibling.rs" && c.expression == "trait_object_dispatch")
+        .collect();
+    assert!(
+        trait_dispatch_rows
+            .iter()
+            .any(|c| c.evidence.contains("through factory") && c.status == "resolved"),
+        "bounded trait_object_dispatch (2<=8) must be resolved with analysis gap evidence: {trait_dispatch_rows:#?}"
+    );
+    assert!(
+        trait_dispatch_rows
+            .iter()
+            .any(|c| c.evidence.contains("through empty") && c.status == "unresolved"),
+        "0-implementor trait_object_dispatch must remain unresolved: {trait_dispatch_rows:#?}"
+    );
+    assert!(
+        trait_dispatch_rows
+            .iter()
+            .any(|c| c.evidence.contains("through crowded") && c.status == "unresolved"),
+        ">8-implementor trait_object_dispatch must remain unresolved: {trait_dispatch_rows:#?}"
+    );
+}

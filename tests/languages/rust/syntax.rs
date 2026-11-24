@@ -417,3 +417,98 @@ fn declarations_and_static_constructor_metadata_are_preserved() {
     assert_eq!(profile.symbol_kind("function_item"), Some("function"));
     let _ = profile.grammar("lib.rs");
 }
+
+#[test]
+fn enum_variant_attributes_skipped_and_serde_callbacks_linked() {
+    let source = r##"
+pub struct Payload;
+pub struct Codec;
+impl Codec {
+    pub fn is_empty_codec(&self) -> bool { false }
+    pub fn default_flag() -> bool { true }
+}
+fn yes() -> bool { true }
+fn skip_item(_v: &Option<Payload>) -> bool { false }
+fn ser_fn<S>(_v: &Payload, _s: S) -> Result<(), ()> { Ok(()) }
+fn de_fn<'de, D>(_d: D) -> Result<Payload, ()> { Err(()) }
+mod custom_codec {
+    pub fn serialize() {}
+    pub fn deserialize() {}
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(default = "Codec::default_flag")]
+pub enum Command {
+    /// Struct variant with clap & serde attributes and comments.
+    Run {
+        #[arg(long, default_value_t = false)]
+        /// Comment inside variant body.
+        all: bool,
+        /* block comment */
+        #[serde(default = "yes", skip_serializing_if = "skip_item")]
+        payload: Option<Payload>,
+        #[serde(rename = "kind", skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+    },
+    Tuple(#[serde(serialize_with = "ser_fn", deserialize_with = r#"de_fn"#)] Payload),
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct Record {
+    #[serde(default)]
+    bare_default: bool,
+    #[serde(with = "custom_codec")]
+    wrapped: Payload,
+}
+"##;
+    let facts = ExtractorHarness::for_lang("rust")
+        .at_path("src/lib.rs")
+        .extract(source);
+    for bogus in ["arg", "long", "default_value_t", "serde", "kind"] {
+        assert!(
+            !facts.references.iter().any(|r| r.expression == bogus),
+            "attribute token `{bogus}` leaked into references: {:#?}",
+            facts.references
+        );
+    }
+    for expected_ref in [
+        "Payload",
+        "Codec::default_flag",
+        "yes",
+        "skip_item",
+        "Option::is_none",
+        "ser_fn",
+        "de_fn",
+        "custom_codec",
+    ] {
+        assert!(
+            facts.references.iter().any(|r| r.expression == expected_ref),
+            "missing expected reference `{expected_ref}`: {:#?}",
+            facts.references
+        );
+    }
+
+    let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+        "src/lib.rs".to_owned(),
+        facts,
+    )]));
+    for (expr, expected_status) in [
+        ("Codec::default_flag", "resolved"),
+        ("yes", "resolved"),
+        ("skip_item", "resolved"),
+        ("ser_fn", "resolved"),
+        ("de_fn", "resolved"),
+        ("Option::is_none", "external"),
+        ("Payload", "resolved"),
+    ] {
+        let matched = graph
+            .coverage
+            .iter()
+            .filter(|c| c.expression == expr)
+            .collect::<Vec<_>>();
+        assert!(
+            matched.iter().any(|c| c.status == expected_status),
+            "`{expr}` expected status `{expected_status}`, got {matched:#?}"
+        );
+    }
+}

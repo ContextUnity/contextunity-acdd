@@ -175,7 +175,7 @@ fn direct_members<'a>(
         .collect()
 }
 
-fn is_public_export(module: &Node, name: &str) -> bool {
+pub(super) fn is_public_export(module: &Node, name: &str) -> bool {
     module.details["exports"].as_array().is_some_and(|exports| {
         exports
             .iter()
@@ -183,12 +183,18 @@ fn is_public_export(module: &Node, name: &str) -> bool {
     })
 }
 
-fn is_public_glob(module: &Node, target: &str) -> bool {
+pub(super) fn is_public_glob(module: &Node, target: &str) -> bool {
     module.details["exports"].as_array().is_some_and(|exports| {
         exports
             .iter()
             .any(|export| export["star"] == true && export["module"].as_str() == Some(target))
     })
+}
+
+pub(super) fn has_any_public_glob(module: &Node) -> bool {
+    module.details["exports"]
+        .as_array()
+        .is_some_and(|exports| exports.iter().any(|export| export["star"] == true))
 }
 
 pub(crate) fn modules_at_import<'a>(
@@ -247,7 +253,7 @@ pub(crate) fn modules_at_import<'a>(
 
 type AliasKey<'a> = (&'a str, String, bool);
 
-fn is_descendant_module(requester: &str, owner: &Node) -> bool {
+pub(super) fn is_descendant_module(requester: &str, owner: &Node) -> bool {
     let namespace = owner
         .qualname
         .strip_suffix(".lib")
@@ -410,8 +416,10 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                 nodes: std::mem::take(candidates),
                 scope: scope.take(),
             };
-            for domain in self.module_visibility.domains(&target_module.qualname) {
-                targets.restrict(Some(&domain.scope));
+            if !is_public_export(step.module, step.name) {
+                for domain in self.module_visibility.domains(&target_module.qualname) {
+                    targets.restrict(Some(&domain.scope));
+                }
             }
             *candidates = targets.nodes;
             *scope = targets.scope;
@@ -421,9 +429,19 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
             if require_public {
                 direct.retain(|node| is_crate_visible(node, &step.module.qualname));
             }
-            let ok = !direct.is_empty();
-            candidates.extend(direct);
-            ok
+            if !direct.is_empty() {
+                candidates.extend(direct);
+                true
+            } else {
+                self.resolve_nested_member_alias(
+                    step,
+                    target_module,
+                    tail,
+                    require_public,
+                    scope,
+                    candidates,
+                )
+            }
         } else {
             match self.resolve(target_module, tail, require_public, step.depth + 1) {
                 Some(targets) if !targets.nodes.is_empty() => {
@@ -439,6 +457,99 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                 _ => false,
             }
         }
+    }
+
+    fn resolve_nested_member_alias(
+        &mut self,
+        step: &ResolvedImportStep<'a, '_>,
+        target_module: &'a Node,
+        tail: &str,
+        require_public: bool,
+        scope: &mut Option<String>,
+        candidates: &mut Vec<&'a Node>,
+    ) -> bool {
+        if step.depth >= RUST_ALIAS_DEPTH {
+            return false;
+        }
+        let Some((head, rest)) = tail.split_once('.') else {
+            return false;
+        };
+        let Some(targets) = self.resolve(target_module, head, require_public, step.depth + 1) else {
+            return false;
+        };
+        let mut mid_candidates = Vec::new();
+        let mut mid_scope = scope.clone();
+        merge_restricted_targets(
+            targets,
+            &step.module.qualname,
+            None,
+            &mut mid_scope,
+            &mut mid_candidates,
+        );
+        if mid_candidates.is_empty() {
+            return false;
+        }
+        let mut ok = false;
+        for mid in mid_candidates {
+            if mid.kind == "module" {
+                let mid_public = step.public_only
+                    || (step.module.qualname != mid.qualname
+                        && !is_descendant_module(&step.module.qualname, mid));
+                if rest.contains('.') {
+                    let mut direct = direct_members(self.all, mid, rest);
+                    if mid_public {
+                        direct.retain(|node| is_crate_visible(node, &step.module.qualname));
+                    }
+                    if !direct.is_empty() {
+                        candidates.extend(direct);
+                        ok = true;
+                    } else {
+                        let next_step = ResolvedImportStep {
+                            module: step.module,
+                            name: step.name,
+                            public_only: step.public_only,
+                            named_scope: step.named_scope,
+                            depth: step.depth + 1,
+                            restricted: step.restricted,
+                        };
+                        ok |= self.resolve_nested_member_alias(
+                            &next_step,
+                            mid,
+                            rest,
+                            mid_public,
+                            &mut mid_scope,
+                            candidates,
+                        );
+                    }
+                } else if let Some(resolved) =
+                    self.resolve(mid, rest, mid_public, step.depth + 1)
+                {
+                    if !resolved.nodes.is_empty() {
+                        merge_restricted_targets(
+                            resolved,
+                            &step.module.qualname,
+                            step.named_scope,
+                            &mut mid_scope,
+                            candidates,
+                        );
+                        ok = true;
+                    }
+                }
+            } else {
+                let mut direct = direct_members(self.all, mid, rest);
+                if step.public_only {
+                    direct.retain(|node| is_crate_visible(node, &step.module.qualname));
+                }
+                if !direct.is_empty() {
+                    candidates.extend(direct);
+                    ok = true;
+                }
+            }
+        }
+        if ok {
+            *scope = mid_scope;
+        }
+        ok
     }
 
     fn resolve(
@@ -818,6 +929,15 @@ impl<'a> RustForwarding<'a> {
         if !self.module_path_visible(&module.qualname, requester) {
             return &[];
         }
+        self.targets_in_accessible_module(module, name, requester)
+    }
+
+    fn targets_in_accessible_module<'forwarding>(
+        &'forwarding self,
+        module: &Node,
+        name: &str,
+        requester: &str,
+    ) -> &'forwarding [&'a Node] {
         if let Some(targets) = self
             .restricted
             .get(module.path.as_str())
@@ -840,7 +960,7 @@ impl<'a> RustForwarding<'a> {
         {
             return targets;
         }
-        if is_descendant_module(requester, module) {
+        if requester == module.qualname || is_descendant_module(requester, module) {
             return self
                 .private
                 .get(module.path.as_str())
@@ -849,6 +969,97 @@ impl<'a> RustForwarding<'a> {
                 .unwrap_or_default();
         }
         &[]
+    }
+
+    pub(crate) fn resolve_path(
+        &self,
+        module: &Node,
+        tail: &str,
+        requester: &str,
+        by_qual: Option<&HashMap<&'a str, Vec<&'a Node>>>,
+    ) -> Vec<&'a Node> {
+        if !self.module_path_visible(&module.qualname, requester) {
+            return Vec::new();
+        }
+        let segments: Vec<&str> = tail.split('.').collect();
+        if segments.len() > RUST_ALIAS_DEPTH || segments.iter().any(|segment| segment.is_empty()) {
+            return Vec::new();
+        }
+        let mut current = vec![module];
+        let mut via_reexport = false;
+        let mut resolved = Vec::new();
+        for (idx, segment) in segments.iter().enumerate() {
+            let is_last = idx + 1 == segments.len();
+            let rest = &segments[idx..];
+            let mut next = Vec::new();
+            for candidate in current {
+                if candidate.kind == "module" {
+                    let hits = if via_reexport {
+                        self.targets_in_accessible_module(candidate, segment, requester)
+                    } else {
+                        self.targets(candidate, segment, requester)
+                    };
+                    next.extend_from_slice(hits);
+                }
+                if let Some(by_qual) = by_qual.filter(|_| via_reexport || candidate.kind != "module") {
+                    let qual = format!("{}.{}", candidate.qualname, rest.join("."));
+                    if let Some(nodes) = by_qual.get(qual.as_str()) {
+                        resolved.extend(nodes.iter().copied().filter(|node| {
+                            is_crate_visible(node, requester)
+                                || node
+                                    .qualname
+                                    .rsplit_once('.')
+                                    .is_some_and(|(s, _)| within(requester, module_namespace(s)))
+                        }));
+                    }
+                }
+            }
+            if is_last {
+                resolved.extend(next);
+                resolved.sort_by(|left, right| left.id.cmp(&right.id));
+                resolved.dedup_by_key(|node| node.id.as_str());
+                return resolved;
+            }
+            next.sort_by(|left, right| left.id.cmp(&right.id));
+            next.dedup_by_key(|node| node.id.as_str());
+            if next.is_empty() {
+                break;
+            }
+            current = next;
+            via_reexport = true;
+        }
+        resolved.sort_by(|left, right| left.id.cmp(&right.id));
+        resolved.dedup_by_key(|node| node.id.as_str());
+        resolved
+    }
+
+    pub(crate) fn external_binding_visible(
+        &self,
+        provider: &Node,
+        binding_name: &str,
+        requester: &str,
+        direct_in_provider: bool,
+    ) -> bool {
+        if requester == provider.qualname || is_descendant_module(requester, provider) {
+            return true;
+        }
+        if is_public_export(provider, binding_name) {
+            return true;
+        }
+        let restricted = restricted_exports(provider);
+        if restricted
+            .iter()
+            .any(|export| export.name == binding_name && within(requester, &export.scope))
+        {
+            return true;
+        }
+        if !direct_in_provider {
+            return has_any_public_glob(provider)
+                || restricted
+                    .iter()
+                    .any(|export| export.name == "*" && within(requester, &export.scope));
+        }
+        false
     }
 
     pub(crate) fn visible_bindings<'s>(

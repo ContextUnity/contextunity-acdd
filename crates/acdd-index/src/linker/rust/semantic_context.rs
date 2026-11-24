@@ -306,7 +306,29 @@ fn resolve_single_glob_provider<'a>(
     let [(provider, tail)] = providers.as_slice() else {
         return None;
     };
-    Some((*provider, tail.clone()))
+    let (prefix, resolved_tail) = if reference.alias.as_deref() == Some("*") {
+        let Some(prefix) = tail
+            .strip_suffix(".*")
+            .or_else(|| (!matches!(tail.as_str(), "" | "*")).then_some(tail.as_str()))
+        else {
+            return Some((*provider, tail.clone()));
+        };
+        (prefix, "*")
+    } else if let Some((prefix, last)) = tail.rsplit_once('.') {
+        (prefix, last)
+    } else {
+        return Some((*provider, tail.clone()));
+    };
+    let mods: Vec<_> = imports
+        .rust_forwarding
+        .resolve_path(provider, prefix, &module.qualname, None)
+        .into_iter()
+        .filter(|node| node.kind == "module")
+        .collect();
+    match mods.as_slice() {
+        [target_mod] => Some((*target_mod, resolved_tail.to_owned())),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "lang-rust")]
@@ -659,18 +681,8 @@ fn collect_scoped_reexport_additions<'a>(
             else {
                 continue;
             };
-            let namespace = provider
-                .qualname
-                .strip_suffix(".lib")
-                .or_else(|| provider.qualname.strip_suffix(".main"))
-                .or_else(|| provider.qualname.strip_suffix(".mod"))
-                .unwrap_or(&provider.qualname);
             if (glob && !matches!(tail.as_str(), "" | "*"))
                 || (!glob && (tail.is_empty() || tail.contains('.') || tail == "*"))
-                || !module
-                    .qualname
-                    .strip_prefix(namespace)
-                    .is_some_and(|suffix| suffix.starts_with('.'))
             {
                 continue;
             }
@@ -680,6 +692,10 @@ fn collect_scoped_reexport_additions<'a>(
             ) else {
                 continue;
             };
+            let requester_qual = imports
+                .by_id
+                .get(&owner_id)
+                .map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
             for (&provider_name_id, imported) in
                 context.imports.get(&provider_id).into_iter().flatten()
             {
@@ -691,6 +707,14 @@ fn collect_scoped_reexport_additions<'a>(
                 }
                 let provider_name = context.symbol_name(provider_name_id);
                 if !glob && provider_name != tail {
+                    continue;
+                }
+                if !imports.rust_forwarding.external_binding_visible(
+                    provider,
+                    provider_name,
+                    requester_qual,
+                    original.source == provider.id,
+                ) {
                     continue;
                 }
                 let Some(name) = (if glob {

@@ -353,30 +353,23 @@ pub(in crate::linker) fn explicit_reexport_targets<'a>(
     else {
         return Vec::new();
     };
+    let _ = lookup_key;
     let mut split = target.namespace.len();
     let mut out = Vec::new();
     while let Some(dot) = target.namespace[..split].rfind('.') {
         let module_ns = &target.namespace[..dot];
         let rest = &target.namespace[dot + 1..];
         if let Some(modules) = rust_modules.get(module_ns) {
-            let (head, tail) = rest.split_once('.').unwrap_or((rest, ""));
             for module in modules
                 .iter()
                 .filter(|m| crate::languages::workspace_path(&m.path).0 == target.workspace)
             {
-                for forwarded in input.rust_forwarding.targets(module, head, file_module) {
-                    if tail.is_empty() {
-                        out.push(*forwarded);
-                    } else {
-                        lookup_key.clear();
-                        lookup_key.push_str(&forwarded.qualname);
-                        lookup_key.push('.');
-                        lookup_key.push_str(tail);
-                        if let Some(nodes) = input.by_qual.get(lookup_key.as_str()) {
-                            out.extend_from_slice(nodes);
-                        }
-                    }
-                }
+                out.extend(input.rust_forwarding.resolve_path(
+                    module,
+                    rest,
+                    file_module,
+                    Some(input.by_qual),
+                ));
             }
             if !out.is_empty() {
                 break;
@@ -1023,6 +1016,14 @@ pub(in crate::linker) fn trait_object_call<'a>(
     let Some((receiver, member)) = reference.expression.split_once('.') else {
         return false;
     };
+    if reference
+        .receiver_hint
+        .as_ref()
+        .is_some_and(|hint| matches!(hint, ReceiverHint::CallResult { .. }))
+        || member.contains(['.', '(', ')'])
+    {
+        return false;
+    }
     let flow_trait_object = value_flow
         .lookup(owner, receiver, reference.position())
         .and_then(extract_flow_trait_object);
@@ -1033,16 +1034,6 @@ pub(in crate::linker) fn trait_object_call<'a>(
         return false;
     }
 
-    graph.push_coverage(
-        path,
-        reference.line,
-        "trait_object_dispatch",
-        "unresolved",
-        format!(
-            "analysis gap: Rust trait-object call through {} may dispatch to multiple implementations; concrete runtime target is unknown",
-            receiver
-        ),
-    );
     let trait_node = flow_trait_object.or_else(|| {
         let trait_name = param_dyn_trait?;
         match semantic_context.resolve_symbol(
@@ -1057,9 +1048,27 @@ pub(in crate::linker) fn trait_object_call<'a>(
             _ => None,
         }
     });
-    if let Some((declaration, implementors)) = trait_node
-        .and_then(|trait_node| semantic_context.dynamic_dispatch(trait_node, member))
-    {
+    let dispatched =
+        trait_node.and_then(|trait_node| semantic_context.dynamic_dispatch(trait_node, member));
+    let bounded_resolved = dispatched.is_some_and(|(_, implementors)| {
+        !implementors.is_empty()
+            && implementors.len() <= crate::linker::value_flow::types::MAX_CANDIDATE_BRANCH_JOINS
+    });
+    graph.push_coverage(
+        path,
+        reference.line,
+        "trait_object_dispatch",
+        if bounded_resolved {
+            "resolved"
+        } else {
+            "unresolved"
+        },
+        format!(
+            "analysis gap: Rust trait-object call through {} may dispatch to multiple implementations; concrete runtime target is unknown",
+            receiver
+        ),
+    );
+    if let Some((declaration, implementors)) = dispatched {
         graph.reference_edge(path, reference, declaration.id.clone(), "calls", "inferred");
         for target in implementors {
             graph.reference_edge(
