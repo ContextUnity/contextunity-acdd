@@ -30,22 +30,30 @@
 - ACDD tool discovery and task operations: load the shared `acdd` skill.
 - Follow the [Blackboard procedure](skills/acdd/SKILL.md#blackboard) for claim context, progress reports, and gate or agent handoffs.
 
-When a symbol's unique name is already known, read it directly with
-`acdd_read(selector="SymbolName")`; add `path="..."` to restrict resolution.
-Follow any source continuation to obtain the complete digest-verified body. Use
-`ast_grep_search` and `code_map_*` (preferring `detail: "compact"` on searches)
-for AST patterns and graph queries, `acdd_read(mode="search", pattern="...")`
-for regex/substring/config searches, `search_docs` / `get_doc` for documentation
-lookup, and `acdd_read(path="...", start_line=..., end_line=...)` for bounded
-line slices. Do NOT use shell `grep`, `sed`, `cat`, `head`, `tail`, `find`,
-`read_file`, inline Python (`python -c` / heredocs), or one-off `.py` scripts
-inside ACDD-enabled workspaces; use `rg -n` ONLY as a fallback for
-unadmitted/gitignored paths, and write benchmarks/reproductions as Rust tests or
-`acdd` CLI commands. Run heavy or long-running shell tasks (`cargo build`,
-`cargo test`, `cargo clippy`, `acdd verify run_tests`, `./scripts/test-macos-ssh.sh`,
-and benchmark runs) ONLY in the built-in shell (`run_command` with
-`WaitMsBeforeAsync: 500` so reactive completion wakeup notifies you without
-polling or manual timers); reserve `ctx_shell` for lightweight commands.
+When ACDD MCP is available, read known symbols directly with
+`acdd_read(selector="SymbolName")` (optionally `path="..."`, following any source
+continuation for the complete digest-verified body), use `ast_grep_search` and
+`code_map_*` (preferring `detail: "compact"` on searches) for AST patterns and
+graph queries, `acdd_read(mode="search", pattern="...")` for regex/substring/config
+searches, `search_docs` / `get_doc` for documentation lookup, and
+`acdd_read(path="...", start_line=..., end_line=...)` for bounded line slices.
+When a worker harness has no MCP access (such as `swarm` workers lacking
+`call_mcp_tool`), agents MUST NOT bypass ACDD with `read_file` or shell readers;
+use the **`acdd` CLI equivalents** instead (`acdd read --selector <Symbol>` /
+`acdd read <path> --start-line N --line-count K` / `--mode search --pattern "..."`,
+`acdd query search|inspect|impact|explain|tests|remove|overview`,
+`acdd query run duplicates|dead_tails|slice|untested|implementations`,
+`acdd ast grep`, `acdd docs search|get`, and `acdd lint`), keeping an isolated
+worktree's index fresh via `acdd build` / `acdd delta`. Across ALL harnesses, do
+NOT use shell `grep`, `sed`, `cat`, `head`, `tail`, `find`, `read_file`, inline
+Python (`python -c` / heredocs), or one-off `.py` scripts inside ACDD-enabled
+workspaces; use `rg -n` ONLY as a fallback for unadmitted/gitignored paths, and
+write benchmarks/reproductions as Rust tests or `acdd` CLI commands. Run heavy or
+long-running shell tasks (`cargo build`, `cargo test`, `cargo clippy`, `acdd verify
+run_tests`, `./scripts/test-macos-ssh.sh`, and benchmark runs) ONLY in the
+built-in shell (`run_command` with `WaitMsBeforeAsync: 500` so reactive completion
+wakeup notifies you without polling or manual timers); reserve `ctx_shell` for
+lightweight commands.
 
 Use Blackboard `notes` for non-obvious technical context, not routine gate
 status, passing tests, or SHAs that add no context. Before rejecting a review,
@@ -136,6 +144,6 @@ Do not run benchmarks without explicit user approval. Read [benchmark instructio
 
 Execute `mode: subagent` gates via native subagents, swarm workers, or background `codex exec` processes (`run_command` with `WaitMsBeforeAsync: 500`, reactive wakeup without polling):
 
-- **Worker self-claim & thin coordinator prompt (mandatory for `mode: subagent`)**: The parent/coordinator session MUST NOT call `acdd_claim` / `acdd claim` on a subagent's behalf, MUST NOT pre-author code recipes or `review_evidence` JSON payloads, and MUST launch workers with only `(run, node_cursor, worker_id, worktree)`. Instruct the worker to: (1) call `acdd_claim` / `acdd claim` as its very first action, (2) read every path listed under `Repository Instructions - MANDATORY` (`docs.instructions`), `ClaimResp.contract`, `ClaimResp.guidance`, `pre_task_slice`, `unresolved_findings`, and `blackboard`, and (3) execute all edits, `acdd_verify`, and `acdd_submit` strictly inside `ClaimResp.worktree`.
+- **Worker self-claim, navigation & thin coordinator prompt (mandatory for `mode: subagent`)**: The parent/coordinator session MUST NOT call `acdd_claim` / `acdd claim` on a subagent's behalf, MUST NOT pre-author code recipes or `review_evidence` JSON payloads, and MUST launch workers with only `(run, node_cursor, worker_id, worktree)`. Instruct the worker to: (1) call `acdd_claim` / `acdd claim` as its very first action, (2) read every path listed under `Repository Instructions - MANDATORY` (`docs.instructions`), `ClaimResp.contract`, `ClaimResp.guidance`, `pre_task_slice`, `unresolved_findings`, and `blackboard`, (3) navigate and read code/docs strictly via ACDD MCP (`code_map_*`, `ast_grep_search`, `acdd_read`, `search_docs`/`get_doc`) or—when MCP is absent in that harness (e.g., `swarm` workers)—explicit `acdd` CLI commands (`acdd read`, `acdd query ...`, `acdd ast grep`, `acdd docs ...`, `acdd lint`), never falling back to `read_file` or raw `cat`/`sed`/`grep`, and (4) execute all edits, `acdd_verify`, and `acdd_submit` strictly inside `ClaimResp.worktree`.
 - **Builder continuity & `BUDGET_OVERRIDE` authority**: Reuse the same worker or `codex exec resume <SESSION_ID>` session when routing `review` rejection findings back to `build`. On any rejection, load `close-review-findings`, trace the full owner path across all ingress surfaces (CLI, MCP, internal handlers), and unify behind one canonical owner. A `builder` MUST NEVER self-approve `BUDGET_OVERRIDE`; escalate to coordinator/architect (`acdd_blackboard` `decisions` or `--action escalate`) when clean shared logic genuinely exceeds `max_net_loc`.
 - **Independent review**: Instruct an independent reviewer (distinct `worker_id`, enforced by `independent_from`) to self-claim and submit `review` / `integration_review`, check every spec `AC` 1:1, verify `BUDGET_OVERRIDE` authority vs measured net LOC, run `code_map_query` (`duplicates` & `dead_tails`; workspace-wide on `integration_review`), verify non-fallback fast-path proofs, and route repeated multi-surface defects to `architectural_drift` (`rearchitect`).
