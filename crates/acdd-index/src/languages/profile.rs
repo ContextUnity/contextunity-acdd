@@ -303,7 +303,10 @@ pub enum LanguageMemberResult<'a> {
         module: &'a str,
         import_line: usize,
         provider: Option<&'a str>,
-        hierarchy: Option<(&'a str, &'a crate::languages::manifests::ClassHierarchyReceiverRule)>,
+        hierarchy: Option<(
+            &'a str,
+            &'a crate::languages::manifests::ClassHierarchyReceiverRule,
+        )>,
     },
     Ambiguous,
     Unknown,
@@ -321,6 +324,86 @@ impl<'a> LanguageMemberResult<'a> {
 }
 
 pub trait LanguageLinker: Send + Sync {
+    /// Resolves an explicitly rooted module reference.
+    fn explicit_module_target(&self, _profile: &dyn LanguageProfile, _phase: &crate::linker::traits::ReferencePhase<'_, '_>) -> Option<crate::linker::traits::ExplicitModuleTarget> {
+        None
+    }
+
+    /// Resolves language-specific property references before generic admission.
+    fn property_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+        false
+    }
+
+    /// Resolves language-specific references after generic admission.
+    fn special_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+        false
+    }
+
+    /// Whether an expression starts with an explicitly rooted module prefix.
+    fn explicit_module_prefix(&self, _expression: &str) -> bool {
+        false
+    }
+
+    /// Resolves template builtin evidence when this profile owns template syntax.
+    fn template_builtin(&self, _expression: &str, _rules: &[&crate::languages::manifests::syntax::SyntaxRule]) -> Option<String> {
+        None
+    }
+
+    /// Resolves a platform builtin origin after configured rules are considered.
+    fn platform_builtin_origin<'a>(&self, _profile: &dyn LanguageProfile, _first: &str, _configured: Option<&'a str>) -> Option<&'a str> {
+        None
+    }
+
+    /// Classifies a language builtin and its reference evidence.
+    fn builtin_evidence(&self, _first: &str, _expression: &str) -> Option<(&'static str, String)> {
+        None
+    }
+
+    /// Reports an external annotation admitted by the language.
+    fn external_annotation(&self, _profile: &dyn LanguageProfile, _head: &str, _path: &str, _dependencies: &DependencyRegistry) -> bool {
+        false
+    }
+
+    /// Whether a constant can denote a callable value in this language.
+    fn callable_constant(&self, _node: &Node) -> bool {
+        false
+    }
+
+    /// Whether script-style optional chains and implicit receivers are supported.
+    fn script_receiver_syntax(&self) -> bool {
+        false
+    }
+
+    /// Default origin of builtins supplied by this language.
+    fn builtin_origin(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Whether a declaration denotes a variant whose result is its parent enum.
+    fn returns_parent_enum(&self, _node: &Node) -> bool {
+        false
+    }
+
+    /// Whether a member declaration is visible at a reference position.
+    fn member_visible_at(&self, _node: &Node, _path: &str, _line: usize, _column: usize) -> bool {
+        true
+    }
+
+    /// Whether a typed call-result reference can resolve as a computed member.
+    fn admits_computed_reference(&self, _language: &str) -> bool {
+        false
+    }
+
+    /// Whether shared class-member indexing applies to this language.
+    fn uses_shared_class_members(&self) -> bool {
+        true
+    }
+
+    /// Whether hierarchy manifest rules are used by this language.
+    fn uses_hierarchy_rules(&self) -> bool {
+        false
+    }
+
     /// Resolves a member through this linker's opaque language-owned state.
     fn lookup_member<'a>(
         &self,
@@ -331,9 +414,11 @@ pub trait LanguageLinker: Send + Sync {
         associated: bool,
         caller: &Node,
     ) -> LanguageMemberResult<'a> {
-        indexes.get(language_id).map_or(LanguageMemberResult::Unknown, |index| {
-            index.lookup_member(receiver, member, associated, caller)
-        })
+        indexes
+            .get(language_id)
+            .map_or(LanguageMemberResult::Unknown, |index| {
+                index.lookup_member(receiver, member, associated, caller)
+            })
     }
 
     fn lookup_builtin<'a>(
@@ -345,9 +430,11 @@ pub trait LanguageLinker: Send + Sync {
         associated: bool,
         caller: &Node,
     ) -> LanguageMemberResult<'a> {
-        indexes.get(language_id).map_or(LanguageMemberResult::Unknown, |index| {
-            index.lookup_builtin(receiver, member, associated, caller)
-        })
+        indexes
+            .get(language_id)
+            .map_or(LanguageMemberResult::Unknown, |index| {
+                index.lookup_builtin(receiver, member, associated, caller)
+            })
     }
 
     /// Resolves a language-specific constructor or direct call expression before fallback expression lookup.
@@ -1039,11 +1126,7 @@ pub trait LanguageProfile: Send + Sync {
         scope_bindings(node, source)
     }
     /// Extracts bounded local value-flow facts from a syntax node.
-    fn value_flow(
-        &self,
-        _node: Syntax<'_>,
-        _source: &str,
-    ) -> crate::semantic::ValueFlowFacts {
+    fn value_flow(&self, _node: Syntax<'_>, _source: &str) -> crate::semantic::ValueFlowFacts {
         crate::semantic::ValueFlowFacts::default()
     }
     /// Extracts local value-flow facts using information prepared for the file.
@@ -1184,7 +1267,13 @@ pub trait LanguageProfile: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the grammar cannot parse or extract the file.
-    fn extract_file(&self, _path: &str, _source: &str, _module: &str, _facts: &mut Facts) -> Result<()> {
+    fn extract_file(
+        &self,
+        _path: &str,
+        _source: &str,
+        _module: &str,
+        _facts: &mut Facts,
+    ) -> Result<()> {
         anyhow::bail!(
             "grammar-backed profile '{}' must be extracted via ast::parse_file",
             self.id()
@@ -1204,8 +1293,11 @@ pub(crate) struct TreeExtractArgs<'a, 'tree> {
 }
 
 /// Function pointer invoked by embedded-language profiles to extract a parsed syntax island.
-pub(crate) type TreeExtractor =
-    fn(TreeExtractArgs<'_, '_>, &mut Facts, Option<&mut crate::typed_facts::FlowStore>) -> ScopeBindings;
+pub(crate) type TreeExtractor = fn(
+    TreeExtractArgs<'_, '_>,
+    &mut Facts,
+    Option<&mut crate::typed_facts::FlowStore>,
+) -> ScopeBindings;
 
 impl DependencyRegistry {
     /// Classifies an external module without workspace-origin context.

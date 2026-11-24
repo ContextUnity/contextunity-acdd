@@ -1004,7 +1004,7 @@ fn match_template_symbol<'a>(
     None
 }
 
-pub(in crate::linker) fn builtin_evidence(
+pub(crate) fn builtin_evidence(
     expression: &str,
     template_rules: &[&languages::manifests::syntax::SyntaxRule],
 ) -> String {

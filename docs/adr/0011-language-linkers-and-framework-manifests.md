@@ -24,6 +24,7 @@ Supporting multi-language imports, third-party package classification, template 
 - **`LanguageLinker`**: Performs language-owned import, scope, and receiver resolution (`crates/acdd-index/src/linker/`), keeping framework behavior strictly data-driven rather than adding framework-specific code branches.
 - **Visibility and dispatch**: `LanguageProfile` remains public for host and profile consumers. `LanguageLinker` and `FileRelationContext` are crate-private and are reached through the language-profile dispatch seam, so private linker details do not leak through public interfaces.
 - **Language-owned member resolution**: `LanguageLinker` supplies lifetime-preserving semantic and import state plus hooks for member/property lookup, dereference targets, polymorphic implementors, candidate filtering, implicit receiver admission, and computed calls. Universal linker phases invoke those hooks instead of carrying per-language context fields or branching on language names. Tier-2 object-oriented profiles use the shared class-member and inheritance index.
+- **Composition root**: Linker `mod.rs` and `indexing.rs` construct language states in stack-lifetime dependency order and inject them through borrowed language-state traits.
 
 ### 2. Dependency Manifest Discovery & 4-Tier Reference Classification
 

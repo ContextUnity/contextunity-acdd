@@ -5,20 +5,19 @@ use super::inferred::{self, RefQuery, ReferenceState};
 use super::members;
 use crate::languages;
 use crate::linker::{
-    html, javascript, python::{self, receivers}, rust, semantic_context, typescript,
-    types::{
-        qualified,
-        ReceiverType,
-    },
-    value_flow, vue,
+    javascript,
+    python::{self, receivers},
+    rust, semantic_context,
+    types::{qualified, ReceiverType},
+    typescript, value_flow, vue,
 };
-use std::borrow::Cow;
 use crate::models::{
     compact_graph::CompactGraph as Graph,
     tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind},
     Node, ReceiverHint, Reference,
 };
 use hashbrown::HashMap;
+use std::borrow::Cow;
 
 pub(super) fn resolve_reference<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -31,92 +30,70 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
     'a: 'file,
     'file: 'res,
 {
-    let owner = ctx.input.interner.lookup_node(ctx.input.by_id, r.source.as_str());
+    let owner = ctx
+        .input
+        .interner
+        .lookup_node(ctx.input.by_id, r.source.as_str());
     let active_profile = ctx.reference_profile(r);
-    if let Some((result, emit)) = typescript::resolution::property_reference(
-        ctx.input,
-        r,
-        &ctx.ordinary_member_receivers,
-        active_profile,
-    ) {
-        if emit {
-            emit_inferred(graph, ctx.path, r, result, None);
-        }
-        return;
-    }
-    if !configured_hint_is_effective(ctx, graph, r) {
-        return;
-    }
-    #[cfg(feature = "lang-rust")]
-    if rust::resolution::trait_object_call(
-        active_profile,
-        r,
+    let builtin_origin = active_profile.and_then(|profile| profile.linker().builtin_origin());
+    let rust_module_target = {
+        let mut phase = crate::linker::traits::ReferencePhase {
+            input: ctx.input,
+            reference: r,
+            profile: active_profile,
         owner,
-        ctx.path,
-        ctx.input.value_flow,
-        ctx.input.semantic_context,
+            path: ctx.path,
+            file_module: ctx.file_module,
+            ordinary_receivers: &ctx.ordinary_member_receivers,
         graph,
-    ) {
+            #[cfg(feature = "lang-html")]
+            templates: &ctx.linker.html_templates,
+            #[cfg(feature = "lang-html")]
+            loads: ctx.template_loads,
+            #[cfg(feature = "lang-html")]
+            registry_rules: ctx.template_registry_rules,
+        };
+        if active_profile.is_some_and(|profile| profile.linker().property_reference(&mut phase))
+            || !configured_hint_is_effective(ctx, phase.graph, r)
+            || active_profile.is_some_and(|profile| profile.linker().special_reference(&mut phase))
+            || ctx.profile.is_some_and(|profile| {
+                active_profile.is_none_or(|active| active.id() != profile.id())
+                    && profile.linker().special_reference(&mut phase)
+            })
+        {
         return;
     }
-    let builtin_origin = match active_profile.map(|profile| profile.family().0) {
-        Some("rust") => Some("Rust standard library"),
-        Some("python") => Some("Python standard library"),
-        Some("typescript" | "javascript") => Some("JavaScript/Web platform"),
-        _ => None,
-    };
-    #[cfg(feature = "lang-html")]
-    if html::templates::resolve_reference(
+        if members::resolve_computed_call(
         ctx.input,
-        &ctx.linker.html_templates,
         ctx.path,
-        ctx.template_loads,
-        ctx.template_registry_rules,
         r,
-        graph,
-    ) {
+            active_profile,
+            builtin_origin,
+            phase.graph,
+        ) || resolve_vue_template_typed_member(ctx, phase.graph, r, owner)
+        {
         return;
     }
-    if members::resolve_computed_call(ctx.input, ctx.path, r, active_profile, builtin_origin, graph) {
-        return;
-    }
-    if resolve_vue_template_typed_member(ctx, graph, r, owner) {
-        return;
-    }
+        ctx.profile
+            .and_then(|profile| profile.linker().explicit_module_target(profile, &phase))
+    };
 
     let expression = if r.expression.contains("::") {
         Cow::Owned(r.expression.replace("::", "."))
-    } else if ctx.profile.is_some_and(|profile| {
-        matches!(
-            profile.id(),
-            p if p == LanguageId::Javascript.as_str()
-                || p == LanguageId::Typescript.as_str()
-                || p == LanguageId::Vue.as_str()
-                || p == LanguageId::Html.as_str()
-        )
-    }) && r.expression.contains("?.")
+    } else if ctx
+        .profile
+        .is_some_and(|profile| profile.linker().script_receiver_syntax())
+        && r.expression.contains("?.")
     {
         Cow::Owned(r.expression.replace("?.", "."))
     } else {
         Cow::Borrowed(r.expression.as_str())
     };
-    #[cfg(feature = "lang-rust")]
-    let rust_keyword_explicit = ctx.profile.is_some_and(|profile| {
-        profile.id() == LanguageId::Rust.as_str()
-            && ["super::", "crate::", "self::"]
-                .iter()
-                .any(|prefix| r.expression.starts_with(prefix))
-    });
+    let rust_keyword_explicit = ctx
+        .profile
+        .is_some_and(|profile| profile.linker().explicit_module_prefix(&r.expression));
     #[cfg(not(feature = "lang-rust"))]
-    let rust_keyword_explicit = false;
-    #[cfg(feature = "lang-rust")]
-    let rust_module_target = rust::resolution::rust_explicit_module_target(
-        ctx.input,
-        ctx.profile,
-        ctx.path,
-        ctx.file_module,
-        &r.expression,
-    );
+    let _ = &rust_module_target;
     let (first, tail) = expression.split_once('.').unwrap_or((&expression, ""));
     if !r.dynamic
         && matches!(
@@ -164,15 +141,7 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
     };
     #[cfg(feature = "lang-typescript")]
     let static_implicit_reference = r.dynamic
-        && active_profile.is_some_and(|profile| {
-            matches!(
-                profile.id(),
-                p if p == LanguageId::Javascript.as_str()
-                    || p == LanguageId::Typescript.as_str()
-                    || p == LanguageId::Vue.as_str()
-                    || p == LanguageId::Html.as_str()
-            )
-        })
+        && active_profile.is_some_and(|profile| profile.linker().script_receiver_syntax())
         && !implicit_receiver.is_empty()
         && ctx.language_context.syntax_rules.iter().any(|rule| {
             let languages::manifests::syntax::SyntaxOperation::ImplicitReceivers { names } =
@@ -180,9 +149,11 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
             else {
                 return false;
             };
-            ctx.language_context
-                .is_syntax_rule_active(rule, ctx.path, &ctx.facts.activation_signals)
-                && names.iter().any(|name| name == implicit_receiver)
+            ctx.language_context.is_syntax_rule_active(
+                rule,
+                ctx.path,
+                &ctx.facts.activation_signals,
+            ) && names.iter().any(|name| name == implicit_receiver)
         });
     #[cfg(not(feature = "lang-typescript"))]
     let static_implicit_reference = false;
@@ -319,12 +290,7 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
     }
 
     if inferred::resolve_lexical_or_imported_candidates(
-        ctx,
-        graph,
-        &query,
-        &mut state,
-        candidates,
-        lookup_key,
+        ctx, graph, &query, &mut state, candidates, lookup_key,
     ) {
         return;
     }
@@ -629,7 +595,10 @@ fn resolve_early_language_specials<'a>(
         return true;
     }
     if q.r.kind != EdgeKind::Imports.as_str()
-        && matches!(q.r.receiver_hint.as_ref(), Some(ReceiverHint::TypeOnlyImport))
+        && matches!(
+            q.r.receiver_hint.as_ref(),
+            Some(ReceiverHint::TypeOnlyImport)
+        )
     {
         graph.reference_coverage(
             ctx.path,
@@ -730,7 +699,9 @@ where
                 ctx.lookup(qualified(lookup_key, scope, q.expression))
                     .iter()
                     .copied()
-                    .filter(|n| n.path == *ctx.path && (!is_rust || n.kind != NodeKind::Impl.as_str())),
+                    .filter(|n| {
+                        n.path == *ctx.path && (!is_rust || n.kind != NodeKind::Impl.as_str())
+                    }),
             );
             lexical_head_declared |= !candidates.is_empty();
             if !candidates.is_empty() {

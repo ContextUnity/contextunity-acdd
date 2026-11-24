@@ -1,10 +1,9 @@
 use super::types::{
     duplicate_position, flow_dependent, merge, node_position, resolve_type, same_fields,
     same_target, stored_type_expr, symbol_type, valid_scope_facts, valid_value, Binding,
-    BindingEvent,
-    BindingList, Definitions, Epochs, InitializedScope, NamedNodes, ReadEpochs, ReadTrace, Scope,
-    ScopeFacts, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
-    EMPTY_SCOPE_FACTS,
+    BindingEvent, BindingList, Definitions, Epochs, InitializedScope, NamedNodes, ReadEpochs,
+    ReadTrace, Scope, ScopeFacts, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
+    ValueFlowIndex, EMPTY_SCOPE_FACTS,
 };
 use crate::interner::{LinkerInterner, SymbolId};
 use crate::models::{Facts, Node, ReceiverHint, Reference};
@@ -21,10 +20,9 @@ fn initialize_scope<'a>(
 ) -> InitializedScope<'a> {
     let encoded = &node.details["value_flow"];
     let typed = resolver.value_flow(node);
-    let oversized = typed.is_some_and(|facts| {
-        crate::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
-    }) || crate::typed_facts::encoded_scope_fact_count(encoded)
-        > limits.facts_per_scope;
+    let oversized = typed
+        .is_some_and(|facts| crate::typed_facts::scope_fact_count(facts) > limits.facts_per_scope)
+        || crate::typed_facts::encoded_scope_fact_count(encoded) > limits.facts_per_scope;
     let decoded = if oversized {
         Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
     } else if let Some(facts) = typed {
@@ -116,9 +114,8 @@ fn initialize_scope<'a>(
     }
     let returned = if invalid {
         TypeTarget::Unknown
-    } else if node.language == "rust"
-        && node.kind == "constant"
-        && node.details["rust_enum_variant"] == true
+    } else if crate::languages::by_id(&node.language)
+        .is_some_and(|profile| profile.linker().returns_parent_enum(node))
     {
         node.qualname
             .rsplit_once('.')
@@ -276,7 +273,9 @@ impl<'a> ValueFlowIndex<'a> {
         for (node, facts, scope, returned) in initialized {
             index.record_scope_metadata(node, &facts, &scope, resolver, limits);
             index.returns.insert(node.id.as_str(), returned);
-            index.local_types.insert(node.id.as_str(), TypeTarget::Local(node));
+            index
+                .local_types
+                .insert(node.id.as_str(), TypeTarget::Local(node));
             index.scopes.insert(node.id.as_str(), scope);
             raw.insert(node.id.as_str(), facts);
         }
@@ -339,7 +338,8 @@ impl<'a> ValueFlowIndex<'a> {
         };
         if supports_async {
             if let Some(async_type) = facts.async_return_type.as_ref() {
-                let returned = resolve_type(node, async_type, node_position(node), resolver, limits);
+                let returned =
+                    resolve_type(node, async_type, node_position(node), resolver, limits);
                 if !matches!(returned, TypeTarget::Unknown | TypeTarget::Ambiguous) {
                     self.async_returns.insert(node.id.as_str(), returned);
                 }
@@ -372,14 +372,12 @@ impl<'a> ValueFlowIndex<'a> {
         }
         if matches!(node.kind.as_str(), "function" | "method") {
             if let Some(return_type) = facts.return_type.as_ref() {
-                if let Some(element) =
-                    super::super::python::value_flow::collection_return_element(
-                        node,
-                        return_type,
-                        resolver,
-                        limits,
-                    )
-                {
+                if let Some(element) = super::super::python::value_flow::collection_return_element(
+                    node,
+                    return_type,
+                    resolver,
+                    limits,
+                ) {
                     self.return_collection_elements
                         .insert(node.id.as_str(), element);
                 }
@@ -577,13 +575,8 @@ impl<'a> ValueFlowIndex<'a> {
         let Some((callee, awaited)) = call else {
             return;
         };
-        let callable = self.callable_expression_tracked(
-            owner,
-            callee,
-            binding.position,
-            resolver,
-            None,
-        );
+        let callable =
+            self.callable_expression_tracked(owner, callee, binding.position, resolver, None);
         let return_elements = if awaited {
             &self.async_return_collection_elements
         } else {
@@ -621,7 +614,12 @@ impl<'a> ValueFlowIndex<'a> {
         by_name: &NamedNodes<'a>,
         resolver: &impl SemanticResolver<'a>,
         definitions: &Definitions<'a>,
-    ) -> Vec<(&'a Node, &'a Node, &'raw crate::semantic::FieldFact, TypeTarget<'a>)> {
+    ) -> Vec<(
+        &'a Node,
+        &'a Node,
+        &'raw crate::semantic::FieldFact,
+        TypeTarget<'a>,
+    )> {
         let mut field_events = Vec::new();
         for owner in owners {
             if raw[owner.id.as_str()].fields.is_empty() {
@@ -700,7 +698,12 @@ impl<'a> ValueFlowIndex<'a> {
         owners: &[&'a Node],
         raw: &HashMap<&'a str, ScopeFacts<'a>>,
         ordered: &HashMap<&'a str, Vec<(BindingEvent<'_, 'a>, usize)>>,
-        field_events: &mut [(&'a Node, &'a Node, &crate::semantic::FieldFact, TypeTarget<'a>)],
+        field_events: &mut [(
+            &'a Node,
+            &'a Node,
+            &crate::semantic::FieldFact,
+            TypeTarget<'a>,
+        )],
         resolver: &impl SemanticResolver<'a>,
         definitions: &Definitions<'a>,
         limits: SemanticLimits,
@@ -840,7 +843,12 @@ impl<'a> ValueFlowIndex<'a> {
     fn step_field_events(
         &mut self,
         owners: &[&'a Node],
-        field_events: &mut [(&'a Node, &'a Node, &crate::semantic::FieldFact, TypeTarget<'a>)],
+        field_events: &mut [(
+            &'a Node,
+            &'a Node,
+            &crate::semantic::FieldFact,
+            TypeTarget<'a>,
+        )],
         field_reads: &mut [Option<ReadEpochs<'a>>],
         epochs: &mut Epochs<'a>,
         resolver: &impl SemanticResolver<'a>,
@@ -947,12 +955,7 @@ impl<'a> ValueFlowIndex<'a> {
                 if callee.len() > limits.name_bytes {
                     TypeTarget::Unknown
                 } else {
-                    symbol_type(resolver.resolve_symbol(
-                        owner,
-                        callee,
-                        at,
-                        SymbolRole::Constructor,
-                    ))
+                    symbol_type(resolver.resolve_symbol(owner, callee, at, SymbolRole::Constructor))
                 }
             }
             Some(ReceiverHint::CallResult { callee, .. }) => {

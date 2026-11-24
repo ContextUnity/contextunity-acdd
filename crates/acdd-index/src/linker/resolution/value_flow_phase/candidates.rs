@@ -1,13 +1,13 @@
 use super::context::PhaseContext;
 use super::inferred::{RefQuery, ReferenceState};
 use super::relation_edges;
-use crate::linker::{html, javascript, python::receivers, python, rust, types::ReceiverType, typescript};
-use std::borrow::Cow;
+use crate::linker::{python, python::receivers, rust, types::ReceiverType, typescript};
 use crate::models::{
     compact_graph::CompactGraph as Graph,
     tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind},
     Node, Reference,
 };
+use std::borrow::Cow;
 
 pub(super) fn finalize_and_emit<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
@@ -36,7 +36,10 @@ fn filter_candidates<'a, 'file, 'res>(
 {
     if state.imported.is_none()
         && state.typed_receiver.is_none()
-        && !matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Local(_)))
+        && !matches!(
+            state.receiver_member,
+            Some(receivers::PythonReceiverMember::Local(_))
+        )
     {
         candidates.retain(|n| {
             n.path == *ctx.path
@@ -80,7 +83,11 @@ fn filter_candidates<'a, 'file, 'res>(
         && candidates.is_empty()
     {
         if let Some(owner) = q.owner {
-            candidates.extend(ctx.input.semantic_context.implicit_callables(owner, q.first));
+            candidates.extend(
+                ctx.input
+                    .semantic_context
+                    .implicit_callables(owner, q.first),
+            );
         }
     }
     candidates.retain(|n| {
@@ -118,18 +125,16 @@ fn filter_candidates<'a, 'file, 'res>(
                     && (!q.tail.is_empty()
                         || (state.imported.is_some()
                             && !ctx.is_type_only(q.first, q.owner, state.definition_scope)
-                            && ctx
-                                .input
-                                .interner
-                                .lookup_symbol(&q.r.source)
-                                .is_some_and(|source| {
+                            && ctx.input.interner.lookup_symbol(&q.r.source).is_some_and(
+                                |source| {
                                     ctx.value_queries.contains(&(
                                         source,
                                         q.r.expression.as_str(),
                                         q.r.line,
                                         q.r.column,
                                     ))
-                                }))))
+                                },
+                            ))))
                     || rust_macro_reference
                     || PhaseContext::is_default_export_vue_module(n)
             }
@@ -177,13 +182,7 @@ fn disambiguate_candidates<'a, 'file, 'res>(
         }
     }
     #[cfg(feature = "lang-rust")]
-    rust::resolution::macro_analysis_gap(
-        ctx.profile,
-        r,
-        candidates,
-        ctx.path,
-        graph,
-    );
+    rust::resolution::macro_analysis_gap(ctx.profile, r, candidates, ctx.path, graph);
     #[cfg(not(feature = "lang-rust"))]
     let _ = (ctx, graph, r);
 }
@@ -196,33 +195,18 @@ fn builtin_origin_and_evidence<'a, 'file, 'res>(
     if !is_builtin {
         return None;
     }
-    if ctx
+    if let Some((origin, evidence)) = ctx
         .profile
-        .is_some_and(|profile| profile.id() == LanguageId::Rust.as_str())
-        && q.first != "Self"
+        .and_then(|profile| profile.linker().builtin_evidence(q.first, q.expression))
     {
-        return Some((
-            Cow::Borrowed("Rust standard library"),
-            format!("Rust standard library prelude: {}", q.expression).into(),
-        ));
+        return Some((Cow::Borrowed(origin), evidence.into()));
     }
-    if ctx
-        .profile
-        .is_some_and(|profile| profile.id() == LanguageId::Python.as_str())
-    {
-        return Some((
-            Cow::Borrowed("Python standard library"),
-            format!("Python standard library built-in: {}", q.expression).into(),
-        ));
-    }
-    if q.expression.starts_with("template.")
-        && q.active_profile
-            .is_some_and(|profile| profile.id() == LanguageId::Html.as_str())
-    {
         #[cfg(feature = "lang-html")]
-        let origin = html::templates::builtin_evidence(q.expression, ctx.template_rules);
-        #[cfg(not(feature = "lang-html"))]
-        let origin = "builtin:shared_template".to_owned();
+    if let Some(origin) = q.active_profile.and_then(|profile| {
+        profile
+            .linker()
+            .template_builtin(q.expression, ctx.template_rules)
+    }) {
         let evidence = format!("{origin} {}", q.expression);
         return Some((Cow::Owned(origin), evidence.into()));
     }
@@ -253,13 +237,15 @@ fn builtin_origin_and_evidence<'a, 'file, 'res>(
         let evidence = format!("{origin} built-in: {}", q.expression);
         return Some((Cow::Owned(origin), evidence.into()));
     }
-    if let Some(origin) = javascript::resolution::builtin_origin(
+    if let Some(origin) = q.active_profile.and_then(|profile| {
+        profile.linker().platform_builtin_origin(
+            profile,
         q.first,
-        q.active_profile,
         ctx.input
             .semantic_context
             .autoimport_evidence(ctx.path, q.first),
-    ) {
+        )
+    }) {
         return Some((
             Cow::Borrowed(origin),
             format!("{origin} built-in: {}", q.expression).into(),
@@ -279,8 +265,10 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
 ) -> (&'static str, Cow<'static, str>) {
     let r = q.r;
     let base_status = if matches!(state.typed_receiver, Some(ReceiverType::Ambiguous))
-        || matches!(state.receiver_member, Some(receivers::PythonReceiverMember::Ambiguous))
-    {
+        || matches!(
+            state.receiver_member,
+            Some(receivers::PythonReceiverMember::Ambiguous)
+        ) {
         CoverageStatus::Ambiguous.as_str()
     } else if (candidates.len() == 1 || is_builtin) && source_present && !source_heuristic {
         CoverageStatus::Resolved.as_str()
@@ -290,23 +278,17 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         CoverageStatus::Ambiguous.as_str()
     };
     let builtin_classified = builtin_origin_and_evidence(ctx, q, is_builtin);
-    #[cfg(feature = "lang-rust")]
-    let rust_external_import = rust::semantic_context::external_annotation_type(
-        ctx.profile,
-        q.first,
+    let rust_external_import = ctx.profile.is_some_and(|profile| {
+        profile.linker().external_annotation(
+            profile,
         q.first,
         ctx.path,
         ctx.input.dependency_registry,
     )
-    .is_some();
-    #[cfg(not(feature = "lang-rust"))]
-    let rust_external_import = false;
-    let external_origin = if let Some(receivers::PythonReceiverMember::External(
-        module,
-        import_line,
-        _,
-        _,
-    )) = state.receiver_member
+    });
+    let external_origin =
+        if let Some(receivers::PythonReceiverMember::External(module, import_line, _, _)) =
+            state.receiver_member
     {
         Some((Cow::Borrowed(module), import_line))
     } else if let Some(ReceiverType::External(module, import_line)) = state.typed_receiver {
@@ -318,7 +300,9 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         && candidates.is_empty()
         && (state.imported.is_some_and(|targets| targets.is_empty())
             || rust_external_import
-            || ctx.external_call_for(q.first, q.owner, r.position()).is_some())
+                || ctx
+                    .external_call_for(q.first, q.owner, r.position())
+                    .is_some())
     {
         if let Some(target) = ctx
             .external_call_for(q.first, q.owner, r.position())
@@ -349,7 +333,10 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         _ => None,
     };
     let evidence: Cow<'static, str> = if let Some(stub_path) = stub_target {
-        format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed").into()
+        format!(
+            "type-stub declaration at {stub_path}; runtime implementation not statically indexed"
+        )
+        .into()
     } else if let Some((_, builtin_evidence)) = builtin_classified {
         builtin_evidence
     } else if let Some((module, import_line)) = external_origin {
@@ -466,12 +453,14 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         } else {
             (source.as_str(), target)
         };
-        let kind_str = if r.kind == EdgeKind::Bases.as_str()
-            || r.kind == EdgeKind::Inherits.as_str()
-        {
+        let kind_str =
+            if r.kind == EdgeKind::Bases.as_str() || r.kind == EdgeKind::Inherits.as_str() {
             let is_interface = candidate.kind == NodeKind::Interface.as_str()
                 || python::resolution::has_protocol_or_abc_base(candidate);
-            if is_interface && q.owner.is_some_and(|n| n.kind != NodeKind::Interface.as_str()) {
+                if is_interface
+                    && q.owner
+                        .is_some_and(|n| n.kind != NodeKind::Interface.as_str())
+                {
                 EdgeKind::Implements.as_str()
             } else {
                 EdgeKind::Inherits.as_str()
@@ -499,8 +488,8 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         if (kind_str == EdgeKind::Implements.as_str() || kind_str == EdgeKind::Inherits.as_str())
             && r.kind != EdgeKind::Decorates.as_str()
         {
-            let source_container_id =
-                if q.owner.is_some_and(|n| n.kind == NodeKind::Impl.as_str()) {
+            let source_container_id = if q.owner.is_some_and(|n| n.kind == NodeKind::Impl.as_str())
+            {
                     r.source.as_str()
                 } else {
                     src

@@ -180,10 +180,7 @@ fn fallback_receiver_value(
 }
 
 #[cfg(feature = "lang-rust")]
-pub(in crate::linker) struct RustExplicitTarget {
-    pub(in crate::linker) namespace: String,
-    pub(in crate::linker) workspace: String,
-}
+pub(in crate::linker) use crate::linker::traits::ExplicitModuleTarget as RustExplicitTarget;
 
 #[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(

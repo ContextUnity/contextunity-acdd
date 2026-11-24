@@ -46,6 +46,21 @@ fn prefer_live_declaration(candidates: &mut Vec<&Node>) -> bool {
 }
 
 impl LanguageLinker for PythonLinker {
+    fn builtin_evidence(&self, _first: &str, expression: &str) -> Option<(&'static str, String)> {
+        Some((
+            "Python standard library",
+            format!("Python standard library built-in: {expression}"),
+        ))
+    }
+
+    fn builtin_origin(&self) -> Option<&'static str> {
+        Some("Python standard library")
+    }
+
+    fn uses_hierarchy_rules(&self) -> bool {
+        true
+    }
+
     fn constructor_result<'a>(
         &self,
         owner: &'a Node,
@@ -56,11 +71,7 @@ impl LanguageLinker for PythonLinker {
         crate::linker::python::value_flow::constructor_result(owner, callee, at, resolver)
     }
 
-    fn construct_value<'a>(
-        &self,
-        owner: &'a Node,
-        callee: &str,
-    ) -> Option<TypeTarget<'a>> {
+    fn construct_value<'a>(&self, owner: &'a Node, callee: &str) -> Option<TypeTarget<'a>> {
         crate::linker::python::value_flow::literal_type(owner, callee)
     }
 
@@ -288,7 +299,6 @@ impl LanguageLinker for PythonLinker {
         )
     }
 
-
     fn required_full_facts(
         &self,
         facts: &dyn crate::models::FactsLookup,
@@ -297,7 +307,6 @@ impl LanguageLinker for PythonLinker {
     ) -> BTreeSet<String> {
         required_full_facts(facts, affected, catalog)
     }
-
 
     fn needs_reference_identity(&self, path: &str, facts: &Facts) -> bool {
         needs_reference_identity(path, facts)
@@ -475,11 +484,7 @@ pub(super) fn required_full_facts(
             let src_name = local_path
                 .split_once("/src/")
                 .map(|(_, path)| module_name(path))
-                .or_else(|| {
-                    local_path
-                        .strip_prefix("src/")
-                        .map(module_name)
-                });
+                .or_else(|| local_path.strip_prefix("src/").map(module_name));
             (matches(&full_name)
                 || matches(&local_name)
                 || src_name.as_ref().is_some_and(|name| matches(name)))
@@ -827,7 +832,9 @@ fn export_provider<'a>(
 ) -> Option<&'a Node> {
     let _ = root;
     let import = normalize_python_import(path, module_path)?;
-    let providers = modules.get(&LanguageFamily("python"))?.get(&import.namespace)?;
+    let providers = modules
+        .get(&LanguageFamily("python"))?
+        .get(&import.namespace)?;
     let workspace = languages::workspace_path(path).0;
     let mut selected: Vec<_> = providers
         .iter()

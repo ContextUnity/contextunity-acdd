@@ -1,7 +1,9 @@
 use crate::ast::syntax::{text, Syntax};
 use crate::languages::context::LanguageContext;
 use crate::languages::manifests;
-use crate::languages::profile::{LanguageProfile, TreeExtractArgs, TreeExtractor};
+use crate::languages::profile::{
+    LanguageLinker, LanguageProfile, TreeExtractArgs, TreeExtractor, GENERIC_LINKER,
+};
 use crate::languages::template::{TemplateMasker, TemplateTagKind};
 use crate::languages::types::{
     module_stem, with_warm_parser, AstSearchCapabilities, ImportPath, LanguageFamily, SyntaxContext,
@@ -20,6 +22,44 @@ use serde_json::{json, Value};
 
 struct Html;
 static HTML: Html = Html;
+struct HtmlLinker;
+static HTML_LINKER: HtmlLinker = HtmlLinker;
+
+impl LanguageLinker for HtmlLinker {
+    fn special_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+        crate::linker::html::special_reference(phase)
+    }
+
+    fn template_builtin(&self, expression: &str, rules: &[&crate::languages::manifests::syntax::SyntaxRule]) -> Option<String> {
+        expression
+            .starts_with("template.")
+            .then(|| crate::linker::html::templates::builtin_evidence(expression, rules))
+    }
+
+    fn platform_builtin_origin<'a>(&self, profile: &dyn LanguageProfile, first: &str, configured: Option<&'a str>) -> Option<&'a str> {
+        crate::linker::javascript::resolution::builtin_origin(first, Some(profile), configured)
+    }
+
+    fn script_receiver_syntax(&self) -> bool {
+        cfg!(feature = "lang-typescript")
+    }
+
+    fn builtin_origin(&self) -> Option<&'static str> {
+        Some("JavaScript/Web platform")
+    }
+    fn allows_multi_file_modules(&self) -> bool {
+        true
+    }
+    fn tracks_external_aliases(&self) -> bool {
+        true
+    }
+    fn module_namespaces(&self, profile: &dyn LanguageProfile, node: &crate::models::Node, dependencies: &crate::languages::dependency_registry::DependencyRegistry, out: &mut Vec<String>) {
+        GENERIC_LINKER.module_namespaces(profile, node, dependencies, out);
+    }
+    fn resolve_import<'ctx, 'a, 'input>(&self, context: &mut crate::languages::profile::ImportContext<'ctx, 'a, 'input>) -> crate::languages::profile::ImportResolution<'a> {
+        GENERIC_LINKER.resolve_import(context)
+    }
+}
 /// Language profiles provided by this module.
 pub(crate) static PROFILES: &[&dyn LanguageProfile] = &[&HTML];
 
@@ -35,6 +75,9 @@ fn javascript_profile() -> Option<&'static dyn LanguageProfile> {
 }
 
 impl LanguageProfile for Html {
+    fn linker(&self) -> &'static dyn LanguageLinker {
+        &HTML_LINKER
+    }
     fn id(&self) -> &'static str {
         "html"
     }
@@ -496,9 +539,18 @@ fn directory_matches_path(path: &str, directory: &str) -> bool {
 fn select_tag_dialect<'a>(
     tag_kind: TemplateTagKind,
     directive: &str,
-    dialects: &[(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)],
-    owned: &[(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)],
-) -> Option<(&'a manifests::syntax::SyntaxRule, &'a manifests::syntax::TemplateDialect)> {
+    dialects: &[(
+        &'a manifests::syntax::SyntaxRule,
+        &'a manifests::syntax::TemplateDialect,
+    )],
+    owned: &[(
+        &'a manifests::syntax::SyntaxRule,
+        &'a manifests::syntax::TemplateDialect,
+    )],
+) -> Option<(
+    &'a manifests::syntax::SyntaxRule,
+    &'a manifests::syntax::TemplateDialect,
+)> {
     if !owned.is_empty() {
         return (owned.len() == 1).then(|| owned[0]);
     }
@@ -542,7 +594,10 @@ fn process_statement_template_tag(
     meta: StatementTagMeta<'_>,
     facts: &mut Facts,
     named_route_rules: &[(&manifests::syntax::SyntaxRule, &String, &String)],
-    dialect: Option<(&manifests::syntax::SyntaxRule, &manifests::syntax::TemplateDialect)>,
+    dialect: Option<(
+        &manifests::syntax::SyntaxRule,
+        &manifests::syntax::TemplateDialect,
+    )>,
     nested_scope: &mut usize,
 ) {
     let StatementTagMeta {
@@ -691,9 +746,7 @@ fn preprocess_template<'a>(
                 for node in &mut facts.nodes[first_node..] {
                     node.details["value_flow"] = json!(crate::semantic::ValueFlowFacts {
                         framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
-                            facts: vec![crate::semantic::FrameworkFact::RuleOrigin(
-                                origin.clone()
-                            )],
+                            facts: vec![crate::semantic::FrameworkFact::RuleOrigin(origin.clone())],
                             ..Default::default()
                         })),
                         ..Default::default()
@@ -722,11 +775,7 @@ fn extract_template_target(input: &str) -> Option<&str> {
 }
 
 /// Resolves a local template target path relative to an owner.
-pub fn local_template_target(
-    owner: &str,
-    target: &str,
-    rules: &LanguageContext,
-) -> Option<String> {
+pub fn local_template_target(owner: &str, target: &str, rules: &LanguageContext) -> Option<String> {
     let target = target.strip_prefix("./").unwrap_or(target);
     if target.is_empty()
         || target.contains([':', '\\'])
@@ -919,7 +968,11 @@ fn record_script_island_scope(
     module: &str,
 ) {
     let first_full_line = body.start_position().row
-        + if body.start_position().column == 0 { 1 } else { 2 };
+        + if body.start_position().column == 0 {
+            1
+        } else {
+            2
+        };
     let last_full_line = body.end_position().row;
     let exclusive_inline = if node.start_position().row == node.end_position().row {
         let line_start = source[..node.start_byte()]

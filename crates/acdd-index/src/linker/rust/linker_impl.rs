@@ -1,6 +1,6 @@
 use super::forwarding::{
-    crate_namespace, declared_exports, is_crate_visible, module_namespace,
-    resolve_crate_namespace, within, WorkspaceCrateMatch,
+    crate_namespace, declared_exports, is_crate_visible, module_namespace, resolve_crate_namespace,
+    within, WorkspaceCrateMatch,
 };
 use crate::interner::LinkerInterner;
 use crate::languages::{
@@ -133,6 +133,84 @@ fn normalize_single_rust_import(
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
+    fn explicit_module_target(
+        &self,
+        profile: &dyn LanguageProfile,
+        phase: &crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> Option<crate::linker::traits::ExplicitModuleTarget> {
+        super::resolution::rust_explicit_module_target(
+            phase.input,
+            Some(profile),
+            phase.path,
+            phase.file_module,
+            &phase.reference.expression,
+        )
+    }
+
+    fn special_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+        super::resolution::trait_object_call(
+            phase.profile,
+            phase.reference,
+            phase.owner,
+            phase.path,
+            phase.input.value_flow,
+            phase.input.semantic_context,
+            phase.graph,
+        )
+    }
+
+    fn explicit_module_prefix(&self, expression: &str) -> bool {
+        ["super::", "crate::", "self::"]
+            .iter()
+            .any(|prefix| expression.starts_with(prefix))
+    }
+
+    fn builtin_evidence(&self, first: &str, expression: &str) -> Option<(&'static str, String)> {
+        (first != "Self").then(|| {
+            (
+                "Rust standard library",
+                format!("Rust standard library prelude: {expression}"),
+            )
+        })
+    }
+
+    fn external_annotation(
+        &self,
+        profile: &dyn LanguageProfile,
+        head: &str,
+        path: &str,
+        dependencies: &DependencyRegistry,
+    ) -> bool {
+        super::semantic_context::external_annotation_type(
+            Some(profile),
+            head,
+            head,
+            path,
+            dependencies,
+        )
+        .is_some()
+    }
+
+    fn callable_constant(&self, node: &Node) -> bool {
+        node.kind == "constant"
+    }
+
+    fn builtin_origin(&self) -> Option<&'static str> {
+        Some("Rust standard library")
+    }
+
+    fn returns_parent_enum(&self, node: &Node) -> bool {
+        node.kind == "constant" && node.details["rust_enum_variant"] == true
+    }
+
+    fn uses_shared_class_members(&self) -> bool {
+        false
+    }
+
+    fn uses_hierarchy_rules(&self) -> bool {
+        true
+    }
+
     fn callable_marker_evidence(
         &self,
         receiver: &crate::linker::value_flow::TypeTarget<'_>,
@@ -157,7 +235,9 @@ impl LanguageLinker for RustLinker {
         if candidates.len() > 1
             && (edge_kind == EdgeKind::Calls.as_str() || edge_kind == EdgeKind::Handles.as_str())
             && candidates.iter().any(|node| state.is_inherent_member(node))
-            && candidates.iter().any(|node| !state.is_inherent_member(node))
+            && candidates
+                .iter()
+                .any(|node| !state.is_inherent_member(node))
         {
             candidates.retain(|node| state.is_inherent_member(node));
         }
@@ -239,18 +319,15 @@ impl LanguageLinker for RustLinker {
         ctx: &ImportNormalizationContext<'_, 'a>,
         out: &mut HashMap<(&'a str, &'a str), Option<ImportPath>>,
     ) {
-        let root_rust_crate = ctx
-            .dependencies
-            .root_rust_crate_for_path(path)
-            .filter(|_| {
-                let workspace = languages::workspace_path(path).0;
-                if workspace.is_empty() {
-                    ctx.profiles.contains_key("src/lib.rs")
-                } else {
-                    ctx.profiles
-                        .contains_key(format!("{workspace}/src/lib.rs").as_str())
-                }
-            });
+        let root_rust_crate = ctx.dependencies.root_rust_crate_for_path(path).filter(|_| {
+            let workspace = languages::workspace_path(path).0;
+            if workspace.is_empty() {
+                ctx.profiles.contains_key("src/lib.rs")
+            } else {
+                ctx.profiles
+                    .contains_key(format!("{workspace}/src/lib.rs").as_str())
+            }
+        });
         for reference in facts
             .references
             .iter()
@@ -343,9 +420,9 @@ impl LanguageLinker for RustLinker {
         context.candidates.retain(|node| {
             node.kind != "impl"
                 && (node.kind == "module"
-                    && context.language_state.is_none_or(|state| {
-                        state.module_path_visible(&node.qualname, requester)
-                    })
+                    && context
+                        .language_state
+                        .is_none_or(|state| state.module_path_visible(&node.qualname, requester))
                     || is_crate_visible(node, requester)
                     || node
                         .qualname
@@ -433,7 +510,8 @@ impl LanguageLinker for RustLinker {
         if module.language != "rust" {
             return resolution;
         }
-        let requester = requester_node.map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
+        let requester =
+            requester_node.map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
         context.candidates.extend(forwarding.resolve_path(
             module,
             &name,

@@ -428,14 +428,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         Some(TypeTarget::ResultObject(result.clone()))
     }
     fn deref_target(&self, receiver: &'a Node) -> Option<&'a Node> {
-        if receiver.language == "rust" {
-            return super::super::rust::semantic_context::deref_target(
-                &LanguageMemberLookup::new(self),
-                receiver,
-            );
-        }
-        let _ = receiver;
-        None
+        LanguageMemberLookup::new(self).deref_target(&receiver.language, receiver)
     }
 
     fn value_flow(&self, node: &'a Node) -> Option<&'a crate::semantic::ValueFlowFacts> {

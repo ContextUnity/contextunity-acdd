@@ -1303,7 +1303,8 @@ impl<'a> Context<'a> {
                     matches!(
                         node.kind.as_str(),
                         "function" | "method" | "class" | "struct" | "enum"
-                    ) || (node.language == "rust" && node.kind == "constant")
+                    ) || languages::by_id(&node.language)
+                        .is_some_and(|profile| profile.linker().callable_constant(node))
                 }
             })
             .collect();
@@ -1316,7 +1317,8 @@ impl<'a> Context<'a> {
         }
         let node = candidates[0];
         if (matches!(node.kind.as_str(), "function" | "method")
-            || (node.language == "rust" && node.kind == "constant"))
+            || languages::by_id(&node.language)
+                .is_some_and(|profile| profile.linker().callable_constant(node)))
             && !matches!(role, SymbolRole::Constructor)
         {
             Symbol::Callable(node)

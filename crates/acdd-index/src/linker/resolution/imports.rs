@@ -311,10 +311,8 @@ fn external_origin_at<'a>(
 ) -> Option<(String, usize)> {
     match input.semantic_context.imported_alias(module, name) {
         Some(semantic_context::Imported::External(origin, _, reference, _)) => {
-            #[cfg(feature = "lang-rust")]
             if enforce_visibility
-                && module.language == "rust"
-                && input.semantic_context.import_state("rust").is_some_and(|state| {
+                && input.semantic_context.import_state(&module.language).is_some_and(|state| {
                     !state.external_binding_visible(
                         module,
                         name,
@@ -325,7 +323,6 @@ fn external_origin_at<'a>(
             {
                 return None;
             }
-            let _ = (requester_qual, enforce_visibility);
             Some((origin.replace("::", "."), line))
         }
         _ => None,

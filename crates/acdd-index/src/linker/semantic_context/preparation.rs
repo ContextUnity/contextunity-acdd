@@ -105,7 +105,9 @@ impl<'a> Context<'a> {
             };
             let rules = dependencies.language_context_for_path(path);
             let rules_ptr = std::sync::Arc::as_ptr(&rules) as usize;
-            if matches!(module.language.as_str(), "python" | "rust") {
+            if languages::by_id(&module.language)
+                .is_some_and(|profile| profile.linker().uses_hierarchy_rules())
+            {
                 self.cache_hierarchy_rules(
                     path,
                     &rules,
@@ -377,8 +379,10 @@ impl<'a> Context<'a> {
                 .interner
                 .lookup_symbol(&reference.expression)
                 .expect("factory import binding is interned");
-            self.factory_imports
-                .insert((owner_id, alias_id), Some((providers[0], binding, position)));
+            self.factory_imports.insert(
+                (owner_id, alias_id),
+                Some((providers[0], binding, position)),
+            );
         }
         let empty_candidates = candidates.is_empty();
         let target = if unproven_guard {
@@ -456,10 +460,9 @@ impl<'a> Context<'a> {
                 else {
                     continue;
                 };
-                let _ = original;
-                #[cfg(feature = "lang-rust")]
-                if item.provider_module.language == "rust"
-                    && self.import_state("rust").is_some_and(|state| {
+                if self
+                    .import_state(&item.provider_module.language)
+                    .is_some_and(|state| {
                         !state.external_binding_visible(
                             item.provider_module,
                             item.symbol_name,
@@ -500,12 +503,14 @@ impl<'a> Context<'a> {
             .values_facts()
             .flat_map(|facts| &facts.nodes)
             .filter(|node| {
-                !matches!(
-                    node.language.as_str(),
-                    "rust" | "typescript" | "javascript" | "vue"
-                ) && (node.kind == "method"
-                    || node.details.get("is_method").and_then(serde_json::Value::as_bool)
-                        == Some(true))
+                languages::by_id(&node.language)
+                    .is_none_or(|profile| profile.linker().uses_shared_class_members())
+                    && (node.kind == "method"
+                        || node
+                            .details
+                            .get("is_method")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true))
             })
         {
             let Some((parent, _)) = node.qualname.rsplit_once('.') else {
@@ -539,7 +544,9 @@ impl<'a> Context<'a> {
             if classes.next().is_none() {
                 self.members
                     .entry((
-                        self.interner.lookup_symbol(&class.id).expect("catalog class"),
+                        self.interner
+                            .lookup_symbol(&class.id)
+                            .expect("catalog class"),
                         self.interner
                             .lookup_symbol(&node.name)
                             .expect("catalog member"),
@@ -547,6 +554,12 @@ impl<'a> Context<'a> {
                     ))
                     .or_default()
                     .push(node);
+            }
+        }
+        let mut classes_by_name: HashMap<&str, Vec<&Node>> = HashMap::new();
+        for node in all.values_facts().flat_map(|facts| &facts.nodes) {
+            if matches!(node.kind.as_str(), "class" | "struct" | "interface") {
+                classes_by_name.entry(&node.name).or_default().push(node);
             }
         }
         for facts in all.values_facts() {
@@ -559,30 +572,25 @@ impl<'a> Context<'a> {
                 let Some(owner) = self.by_id.get(&owner_id).copied() else {
                     continue;
                 };
-                if matches!(
-                    owner.language.as_str(),
-                    "rust" | "typescript" | "javascript" | "vue"
-                ) || !matches!(owner.kind.as_str(), "class" | "struct" | "interface")
+                if languages::by_id(&owner.language)
+                    .is_some_and(|profile| !profile.linker().uses_shared_class_members())
+                    || !matches!(owner.kind.as_str(), "class" | "struct" | "interface")
                 {
                     continue;
                 }
-                let base_qual = if reference.expression.contains('.') {
-                    None
+                let candidates = if reference.expression.contains('.') {
+                    self.by_qual.get(reference.expression.as_str())
                 } else {
-                    owner
-                        .qualname
-                        .rsplit_once('.')
-                        .map(|(parent, _)| format!("{parent}.{}", reference.expression))
+                    classes_by_name.get(reference.expression.as_str())
                 };
-                let mut candidates = self
-                    .by_qual
-                    .get(reference.expression.as_str())
-                    .or_else(|| base_qual.as_deref().and_then(|name| self.by_qual.get(name)))
+                let mut candidates = candidates
                     .into_iter()
                     .flatten()
                     .copied()
                     .filter(|candidate| {
-                        candidate.path == owner.path
+                        languages::workspace_path(&candidate.path).0
+                            == languages::workspace_path(&owner.path).0
+                            && candidate.language == owner.language
                             && matches!(candidate.kind.as_str(), "class" | "struct" | "interface")
                     });
                 let Some(base) = candidates.next() else {
@@ -615,7 +623,10 @@ impl<'a> Context<'a> {
         node_rebindings: &'a super::super::NodeBindingIndex,
         exports: &'a HashMap<&'a str, PackageExports<'a>>,
         normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
-        import_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
+        import_states: HashMap<
+            &'static str,
+            &'a (dyn languages::profile::LanguageImportState + 'a),
+        >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut context = Self {
@@ -695,7 +706,8 @@ fn collect_receiver_type_and_factory_rules(
             continue;
         }
         indices.push(index);
-        if !matches!(module_language, "javascript" | "typescript") || rule.language != module_language
+        if !matches!(module_language, "javascript" | "typescript")
+            || rule.language != module_language
         {
             continue;
         }
@@ -747,15 +759,18 @@ fn insert_hierarchy_authority(
     else {
         return;
     };
-    let (Some(pack_id), Some(base_id)) = (interner.lookup_symbol(pack), interner.lookup_symbol(base))
+    let (Some(pack_id), Some(base_id)) =
+        (interner.lookup_symbol(pack), interner.lookup_symbol(base))
     else {
         return;
     };
     map.insert(
         (pack_id, base_id),
-        std::sync::Arc::new(super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
-            pack: pack.to_owned(),
-            rule: std::sync::Arc::new(rule.clone()),
-        }),
+        std::sync::Arc::new(
+            super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                pack: pack.to_owned(),
+                rule: std::sync::Arc::new(rule.clone()),
+            },
+        ),
     );
 }

@@ -15,21 +15,6 @@ use super::super::semantic_context::LanguageMemberLookup;
 #[cfg(feature = "lang-rust")]
 use super::super::semantic_context::{Context, Imported};
 
-pub(in crate::linker) fn deref_target<'a>(
-    lookup: &LanguageMemberLookup<'_, 'a>,
-    receiver: &Node,
-) -> Option<&'a Node> {
-    #[cfg(feature = "lang-rust")]
-    {
-        lookup.deref_target("rust", receiver)
-    }
-    #[cfg(not(feature = "lang-rust"))]
-    {
-        let _ = (lookup, receiver);
-        None
-    }
-}
-
 pub(in crate::linker) fn receiver_symbol<'a>(
     lookup: Option<&LanguageMemberLookup<'_, 'a>>,
     owner: &'a Node,

@@ -1,7 +1,6 @@
 use crate::interner::LinkerInterner;
 use crate::languages::{
-    dependency_registry,
-    manifests,
+    dependency_registry, manifests,
     profile::LanguageProfile,
     types::{self as languages, ImportPath, LanguageFamily},
     typescript::{
@@ -154,11 +153,60 @@ fn configured_component_modules<'a>(
 }
 
 impl LanguageLinker for TypeScriptLinker {
-    fn construct_value<'a>(
+    fn property_reference(
         &self,
-        owner: &'a Node,
-        callee: &str,
-    ) -> Option<TypeTarget<'a>> {
+        phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> bool {
+        let Some((result, emit)) = super::resolution::property_reference(
+            phase.input,
+            phase.reference,
+            phase.ordinary_receivers,
+            phase.profile,
+        ) else {
+            return false;
+        };
+        if emit {
+            super::super::resolution::context::emit_inferred(
+                phase.graph,
+                phase.path,
+                phase.reference,
+                result,
+                None,
+            );
+        }
+        true
+    }
+
+    fn platform_builtin_origin<'a>(
+        &self,
+        profile: &dyn LanguageProfile,
+        first: &str,
+        configured: Option<&'a str>,
+    ) -> Option<&'a str> {
+        super::super::javascript::resolution::builtin_origin(first, Some(profile), configured)
+    }
+
+    fn script_receiver_syntax(&self) -> bool {
+        true
+    }
+
+    fn builtin_origin(&self) -> Option<&'static str> {
+        Some("JavaScript/Web platform")
+    }
+
+    fn member_visible_at(&self, node: &Node, path: &str, line: usize, column: usize) -> bool {
+        super::semantic_context::prototype_visible_at(node, path, line, column)
+    }
+
+    fn admits_computed_reference(&self, language: &str) -> bool {
+        matches!(language, "javascript" | "typescript")
+    }
+
+    fn uses_shared_class_members(&self) -> bool {
+        false
+    }
+
+    fn construct_value<'a>(&self, owner: &'a Node, callee: &str) -> Option<TypeTarget<'a>> {
         crate::linker::javascript::value_flow::construct(owner, callee)
     }
 
@@ -189,9 +237,7 @@ impl LanguageLinker for TypeScriptLinker {
         receiver: &TypeTarget<'a>,
         callee: &str,
     ) -> Option<TypeTarget<'a>> {
-        crate::linker::javascript::value_flow::platform_member_return(
-            eval.owner, receiver, callee,
-        )
+        crate::linker::javascript::value_flow::platform_member_return(eval.owner, receiver, callee)
     }
 
     fn needs_family_module_stems(&self) -> bool {
@@ -245,8 +291,7 @@ impl LanguageLinker for TypeScriptLinker {
     ) -> Option<&'static str> {
         match receiver {
             TypeTarget::Builtin(name)
-                if name == "Web.Response"
-                    || typed_dom_receiver(name).is_some() =>
+                if name == "Web.Response" || typed_dom_receiver(name).is_some() =>
             {
                 Some("builtin:web_api")
             }
@@ -507,7 +552,9 @@ fn process_export_binding<'a>(
     if let Some(source) = source {
         if let Some(provider) = resolve_provider(path, source) {
             if let Some(member) = member {
-                state.pending.push((path, name, provider, member, type_only));
+                state
+                    .pending
+                    .push((path, name, provider, member, type_only));
             } else if !type_only || type_position_kind(provider.kind.as_str()) {
                 owner.insert(name_id, Some(provider));
             }
@@ -705,15 +752,14 @@ pub(crate) fn required_configuration_facts(
             else {
                 continue;
             };
-            let Some(config_path) =
-                dependency_registry::component_environment_config_path(
-                    rule,
-                    path,
-                    scope,
-                    package,
-                    config_file,
-                    dependencies,
-                ) else {
+            let Some(config_path) = dependency_registry::component_environment_config_path(
+                rule,
+                path,
+                scope,
+                package,
+                config_file,
+                dependencies,
+            ) else {
                 continue;
             };
             if catalog

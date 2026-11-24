@@ -3,9 +3,11 @@ use super::context::PhaseContext;
 use super::members;
 use crate::languages::LanguageProfile;
 use crate::linker::{
-    javascript, python::{self, receivers}, rust, semantic_context,
+    javascript,
+    python::{self, receivers},
+    rust, semantic_context,
     types::{qualified, receiver_language_requires_static, ReceiverType},
-    typescript, value_flow, vue,
+    value_flow, vue,
 };
 use crate::models::{
     compact_graph::CompactGraph as Graph,
@@ -55,11 +57,9 @@ pub(super) fn emit_resolved_with_polymorphism(
             semantic_context::Member::Local(contract_decl),
         ) = (resolved_receiver, &result)
         {
-            if let Some(implementors) = semantic_context.polymorphic_implementors(
-                abstract_type,
-                member,
-                contract_decl,
-            ) {
+            if let Some(implementors) =
+                semantic_context.polymorphic_implementors(abstract_type, member, contract_decl)
+            {
                 if implementors.len() > value_flow::MAX_CANDIDATE_BRANCH_JOINS {
                     graph.reference_coverage(
                         path,
@@ -192,12 +192,10 @@ where
                 }
             }
             value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class.as_str() => {
-                let result = ctx.input.semantic_context.lookup_member_mode(
-                    receiver,
-                    "__call__",
-                    owner,
-                    false,
-                );
+                let result = ctx
+                    .input
+                    .semantic_context
+                    .lookup_member_mode(receiver, "__call__", owner, false);
                 if emit_resolved_member(graph, ctx, q, result) {
                     return true;
                 }
@@ -274,10 +272,10 @@ where
         && ctx.input.value_flow.lookup(owner, q.first, at).is_none())
     .then(|| {
         use crate::linker::value_flow::{SemanticResolver, Symbol, SymbolRole};
-        if let Symbol::Callable(node) = ctx
-            .input
-            .semantic_context
-            .resolve_symbol(owner, q.first, at, SymbolRole::Callable)
+        if let Symbol::Callable(node) =
+            ctx.input
+                .semantic_context
+                .resolve_symbol(owner, q.first, at, SymbolRole::Callable)
         {
             ctx.input.value_flow.constant_type(node)
         } else {
@@ -285,22 +283,27 @@ where
         }
     })
     .flatten();
-    let inferred = implicit_receiver.as_ref().or(constant_receiver).or_else(|| {
-        if !ctx.profile.is_none_or(|p| p.value_binding_applies(q.r)) {
-            return None;
-        }
-        let receiver = ctx.input.value_flow.lookup(owner, q.first, at)?;
-        let incomplete_reference = matches!(
-            receiver,
-            value_flow::TypeTarget::RustReference { target, .. }
-                if matches!(target.as_ref(), value_flow::TypeTarget::Unknown)
-        );
-        if incomplete_reference && matches!(state.typed_receiver, Some(ReceiverType::External(..))) {
-            None
-        } else {
-            Some(receiver)
-        }
-    });
+    let inferred = implicit_receiver
+        .as_ref()
+        .or(constant_receiver)
+        .or_else(|| {
+            if !ctx.profile.is_none_or(|p| p.value_binding_applies(q.r)) {
+                return None;
+            }
+            let receiver = ctx.input.value_flow.lookup(owner, q.first, at)?;
+            let incomplete_reference = matches!(
+                receiver,
+                value_flow::TypeTarget::RustReference { target, .. }
+                    if matches!(target.as_ref(), value_flow::TypeTarget::Unknown)
+            );
+            if incomplete_reference
+                && matches!(state.typed_receiver, Some(ReceiverType::External(..)))
+            {
+                None
+            } else {
+                Some(receiver)
+            }
+        });
     if members::resolve_candidate_join(
         ctx.path,
         q.r,
@@ -357,26 +360,27 @@ where
             .semantic_context
             .lookup_member_mode(resolved_receiver, member, owner, associated)
     };
-    let result = if q.r.kind == EdgeKind::References.as_str()
-        && q.active_profile.is_some_and(|profile| {
+    let result =
+        if q.r.kind == EdgeKind::References.as_str() && q.active_profile.is_some_and(|profile| {
             matches!(
                 profile.id(),
                 p if p == LanguageId::Javascript.as_str() || p == LanguageId::Typescript.as_str()
             )
-        })
-        && matches!(result, semantic_context::Member::Unknown)
-    {
-        ctx.input
-            .semantic_context
-            .lookup_property(resolved_receiver, member, owner)
-    } else {
-        result
-    };
+        }) && matches!(result, semantic_context::Member::Unknown)
+        {
+            ctx.input
+                .semantic_context
+                .lookup_property(resolved_receiver, member, owner)
+        } else {
+            result
+        };
     let result = match result {
         semantic_context::Member::Local(node)
-            if !typescript::semantic_context::prototype_visible_at(
-                node, ctx.path, q.r.line, q.r.column,
-            ) =>
+            if crate::languages::by_id(&node.language).is_some_and(|profile| {
+                !profile
+                    .linker()
+                    .member_visible_at(node, ctx.path, q.r.line, q.r.column)
+            }) =>
         {
             semantic_context::Member::Unknown
         }
@@ -395,9 +399,9 @@ where
         }
         _ => result,
     };
-    let origin = ctx
-        .language_linker
-        .builtin_member_origin(resolved_receiver, q.builtin_origin, false);
+    let origin =
+        ctx.language_linker
+            .builtin_member_origin(resolved_receiver, q.builtin_origin, false);
     emit_resolved_with_polymorphism(
         graph,
         ctx.path,
@@ -502,10 +506,10 @@ where
         return false;
     }
     let receiver_target = value_flow::TypeTarget::Local(receiver);
-    let member = ctx
-        .input
-        .semantic_context
-        .lookup_member_mode(&receiver_target, q.tail, owner, true);
+    let member =
+        ctx.input
+            .semantic_context
+            .lookup_member_mode(&receiver_target, q.tail, owner, true);
     let member = match (q.r.kind.as_str(), &member) {
         (k, semantic_context::Member::Local(node))
             if k == EdgeKind::Calls.as_str() && node.kind == NodeKind::Field.as_str() =>
@@ -569,54 +573,54 @@ where
     if resolve_imported_static_type_member(ctx, graph, q, imported) {
         return true;
     }
-fn resolve_imported_python_module_call<'a, 'file, 'res>(
-    ctx: &'res PhaseContext<'a, 'file, 'res>,
-    graph: &mut Graph,
-    q: &RefQuery<'a, '_>,
-    state: &ReferenceState<'res>,
-    imported: &[&'res Node],
-    lookup_key: &mut String,
-) -> bool
-where
-    'a: 'file,
-    'file: 'res,
-{
-    if !(matches!(
-        q.r.kind.as_str(),
-        k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
-    ) && ctx
-        .alias_import_positions
-        .get(&(state.scope, q.first))
-        .is_some_and(|position| *position <= q.r.position()))
+    fn resolve_imported_python_module_call<'a, 'file, 'res>(
+        ctx: &'res PhaseContext<'a, 'file, 'res>,
+        graph: &mut Graph,
+        q: &RefQuery<'a, '_>,
+        state: &ReferenceState<'res>,
+        imported: &[&'res Node],
+        lookup_key: &mut String,
+    ) -> bool
+    where
+        'a: 'file,
+        'file: 'res,
     {
-        return false;
+        if !(matches!(
+            q.r.kind.as_str(),
+            k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
+        ) && ctx
+            .alias_import_positions
+            .get(&(state.scope, q.first))
+            .is_some_and(|position| *position <= q.r.position()))
+        {
+            return false;
+        }
+        let [module] = imported else {
+            return false;
+        };
+        let Some(receivers::PythonReceiverMember::External(origin, line, provider, _)) =
+            python::resolution::imported_module_member(
+                ctx.profile,
+                module,
+                q.tail,
+                ctx.input.node_rebindings,
+                ctx.input.interner,
+                ctx.input.by_qual,
+                lookup_key,
+                &ctx.linker.member_lookup,
+            )
+        else {
+            return false;
+        };
+        emit_inferred(
+            graph,
+            ctx.path,
+            q.r,
+            semantic_context::Member::External(origin, line, provider),
+            q.builtin_origin,
+        );
+        true
     }
-    let [module] = imported else {
-        return false;
-    };
-    let Some(receivers::PythonReceiverMember::External(origin, line, provider, _)) =
-        python::resolution::imported_module_member(
-            ctx.profile,
-            module,
-            q.tail,
-            ctx.input.node_rebindings,
-            ctx.input.interner,
-            ctx.input.by_qual,
-            lookup_key,
-            &ctx.linker.member_lookup,
-        )
-    else {
-        return false;
-    };
-    emit_inferred(
-        graph,
-        ctx.path,
-        q.r,
-        semantic_context::Member::External(origin, line, provider),
-        q.builtin_origin,
-    );
-    true
-}
 
     if resolve_imported_python_module_call(ctx, graph, q, state, imported, lookup_key) {
         return true;
@@ -742,7 +746,11 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
         return;
     }
     if q.tail.is_empty() {
-        candidates.extend_from_slice(ctx.lookup(qualified(lookup_key, ctx.file_module, q.expression)));
+        candidates.extend_from_slice(ctx.lookup(qualified(
+            lookup_key,
+            ctx.file_module,
+            q.expression,
+        )));
     } else if state.known_receiver {
         if let Some(owner) = q.owner {
             #[cfg(feature = "lang-rust")]
@@ -763,7 +771,11 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
             candidates.extend_from_slice(ctx.lookup(qualified(lookup_key, scope, q.tail)));
         }
     } else if !state.shadowed {
-        candidates.extend_from_slice(ctx.lookup(qualified(lookup_key, ctx.file_module, q.expression)));
+        candidates.extend_from_slice(ctx.lookup(qualified(
+            lookup_key,
+            ctx.file_module,
+            q.expression,
+        )));
         #[cfg(feature = "lang-rust")]
         if candidates.is_empty()
             && ctx
@@ -854,7 +866,9 @@ where
                         ctx.input
                             .semantic_context
                             .import_state("rust")
-                            .is_none_or(|state| state.module_path_visible(&n.qualname, ctx.file_module))
+                            .is_none_or(|state| {
+                                state.module_path_visible(&n.qualname, ctx.file_module)
+                            })
                     }),
             );
             if candidates.is_empty() {

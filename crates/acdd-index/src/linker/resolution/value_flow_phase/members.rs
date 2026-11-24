@@ -1,7 +1,7 @@
 use super::super::context::*;
 use super::super::input::ResolutionInput;
 use crate::languages::LanguageProfile;
-use crate::linker::{semantic_context, typescript, value_flow};
+use crate::linker::{semantic_context, value_flow};
 use crate::models::{compact_graph::CompactGraph as Graph, Node, ReceiverHint, Reference};
 
 pub(super) fn resolve_computed_call(
@@ -15,7 +15,7 @@ pub(super) fn resolve_computed_call(
     if !(matches!(reference.kind.as_str(), "calls" | "handles")
         || (reference.kind == "references"
             && active_profile
-                .is_some_and(|profile| matches!(profile.id(), "javascript" | "typescript"))
+                .is_some_and(|profile| profile.linker().admits_computed_reference(profile.id()))
             && matches!(
                 reference.receiver_hint,
                 Some(ReceiverHint::TypedCallResult { .. })
@@ -77,12 +77,14 @@ pub(super) fn resolve_computed_call(
                 }
                 let result = match result {
                     semantic_context::Member::Local(node)
-                        if !typescript::semantic_context::prototype_visible_at(
-                            node,
-                            path,
-                            reference.line,
-                            reference.column,
-                        ) =>
+                        if crate::languages::by_id(&node.language).is_some_and(|profile| {
+                            !profile.linker().member_visible_at(
+                                node,
+                                path,
+                                reference.line,
+                                reference.column,
+                            )
+                        }) =>
                     {
                         semantic_context::Member::Unknown
                     }
@@ -159,12 +161,14 @@ pub(super) fn resolve_candidate_join(
             ) {
                 semantic_context::Member::Local(method)
                     if method.kind == "method"
-                        && typescript::semantic_context::prototype_visible_at(
-                            method,
-                            path,
-                            reference.line,
-                            reference.column,
-                        ) =>
+                        && crate::languages::by_id(&method.language).is_none_or(|profile| {
+                            profile.linker().member_visible_at(
+                                method,
+                                path,
+                                reference.line,
+                                reference.column,
+                            )
+                        }) =>
                 {
                     candidates.push(method.id.clone());
                 }

@@ -4,8 +4,8 @@
     feature = "lang-typescript"
 ))]
 
-use acdd_index::models::{Facts, Graph};
 use acdd_index::ast;
+use acdd_index::models::{Facts, Graph};
 use std::collections::BTreeMap;
 
 #[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
@@ -96,12 +96,37 @@ fn tier_two_profiles_resolve_declared_class_methods() {
             .iter()
             .find(|coverage| coverage.expression == expression)
             .unwrap_or_else(|| panic!("{language}: missing `{expression}` coverage: {graph:#?}"));
-        assert_eq!(
-            coverage.status,
-            "resolved",
-            "{language}: {graph:#?}"
-        );
+        assert_eq!(coverage.status, "resolved", "{language}: {graph:#?}");
     }
+}
+
+#[cfg(feature = "lang-java")]
+#[test]
+fn tier_two_inheritance_resolves_base_in_another_file() {
+    let (facts, graph) = linked(&[
+        ("Base.java", "java", "class Base { void run() {} }"),
+        (
+            "Child.java",
+            "java",
+            "class Child extends Base { void call(Child c) { c.run(); } }",
+        ),
+    ]);
+    assert_inferred(&facts, &graph, "c.run", "run");
+
+    let (facts, graph) = linked(&[
+        ("[one]/Base.java", "java", "class Base { void run() {} }"),
+        ("[one]/Child.java", "java", "class Child extends Base { void call(Child c) { c.run(); } }"),
+        ("[two]/Base.java", "java", "class Base { void run() {} }"),
+    ]);
+    let target = facts["[one]/Base.java"].nodes.iter().find(|node| node.name == "run").unwrap();
+    assert!(graph.edges.iter().any(|edge| edge.dst == target.id && edge.evidence == "c.run"));
+
+    let (_, graph) = linked(&[
+        ("Base.java", "java", "class Base { void run() {} }"),
+        ("Other.java", "java", "class Base { void run() {} }"),
+        ("Child.java", "java", "class Child extends Base { void call(Child c) { c.run(); } }"),
+    ]);
+    assert_ne!(call(&graph, "c.run").status, "resolved");
 }
 
 fn assert_inferred(facts: &BTreeMap<String, Facts>, graph: &Graph, expression: &str, method: &str) {

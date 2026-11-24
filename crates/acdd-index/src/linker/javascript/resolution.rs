@@ -278,7 +278,7 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
     true
 }
 
-pub(in crate::linker) fn builtin_origin<'a>(
+pub(crate) fn builtin_origin<'a>(
     first: &str,
     profile: Option<&dyn LanguageProfile>,
     configured: Option<&'a str>,

@@ -412,9 +412,9 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
-        #[cfg(feature = "lang-rust")]
-        if caller.language == "rust" {
-            if let Some(target) = crate::linker::rust::value_flow::reference_target(receiver) {
+        if let Some(profile) = crate::languages::by_id(&caller.language) {
+            let target = profile.linker().unwrap_reference(receiver);
+            if !std::ptr::eq(target, receiver) {
                 return self.lookup_member_mode(target, member, caller, associated);
             }
         }
