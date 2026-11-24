@@ -38,7 +38,19 @@ impl<'a> ValueFlowIndex<'a> {
                 let immutable_capture = is_parent
                     && matches!(owner.language.as_str(), "javascript" | "typescript")
                     && super::super::javascript::value_flow::stable_immutable_capture(writes);
-                if is_parent && writes.len() > 1 && !setup_complete && !immutable_capture {
+                let uniform_capture = is_parent
+                    && writes.first().is_some_and(|first| {
+                        !matches!(first.target, TypeTarget::Unknown | TypeTarget::Ambiguous)
+                            && writes
+                                .iter()
+                                .all(|write| super::types::same_target(&first.target, &write.target))
+                    });
+                if is_parent
+                    && writes.len() > 1
+                    && !setup_complete
+                    && !immutable_capture
+                    && !uniform_capture
+                {
                     return Some(&self.unknown);
                 }
                 if let Some(trace) = trace {

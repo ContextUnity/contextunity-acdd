@@ -57,7 +57,7 @@ impl<'a> Context<'a> {
             spec.compiled(),
             &ReturnProjection {
                 owner,
-                pack: None,
+                pack: Some(pack),
                 receiver: Some(receiver),
                 origin,
                 import_line: 0,
@@ -193,6 +193,16 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 origin.as_ref(),
                 member,
             ),
+            TypeTarget::RustReference { target, .. } => {
+                self.resolve_member_result(target, member, owner, _at)
+            }
+            TypeTarget::RustDeref { wrapper, target } => {
+                if super::super::rust::semantic_context::wrapper_value_member(wrapper, member) {
+                    None
+                } else {
+                    self.resolve_member_result(target, member, owner, _at)
+                }
+            }
             TypeTarget::Local(class) if class.language == "python" => {
                 let (pack, _row, policy) = self.python?.return_policy(class, member)?;
                 let super::super::receivers::PythonReceiverMember::External(module, line, _, _) =
@@ -227,9 +237,6 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 TypeTarget::Unknown
             });
         }
-        if !matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
-            return None;
-        }
         if let Some(site) = site {
             match self.resolve_argument_factory_call(owner, callee, site, at) {
                 Some(Some(TypeTarget::ConfiguredReceiver {
@@ -250,26 +257,52 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 None => {}
             }
         }
-        let head = callee.split('.').next().unwrap_or(callee);
+        let head = callee
+            .split('.')
+            .next()
+            .and_then(|segment| segment.split("::").next())
+            .unwrap_or(callee);
+        let imported_head = self.imported_alias_in_scope(owner, head, at);
         let unshadowed = !matches!(
             self.resolve_symbol(owner, head, at, SymbolRole::Callable),
             Symbol::Callable(_)
-        ) && (self.unshadowed_global(owner, head, at)
-            || self.has_imported_alias_in_scope(owner, head));
+        ) && (self.unshadowed_global(owner, head, at) || imported_head.is_some());
         if !unshadowed {
             return fallback;
         }
+        let external_member = callee
+            .rsplit_once('.')
+            .or_else(|| callee.rsplit_once("::"))
+            .and_then(|(alias, member)| {
+                let imported = if alias == head {
+                    imported_head
+                } else {
+                    self.imported_alias_in_scope(owner, alias, at)
+                };
+                match imported {
+                    Some(Imported::External(module, _, _, _)) => Some((module.as_str(), member)),
+                    _ => None,
+                }
+            });
         let origin = TypeTarget::External {
             module: callee.to_owned(),
             import_line: site.map_or(at.line, |site| site.position.line),
         };
         for (pack, _rule_id, rule) in self.receiver_types_with_meta_for_path(&owner.path)? {
-            if let Some(spec) = rule.call_returns.get(callee) {
+            let spec = rule.call_returns.get(callee).or_else(|| {
+                let (ext_module, member) = external_member?;
+                rule.module
+                    .as_deref()
+                    .is_some_and(|rule_mod| rule_mod == ext_module)
+                    .then(|| rule.call_returns.get(member))
+                    .flatten()
+            });
+            if let Some(spec) = spec {
                 return Some(self.project_return_node(
                     spec.compiled(),
                     &ReturnProjection {
                         owner,
-                        pack: None,
+                        pack: Some(pack),
                         receiver: None,
                         origin: &origin,
                         import_line: 0,
@@ -771,18 +804,31 @@ impl<'a> Context<'a> {
         })
     }
 
-    fn has_imported_alias_in_scope(&self, owner: &'a Node, head: &str) -> bool {
+    fn imported_alias_in_scope(
+        &self,
+        owner: &'a Node,
+        head: &str,
+        at: SourcePosition,
+    ) -> Option<&Imported<'a>> {
         let mut scope = owner.qualname.as_str();
         loop {
-            if self
-                .nodes_in_path(scope, &owner.path)
-                .any(|node| self.imported_alias(node, head).is_some())
-            {
-                return true;
+            let mut shadowed = false;
+            for node in self.nodes_in_path(scope, &owner.path) {
+                if let Some(imported) = self.imported_alias(node, head) {
+                    return Some(imported);
+                }
+                shadowed |= node.binding_names().any(|candidate| candidate == head)
+                    || node.rebinding_names().any(|candidate| candidate == head)
+                    || self.value_flow(node).is_some_and(|flow| {
+                        flow.bindings
+                            .iter()
+                            .any(|binding| binding.name == head && binding.position <= at)
+                    });
             }
-            let Some((parent, _)) = scope.rsplit_once('.') else {
-                return false;
-            };
+            if shadowed {
+                return None;
+            }
+            let (parent, _) = scope.rsplit_once('.')?;
             scope = parent;
         }
     }
@@ -996,6 +1042,28 @@ impl<'a> Context<'a> {
             "Vec" if ctx.owner.language == "rust" => TypeTarget::RustCollection {
                 item: Box::new(first),
             },
+            "Box" | "Arc" | "Rc" | "Cow" if ctx.owner.language == "rust" => TypeTarget::RustDeref {
+                wrapper: match short {
+                    "Box" => "Box",
+                    "Arc" => "Arc",
+                    "Rc" => "Rc",
+                    _ => "Cow",
+                },
+                target: Box::new(first),
+            },
+            "VecDeque" | "HashSet" | "BTreeSet" if ctx.owner.language == "rust" => {
+                TypeTarget::RustTypedContainer {
+                    base: match short {
+                        "VecDeque" => "VecDeque",
+                        "HashSet" => "HashSet",
+                        _ => "BTreeSet",
+                    },
+                    item: Box::new(first),
+                }
+            }
+            "Slice" if ctx.owner.language == "rust" => TypeTarget::RustSlice {
+                item: Box::new(first),
+            },
             "QuerySet" => {
                 if let Some(TypeTarget::ConfiguredReceiver {
                     authority,
@@ -1024,6 +1092,12 @@ impl<'a> Context<'a> {
                 }
             }
             "NodeList" | "HTMLCollection" | "Array" | "List" | "list" => {
+                TypeTarget::Collection {
+                    base: constructor.to_owned(),
+                    item: Box::new(first),
+                }
+            }
+            "Set" | "ReadonlyArray" | "Sequence" | "Iterable" if ctx.owner.language != "rust" => {
                 TypeTarget::Collection {
                     base: constructor.to_owned(),
                     item: Box::new(first),

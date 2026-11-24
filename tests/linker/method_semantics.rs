@@ -1882,3 +1882,256 @@ fn exercise(
         assert_eq!(status, expected_status, "expr={expr} evidence={ev}");
     }
 }
+
+#[test]
+fn universal_value_flow_branch_joins_external_aliases_and_call_returns_matrix() {
+    let workspace = Workspace::new();
+    workspace.write(
+        ".acdd/frameworks/probe.toml",
+        r#"
+enabled = true
+
+[[syntax_rules]]
+id = "probe-py-client"
+language = "python"
+operation = { kind = "receiver_type", receiver = { name = "Probe.PyClient", members = ["ping"], properties = {}, call_returns = { py_connect = "Probe.PyClient" }, callback_callees = [], generic = false } }
+
+[[syntax_rules]]
+id = "probe-ts-client"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "Probe.TsClient", members = ["ping"], properties = {}, call_returns = { ts_connect = "Promise<Probe.TsClient>" }, callback_callees = [], generic = false } }
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::probe::Factory"]
+provider = "tokio"
+members = ["connect"]
+[class_hierarchy_receivers.returns]
+connect = { kind = "receiver", base = "std::result::Result<Arc<tokio::probe::Client>, std::io::Error>" }
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::probe::Client"]
+provider = "tokio"
+members = ["ping"]
+"#,
+    );
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = \"1\"\n",
+    );
+    workspace.write(
+        "py_reexport.py",
+        "from ext_pkg import ExtHelper\n",
+    );
+    workspace.write(
+        "py_consumer.py",
+        "from py_reexport import ExtHelper\n\ndef run_py():\n    ExtHelper.run()\n    client = py_connect()\n    client.ping()\n",
+    );
+    workspace.write(
+        "ts_reexport.ts",
+        "import { ExtWidget } from 'ext-ui';\nexport { ExtWidget };\n",
+    );
+    workspace.write(
+        "ts_consumer.ts",
+        "import { ExtWidget } from './ts_reexport';\nexport async function runTs() {\n    ExtWidget.render();\n    const tsClient = await ts_connect();\n    tsClient.ping();\n}\n",
+    );
+    workspace.write(
+        "src/reexport.rs",
+        "pub use ext_crate::ExtService;\npub use tokio::probe::Factory;\n",
+    );
+    workspace.write(
+        "src/lib.rs",
+        r#"
+mod reexport;
+use reexport::{ExtService, Factory};
+
+pub struct DefaultItem;
+impl DefaultItem {
+    pub fn default_work(&self) {}
+    pub fn shared_work(&self) {}
+}
+
+pub struct ValItem;
+impl ValItem {
+    pub fn shared_work(&self) {}
+}
+
+pub struct PayloadItem;
+impl PayloadItem {
+    pub fn payload_work(&self) {}
+}
+
+pub fn tuple_option_join_and_monotonic_loop(
+    input: Option<PayloadItem>,
+    flag: bool,
+    raw: &str,
+) {
+    let (same_item, opt_item) = match input {
+        None => (DefaultItem {}, None),
+        Some(_) => (DefaultItem {}, Some(PayloadItem {})),
+    };
+    same_item.default_work();
+    if let Some(p) = opt_item {
+        p.payload_work();
+    }
+
+    let (mixed_item, opt_item2) = match flag {
+        false => (DefaultItem {}, None),
+        true => (ValItem {}, Some(PayloadItem {})),
+    };
+    mixed_item.shared_work();
+    opt_item2.unwrap().payload_work();
+
+    let mut scope = raw;
+    while let Some((parent, _)) = scope.rsplit_once('.') {
+        scope = parent;
+    }
+    let _ = scope.len();
+    if flag {
+        scope = unknown_str();
+    }
+    let _ = scope.rsplit_once('.');
+
+    let client = Factory::connect().unwrap();
+    client.ping();
+    ExtService::boot();
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+
+    let status_for = |path: &str, expr: &str| -> (String, String) {
+        conn.query_row(
+            "SELECT r.status, e.evidence FROM resolution_coverage r
+             JOIN path_dictionary p ON p.path_id = r.path_id
+             JOIN coverage_expressions x ON x.expression_id = r.expression_id
+             JOIN coverage_evidence e ON e.evidence_id = r.evidence_id
+             WHERE p.path = ?1 AND x.expression = ?2
+             LIMIT 1",
+            [path, expr],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap_or_else(|err| panic!("missing coverage for {path} `{expr}`: {err}"))
+    };
+
+    for (path, expr, expected) in [
+        ("py_consumer.py", "ExtHelper.run", "external"),
+        ("py_consumer.py", "client.ping", "external"),
+        ("ts_consumer.ts", "ExtWidget.render", "external"),
+        ("ts_consumer.ts", "tsClient.ping", "external"),
+        ("src/lib.rs", "same_item.default_work", "resolved"),
+        ("src/lib.rs", "p.payload_work", "resolved"),
+        ("src/lib.rs", "mixed_item.shared_work", "ambiguous"),
+        ("src/lib.rs", "opt_item2.unwrap().payload_work", "resolved"),
+        ("src/lib.rs", "scope.len", "external"),
+        ("src/lib.rs", "scope.rsplit_once", "external"),
+        ("src/lib.rs", "client.ping", "external"),
+        ("src/lib.rs", "ExtService::boot", "external"),
+    ] {
+        let (status, evidence) = status_for(path, expr);
+        assert_eq!(status, expected, "{path} `{expr}` ({evidence})");
+    }
+
+    let mixed_possible: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edge_occurrences e
+             JOIN nodes d ON d.node_hash = e.dst_hash
+             JOIN coverage_evidence v ON v.evidence_id = e.evidence_id
+             WHERE e.kind = 'possible_calls' AND d.name = 'shared_work' AND v.evidence = 'mixed_item.shared_work'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mixed_possible, 2, "expected 2 possible_calls for mixed_item.shared_work");
+
+    // Also verify element-wise TypeTarget::Tuple branch join directly in ValueFlowIndex.
+    let tuple_owner = acdd_index::models::Node {
+        native_semantic: None,
+        id: "fn:tuple_join.py:1:run".into(),
+        kind: "function".into(),
+        name: "run".into(),
+        qualname: "tuple_join.run".into(),
+        path: "tuple_join.py".into(),
+        line: 1,
+        end_line: 4,
+        is_test: true,
+        language: "python".into(),
+        generated: false,
+        details: serde_json::json!({
+            "value_flow": acdd_index::semantic::ValueFlowFacts {
+                bindings: vec![acdd_index::semantic::BindingFact {
+                    name: "pair".into(),
+                    position: acdd_index::semantic::SourcePosition { line: 2, column: 4 },
+                    value: acdd_index::semantic::ValueExpr::BranchJoin {
+                        alternatives: vec![
+                            acdd_index::semantic::ValueExpr::Alias { name: "a".into() },
+                            acdd_index::semantic::ValueExpr::Alias { name: "b".into() },
+                        ],
+                    },
+                    conditional: false,
+                }],
+                ..Default::default()
+            }
+        }),
+    };
+    struct TupleResolver<'a>(&'a acdd_index::models::Node);
+    impl<'a> acdd_index::linker::value_flow::SemanticResolver<'a> for TupleResolver<'a> {
+        fn resolve_symbol(
+            &self,
+            _scope: &'a acdd_index::models::Node,
+            name: &str,
+            _at: acdd_index::semantic::SourcePosition,
+            _role: acdd_index::linker::value_flow::SymbolRole,
+        ) -> acdd_index::linker::value_flow::Symbol<'a> {
+            use acdd_index::linker::value_flow::{Symbol, TypeTarget};
+            match name {
+                "a" => Symbol::Type(TypeTarget::Tuple(vec![
+                    TypeTarget::Local(self.0),
+                    TypeTarget::Builtin("str".into()),
+                ])),
+                "b" => Symbol::Type(TypeTarget::Tuple(vec![
+                    TypeTarget::Local(self.0),
+                    TypeTarget::Builtin("str".into()),
+                ])),
+                _ => Symbol::Unknown,
+            }
+        }
+    }
+    let facts_map = std::collections::BTreeMap::from([(
+        "tuple_join.py".to_owned(),
+        acdd_index::models::Facts {
+            nodes: vec![tuple_owner],
+            ..Default::default()
+        },
+    )]);
+    let owner_ref = &facts_map["tuple_join.py"].nodes[0];
+    let vf_index = acdd_index::linker::value_flow::ValueFlowIndex::build(
+        &facts_map,
+        &TupleResolver(owner_ref),
+    );
+    let joined = vf_index.resolve_value(
+        owner_ref,
+        &acdd_index::semantic::ValueExpr::BranchJoin {
+            alternatives: vec![
+                acdd_index::semantic::ValueExpr::Annotated {
+                    type_expr: acdd_index::semantic::TypeExpr::Named { name: "a".into() },
+                },
+                acdd_index::semantic::ValueExpr::Annotated {
+                    type_expr: acdd_index::semantic::TypeExpr::Named { name: "b".into() },
+                },
+            ],
+        },
+        acdd_index::semantic::SourcePosition { line: 3, column: 0 },
+        &TupleResolver(owner_ref),
+    );
+    assert!(
+        matches!(
+            joined,
+            acdd_index::linker::value_flow::TypeTarget::Tuple(ref items)
+                if items.len() == 2
+                    && matches!(items[0], acdd_index::linker::value_flow::TypeTarget::Local(_))
+                    && matches!(items[1], acdd_index::linker::value_flow::TypeTarget::Builtin(ref b) if b == "str")
+        ),
+        "expected element-wise Tuple BranchJoin, got {joined:?}"
+    );
+}

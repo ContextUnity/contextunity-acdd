@@ -77,13 +77,15 @@ impl<'a> ValueFlowIndex<'a> {
             ValueExpr::Scoped { value, .. } => {
                 self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
             }
-            ValueExpr::BranchJoin { alternatives } => {
-                collect_candidate_join(
-                    alternatives.iter().map(|alternative| {
+            ValueExpr::BranchJoin { alternatives } => join_branch_targets(
+                alternatives
+                    .iter()
+                    .map(|alternative| {
                         self.evaluate_tracked(owner, alternative, at, resolver, definitions, trace)
-                    }),
-                )
-            }
+                    })
+                    .collect(),
+                false,
+            ),
             ValueExpr::Call { callee, site } => self.evaluate_call(
                 owner,
                 callee,
@@ -560,6 +562,17 @@ impl<'a> ValueFlowIndex<'a> {
                         .collect(),
                 ));
             }
+            if member == "__rust_if_join" {
+                return Some(join_branch_targets(
+                    alternatives
+                        .iter()
+                        .map(|item| {
+                            self.evaluate_tracked(owner, item, at, resolver, definitions, trace)
+                        })
+                        .collect(),
+                    true,
+                ));
+            }
             let mut items = alternatives
                 .iter()
                 .map(|item| self.evaluate_tracked(owner, item, at, resolver, definitions, trace));
@@ -569,12 +582,8 @@ impl<'a> ValueFlowIndex<'a> {
             } else {
                 TypeTarget::Unknown
             };
-            return Some(if member == "__rust_if_join" {
-                item
-            } else {
-                TypeTarget::RustCollection {
-                    item: Box::new(item),
-                }
+            return Some(TypeTarget::RustCollection {
+                item: Box::new(item),
             });
         }
         if matches!(member, "__rust_ref" | "__rust_ref_mut") {
@@ -824,7 +833,7 @@ impl<'a> ValueFlowIndex<'a> {
 
     fn callback_param_from_receiver(
         &self,
-        receiver: &TypeTarget<'a>,
+        mut receiver: &TypeTarget<'a>,
         method: &str,
         arg_index: usize,
         param_index: usize,
@@ -834,7 +843,28 @@ impl<'a> ValueFlowIndex<'a> {
         if param_index != 0 || !valid_arg {
             return TypeTarget::Unknown;
         }
+        while matches!(receiver, TypeTarget::RustReference { .. })
+            || matches!(receiver, TypeTarget::RustDeref { wrapper, .. } if *wrapper != "LocalKey")
+        {
+            match receiver {
+                TypeTarget::RustReference { target, .. }
+                | TypeTarget::RustDeref { target, .. } => receiver = target,
+                _ => break,
+            }
+        }
         match receiver {
+            TypeTarget::RustDeref {
+                wrapper: "LocalKey",
+                target,
+            } if matches!(method, "with" | "try_with") => match target.as_ref() {
+                TypeTarget::RustTuple(items) => items.first().map_or(TypeTarget::Unknown, |inner| {
+                    TypeTarget::RustReference {
+                        mutable: false,
+                        target: Box::new(inner.clone()),
+                    }
+                }),
+                _ => TypeTarget::Unknown,
+            },
             TypeTarget::Promise(inner) if matches!(method, "then" | "finally") => {
                 if method == "then" {
                     (**inner).clone()
@@ -858,6 +888,16 @@ impl<'a> ValueFlowIndex<'a> {
                         | "flatMap"
                         | "inspect"
                         | "filter_map"
+                        | "flat_map"
+                        | "for_each"
+                        | "try_for_each"
+                        | "position"
+                        | "rposition"
+                        | "take_while"
+                        | "skip_while"
+                        | "map_while"
+                        | "partition"
+                        | "find_map"
                         | "any"
                         | "all"
                         | "retain"
@@ -884,18 +924,6 @@ impl<'a> ValueFlowIndex<'a> {
             TypeTarget::RustWrapper {
                 err: Some(err), ..
             } if matches!(method, "map_err" | "or_else" | "inspect_err") => (**err).clone(),
-            TypeTarget::RustDeref {
-                wrapper: "LocalKey",
-                target,
-            } if matches!(method, "with" | "try_with") => match target.as_ref() {
-                TypeTarget::RustTuple(items) => items.first().map_or(TypeTarget::Unknown, |inner| {
-                    TypeTarget::RustReference {
-                        mutable: false,
-                        target: Box::new(inner.clone()),
-                    }
-                }),
-                _ => TypeTarget::Unknown,
-            },
             _ => TypeTarget::Unknown,
         }
     }
@@ -1038,4 +1066,101 @@ impl<'a> ValueFlowIndex<'a> {
             _ => TypeTarget::Unknown,
         }
     }
+}
+
+fn tuple_items<'a, 'b>(target: &'b TypeTarget<'a>, rust: bool) -> Option<&'b [TypeTarget<'a>]> {
+    match target {
+        TypeTarget::RustTuple(items) if rust => Some(items),
+        TypeTarget::Tuple(items) if !rust => Some(items),
+        _ => None,
+    }
+}
+
+fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], rust: bool) -> Option<TypeTarget<'a>> {
+    let arity = tuple_items(targets.first()?, rust)?.len();
+    if !targets
+        .iter()
+        .all(|t| tuple_items(t, rust).is_some_and(|items| items.len() == arity))
+    {
+        return None;
+    }
+    let joined = (0..arity)
+        .map(|i| {
+            join_branch_targets(
+                targets
+                    .iter()
+                    .filter_map(|t| tuple_items(t, rust).map(|items| items[i].clone()))
+                    .collect(),
+                true,
+            )
+        })
+        .collect();
+    Some(if rust { TypeTarget::RustTuple(joined) } else { TypeTarget::Tuple(joined) })
+}
+
+fn join_branch_targets<'a>(
+    targets: Vec<TypeTarget<'a>>,
+    collapse_identical_local: bool,
+) -> TypeTarget<'a> {
+    use super::types::RustWrapperKind;
+    if targets.is_empty() || targets.iter().all(|t| matches!(t, TypeTarget::Unknown)) {
+        return TypeTarget::Unknown;
+    }
+    if targets.len() == 1 {
+        return targets.into_iter().next().unwrap();
+    }
+    if let Some(tuple) =
+        join_tuple_elements(&targets, true).or_else(|| join_tuple_elements(&targets, false))
+    {
+        return tuple;
+    }
+    let is_opt = |t: &TypeTarget<'a>| {
+        matches!(t, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, .. })
+    };
+    if targets.iter().any(is_opt)
+        && targets.iter().all(|t| {
+            is_opt(t) || matches!(t, TypeTarget::Unknown) || matches!(t, TypeTarget::Builtin(n) if n == "Option")
+        })
+    {
+        let payloads = targets
+            .into_iter()
+            .filter_map(|t| match t {
+                TypeTarget::RustWrapper { ok, .. } => Some(*ok),
+                _ => None,
+            })
+            .collect();
+        return TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Option,
+            ok: Box::new(join_branch_targets(payloads, true)),
+            err: None,
+        };
+    }
+    if targets.iter().all(|t| {
+        matches!(t, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, .. })
+    }) {
+        let mut oks = Vec::with_capacity(targets.len());
+        let mut errs = Vec::with_capacity(targets.len());
+        for target in targets {
+            if let TypeTarget::RustWrapper { ok, err, .. } = target {
+                oks.push(*ok);
+                errs.extend(err.map(|e| *e));
+            }
+        }
+        let joined_err =
+            (errs.len() == oks.len()).then(|| Box::new(join_branch_targets(errs, true)));
+        return TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(join_branch_targets(oks, true)),
+            err: joined_err,
+        };
+    }
+    let first = &targets[0];
+    let allow_collapse = !matches!(
+        first,
+        TypeTarget::Unknown | TypeTarget::Ambiguous | TypeTarget::Candidates { .. }
+    ) && (collapse_identical_local || !matches!(first, TypeTarget::Local(_)));
+    if allow_collapse && targets[1..].iter().all(|other| same_target(first, other)) {
+        return targets.into_iter().next().unwrap();
+    }
+    collect_candidate_join(targets)
 }

@@ -148,17 +148,24 @@ where
         );
         return true;
     }
+    if q.r.kind == EdgeKind::Calls.as_str()
+        && matches!(receiver, value_flow::TypeTarget::CallableReturn(_))
+    {
+        let evidence = if owner.language == LanguageId::Python.as_str() {
+            "invocation of a typed Python Callable binding"
+        } else {
+            "invocation of a typed Callable binding"
+        };
+        graph.reference_coverage(
+            ctx.path,
+            q.r,
+            CoverageStatus::Resolved.as_str(),
+            evidence.into(),
+        );
+        return true;
+    }
     if owner.language == LanguageId::Python.as_str() && q.r.kind == EdgeKind::Calls.as_str() {
         match receiver {
-            value_flow::TypeTarget::CallableReturn(_) => {
-                graph.reference_coverage(
-                    ctx.path,
-                    q.r,
-                    CoverageStatus::Resolved.as_str(),
-                    "invocation of a typed Python Callable binding".into(),
-                );
-                return true;
-            }
             value_flow::TypeTarget::ClassType(inner) => {
                 let result = match inner.as_ref() {
                     value_flow::TypeTarget::Local(class) => {

@@ -510,6 +510,25 @@ impl<'a> ValueFlowIndex<'a> {
         ordered
     }
 
+    fn prior_binding_target(
+        &self,
+        owner: &'a Node,
+        binding: BindingEvent<'_, 'a>,
+        trace: Option<&ReadTrace<'a, '_>>,
+    ) -> (bool, Option<TypeTarget<'a>>) {
+        let loop_element = matches!(binding.value, ValueExpr::LoopElement { .. });
+        let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
+        let conditional_rebind = binding.conditional && !loop_element && !lexical_scoped;
+        let prev_target = conditional_rebind
+            .then(|| {
+                self.lookup_tracked(owner, binding.name, binding.position, trace)
+                    .cloned()
+            })
+            .flatten()
+            .filter(|prev| !matches!(prev, TypeTarget::Unknown));
+        (conditional_rebind && prev_target.is_none(), prev_target)
+    }
+
     fn evaluate_single_binding(
         &self,
         owner: &'a Node,
@@ -517,15 +536,8 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         definitions: &Definitions<'a>,
     ) -> TypeTarget<'a> {
-        let loop_element = matches!(binding.value, ValueExpr::LoopElement { .. });
-        let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
-        let prev_target = (binding.conditional && !loop_element && !lexical_scoped)
-            .then(|| self.lookup(owner, binding.name, binding.position).cloned())
-            .flatten()
-            .filter(|prev| !matches!(prev, TypeTarget::Unknown));
-        if self.scopes[owner.id.as_str()].invalid
-            || (binding.conditional && !loop_element && !lexical_scoped && prev_target.is_none())
-        {
+        let (missing_prior, prev_target) = self.prior_binding_target(owner, binding, None);
+        if self.scopes[owner.id.as_str()].invalid || missing_prior {
             return TypeTarget::Unknown;
         }
         let evaluated = self.evaluate(
@@ -535,11 +547,7 @@ impl<'a> ValueFlowIndex<'a> {
             resolver,
             Some(definitions),
         );
-        match prev_target {
-            Some(prev) if same_target(&prev, &evaluated) => prev,
-            Some(_) => TypeTarget::Unknown,
-            None => evaluated,
-        }
+        finalize_binding_target(prev_target, evaluated)
     }
 
     fn record_python_collection_return(
@@ -659,21 +667,19 @@ impl<'a> ValueFlowIndex<'a> {
                 continue;
             }
             for (binding, event_index) in &ordered[owner.id.as_str()] {
-                let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
-                if binding.conditional && !lexical_scoped {
-                    continue;
-                }
                 let writes = &self.scopes[owner.id.as_str()].bindings[binding.name];
-                let updated = if duplicate_position(writes, *event_index) {
+                let (missing_prior, prev_target) = self.prior_binding_target(owner, *binding, None);
+                let updated = if duplicate_position(writes, *event_index) || missing_prior {
                     TypeTarget::Unknown
                 } else if flow_dependent(binding.value) {
-                    self.evaluate(
+                    let evaluated = self.evaluate(
                         owner,
                         binding.value,
                         binding.position,
                         resolver,
                         Some(definitions),
-                    )
+                    );
+                    finalize_binding_target(prev_target, evaluated)
                 } else {
                     continue;
                 };
@@ -799,14 +805,21 @@ impl<'a> ValueFlowIndex<'a> {
             let target = if duplicate_position(writes, *event_index) {
                 TypeTarget::Unknown
             } else {
-                self.evaluate_tracked(
-                    owner,
-                    binding.value,
-                    binding.position,
-                    resolver,
-                    Some(definitions),
-                    Some(&trace),
-                )
+                let (missing_prior, prev_target) =
+                    self.prior_binding_target(owner, *binding, Some(&trace));
+                if missing_prior {
+                    TypeTarget::Unknown
+                } else {
+                    let evaluated = self.evaluate_tracked(
+                        owner,
+                        binding.value,
+                        binding.position,
+                        resolver,
+                        Some(definitions),
+                        Some(&trace),
+                    );
+                    finalize_binding_target(prev_target, evaluated)
+                }
             };
             *reads = Some(trace.reads.into_inner());
             let previous = &mut self
@@ -1120,15 +1133,44 @@ fn collect_replay_events<'a, 'raw>(
         .iter()
         .filter(|owner| !scopes[owner.id.as_str()].invalid)
         .flat_map(|owner| {
+            let scope_bindings = &scopes[owner.id.as_str()].bindings;
             ordered[owner.id.as_str()]
                 .iter()
-                .filter(|(binding, _)| {
-                    (!binding.conditional
-                        || (owner.language == "python"
-                            && matches!(binding.value, ValueExpr::Scoped { .. })))
-                        && flow_dependent(binding.value)
+                .filter(move |(binding, _)| {
+                    flow_dependent(binding.value)
+                        || (binding.conditional
+                            && !matches!(
+                                binding.value,
+                                ValueExpr::LoopElement { .. } | ValueExpr::Scoped { .. }
+                            )
+                            && scope_bindings
+                                .get(binding.name)
+                                .is_some_and(|writes| writes.len() > 1))
                 })
                 .map(move |(binding, event_index)| (*owner, *binding, *event_index))
         })
         .collect()
+}
+
+fn unwrap_rust_ref<'a>(mut target: &'a TypeTarget<'a>) -> &'a TypeTarget<'a> {
+    while let TypeTarget::RustReference { target: inner, .. } = target {
+        target = inner;
+    }
+    target
+}
+
+fn finalize_binding_target<'a>(
+    prev_target: Option<TypeTarget<'a>>,
+    evaluated: TypeTarget<'a>,
+) -> TypeTarget<'a> {
+    match prev_target {
+        Some(prev)
+            if matches!(evaluated, TypeTarget::Unknown)
+                || same_target(unwrap_rust_ref(&prev), unwrap_rust_ref(&evaluated)) =>
+        {
+            prev
+        }
+        Some(_) => TypeTarget::Unknown,
+        None => evaluated,
+    }
 }

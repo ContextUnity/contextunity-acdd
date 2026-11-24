@@ -286,3 +286,102 @@ pub fn destructured_no_shadowing(
         assert_eq!(status, "resolved", "expr={expr}");
     }
 }
+
+#[cfg(all(feature = "lang-rust", feature = "lang-typescript", feature = "lang-python"))]
+#[test]
+fn typed_callback_param_resolution_across_languages_matrix() {
+    let workspace = crate::common::Workspace::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"cb_resolution\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    workspace.write(
+        "src/lib.rs",
+        r#"
+pub struct Item;
+impl Item {
+    pub fn mark(&self) -> bool { true }
+}
+
+pub struct Runner;
+impl Runner {
+    pub fn run_where<F: FnMut(&Item) -> bool>(&self, item: &Item, mut f: F) -> bool {
+        f(item)
+    }
+}
+
+pub fn apply_fn_ptr(item: &Item, f: fn(&Item) -> bool) -> bool {
+    f(item)
+}
+
+pub fn drive(r: &Runner, item: Item, items: Vec<Item>, opt: Option<Item>) {
+    let _ = apply_fn_ptr(&item, |x| x.mark());
+    let _ = r.run_where(&item, |elem| elem.mark());
+    items.iter().for_each(|iter_item| {
+        let _ = iter_item.mark();
+    });
+    let _ = opt.map(|opt_item| opt_item.mark());
+}
+"#,
+    );
+    workspace.write(
+        "callbacks.ts",
+        r#"
+class Service {
+    work(): void {}
+}
+
+function apply(cb: (item: Service) => void): void {
+    cb(new Service());
+}
+
+function driveTs(items: Service[]): void {
+    apply((ts_item) => ts_item.work());
+    items.forEach((arr_item) => arr_item.work());
+}
+"#,
+    );
+    workspace.write(
+        "callbacks.py",
+        r#"
+from typing import Callable
+
+class PyService:
+    def work(self):
+        pass
+
+def apply_py(cb: Callable[[PyService], PyService]) -> PyService:
+    return cb(PyService())
+
+def drive_py():
+    apply_py(lambda py_item: py_item.work())
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+
+    for (path, expr, expected_status) in [
+        ("src/lib.rs", "x.mark", "resolved"),
+        ("src/lib.rs", "elem.mark", "resolved"),
+        ("src/lib.rs", "iter_item.mark", "resolved"),
+        ("src/lib.rs", "opt_item.mark", "resolved"),
+        ("callbacks.ts", "ts_item.work", "resolved"),
+        ("callbacks.ts", "arr_item.work", "resolved"),
+        ("callbacks.py", "cb", "resolved"),
+        ("callbacks.py", "py_item.work", "resolved"),
+    ] {
+        let (status, evidence): (String, String) = conn
+            .query_row(
+                "SELECT r.status, e.evidence FROM resolution_coverage r
+                 JOIN path_dictionary p ON p.path_id = r.path_id
+                 JOIN coverage_expressions x ON x.expression_id = r.expression_id
+                 JOIN coverage_evidence e ON e.evidence_id = r.evidence_id
+                 WHERE p.path = ?1 AND x.expression = ?2
+                 LIMIT 1",
+                [path, expr],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("missing coverage for {path} `{expr}`: {e}"));
+        assert_eq!(status, expected_status, "{path} `{expr}` ({evidence})");
+    }
+}

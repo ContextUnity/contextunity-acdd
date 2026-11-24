@@ -246,7 +246,8 @@ impl<'a> Context<'a> {
             'a,
         >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
-    ) {
+    ) -> Vec<(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)> {
+        let mut pending_cross_module = Vec::new();
         for (path, facts) in all.iter_facts() {
             let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
                 continue;
@@ -268,7 +269,7 @@ impl<'a> Context<'a> {
                 .iter()
                 .filter(|reference| reference.kind == "imports")
             {
-                self.record_single_file_import(
+                if let Some(pending) = self.record_single_file_import(
                     path,
                     facts,
                     module,
@@ -284,9 +285,12 @@ impl<'a> Context<'a> {
                     #[cfg(feature = "lang-rust")]
                     rust_forwarding,
                     dependencies,
-                );
+                ) {
+                    pending_cross_module.push(pending);
+                }
             }
         }
+        pending_cross_module
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -308,20 +312,14 @@ impl<'a> Context<'a> {
             'a,
         >,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
-    ) {
-        let Some(alias) = reference.alias.as_deref().filter(|alias| *alias != "*") else {
-            return;
-        };
-        let Some(owner) = owners.get(reference.source.as_str()).copied() else {
-            return;
-        };
+    ) -> Option<(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)> {
+        let alias = reference.alias.as_deref().filter(|alias| *alias != "*")?;
+        let owner = owners.get(reference.source.as_str()).copied()?;
         let key = (
             path,
             reference.module.as_deref().unwrap_or(&reference.expression),
         );
-        let Some(normalized) = normalized_imports.get(&key).and_then(Option::as_ref) else {
-            return;
-        };
+        let normalized = normalized_imports.get(&key).and_then(Option::as_ref)?;
         let (mut providers, selected) =
             import_provider_modules(path, normalized, profile.family(), modules);
         let mut candidates = Vec::new();
@@ -381,9 +379,10 @@ impl<'a> Context<'a> {
             self.factory_imports
                 .insert((owner_id, alias_id), Some((providers[0], binding, position)));
         }
+        let empty_candidates = candidates.is_empty();
         let target = if unproven_guard {
             Imported::Unknown
-        } else if providers.len() == 1 && !candidates.is_empty() {
+        } else if providers.len() == 1 && !empty_candidates {
             Imported::Nodes(candidates, position, is_type_only)
         } else if providers.is_empty() && !normalized.relative {
             let module_name = reference.module.as_deref().unwrap_or(&reference.expression);
@@ -403,11 +402,80 @@ impl<'a> Context<'a> {
         } else {
             Imported::Unknown
         };
+        let mut pending = None;
         let aliases = self.imports.entry(owner_id).or_default();
         if aliases.contains_key(&alias_id) {
             aliases.insert(alias_id, Imported::Unknown);
         } else {
+            if !unproven_guard
+                && providers.len() == 1
+                && empty_candidates
+                && matches!(target, Imported::Unknown)
+            {
+                let symbol_name = reference
+                    .expression
+                    .rsplit_once("::")
+                    .or_else(|| reference.expression.rsplit_once('.'))
+                    .map_or(reference.expression.as_str(), |(_, name)| name);
+                pending = Some((
+                    owner_id,
+                    alias_id,
+                    providers[0],
+                    symbol_name,
+                    reference,
+                    super::super::python::semantic_context::logging_factory_import_is_safe(
+                        module, alias, position,
+                    ),
+                ));
+            }
             aliases.insert(alias_id, target);
+        }
+        pending
+    }
+
+    fn propagate_cross_module_external_imports(
+        &mut self,
+        pending: &[(SymbolId, SymbolId, &'a Node, &'a str, &'a Reference, bool)],
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+        for _ in 0..8 {
+            let mut changed = false;
+            for &(owner_id, alias_id, provider_module, symbol_name, reference, factory_safe) in
+                pending
+            {
+                if !matches!(
+                    self.imports
+                        .get(&owner_id)
+                        .and_then(|aliases| aliases.get(&alias_id)),
+                    Some(Imported::Unknown)
+                ) {
+                    continue;
+                }
+                let Some(Imported::External(origin, _, _, parent_safe)) =
+                    self.imported_alias(provider_module, symbol_name)
+                else {
+                    continue;
+                };
+                let propagated = Imported::External(
+                    origin.clone(),
+                    reference.position(),
+                    reference,
+                    factory_safe && *parent_safe,
+                );
+                if let Some(slot) = self
+                    .imports
+                    .get_mut(&owner_id)
+                    .and_then(|aliases| aliases.get_mut(&alias_id))
+                {
+                    *slot = propagated;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
         }
     }
 
@@ -506,7 +574,7 @@ impl<'a> Context<'a> {
             typescript: None,
         };
         context.build_rule_caches_for_paths(all, dependencies);
-        context.populate_file_imports(
+        let pending_cross_module = context.populate_file_imports(
             all,
             modules,
             by_module,
@@ -526,6 +594,7 @@ impl<'a> Context<'a> {
             modules,
             rust_forwarding,
         );
+        context.propagate_cross_module_external_imports(&pending_cross_module);
         context.populate_class_members(all, by_qual);
         context
     }
