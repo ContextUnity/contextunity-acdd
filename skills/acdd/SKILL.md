@@ -28,7 +28,22 @@ regardless of active claims.
 Worktree selectors resolve explicit paths first, then exact directory name,
 literal or zero-normalized numeric prefix, suffix, and substring (first nonempty
 tier must be unique). Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
-and shared locks automatically. CLI `--worktree` takes an explicit directory path.
+and shared locks automatically.
+
+When invoking `acdd` from the repository root (`acdd` on `$PATH`), pass relative
+worktree flags instead of repeating `cd /abs/path && /abs/bin/acdd`:
+
+```sh
+# Refresh, read, query, or lint an isolated worktree without changing CWD:
+acdd --root .worktrees/<run_name> delta
+acdd --root .worktrees/<run_name> query search "SymbolName" --limit 10
+acdd --root .worktrees/<run_name> read src/lib.rs --start-line 1 --line-count 80
+acdd --root .worktrees/<run_name> lint --categories all
+
+# Target the worktree for gate operations (reserve cd for git/cargo):
+acdd claim <node_cursor> --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
+acdd submit <node_cursor> --action pass --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
+```
 
 ## Discovery & read protocol
 
