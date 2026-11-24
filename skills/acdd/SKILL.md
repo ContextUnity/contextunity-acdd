@@ -57,9 +57,9 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
   `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
   `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
   `path`/`target` on integration reviews), and `code_map_lint` (`acdd lint`; defaults to
-  `[arch, syntax, docs]`, or `categories: ["arch","duplicates","dead_tails","cycles","syntax","docs"]` / `--categories all`). `syntax` checks stored parser diagnostics (`syntax.parse`), `fact_budget_exceeded`, and `intra_crate_type_homonym` (while AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry); `cycles` isolates multi-node module `imports` SCCs (enforceable at `error` via `forbid_cycles`); `dead_tails` computes workspace-wide
+  `[arch, syntax, docs]`, or `categories: ["arch","duplicates","dead_tails","cycles","syntax","docs"]` / `--categories all`). `syntax` checks stored parser diagnostics (`syntax.parse`), `fact_budget_exceeded`, and `intra_crate_type_homonym` (using `complexity.severity`, while AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry); `cycles` isolates multi-node non-test/non-archive module `imports` SCCs (enforceable at `error` via `forbid_cycles`); `dead_tails` computes workspace-wide
   production liveness first, then reports `phantom_tested`, `dead_tails` (`unreachable`),
-  `dangling_calls` (`crate::*`/`super::*`/`self::*`), and `dead_tails.unused_public_api`
+  `dangling_calls` (`crate::*`/`super::*`/`self::*`), and—when `architecture.unused_public_api: true` is configured—`dead_tails.unused_public_api`
   (`error` on unused/test-only `pub use` re-exports and `pub` items lacking non-test
   cross-module production callers). Eliminate or reject new
   clones, phantom-tested dead code, dead tails, dangling calls, unused public compatibility APIs, module import cycles, and `acdd-rule` / doc-integrity lint errors.

@@ -131,21 +131,18 @@ fn match_symbol_claim<'a>(
 
 fn collect_broken_doc_links(
     conn: &Connection,
-    single_doc_path: Option<&str>,
-    scope: Option<&LintScope>,
-    findings: &mut Vec<DocIntegrityFinding>,
-) -> Result<()> {
+    single_doc_path: &str,
+) -> Result<Vec<Value>> {
     let doc_kind = NodeKind::Document.as_str();
-    let path_filter = single_doc_path.unwrap_or("");
     let mut stmt = conn.prepare(&format!(
-        "SELECT 'broken_doc_link' AS kind, p.path,
+        "SELECT p.path,
                 CAST(json_extract(c.value,'$.line') AS INTEGER) AS line,
                 json_extract(c.value,'$.target') AS target
          FROM nodes n
          JOIN path_dictionary p ON p.path_id = n.path_id
          JOIN json_each(n.details,'$.citations') c
          WHERE n.kind = '{doc_kind}'
-           AND (?1 = '' OR p.path = ?1)
+           AND p.path = ?1
            AND p.path NOT LIKE 'archive/%'
            AND p.path NOT LIKE '%/archive/%'
            AND NOT EXISTS (
@@ -158,30 +155,20 @@ fn collect_broken_doc_links(
            )
          ORDER BY p.path, line, target",
     ))?;
-    let mut rows = stmt.query([path_filter])?;
+    let mut diagnostics = Vec::new();
+    let mut rows = stmt.query([single_doc_path])?;
     while let Some(row) = rows.next()? {
-        let path: String = row.get(1)?;
-        let line: i64 = row.get(2)?;
-        let Some(target) = row.get::<_, Option<String>>(3)? else {
+        let path: String = row.get(0)?;
+        let line: i64 = row.get(1)?;
+        let Some(target) = row.get::<_, Option<String>>(2)? else {
             continue;
         };
-        if !is_document_link_target(&target) || scope.is_some_and(|s| !s.in_scope(&path)) {
+        if !is_document_link_target(&target) {
             continue;
         }
-        let mut f = DocIntegrityFinding::new(
-            "broken_doc_link",
-            "docs.broken_doc_link",
-            LintSeverity::Error,
-            path.clone(),
-            line.max(1) as usize,
-            format!("broken documentation link target '{target}'"),
-        );
-        f.target = Some(target.clone());
-        f.raw_diagnostic =
-            Some(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
-        findings.push(f);
+        diagnostics.push(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
     }
-    Ok(())
+    Ok(diagnostics)
 }
 
 fn collect_claim_refs_from_details(
@@ -360,11 +347,14 @@ fn collect_stored_doc_errors(
            AND e.path NOT LIKE '%/archive/%'
          ORDER BY e.path, e.line, e.message",
     )?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let path: String = row.get(0)?;
-        let line: i64 = row.get(1)?;
-        let message: String = row.get(2)?;
+    let mut rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    while let Some((path, line, message)) = rows.next().transpose()? {
         if scope.is_some_and(|s| !s.in_scope(&path)) {
             continue;
         }
@@ -449,6 +439,7 @@ fn check_symbol_claims(
     candidates_by_path: &HashMap<String, Vec<TargetCandidateNode>>,
     indexed_code_paths: &HashSet<String>,
     resolved_root: Option<&Path>,
+    is_lint_mode: bool,
     generation: Option<&str>,
     findings: &mut Vec<DocIntegrityFinding>,
 ) {
@@ -517,31 +508,37 @@ fn check_symbol_claims(
             );
             continue;
         }
-        if matched.len() > 1 {
+        if !is_lint_mode && matched.len() > 1 {
             continue;
         }
-        let target = matched[0];
         let (Some(start), Some(end)) = (claim.start_line, claim.end_line) else {
             continue;
         };
-        let Some(root) = resolved_root else {
-            continue;
-        };
-        let source_lines = *line_count_cache
-            .entry(claim.target_path.clone())
-            .or_insert_with(|| {
-                source_loader
-                    .read(conn, root, &claim.target_path)
-                    .ok()
-                    .map(|src| src.lines().count().max(1))
-            });
-        let Some(source_lines) = source_lines else {
-            continue;
-        };
-        if start == 0 || end < start || end > source_lines {
+        if start == 0 || end < start {
             continue;
         }
-        if end < target.line || start > target.end_line {
+        let source_lines = resolved_root.and_then(|root| {
+            *line_count_cache
+                .entry(claim.target_path.clone())
+                .or_insert_with(|| {
+                    source_loader
+                        .read(conn, root, &claim.target_path)
+                        .ok()
+                        .map(|src| src.lines().count().max(1))
+                })
+        });
+        if !is_lint_mode {
+            let Some(source_lines) = source_lines else {
+                continue;
+            };
+            if end > source_lines {
+                continue;
+            }
+        }
+        let target = matched[0];
+        let out_of_bounds = is_lint_mode && source_lines.is_some_and(|lines| end > lines);
+        let disjoint_all = matched.iter().all(|t| end < t.line || start > t.end_line);
+        if out_of_bounds || disjoint_all {
             let raw = json!({
                 "kind": "stale_doc_sections",
                 "reason": "documented_symbol_range_mismatch",
@@ -551,10 +548,22 @@ fn check_symbol_claims(
                 "target": {"id": target.id, "path": claim.target_path, "line": target.line, "end_line": target.end_line},
                 "generation": generation.unwrap_or(""),
             });
-            let msg = format!(
-                "stale symbol line range #L{start}-L{end} for '{}' in '{}' (indexed at L{}-L{})",
-                claim.name, claim.target_path, target.line, target.end_line
-            );
+            let msg = if let Some(lines) = source_lines.filter(|_| out_of_bounds) {
+                format!(
+                    "out-of-bounds symbol line range #L{start}-L{end} for '{}' in '{}' (file has {lines} lines; indexed at L{}-L{})",
+                    claim.name, claim.target_path, target.line, target.end_line
+                )
+            } else if matched.len() > 1 {
+                format!(
+                    "stale symbol line range #L{start}-L{end} for '{}' in '{}' (disjoint from all {} matching declarations)",
+                    claim.name, claim.target_path, matched.len()
+                )
+            } else {
+                format!(
+                    "stale symbol line range #L{start}-L{end} for '{}' in '{}' (indexed at L{}-L{})",
+                    claim.name, claim.target_path, target.line, target.end_line
+                )
+            };
             push_claim(
                 findings,
                 "stale_doc_sections",
@@ -649,15 +658,11 @@ fn collect_doc_findings(
     scope: Option<&LintScope>,
     enforced_invariants: &BTreeSet<String>,
     workspace_root: Option<&Path>,
-    include_broken_links: bool,
     generation: Option<&str>,
 ) -> Result<Vec<DocIntegrityFinding>> {
     let _budget = reader::QueryBudget::new(conn);
     let mut findings = Vec::new();
-
-    if include_broken_links {
-        collect_broken_doc_links(conn, single_doc_path, scope, &mut findings)?;
-    }
+    let is_lint_mode = single_doc_path.is_none();
 
     let ScannedDocClaims {
         symbol_claims,
@@ -665,7 +670,7 @@ fn collect_doc_findings(
         non_contract_by_id,
     } = scan_doc_metadata_claims(conn, single_doc_path)?;
 
-    if single_doc_path.is_none() {
+    if is_lint_mode {
         collect_stored_doc_errors(conn, scope, &mut findings)?;
     }
 
@@ -687,11 +692,12 @@ fn collect_doc_findings(
         &candidates_by_path,
         &indexed_code_paths,
         resolved_root.as_deref(),
+        is_lint_mode,
         generation,
         &mut findings,
     );
 
-    if single_doc_path.is_none() {
+    if is_lint_mode {
         check_duplicate_and_orphan_invariants(
             conn,
             scope,
@@ -724,7 +730,6 @@ pub(super) fn collect_scoped_doc_findings(
         Some(&index.scope),
         enforced_invariants,
         workspace_root,
-        false,
         None,
     )
 }
@@ -807,13 +812,10 @@ pub(crate) fn document_diagnostics_paged(
         None,
         &empty_enforced,
         None,
-        true,
         Some(generation),
     )?;
-    let mut diagnostics: Vec<Value> = findings
-        .into_iter()
-        .filter_map(|f| f.raw_diagnostic)
-        .collect();
+    let mut diagnostics: Vec<Value> = collect_broken_doc_links(conn, path)?;
+    diagnostics.extend(findings.into_iter().filter_map(|f| f.raw_diagnostic));
     diagnostics.sort_by(|left, right| {
         left["line"]
             .as_u64()

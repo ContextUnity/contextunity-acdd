@@ -1,9 +1,28 @@
 use super::reader::{selectors::path_bounds, sql::QueryBudget};
+use crate::models::details::NodeDetailFlags;
 use anyhow::{bail, Result};
 use petgraph::graphmap::DiGraphMap;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+
+pub(crate) fn is_archived_path(path: &str) -> bool {
+    path.starts_with("archive/") || path.contains("/archive/")
+}
+
+pub(crate) fn is_test_context_path(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.ends_with("/tests.rs")
+        || path == "tests.rs"
+        || path.starts_with("benchmarks/")
+}
+
+fn is_non_prod_cycle_node(path: &str, details: &str) -> bool {
+    is_archived_path(path)
+        || is_test_context_path(path)
+        || NodeDetailFlags::from_json(details).has_cfg_test
+}
 
 pub(crate) fn kosaraju_cycle_sccs<N>(graph: &DiGraphMap<N, ()>) -> Vec<Vec<N>>
 where
@@ -47,17 +66,45 @@ fn collect_cycle_components_filtered(
         None
     };
 
-    let sql = format!("SELECT src_hash,dst_hash FROM edges WHERE kind IN {kinds_sql} LIMIT 500001");
+    let sql = format!(
+        "SELECT e.src_hash, e.dst_hash, src_p.path, dst_p.path, src_n.details, dst_n.details
+         FROM edges e
+         JOIN nodes src_n ON src_n.node_hash = e.src_hash
+         JOIN nodes dst_n ON dst_n.node_hash = e.dst_hash
+         JOIN path_dictionary src_p ON src_p.path_id = src_n.path_id
+         JOIN path_dictionary dst_p ON dst_p.path_id = dst_n.path_id
+         LEFT JOIN files src_f ON src_f.path = src_p.path
+         LEFT JOIN files dst_f ON dst_f.path = dst_p.path
+         WHERE e.kind IN {kinds_sql}
+           AND src_n.is_test = 0 AND dst_n.is_test = 0
+           AND src_n.generated = 0 AND dst_n.generated = 0
+           AND COALESCE(src_f.is_test, 0) = 0 AND COALESCE(dst_f.is_test, 0) = 0
+         LIMIT 500001"
+    );
     let mut statement = conn.prepare(&sql)?;
-    let edges = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+    let edges = statement.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
     let mut graph = DiGraphMap::<i64, ()>::new();
     for (count, edge) in edges.enumerate() {
         if count == 500_000 {
             bail!("cycle analysis exceeds 500000 edge budget");
         }
-        let (src, dst) = edge?;
-        graph.add_edge(src, dst, ());
+        let (src, dst, src_path, dst_path, src_details, dst_details) = edge?;
         budget.check()?;
+        if is_non_prod_cycle_node(&src_path, &src_details)
+            || is_non_prod_cycle_node(&dst_path, &dst_details)
+        {
+            continue;
+        }
+        graph.add_edge(src, dst, ());
     }
     let components = kosaraju_cycle_sccs(&graph);
     budget.check()?;

@@ -1448,7 +1448,8 @@ fn main() {
     ws.build();
     let conn = ws.open();
     let opts = page(100, 0, None);
-    let res = run_lint(
+
+    let default_disabled = run_lint(
         &conn,
         &LintRequest {
             target: None,
@@ -1457,6 +1458,29 @@ fn main() {
             rule_ids: Some(&["dead_tails.unused_public_api".to_owned()]),
             minimum_severity: Some(LintSeverity::Error),
             architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    assert!(
+        default_disabled["items"].as_array().unwrap().is_empty(),
+        "dead_tails.unused_public_api must be opt-in (false by default): {default_disabled:?}"
+    );
+
+    let opt_in_arch = acdd_core::lint::ArchitectureConfig {
+        unused_public_api: true,
+        ..Default::default()
+    };
+    let res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::DeadTails]),
+            rule_ids: Some(&["dead_tails.unused_public_api".to_owned()]),
+            minimum_severity: Some(LintSeverity::Error),
+            architecture: Some(&opt_in_arch),
             workspace_root: Some(ws.root()),
             page: &opts,
         },
@@ -1576,7 +1600,7 @@ fn main() {
             categories: Some(&[LintCategory::DeadTails]),
             rule_ids: None,
             minimum_severity: Some(LintSeverity::Warn),
-            architecture: None,
+            architecture: Some(&opt_in_arch),
             workspace_root: Some(ws.root()),
             page: &opts,
         },
@@ -1590,4 +1614,605 @@ fn main() {
         "#[cfg(test)] pub mod helper in src/lib.rs must mark src/helper.rs test-only: {warn_items:?}"
     );
     let _ = symbols;
+}
+
+#[test]
+fn soundness_batch_ast_pattern_possible_calls_externals_cycles_and_must_implement_matrix() {
+    let ws = Workspace::new();
+    ws.write(
+        "acdd.yaml",
+        r##"roots:
+  - src
+  - py
+architecture:
+  zones:
+    a_broad: ["src/**"]
+    z_nested: ["src/nested/**"]
+    other: ["src/other/**"]
+    api: ["src/api/**", "py/api/**"]
+    domain: ["src/domain/**", "py/domain/**"]
+  rules:
+    - id: AST-CMD-QUAL
+      severity: error
+      kind: ast_pattern
+      from: { zones: ["a_broad"] }
+      ast_pattern: "std::process::Command::new($PROGRAM)"
+    - id: AST-SQL-QUAL
+      severity: error
+      kind: ast_pattern
+      from: { zones: ["a_broad"] }
+      ast_pattern: "rusqlite::Connection::open($PATH)"
+    - id: AST-ALLOW-INNER
+      severity: error
+      kind: ast_pattern
+      from: { zones: ["a_broad"] }
+      ast_pattern: "#![allow(dead_code)]"
+    - id: AST-EXPECT-ATTR
+      severity: error
+      kind: ast_pattern
+      from: { zones: ["a_broad"] }
+      ast_pattern: "#[expect(dead_code)]"
+    - id: AST-EXPECT-INNER
+      severity: error
+      kind: ast_pattern
+      from: { zones: ["a_broad"] }
+      ast_pattern: "#![expect(dead_code)]"
+    - id: ALLOW-ONLY-SERDE
+      severity: error
+      kind: allow_only_dependencies
+      from: { zones: ["domain"] }
+      to: { zones: ["api"], external_symbols: ["serde"] }
+    - id: POSSIBLE-EDGE-FORBID
+      severity: error
+      kind: forbid_dependency
+      from: { zones: ["api"] }
+      to: { zones: ["domain"] }
+    - id: CYCLE-ZONE-SPECIFICITY
+      severity: error
+      kind: forbid_cycles
+      zones: ["a_broad", "z_nested", "other"]
+    - id: MUST-IMPL-HANDLER
+      severity: error
+      kind: must_implement
+      from: { zones: ["api"] }
+      to: { symbols: ["Handler"] }
+"##,
+    );
+    ws.write(
+        "src/lib.rs",
+        "pub mod ast_hits;\npub mod clean_with_test;\npub mod nested;\npub mod other;\npub mod api;\npub mod domain;\n",
+    );
+    ws.write(
+        "src/ast_hits.rs",
+        r#"#![allow(dead_code)]
+#![expect(dead_code)]
+
+#[expect(dead_code)]
+fn suppressed() {}
+
+pub fn spawn_and_open() {
+    let _ = std::process::Command::new("echo");
+    let _ = rusqlite::Connection::open("db.sqlite");
+}
+"#,
+    );
+    ws.write(
+        "src/clean_with_test.rs",
+        r#"pub fn prod_ok() -> usize { 1 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_open() {
+        let _ = rusqlite::Connection::open("test.sqlite");
+    }
+}
+"#,
+    );
+    ws.write(
+        "src/domain/mod.rs",
+        "pub mod allowed;\npub mod disallowed;\n",
+    );
+    ws.write(
+        "src/domain/allowed.rs",
+        r#"use serde::Serialize;
+
+pub fn target_a() {}
+pub fn target_b() {}
+
+pub trait DomainLocalTrait {
+    fn local_op(&self);
+}
+
+pub struct DomainPortImpl;
+pub struct AltPortImpl;
+pub fn new_port() -> DomainPortImpl { DomainPortImpl }
+pub fn new_alt_port() -> AltPortImpl { AltPortImpl }
+impl crate::api::types::Port for DomainPortImpl {
+    fn ping(&self) {}
+}
+impl DomainLocalTrait for DomainPortImpl {
+    fn local_op(&self) {}
+}
+impl DomainPortImpl {
+    pub fn inherent_secret(&self) {}
+}
+impl AltPortImpl {
+    pub fn inherent_secret(&self) {}
+}
+
+#[derive(Serialize)]
+pub struct Payload {
+    pub x: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+    #[test]
+    fn allowed_test_dep() {
+        let _ = Connection::open("t.sqlite");
+    }
+}
+"#,
+    );
+    ws.write(
+        "src/domain/disallowed.rs",
+        r#"use tokio::runtime::Runtime;
+pub fn bad_ext_user() {
+    let _ = Runtime::new();
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::runtime::Runtime;
+    #[test]
+    fn mixed_test_tokio_usage() {
+        let _ = Runtime::new();
+    }
+}
+"#,
+    );
+    ws.write("src/nested/mod.rs", "pub mod a;\n");
+    ws.write(
+        "src/nested/a.rs",
+        "use crate::other::b;\npub fn fa() { b::fb(); }\n",
+    );
+    ws.write("src/other/mod.rs", "pub mod b;\n");
+    ws.write(
+        "src/other/b.rs",
+        "use crate::nested::a;\npub fn fb() { a::fa(); }\n",
+    );
+    ws.write("src/api/mod.rs", "pub mod types;\npub mod impls;\npub mod branch;\n");
+    ws.write(
+        "src/api/types.rs",
+        r#"pub trait Handler {}
+pub trait Port {
+    fn ping(&self);
+}
+
+pub struct MissingStruct {
+    pub id: i32,
+}
+
+pub enum MissingEnum {
+    Alpha,
+    Beta,
+}
+
+pub struct CrossFileOk;
+
+struct PrivateSerdeHelper;
+
+pub fn unrelated_helper() {
+    external_crate::tick();
+}
+"#,
+    );
+    ws.write(
+        "src/api/impls.rs",
+        "use crate::api::types::{CrossFileOk, Handler};\nimpl Handler for CrossFileOk {}\n",
+    );
+    ws.write(
+        "src/api/branch.rs",
+        r#"pub fn via_port(port: &dyn crate::api::types::Port) {
+    port.ping();
+}
+
+pub fn maybe_call(flag: bool) {
+    let callee = if flag {
+        crate::domain::allowed::target_a
+    } else {
+        crate::domain::allowed::target_b
+    };
+    callee();
+}
+"#,
+    );
+    ws.write(
+        "py/api/types.py",
+        "class PyPort:\n    def ping(self):\n        pass\n",
+    );
+    ws.write(
+        "py/domain/allowed.py",
+        "from py.api.types import PyPort\nclass PyPortImpl(PyPort):\n    def ping(self):\n        pass\n    def inherent_secret(self):\n        pass\nclass AltPyImpl:\n    def inherent_secret(self):\n        pass\n",
+    );
+    ws.write(
+        "py/api/branch.py",
+        "from py.domain.allowed import PyPortImpl, AltPyImpl\ndef maybe_inherent(condition):\n    if condition:\n        receiver = PyPortImpl()\n    else:\n        receiver = AltPyImpl()\n    receiver.inherent_secret()\n",
+    );
+
+    ws.build();
+    let conn = ws.open();
+    let opts = page(100, 0, None);
+    let res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::Arch]),
+            rule_ids: None,
+            minimum_severity: Some(LintSeverity::Error),
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = res["items"].as_array().unwrap();
+
+    for rule_id in [
+        "AST-CMD-QUAL",
+        "AST-SQL-QUAL",
+        "AST-ALLOW-INNER",
+        "AST-EXPECT-ATTR",
+        "AST-EXPECT-INNER",
+    ] {
+        assert!(
+            items.iter().any(|v| v["rule_id"] == rule_id && v["path"] == "src/ast_hits.rs"),
+            "expected batched ast_pattern rule {rule_id} hit in src/ast_hits.rs: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|v| v["rule_id"] == rule_id && v["path"] == "src/clean_with_test.rs"),
+            "test-only code in clean_with_test.rs must not trigger {rule_id}: {items:?}"
+        );
+    }
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "ALLOW-ONLY-SERDE"
+                && v["path"] == "src/domain/disallowed.rs"
+                && v["line"].as_u64().is_some_and(|l| l <= 3)
+                && v["message"].as_str().is_some_and(|m| m.contains("tokio"))
+        }),
+        "allow_only_dependencies must flag prod tokio in mixed prod+test file: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["rule_id"] == "ALLOW-ONLY-SERDE"
+                && v["path"] == "src/domain/disallowed.rs"
+                && v["line"].as_u64().is_some_and(|l| l >= 6)
+        }),
+        "test-only tokio lines inside mixed file must remain excluded: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["rule_id"] == "ALLOW-ONLY-SERDE" && v["path"] == "src/domain/allowed.rs"
+        }),
+        "allow_only_dependencies must permit serde and ignore #[cfg(test)] rusqlite: {items:?}"
+    );
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "CYCLE-ZONE-SPECIFICITY"
+                && v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("other") && m.contains("z_nested"))
+        }),
+        "forbid_cycles must pick most-specific zone 'z_nested' over alphabetical 'a_broad': {items:?}"
+    );
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "POSSIBLE-EDGE-FORBID" && v["path"] == "src/api/branch.rs"
+        }),
+        "forbid_dependency with default confidences must admit possible_calls/branch edges: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "POSSIBLE-EDGE-FORBID"
+                && v["path"] == "py/api/branch.py"
+                && v["symbol"]
+                    .as_str()
+                    .is_some_and(|s| s.ends_with(".inherent_secret"))
+        }),
+        "inherent method on PyPortImpl (inheriting PyPort) must still be flagged on possible_calls from api->domain: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["rule_id"] == "POSSIBLE-EDGE-FORBID"
+                && v["symbol"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("DomainPortImpl") && s.ends_with(".ping"))
+        }),
+        "Dependency Inversion via allowed Port trait must not false-positive even when DomainPortImpl also implements DomainLocalTrait: {items:?}"
+    );
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "MUST-IMPL-HANDLER"
+                && v["symbol"].as_str().and_then(|s| s.rsplit('.').next()) == Some("MissingStruct")
+        }),
+        "must_implement must flag public struct MissingStruct: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "MUST-IMPL-HANDLER"
+                && v["symbol"].as_str().and_then(|s| s.rsplit('.').next()) == Some("MissingEnum")
+        }),
+        "must_implement must flag public enum MissingEnum: {items:?}"
+    );
+    for exempt in ["CrossFileOk", "PrivateSerdeHelper"] {
+        assert!(
+            !items.iter().any(|v| {
+                v["rule_id"] == "MUST-IMPL-HANDLER"
+                    && v["symbol"].as_str().and_then(|s| s.rsplit('.').next()) == Some(exempt)
+            }),
+            "must_implement must not flag cross-file impl or private struct '{exempt}': {items:?}"
+        );
+    }
+}
+
+#[test]
+fn lint_hygiene_docs_homonym_duplicates_callbacks_and_cycles_matrix() {
+    let ws = Workspace::new();
+    ws.write(
+        "acdd.yaml",
+        r#"roots:
+  - crates
+docs:
+  - docs
+architecture:
+  complexity:
+    severity: error
+    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+"#,
+    );
+    ws.write(
+        "crates/pkg_a/Cargo.toml",
+        "[package]\nname = \"pkg_a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    ws.write(
+        "crates/pkg_b/Cargo.toml",
+        "[package]\nname = \"pkg_b\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/lib.rs",
+        "pub mod m1;\npub mod m2;\npub mod cyc_a;\npub mod cyc_b;\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/m1.rs",
+        r#"pub struct SharedCfg { pub a: i32 }
+pub mod sub_one { pub struct LocalDup { pub x: i32 } }
+pub mod sub_two { pub struct LocalDup { pub z: i32 } }
+
+pub fn compute_alpha(input: i32) -> i32 {
+    let base = input + 1;
+    let s1 = base * 2;
+    let s2 = s1 + 3;
+    let s3 = s2 - 1;
+    let s4 = s3 * 3;
+    s4 + 10
+}
+
+pub fn near_alpha(v: i32) -> i32 {
+    let a = v + 100;
+    let b = a * 4;
+    let c = b - 7;
+    let d = c + 19;
+    let e = d * 5;
+    let f = e - 3;
+    f + 42
+}
+
+#[cfg(test)]
+mod tests {
+    pub fn test_clone_one(x: i32) -> i32 {
+        let base = x + 1;
+        let s1 = base * 2;
+        let s2 = s1 + 3;
+        let s3 = s2 - 1;
+        let s4 = s3 * 3;
+        s4 + 10
+    }
+}
+"#,
+    );
+    ws.write(
+        "crates/pkg_a/src/m2.rs",
+        r#"pub struct LocalDup { pub y: i32 }
+
+pub fn compute_beta(val: i32) -> i32 {
+    let seed = val + 1;
+    let t1 = seed * 2;
+    let t2 = t1 + 3;
+    let t3 = t2 - 1;
+    let t4 = t3 * 3;
+    t4 + 10
+}
+
+pub fn near_beta(w: i32) -> i32 {
+    let x = w + 100;
+    let y = x * 4;
+    let extra = y ^ 99;
+    let z = y - 7;
+    let u = z + 19;
+    let p = u * 5;
+    let q = p - 3;
+    q + 42
+}
+
+#[cfg(test)]
+mod tests {
+    pub fn test_clone_two(y: i32) -> i32 {
+        let seed = y + 1;
+        let t1 = seed * 2;
+        let t2 = t1 + 3;
+        let t3 = t2 - 1;
+        let t4 = t3 * 3;
+        t4 + 10
+    }
+}
+"#,
+    );
+    ws.write(
+        "crates/pkg_b/src/lib.rs",
+        "pub struct SharedCfg { pub b: i32 }\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/cyc_a.rs",
+        "#[cfg(test)]\nmod tests {\n    use crate::cyc_b;\n    pub fn ta() { cyc_b::tests::tb(); }\n}\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/cyc_b.rs",
+        "#[cfg(test)]\nmod tests {\n    use crate::cyc_a;\n    pub fn tb() { cyc_a::tests::ta(); }\n}\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/main.rs",
+        r#"pub struct UnknownApi;
+pub fn on_event(v: i32) -> i32 { v + 1 }
+pub fn register(_f: fn(i32) -> i32) {}
+
+pub struct Holder;
+impl Holder {
+    pub fn custom_hook(&self) {}
+}
+
+pub fn main_wire(ext: UnknownApi) {
+    let cb = on_event;
+    register(cb);
+    ext.custom_hook();
+}
+
+fn main() {
+    main_wire(UnknownApi);
+}
+"#,
+    );
+    ws.write(
+        "docs/arch.md",
+        r#"---
+title: Arch Spec
+doc_type: architecture
+---
+# Spec
+
+- Broken link: [missing](missing.md)
+- Out of range: [`SharedCfg`](../crates/pkg_b/src/lib.rs#L1-L99)
+- Ambiguous multi-match: [`LocalDup`](../crates/pkg_a/src/m1.rs#L9-L10)
+"#,
+    );
+    ws.write(
+        "docs/archive/old_a.rs",
+        "use crate::old_b;\npub fn oa() {}\n",
+    );
+    ws.write(
+        "docs/archive/old_b.rs",
+        "use crate::old_a;\npub fn ob() {}\n",
+    );
+
+    ws.build();
+    let conn = ws.open();
+    let opts = page(100, 0, None);
+    let res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[
+                LintCategory::Docs,
+                LintCategory::Syntax,
+                LintCategory::Duplicates,
+                LintCategory::DeadTails,
+                LintCategory::Cycles,
+            ]),
+            rule_ids: None,
+            minimum_severity: Some(LintSeverity::Warn),
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = res["items"].as_array().unwrap();
+
+    assert!(
+        !items.iter().any(|v| v["rule_id"] == "docs.broken_doc_link"),
+        "docs.broken_doc_link must be retired from run_lint: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| v["rule_id"] == "docs.stale_symbol_range" && v["symbol"] == "SharedCfg"),
+        "out-of-range #L1-L99 must emit docs.stale_symbol_range in lint mode: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| v["rule_id"] == "docs.stale_symbol_range" && v["symbol"] == "LocalDup"),
+        "multi-match ambiguous symbol claim must emit docs.stale_symbol_range in lint mode: {items:?}"
+    );
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "syntax.intra_crate_type_homonym"
+                && v["symbol"]
+                    .as_str()
+                    .and_then(|s| s.rsplit('.').next())
+                    == Some("LocalDup")
+                && v["severity"] == "error"
+        }),
+        "intra-package LocalDup must emit syntax.intra_crate_type_homonym at complexity.severity=error: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["rule_id"] == "syntax.intra_crate_type_homonym"
+                && v["symbol"]
+                    .as_str()
+                    .and_then(|s| s.rsplit('.').next())
+                    == Some("SharedCfg")
+        }),
+        "cross-package SharedCfg (pkg_a vs pkg_b Cargo.toml) must NOT emit intra_crate_type_homonym: {items:?}"
+    );
+
+    assert!(
+        items.iter().any(|v| v["category"] == "duplicates" && !v["path"].as_str().unwrap_or("").contains("test")),
+        "Type-2 renamed-local cross-name functions compute_alpha/compute_beta must emit duplicate clone: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| v["rule_id"] == "duplicates.similar"),
+        "LCS/Jaccard near-clone pair near_alpha/near_beta must emit duplicates.similar: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["category"] == "duplicates"
+                && v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("test_clone_"))
+        }),
+        "duplicates must exclude #[cfg(test)] functions by default: {items:?}"
+    );
+
+    assert!(
+        items.iter().filter(|v| v["category"] == "cycles").count() == 0,
+        "test-only and archive import cycles must be filtered from cycles.scc: {items:?}"
+    );
+
+    for live_fn in ["on_event", "custom_hook"] {
+        assert!(
+            !items.iter().any(|v| {
+                v["category"] == "dead_tails"
+                    && v["symbol"]
+                        .as_str()
+                        .is_some_and(|s| s.rsplit('.').next() == Some(live_fn))
+            }),
+            "indexed callback/unresolved receiver '{live_fn}' must remain live: {items:?}"
+        );
+    }
 }

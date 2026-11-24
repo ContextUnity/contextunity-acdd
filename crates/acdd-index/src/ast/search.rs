@@ -722,6 +722,203 @@ pub struct PreparedAstMatcher {
     prepared_by_grammar: Vec<(tree_sitter::Language, PreparedVariant)>,
 }
 
+/// Result for one matcher in a batched single-parse source scan.
+pub struct AstBatchMatch {
+    /// Zero-based index of the matcher in the input slice.
+    pub matcher_index: usize,
+    /// Search result page for this matcher on the parsed source.
+    pub page: SearchPage,
+}
+
+struct TreeMatchTarget<'a> {
+    source: &'a str,
+    path: &'a str,
+    offset: usize,
+    limit: usize,
+}
+
+fn match_prepared_tree(
+    profile: &dyn LanguageProfile,
+    variant: &PreparedVariant,
+    tree: &Tree,
+    target: TreeMatchTarget<'_>,
+    budget: &mut SearchBudget,
+) -> Result<SearchPage> {
+    let TreeMatchTarget {
+        source,
+        path,
+        offset,
+        limit,
+    } = target;
+    let bounded = budget.deadline.is_some();
+    let pn = variant
+        .prepared
+        .node(profile)
+        .context("search pattern root is empty")?;
+    let capabilities = profile.ast_search_capabilities();
+    let mut stack = vec![tree.root_node()];
+    let mut matches = Vec::new();
+    let mut matched_count = 0;
+    let mut visited = 0;
+    while let Some(n) = stack.pop() {
+        visited += 1;
+        if !budget.step() || (bounded && visited > 100_000) {
+            return Ok(SearchPage::limited(matches, matched_count));
+        }
+        let mut captures = serde_json::Map::new();
+        let matched = structural_match(
+            pn,
+            n,
+            &variant.prepared.source,
+            source,
+            &mut captures,
+            budget,
+            StructuralMatchOptions {
+                capabilities: &capabilities,
+                declaration_root: variant.prepared.mode == PatternMode::Declaration,
+                declaration_prefix_end: variant.prepared.declaration_prefix_end,
+            },
+        );
+        if budget.exhausted {
+            return Ok(SearchPage::limited(matches, matched_count));
+        }
+        if matched {
+            matched_count += 1;
+            if matched_count > offset {
+                if matches.len() == limit {
+                    return Ok(SearchPage {
+                        items: matches,
+                        matched: matched_count,
+                        complete: false,
+                        work_limited: false,
+                    });
+                }
+                matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
+                if !bounded && matches.len() >= limit {
+                    return Ok(SearchPage {
+                        items: matches,
+                        matched: matched_count,
+                        complete: false,
+                        work_limited: false,
+                    });
+                }
+            }
+        }
+        let mut c = n.walk();
+        let children: Vec<_> = n.named_children(&mut c).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    Ok(SearchPage {
+        items: matches,
+        matched: matched_count,
+        complete: true,
+        work_limited: false,
+    })
+}
+
+/// Evaluates multiple same-language `PreparedAstMatcher`s against `source`, parsing at most once.
+pub fn search_matchers_in_source(
+    matchers: &mut [&mut PreparedAstMatcher],
+    source: &str,
+    path: &str,
+    limit: usize,
+    deadline: std::time::Instant,
+) -> Result<Vec<AstBatchMatch>> {
+    anyhow::ensure!(
+        limit > 0 && limit <= SEARCH_MATCH_HORIZON,
+        "AST search limit must be 1..=10000; narrow path or pattern"
+    );
+    if matchers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let expected_lang = matchers[0].profile.id();
+    let mut pages: Vec<Option<SearchPage>> = (0..matchers.len()).map(|_| None).collect();
+    let mut active_indices: Vec<usize> = Vec::new();
+    let mut active_grammar: Option<tree_sitter::Language> = None;
+
+    for (idx, matcher) in matchers.iter_mut().enumerate() {
+        anyhow::ensure!(
+            matcher.profile.id() == expected_lang,
+            "batched AST search requires uniform language '{}' (got '{}')",
+            expected_lang,
+            matcher.profile.id()
+        );
+        let mut prep_budget = SearchBudget::bounded(deadline);
+        if matcher.prepare_variant(path, &mut prep_budget)?.is_none() {
+            pages[idx] = Some(SearchPage::limited(Vec::new(), 0));
+            continue;
+        }
+        let grammar = matcher.profile.grammar(path);
+        if active_grammar.is_none() {
+            active_grammar = Some(grammar.clone());
+        }
+        let variant = &matcher
+            .prepared_by_grammar
+            .iter()
+            .find(|(cached, _)| *cached == grammar)
+            .expect("variant prepared above")
+            .1;
+        if !source_satisfies_anchors(matcher.profile.id(), &variant.required_anchors, source) {
+            pages[idx] = Some(SearchPage {
+                items: Vec::new(),
+                matched: 0,
+                complete: true,
+                work_limited: false,
+            });
+        } else {
+            active_indices.push(idx);
+        }
+    }
+
+    if !active_indices.is_empty() {
+        let mut parse_budget = SearchBudget::bounded(deadline);
+        let first_idx = active_indices[0];
+        let parsed = if parse_budget.prepare_parser(&mut matchers[first_idx].parser) {
+            matchers[first_idx].parser.parse(source, None)
+        } else {
+            None
+        };
+        if let Some(tree) = parsed {
+            let grammar = active_grammar.expect("active grammar set");
+            for idx in active_indices {
+                let matcher = &matchers[idx];
+                let variant = &matcher
+                    .prepared_by_grammar
+                    .iter()
+                    .find(|(cached, _)| *cached == grammar)
+                    .expect("variant prepared above")
+                    .1;
+                let mut match_budget = SearchBudget::bounded(deadline);
+                pages[idx] = Some(match_prepared_tree(
+                    matcher.profile,
+                    variant,
+                    &tree,
+                    TreeMatchTarget {
+                        source,
+                        path,
+                        offset: 0,
+                        limit,
+                    },
+                    &mut match_budget,
+                )?);
+            }
+        } else {
+            for idx in active_indices {
+                pages[idx] = Some(SearchPage::limited(Vec::new(), 0));
+            }
+        }
+    }
+
+    Ok(pages
+        .into_iter()
+        .enumerate()
+        .map(|(matcher_index, page)| AstBatchMatch {
+            matcher_index,
+            page: page.expect("every matcher produces a SearchPage"),
+        })
+        .collect())
+}
+
 impl PreparedAstMatcher {
     /// Compiles a matcher for `language` and `pattern` without binding a single file path.
     pub fn new(language: &str, pattern: &str) -> Result<Self> {
@@ -830,11 +1027,6 @@ impl PreparedAstMatcher {
                 work_limited: false,
             });
         }
-        let pn = variant
-            .prepared
-            .node(self.profile)
-            .context("search pattern root is empty")?;
-        let capabilities = self.profile.ast_search_capabilities();
         if !budget.prepare_parser(&mut self.parser) {
             return Ok(SearchPage::limited(Vec::new(), 0));
         }
@@ -843,64 +1035,18 @@ impl PreparedAstMatcher {
             None if bounded => return Ok(SearchPage::limited(Vec::new(), 0)),
             None => bail!("parse cancelled"),
         };
-        let mut stack = vec![tree.root_node()];
-        let mut matches = Vec::new();
-        let mut matched_count = 0;
-        let mut visited = 0;
-        while let Some(n) = stack.pop() {
-            visited += 1;
-            if !budget.step() || (bounded && visited > 100_000) {
-                return Ok(SearchPage::limited(matches, matched_count));
-            }
-            let mut captures = serde_json::Map::new();
-            let matched = structural_match(
-                pn,
-                n,
-                &variant.prepared.source,
+        match_prepared_tree(
+            self.profile,
+            variant,
+            &tree,
+            TreeMatchTarget {
                 source,
-                &mut captures,
-                &mut budget,
-                StructuralMatchOptions {
-                    capabilities: &capabilities,
-                    declaration_root: variant.prepared.mode == PatternMode::Declaration,
-                    declaration_prefix_end: variant.prepared.declaration_prefix_end,
-                },
-            );
-            if budget.exhausted {
-                return Ok(SearchPage::limited(matches, matched_count));
-            }
-            if matched {
-                matched_count += 1;
-                if matched_count > offset {
-                    if matches.len() == limit {
-                        return Ok(SearchPage {
-                            items: matches,
-                            matched: matched_count,
-                            complete: false,
-                            work_limited: false,
-                        });
-                    }
-                    matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
-                    if !bounded && matches.len() >= limit {
-                        return Ok(SearchPage {
-                            items: matches,
-                            matched: matched_count,
-                            complete: false,
-                            work_limited: false,
-                        });
-                    }
-                }
-            }
-            let mut c = n.walk();
-            let children: Vec<_> = n.named_children(&mut c).collect();
-            stack.extend(children.into_iter().rev());
-        }
-        Ok(SearchPage {
-            items: matches,
-            matched: matched_count,
-            complete: true,
-            work_limited: false,
-        })
+                path,
+                offset,
+                limit,
+            },
+            &mut budget,
+        )
     }
 }
 

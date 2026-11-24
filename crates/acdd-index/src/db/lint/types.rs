@@ -135,21 +135,35 @@ impl LintScope {
     }
 }
 
+pub(super) fn load_test_line_spans(conn: &Connection) -> Result<HashMap<String, Vec<(usize, usize)>>> {
+    let mut spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT p.path, n.line, n.end_line, n.is_test, n.details
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         WHERE n.is_test != 0 OR n.details LIKE '%cfg(%test%'",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let line: i64 = row.get(1)?;
+        let end_line: i64 = row.get(2)?;
+        let is_test: i64 = row.get(3)?;
+        let details: String = row.get(4)?;
+        if is_test != 0 || NodeDetailFlags::from_json(&details).has_cfg_test {
+            let start = line.max(1) as usize;
+            let end = end_line.max(line).max(1) as usize;
+            spans.entry(path).or_default().push((start, end));
+        }
+    }
+    Ok(spans)
+}
+
 pub(super) fn is_glob_pattern(pattern: &str) -> bool {
     pattern.contains(['*', '?', '{'])
 }
 
-pub(super) fn is_archived_path(path: &str) -> bool {
-    path.starts_with("archive/") || path.contains("/archive/")
-}
-
-pub(super) fn is_test_context_path(path: &str) -> bool {
-    path.starts_with("tests/")
-        || path.contains("/tests/")
-        || path.ends_with("/tests.rs")
-        || path == "tests.rs"
-        || path.starts_with("benchmarks/")
-}
+pub(super) use crate::db::cycles::{is_archived_path, is_test_context_path};
 
 #[derive(Debug, Clone)]
 pub(super) struct IndexedFile {
@@ -168,6 +182,7 @@ pub(super) struct IndexedNode {
     pub(super) line: usize,
     pub(super) end_line: usize,
     pub(super) is_test: bool,
+    pub(super) explicit_is_public: Option<bool>,
     pub(super) language: String,
     pub(super) generated: bool,
     pub(super) decorators: Vec<String>,
@@ -262,28 +277,7 @@ impl LintIndexData {
                 );
             }
         }
-        let mut test_line_spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        {
-            let mut stmt = conn.prepare(
-                "SELECT p.path, n.line, n.end_line, n.is_test, n.details
-                 FROM nodes n
-                 JOIN path_dictionary p ON p.path_id = n.path_id
-                 WHERE n.is_test != 0 OR n.details LIKE '%cfg(%test%'",
-            )?;
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                let path: String = row.get(0)?;
-                let line: i64 = row.get(1)?;
-                let end_line: i64 = row.get(2)?;
-                let is_test: i64 = row.get(3)?;
-                let details: String = row.get(4)?;
-                if is_test != 0 || NodeDetailFlags::from_json(&details).has_cfg_test {
-                    let start = line.max(1) as usize;
-                    let end = end_line.max(line).max(1) as usize;
-                    test_line_spans.entry(path).or_default().push((start, end));
-                }
-            }
-        }
+        let test_line_spans = load_test_line_spans(conn)?;
         Ok(Self {
             scope,
             files,
@@ -329,7 +323,8 @@ impl LintIndexData {
                     (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?);
                 let (line, end_line, is_test, language, generated, details_raw): (i64, i64, i64, String, i64, String) =
                     (row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?);
-                let (decorators, receiver_type, impl_trait) = parse_node_lint_details(&details_raw);
+                let (decorators, receiver_type, impl_trait, explicit_is_public) =
+                    parse_node_lint_details(&details_raw);
                 by_path.entry(path.clone()).or_default().push(hash);
                 map.insert(
                     hash,
@@ -343,6 +338,7 @@ impl LintIndexData {
                         line: line.max(1) as usize,
                         end_line: end_line.max(line).max(1) as usize,
                         is_test: is_test != 0,
+                        explicit_is_public,
                         language,
                         generated: generated != 0,
                         decorators,
@@ -409,13 +405,14 @@ impl LintIndexData {
                     let line: i64 = row.get(1)?;
                     let symbol: String = row.get(2)?;
                     let evidence: String = row.get(3)?;
+                    let line_usize = line.max(1) as usize;
                     let module_symbol = extract_external_module_from_evidence(&evidence)
                         .filter(|m| m != &symbol);
                     seen_in_coverage.insert((path.clone(), symbol.clone()));
                     by_path.entry(path.clone()).or_default().push(list.len());
                     list.push(ExternalOccurrence {
                         path,
-                        line: Some(line.max(1) as usize),
+                        line: Some(line_usize),
                         symbol,
                         module_symbol,
                     });
@@ -454,16 +451,19 @@ impl LintIndexData {
     }
 }
 
-fn parse_node_lint_details(raw: &str) -> (Vec<String>, Option<String>, Option<String>) {
+fn parse_node_lint_details(
+    raw: &str,
+) -> (Vec<String>, Option<String>, Option<String>, Option<bool>) {
     if !raw.starts_with('{')
         || (!raw.contains(NodeDetailKey::DECORATORS)
             && !raw.contains("receiver_type")
-            && !raw.contains(NodeDetailKey::IMPL_TRAIT))
+            && !raw.contains(NodeDetailKey::IMPL_TRAIT)
+            && !raw.contains(NodeDetailKey::IS_PUBLIC))
     {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None, None, None);
     }
     let Ok(val) = serde_json::from_str::<Value>(raw) else {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None, None, None);
     };
     let decorators = val
         .get(NodeDetailKey::DECORATORS)
@@ -483,12 +483,13 @@ fn parse_node_lint_details(raw: &str) -> (Vec<String>, Option<String>, Option<St
         .get(NodeDetailKey::IMPL_TRAIT)
         .and_then(Value::as_str)
         .map(str::to_owned);
-    (decorators, receiver_type, impl_trait)
+    let explicit_is_public = val.get(NodeDetailKey::IS_PUBLIC).and_then(Value::as_bool);
+    (decorators, receiver_type, impl_trait, explicit_is_public)
 }
 
 pub(super) fn is_type_declaration(kind: &str) -> bool {
     matches!(
         NodeKind::parse(kind),
-        Some(NodeKind::Class | NodeKind::Struct)
+        Some(NodeKind::Class | NodeKind::Struct | NodeKind::Enum)
     )
 }

@@ -1,6 +1,8 @@
 use super::types::{is_archived_path, LintIndexData, LintScope, LintViolation};
+use crate::db::commitments::{read_metadata_optional, MetadataKey};
 use crate::db::paging;
 use crate::db::reader::{selectors::path_bounds, sql::rows};
+use crate::languages::dependency_registry::DependencyRegistry;
 use crate::models::{
     details::NodeDetailKey,
     tags::NodeKind,
@@ -11,6 +13,7 @@ use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 fn supported_language_profiles() -> Vec<&'static str> {
     crate::languages::profiles()
@@ -85,11 +88,12 @@ pub(super) fn collect_syntax_violations(
     conn: &Connection,
     index: &LintIndexData,
     complexity: &ComplexityLimits,
+    workspace_root: Option<&Path>,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     collect_parse_violations(conn, &index.scope, violations)?;
     collect_fact_budget_violations(conn, index, complexity, violations)?;
-    collect_type_homonym_violations(conn, index, complexity, violations)?;
+    collect_type_homonym_violations(conn, index, complexity, workspace_root, violations)?;
     Ok(())
 }
 
@@ -217,12 +221,41 @@ fn crate_or_package_bucket(path: &str) -> String {
     }
 }
 
+fn package_bucket_for_node(
+    path: &str,
+    language: &str,
+    dep_registry: Option<&DependencyRegistry>,
+) -> String {
+    if let (Some(reg), Some(profile)) = (dep_registry, crate::languages::by_id(language)) {
+        if let Some(scope) = reg.nearest_manifest_scope_for_path(profile.family(), path) {
+            return if scope.is_empty() {
+                "workspace-root".to_owned()
+            } else {
+                scope.to_owned()
+            };
+        }
+    }
+    crate_or_package_bucket(path)
+}
+
 fn collect_type_homonym_violations(
     conn: &Connection,
     index: &LintIndexData,
     complexity: &ComplexityLimits,
+    workspace_root: Option<&Path>,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
+    let resolved_root = workspace_root.map(Path::to_path_buf).or_else(|| {
+        read_metadata_optional(conn, MetadataKey::WorkspaceRoot)
+            .ok()
+            .flatten()
+            .map(PathBuf::from)
+    });
+    let dep_registry = resolved_root
+        .as_deref()
+        .filter(|root| root.is_dir())
+        .map(|root| DependencyRegistry::collect(Some(root)));
+
     let sql = format!(
         "SELECT n.name, n.qualname, p.path, n.line, n.language
          FROM nodes n
@@ -246,7 +279,8 @@ fn collect_type_homonym_violations(
         if is_archived_path(&path) || index.is_test_location(&path, line) {
             continue;
         }
-        groups.entry((crate_or_package_bucket(&path), language, name)).or_default().push((qualname, path, line));
+        let bucket = package_bucket_for_node(&path, &language, dep_registry.as_ref());
+        groups.entry((bucket, language, name)).or_default().push((qualname, path, line));
     }
     for ((bucket, _lang, name), entries) in groups {
         let distinct_file_count = entries.iter().map(|(_, p, _)| p.as_str()).collect::<BTreeSet<_>>().len();
@@ -259,7 +293,7 @@ fn collect_type_homonym_violations(
                 continue;
             }
             push_syntax(
-                violations, "syntax.intra_crate_type_homonym", LintSeverity::Warn, (&path, line, &qualname),
+                violations, "syntax.intra_crate_type_homonym", complexity.severity, (&path, line, &qualname),
                 format!("type '{name}' ({qualname}) is declared in {distinct_file_count} distinct files inside '{scope_label}'"),
                 complexity.invariant.as_deref(),
                 Some("Disambiguate intra-crate type homonyms so suffix resolution stays unique."),

@@ -46,7 +46,6 @@ invariants:
   - INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING
   - INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME
   - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT
-  - INV-WORKSPACE-BOUNDARIES
 ---
 
 # Performance Guidance, Search Architecture, and Storage Compaction
@@ -439,27 +438,3 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > In `crates/acdd-index/src/db/writer/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
 - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/acdd-index/src/db/writer/dictionary.rs).
-
-> [!IMPORTANT]
-> Invariant: Strict Cargo Workspace Boundaries
->
-> Splitting the codebase into three independent Cargo workspace library crates (`crates/acdd-core`, `crates/acdd-index`, and `crates/acdd-state`) plus the root host crate `contextunity-acdd` enforces unidirectional dependency boundaries, isolates parser, storage, and state-engine internals from the strict leaf crate, and reduces incremental compilation overhead.
-
-- INV-WORKSPACE-BOUNDARIES: Splitting the repository into `acdd-core`, `acdd-index`, `acdd-state`, and root host `contextunity-acdd` enforces strict unidirectional dependency boundaries with zero circular crate dependencies. [Cargo.toml](../../Cargo.toml).
-
-```acdd-rule
-id: INV-WORKSPACE-BOUNDARIES
-invariant: INV-WORKSPACE-BOUNDARIES
-severity: error
-kind: forbid_cycles
-zones:
-  - core
-  - index
-  - state
-  - host_format
-  - host_engine
-  - host_state_bridge
-  - host_telemetry
-  - host_cli
-  - host_mcp
-```

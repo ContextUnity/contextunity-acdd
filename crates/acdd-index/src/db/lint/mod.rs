@@ -108,7 +108,13 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
         docs_lint::evaluate_docs_lint(&scoped_doc_findings, &doc_integrity_covered, &mut violations);
     }
     if categories.contains(&LintCategory::Syntax) {
-        syntax::collect_syntax_violations(conn, &index, &arch_cfg.complexity, &mut violations)?;
+        syntax::collect_syntax_violations(
+            conn,
+            &index,
+            &arch_cfg.complexity,
+            request.workspace_root,
+            &mut violations,
+        )?;
     }
     if categories.contains(&LintCategory::Duplicates) {
         duplicates::collect_duplicate_violations(conn, &index.scope, &mut violations)?;
@@ -118,6 +124,7 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
             conn,
             &index.scope,
             request.workspace_root,
+            arch_cfg.unused_public_api,
             &mut violations,
         )?;
     }

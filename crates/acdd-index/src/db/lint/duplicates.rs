@@ -1,4 +1,6 @@
-use super::types::{LintScope, LintViolation};
+use super::types::{
+    is_archived_path, is_test_context_path, load_test_line_spans, LintScope, LintViolation,
+};
 use crate::db::reader::selectors as reader;
 use crate::models::{tags::NodeKind, StatementFingerprint};
 use acdd_core::lint::{LintCategory, LintSeverity};
@@ -78,15 +80,58 @@ pub(crate) fn format_duplicate_suggestion(name: &str, paths: &[&str]) -> String 
     }
 }
 
+fn lcs_statement_len(a: &[StatementFingerprint], b: &[StatementFingerprint]) -> usize {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut prev = vec![0usize; short.len() + 1];
+    let mut curr = vec![0usize; short.len() + 1];
+    for x in long {
+        for (j, y) in short.iter().enumerate() {
+            curr[j + 1] = if x.hash == y.hash && x.token_count == y.token_count {
+                prev[j] + 1
+            } else {
+                curr[j].max(prev[j + 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.fill(0);
+    }
+    prev[short.len()]
+}
+
+fn jaccard_statement_similarity(a: &[StatementFingerprint], b: &[StatementFingerprint]) -> f64 {
+    let mut counts: HashMap<(u64, usize), usize> = HashMap::with_capacity(a.len());
+    for s in a {
+        *counts.entry((s.hash, s.token_count)).or_default() += 1;
+    }
+    let mut intersection = 0usize;
+    for s in b {
+        if let Some(rem) = counts.get_mut(&(s.hash, s.token_count)) {
+            if *rem > 0 {
+                *rem -= 1;
+                intersection += 1;
+            }
+        }
+    }
+    let union = a.len() + b.len() - intersection;
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
 fn compute_statement_similarity(a: &[StatementFingerprint], b: &[StatementFingerprint]) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
+    let max_len = a.len().max(b.len());
     let min_len = a.len().min(b.len());
-    let matching = (0..min_len)
-        .filter(|&i| a[i].hash == b[i].hash && a[i].token_count == b[i].token_count)
-        .count();
-    matching as f64 / a.len().max(b.len()) as f64
+    if min_len * 10 < max_len * 6 {
+        return 0.0;
+    }
+    let lcs_ratio = lcs_statement_len(a, b) as f64 / max_len as f64;
+    let jaccard = jaccard_statement_similarity(a, b);
+    0.5 * lcs_ratio + 0.5 * jaccard
 }
 
 fn hash_statement_slice(stmts: &[StatementFingerprint]) -> [u8; 32] {
@@ -206,24 +251,30 @@ pub(crate) fn collect_file_duplicates(
     conn: &Connection,
     scope: &str,
 ) -> Result<(Vec<FileDuplicateGroup>, u64)> {
+    let include_tests = is_test_context_path(scope);
     let (lower, upper) = reader::path_bounds(scope);
     let mut stmt = conn.prepare(
-        "SELECT f.digest, f.size, f.path
+        "SELECT f.digest, f.size, f.path, f.is_test
          FROM files f
          WHERE (?1 = '' OR f.path = ?1 OR (f.path >= ?2 AND f.path < ?3))
+           AND (?4 = 1 OR f.is_test = 0)
            AND f.digest IN (
                SELECT digest FROM files
                WHERE (?1 = '' OR path = ?1 OR (path >= ?2 AND path < ?3))
+                 AND (?4 = 1 OR is_test = 0)
                GROUP BY digest HAVING count(*) > 1
            )
          ORDER BY f.size DESC, f.digest, f.path",
     )?;
     let mut groups: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
-    let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
+    let mut rows = stmt.query(rusqlite::params![scope, lower, upper, i64::from(include_tests)])?;
     while let Some(row) = rows.next()? {
         let digest: String = row.get(0)?;
         let size: u64 = row.get(1)?;
         let p: String = row.get(2)?;
+        if is_archived_path(&p) || (!include_tests && is_test_context_path(&p)) {
+            continue;
+        }
         groups.entry(digest).or_insert((size, Vec::new())).1.push(p);
     }
     drop(rows);
@@ -401,14 +452,22 @@ pub(crate) fn collect_symbol_duplicates(
     min_lines: usize,
 ) -> Result<SymbolDuplicateReport> {
     let min_stmts = min_lines.max(1);
+    let include_tests = is_test_context_path(scope);
     let (lower, upper) = reader::path_bounds(scope);
+    let test_spans = if include_tests {
+        HashMap::new()
+    } else {
+        load_test_line_spans(conn)?
+    };
 
     let mut stmt = conn.prepare(&format!(
         "SELECT n.id, n.name, n.kind, n.line, n.end_line, p.path
          FROM nodes n
          JOIN path_dictionary p ON p.path_id = n.path_id
+         LEFT JOIN files f ON f.path = p.path
          WHERE n.kind IN ('{function}', '{method}')
            AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
+           AND (?4 = 1 OR (n.is_test = 0 AND n.generated = 0 AND COALESCE(f.is_test, 0) = 0))
          ORDER BY p.path, n.line",
         function = NodeKind::Function.as_str(),
         method = NodeKind::Method.as_str(),
@@ -418,7 +477,7 @@ pub(crate) fn collect_symbol_duplicates(
     let mut node_ids: Vec<String> = Vec::new();
     let mut raw_candidates = Vec::new();
 
-    let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
+    let mut rows = stmt.query(rusqlite::params![scope, lower, upper, i64::from(include_tests)])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let name: String = row.get(1)?;
@@ -426,6 +485,15 @@ pub(crate) fn collect_symbol_duplicates(
         let line: usize = row.get(3)?;
         let end_line: usize = row.get(4)?;
         let path: String = row.get(5)?;
+        if is_archived_path(&path)
+            || (!include_tests
+                && (is_test_context_path(&path)
+                    || test_spans
+                        .get(&path)
+                        .is_some_and(|spans| spans.iter().any(|&(s, e)| line >= s && line <= e))))
+        {
+            continue;
+        }
         needed_paths.insert(path.clone());
         node_ids.push(id);
         raw_candidates.push(DuplicateCandidate {
@@ -482,58 +550,62 @@ pub(crate) fn collect_symbol_duplicates(
         }
     }
 
-    let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut stmt_index: HashMap<(u64, usize), Vec<usize>> = HashMap::new();
+    let mut similar_pool: Vec<usize> = Vec::new();
     for (idx, p) in prepared.iter().enumerate() {
-        if p.body_hash.is_some() {
-            by_name
-                .entry(raw_candidates[idx].name.as_str())
-                .or_default()
-                .push(idx);
-        }
-    }
-
-    for (_name, indices) in by_name {
-        if indices.len() < 2 {
-            continue;
-        }
-        let mut hash_to_candidates: BTreeMap<[u8; 32], Vec<usize>> = BTreeMap::new();
-        for &i in &indices {
-            if let Some(h) = prepared[i].body_hash {
-                hash_to_candidates.entry(h).or_default().push(i);
-            }
-        }
-        if hash_to_candidates.len() < 2 {
-            continue;
-        }
-        let mut hash_clusters: Vec<Vec<[u8; 32]>> = Vec::new();
-        for (&h, inds) in &hash_to_candidates {
-            let stmts_rep = &prepared[inds[0]].statements;
-            let mut clustered = false;
-            for cluster in &mut hash_clusters {
-                let cluster_rep_idx = hash_to_candidates[&cluster[0]][0];
-                let cluster_rep_stmts = &prepared[cluster_rep_idx].statements;
-                if compute_statement_similarity(stmts_rep, cluster_rep_stmts) >= 0.80 {
-                    cluster.push(h);
-                    clustered = true;
-                    break;
+        if p.body_hash.is_some() && !whole_symbol_duplicate_members.contains(&idx) {
+            similar_pool.push(idx);
+            let mut seen_stmt = HashSet::new();
+            for s in &p.statements {
+                if seen_stmt.insert((s.hash, s.token_count)) {
+                    stmt_index
+                        .entry((s.hash, s.token_count))
+                        .or_default()
+                        .push(idx);
                 }
             }
-            if !clustered {
-                hash_clusters.push(vec![h]);
+        }
+    }
+    let mut clustered: HashSet<usize> = HashSet::new();
+    for &rep_idx in &similar_pool {
+        if clustered.contains(&rep_idx) {
+            continue;
+        }
+        let rep_stmts = &prepared[rep_idx].statements;
+        let mut overlap_counts: HashMap<usize, usize> = HashMap::new();
+        for s in rep_stmts {
+            if let Some(cands) = stmt_index.get(&(s.hash, s.token_count)) {
+                if cands.len() > 64 {
+                    continue;
+                }
+                for &cand_idx in cands {
+                    if cand_idx > rep_idx && !clustered.contains(&cand_idx) {
+                        *overlap_counts.entry(cand_idx).or_default() += 1;
+                    }
+                }
             }
         }
-
-        for cluster in hash_clusters {
-            if cluster.len() < 2 {
-                continue;
+        let mut group = vec![rep_idx];
+        let mut candidates_to_score: Vec<usize> = overlap_counts
+            .into_iter()
+            .filter_map(|(cand_idx, shared)| {
+                let max_len = rep_stmts.len().max(prepared[cand_idx].statements.len());
+                (shared * 10 >= max_len * 6).then_some(cand_idx)
+            })
+            .collect();
+        candidates_to_score.sort_unstable();
+        for cand_idx in candidates_to_score {
+            if compute_statement_similarity(rep_stmts, &prepared[cand_idx].statements) >= 0.80 {
+                group.push(cand_idx);
             }
-            let cluster_indices: Vec<usize> = cluster
-                .iter()
-                .flat_map(|h| hash_to_candidates[h].iter().copied())
-                .collect();
+        }
+        if group.len() >= 2 {
+            for &m in &group {
+                clustered.insert(m);
+            }
             push_symbol_group(
                 &raw_candidates,
-                &cluster_indices,
+                &group,
                 "similar",
                 &mut counted_duplicate_locations,
                 &mut whole_symbol_duplicate_members,

@@ -7,7 +7,8 @@ use super::types::{
     is_archived_path, is_type_declaration, ExternalOccurrence, IndexedEdge, IndexedNode,
     LintIndexData, LintViolation,
 };
-use crate::ast::search::PreparedAstMatcher;
+use crate::ast::search::{search_matchers_in_source, PreparedAstMatcher};
+use crate::ast::SEARCH_MATCH_HORIZON;
 use crate::db::cycles::kosaraju_cycle_sccs;
 use crate::db::source::VerifiedSourceCache;
 use acdd_core::lint::{
@@ -57,7 +58,6 @@ pub(super) fn evaluate_arch_rules(
                 ArchRuleKind::ForbidDependency
                     | ArchRuleKind::SingleOwner
                     | ArchRuleKind::AllowOnlyDependencies
-                    | ArchRuleKind::MustImplement
             )
     });
 
@@ -68,20 +68,38 @@ pub(super) fn evaluate_arch_rules(
     if needs_external {
         index.ensure_external(conn)?;
     }
+    let dispatch_idx = needs_graph.then(|| InterfaceDispatchIndex::build(index));
 
     let mut source_cache = VerifiedSourceCache::new();
+    let mut ast_rules: Vec<&LoadedRule> = Vec::new();
     for &loaded in rules {
         let spec = &loaded.spec;
         match spec.kind {
-            ArchRuleKind::ForbidDependency => {
-                eval_dependency_rule(index, arch, loaded, false, violations)
-            }
-            ArchRuleKind::AllowOnlyDependencies => {
-                eval_dependency_rule(index, arch, loaded, true, violations)
-            }
+            ArchRuleKind::ForbidDependency => eval_dependency_rule(
+                index,
+                arch,
+                dispatch_idx.as_ref().expect("dispatch_idx built"),
+                loaded,
+                false,
+                violations,
+            ),
+            ArchRuleKind::AllowOnlyDependencies => eval_dependency_rule(
+                index,
+                arch,
+                dispatch_idx.as_ref().expect("dispatch_idx built"),
+                loaded,
+                true,
+                violations,
+            ),
             ArchRuleKind::SingleOwner => eval_single_owner(index, arch, loaded, violations),
             ArchRuleKind::ForbidCycles => eval_forbid_cycles(index, arch, loaded, violations),
-            ArchRuleKind::BoundaryEntry => eval_boundary_entry(index, arch, loaded, violations),
+            ArchRuleKind::BoundaryEntry => eval_boundary_entry(
+                index,
+                arch,
+                dispatch_idx.as_ref().expect("dispatch_idx built"),
+                loaded,
+                violations,
+            ),
             ArchRuleKind::MustImplement => eval_must_implement(index, arch, loaded, violations),
             ArchRuleKind::DocIntegrity => evaluate_doc_integrity_rule(
                 index,
@@ -91,11 +109,18 @@ pub(super) fn evaluate_arch_rules(
                 violations,
                 &mut doc_integrity_covered,
             ),
-            ArchRuleKind::AstPattern => {
-                eval_ast_pattern(conn, index, arch, loaded, workspace_root, &mut source_cache, violations)?
-            }
+            ArchRuleKind::AstPattern => ast_rules.push(loaded),
         }
     }
+    eval_ast_patterns_batched(
+        conn,
+        index,
+        arch,
+        &ast_rules,
+        workspace_root,
+        &mut source_cache,
+        violations,
+    )?;
     Ok(doc_integrity_covered)
 }
 
@@ -155,9 +180,97 @@ fn push_ext_violation(
     push_arch_violation(violations, loaded, ext.path.clone(), ext.line, msg, Some(display), None);
 }
 
+struct InterfaceDispatchIndex<'a> {
+    method_ifaces: HashMap<i64, Vec<&'a IndexedNode>>,
+    enclosing_impl: HashMap<i64, &'a IndexedNode>,
+    impls_by_path: HashMap<&'a str, Vec<&'a IndexedNode>>,
+    trait_by_name: HashMap<&'a str, Vec<&'a IndexedNode>>,
+}
+
+impl<'a> InterfaceDispatchIndex<'a> {
+    fn build(index: &'a LintIndexData) -> Self {
+        let nodes = index.nodes.as_ref().expect("nodes loaded");
+        let edges = index.edges.as_deref().expect("edges loaded");
+        let mut method_ifaces: HashMap<i64, Vec<&'a IndexedNode>> = HashMap::new();
+        let mut enclosing_impl: HashMap<i64, &'a IndexedNode> = HashMap::new();
+        for edge in edges {
+            if matches!(edge.kind.as_str(), "implements" | "overrides" | "inherits") {
+                if let Some(dst) = nodes.get(&edge.dst_hash) {
+                    method_ifaces.entry(edge.src_hash).or_default().push(dst);
+                }
+            } else if edge.kind == "contains" {
+                if let Some(src) = nodes.get(&edge.src_hash) {
+                    if src.kind == "impl" {
+                        enclosing_impl.insert(edge.dst_hash, src);
+                    }
+                }
+            }
+        }
+        let mut trait_by_name: HashMap<&'a str, Vec<&'a IndexedNode>> = HashMap::new();
+        let mut impls_by_path: HashMap<&'a str, Vec<&'a IndexedNode>> = HashMap::new();
+        for node in nodes.values() {
+            if matches!(node.kind.as_str(), "trait" | "interface") {
+                trait_by_name.entry(node.name.as_str()).or_default().push(node);
+            } else if node.kind == "impl" {
+                impls_by_path.entry(node.path.as_str()).or_default().push(node);
+            }
+        }
+        Self {
+            method_ifaces,
+            enclosing_impl,
+            impls_by_path,
+            trait_by_name,
+        }
+    }
+
+    fn innermost_enclosing_impl(&self, dst: &'a IndexedNode) -> Option<&'a IndexedNode> {
+        if let Some(&imp) = self.enclosing_impl.get(&dst.hash) {
+            return Some(imp);
+        }
+        self.impls_by_path.get(dst.path.as_str()).and_then(|imps| {
+            imps.iter()
+                .copied()
+                .filter(|imp| imp.line <= dst.line && dst.line <= imp.end_line)
+                .min_by_key(|imp| imp.end_line.saturating_sub(imp.line))
+        })
+    }
+
+    fn dispatched_interfaces(&self, dst: &'a IndexedNode) -> Vec<&'a IndexedNode> {
+        if let Some(direct) = self.method_ifaces.get(&dst.hash) {
+            if !direct.is_empty() {
+                return direct.clone();
+            }
+        }
+        let Some(imp) = self.innermost_enclosing_impl(dst) else {
+            return Vec::new();
+        };
+        let Some(tr) = imp.impl_trait.as_deref() else {
+            return Vec::new();
+        };
+        if let Some(direct_impl) = self.method_ifaces.get(&imp.hash) {
+            if !direct_impl.is_empty() {
+                return direct_impl.clone();
+            }
+        }
+        let clean_tr = clean_type_head(tr);
+        self.trait_by_name.get(clean_tr).cloned().unwrap_or_default()
+    }
+}
+
+fn clean_type_head(raw: &str) -> &str {
+    raw.split('<')
+        .next()
+        .unwrap_or(raw)
+        .rsplit("::")
+        .next()
+        .unwrap_or(raw)
+        .trim()
+}
+
 fn edge_allowed_for_test_policy(
     index: &LintIndexData,
     src_node: &IndexedNode,
+    dst_node: &IndexedNode,
     edge: &IndexedEdge,
     include_tests: bool,
 ) -> bool {
@@ -165,7 +278,9 @@ fn edge_allowed_for_test_policy(
         return true;
     }
     !src_node.is_test
+        && !dst_node.is_test
         && !index.is_test_location(&src_node.path, src_node.line)
+        && !index.is_test_location(&dst_node.path, dst_node.line)
         && !index.is_test_location(&edge.path, edge.line)
 }
 
@@ -215,7 +330,7 @@ fn iter_rule_edges<'a>(
         {
             return None;
         }
-        if !edge_allowed_for_test_policy(index, src, edge, spec.include_tests) {
+        if !edge_allowed_for_test_policy(index, src, dst, edge, spec.include_tests) {
             return None;
         }
         Some((edge, src, dst))
@@ -248,9 +363,28 @@ fn iter_rule_externals<'a>(
     })
 }
 
+fn is_permitted_interface_dispatch<F>(
+    dispatch_idx: &InterfaceDispatchIndex<'_>,
+    spec: &ArchRuleSpec,
+    edge: &IndexedEdge,
+    dst: &IndexedNode,
+    mut iface_allowed: F,
+) -> bool
+where
+    F: FnMut(&IndexedNode) -> bool,
+{
+    if !spec.edge_kinds.is_empty() || !spec.confidences.is_empty() || edge.kind != "possible_calls"
+    {
+        return false;
+    }
+    let ifaces = dispatch_idx.dispatched_interfaces(dst);
+    !ifaces.is_empty() && ifaces.iter().all(|iface| iface_allowed(iface))
+}
+
 fn eval_dependency_rule(
     index: &LintIndexData,
     arch: &ArchitectureConfig,
+    dispatch_idx: &InterfaceDispatchIndex<'_>,
     loaded: &LoadedRule,
     allow_only: bool,
     violations: &mut Vec<LintViolation>,
@@ -263,6 +397,18 @@ fn eval_dependency_rule(
     if check_internal {
         for (edge, src, dst) in iter_rule_edges(index, spec, true) {
             if !selector_matches_node(from_sel, src, &arch.zones, index.file_language(&src.path)) {
+                continue;
+            }
+            if is_permitted_interface_dispatch(dispatch_idx, spec, edge, dst, |iface| {
+                let iface_lang = index.file_language(&iface.path);
+                if allow_only {
+                    iface.path == src.path
+                        || selector_matches_node(from_sel, iface, &arch.zones, iface_lang)
+                        || selector_matches_node(to_sel, iface, &arch.zones, iface_lang)
+                } else {
+                    !selector_matches_node(to_sel, iface, &arch.zones, iface_lang)
+                }
+            }) {
                 continue;
             }
             let dst_lang = index.file_language(&dst.path);
@@ -393,17 +539,36 @@ fn dir_bucket(path: &str, depth: usize) -> String {
     parts.join("/")
 }
 
+fn glob_specificity(glob: &str) -> (usize, usize, bool, usize) {
+    let literal_prefix_len = glob.find(['*', '?', '{']).unwrap_or(glob.len());
+    let non_wildcard_len = glob
+        .chars()
+        .filter(|c| !matches!(c, '*' | '?' | '{' | '}'))
+        .count();
+    let exact_glob = !glob.contains("**");
+    (literal_prefix_len, non_wildcard_len, exact_glob, glob.len())
+}
+
 fn zone_bucket(
     path: &str,
     zone_names: &[String],
     zones: &BTreeMap<String, Vec<String>>,
 ) -> Option<String> {
-    zone_names.iter().find_map(|name| {
-        zones
-            .get(name)
-            .is_some_and(|globs| globs.iter().any(|g| glob_matches(g, path)))
-            .then(|| name.clone())
-    })
+    zone_names
+        .iter()
+        .filter_map(|name| {
+            let best = zones
+                .get(name)?
+                .iter()
+                .filter(|g| glob_matches(g, path))
+                .map(|g| glob_specificity(g))
+                .max()?;
+            Some((best, name))
+        })
+        .max_by(|(spec_a, name_a), (spec_b, name_b)| {
+            spec_a.cmp(spec_b).then_with(|| name_b.cmp(name_a))
+        })
+        .map(|(_, name)| name.clone())
 }
 
 fn eval_forbid_cycles(
@@ -505,6 +670,7 @@ fn eval_forbid_cycles(
 fn eval_boundary_entry(
     index: &LintIndexData,
     arch: &ArchitectureConfig,
+    dispatch_idx: &InterfaceDispatchIndex<'_>,
     loaded: &LoadedRule,
     violations: &mut Vec<LintViolation>,
 ) {
@@ -519,6 +685,12 @@ fn eval_boundary_entry(
             if !selector_matches_node(from_sel, src, &arch.zones, index.file_language(&src.path)) {
                 continue;
             }
+        }
+        if is_permitted_interface_dispatch(dispatch_idx, spec, edge, dst, |iface| {
+            !selector_matches_node(to_sel, iface, &arch.zones, index.file_language(&iface.path))
+                || is_entrypoint(&iface.path)
+        }) {
+            continue;
         }
         let dst_lang = index.file_language(&dst.path);
         let src_lang = index.file_language(&src.path);
@@ -540,6 +712,18 @@ fn eval_boundary_entry(
     }
 }
 
+fn is_public_for_must_implement(node: &IndexedNode) -> bool {
+    match node.explicit_is_public {
+        Some(flag) => flag,
+        // `compact_node_details` strips `"is_public": false` before persistence; for languages
+        // whose extractors always emit `is_public`, an absent flag means non-public.
+        None => !matches!(
+            node.language.as_str(),
+            "rust" | "python" | "typescript" | "tsx" | "javascript" | "vue"
+        ),
+    }
+}
+
 fn eval_must_implement(
     index: &LintIndexData,
     arch: &ArchitectureConfig,
@@ -555,6 +739,7 @@ fn eval_must_implement(
 
     // Precompute type -> satisfied via direct edge or Rust `impl` node
     let mut direct_edges_by_src: HashMap<i64, Vec<&IndexedEdge>> = HashMap::new();
+    let mut path_refs_to_target: HashSet<(&str, i64)> = HashSet::new();
     for edge in edges {
         if edge_matches_rule(edge, spec) {
             direct_edges_by_src
@@ -562,10 +747,13 @@ fn eval_must_implement(
                 .or_default()
                 .push(edge);
         }
+        if matches!(edge.kind.as_str(), "references" | "implements") {
+            path_refs_to_target.insert((edge.path.as_str(), edge.dst_hash));
+        }
     }
 
-    // Index Rust `impl Trait for Type` nodes by (path, receiver_type)
-    let mut impl_nodes_by_receiver: HashMap<(&str, &str), Vec<&IndexedNode>> = HashMap::new();
+    // Index Rust `impl Trait for Type` nodes by clean receiver name (supporting cross-file impls)
+    let mut impl_nodes_by_receiver: HashMap<&str, Vec<&IndexedNode>> = HashMap::new();
     for node in nodes.values() {
         if node.kind == "impl" {
             if let Some(recv) = node.receiver_type.as_deref() {
@@ -579,7 +767,7 @@ fn eval_must_implement(
                     .trim();
                 if !clean_recv.is_empty() {
                     impl_nodes_by_receiver
-                        .entry((node.path.as_str(), clean_recv))
+                        .entry(clean_recv)
                         .or_default()
                         .push(node);
                 }
@@ -627,6 +815,7 @@ fn eval_must_implement(
         .filter(|n| {
             is_type_declaration(&n.kind)
                 && !n.generated
+                && is_public_for_must_implement(n)
                 && !is_archived_path(&n.path)
                 && index.scope.in_scope(&n.path)
                 && (spec.include_tests || (!n.is_test && !index.is_test_location(&n.path, n.line)))
@@ -636,27 +825,25 @@ fn eval_must_implement(
         .collect();
     candidates.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.line.cmp(&b.line)));
 
+    let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    for n in nodes.values().filter(|n| is_type_declaration(&n.kind)) {
+        *name_counts.entry(n.name.as_str()).or_default() += 1;
+    }
+
     for ty in candidates {
+        let unique_name = name_counts.get(ty.name.as_str()).copied().unwrap_or(0) <= 1;
         let satisfied_internal = edge_satisfies_to(ty.hash)
             || impl_nodes_by_receiver
-                .get(&(ty.path.as_str(), ty.name.as_str()))
-                .is_some_and(|impls| impls.iter().any(|im| impl_node_satisfies_to(im)));
-        let satisfied_external = if !satisfied_internal && !to_sel.external_symbols.is_empty() {
-            index
-                .externals_by_path
-                .as_ref()
-                .and_then(|by_path| by_path.get(&ty.path))
-                .zip(index.external_occurrences.as_deref())
-                .is_some_and(|(idxs, exts)| {
-                    idxs.iter().map(|&i| &exts[i]).any(|ext| {
-                        ext.line.is_none_or(|l| l >= ty.line && l <= ty.end_line)
-                            && to_sel.external_symbols.iter().any(|pre| ext.matches_prefix(pre))
+                .get(ty.name.as_str())
+                .is_some_and(|impls| {
+                    impls.iter().any(|im| {
+                        (im.path == ty.path
+                            || path_refs_to_target.contains(&(im.path.as_str(), ty.hash))
+                            || unique_name)
+                            && impl_node_satisfies_to(im)
                     })
-                })
-        } else {
-            false
-        };
-        if !satisfied_internal && !satisfied_external {
+                });
+        if !satisfied_internal {
             let expected: Vec<String> = to_sel
                 .symbols
                 .iter()
@@ -706,82 +893,162 @@ fn compile_ast_matcher(
     }
 }
 
-fn eval_ast_pattern(
+struct CompiledAstRule<'a> {
+    loaded: &'a LoadedRule,
+    pattern: &'a str,
+    matcher: PreparedAstMatcher,
+}
+
+fn eval_ast_patterns_batched(
     conn: &Connection,
     index: &LintIndexData,
     arch: &ArchitectureConfig,
-    loaded: &LoadedRule,
+    ast_rules: &[&LoadedRule],
     workspace_root: Option<&Path>,
     source_cache: &mut VerifiedSourceCache,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
-    let spec = &loaded.spec;
-    let Some(from_sel) = &spec.from else {
+    let match_limit = SEARCH_MATCH_HORIZON;
+    let timeout = std::time::Duration::from_secs(2);
+    if ast_rules.is_empty() {
         return Ok(());
-    };
-    let Some(pattern) = spec.ast_pattern.as_deref() else {
-        return Ok(());
-    };
+    }
     let Some(root) = workspace_root else {
         bail!(
             "ast_pattern rule '{}' requires workspace_root for digest-verified source reads",
-            spec.id
+            ast_rules[0].spec.id
         );
     };
 
-    let mut files_by_lang: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (path, info) in &index.files {
-        if is_archived_path(path) || !index.scope.in_scope(path) {
-            continue;
-        }
-        if !spec.include_tests && index.is_file_test(path) {
-            continue;
-        }
-        let Some(lang) = info.language.as_deref() else {
+    let mut by_lang_rules: BTreeMap<&str, Vec<CompiledAstRule<'_>>> = BTreeMap::new();
+    let mut by_lang_files: BTreeMap<&str, BTreeMap<&str, Vec<usize>>> = BTreeMap::new();
+
+    for &loaded in ast_rules {
+        let spec = &loaded.spec;
+        let Some(from_sel) = &spec.from else {
             continue;
         };
-        if crate::languages::by_id(lang).is_none() {
-            continue;
-        }
-        if selector_matches_file(from_sel, path, &arch.zones, Some(lang)) {
-            files_by_lang.entry(lang).or_default().push(path.as_str());
-        }
-    }
-
-    let explicit_langs = !from_sel.languages.is_empty();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut compiled_any = false;
-    let mut first_compile_err: Option<anyhow::Error> = None;
-
-    for (lang, paths) in files_by_lang {
-        let Some(mut matcher) = compile_ast_matcher(
-            lang,
-            pattern,
-            paths.first().copied(),
-            explicit_langs,
-            &mut first_compile_err,
-        )?
-        else {
+        let Some(pattern) = spec.ast_pattern.as_deref() else {
             continue;
         };
-        compiled_any = true;
-        for path in paths {
-            let source = source_cache.read(conn, root, path)?;
-            let page = matcher.search_page(&source, path, 0, 100, deadline)?;
-            for item in page.items {
-                let line = item["line"].as_u64().unwrap_or(1) as usize;
-                if !spec.include_tests && index.is_test_location(path, line) {
-                    continue;
-                }
-                let matched_text = item["text"].as_str().unwrap_or(pattern).trim();
-                let msg = format!("forbidden AST pattern match `{matched_text}`");
-                push_arch_violation(violations, loaded, path.to_owned(), Some(line), msg, None, None);
+        let mut files_by_lang: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (path, info) in &index.files {
+            if is_archived_path(path) || !index.scope.in_scope(path) {
+                continue;
+            }
+            if !spec.include_tests && index.is_file_test(path) {
+                continue;
+            }
+            let Some(lang) = info.language.as_deref() else {
+                continue;
+            };
+            if crate::languages::by_id(lang).is_none() {
+                continue;
+            }
+            if selector_matches_file(from_sel, path, &arch.zones, Some(lang)) {
+                files_by_lang.entry(lang).or_default().push(path.as_str());
+            }
+        }
+
+        let explicit_langs = !from_sel.languages.is_empty();
+        let mut compiled_any = false;
+        let mut first_compile_err: Option<anyhow::Error> = None;
+
+        for (lang, paths) in files_by_lang {
+            let Some(matcher) = compile_ast_matcher(
+                lang,
+                pattern,
+                paths.first().copied(),
+                explicit_langs,
+                &mut first_compile_err,
+            )?
+            else {
+                continue;
+            };
+            compiled_any = true;
+            let rule_vec = by_lang_rules.entry(lang).or_default();
+            let rule_slot = rule_vec.len();
+            rule_vec.push(CompiledAstRule {
+                loaded,
+                pattern,
+                matcher,
+            });
+            let lang_files = by_lang_files.entry(lang).or_default();
+            for path in paths {
+                lang_files.entry(path).or_default().push(rule_slot);
+            }
+        }
+        if !compiled_any {
+            if let Some(err) = first_compile_err {
+                return Err(err);
             }
         }
     }
-    if !compiled_any {
-        if let Some(err) = first_compile_err {
-            return Err(err);
+
+    for (lang, mut rules_for_lang) in by_lang_rules {
+        let Some(file_map) = by_lang_files.get(lang) else {
+            continue;
+        };
+        for (path, rule_slots) in file_map {
+            let source = source_cache.read(conn, root, path)?;
+            let mut active_set: Vec<bool> = vec![false; rules_for_lang.len()];
+            for &slot in rule_slots {
+                active_set[slot] = true;
+            }
+            let mut slot_by_matcher_idx: Vec<usize> = Vec::with_capacity(rule_slots.len());
+            let mut active_matchers: Vec<&mut PreparedAstMatcher> = Vec::with_capacity(rule_slots.len());
+            for (slot, rule) in rules_for_lang.iter_mut().enumerate() {
+                if active_set[slot] {
+                    slot_by_matcher_idx.push(slot);
+                    active_matchers.push(&mut rule.matcher);
+                }
+            }
+            let deadline = std::time::Instant::now() + timeout;
+            let matches = search_matchers_in_source(
+                &mut active_matchers,
+                &source,
+                path,
+                match_limit,
+                deadline,
+            )?;
+            for entry in matches {
+                let rule_entry = &rules_for_lang[slot_by_matcher_idx[entry.matcher_index]];
+                let spec = &rule_entry.loaded.spec;
+                if entry.page.work_limited {
+                    bail!(
+                        "ast_pattern rule '{}' hit AST search work limit/timeout on '{}'",
+                        spec.id,
+                        path
+                    );
+                }
+                if !entry.page.complete {
+                    bail!(
+                        "ast_pattern rule '{}' returned incomplete AST search results (limit {match_limit}) on '{}'",
+                        spec.id,
+                        path
+                    );
+                }
+                for item in entry.page.items {
+                    let line = item["line"].as_u64().unwrap_or(1) as usize;
+                    if !spec.include_tests && index.is_test_location(path, line) {
+                        continue;
+                    }
+                    let matched_text = item["text"]
+                        .as_str()
+                        .unwrap_or(rule_entry.pattern)
+                        .trim();
+                    let msg = format!("forbidden AST pattern match `{matched_text}`");
+                    push_arch_violation(
+                        violations,
+                        rule_entry.loaded,
+                        (*path).to_owned(),
+                        Some(line),
+                        msg,
+                        None,
+                        None,
+                    );
+                }
+            }
         }
     }
     Ok(())

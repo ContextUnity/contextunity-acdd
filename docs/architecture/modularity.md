@@ -110,7 +110,7 @@ The shared body traversal replaces recursive declaration-body binding, value-flo
 > - INV-SINGLE-OWNER: Shared workspace configuration (`acdd_core::config`), error taxonomy (`acdd_core::errors`), path confinement and brace-aware glob matching (`acdd_core::{fs, path_policy}`), advisory locking (`acdd_core::lock`), system/telemetry primitives (`acdd_core::{sys, format, telemetry}`), and `validate`/`WhenExpr` (`acdd_state`) have one canonical owner with zero downstream duplicates. [`glob_matches`](../../crates/acdd-core/src/path_policy.rs) [`load_adapter`](../../crates/acdd-core/src/config/loader.rs)
 > - INV-GIT-SINGLE-OWNER: Raw `std::process::Command::new("git")` invocations are strictly confined to `crates/acdd-core/src/git.rs` (`acdd_core::git`); all downstream Git workflows in `acdd-state` and host `src/` route through `acdd_core::git`. [`git_command`](../../crates/acdd-core/src/git.rs)
 > - INV-SURFACE-COMPATIBILITY: Preserve active CLI/MCP wire and DTO contracts and `ErrorCode` semantics without mirror `Mcp*` clone structs or duplicate `ClaimResp` Markdown renderers, while forbidding dead or test-only `pub` / `pub use` compatibility shims across internal workspace crates. [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs)
-> - INV-NO-DEAD-CODE-SHIMS: Ban `#![allow(dead_code, unused_imports)]`, legacy re-export shims (`src/core/*`, `src/db/*`), `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, `dangling_calls`, and `dead_tails.unused_public_api` violations. [`collect_dead_tails`](../../crates/acdd-index/src/db/lint/dead_tails.rs)
+> - INV-NO-DEAD-CODE-SHIMS: Ban `#![allow(dead_code, unused_imports)]`, `#[allow(dead_code)]`, `#[expect(dead_code)]`, legacy re-export shims (`src/core/*`, `src/db/*`), `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, `dangling_calls`, and opt-in `dead_tails.unused_public_api` violations. [`collect_dead_tails`](../../crates/acdd-index/src/db/lint/dead_tails.rs)
 > - INV-BOUNDED-STRUCTURAL-COMPLEXITY: Production callables stay within ValueFlow extraction budgets (`syntax.fact_budget_exceeded`) and maintain unique intra-crate nominal type names (`syntax.intra_crate_type_homonym`) with AST `cognitive_complexity` and `max_nesting_depth` recorded as `node.details` telemetry without fragmenting flat lookup tables or cohesive functions into single-use micro-helpers. [`collect_syntax_violations`](../../crates/acdd-index/src/db/lint/syntax.rs)
 > - INV-AR003-CANONICAL-INVARIANT-AUTHORITY: Every architectural invariant has one canonical `INV-*` declaration in `docs/architecture/*.md` or `docs/adr/*.md` with verified symbol links (and `acdd-rule` blocks for machine-enforceable boundaries), while `**/AGENTS.md` files stay concise operational routers. [`enforced_invariant_ids`](../../crates/acdd-index/src/db/lint/rules.rs)
 
@@ -149,6 +149,42 @@ from:
   paths: ["src/**", "crates/**"]
   languages: ["rust"]
 ast_pattern: "#[allow(dead_code)]"
+include_tests: false
+```
+
+```acdd-rule
+id: INV-NO-DEAD-CODE-SHIMS-INNER
+invariant: INV-NO-DEAD-CODE-SHIMS
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#![allow(dead_code)]"
+include_tests: false
+```
+
+```acdd-rule
+id: INV-NO-DEAD-CODE-SHIMS-EXPECT
+invariant: INV-NO-DEAD-CODE-SHIMS
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#[expect(dead_code)]"
+include_tests: false
+```
+
+```acdd-rule
+id: INV-NO-DEAD-CODE-SHIMS-EXPECT-INNER
+invariant: INV-NO-DEAD-CODE-SHIMS
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#![expect(dead_code)]"
 include_tests: false
 ```
 

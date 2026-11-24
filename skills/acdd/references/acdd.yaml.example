@@ -57,6 +57,7 @@ response:
 
 # Optional architectural zones, rules, and syntax invariant configuration
 # architecture:
+#   unused_public_api: false
 #   complexity:
 #     severity: warn
 #     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY

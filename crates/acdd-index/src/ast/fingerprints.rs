@@ -111,9 +111,77 @@ fn control_flow_effect(node: Syntax<'_>) -> ControlFlowEffect {
     }
 }
 
+fn is_normalizable_local_ident(node: Syntax<'_>, raw: &str) -> bool {
+    if node.kind() != "identifier"
+        || matches!(
+            raw,
+            "self" | "Self" | "super" | "crate" | "this" | "None" | "Some" | "Ok" | "Err"
+                | "true" | "false" | "True" | "False" | "null" | "undefined" | "nil" | "_"
+        )
+    {
+        return false;
+    }
+    let Some(parent) = node.parent() else {
+        return true;
+    };
+    let pkind = parent.kind();
+    if matches!(
+        pkind,
+        "scoped_identifier" | "scoped_type_identifier" | "qualified_name" | "use_declaration"
+            | "use_as_clause" | "use_list" | "import_statement" | "import_from_statement"
+    ) {
+        return false;
+    }
+    if matches!(
+        pkind,
+        "call_expression" | "call" | "invocation_expression" | "macro_invocation"
+    ) && parent
+        .child_by_field_name("function")
+        .or_else(|| parent.child_by_field_name("macro"))
+        .is_some_and(|f| f.id() == node.id())
+    {
+        return false;
+    }
+    if matches!(pkind, "attribute" | "member_expression" | "field_expression")
+        && parent
+            .child_by_field_name("attribute")
+            .or_else(|| parent.child_by_field_name("property"))
+            .or_else(|| parent.child_by_field_name("field"))
+            .is_some_and(|f| f.id() == node.id())
+    {
+        return false;
+    }
+    true
+}
+
+fn push_normalized_token<'a>(
+    out: &mut String,
+    node: Syntax<'_>,
+    part: &'a str,
+    ident_slots: &mut Vec<&'a str>,
+) {
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    if is_normalizable_local_ident(node, part) {
+        let slot = match ident_slots.iter().position(|&existing| existing == part) {
+            Some(idx) => idx,
+            None => {
+                ident_slots.push(part);
+                ident_slots.len() - 1
+            }
+        };
+        use std::fmt::Write;
+        let _ = write!(out, "$v{slot}");
+    } else {
+        out.push_str(part);
+    }
+}
+
 fn normalize_statement_into(stmt: Syntax<'_>, source: &str, out: &mut String) -> usize {
     out.clear();
     let mut token_count = 0usize;
+    let mut ident_slots: Vec<&str> = Vec::new();
     let mut cursor = stmt.walk();
     loop {
         let node = cursor.node();
@@ -126,8 +194,7 @@ fn normalize_statement_into(stmt: Syntax<'_>, source: &str, out: &mut String) ->
             if !raw.is_empty() {
                 if matches!(raw, ")" | "]" | "}") && out.ends_with(" ,") { out.truncate(out.len() - 2); }
                 for part in raw.split_whitespace() {
-                    if !out.is_empty() { out.push(' '); }
-                    out.push_str(part);
+                    push_normalized_token(out, node, part, &mut ident_slots);
                 }
                 if !matches!(raw, "{" | "}" | "(" | ")" | "[" | "]" | ";" | ",") { token_count += 1; }
             }

@@ -10,12 +10,14 @@ fn architecture_complexity_limits_contract_and_locked_rule_kinds() {
 
     let default_cfg = ArchitectureConfig::default();
     assert!(default_cfg.is_empty());
+    assert!(!default_cfg.unused_public_api);
     default_cfg.validate().unwrap();
     assert!(default_cfg.complexity.max_cognitive_complexity > 0);
     assert!(default_cfg.complexity.max_nesting_depth > 0);
     assert!(default_cfg.complexity.max_fanout > 0);
 
     let custom_yaml = r#"
+unused_public_api: true
 complexity:
   max_cognitive_complexity: 42
   max_nesting_depth: 5
@@ -25,6 +27,7 @@ complexity:
 "#;
     let custom: ArchitectureConfig = serde_yaml::from_str(custom_yaml).unwrap();
     assert!(!custom.is_empty());
+    assert!(custom.unused_public_api);
     custom.validate().unwrap();
     assert_eq!(custom.complexity.max_cognitive_complexity, 42);
     assert_eq!(custom.complexity.max_nesting_depth, 5);
@@ -99,6 +102,26 @@ pub fn wrapped_call_with_comments(a: i32, b: i32) -> i32 {
     );
     res
 }
+
+pub fn renamed_locals_type2(first: i32, second: i32) -> i32 {
+    let computed_output = helper(first, second);
+    computed_output
+}
+
+pub fn different_callee_distinct(a: i32, b: i32) -> i32 {
+    let res = other_helper(a, b);
+    res
+}
+
+pub fn method_a(x: Foo) {
+    let v = x.alpha();
+    consume(v);
+}
+
+pub fn method_b(y: Foo) {
+    let w = y.beta();
+    consume(w);
+}
 "#;
     let typed = ast::extract_typed("src/sample.rs", "rust", rust_src).unwrap();
 
@@ -154,7 +177,82 @@ pub fn wrapped_call_with_comments(a: i32, b: i32) -> i32 {
         "wrapped call statement must collapse into one span"
     );
 
+    let renamed_node = typed
+        .nodes
+        .iter()
+        .find(|n| n.name == "renamed_locals_type2")
+        .unwrap();
+    let other_callee_node = typed
+        .nodes
+        .iter()
+        .find(|n| n.name == "different_callee_distinct")
+        .unwrap();
+    let method_a_node = typed.nodes.iter().find(|n| n.name == "method_a").unwrap();
+    let method_b_node = typed.nodes.iter().find(|n| n.name == "method_b").unwrap();
+
+    let fps = &typed.statement_fingerprints;
+    let renamed_fp = fps.iter().find(|fp| fp.node_id == renamed_node.id).unwrap();
+    let other_callee_fp = fps
+        .iter()
+        .find(|fp| fp.node_id == other_callee_node.id)
+        .unwrap();
+    let method_a_fp = fps.iter().find(|fp| fp.node_id == method_a_node.id).unwrap();
+    let method_b_fp = fps.iter().find(|fp| fp.node_id == method_b_node.id).unwrap();
+
+    assert_eq!(
+        single_fp.statements[0].hash, renamed_fp.statements[0].hash,
+        "Type-2 local identifier alpha-normalization must match renamed locals with same callee"
+    );
+    assert_eq!(
+        single_fp.statements[1].hash, renamed_fp.statements[1].hash,
+        "Type-2 return local identifier must alpha-normalize identically"
+    );
+    assert_ne!(
+        single_fp.statements[0].hash, other_callee_fp.statements[0].hash,
+        "Type-2 normalization must preserve distinct call targets"
+    );
+    assert_ne!(
+        method_a_fp.statements[0].hash, method_b_fp.statements[0].hash,
+        "Type-2 normalization must preserve distinct method/field names"
+    );
+
     let encoded = encode_facts(&typed).unwrap();
     let decoded: TypedFacts = decode_facts(&encoded).unwrap();
     assert_eq!(decoded.facts.statement_fingerprints, typed.facts.statement_fingerprints);
+
+    let mut m1 = ast::search::PreparedAstMatcher::new("rust", "helper($A, $B)").unwrap();
+    let mut m2 = ast::search::PreparedAstMatcher::new("rust", "other_helper($A, $B)").unwrap();
+    let sample_src = "fn f() { helper(1, 2); helper(3, 4); other_helper(5, 6); }\n";
+    let ok_pages = ast::search::search_matchers_in_source(
+        &mut [&mut m1, &mut m2],
+        sample_src,
+        "src/sample.rs",
+        10,
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(ok_pages.len(), 2);
+    assert!(ok_pages[0].page.complete && !ok_pages[0].page.work_limited);
+    assert_eq!(ok_pages[0].page.items.len(), 2);
+    assert_eq!(ok_pages[1].page.items.len(), 1);
+
+    let limited = ast::search::search_matchers_in_source(
+        &mut [&mut m1],
+        sample_src,
+        "src/sample.rs",
+        1,
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    )
+    .unwrap();
+    assert!(!limited[0].page.complete, "limit=1 with 2 matches must report incomplete");
+
+    let timed_out = ast::search::search_matchers_in_source(
+        &mut [&mut m1],
+        sample_src,
+        "src/sample.rs",
+        10,
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(timed_out[0].page.work_limited, "expired deadline must report work_limited");
 }

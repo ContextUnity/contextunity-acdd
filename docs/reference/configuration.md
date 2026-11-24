@@ -86,6 +86,7 @@ Declare workspace-relative glob zones, static `ArchRuleSpec` boundary rules, and
 
 ```yaml
 architecture:
+  unused_public_api: true
   complexity:
     severity: warn
     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
@@ -106,9 +107,10 @@ architecture:
       depth: 2
 ```
 
+- **`architecture.unused_public_api`**: defaults to `false` (library-friendly) and enables `dead_tails.unused_public_api` when set to `true` (enabled in this repository's `acdd.yaml`).
 - **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
 - **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
-- **`architecture.complexity`**: `ComplexityLimits` defaults (`max_cognitive_complexity: 50`, `max_nesting_depth: 6`, `max_fanout: 40`, `severity: warn`, optional `invariant: null`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
+- **`architecture.complexity`**: `ComplexityLimits` defaults (`max_cognitive_complexity: 50`, `max_nesting_depth: 6`, `max_fanout: 40`, `severity: warn`, optional `invariant: null`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` use `complexity.severity` and bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
 
 ## Cold-build memory budget
 

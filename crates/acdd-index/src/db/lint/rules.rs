@@ -357,6 +357,7 @@ pub(super) fn edge_matches_rule(edge: &IndexedEdge, rule: &ArchRuleSpec) -> bool
     }
     if rule.confidences.is_empty() {
         matches!(edge.confidence.as_str(), "exact" | "inferred")
+            || (edge.kind == "possible_calls" && edge.confidence == "possible")
     } else {
         rule.confidences
             .iter()

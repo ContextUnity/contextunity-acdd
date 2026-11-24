@@ -355,12 +355,18 @@ pub struct ArchitectureConfig {
     /// Structural complexity thresholds evaluated under `LintCategory::Syntax`.
     #[serde(default, skip_serializing_if = "ComplexityLimits::is_default")]
     pub complexity: ComplexityLimits,
+    /// Opt-in flag enabling `dead_tails.unused_public_api` checks (disabled by default for libraries).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unused_public_api: bool,
 }
 
 impl ArchitectureConfig {
-    /// Return `true` when no zones, rules, or custom complexity thresholds are configured.
+    /// Return `true` when no zones, rules, custom complexity thresholds, or opt-in flags are configured.
     pub fn is_empty(&self) -> bool {
-        self.zones.is_empty() && self.rules.is_empty() && self.complexity.is_default()
+        self.zones.is_empty()
+            && self.rules.is_empty()
+            && self.complexity.is_default()
+            && !self.unused_public_api
     }
 
     /// Return the deterministic set of declared zone names.

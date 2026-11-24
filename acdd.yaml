@@ -56,6 +56,7 @@ response:
     max_body_lines: 35
 
 architecture:
+  unused_public_api: true
   complexity:
     severity: warn
     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
@@ -224,6 +225,20 @@ architecture:
       ast_pattern: "Command::new($PROGRAM)"
       message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
 
+    - id: ARCH-SUBPROCESS-CONFINED-QUALIFIED
+      severity: error
+      kind: ast_pattern
+      from:
+        paths: ["src/**", "crates/**"]
+        exclude_paths:
+          - "crates/acdd-core/src/git.rs"
+          - "crates/acdd-core/src/sys.rs"
+          - "crates/acdd-state/src/runner/**"
+          - "src/mcp/server.rs"
+        languages: ["rust"]
+      ast_pattern: "std::process::Command::new($PROGRAM)"
+      message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
+
     - id: ARCH-NO-PROD-TEMP-DIR
       severity: error
       kind: ast_pattern
@@ -257,6 +272,18 @@ architecture:
       ast_pattern: "Connection::open($PATH)"
       message: "Open SQLite databases via confined_database_open_path + SQLITE_OPEN_NOFOLLOW owners"
 
+    - id: ARCH-SQLITE-NO-UNCONFINED-OPEN-QUALIFIED
+      severity: error
+      kind: ast_pattern
+      from:
+        paths: ["src/**", "crates/**"]
+        exclude_paths:
+          - "crates/acdd-index/src/db/**"
+          - "crates/acdd-state/src/store/sqlite/**"
+        languages: ["rust"]
+      ast_pattern: "rusqlite::Connection::open($PATH)"
+      message: "Open SQLite databases via confined_database_open_path + SQLITE_OPEN_NOFOLLOW owners"
+
     - id: ARCH-DOCS-INTEGRITY-STRICT
       severity: error
       kind: doc_integrity
@@ -274,33 +301,6 @@ architecture:
         paths: ["crates/acdd-index/src/linker/**"]
         external_symbols: ["acdd_state", "tokio", "rmcp", "clap"]
       message: "crates/acdd-index/src/db must not depend on linker, acdd-state, or host layers"
-
-    - id: ARCH-INDEX-DB-BOUNDARY-ENTRY
-      severity: error
-      kind: boundary_entry
-      to:
-        zones: [index_db]
-      entrypoints:
-        - "crates/acdd-index/src/db/mod.rs"
-        - "crates/acdd-index/src/db/reader/*.rs"
-        - "crates/acdd-index/src/db/symbols/*.rs"
-        - "crates/acdd-index/src/db/traversal/*.rs"
-        - "crates/acdd-index/src/db/lint/mod.rs"
-        - "crates/acdd-index/src/db/lint/rules.rs"
-        - "crates/acdd-index/src/db/lint/syntax.rs"
-        - "crates/acdd-index/src/db/writer/mod.rs"
-        - "crates/acdd-index/src/db/writer/cache.rs"
-        - "crates/acdd-index/src/db/writer/delta.rs"
-        - "crates/acdd-index/src/db/writer/ingest.rs"
-        - "crates/acdd-index/src/db/writer/payload_store.rs"
-        - "crates/acdd-index/src/db/writer/temp_table.rs"
-        - "crates/acdd-index/src/db/commitments.rs"
-        - "crates/acdd-index/src/db/commitments/mod.rs"
-        - "crates/acdd-index/src/db/cycles.rs"
-        - "crates/acdd-index/src/db/paging.rs"
-        - "crates/acdd-index/src/db/schema.rs"
-        - "crates/acdd-index/src/db/cache.rs"
-      message: "External callers must enter crates/acdd-index/src/db through its public surface modules"
 
     - id: ARCH-INDEX-DB-NO-WRITER-IN-TRANSPORT
       severity: error

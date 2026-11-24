@@ -1,13 +1,11 @@
 use super::types::{is_test_context_path, LintScope, LintViolation};
-use crate::db::{
-    commitments::{read_metadata_optional, MetadataKey},
-    reader::selectors as reader,
-    source,
-};
+use crate::db::reader::selectors as reader;
 use crate::models::{
     details::NodeDetailFlags,
     tags::{CoverageStatus, EdgeKind, NodeKind},
 };
+use crate::semantic::types::ValueExpr;
+use crate::typed_facts::{decode_facts, FlowState};
 use acdd_core::lint::{LintCategory, LintSeverity};
 use anyhow::Result;
 use rusqlite::Connection;
@@ -337,11 +335,10 @@ fn load_dead_tails_graph(conn: &Connection) -> Result<DeadTailsGraph> {
     }
 
     propagate_nested_contains(&nodes, &contains_children, &candidates, &mut fwd_set);
-    wire_same_file_callbacks(
+    wire_indexed_callbacks_and_unresolved_receivers(
         conn,
         &nodes,
         &candidates,
-        &test_targeted,
         &mut fwd_set,
         &mut roots,
     )?;
@@ -398,419 +395,199 @@ fn propagate_nested_contains(
     }
 }
 
-fn blank_non_newline_byte(out: &mut [u8], idx: usize) {
-    if out[idx] != b'\n' {
-        out[idx] = b' ';
-    }
-}
-
-fn blank_block_comment_step(bytes: &[u8], out: &mut [u8], i: usize, depth: &mut usize) -> usize {
-    if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-        out[i] = b' ';
-        out[i + 1] = b' ';
-        *depth += 1;
-        return i + 2;
-    }
-    if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-        out[i] = b' ';
-        out[i + 1] = b' ';
-        *depth -= 1;
-        return i + 2;
-    }
-    blank_non_newline_byte(out, i);
-    i + 1
-}
-
-fn try_blank_raw_string(bytes: &[u8], out: &mut [u8], i: usize) -> Option<usize> {
-    if bytes[i] != b'r'
-        || (i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
-    {
-        return None;
-    }
-    let len = bytes.len();
-    let mut j = i + 1;
-    while j < len && bytes[j] == b'#' {
-        j += 1;
-    }
-    if j >= len || bytes[j] != b'"' {
-        return None;
-    }
-    let hashes = j - (i + 1);
-    out[i..=j].fill(b' ');
-    let mut cur = j + 1;
-    while cur < len {
-        if bytes[cur] == b'"'
-            && cur + hashes < len
-            && bytes[cur + 1..=cur + hashes].iter().all(|&b| b == b'#')
-        {
-            out[cur..=cur + hashes].fill(b' ');
-            return Some(cur + hashes + 1);
-        }
-        blank_non_newline_byte(out, cur);
-        cur += 1;
-    }
-    Some(cur)
-}
-
-fn blank_quoted_string(bytes: &[u8], out: &mut [u8], mut i: usize, quote: u8, multiline: bool) -> usize {
-    let len = bytes.len();
-    out[i] = b' ';
-    i += 1;
-    while i < len && (multiline || bytes[i] != b'\n') {
-        if bytes[i] == b'\\' && i + 1 < len {
-            blank_non_newline_byte(out, i);
-            blank_non_newline_byte(out, i + 1);
-            i += 2;
-            continue;
-        }
-        let close = bytes[i] == quote;
-        blank_non_newline_byte(out, i);
-        i += 1;
-        if close {
-            break;
-        }
-    }
-    i
-}
-
-fn strip_comments_and_strings_preserving_lines(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = bytes.to_vec();
-    let mut i = 0;
-    let mut block_depth = 0usize;
-
-    while i < len {
-        if block_depth > 0 {
-            i = blank_block_comment_step(bytes, &mut out, i, &mut block_depth);
-            continue;
-        }
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            out[i..i + 2].fill(b' ');
-            i += 2;
-            while i < len && bytes[i] != b'\n' {
-                out[i] = b' ';
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            out[i..i + 2].fill(b' ');
-            block_depth = 1;
-            i += 2;
-            continue;
-        }
-        if let Some(next_i) = try_blank_raw_string(bytes, &mut out, i) {
-            i = next_i;
-            continue;
-        }
-        if bytes[i] == b'"' {
-            i = blank_quoted_string(bytes, &mut out, i, b'"', true);
-            continue;
-        }
-        if bytes[i] == b'\'' {
-            if i + 2 < len
-                && bytes[i + 1] != b'\\'
-                && bytes[i + 1] != b'\n'
-                && bytes[i + 2] == b'\''
-            {
-                out[i..i + 3].fill(b' ');
-                i += 3;
-                continue;
-            }
-            if i + 1 < len && bytes[i + 1] == b'\\' {
-                i = blank_quoted_string(bytes, &mut out, i, b'\'', false);
-                continue;
-            }
-        }
-        i += 1;
-    }
-
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn scan_bare_callback_tokens<F>(text: &str, match_token: &mut F)
-where
-    F: FnMut(&str, bool),
-{
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        let b = bytes[i];
-        if !(b.is_ascii_alphabetic() || b == b'_') {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        i += 1;
-        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-            i += 1;
-        }
-        let ident = &text[start..i];
-        let prev_non_ws = bytes[..start]
-            .iter()
-            .rposition(|c| !c.is_ascii_whitespace())
-            .map(|idx| (idx, bytes[idx]));
-        let next_non_ws = bytes[i..]
-            .iter()
-            .position(|c| !c.is_ascii_whitespace())
-            .map(|rel| bytes[i + rel]);
-
-        let preceded_by_dot = matches!(prev_non_ws, Some((_, b'.')));
-        let preceded_by_decl_kw = if let Some((idx, _)) = prev_non_ws {
-            let word_end = idx + 1;
-            let mut word_start = word_end;
-            while word_start > 0
-                && (bytes[word_start - 1].is_ascii_alphanumeric() || bytes[word_start - 1] == b'_')
-            {
-                word_start -= 1;
-            }
-            matches!(
-                &text[word_start..word_end],
-                "fn" | "mod"
-                    | "struct"
-                    | "enum"
-                    | "trait"
-                    | "type"
-                    | "let"
-                    | "mut"
-                    | "const"
-                    | "static"
-                    | "for"
-            )
-        } else {
-            false
-        };
-        let preceded_by_scope = matches!(
-            prev_non_ws,
-            Some((idx, b':')) if idx > 0 && bytes[idx - 1] == b':'
-        );
-        let followed_by_call_or_colon = matches!(next_non_ws, Some(b'(' | b':'));
-
-        if !preceded_by_dot && !preceded_by_decl_kw && !followed_by_call_or_colon {
-            match_token(ident, preceded_by_scope);
-        }
-    }
-}
-
-fn starts_top_level_const_or_static(trimmed: &str) -> bool {
-    let mut rest = trimmed;
-    if let Some(after_pub) = rest.strip_prefix("pub") {
-        let after_pub = after_pub.trim_start();
-        if let Some(after_vis) = after_pub.strip_prefix('(') {
-            let Some(close) = after_vis.find(')') else {
-                return false;
-            };
-            rest = after_vis[close + 1..].trim_start();
-        } else if after_pub.len() < rest.len() - 3 || rest == "pub" {
-            rest = after_pub;
-        } else {
-            return false;
-        }
-    }
-    let after_kw = if let Some(s) = rest.strip_prefix("const") {
-        s
-    } else if let Some(s) = rest.strip_prefix("static") {
-        s
-    } else {
-        return false;
-    };
-    if !after_kw.starts_with(char::is_whitespace) {
-        return false;
-    }
-    let after_kw = after_kw.trim_start();
-    !after_kw.starts_with("fn")
-        || after_kw["fn".len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn index_cands_by_name<'a>(
-    cands: &[&'a DeadTailsNode],
-) -> HashMap<&'a str, Vec<&'a DeadTailsNode>> {
-    let mut by_name: HashMap<&'a str, Vec<&'a DeadTailsNode>> = HashMap::new();
-    for &cand in cands {
-        by_name.entry(cand.name.as_str()).or_default().push(cand);
-    }
-    by_name
-}
-
-fn for_matching_callback_targets<'a>(
-    by_name: &HashMap<&'a str, Vec<&'a DeadTailsNode>>,
-    ident: &str,
-    has_scope: bool,
-    mut on_match: impl FnMut(&'a DeadTailsNode),
+fn wire_value_expr_callbacks<F: FnMut(&str, &str, i64)>(
+    owner_id: &str,
+    expr: &ValueExpr,
+    line: i64,
+    wire: &mut F,
 ) {
-    let Some(matches) = by_name.get(ident) else {
-        return;
-    };
-    for &target in matches {
-        if has_scope || target.kind == NodeKind::Function.as_str() {
-            on_match(target);
+    match expr {
+        ValueExpr::Alias { name } => wire(owner_id, name, line),
+        ValueExpr::Await { value } | ValueExpr::Scoped { value, .. } => {
+            wire_value_expr_callbacks(owner_id, value, line, wire);
         }
+        ValueExpr::BranchJoin { alternatives } => {
+            for alt in alternatives {
+                wire_value_expr_callbacks(owner_id, alt, line, wire);
+            }
+        }
+        ValueExpr::Object { members, .. } => {
+            for member in members {
+                wire(owner_id, member.declaration_name(), line);
+            }
+        }
+        _ => {}
     }
 }
 
-fn scan_rust_file_callbacks(
-    raw: &str,
-    cands: &[&DeadTailsNode],
-    test_nodes: &[&DeadTailsNode],
-    fwd_set: &mut HashMap<i64, HashSet<i64>>,
-    roots: &mut HashSet<i64>,
-) {
-    let by_name = index_cands_by_name(cands);
-    let masked = strip_comments_and_strings_preserving_lines(raw);
-    let mut in_top_level_const = false;
-    let mut const_delim_depth: usize = 0;
-
-    for (idx, line_text) in masked.lines().enumerate() {
-        let line_num = (idx + 1) as i64;
-        if test_nodes.iter().any(|t| line_num >= t.line && line_num <= t.end_line) {
-            in_top_level_const = false;
-            const_delim_depth = 0;
-            continue;
-        }
-        let trimmed = line_text.trim_start();
-        if trimmed.starts_with("#[")
-            || trimmed.starts_with("#![")
-            || trimmed.starts_with("use ")
-            || trimmed.starts_with("pub use ")
-            || (trimmed.starts_with("pub(") && trimmed.contains(" use "))
-        {
-            continue;
-        }
-        let enclosing = cands
-            .iter()
-            .copied()
-            .filter(|f| line_num >= f.line && line_num <= f.end_line)
-            .min_by_key(|f| (f.end_line - f.line, f.line, f.hash));
-
-        if enclosing.is_none()
-            && !in_top_level_const
-            && starts_top_level_const_or_static(trimmed)
-        {
-            in_top_level_const = true;
-            const_delim_depth = 0;
-        }
-
-        if enclosing.is_some() || in_top_level_const {
-            scan_bare_callback_tokens(line_text, &mut |ident, has_scope| {
-                for_matching_callback_targets(&by_name, ident, has_scope, |target| {
-                    if line_num >= target.line && line_num <= target.end_line {
-                        return;
-                    }
-                    if let Some(caller) = enclosing {
-                        if caller.hash != target.hash {
-                            fwd_set.entry(caller.hash).or_default().insert(target.hash);
-                        }
-                    } else {
-                        roots.insert(target.hash);
-                    }
-                });
-            });
-        }
-
-        if in_top_level_const {
-            let mut terminated = false;
-            for b in line_text.bytes() {
-                match b {
-                    b'(' | b'[' | b'{' => const_delim_depth += 1,
-                    b')' | b']' | b'}' => const_delim_depth = const_delim_depth.saturating_sub(1),
-                    b';' if const_delim_depth == 0 => terminated = true,
-                    _ => {}
-                }
-            }
-            if terminated || enclosing.is_some() {
-                in_top_level_const = false;
-                const_delim_depth = 0;
-            }
-        }
-    }
-}
-
-fn wire_same_file_callbacks(
+fn wire_indexed_callbacks_and_unresolved_receivers(
     conn: &Connection,
     nodes: &HashMap<i64, DeadTailsNode>,
     candidates: &HashSet<i64>,
-    test_targeted: &HashSet<i64>,
     fwd_set: &mut HashMap<i64, HashSet<i64>>,
     roots: &mut HashSet<i64>,
 ) -> Result<()> {
-    let mut path_candidates: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+    let mut path_cands_by_name: HashMap<&str, HashMap<&str, Vec<&DeadTailsNode>>> = HashMap::new();
+    let mut method_cands_by_name: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
     let mut path_test_nodes: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
-    let mut paths_needing_scan: HashSet<&str> = HashSet::new();
+    let mut nodes_by_id: HashMap<&str, &DeadTailsNode> = HashMap::with_capacity(nodes.len());
+    let mut paths_needing_facts: HashSet<&str> = HashSet::new();
 
     for node in nodes.values() {
+        nodes_by_id.insert(node.id.as_str(), node);
         if node.is_test_ctx {
             path_test_nodes.entry(node.path.as_str()).or_default().push(node);
             continue;
         }
         if candidates.contains(&node.hash) {
-            path_candidates.entry(node.path.as_str()).or_default().push(node);
+            path_cands_by_name
+                .entry(node.path.as_str())
+                .or_default()
+                .entry(node.name.as_str())
+                .or_default()
+                .push(node);
+            if node.kind == NodeKind::Method.as_str() {
+                method_cands_by_name
+                    .entry(node.name.as_str())
+                    .or_default()
+                    .push(node);
+            }
             if !roots.contains(&node.hash) {
-                paths_needing_scan.insert(node.path.as_str());
+                paths_needing_facts.insert(node.path.as_str());
             }
         }
     }
 
-    if paths_needing_scan.is_empty() {
-        return Ok(());
-    }
-
-    let workspace_root =
-        read_metadata_optional(conn, MetadataKey::WorkspaceRoot)?.map(std::path::PathBuf::from);
-
-    let mut scanned_on_disk: HashSet<&str> = HashSet::new();
-    if let Some(root) = workspace_root.as_deref() {
-        let mut source_loader = source::VerifiedSourceCache::new();
-        for &path in &paths_needing_scan {
-            if !path.ends_with(".rs") {
-                continue;
-            }
-            let Ok(raw) = source_loader.read(conn, root, path) else {
-                continue;
-            };
-            scanned_on_disk.insert(path);
-            let Some(cands) = path_candidates.get(path) else {
-                continue;
-            };
-            let test_nodes = path_test_nodes.get(path).map(Vec::as_slice).unwrap_or(&[]);
-            scan_rust_file_callbacks(&raw, cands, test_nodes, fwd_set, roots);
-        }
-    }
-
-    if scanned_on_disk.len() < paths_needing_scan.len() {
+    if !paths_needing_facts.is_empty() {
         let mut stmt = conn.prepare(
-            "SELECT p.path, d.symbol
-             FROM dependencies d
-             JOIN path_dictionary p ON p.path_id = d.owner_id
-             WHERE d.symbol != ''",
+            "SELECT path, facts_blob FROM local_facts WHERE is_test = 0 AND generated = 0",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let path: String = row.get(0)?;
-            if !paths_needing_scan.contains(path.as_str())
-                || scanned_on_disk.contains(path.as_str())
+            if !paths_needing_facts.contains(path.as_str()) {
+                continue;
+            }
+            let Some(by_name) = path_cands_by_name.get(path.as_str()) else {
+                continue;
+            };
+            let blob: Vec<u8> = row.get(1)?;
+            let Ok(typed) = decode_facts(&blob) else {
+                continue;
+            };
+            let test_nodes = path_test_nodes.get(path.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+            let mut wire_expr = |source_id: &str, expr: &str, line: i64| {
+                if test_nodes.iter().any(|t| line >= t.line && line <= t.end_line) {
+                    return;
+                }
+                let caller = nodes_by_id.get(source_id).copied();
+                if caller.is_some_and(|c| c.is_test_ctx) {
+                    return;
+                }
+                let tail = expr
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(expr)
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(expr);
+                let has_scope = expr.contains("::");
+                let Some(targets) = by_name.get(tail) else {
+                    return;
+                };
+                for &target in targets {
+                    if !has_scope && target.kind != NodeKind::Function.as_str() {
+                        continue;
+                    }
+                    if line >= target.line && line <= target.end_line {
+                        continue;
+                    }
+                    match caller {
+                        Some(c) if candidates.contains(&c.hash) && c.hash != target.hash => {
+                            fwd_set.entry(c.hash).or_default().insert(target.hash);
+                        }
+                        Some(_) | None => {
+                            roots.insert(target.hash);
+                        }
+                    }
+                }
+            };
+            for r in &typed.facts.references {
+                if r.kind == EdgeKind::References.as_str() {
+                    wire_expr(r.source.as_str(), r.expression.as_str(), r.line as i64);
+                }
+            }
+            for (owner_id, state) in typed.flows.cache_entries() {
+                let FlowState::Valid { facts, .. } = state else {
+                    continue;
+                };
+                for binding in &facts.bindings {
+                    wire_value_expr_callbacks(
+                        owner_id,
+                        &binding.value,
+                        binding.position.line as i64,
+                        &mut wire_expr,
+                    );
+                }
+                for join in &facts.branch_joins {
+                    wire_value_expr_callbacks(
+                        owner_id,
+                        &join.value,
+                        join.position.line as i64,
+                        &mut wire_expr,
+                    );
+                }
+                for field in &facts.fields {
+                    wire_value_expr_callbacks(
+                        owner_id,
+                        &field.value,
+                        field.position.line as i64,
+                        &mut wire_expr,
+                    );
+                }
+            }
+        }
+    }
+
+    // Conservatively treat production method candidates as reachable when non-test code
+    // has an unresolved receiver method call with the same method name.
+    if !method_cands_by_name.is_empty() {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT p.path, c.line, x.expression
+             FROM resolution_coverage c
+             JOIN path_dictionary p ON p.path_id = c.path_id
+             JOIN coverage_expressions x ON x.expression_id = c.expression_id
+             LEFT JOIN files f ON f.path = p.path
+             WHERE c.status = '{unresolved}'
+               AND COALESCE(f.is_test, 0) = 0
+               AND x.expression LIKE '%.%'",
+            unresolved = CoverageStatus::Unresolved.as_str(),
+        ))?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        while let Some((path, line, expr)) = rows.next().transpose()? {
+            if is_test_context_path(&path)
+                || path_test_nodes
+                    .get(path.as_str())
+                    .is_some_and(|tns| tns.iter().any(|t| line >= t.line && line <= t.end_line))
             {
                 continue;
             }
-            let symbol: String = row.get(1)?;
-            if !symbol.contains('(') && !symbol.contains('{') {
-                continue;
-            }
-            let Some(cands) = path_candidates.get(path.as_str()) else {
-                continue;
-            };
-            let by_name = index_cands_by_name(cands);
-            scan_bare_callback_tokens(&symbol, &mut |ident, has_scope| {
-                for_matching_callback_targets(&by_name, ident, has_scope, |target| {
-                    if !test_targeted.contains(&target.hash) {
-                        roots.insert(target.hash);
+            let tail = expr.rsplit('.').next().unwrap_or("");
+            if !tail.is_empty()
+                && tail.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                if let Some(cands) = method_cands_by_name.get(tail) {
+                    for &cand in cands {
+                        roots.insert(cand.hash);
                     }
-                });
-            });
+                }
+            }
         }
     }
 
@@ -1014,6 +791,7 @@ pub(super) fn collect_dead_tails_violations(
     conn: &Connection,
     scope: &LintScope,
     workspace_root: Option<&std::path::Path>,
+    include_unused_public_api: bool,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     let sql_scope = scope.exact_prefix().unwrap_or("");
@@ -1071,13 +849,15 @@ pub(super) fn collect_dead_tails_violations(
         });
     }
 
-    super::unused_public_api::collect_unused_public_api_violations(
-        conn,
-        scope,
-        workspace_root,
-        &report.nodes,
-        violations,
-    )?;
+    if include_unused_public_api {
+        super::unused_public_api::collect_unused_public_api_violations(
+            conn,
+            scope,
+            workspace_root,
+            &report.nodes,
+            violations,
+        )?;
+    }
 
     Ok(())
 }
