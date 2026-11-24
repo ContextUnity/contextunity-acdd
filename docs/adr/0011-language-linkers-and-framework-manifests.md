@@ -22,6 +22,8 @@ Supporting multi-language imports, third-party package classification, template 
 - **`LanguageProfile`**: Owns grammar bindings, file extensions, comment boundaries, and AST extraction per language (`crates/acdd-index/src/languages/`).
 - **`TemplateMasker`**: Masks `{% ... %}`, `{{ ... }}`, and `{# ... #}` template directives byte-for-byte with spaces (preserving newlines and offsets) before HTML/JS parsing while retaining template relations (`include`, `extends`, Vue interpolations).
 - **`LanguageLinker`**: Performs language-owned import, scope, and receiver resolution (`crates/acdd-index/src/linker/`), keeping framework behavior strictly data-driven rather than adding framework-specific code branches.
+- **Visibility and dispatch**: `LanguageProfile` remains public for host and profile consumers. `LanguageLinker` and `FileRelationContext` are crate-private and are reached through the language-profile dispatch seam, so private linker details do not leak through public interfaces.
+- **Language-owned member resolution**: `LanguageLinker` supplies lifetime-preserving semantic and import state plus hooks for member/property lookup, dereference targets, polymorphic implementors, candidate filtering, implicit receiver admission, and computed calls. Universal linker phases invoke those hooks instead of carrying per-language context fields or branching on language names. Tier-2 object-oriented profiles use the shared class-member and inheritance index.
 
 ### 2. Dependency Manifest Discovery & 4-Tier Reference Classification
 
@@ -36,6 +38,7 @@ Supporting multi-language imports, third-party package classification, template 
 
 - Framework receiver families, route/DI/semantic/syntax rules (including declarative `ReceiverTypeRule` `member_returns` and `call_returns` compiled into `ReturnTypeSpec` ASTs supporting compound generic wrappers such as `Result<T, E>`, `Option<T>`, `Tuple`, `Iterator<T>`, `Promise<T>`, and `QuerySet<T>`), activation conditions, and graph relations are expressed as typed `FrameworkManifest` data compiled into finite `RuleIR` operations.
 - Standard packs embed via `include_str!`; user workspace overrides load from `.acdd/frameworks/<id>.toml`, `.yaml`, or `.yml` (parsed with strict `deny_unknown_fields`, rejecting legacy raw string lists like top-level `receivers`, `builtins`, `filters`, or `routes`).
+- `HtmlRequestAttributes` projects to the canonical `NodeKind::HtmlRequest` and `NodeKind::HtmlContext` graph nodes. Its request/context role is stored in typed `NodeDetailKey::REQUEST_NODE_ROLE` metadata, so framework manifests continue to select and extend these relations without Rust changes.
 - Default or `extend: true` merges project rules before bundled rules; `replace: true` uses only project rules (setting both `true` fails closed). Any invalid manifest fails the index build before publication.
 - Rules with package activation require a matching dependency in `DependencyRegistry`. Manifest migrations preserve `(src, dst, kind)` edge triples and resolution status multisets on the reference corpus.
 

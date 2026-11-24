@@ -39,7 +39,7 @@ The workspace is structured as **three library crates** plus **one root host bin
                           fs, git, lock, response, subsystems, telemetry)
 ```
 
-- **`crates/acdd-core`**: Strict leaf crate containing decoded identifier newtypes (`ids`), canonical `ErrorCode` / `StateError` (`errors`), normalized `WorkspacePathPolicy` predicates (`path_policy`), self-contained `SchemaDef` (`schema`), `DomainProvider` SPI (`ports`), workspace `Adapter` configuration (`config`), subsystem toggles (`subsystems`), response budgets (`response`), confined filesystem/lock/Git wrappers (`fs`, `lock`, `git`), Linux cgroup memory calculation (`sys`), and telemetry wire DTOs (`telemetry`).
+- **`crates/acdd-core`**: Strict leaf crate containing decoded identifier newtypes (`ids`), canonical `ErrorCode` / `AcddError` (`errors`; `StateError` remains a type alias), normalized `WorkspacePathPolicy` predicates (`path_policy`), self-contained `SchemaDef` (`schema`), `DomainProvider` SPI (`ports`), workspace `Adapter` configuration (`config`), subsystem toggles (`subsystems`), response budgets (`response`), confined filesystem/lock/Git wrappers (`fs`, `lock`, `git`), Linux cgroup memory calculation (`sys`), and telemetry wire DTOs (`telemetry`).
 - **`crates/acdd-index`**: Depends on `acdd-core`. Owns Tree-sitter extraction (`ast`), language profiles and declarative framework manifests (`languages`), cross-file linking (`linker`), documentation section/invariant extraction (`docs`), Merkle commitment sealing (`commitments`), compact graph/fact encoding (`models`, `typed_facts`, `interner`), and `code-map.sqlite` storage (`db`).
 - **`crates/acdd-state`**: Depends on `acdd-core`. Owns `GateProfile` (`version: 2`) and `SpecDocument` parsing (`profile`, `spec`), the pure state-transition core (`machine/`), application use cases (`usecases/`), budgeted `ClaimResp` assembly (`context`), Git snapshot/commit/integration operations (`git_ops/`), wave/runner execution (`runner/`), `StateBackend` persistence (`store/`), and `RunHarness` (`harness`).
 - **`src/` (`contextunity-acdd`)**: Host crate wiring `acdd-core`, `acdd-index`, and `acdd-state`. Owns `src/state_bridge/`, `src/engine/` (indexing pipeline and layered reader), `src/format/` (pure Markdown/JSON presentation), `src/cli/`, and `src/mcp/`.
@@ -112,6 +112,12 @@ to:
 ### 3. Balanced Modularity
 
 Split modules strictly when responsibilities diverge (for example protocol ingress vs. business logic vs. persistence), never by arbitrary line-count caps. Cohesive multi-pass algorithms keep their linear structure in place; proven duplicate logic is extracted into a single canonical owner in `acdd-core` (`fs`, `git`, `lock`, `config`, `sys`).
+
+### 4. Typed Graph Tags and Canonical Errors
+
+- `acdd-core::errors::AcddError` is the canonical structured diagnostic type. `StateError` is a type alias that preserves existing crate callers while they migrate; `ErrorCode`, its wire names, and CLI exit-code mapping remain stable.
+- `acdd-index::models::tags` owns the closed `Copy` enums for node kinds, language IDs, edge kinds, edge confidence, coverage status, and reference kinds. Each enum uses a one-byte representation and exposes its stable wire names through the existing parse and formatting helpers.
+- Public edge tags remain strings at the compatibility boundary. Conversion into compact typed graph storage is fallible and rejects unknown tags instead of inventing enum values.
 
 ## Consequences
 

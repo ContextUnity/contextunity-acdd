@@ -91,7 +91,10 @@ include_tests: false
 ```
 
 - **`StateBackend` (`StateReader` / `StateTx`)**: Short optimistic-CAS transactions verify `node_version` and `runs.generation`, returning `ErrorCode::BackendConflict` on concurrent drift.
+- **Canonical errors**: `acdd-core::errors::AcddError` carries `ErrorCode`, a message, and an optional hint; `StateError` is its compatibility type alias. Stable `ErrorCode` wire names and exit codes are preserved.
 - **SQLite schema**: [`crates/acdd-state/src/store/sqlite/schema.rs`](../../crates/acdd-state/src/store/sqlite/schema.rs) defines `_sqlite_meta` (`schema_version`, `write_seq`, `last_backup_seq`) and 9 domain tables: `runs`, `gate_nodes`, `task_dependencies`, `subtasks`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`, and `run_tombstones`.
+
+Use `ControlFlow` for early exits and borrow loaded graph slices through use-case phases. Keep one-caller preparation and accumulator structs out of the state API.
 
 ### 4. Blackboard Hierarchy and Bounded Pagination
 

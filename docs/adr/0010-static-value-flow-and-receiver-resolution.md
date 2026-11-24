@@ -49,6 +49,10 @@ In [`crates/acdd-index/src/linker/value_flow/mod.rs`](../../crates/acdd-index/sr
 - **Canonical Manifest & Activation Ownership**: `languages::dependency_registry::parser::{ManifestParser, MANIFEST_PARSERS, ModulePrefix}` owns ecosystem manifest discovery and module-prefix parsing; `languages::manifests::semantic::{ActivationCondition, ActivationMatch, SyntaxActivationKeys, FileActivationSignals}` owns two-tier workspace vs. per-file syntax activation. Observed `FileActivationSignals` persist on `Facts.activation_signals` (`ACDD-LOCAL-FACTS\0\x05` in `typed_facts/mod.rs`) and gate `LanguageContext::is_syntax_rule_active` / `LanguageContext::syntax_rules_for_signals` and `ImplicitReceivers` evaluation at link time.
 - **Data-Driven Linker Dispatch**: `LanguageProfile::linker()` exposes per-profile `LanguageLinker` implementations (eliminating hardcoded language switches from `linker/indexing.rs` and `linker/resolution/mod.rs`), while `FileContext` stores per-language extractor state in typed `LanguageFileState` and `GENERIC_LINKER` handles multi-file same-package declarations, wildcard/static imports, external import aliases, and `ModulePrefix` normalization.
 
+### 5. Typed Graph Tag Boundary
+
+`acdd-index::models::tags` owns closed one-byte `Copy` enums for `NodeKind`, `LanguageId`, `EdgeKind`, `EdgeConfidence`, `CoverageStatus`, and `ReferenceKind`. `Node` and `CompactEdge` use these types internally while stable wire names preserve the serialized and public-graph contract. Compact graph conversion parses public strings fail-closed; unsupported tags return an error instead of being retained as an unknown compact enum value.
+
 ## Consequences
 
 - Exact call counts (`calls`) remain strictly separated from bounded candidate navigation (`possible_calls`), while impact and removal analyses conservatively follow both.

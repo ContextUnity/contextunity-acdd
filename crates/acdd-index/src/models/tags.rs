@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr};
 
 macro_rules! wire_tags {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
+        #[repr(u8)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum $name { $(#[serde(rename = $wire)] $variant),+ }
         impl $name {
@@ -30,6 +31,15 @@ wire_tags!(EdgeKind {
     PossibleCalls => "possible_calls",
     Imports => "imports",
     Contains => "contains",
+    DefinesTable => "defines_table",
+    QueriesTable => "queries_table",
+    MutatesTable => "mutates_table",
+    ReferencesTable => "references_table",
+    UsesModel => "uses_model",
+    CallsEndpoint => "calls_endpoint",
+    ReferencesRoute => "references_route",
+    RendersTemplate => "renders_template",
+    InjectsDependency => "injects_dependency",
     References => "references",
     Inherits => "inherits",
     Implements => "implements",
@@ -38,9 +48,17 @@ wire_tags!(EdgeKind {
     Handles => "handles",
     Mutates => "mutates",
     Registers => "registers",
+    Injects => "injects",
+    Renders => "renders",
+    ContextProvider => "context_provider",
+    Includes => "includes",
+    TemplateImports => "template_imports",
     Governs => "governs",
     Documents => "documents",
     ReferencesDoc => "references_doc",
+    CitesDoc => "cites_doc",
+    CitedByDoc => "cited_by_doc",
+    GovernedBy => "governed_by",
     Overrides => "overrides",
     Extends => "extends",
 });
@@ -88,6 +106,14 @@ wire_tags!(NodeKind {
     TemplateLoaderRoot => "template_loader_root",
     MainRegistration => "main_registration",
     CliCommandRegistration => "cli_command_registration",
+    ModuleDeclaration => "module_declaration",
+    View => "view",
+    Service => "service",
+    ToolRegistration => "tool_registration",
+    EventHandlerRegistration => "event_handler_registration",
+    HtmlRequest => "html_request",
+    HtmlContext => "html_context",
+    Object => "object",
 });
 
 wire_tags!(ReferenceKind {
@@ -107,6 +133,12 @@ wire_tags!(ReferenceKind {
     SemanticNamedReference => "semantic_named_reference",
     SemanticKey => "semantic_key",
     SqlTypeQueriesTable => "sql_type_queries_table",
+    TemplateImports => "template_imports",
+    TemplateLoads => "template_loads",
+    TemplateBindings => "template_bindings",
+    QueriesTable => "queries_table",
+    MutatesTable => "mutates_table",
+    ReferencesTable => "references_table",
 });
 
 wire_tags!(LanguageId {
@@ -134,3 +166,43 @@ wire_tags!(LanguageId {
     Markdown => "markdown",
     Workspace => "workspace",
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_copy<T: Copy>() {}
+
+    #[test]
+    fn graph_tags_are_closed_one_byte_copy_enums() {
+        assert_copy::<NodeKind>();
+        assert_copy::<LanguageId>();
+        assert_copy::<EdgeKind>();
+        assert_copy::<EdgeConfidence>();
+        assert_copy::<CoverageStatus>();
+        assert_copy::<ReferenceKind>();
+
+        assert_eq!(std::mem::size_of::<NodeKind>(), 1);
+        assert_eq!(std::mem::size_of::<LanguageId>(), 1);
+        assert_eq!(std::mem::size_of::<EdgeKind>(), 1);
+        assert_eq!(std::mem::size_of::<EdgeConfidence>(), 1);
+        assert_eq!(std::mem::size_of::<CoverageStatus>(), 1);
+        assert_eq!(std::mem::size_of::<ReferenceKind>(), 1);
+
+        assert_eq!(NodeKind::ALL.len(), 36);
+        assert_eq!(EdgeKind::ALL.len(), 34);
+        assert_eq!(ReferenceKind::ALL.len(), 22);
+        for (tag, wire) in NodeKind::ALL.iter().zip(NodeKind::WIRE_NAMES) {
+            assert_eq!(tag.as_str(), *wire);
+            assert_eq!(NodeKind::parse(wire), Some(*tag));
+        }
+        for (tag, wire) in EdgeKind::ALL.iter().zip(EdgeKind::WIRE_NAMES) {
+            assert_eq!(tag.as_str(), *wire);
+            assert_eq!(EdgeKind::parse(wire), Some(*tag));
+        }
+        for (tag, wire) in ReferenceKind::ALL.iter().zip(ReferenceKind::WIRE_NAMES) {
+            assert_eq!(tag.as_str(), *wire);
+            assert_eq!(ReferenceKind::parse(wire), Some(*tag));
+        }
+    }
+}

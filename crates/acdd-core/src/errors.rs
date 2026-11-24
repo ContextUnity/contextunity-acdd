@@ -179,7 +179,7 @@ impl fmt::Display for ErrorCode {
 }
 
 impl FromStr for ErrorCode {
-    type Err = StateError;
+    type Err = AcddError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::ALL
@@ -187,7 +187,7 @@ impl FromStr for ErrorCode {
             .copied()
             .find(|code| code.as_str() == s)
             .ok_or_else(|| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::ProfileSchemaInvalid,
                     format!("unknown error code '{s}'"),
                 )
@@ -198,7 +198,7 @@ impl FromStr for ErrorCode {
 /// Structured diagnostic error carrying a canonical `ErrorCode`, human message, and optional remediation hint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StateError {
+pub struct AcddError {
     /// Stable machine-readable error code.
     pub code: ErrorCode,
     /// Contextual explanation of the failure.
@@ -208,8 +208,11 @@ pub struct StateError {
     pub hint: Option<String>,
 }
 
-impl StateError {
-    /// Construct a new `StateError` without a hint.
+/// Compatibility name retained while downstream crates adopt [`AcddError`].
+pub type StateError = AcddError;
+
+impl AcddError {
+    /// Construct a new `AcddError` without a hint.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -229,20 +232,20 @@ impl StateError {
         self.code.exit_code()
     }
 
-    /// Extract a `&StateError` from an `anyhow::Error` chain (including `std::io::Error` payloads) if present.
+    /// Extract a `&AcddError` from an `anyhow::Error` chain (including `std::io::Error` payloads) if present.
     pub fn from_anyhow(err: &anyhow::Error) -> Option<&Self> {
         err.chain().find_map(|cause| {
-            cause.downcast_ref::<StateError>().or_else(|| {
+            cause.downcast_ref::<AcddError>().or_else(|| {
                 cause
                     .downcast_ref::<std::io::Error>()
                     .and_then(|io_err| io_err.get_ref())
-                    .and_then(|inner| inner.downcast_ref::<StateError>())
+                    .and_then(|inner| inner.downcast_ref::<AcddError>())
             })
         })
     }
 }
 
-impl fmt::Display for StateError {
+impl fmt::Display for AcddError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.code.as_str(), self.message)?;
         if let Some(hint) = &self.hint {
@@ -252,7 +255,7 @@ impl fmt::Display for StateError {
     }
 }
 
-impl std::error::Error for StateError {}
+impl std::error::Error for AcddError {}
 
 #[cfg(test)]
 mod tests {
