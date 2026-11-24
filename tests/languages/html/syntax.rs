@@ -289,18 +289,27 @@ fn html_diagnostics_and_whole_document_ast_search_use_html_grammar() {
         .extract("<div attr=\"");
     assert!(!facts.errors.is_empty());
     assert_eq!(facts.nodes.len(), 1);
-    let matches = ast::search("<p>Hello</p>", "index.html", "html", "<p>Hello</p>", 10).unwrap();
+    let ast_search = |src: &str, pat: &str| {
+        ast::search::PreparedAstMatcher::new("html", pat).and_then(|mut m| {
+            m.search_page(
+                src,
+                "index.html",
+                0,
+                10,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .map(|p| p.items)
+        })
+    };
+    let matches = ast_search("<p>Hello</p>", "<p>Hello</p>").unwrap();
     assert_eq!(matches.len(), 1);
-    let nested = ast::search(
+    let nested = ast_search(
         "<html><body><p>Hello</p><p>Hello</p></body></html>",
-        "index.html",
-        "html",
         "<p>Hello</p>",
-        10,
     )
     .unwrap();
     assert_eq!(nested.len(), 2);
-    assert!(ast::search("<p>Hello</p>", "index.html", "html", "<div attr=\"", 10).is_err());
+    assert!(ast_search("<p>Hello</p>", "<div attr=\"").is_err());
 }
 
 #[test]

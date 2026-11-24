@@ -152,7 +152,7 @@ Each `[[syntax_rules]]` entry declares `id`, `language`, optional `package_famil
 | `command_dispatch` | Link Rust CLI subcommand enums and match arms to their handler functions. |
 | `template_loader` / `template_library` | Record static template roots and custom tag/filter libraries within project scope. |
 | `template_symbols` / `template_dialect` | Declare built-in template tags/filters/routes and custom block/include/extends directives. |
-| `object_factory` / `receiver_type` | Bind factory return members, nominal types, and callback parameter types. |
+| `object_factory` / `receiver_type` | Bind factory return members, nominal types, callback parameter types, and optional `argument_factories` / `member_returns` / `call_returns` (`ReturnTypeSpec` compound generic wrappers) for chained return-type resolution. |
 | `implicit_receivers` / `implicit_builtins` | Admit framework-injected globals (`defineProps`, `$el`) unless shadowed by local variables. |
 | `component_environment` / `component_options` / `component_macros` | Resolve auto-imported Vue/Nuxt components, composables (`exports`, `call_results`), options API registrations, and `props`/`emits`/`slots` macros. |
 | `route_object` / `file_route` | Extract routes from JS/TS route objects or file-based Vue page directories (`method = "GET"`). |

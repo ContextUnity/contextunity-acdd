@@ -48,7 +48,7 @@ impl std::fmt::Display for BuildMode {
 
 #[derive(Debug)]
 /// Reports that a source file changed after its inventory digest was scanned.
-pub struct SourceSnapshotMismatch(pub String);
+pub(crate) struct SourceSnapshotMismatch(pub(crate) String);
 
 impl std::fmt::Display for SourceSnapshotMismatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

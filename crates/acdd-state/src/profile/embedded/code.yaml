@@ -165,9 +165,10 @@ guidance:
     description: "ENGINEERING & SIMPLICITY PRINCIPLES"
     criteria:
       - "Reuse canonical owners (`INV-SINGLE-OWNER`), keep one SSOT with native closed enums/types instead of magic strings or shadow layers, and avoid unrequested fallback architecture."
+      - "Extend upstream producers instead of re-implementing downstream: when a consumer (query, lint, report, validator, or gate) lacks a structural fact, extend the canonical upstream extractor/resolver (`incoming_seams`) that owns that domain — never build parallel parsers, resolvers, or string heuristics in downstream consumers."
       - "Zero production N+1 I/O, DB, parse, or subprocess loops: batch/preload once at the boundary, skip branches discarded by caller filters, and trust validated internal types without re-checking."
-      - "Extract shared helpers for `>= 5`-line repeated pipelines, keep cohesive single-caller code together, and remove clones, `dead_tails`, `phantom_tested`, and `dangling_calls`."
-      - "Escalate new subsystems or `max_net_loc` overages via `acdd_blackboard` (`decisions`/`blockers`) or `submit --action escalate` — never convert one-time incidents into permanent layers."
+      - "Extract shared helpers for `>= 5`-line repeated pipelines, keep cohesive single-caller code together, and decompose large routines only into distinct domain phases or reusable (`>= 2` callers) helpers — never slice a cohesive algorithm into single-use pass-through micro-functions or pack statements onto single lines."
+      - "Eliminate clones, `dead_tails`, `phantom_tested`, `dangling_calls`, and dead/test-only public API surface; escalate new subsystems or `max_net_loc` overages via `acdd_blackboard` (`decisions`/`blockers`) or `submit --action escalate` — never convert one-time incidents into permanent layers."
       - "Keep logic/state tests in-memory with hoisted setup and table matrices; reserve tempdirs, VCS checkouts, and child processes strictly for isolation contracts."
   code.tools:
     description: "ACDD NAVIGATION & HYGIENE PROTOCOL"
@@ -178,24 +179,25 @@ guidance:
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "Audit canonical owners first; populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, and cross-task seams."
+      - "Audit canonical owners first; populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules` naming the exact existing upstream producers/stores/types to reuse (forbidding parallel downstream parsers or resolvers), `max_net_loc`, `verification_seam`, and cross-task seams."
       - "Post the decision via `acdd_blackboard` and cite its ID in `blackboard_decision_id`."
   milestone.blueprint_review:
     description: "INDEPENDENT BLUEPRINT REVIEW"
     criteria:
-      - "Verify invariants, canonical-owner reuse, layer boundaries, realistic `max_net_loc`, proportional verification, and a valid `blackboard_decision_id` across `proof.tasks`."
+      - "Verify invariants, canonical-owner reuse (rejecting any task design that duplicates an existing parser, resolver, or store instead of extending the upstream producer), layer boundaries, realistic `max_net_loc`, proportional verification, and a valid `blackboard_decision_id` across `proof.tasks`."
   task.code:
     description: "TASK BUILD & SEAM PROOF"
     criteria:
-      - "Follow `pre_task_slice` (`canonical_owners`, `mechanism_rules`, `max_net_loc`); fix defects across all sibling call sites at the canonical owner."
+      - "Follow `pre_task_slice` (`canonical_owners`, `mechanism_rules`, `max_net_loc`); fix defects across all sibling call sites at the canonical owner, and extend upstream fact producers (`incoming_seams`) rather than adding downstream workarounds."
       - "Author compiling, passing seam tests directly in `build` (`code.seam`, `exit_code == 0`) and verify hot-path budgets proportionally."
       - "If `context_reset_required` is set, read the latest `rearchitect` decision from `acdd_blackboard` and rebuild cleanly from scratch."
   task.review:
     description: "INDEPENDENT TASK REVIEW"
     criteria:
+      - "Gate 0 (Mechanism & Ownership Audit before edge-case review): verify that the change reuses existing canonical subsystems (`INV-SINGLE-OWNER`). If a candidate introduces a parallel parser, resolver, or heuristic for a domain already owned by an upstream subsystem, reject the mechanism immediately and route to the canonical owner — never request edge-case patches on top of a duplicate mechanism."
       - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and `code_map_impact` / `code_map_query` (`duplicates`, `dead_tails`, `phantom_tested`, `dangling_calls`) across all contours."
-      - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
-      - "Reject N+1 loops, duplicate `>= 5`-line logic, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are tangled)."
+      - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations or duplicate subsystem implementations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
+      - "Reject N+1 loops, duplicate `>= 5`-line logic, artificial single-use micro-helper fragmentation, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are genuinely distinct)."
   task.rearchitect:
     description: "ARCHITECTURAL RECOVERY AFTER DRIFT"
     criteria:
@@ -217,8 +219,8 @@ contours:
   architecture:
     description: "Verify single-owner reuse, simplicity, layer boundaries, and absence of redundant or incident-driven abstractions."
     criteria:
-      - "Confirm canonical owners and existing safeguards are reused instead of accumulating defensive wrappers, redundant validations, parallel pipelines, or shadow resolvers."
-      - "Verify strict layer boundaries, zero unnecessary code or narrow string heuristics where structural data exists, proportional complexity, and zero incident-driven permanent abstractions."
+      - "Confirm canonical owners and existing upstream producers are reused instead of accumulating defensive wrappers, redundant validations, parallel parsers/resolvers, or downstream string heuristics."
+      - "Verify strict layer boundaries, cohesive functions without artificial single-use micro-helper fragmentation, zero unnecessary code where structural data already exists, and zero incident-driven permanent abstractions."
   concurrency:
     description: "Verify concurrent operations preserve revision fencing, claim ownership, and rollback integrity."
     criteria:

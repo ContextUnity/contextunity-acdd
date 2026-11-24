@@ -36,6 +36,8 @@ impl NodeDetailKey {
     pub const COGNITIVE_COMPLEXITY: &'static str = "cognitive_complexity";
     pub const MAX_NESTING_DEPTH: &'static str = "max_nesting_depth";
     pub const FACT_LIMIT_EXCEEDED: &'static str = "fact_limit_exceeded";
+    pub(crate) const IS_PUBLIC: &'static str = "is_public";
+    pub(crate) const RUST_DERIVE_TRAIT: &'static str = "rust_derive_trait";
 }
 
 /// Boolean properties projected from node details.
@@ -46,17 +48,29 @@ pub struct NodeDetailFlags {
     pub has_trait_default: bool,
     pub has_cfg_test: bool,
     pub has_tool: bool,
+    pub has_schema_derive: bool,
+    pub is_public: bool,
     pub is_stub: bool,
     pub is_overload: bool,
 }
-fn is_cfg_test_attribute(dec: &str) -> bool {
-    let Some((_, rest)) = dec.split_once("cfg(") else {
-        return false;
-    };
+
+const WIRE_CLI_DERIVES: &[&str] = &[
+    "Serialize",
+    "Deserialize",
+    "JsonSchema",
+    "Parser",
+    "Args",
+    "Subcommand",
+    "ValueEnum",
+];
+
+fn split_top_level_cfg_args(expr: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
     let mut in_quotes = false;
     let mut escaped = false;
-    let mut ident = String::new();
-    for ch in rest.chars() {
+    let mut start = 0usize;
+    for (idx, ch) in expr.char_indices() {
         if escaped {
             escaped = false;
             continue;
@@ -69,21 +83,75 @@ fn is_cfg_test_attribute(dec: &str) -> bool {
             }
             continue;
         }
-        if ch == '"' {
-            in_quotes = true;
-            ident.clear();
-            continue;
-        }
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            ident.push(ch);
-        } else {
-            if ident == "test" {
-                return true;
+        match ch {
+            '"' => in_quotes = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(expr[start..idx].trim());
+                start = idx + 1;
             }
-            ident.clear();
+            _ => {}
         }
     }
-    ident == "test"
+    let tail = expr[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    out
+}
+
+fn eval_cfg_is_test_only(expr: &str) -> bool {
+    let e = expr.trim();
+    if e == "test" {
+        return true;
+    }
+    if let Some(inner) = e
+        .strip_prefix("all")
+        .map(str::trim)
+        .and_then(|r| r.strip_prefix('('))
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return split_top_level_cfg_args(inner)
+            .into_iter()
+            .any(eval_cfg_is_test_only);
+    }
+    if let Some(inner) = e
+        .strip_prefix("any")
+        .map(str::trim)
+        .and_then(|r| r.strip_prefix('('))
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        let args = split_top_level_cfg_args(inner);
+        return args.iter().any(|arg| arg.trim() == "test")
+            || (!args.is_empty() && args.into_iter().all(eval_cfg_is_test_only));
+    }
+    false
+}
+
+pub(crate) fn is_cfg_test_attribute(dec: &str) -> bool {
+    let compact: String = dec.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some(body) = compact.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) else {
+        return false;
+    };
+    let Some(inner) = body.strip_prefix("cfg(").and_then(|s| s.strip_suffix(')')) else {
+        return false;
+    };
+    eval_cfg_is_test_only(inner)
+}
+
+fn has_schema_derive_decorator(dec: &str) -> bool {
+    let d = dec.trim();
+    if d.starts_with("#[serde(") || d.starts_with("#[schemars(") || d.starts_with("#[clap(") {
+        return true;
+    }
+    let Some(inner) = d.strip_prefix("#[derive(").and_then(|s| s.strip_suffix(")]")) else {
+        return false;
+    };
+    inner.split(',').any(|trait_path| {
+        let tail = trait_path.trim().rsplit("::").next().unwrap_or("").trim();
+        WIRE_CLI_DERIVES.contains(&tail)
+    })
 }
 
 impl NodeDetailFlags {
@@ -93,6 +161,14 @@ impl NodeDetailFlags {
             has_entrypoint: present(NodeDetailKey::ENTRYPOINT),
             has_impl_trait: present(NodeDetailKey::IMPL_TRAIT),
             has_trait_default: present(NodeDetailKey::TRAIT_DEFAULT),
+            has_schema_derive: value
+                .get(NodeDetailKey::RUST_DERIVE_TRAIT)
+                .and_then(Value::as_str)
+                .is_some_and(|t| WIRE_CLI_DERIVES.contains(&t)),
+            is_public: value
+                .get(NodeDetailKey::IS_PUBLIC)
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             is_stub: value
                 .get(NodeDetailKey::IS_STUB)
                 .and_then(Value::as_bool)
@@ -110,6 +186,7 @@ impl NodeDetailFlags {
             for dec in decorators.iter().filter_map(Value::as_str) {
                 flags.has_cfg_test |= is_cfg_test_attribute(dec);
                 flags.has_tool |= dec.starts_with("#[tool") || dec.starts_with("#[rmcp::tool");
+                flags.has_schema_derive |= has_schema_derive_decorator(dec);
             }
         }
         flags
@@ -121,6 +198,8 @@ impl NodeDetailFlags {
                 NodeDetailKey::IMPL_TRAIT,
                 NodeDetailKey::TRAIT_DEFAULT,
                 NodeDetailKey::DECORATORS,
+                NodeDetailKey::IS_PUBLIC,
+                NodeDetailKey::RUST_DERIVE_TRAIT,
                 NodeDetailKey::IS_STUB,
                 NodeDetailKey::IS_OVERLOAD,
             ]
@@ -131,5 +210,29 @@ impl NodeDetailFlags {
         }
         serde_json::from_str::<Value>(raw)
             .map_or_else(|_| Self::default(), |v| Self::from_value(&v))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_cfg_test_attribute, NodeDetailFlags};
+
+    #[test]
+    fn cfg_test_attribute_and_schema_derive_flags_match_contract() {
+        for (attr, expected) in [
+            ("#[cfg(test)]", true),
+            ("#[cfg(all(test, target_os = \"linux\"))]", true),
+            ("#[cfg(any(test, feature = \"nonexistent\"))]", true),
+            ("#[cfg(not(test))]", false),
+            ("#[cfg(all(not(test), unix))]", false),
+            ("#[cfg(feature = \"test\")]", false),
+            ("#[cfg_attr(test, allow(dead_code))]", false),
+        ] {
+            assert_eq!(is_cfg_test_attribute(attr), expected, "{attr}");
+        }
+        let flags = NodeDetailFlags::from_json(
+            r##"{"is_public":true,"decorators":["#[derive(serde::Serialize)]"]}"##,
+        );
+        assert!(flags.is_public && flags.has_schema_derive);
     }
 }

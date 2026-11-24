@@ -8,6 +8,7 @@ mod duplicates;
 mod rules;
 mod syntax;
 mod types;
+mod unused_public_api;
 
 use super::paging;
 use acdd_core::lint::{ArchRuleKind, ArchitectureConfig, LintCategory, LintSeverity};

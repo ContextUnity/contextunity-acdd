@@ -59,8 +59,10 @@ fn normalize_declared_child_module(
     let directory = if integration_root
         || matches!(
             source.file_name().and_then(|name| name.to_str()),
-            Some("lib.rs" | "main.rs" | "mod.rs")
-        ) {
+            Some("lib.rs" | "main.rs" | "mod.rs" | "build.rs")
+        )
+        || parent.file_name().is_some_and(|name| name == "bin")
+    {
         parent.to_path_buf()
     } else {
         source.with_extension("")
@@ -285,7 +287,7 @@ impl LanguageLinker for RustLinker {
             context.candidates.clear();
             return ImportResolution::default();
         }
-        let resolution = resolve_default_import(context);
+        let mut resolution = resolve_default_import(context);
         context.candidates.retain(|node| {
             node.kind != "impl"
                 && (node.kind == "module"
@@ -358,6 +360,14 @@ impl LanguageLinker for RustLinker {
         context
             .candidates
             .extend(forwarding.targets(module, name, requester).iter().copied());
+        if !context.candidates.is_empty()
+            && context
+                .candidates
+                .iter()
+                .all(|node| node.kind != "module" || node.path != module.path)
+        {
+            resolution.reexport_symbol = true;
+        }
         resolution
     }
 

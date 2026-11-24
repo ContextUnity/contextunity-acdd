@@ -1059,27 +1059,54 @@ doc_type: architecture
         })
     };
 
-    assert!(has("syntax.cognitive_complexity", "deep_branching"), "{items:?}");
-    assert!(has("syntax.max_nesting_depth", "deep_branching"), "{items:?}");
-    assert!(!has("syntax.cognitive_complexity", "flat_router"), "{items:?}");
-    assert!(!has("syntax.max_nesting_depth", "flat_router"), "{items:?}");
-    assert!(has("syntax.high_fanout", "high_fanout_fn"), "{items:?}");
+    let deep_details: Value = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name = 'deep_branching'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).unwrap())
+        .unwrap();
+    assert!(
+        deep_details["cognitive_complexity"].as_u64().unwrap_or(0) > 4,
+        "deep_branching must record cognitive_complexity in node.details: {deep_details}"
+    );
+    assert!(
+        deep_details["max_nesting_depth"].as_u64().unwrap_or(0) > 2,
+        "deep_branching must record max_nesting_depth in node.details: {deep_details}"
+    );
+    let router_details: Value = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name = 'flat_router'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).unwrap())
+        .unwrap();
+    assert!(
+        router_details["cognitive_complexity"].as_u64().unwrap_or(0) <= 4,
+        "flat_router must not inflate cognitive_complexity in node.details: {router_details}"
+    );
+    assert!(
+        router_details["max_nesting_depth"].as_u64().unwrap_or(0) <= 2,
+        "flat_router must not inflate max_nesting_depth in node.details: {router_details}"
+    );
+    assert!(!has("syntax.cognitive_complexity", ""), "{items:?}");
+    assert!(!has("syntax.max_nesting_depth", ""), "{items:?}");
+    assert!(!has("syntax.high_fanout", ""), "{items:?}");
     assert!(has("syntax.intra_crate_type_homonym", "SharedType"), "{items:?}");
 
-    for rule_id in [
-        "syntax.cognitive_complexity",
-        "syntax.max_nesting_depth",
-        "syntax.high_fanout",
-    ] {
-        let matching: Vec<&Value> = items.iter().filter(|v| v["rule_id"] == rule_id).collect();
-        assert!(!matching.is_empty(), "missing {rule_id}");
-        assert!(
-            matching
-                .iter()
-                .all(|v| v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"),
-            "{rule_id} must bind invariant: {matching:?}"
-        );
-    }
+    let matching: Vec<&Value> = items
+        .iter()
+        .filter(|v| v["rule_id"] == "syntax.intra_crate_type_homonym")
+        .collect();
+    assert!(!matching.is_empty(), "missing syntax.intra_crate_type_homonym");
+    assert!(
+        matching
+            .iter()
+            .all(|v| v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"),
+        "syntax.intra_crate_type_homonym must bind invariant: {matching:?}"
+    );
 
     assert!(
         items.iter().any(|v| {
@@ -1142,10 +1169,31 @@ pub mod other;
 pub mod caller;
 pub mod glob_used;
 pub mod glob_unused;
+#[cfg(test)]
+pub mod helper;
+pub mod harness;
+#[cfg(test)]
+pub(crate) mod dual_cfg;
+#[cfg(not(test))]
+mod dual_cfg;
+pub mod a;
+pub mod reexport_a;
+pub mod reexport_b;
+pub mod reexport_c;
+pub mod reexport_named_b;
+pub mod dead_glob_mod;
+pub mod data_only;
 
 pub use inner::unused_reexport;
 pub use inner::test_only_reexport;
 pub use inner::used_reexport;
+pub use inner::direct_submod_masked;
+pub use inner::main_reexport;
+pub use inner::unrelated_unresolved_reexport;
+pub use inner::test_only_unresolved_reexport;
+pub use missing_mod::mixed_unresolved_reexport;
+pub use missing_mod::helper_unresolved_reexport;
+pub use missing_mod::data_only_unresolved;
 pub use glob_used::*;
 pub use glob_unused::*;
 
@@ -1161,6 +1209,104 @@ pub struct NonWireDeadDto {
 
 pub fn main_entrypoint() {}
 pub fn lib_unused() {}
+
+#[cfg(test)]
+mod test_imports {
+    use crate::used_reexport;
+}
+"#,
+    );
+    ws.write(
+        "src/data_only.rs",
+        r#"pub struct DataDto {
+    pub value: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let _ = crate::data_only_unresolved();
+    }
+}
+"#,
+    );
+    ws.write(
+        "src/helper.rs",
+        r#"pub fn test_helper_only() -> i32 {
+    let _ = sample_app::helper_unresolved_reexport();
+    crate::inner::test_only_from_cfg_test_mod()
+}
+"#,
+    );
+    ws.write(
+        "src/harness.rs",
+        r#"pub fn prod_harness_used() -> i32 { 101 }
+pub fn prod_harness_unused() -> i32 { 102 }
+"#,
+    );
+    ws.write(
+        "src/dual_cfg.rs",
+        r#"pub fn dual_cfg_used() -> i32 { 103 }
+pub fn dual_cfg_unused() -> i32 { 104 }
+"#,
+    );
+    ws.write(
+        "src/a/mod.rs",
+        r#"pub mod b;
+pub mod child;
+
+pub use b::submod_reexport;
+pub use b::used_via_a;
+pub use b::used_via_alias;
+pub use b::super_submod_masked;
+pub use b::super_used_via_a;
+pub use missing_sub::a_test_unresolved;
+"#,
+    );
+    ws.write(
+        "src/a/b.rs",
+        r#"pub fn submod_reexport() -> i32 { 110 }
+pub fn used_via_a() -> i32 { 111 }
+pub fn used_via_alias() -> i32 { 114 }
+pub fn super_submod_masked() -> i32 { 112 }
+pub fn super_used_via_a() -> i32 { 113 }
+"#,
+    );
+    ws.write(
+        "src/a/child.rs",
+        r#"pub fn child_entry() -> i32 {
+    super::super_used_via_a() + super::b::super_submod_masked()
+}
+"#,
+    );
+    ws.write(
+        "src/reexport_a.rs",
+        r#"pub use crate::reexport_b::*;
+pub use crate::reexport_named_b::direct_foo;
+"#,
+    );
+    ws.write(
+        "src/reexport_b.rs",
+        r#"pub use crate::reexport_c::via_glob_named;
+pub use crate::reexport_c::unused_in_c;
+"#,
+    );
+    ws.write(
+        "src/reexport_c.rs",
+        r#"pub fn via_glob_named() -> i32 { 120 }
+pub fn unused_in_c() -> i32 { 121 }
+"#,
+    );
+    ws.write(
+        "src/reexport_named_b.rs",
+        r#"pub fn direct_foo() -> i32 { 122 }
+pub use crate::dead_glob_mod::*;
+"#,
+    );
+    ws.write(
+        "src/dead_glob_mod.rs",
+        r#"pub fn dead_glob_fn() -> i32 { 123 }
 "#,
     );
     ws.write(
@@ -1177,6 +1323,8 @@ pub fn glob_dead() -> i32 { 11 }
     ws.write(
         "src/other.rs",
         r#"pub fn shadowed_local_fn() -> i32 { 20 }
+pub fn macro_arg_fn() -> i32 { 21 }
+pub fn macro_path_fn() -> i32 { 22 }
 "#,
     );
     ws.write(
@@ -1190,6 +1338,11 @@ pub fn test_only_pub_fn() -> i32 { 6 }
 pub fn cfg_all_test_only_fn() -> i32 { 7 }
 pub fn cfg_any_test_only_fn() -> i32 { 8 }
 pub fn shadowed_local_fn() -> i32 { 9 }
+pub fn direct_submod_masked() -> i32 { 10 }
+pub fn main_reexport() -> i32 { 11 }
+pub fn unrelated_unresolved_reexport() -> i32 { 12 }
+pub fn test_only_unresolved_reexport() -> i32 { 13 }
+pub fn test_only_from_cfg_test_mod() -> i32 { 14 }
 
 #[cfg(test)]
 mod tests {
@@ -1225,6 +1378,7 @@ mod any_tests {
 use crate::glob_live;
 use crate::inner::used_direct_pub;
 use crate::other::shadowed_local_fn as other_shadowed;
+use crate::a::{self, self as aliased_a};
 
 struct Helper;
 impl Helper {
@@ -1232,6 +1386,12 @@ impl Helper {
 }
 
 fn shadowed_local_fn() -> i32 { 0 }
+
+macro_rules! invoke_helper {
+    ($e:expr) => {
+        $e
+    };
+}
 
 pub fn prod_entry() -> i32 {
     let h = Helper;
@@ -1241,14 +1401,46 @@ pub fn prod_entry() -> i32 {
         + other_shadowed()
         + shadowed_local_fn()
         + h.shadowed_local_fn()
+        + invoke_helper!(crate::other::macro_arg_fn())
+        + crate::inner::direct_submod_masked()
+        + a::used_via_a()
+        + aliased_a::used_via_alias()
+        + aliased_a::b::submod_reexport()
+        + a::b::submod_reexport()
+        + crate::a::b::submod_reexport()
+        + crate::a::child::child_entry()
+        + crate::harness::prod_harness_used()
+        + crate::dual_cfg::dual_cfg_used()
+        + crate::reexport_a::via_glob_named()
+        + crate::reexport_a::direct_foo()
+        + unknown_crate::unrelated_unresolved_reexport()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mixed_file_unresolved_test_call() {
+        let _ = crate::mixed_unresolved_reexport();
+        let _ = sample_app::mixed_unresolved_reexport();
+        let _ = a::a_test_unresolved();
+        let _ = crate::unknown_test_mod::test_only_unresolved_reexport();
+    }
 }
 "#,
     );
     ws.write(
         "src/main.rs",
-        r#"fn main() {
+        r#"macro_rules! pass_path_helper {
+    ($f:path) => {
+        $f()
+    };
+}
+
+fn main() {
     let _ = sample_app::caller::prod_entry();
+    let _ = pass_path_helper!(sample_app::other::macro_path_fn);
     sample_app::main_entrypoint();
+    let _ = sample_app::main_reexport();
 }
 "#,
     );
@@ -1279,15 +1471,29 @@ pub fn prod_entry() -> i32 {
     let expect_flagged = [
         ("unused_reexport", Some("src/lib.rs")),
         ("test_only_reexport", Some("src/lib.rs")),
+        ("direct_submod_masked", Some("src/lib.rs")),
+        ("unrelated_unresolved_reexport", Some("src/lib.rs")),
+        ("test_only_unresolved_reexport", Some("src/lib.rs")),
+        ("mixed_unresolved_reexport", Some("src/lib.rs")),
+        ("helper_unresolved_reexport", Some("src/lib.rs")),
+        ("data_only_unresolved", Some("src/lib.rs")),
+        ("DataDto", Some("src/data_only.rs")),
+        ("submod_reexport", Some("src/a/mod.rs")),
+        ("a_test_unresolved", Some("src/a/mod.rs")),
+        ("super_submod_masked", Some("src/a/mod.rs")),
         ("unused_pub_fn", Some("src/inner.rs")),
         ("test_only_pub_fn", Some("src/inner.rs")),
         ("cfg_all_test_only_fn", Some("src/inner.rs")),
         ("cfg_any_test_only_fn", Some("src/inner.rs")),
         ("shadowed_local_fn", Some("src/inner.rs")),
+        ("test_only_from_cfg_test_mod", Some("src/inner.rs")),
         ("glob_dead", Some("src/glob_used.rs")),
         ("never_used_via_glob", Some("src/glob_unused.rs")),
         ("NonWireDeadDto", Some("src/lib.rs")),
         ("lib_unused", Some("src/lib.rs")),
+        ("prod_harness_unused", Some("src/harness.rs")),
+        ("dual_cfg_unused", Some("src/dual_cfg.rs")),
+        ("unused_in_c", Some("src/reexport_b.rs")),
     ];
     for (name, expected_path) in expect_flagged {
         assert!(
@@ -1301,15 +1507,20 @@ pub fn prod_entry() -> i32 {
             "expected dead_tails.unused_public_api for '{name}' at {expected_path:?}: {items:?}"
         );
     }
-    assert!(
-        items.iter().any(|v| {
-            v["path"] == "src/lib.rs"
-                && v["message"]
-                    .as_str()
-                    .is_some_and(|m| m.contains("glob_unused::*"))
-        }),
-        "expected unused glob pub use violation for glob_unused::*: {items:?}"
-    );
+    for (expected_path, expected_glob) in [
+        ("src/lib.rs", "glob_unused::*"),
+        ("src/reexport_named_b.rs", "dead_glob_mod::*"),
+    ] {
+        assert!(
+            items.iter().any(|v| {
+                v["path"] == expected_path
+                    && v["message"]
+                        .as_str()
+                        .is_some_and(|m| m.contains(expected_glob))
+            }),
+            "expected unused glob pub use violation for {expected_glob} at {expected_path}: {items:?}"
+        );
+    }
     assert!(
         !items.iter().any(|v| {
             v["path"] == "src/lib.rs"
@@ -1322,12 +1533,23 @@ pub fn prod_entry() -> i32 {
     for (name, disallowed_path) in [
         ("used_reexport", None),
         ("used_direct_pub", None),
+        ("main_reexport", Some("src/lib.rs")),
+        ("used_via_a", Some("src/a/mod.rs")),
+        ("used_via_alias", Some("src/a/mod.rs")),
+        ("super_used_via_a", Some("src/a/mod.rs")),
+        ("prod_harness_used", Some("src/harness.rs")),
+        ("dual_cfg_used", Some("src/dual_cfg.rs")),
+        ("test_helper_only", Some("src/helper.rs")),
+        ("via_glob_named", Some("src/reexport_b.rs")),
+        ("direct_foo", Some("src/reexport_a.rs")),
         ("glob_live", None),
         ("prod_entry", None),
         ("PublicDto", None),
         ("main", None),
         ("main_entrypoint", None),
         ("emit", Some("build_helper.rs")),
+        ("macro_arg_fn", Some("src/other.rs")),
+        ("macro_path_fn", Some("src/other.rs")),
         ("shadowed_local_fn", Some("src/other.rs")),
     ] {
         assert!(
@@ -1344,6 +1566,28 @@ pub fn prod_entry() -> i32 {
     assert!(
         items.iter().all(|v| v["severity"] == "error"),
         "dead_tails.unused_public_api must emit error severity: {items:?}"
+    );
+
+    let warn_res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::DeadTails]),
+            rule_ids: None,
+            minimum_severity: Some(LintSeverity::Warn),
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let warn_items = warn_res["items"].as_array().unwrap();
+    assert!(
+        !warn_items
+            .iter()
+            .any(|v| v["path"] == "src/helper.rs"),
+        "#[cfg(test)] pub mod helper in src/lib.rs must mark src/helper.rs test-only: {warn_items:?}"
     );
     let _ = symbols;
 }

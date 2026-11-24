@@ -34,7 +34,7 @@ Supporting multi-language imports, third-party package classification, template 
 
 ### 3. Serde-Driven `FrameworkManifest` Packs (`.acdd/frameworks/`)
 
-- Framework receiver families, route/DI/semantic/syntax rules, activation conditions, and graph relations are expressed as typed `FrameworkManifest` data compiled into finite `RuleIR` operations.
+- Framework receiver families, route/DI/semantic/syntax rules (including declarative `ReceiverTypeRule` `member_returns` and `call_returns` compiled into `ReturnTypeSpec` ASTs supporting compound generic wrappers such as `Result<T, E>`, `Option<T>`, `Tuple`, `Iterator<T>`, `Promise<T>`, and `QuerySet<T>`), activation conditions, and graph relations are expressed as typed `FrameworkManifest` data compiled into finite `RuleIR` operations.
 - Standard packs embed via `include_str!`; user workspace overrides load from `.acdd/frameworks/<id>.toml`, `.yaml`, or `.yml` (parsed with strict `deny_unknown_fields`, rejecting legacy raw string lists like top-level `receivers`, `builtins`, `filters`, or `routes`).
 - Default or `extend: true` merges project rules before bundled rules; `replace: true` uses only project rules (setting both `true` fails closed). Any invalid manifest fails the index build before publication.
 - Rules with package activation require a matching dependency in `DependencyRegistry`. Manifest migrations preserve `(src, dst, kind)` edge triples and resolution status multisets on the reference corpus.

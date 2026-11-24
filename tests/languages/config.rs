@@ -81,6 +81,18 @@ fn persisted_config_key_identity() {
 #[test]
 fn config_ast_search_finds_inner_pairs_and_key_captures() {
     let w = crate::languages::PersistedWorkspaceHarness::new();
+    let ast_search = |src: &str, path: &str, lang: &str, pat: &str| {
+        ast::search::PreparedAstMatcher::new(lang, pat).and_then(|mut m| {
+            m.search_page(
+                src,
+                path,
+                0,
+                20,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .map(|p| p.items)
+        })
+    };
     for (path, language, source, patterns) in [
         (
             "settings.yml",
@@ -98,15 +110,15 @@ fn config_ast_search_finds_inner_pairs_and_key_captures() {
         w.write(path, source);
         for pattern in patterns {
             assert!(
-                !ast::search(source, path, language, pattern, 20)
+                !ast_search(source, path, language, pattern)
                     .unwrap()
                     .is_empty(),
                 "{language}: {pattern}"
             );
         }
     }
-    assert!(ast::search("key: 1\n", "settings.yaml", "yaml", "key: [", 20).is_err());
-    assert!(ast::search("key = 1\n", "settings.toml", "toml", "key = [", 20).is_err());
+    assert!(ast_search("key: 1\n", "settings.yaml", "yaml", "key: [").is_err());
+    assert!(ast_search("key = 1\n", "settings.toml", "toml", "key = [").is_err());
 }
 
 #[test]

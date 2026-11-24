@@ -1,5 +1,8 @@
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
-use acdd_index::{ast, scanner};
+use acdd_index::{
+    ast::{self, PatternSearchDiagnostic},
+    scanner,
+};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -582,7 +585,7 @@ pub(crate) fn search_paged_with_adapter(
     let declaration = match ast::pattern_symbol_name(pattern, language) {
         Ok(declaration) => declaration,
         Err(error) => {
-            if let Some(diagnostic) = error.downcast_ref::<ast::PatternSearchDiagnostic>() {
+            if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
                 return Ok(json!({"diagnostic":diagnostic}));
             }
             return Err(error);
@@ -617,7 +620,7 @@ pub(crate) fn search_paged_with_adapter(
     let mut matcher = match ast::search::PreparedAstMatcher::new(language, pattern) {
         Ok(matcher) => matcher,
         Err(error) => {
-            if let Some(diagnostic) = error.downcast_ref::<ast::PatternSearchDiagnostic>() {
+            if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
                 return Ok(json!({"diagnostic":diagnostic}));
             }
             return Err(error);
@@ -656,7 +659,7 @@ pub(crate) fn search_paged_with_adapter(
         ) {
             Ok(page) => page,
             Err(error) => {
-                if let Some(diagnostic) = error.downcast_ref::<ast::PatternSearchDiagnostic>() {
+                if let Some(diagnostic) = error.downcast_ref::<PatternSearchDiagnostic>() {
                     return Ok(json!({"diagnostic":diagnostic}));
                 }
                 return Err(error);

@@ -57,9 +57,6 @@ response:
 
 architecture:
   complexity:
-    max_cognitive_complexity: 50
-    max_nesting_depth: 6
-    max_fanout: 40
     severity: warn
     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
 

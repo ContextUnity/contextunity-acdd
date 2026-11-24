@@ -27,7 +27,7 @@ Code-map storage requires cryptographic verification across cold builds and incr
 ### 2. Compressed Fact Store (`ACDD-LOCAL-FACTS`) & Lean Projections
 
 - **`nodes.details`**: Retains only navigation and direct-query fields; temporary value-flow graphs and raw scope maps stay out of `nodes.details` and FTS5 tables.
-- **Compressed `local_facts.facts_blob`**: Stores typed AST facts compressed with Zstandard (`LOCAL_FACTS_BINARY_MAGIC = b"ACDD-LOCAL-FACTS\0\x03"`, pre-rename `FORGE-LOCAL-FACTS\0\x03`) in [`crates/acdd-index/src/typed_facts/mod.rs`](../../crates/acdd-index/src/typed_facts/mod.rs), preserving deterministic decode and delta hydration without duplicating uncompressed source text in SQLite.
+- **Compressed `local_facts.facts_blob`**: Stores typed AST facts compressed with Zstandard (`LOCAL_FACTS_BINARY_MAGIC = b"ACDD-LOCAL-FACTS\0\x05"`) in [`crates/acdd-index/src/typed_facts/mod.rs`](../../crates/acdd-index/src/typed_facts/mod.rs), preserving deterministic decode and delta hydration without duplicating uncompressed source text in SQLite.
 - **Bulk Ingestion**: Multi-value batch inserts (`COLD_LOCAL_FACTS_BATCH_ROWS`) and borrowed serializers (`NavigationDetails`) avoid row-at-a-time SQL overhead and ingestion node clones, while target-scoped queries avoid workspace-wide table scans.
 
 ### 3. Single-Pass Positioned Spooling & `CompactTag` Pooling (`PF-002`)

@@ -15,7 +15,7 @@ mod staging;
 pub use cold::{build, build_with_cache_dir, build_with_selection_and_guard, validate_code_map_target};
 pub use delta::delta_with_selection;
 pub(crate) use delta::delta_with_selection_and_guard;
-pub use shared::SourceSnapshotMismatch;
+pub(crate) use shared::SourceSnapshotMismatch;
 
 // ---------------------------------------------------------------------------
 // Incremental Delta Indexing

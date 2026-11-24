@@ -106,7 +106,7 @@ gate uses one primary proof/execution contract:
   `code.signature_scope` in `src/state_bridge/code_domain/`, or `docs.links` in
   `src/state_bridge/docs_domain.rs`).
   (`docs.invariants` stamps `"enforced": true` / `[ENFORCED]` on invariants backed
-  by `acdd-rule` or `acdd.yaml` `architecture.rules`.)
+  by `acdd-rule`, `acdd.yaml` `architecture.rules`, or `acdd.yaml` `architecture.complexity.invariant`.)
 - **Container gate** (`gates: [...]`): Groups sequential child gates under dotted
   hierarchical cursors (e.g., `blueprint_synthesis.synthesize` -> `blueprint_synthesis.review`).
 - **Task container** (`- tasks: { when?, gates: [...] }`): Expands its child gate
@@ -130,16 +130,18 @@ indexed test reachability into admitted production scope (`calls`, `imports`,
 completion.
 
 `code_map_query(operation: "duplicates")` pages duplicate symbol bodies and
-repeated normalized code blocks in the indexed graph. At `level: "symbol"`
+repeated normalized AST statement blocks in the indexed graph. At `level: "symbol"`
 (default), `duplicates_paged` and MCP `code_map_query(operation: "duplicates")`
-default `min_lines` to **5** when the argument is omitted; the CLI
+default `min_lines` (minimum AST statement count) to **5** when the argument is omitted; the CLI
 `acdd query run duplicates --min-lines` flag still defaults to **10** unless set
-explicitly. **`exact`** whole-symbol groups hash the blank-trimmed raw symbol
-body (leading/trailing blank lines removed, indentation preserved). **`block`**
-windows hash indent-normalized non-empty lines for each `>= min_lines` slice.
-Near clones cluster by name and line similarity. **`block`** matches cover
-repeated normalized windows across symbols/files or at non-overlapping positions
-within one function (overlapping shifted windows are not double-counted). Block
+explicitly. **`exact`** whole-symbol groups hash the callable's normalized AST
+statement fingerprint sequence (`StatementFingerprint` extracted in
+`crates/acdd-index/src/ast/fingerprints.rs`, skipping pure delimiter/comment trivia
+and collapsing multi-line formatting within a statement). **`similar`** near-clones
+cluster same-named callables with `>= 0.80` AST statement similarity. **`block`**
+windows hash each `>= min_lines` contiguous AST statement slice across symbols/files
+or at non-overlapping positions within one function and coalesce overlapping
+adjacent window matches into maximal clone spans. Block
 groups that only repeat an already-reported whole-symbol **`exact`** or
 **`similar`** clone are suppressed. See [mcp-tools.md](mcp-tools.md) and
 [cli.md](cli.md) for pagination and scope options.

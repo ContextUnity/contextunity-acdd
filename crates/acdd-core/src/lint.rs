@@ -294,20 +294,20 @@ impl ArchRuleSpec {
     }
 }
 
-/// Configurable structural complexity thresholds evaluated under `LintCategory::Syntax`.
+/// Syntax invariant settings evaluated under `LintCategory::Syntax` (`syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComplexityLimits {
-    /// Maximum AST cognitive complexity per callable before emitting `syntax.cognitive_complexity`.
+    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing; AST `cognitive_complexity` is recorded in `node.details` telemetry.
     pub max_cognitive_complexity: usize,
-    /// Maximum AST control-flow nesting depth per callable before emitting `syntax.max_nesting_depth`.
+    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing; AST `max_nesting_depth` is recorded in `node.details` telemetry.
     pub max_nesting_depth: usize,
-    /// Maximum outgoing call/reference fanout per callable before emitting `syntax.high_fanout`.
+    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing.
     pub max_fanout: usize,
-    /// Diagnostic severity emitted when a structural complexity threshold is exceeded.
+    /// Diagnostic severity emitted for syntax invariant violations (such as `syntax.fact_budget_exceeded`).
     #[serde(default)]
     pub severity: LintSeverity,
-    /// Optional invariant ID bound to structural complexity checks in `enforced_invariant_ids`.
+    /// Optional invariant ID bound to syntax checks in `enforced_invariant_ids`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invariant: Option<String>,
 }

@@ -278,26 +278,6 @@ fn structural_match(
     sequence(&p, &t, ps, source, captures, budget, options.capabilities)
 }
 
-/// Performs search.
-pub fn search(
-    source: &str,
-    path: &str,
-    language: &str,
-    pattern: &str,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>> {
-    Ok(search_range(
-        source,
-        path,
-        language,
-        pattern,
-        0,
-        limit,
-        SearchBudget::unbounded(),
-    )?
-    .items)
-}
-
 /// Represents search page data.
 pub struct SearchPage {
     /// The items value.
@@ -1134,19 +1114,6 @@ fn extract_required_anchors(
     );
     anchors.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     anchors
-}
-
-fn search_range(
-    source: &str,
-    path: &str,
-    language: &str,
-    pattern: &str,
-    offset: usize,
-    limit: usize,
-    budget: SearchBudget,
-) -> Result<SearchPage> {
-    let mut matcher = PreparedAstMatcher::new(language, pattern)?;
-    matcher.search_with_budget(source, path, offset, limit, budget)
 }
 
 #[cfg(test)]

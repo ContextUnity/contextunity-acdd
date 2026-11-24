@@ -3,7 +3,7 @@ use crate::db::paging;
 use crate::db::reader::{selectors::path_bounds, sql::rows};
 use crate::models::{
     details::NodeDetailKey,
-    tags::{EdgeKind, NodeKind},
+    tags::NodeKind,
 };
 use acdd_core::lint::{ComplexityLimits, LintCategory, LintSeverity};
 use acdd_core::response::{Detail, QueryOptions};
@@ -88,8 +88,7 @@ pub(super) fn collect_syntax_violations(
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     collect_parse_violations(conn, &index.scope, violations)?;
-    collect_complexity_and_budget_violations(conn, index, complexity, violations)?;
-    collect_high_fanout_violations(conn, index, complexity, violations)?;
+    collect_fact_budget_violations(conn, index, complexity, violations)?;
     collect_type_homonym_violations(conn, index, complexity, violations)?;
     Ok(())
 }
@@ -164,7 +163,7 @@ fn is_production_node_in_scope(index: &LintIndexData, path: &str, line: usize) -
     !is_archived_path(path) && index.scope.in_scope(path) && !index.is_test_location(path, line)
 }
 
-fn collect_complexity_and_budget_violations(
+fn collect_fact_budget_violations(
     conn: &Connection,
     index: &LintIndexData,
     complexity: &ComplexityLimits,
@@ -172,8 +171,6 @@ fn collect_complexity_and_budget_violations(
 ) -> Result<()> {
     let prefix_target = index.scope.exact_prefix().unwrap_or("");
     let (lower, upper) = path_bounds(prefix_target);
-    let cc_pat = format!("%{}%", NodeDetailKey::COGNITIVE_COMPLEXITY);
-    let nest_pat = format!("%{}%", NodeDetailKey::MAX_NESTING_DEPTH);
     let budget_pat = format!("%{}%", NodeDetailKey::FACT_LIMIT_EXCEEDED);
     let mut stmt = conn.prepare(
         "SELECT n.qualname, p.path, n.line, n.details
@@ -181,10 +178,10 @@ fn collect_complexity_and_budget_violations(
          JOIN path_dictionary p ON p.path_id = n.path_id
          WHERE n.is_test = 0 AND n.generated = 0
            AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
-           AND (n.details LIKE ?4 OR n.details LIKE ?5 OR n.details LIKE ?6)
+           AND n.details LIKE ?4
          ORDER BY p.path, n.line, n.id",
     )?;
-    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, cc_pat, nest_pat, budget_pat])?;
+    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, budget_pat])?;
     let inv = complexity.invariant.as_deref();
     while let Some(row) = rows.next()? {
         let (qualname, path, line): (String, String, usize) =
@@ -196,77 +193,17 @@ fn collect_complexity_and_budget_violations(
         let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
             continue;
         };
-        let loc = (path.as_str(), line, qualname.as_str());
-        if let Some(cc) = details.get(NodeDetailKey::COGNITIVE_COMPLEXITY).and_then(Value::as_u64) {
-            if cc as usize > complexity.max_cognitive_complexity {
-                push_syntax(
-                    violations, "syntax.cognitive_complexity", complexity.severity, loc,
-                    format!("callable '{qualname}' has AST cognitive complexity {cc} (limit {})", complexity.max_cognitive_complexity),
-                    inv, Some("Decompose deeply nested control flow into cohesive helper functions; flat lookup/match tables do not need splitting."),
-                );
-            }
-        }
-        if let Some(depth) = details.get(NodeDetailKey::MAX_NESTING_DEPTH).and_then(Value::as_u64) {
-            if depth as usize > complexity.max_nesting_depth {
-                push_syntax(
-                    violations, "syntax.max_nesting_depth", complexity.severity, loc,
-                    format!("callable '{qualname}' has AST nesting depth {depth} (limit {})", complexity.max_nesting_depth),
-                    inv, Some("Use early returns or extract nested blocks into focused helpers."),
-                );
-            }
-        }
         if details.get(NodeDetailKey::FACT_LIMIT_EXCEEDED).and_then(Value::as_bool) == Some(true) {
             push_syntax(
-                violations, "syntax.fact_budget_exceeded", complexity.severity, loc,
+                violations,
+                "syntax.fact_budget_exceeded",
+                complexity.severity,
+                (path.as_str(), line, qualname.as_str()),
                 format!("callable '{qualname}' exceeded ValueFlow fact extraction budget"),
-                inv, Some("Split oversized callable so static value-flow analysis stays within budget."),
+                inv,
+                Some("Split oversized callable so static value-flow analysis stays within budget."),
             );
         }
-    }
-    Ok(())
-}
-
-fn collect_high_fanout_violations(
-    conn: &Connection,
-    index: &LintIndexData,
-    complexity: &ComplexityLimits,
-    violations: &mut Vec<LintViolation>,
-) -> Result<()> {
-    let prefix_target = index.scope.exact_prefix().unwrap_or("");
-    let (lower, upper) = path_bounds(prefix_target);
-    let sql = format!(
-        "SELECT n.qualname, p.path, n.line, COUNT(DISTINCT e.dst_hash) AS fanout
-         FROM edges e
-         JOIN nodes n ON n.node_hash = e.src_hash
-         JOIN path_dictionary p ON p.path_id = n.path_id
-         WHERE e.kind IN ('{calls}', '{possible}', '{refs}')
-           AND n.kind IN ('{func}', '{method}', '{ctor}')
-           AND n.is_test = 0 AND n.generated = 0
-           AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
-         GROUP BY n.node_hash
-         HAVING COUNT(DISTINCT e.dst_hash) > ?4
-         ORDER BY p.path, n.line, n.id",
-        calls = EdgeKind::Calls.as_str(),
-        possible = EdgeKind::PossibleCalls.as_str(),
-        refs = EdgeKind::References.as_str(),
-        func = NodeKind::Function.as_str(),
-        method = NodeKind::Method.as_str(),
-        ctor = NodeKind::Constructor.as_str(),
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, complexity.max_fanout as i64])?;
-    while let Some(row) = rows.next()? {
-        let (qualname, path): (String, String) = (row.get(0)?, row.get(1)?);
-        let (line, fanout) = (row.get::<_, i64>(2)?.max(1) as usize, row.get::<_, i64>(3)? as usize);
-        if !is_production_node_in_scope(index, &path, line) {
-            continue;
-        }
-        push_syntax(
-            violations, "syntax.high_fanout", complexity.severity, (&path, line, &qualname),
-            format!("callable '{qualname}' has outgoing fanout {fanout} (limit {})", complexity.max_fanout),
-            complexity.invariant.as_deref(),
-            Some("Delegate distinct orchestration phases to focused collaborator helpers."),
-        );
     }
     Ok(())
 }

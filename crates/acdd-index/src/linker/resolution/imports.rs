@@ -552,10 +552,10 @@ fn emit_import_edges<'a, 'file>(
                 path,
                 import_owner,
                 &item.candidates[0].id,
-                "imports",
+                EdgeKind::Imports.as_str(),
                 r.line,
                 r.expression.as_str(),
-                "exact",
+                EdgeConfidence::Exact.as_str(),
             );
         } else if item.profile.is_some_and(|profile| profile.id() == "python")
             && !item.child_module

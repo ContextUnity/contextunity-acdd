@@ -56,11 +56,7 @@ fn has_cfg_test(node: Syntax<'_>, source: &str) -> bool {
     while let Some(declaration) = current {
         let mut sibling = declaration.prev_named_sibling();
         while let Some(attribute) = sibling.filter(|sibling| sibling.kind() == "attribute_item") {
-            if text(attribute, source)
-                .chars()
-                .filter(|character| !character.is_whitespace())
-                .eq("#[cfg(test)]".chars())
-            {
+            if crate::models::details::is_cfg_test_attribute(text(attribute, source)) {
                 return true;
             }
             sibling = attribute.prev_named_sibling();
@@ -689,6 +685,7 @@ static RUST_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
         "call_expression",
         "macro_invocation",
         "struct_expression",
+        "scoped_identifier",
         "string_literal",
         "raw_string_literal",
     ],
@@ -862,6 +859,9 @@ impl LanguageProfile for Rust {
             .named_children(&mut cursor)
             .filter(|node| matches!(node.kind(), "use_declaration" | "mod_item"))
         {
+            if has_cfg_test(declaration, source) {
+                continue;
+            }
             if declaration.kind() == "mod_item" {
                 if unrestricted_public(declaration, source)
                     && declaration.child_by_field_name("body").is_none()
@@ -901,7 +901,7 @@ impl LanguageProfile for Rust {
                 crate::semantic::ExportBinding {
                     name,
                     local,
-                    module: star.then_some(target),
+                    module: Some(target),
                     type_only: false,
                     star,
                 }
@@ -921,41 +921,49 @@ impl LanguageProfile for Rust {
         Some(ScopeAnalysis::rust(node, source))
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if ctx.node.kind() == "use_declaration" {
-            if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                if let Some(scope) = visibility::restricted_scope(
-                    text(ctx.node, ctx.source),
-                    &owner.qualname,
-                    &owner.path,
-                ) {
-                    if let Some(argument) = ctx.node.child_by_field_name("argument") {
-                        let mut imports = Vec::new();
-                        collect_use(argument, ctx.source, "", &mut imports);
-                        let mut exports: Vec<visibility::RestrictedExport> = owner
-                            .details
-                            .get("rust_restricted_exports")
-                            .and_then(|value| serde_json::from_value(value.clone()).ok())
-                            .unwrap_or_default();
-                        exports.extend(imports.into_iter().map(|(target, name)| {
-                            visibility::RestrictedExport {
-                                module: (name == "*").then_some(target),
-                                name,
-                                scope: scope.clone(),
-                            }
-                        }));
-                        owner.details["rust_restricted_exports"] = serde_json::to_value(exports)
-                            .expect("Rust export visibility serializes");
-                    }
+        if ctx.node.kind() != "use_declaration" {
+            return;
+        }
+        if has_cfg_test(ctx.node, ctx.source)
+            && facts
+                .nodes
+                .iter()
+                .find(|node| node.id == ctx.owner)
+                .is_some_and(|owner| owner.kind == "module" && !owner.is_test)
+        {
+            return;
+        }
+        if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+            if let Some(scope) = visibility::restricted_scope(
+                text(ctx.node, ctx.source),
+                &owner.qualname,
+                &owner.path,
+            ) {
+                if let Some(argument) = ctx.node.child_by_field_name("argument") {
+                    let mut imports = Vec::new();
+                    collect_use(argument, ctx.source, "", &mut imports);
+                    let mut exports: Vec<visibility::RestrictedExport> = owner
+                        .details
+                        .get("rust_restricted_exports")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok())
+                        .unwrap_or_default();
+                    exports.extend(imports.into_iter().map(|(target, name)| {
+                        visibility::RestrictedExport {
+                            module: (name == "*").then_some(target),
+                            name,
+                            scope: scope.clone(),
+                        }
+                    }));
+                    owner.details["rust_restricted_exports"] = serde_json::to_value(exports)
+                        .expect("Rust export visibility serializes");
                 }
             }
         }
-        if ctx.node.kind() == "use_declaration" {
-            if let Some(argument) = ctx.node.child_by_field_name("argument") {
-                let mut imports = Vec::new();
-                collect_use(argument, ctx.source, "", &mut imports);
-                for (name, alias) in imports {
-                    ctx.import(facts, name.clone(), Some(alias), Some(name));
-                }
+        if let Some(argument) = ctx.node.child_by_field_name("argument") {
+            let mut imports = Vec::new();
+            collect_use(argument, ctx.source, "", &mut imports);
+            for (name, alias) in imports {
+                ctx.import(facts, name.clone(), Some(alias), Some(name));
             }
         }
     }
@@ -1011,6 +1019,9 @@ impl LanguageProfile for Rust {
         } else if ctx.node.kind() == "macro_invocation" {
             super::sql::extract_macro_type(ctx, facts);
             macros::project_macro_invocation(ctx, facts);
+            if let Some(tree) = ctx.node.named_children(&mut ctx.node.walk()).find(|c| c.kind() == "token_tree") {
+                extract_macro_invocation_paths(tree, ctx.source, ctx.owner, facts);
+            }
             let previous = facts.references.len();
             call(ctx, facts, false);
             if let Some(reference) = facts.references.get_mut(previous) {
@@ -1019,6 +1030,8 @@ impl LanguageProfile for Rust {
                     member: String::new(),
                 });
             }
+        } else if ctx.node.kind() == "scoped_identifier" {
+            extract_scoped_identifier_reference(ctx, facts);
         } else if ctx.node.kind() == "struct_expression" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 let text = relations::type_name(name, ctx.source);
@@ -1678,6 +1691,25 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if ctx.node.kind() == "struct_item" && has_non_lifetime_type_params(ctx.node, ctx.source) {
         set_owner_flag(facts, ctx.owner, "deref_unproven");
     }
+    if let Some(body) = ctx.node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.named_children(&mut cursor) {
+            if child.kind() == "field_declaration" {
+                if let Some(ty) = child.child_by_field_name("type") {
+                    value_flow::type_references(facts, ctx.owner, ty, ctx.source, child.start_position().row + 1);
+                }
+            } else if child.kind() == "enum_variant" {
+                if let Some(vbody) = child.child_by_field_name("body") {
+                    let mut vcursor = vbody.walk();
+                    for vchild in vbody.named_children(&mut vcursor) {
+                        if let Some(ty) = vchild.child_by_field_name("type").or_else(|| (vchild.kind() != "field_declaration").then_some(vchild)) {
+                            value_flow::type_references(facts, ctx.owner, ty, ctx.source, vchild.start_position().row + 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let derives = macros::extract_derives(ctx.node, ctx.source);
     if derives.is_empty() {
         return;
@@ -1699,6 +1731,94 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
             is_test: owner.is_test,
         };
         macros::synthesize_derive_methods(&synth_owner, &derives, facts);
+    }
+}
+
+fn extract_scoped_identifier_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if let Some(parent) = ctx.node.parent() {
+        if matches!(parent.kind(), "scoped_identifier" | "scoped_type_identifier")
+            || (parent.kind() == "call_expression"
+                && parent
+                    .child_by_field_name("function")
+                    .is_some_and(|f| f.id() == ctx.node.id()))
+            || (parent.kind() == "generic_function"
+                && parent
+                    .child_by_field_name("function")
+                    .is_some_and(|f| f.id() == ctx.node.id()))
+            || (parent.kind() == "struct_expression"
+                && parent
+                    .child_by_field_name("name")
+                    .is_some_and(|n| n.id() == ctx.node.id()))
+            || (parent.kind() == "macro_invocation"
+                && parent
+                    .child_by_field_name("macro")
+                    .is_some_and(|m| m.id() == ctx.node.id()))
+        {
+            return;
+        }
+    }
+    let mut anc = ctx.node.parent();
+    while let Some(node) = anc {
+        match node.kind() {
+            "use_declaration"
+            | "attribute_item"
+            | "meta_item"
+            | "type_arguments"
+            | "visibility_modifier" => return,
+            "function_item" | "source_file" | "impl_item" | "trait_item" | "mod_item" => break,
+            _ => anc = node.parent(),
+        }
+    }
+    let raw = text(ctx.node, ctx.source).trim();
+    if raw.is_empty()
+        || raw.starts_with("Self::")
+        || raw.starts_with("std::")
+        || raw.starts_with("core::")
+        || raw.starts_with("alloc::")
+    {
+        return;
+    }
+    relations::reference(facts, ctx.owner, raw, "references", ctx.line());
+}
+
+fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
+    let mut pending = vec![tree];
+    while let Some(node) = pending.pop() {
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        let mut i = 0;
+        while i < children.len() {
+            if children[i].kind() == "token_tree" {
+                pending.push(children[i]);
+                i += 1;
+                continue;
+            }
+            if !matches!(children[i].kind(), "identifier" | "crate" | "super" | "self") {
+                i += 1;
+                continue;
+            }
+            let first = text(children[i], source);
+            let mut end = i;
+            let mut path = first.to_owned();
+            while end + 2 < children.len()
+                && text(children[end + 1], source) == "::"
+                && matches!(children[end + 2].kind(), "identifier" | "super" | "self")
+            {
+                path.push_str("::");
+                path.push_str(text(children[end + 2], source));
+                end += 2;
+            }
+            if end > i && !matches!(first, "std" | "core" | "alloc" | "Self") {
+                relations::reference(
+                    facts,
+                    owner,
+                    &path,
+                    "references",
+                    children[i].start_position().row + 1,
+                );
+            }
+            i = end + 1;
+        }
     }
 }
 

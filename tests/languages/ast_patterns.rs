@@ -299,8 +299,18 @@ fn ast_pattern_capabilities() {
         });
     }
     for case in cases {
-        let matches = ast::search(case.source, case.path, case.language, case.pattern, 10)
+        let mut matcher = ast::search::PreparedAstMatcher::new(case.language, case.pattern)
             .unwrap_or_else(|error| panic!("{}: {}: {error}", case.case_id, case.pattern));
+        let matches = matcher
+            .search_page(
+                case.source,
+                case.path,
+                0,
+                10,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .unwrap_or_else(|error| panic!("{}: {}: {error}", case.case_id, case.pattern))
+            .items;
         assert!(!matches.is_empty(), "{}: {}", case.case_id, case.pattern);
         if let Some(count) = case.count {
             assert_eq!(matches.len(), count, "{}", case.case_id);

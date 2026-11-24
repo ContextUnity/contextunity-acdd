@@ -82,14 +82,11 @@ Changing workflow, state, or output formatting settings does **not** trigger a c
 
 ### Architectural zones, rules, and complexity limits (`architecture:`)
 
-Declare workspace-relative glob zones, static `ArchRuleSpec` boundary rules, and `ComplexityLimits` thresholds evaluated by `acdd lint`, `code_map_lint`, and `code.lint` (`#[serde(deny_unknown_fields)]`):
+Declare workspace-relative glob zones, static `ArchRuleSpec` boundary rules, and `ComplexityLimits` telemetry/invariant rules (`syntax.fact_budget_exceeded`, `syntax.intra_crate_type_homonym`) evaluated by `acdd lint`, `code_map_lint`, and `code.lint` (`#[serde(deny_unknown_fields)]`):
 
 ```yaml
 architecture:
   complexity:
-    max_cognitive_complexity: 50
-    max_nesting_depth: 6
-    max_fanout: 40
     severity: warn
     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
   zones:
@@ -111,7 +108,7 @@ architecture:
 
 - **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
 - **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
-- **`architecture.complexity`**: `ComplexityLimits` defaults (`max_cognitive_complexity: 50`, `max_nesting_depth: 6`, `max_fanout: 40`, `severity: warn`, optional `invariant: null`).
+- **`architecture.complexity`**: `ComplexityLimits` defaults (`max_cognitive_complexity: 50`, `max_nesting_depth: 6`, `max_fanout: 40`, `severity: warn`, optional `invariant: null`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
 
 ## Cold-build memory budget
 

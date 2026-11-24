@@ -113,22 +113,23 @@ fn filter_candidates<'a, 'file, 'res>(
                         || nk == NodeKind::Trait.as_str()
                         || nk == NodeKind::Interface.as_str()
                         || nk == NodeKind::Field.as_str()
+                        || nk == NodeKind::Constant.as_str()
                 ) || (n.kind == NodeKind::Function.as_str()
-                    && q.tail.is_empty()
-                    && state.imported.is_some()
-                    && !ctx.is_type_only(q.first, q.owner, state.definition_scope)
-                    && ctx
-                        .input
-                        .interner
-                        .lookup_symbol(&q.r.source)
-                        .is_some_and(|source| {
-                            ctx.value_queries.contains(&(
-                                source,
-                                q.r.expression.as_str(),
-                                q.r.line,
-                                q.r.column,
-                            ))
-                        }))
+                    && (!q.tail.is_empty()
+                        || (state.imported.is_some()
+                            && !ctx.is_type_only(q.first, q.owner, state.definition_scope)
+                            && ctx
+                                .input
+                                .interner
+                                .lookup_symbol(&q.r.source)
+                                .is_some_and(|source| {
+                                    ctx.value_queries.contains(&(
+                                        source,
+                                        q.r.expression.as_str(),
+                                        q.r.line,
+                                        q.r.column,
+                                    ))
+                                }))))
                     || rust_macro_reference
                     || PhaseContext::is_default_export_vue_module(n)
             }

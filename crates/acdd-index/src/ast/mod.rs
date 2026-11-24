@@ -15,9 +15,7 @@ use crate::languages;
 use crate::models::{tags::{LanguageId, NodeKind}, *};
 use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
-pub use search::{
-    pattern_symbol_name, search, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON,
-};
+pub use search::{pattern_symbol_name, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON};
 
 /// Performs extract.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
@@ -263,14 +261,17 @@ mod tests {
     fn test_ast_parameterless_declaration() {
         let capabilities = crate::languages::rust::RUST.ast_search_capabilities();
         assert!(capabilities.declaration_kinds.contains(&"function_item"));
-        let matches = super::search(
-            "fn target() { call(value); }\nfn other() {}",
-            "lib.rs",
-            "rust",
-            "fn target",
-            10,
-        )
-        .expect("a Rust function header without parameters is searchable");
+        let matches = super::search::PreparedAstMatcher::new("rust", "fn target")
+            .unwrap()
+            .search_page(
+                "fn target() { call(value); }\nfn other() {}",
+                "lib.rs",
+                0,
+                10,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .expect("a Rust function header without parameters is searchable")
+            .items;
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["text"], "fn target() { call(value); }");
     }

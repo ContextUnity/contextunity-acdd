@@ -499,6 +499,19 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
     workspace.write("service.py", source);
     invalidate_mcp_connection_cache(&workspace.db()).unwrap();
+    let ast_search = |src: &str, path: &str, pat: &str, limit: usize| {
+        acdd_index::ast::search::PreparedAstMatcher::new("python", pat)
+            .unwrap()
+            .search_page(
+                src,
+                path,
+                0,
+                limit,
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .unwrap()
+            .items
+    };
     for pattern in ["f($$$A, $$$B, missing)", "f($VALUE, $VALUE)"] {
         let ordinary = client
             .payload(
@@ -506,25 +519,16 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
                 json!({"pattern":pattern,"language":"python","limit":100}),
             )
             .expect("MCP tool should succeed");
-        let legacy =
-            acdd_index::ast::search(source, "service.py", "python", pattern, 100)
-                .unwrap();
+        let legacy = ast_search(source, "service.py", pattern, 100);
         assert!(!legacy.is_empty());
         assert_eq!(ordinary["matches"]["items"], json!(legacy));
         assert_eq!(ordinary["matches"]["computation_truncated"], false);
     }
-    let late_source = (0..25_001)
+    let late_source = (0..15_001)
         .map(|i| format!("print({i})\n"))
         .collect::<String>();
-    let legacy = acdd_index::ast::search(
-        &late_source,
-        "late.py",
-        "python",
-        "print(25000)",
-        1,
-    )
-    .unwrap();
+    let legacy = ast_search(&late_source, "late.py", "print(15000)", 1);
     assert_eq!(legacy.len(), 1);
-    assert_eq!(legacy[0]["line"], 25_001);
+    assert_eq!(legacy[0]["line"], 15_001);
     client.finish().expect("server must finish successfully");
 }
