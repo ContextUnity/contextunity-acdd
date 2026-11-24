@@ -1,6 +1,5 @@
 //! Pure archive Markdown input construction and closure rollup rendering.
 
-use crate::machine::MachineGateDef;
 use crate::spec::{
     ArchiveRenderInput, ArchiveTaskUpdate, ClosureSummary, Receipt, ReceiptRollup, SpecStatus,
     Subtask,
@@ -10,25 +9,23 @@ use crate::types::{
     InvariantsState, NodeKind, NodeStatus, RunGraphSnapshot, TraceStatus,
 };
 use crate::usecases::dto::SubmitReq;
-use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
+use acdd_core::errors::StateError;
+use acdd_core::ids::{CommitOid, GateId, NodeCursor, TreeOid};
 use serde_json::json;
 use std::collections::BTreeMap;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_provisional_receipt(
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
-    machine_gate: &MachineGateDef,
-    cursor: &NodeCursor,
     current_tree: &TreeOid,
     committed_oid: Option<CommitOid>,
     now_utc: &str,
     req: &SubmitReq,
-) -> Receipt {
-    Receipt {
+) -> Result<Receipt, StateError> {
+    Ok(Receipt {
         run_id: snapshot.run.run_id.clone(),
-        node_cursor: cursor.clone(),
-        gate_id: machine_gate.id.clone(),
+        node_cursor: NodeCursor::from_node_id(&node.node_id)?,
+        gate_id: GateId::new(&node.gate_id)?,
         worker_id: req.worker_id.clone(),
         claim_revision: node.claim_revision,
         contract_revision: node.contract_revision,
@@ -45,7 +42,7 @@ pub(super) fn build_provisional_receipt(
             deferred_findings: Vec::new(),
             review_summary: req.summary.clone(),
         }),
-    }
+    })
 }
 
 fn push_unique_string(target: &mut Vec<String>, candidate: &str) {
@@ -194,10 +191,7 @@ pub(super) fn build_archive_render_input(
     metrics_summary.insert("tasks_total".to_owned(), json!(tasks_total));
     metrics_summary.insert("tasks_completed".to_owned(), json!(tasks_completed));
     metrics_summary.insert("tasks_cancelled".to_owned(), json!(tasks_cancelled));
-    metrics_summary.insert(
-        "task_receipts_count".to_owned(),
-        json!(task_receipts.len()),
-    );
+    metrics_summary.insert("task_receipts_count".to_owned(), json!(task_receipts.len()));
     metrics_summary.insert("total_claims".to_owned(), json!(snapshot.claims.len()));
     metrics_summary.insert("total_traces".to_owned(), json!(snapshot.traces.len()));
     metrics_summary.insert("passed_traces".to_owned(), json!(passed_traces));

@@ -70,7 +70,11 @@ fn full_providers() -> CompositeDomainProvider {
             ..DomainCapabilities::default()
         },
     );
-    CompositeDomainProvider::new(vec![Arc::new(code), Arc::new(docs)]).unwrap()
+    CompositeDomainProvider::with_module_flags(
+        vec![Arc::new(code), Arc::new(docs)],
+        BTreeMap::new(),
+    )
+    .unwrap()
 }
 
 fn write_bound_profile(root: &Path, extra: &str) {

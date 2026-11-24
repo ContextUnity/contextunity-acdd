@@ -10,7 +10,6 @@ use crate::git_ops::worktree::canonicalize_macos_var;
 use crate::machine::compute_schedule;
 use crate::machine::graph::{build_preconditions, is_post_task_root_node};
 use crate::machine::schedule::all_non_cancelled_tasks_completed;
-use crate::profile::ResolvedGateProfile;
 use crate::runner::{
     spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow, WaveExecutionReport,
 };
@@ -21,82 +20,23 @@ use crate::types::{
     ValidatedObservations,
 };
 use crate::usecases::commands::{handle_claim_dyn, is_context_reset_required};
-use crate::usecases::dto::{ClaimReq, RunReq, RunResp, SubmitReq, VerifyReq};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
+use crate::usecases::dto::{ClaimReq, RunReq, RunResp, SubmitReq, VerifyReq};
 use crate::usecases::lifecycle::{
-    collect_integration_inputs, ensure_state_enabled,
-    parse_profile_from_run, primary_workspace_root, resolve_active_run,
-    with_repo_lock_and_maintenance,
+    collect_integration_inputs, ensure_state_enabled, parse_profile_from_run,
+    primary_workspace_root, resolve_active_run, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def_ref;
 use crate::usecases::submit::handle_submit_dyn;
 use crate::usecases::verify::handle_verify_with_failure_return;
-use crate::usecases::config::StateEngineConfig;
-use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
+use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-#[allow(clippy::too_many_arguments)]
-fn execute_ready_wave_tasks(
-    config: &StateEngineConfig,
-    backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
-    profile: &ResolvedGateProfile,
-    snapshot: &RunGraphSnapshot,
-    wave_tasks: &[TaskRef],
-    jobs: usize,
-    allow_main: bool,
-    session_cache: &Mutex<BTreeMap<(RunId, String, String), String>>,
-) -> Result<Vec<StepOutcome>, StateError> {
-    if jobs > 1 && wave_tasks.len() > 1 {
-        return std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(wave_tasks.len());
-            for tref in wave_tasks {
-                handles.push(scope.spawn(move || {
-                    execute_task_to_completion(
-                        config,
-                        backend,
-                        provider,
-                        profile,
-                        snapshot,
-                        tref,
-                        allow_main,
-                        session_cache,
-                    )
-                }));
-            }
-            let mut results = Vec::with_capacity(handles.len());
-            for handle in handles {
-                let joined = handle.join().map_err(|_| {
-                    StateError::new(
-                        ErrorCode::BackendConflict,
-                        "wave worker thread panicked during acdd run",
-                    )
-                })??;
-                results.push(joined);
-            }
-            Ok(results)
-        });
-    }
-    let mut results = Vec::with_capacity(wave_tasks.len());
-    for tref in wave_tasks {
-        results.push(execute_task_to_completion(
-            config,
-            backend,
-            provider,
-            profile,
-            snapshot,
-            tref,
-            allow_main,
-            session_cache,
-        )?);
-    }
-    Ok(results)
-}
 
 pub(crate) fn handle_run_dyn(
     config: &StateEngineConfig,
@@ -106,7 +46,6 @@ pub(crate) fn handle_run_dyn(
 ) -> Result<RunResp, StateError> {
     ensure_state_enabled(config)?;
     let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
-    let profile = parse_profile_from_run(&run)?;
 
     let jobs = if run.isolation == IsolationMode::InPlace {
         1
@@ -138,6 +77,75 @@ pub(crate) fn handle_run_dyn(
 
     let session_cache: Mutex<BTreeMap<(RunId, String, String), String>> =
         Mutex::new(BTreeMap::new());
+    let execute_ready_wave_tasks = |snapshot: &RunGraphSnapshot,
+                                    wave_tasks: &[TaskRef],
+                                    jobs: usize|
+     -> Result<Vec<StepOutcome>, StateError> {
+        let execute_task = |task_ref: &TaskRef| -> Result<StepOutcome, StateError> {
+            let mut total = StepOutcome::default();
+            let parent_id = format!("task:{task_ref}");
+            let run_id = snapshot.run.run_id.clone();
+            for _ in 0..256usize {
+                let Some(current) = backend.load_run_graph(&run_id)? else {
+                    break;
+                };
+                let Some(task_node) = current
+                    .nodes
+                    .iter()
+                    .find(|n| n.node_id == parent_id && n.kind == NodeKind::Task)
+                else {
+                    break;
+                };
+                match task_node.status {
+                    NodeStatus::Completed | NodeStatus::Cancelled => break,
+                    NodeStatus::Escalated => {
+                        total.halted_reason = Some(format!("task {task_ref} escalated"));
+                        break;
+                    }
+                    _ => {}
+                }
+                let Some(next_gate) = find_next_task_gate(&current, &parent_id) else {
+                    break;
+                };
+                let step = execute_gate_node(
+                    config,
+                    backend,
+                    provider,
+                    &current,
+                    next_gate,
+                    req.allow_main,
+                    &session_cache,
+                )?;
+                total.gates_completed += step.gates_completed;
+                if step.halted_reason.is_some() {
+                    total.halted_reason = step.halted_reason;
+                    break;
+                }
+            }
+            Ok(total)
+        };
+
+        if jobs > 1 && wave_tasks.len() > 1 {
+            return std::thread::scope(|scope| {
+                let handles: Vec<_> = wave_tasks
+                    .iter()
+                    .map(|task_ref| scope.spawn(|| execute_task(task_ref)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle.join().map_err(|_| {
+                            StateError::new(
+                                ErrorCode::BackendConflict,
+                                "wave worker thread panicked during acdd run",
+                            )
+                        })?
+                    })
+                    .collect()
+            });
+        }
+        wave_tasks.iter().map(execute_task).collect()
+    };
     let mut waves_executed = 0u32;
     let mut gates_completed = 0u32;
     let mut tasks_integrated: Vec<TaskRef> = Vec::new();
@@ -164,13 +172,22 @@ pub(crate) fn handle_run_dyn(
 
         if !schedule.ready_root_nodes.is_empty() {
             let root_id = schedule.ready_root_nodes[0].clone();
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.node_id == root_id)
+                .ok_or_else(|| {
+                    StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!("node `{root_id}` not found in run graph"),
+                    )
+                })?;
             let outcome = execute_gate_node(
                 config,
                 backend,
                 provider,
-                &profile,
                 &snapshot,
-                &root_id,
+                node,
                 req.allow_main,
                 &session_cache,
             )?;
@@ -192,17 +209,7 @@ pub(crate) fn handle_run_dyn(
                 .collect();
 
             if !wave_tasks.is_empty() {
-                let task_outcomes = execute_ready_wave_tasks(
-                    config,
-                    backend,
-                    provider,
-                    &profile,
-                    &snapshot,
-                    &wave_tasks,
-                    jobs,
-                    req.allow_main,
-                    &session_cache,
-                )?;
+                let task_outcomes = execute_ready_wave_tasks(&snapshot, &wave_tasks, jobs)?;
 
                 waves_executed += 1;
                 for out in &task_outcomes {
@@ -283,8 +290,7 @@ fn build_schedule_observations(
     config: &StateEngineConfig,
     snapshot: &RunGraphSnapshot,
 ) -> Result<ValidatedObservations, StateError> {
-    let external_satisfied_deps =
-        collect_external_satisfied_deps(config, snapshot)?;
+    let external_satisfied_deps = collect_external_satisfied_deps(config, snapshot)?;
     let unintegrated_tasks = if snapshot.run.isolation == IsolationMode::Worktree
         && all_non_cancelled_tasks_completed(snapshot)
     {
@@ -310,64 +316,6 @@ fn build_schedule_observations(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn execute_task_to_completion(
-    config: &StateEngineConfig,
-    backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
-    profile: &ResolvedGateProfile,
-    initial_snapshot: &RunGraphSnapshot,
-    task_ref: &TaskRef,
-    allow_main: bool,
-    session_cache: &Mutex<BTreeMap<(RunId, String, String), String>>,
-) -> Result<StepOutcome, StateError> {
-    let mut total = StepOutcome::default();
-    let parent_id = format!("task:{task_ref}");
-    let run_id = initial_snapshot.run.run_id.clone();
-
-    for _ in 0..256usize {
-        let Some(snapshot) = backend.load_run_graph(&run_id)? else {
-            break;
-        };
-        let Some(task_node) = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.node_id == parent_id && n.kind == NodeKind::Task)
-        else {
-            break;
-        };
-        match task_node.status {
-            NodeStatus::Completed | NodeStatus::Cancelled => break,
-            NodeStatus::Escalated => {
-                total.halted_reason = Some(format!("task {task_ref} escalated"));
-                break;
-            }
-            _ => {}
-        }
-
-        let Some(next_gate) = find_next_task_gate(&snapshot, &parent_id) else {
-            break;
-        };
-        let step = execute_gate_node(
-            config,
-            backend,
-            provider,
-            profile,
-            &snapshot,
-            &next_gate.node_id,
-            allow_main,
-            session_cache,
-        )?;
-        total.gates_completed += step.gates_completed;
-        if let Some(halt) = step.halted_reason {
-            total.halted_reason = Some(halt);
-            break;
-        }
-    }
-
-    Ok(total)
-}
-
 fn find_next_task_gate<'a>(
     snapshot: &'a RunGraphSnapshot,
     parent_id: &str,
@@ -387,34 +335,27 @@ fn find_next_task_gate<'a>(
     gates.into_iter().next()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_gate_node(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
-    profile: &ResolvedGateProfile,
     snapshot: &RunGraphSnapshot,
-    node_id: &str,
+    node: &GateNodeRecord,
     allow_main: bool,
     session_cache: &Mutex<BTreeMap<(RunId, String, String), String>>,
 ) -> Result<StepOutcome, StateError> {
-    let cursor = NodeCursor::from_node_id(node_id)?;
-    let gate_def = find_profile_gate_def_ref(profile, &cursor).ok_or_else(|| {
+    let profile = parse_profile_from_run(&snapshot.run)?;
+    let cursor = NodeCursor::from_node_id(&node.node_id)?;
+    let gate_def = find_profile_gate_def_ref(&profile, &cursor).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             format!("no profile gate definition found for cursor `{cursor}`"),
         )
     })?;
-    let node = snapshot
+    debug_assert!(snapshot
         .nodes
         .iter()
-        .find(|n| n.node_id == node_id)
-        .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("node `{node_id}` not found in run graph"),
-            )
-        })?;
+        .any(|candidate| candidate.node_id == node.node_id));
 
     let container_id = node.parent_id.as_deref().unwrap_or(&node.node_id);
 
@@ -472,7 +413,9 @@ pub(crate) fn execute_gate_node(
             let mut guard = session_cache.lock().map_err(|_| {
                 StateError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
             })?;
-            if claim_resp.context_reset_required || is_context_reset_required(snapshot, node, gate_def) {
+            if claim_resp.context_reset_required
+                || is_context_reset_required(snapshot, node, gate_def)
+            {
                 guard.remove(&key);
             } else if let Some(existing) = guard.get(&key) {
                 local_cache.insert(key.clone(), existing.clone());
@@ -511,7 +454,7 @@ pub(crate) fn execute_gate_node(
         let completed_now = check_post_runner_completion(
             backend,
             &snapshot.run.run_id,
-            node_id,
+            &node.node_id,
             claim_resp.claim_revision,
             &outcome,
         )?;
@@ -557,7 +500,7 @@ pub(crate) fn execute_gate_node(
     if !verify_resp.passed {
         let escalated = backend
             .load_run_graph(&snapshot.run.run_id)?
-            .and_then(|g| g.nodes.into_iter().find(|n| n.node_id == node_id))
+            .and_then(|g| g.nodes.into_iter().find(|n| n.node_id == node.node_id))
             .is_some_and(|n| n.status == NodeStatus::Escalated);
         if escalated {
             return Ok(StepOutcome {

@@ -1,6 +1,4 @@
-pub(super) use acdd_core::ids::{
-    CommitOid, GateId, RunId, RunName, TaskRef, TreeOid, WorkerId,
-};
+pub(super) use acdd_core::ids::{CommitOid, GateId, RunId, RunName, TaskRef, TreeOid, WorkerId};
 pub(super) use acdd_state::harness::RunHarness;
 pub(super) use acdd_state::machine::claim::admit_claim;
 pub(super) use acdd_state::machine::inputs::VerifyEvaluation;
@@ -88,7 +86,9 @@ pub(super) fn apply_claim_in_memory(snap: &mut RunGraphSnapshot, decision: &Clai
                     run_id,
                     &TransitionPlan {
                         preconditions: StoragePreconditions {
-                            expected_run_generation: transition.preconditions.expected_run_generation
+                            expected_run_generation: transition
+                                .preconditions
+                                .expected_run_generation
                                 + 1,
                             expected_node_versions: parent_versions,
                             expected_claim_revision: None,
@@ -134,7 +134,11 @@ pub(super) fn apply_plan_in_memory(snap: &mut RunGraphSnapshot, plan: &Transitio
 }
 
 pub(super) fn apply_sync_plan_in_memory(snap: &mut RunGraphSnapshot, plan: &SyncPlan) {
-    let added_ids: BTreeSet<&str> = plan.added_nodes.iter().map(|n| n.node_id.as_str()).collect();
+    let added_ids: BTreeSet<&str> = plan
+        .added_nodes
+        .iter()
+        .map(|n| n.node_id.as_str())
+        .collect();
     let (deferred_subtasks, immediate_subtasks): (Vec<_>, Vec<_>) = plan
         .transition
         .new_subtasks

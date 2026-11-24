@@ -5,8 +5,8 @@ use crate::git_ops::snapshot::{current_scope_tree, diff_scope_changed_paths};
 use crate::git_ops::worktree::RepoWorktreeLayout;
 use crate::machine::verify::detect_scope_violations;
 use crate::machine::{
-    compute_execution_digest, container_scope, evaluate_verify, ExecutionDigestInput,
-    ActionExecutionOutcome, MachineProfileInput, VerifyExecutionObservation, VerifyInput,
+    compute_execution_digest, container_scope, evaluate_verify, ActionExecutionOutcome,
+    ExecutionDigestInput, MachineProfileInput, VerifyExecutionObservation, VerifyInput,
 };
 use crate::profile::{resolve_command_for_scope, GateDef, ResolvedGateProfile};
 use crate::runner::{execute_gate_commands, render_invocation_command, CommandExecReq};
@@ -15,24 +15,21 @@ use crate::types::{
     CheckResultRecord, GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, TraceFinishInput,
     TraceStartInput, TraceStatus, ValidatedObservations,
 };
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::{VerifyReq, VerifyResp};
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event, combine_check_observations,
-    ensure_state_enabled, load_active_run_graph, parse_cursor_for_snapshot,
-    primary_workspace_root, resolve_node_worktree, resolve_repo_layout_optional,
-    LoadedRunGraph,
+    acquire_repo_lock, append_trace_event, combine_check_observations, ensure_state_enabled,
+    load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
+    resolve_node_worktree, resolve_repo_layout_optional,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{GateId, NodeCursor, TreeOid};
-use acdd_core::path_policy::WorkspacePathPolicy;
+use acdd_core::ids::{GateId, TreeOid};
 use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainCheckOutcome, DomainCheckReq,
     FreshnessObservation,
 };
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
 
 struct CapturedVerifyClaim {
     claim_revision: u32,
@@ -41,12 +38,12 @@ struct CapturedVerifyClaim {
     node_version: u64,
 }
 
-fn verify_active_node_cas(
-    snapshot: &RunGraphSnapshot,
+fn verify_active_node_cas<'a>(
+    snapshot: &'a RunGraphSnapshot,
     node_id: &str,
     req: &VerifyReq,
     captured: Option<&CapturedVerifyClaim>,
-) -> Result<GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, StateError> {
     let node = snapshot
         .nodes
         .iter()
@@ -54,10 +51,12 @@ fn verify_active_node_cas(
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("node '{}' does not exist in run '{}'", req.node, snapshot.run.run_id),
+                format!(
+                    "node '{}' does not exist in run '{}'",
+                    req.node, snapshot.run.run_id
+                ),
             )
-        })?
-        .clone();
+        })?;
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
         return Err(StateError::new(
@@ -119,67 +118,113 @@ pub(crate) fn handle_verify_dyn(
     handle_verify_with_failure_return(config, backend, provider, req, false)
 }
 
-struct PreparedVerifyPhase {
-    loaded: LoadedRunGraph,
-    cursor: NodeCursor,
-    node_id: String,
-    node: GateNodeRecord,
-    captured: CapturedVerifyClaim,
-    gate_def: GateDef,
-    gate_id: GateId,
-    machine_gate: crate::machine::MachineGateDef,
-    target_worktree: PathBuf,
-    policy: WorkspacePathPolicy,
-    admitted_scope: Vec<String>,
-    resolved_commands: Vec<String>,
-    started_at: String,
-    log_relpath: String,
-    candidate_tree_before: TreeOid,
-    pre_changed_paths: Vec<String>,
-    recovery_only: bool,
-    early_failure: Option<Result<VerifyResp, StateError>>,
-}
-
-fn prepare_verify_phase(
+pub(crate) fn handle_verify_with_failure_return(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
-    layout: Option<&RepoWorktreeLayout>,
-    primary: &Path,
-    req: &VerifyReq,
+    req: VerifyReq,
     return_on_failure_transition: bool,
-) -> Result<PreparedVerifyPhase, StateError> {
-    let _pre_lock = acquire_repo_lock(layout)?;
-    let loaded = load_active_run_graph(
-        config,
-        backend,
-        req.run.as_deref(),
-        req.worktree.as_deref(),
-    )?;
+) -> Result<VerifyResp, StateError> {
+    ensure_state_enabled(config)?;
+    let primary = primary_workspace_root(config);
+    let layout = resolve_repo_layout_optional(&primary)?;
+    let persist_and_finalize_verify =
+        |snapshot: &RunGraphSnapshot,
+         machine_profile: &MachineProfileInput,
+         obs: &ValidatedObservations,
+         verify_input: &VerifyInput,
+         existing_running_trace_id: Option<i64>| {
+            let eval = evaluate_verify(snapshot, machine_profile, obs, verify_input)?;
+            if let Err(err) = &eval.outcome {
+                if err.code == ErrorCode::MutatingActionUncertainOutcome {
+                    return Err(err.clone());
+                }
+            }
+
+            let has_failure_transition = eval.failure_transition.is_some();
+            exec_tx_with(backend, |tx| {
+                let trace_row_id = match existing_running_trace_id {
+                    Some(id) => id,
+                    None => {
+                        let started = tx.start_trace(&eval.preconditions, &eval.trace_start)?;
+                        started.trace_row_id.ok_or_else(|| {
+                            StateError::new(
+                                ErrorCode::BackendConflict,
+                                "start_trace returned no trace_row_id",
+                            )
+                        })?
+                    }
+                };
+                let mut finish = eval.trace_finish.clone();
+                finish.trace_row_id = trace_row_id;
+                tx.finish_trace(&finish)?;
+                if let Some(ref failure_plan) = eval.failure_transition {
+                    tx.apply_transition_plan(&snapshot.run.run_id, failure_plan)?;
+                }
+                Ok(())
+            })?;
+
+            let _ = append_trace_event(
+                layout.as_ref(),
+                &primary,
+                &snapshot.run.run_id,
+                &json!({
+                    "kind": "gate_verify",
+                    "run_id": snapshot.run.run_id.as_str(),
+                    "node_cursor": verify_input.node_cursor.to_string(),
+                    "claim_revision": eval.trace_start.claim_revision,
+                    "execution_digest": eval.execution_digest,
+                    "trace_status": eval.trace_finish.status.as_str(),
+                    "timestamp": eval.trace_finish.finished_at,
+                }),
+            );
+
+            let passed = if eval.outcome.is_ok() {
+                true
+            } else if return_on_failure_transition && has_failure_transition {
+                false
+            } else {
+                eval.outcome?;
+                unreachable!()
+            };
+            Ok(VerifyResp {
+                run_id: snapshot.run.run_id.clone(),
+                node_cursor: verify_input.node_cursor.clone(),
+                claim_revision: eval.trace_start.claim_revision,
+                trace_status: eval.trace_finish.status,
+                execution_digest: eval.execution_digest,
+                exit_code: eval.trace_finish.exit_code,
+                check_results: eval.trace_finish.check_results,
+                log_relpath: eval.trace_start.log_relpath,
+                passed,
+            })
+        };
+
+    let _pre_lock = acquire_repo_lock(layout.as_ref())?;
+    let loaded =
+        load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let run_id = &loaded.snapshot.run.run_id;
     let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
-    let node = verify_active_node_cas(&loaded.snapshot, &node_id, req, None)?;
+    let node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
     let captured = CapturedVerifyClaim {
         claim_revision: node.claim_revision,
         contract_revision: node.contract_revision,
         worker_id: node.worker_id.clone(),
         node_version: node.node_version,
     };
-    let gate_def = find_profile_gate_def(&loaded.profile, &cursor)
-        .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("no gate definition found for '{cursor}'"),
-            )
-        })?
-        .clone();
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
+    })?;
     let gate_id = GateId::new(&gate_def.id)?;
-    let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?.clone();
+    let machine_gate = find_machine_gate(&loaded.machine_profile, node)?;
     let target_worktree =
-        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
+        resolve_node_worktree(config, &loaded.snapshot.run, node, req.worktree.as_deref());
     let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
-    let admitted_scope = container_scope(&loaded.snapshot, &node);
+    let admitted_scope = container_scope(&loaded.snapshot, node);
     let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
     let resolved_commands = resolve_commands(
         &loaded.profile,
@@ -205,11 +250,14 @@ fn prepare_verify_phase(
         ..ValidatedObservations::default()
     };
     let has_running_mutating_trace = if let Some(ref call_ref) = gate_def.call {
-        provider.action_capability(call_ref).is_ok_and(|c| c.mutating)
+        provider
+            .action_capability(call_ref)
+            .is_ok_and(|c| c.mutating)
             && backend
                 .latest_trace(run_id, &node_id, node.claim_revision)?
                 .is_some_and(|t| {
-                    t.status == TraceStatus::Running && t.action_id.as_deref() == Some(call_ref.as_str())
+                    t.status == TraceStatus::Running
+                        && t.action_id.as_deref() == Some(call_ref.as_str())
                 })
     } else {
         false
@@ -222,163 +270,63 @@ fn prepare_verify_phase(
         is_unscoped_root,
     );
     let recovery_only = !pre_violations.is_empty();
-    let early_failure = if recovery_only && !has_running_mutating_trace {
-        let res = run_early_scope_failure_verify(
-            backend,
-            layout,
-            primary,
-            &loaded,
-            &cursor,
-            req,
-            &gate_def,
-            &resolved_commands,
-            &log_relpath,
-            &started_at,
-            &candidate_tree_before,
-            &pre_obs,
-            return_on_failure_transition,
-        );
+    if recovery_only && !has_running_mutating_trace {
         drop(_pre_lock);
+        let candidate_tree_after = candidate_tree_before.clone();
+        let verify_input = VerifyInput {
+            node_cursor: cursor,
+            worker_id: req.worker_id,
+            claim_revision: req.claim_revision,
+            test_target: req.test_target,
+            command_id: gate_def.command,
+            command_line: resolved_commands.first().cloned(),
+            resolved_commands,
+            action_id: gate_def.call,
+            index_generation: None,
+            live_files_digest: None,
+            log_relpath,
+            started_at,
+            exec_obs: VerifyExecutionObservation {
+                timed_out: false,
+                aborted: false,
+                exit_code: None,
+                stderr_tail: String::new(),
+                check_results: Vec::new(),
+                action_outcome: None,
+                candidate_tree_before,
+                candidate_tree_after: Some(candidate_tree_after),
+            },
+        };
+        let result = persist_and_finalize_verify(
+            &loaded.snapshot,
+            &loaded.machine_profile,
+            &pre_obs,
+            &verify_input,
+            None,
+        );
         backend.after_commit_maintenance()?;
-        Some(res)
-    } else {
-        None
-    };
-
-    Ok(PreparedVerifyPhase {
-        loaded,
-        cursor,
-        node_id,
-        node,
-        captured,
-        gate_def,
-        gate_id,
-        machine_gate,
-        target_worktree,
-        policy,
-        admitted_scope,
-        resolved_commands,
-        started_at,
-        log_relpath,
-        candidate_tree_before,
-        pre_changed_paths,
-        recovery_only,
-        early_failure,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_early_scope_failure_verify(
-    backend: &dyn StateBackend,
-    layout: Option<&RepoWorktreeLayout>,
-    primary: &Path,
-    loaded: &LoadedRunGraph,
-    cursor: &NodeCursor,
-    req: &VerifyReq,
-    gate_def: &GateDef,
-    resolved_commands: &[String],
-    log_relpath: &str,
-    started_at: &str,
-    candidate_tree_before: &TreeOid,
-    pre_obs: &ValidatedObservations,
-    return_on_failure_transition: bool,
-) -> Result<VerifyResp, StateError> {
-    let verify_input = VerifyInput {
-        node_cursor: cursor.clone(),
-        worker_id: req.worker_id.clone(),
-        claim_revision: req.claim_revision,
-        test_target: req.test_target.clone(),
-        command_id: gate_def.command.clone(),
-        command_line: resolved_commands.first().cloned(),
-        resolved_commands: resolved_commands.to_vec(),
-        action_id: gate_def.call.clone(),
-        index_generation: None,
-        live_files_digest: None,
-        log_relpath: log_relpath.to_owned(),
-        started_at: started_at.to_owned(),
-        exec_obs: VerifyExecutionObservation {
-            timed_out: false,
-            aborted: false,
-            exit_code: None,
-            stderr_tail: String::new(),
-            check_results: Vec::new(),
-            action_outcome: None,
-            candidate_tree_before: candidate_tree_before.clone(),
-            candidate_tree_after: Some(candidate_tree_before.clone()),
-        },
-    };
-    persist_and_finalize_verify(
-        backend,
-        layout,
-        primary,
-        &loaded.snapshot,
-        &loaded.machine_profile,
-        pre_obs,
-        &verify_input,
-        None,
-        return_on_failure_transition,
-    )
-}
-
-pub(crate) fn handle_verify_with_failure_return(
-    config: &StateEngineConfig,
-    backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
-    req: VerifyReq,
-    return_on_failure_transition: bool,
-) -> Result<VerifyResp, StateError> {
-    ensure_state_enabled(config)?;
-    let primary = primary_workspace_root(config);
-    let layout = resolve_repo_layout_optional(&primary)?;
-
-    let PreparedVerifyPhase {
-        loaded,
-        cursor,
-        node_id,
-        node,
-        captured,
-        gate_def,
-        gate_id,
-        machine_gate,
-        target_worktree,
-        policy,
-        admitted_scope,
-        resolved_commands,
-        started_at,
-        log_relpath,
-        candidate_tree_before,
-        pre_changed_paths,
-        recovery_only,
-        early_failure,
-    } = prepare_verify_phase(
-        config,
-        backend,
-        provider,
-        layout.as_ref(),
-        &primary,
-        &req,
-        return_on_failure_transition,
-    )?;
-    if let Some(res) = early_failure {
-        return res;
+        return result;
     }
+    // Phase 1 has captured/persisted its snapshot. Release the repository lock
+    // before any Phase 2/3 work can acquire the same process-level flock.
+    drop(_pre_lock);
     let run_id = &loaded.snapshot.run.run_id;
 
     // Phase 2 (no `repo.lock`): run domain `checks:`, optional `call:`, and optional `command:`.
-    let (check_results, index_generation, live_files_digest) = run_gate_checks(
-        provider,
-        &loaded.snapshot,
-        &node,
-        &cursor,
-        &gate_id,
-        &gate_def,
-        &primary,
-        &target_worktree,
-        &admitted_scope,
-        &pre_changed_paths,
-        req.test_target.as_deref(),
-        &policy,
-    )?;
+    let check_req = DomainCheckReq {
+        run_id: loaded.snapshot.run.run_id.clone(),
+        node_cursor: cursor.clone(),
+        gate_id: gate_id.clone(),
+        workspace_root: primary.clone(),
+        worktree: target_worktree.clone(),
+        admitted_scope: admitted_scope.clone(),
+        changed_paths: pre_changed_paths.clone(),
+        test_target: req.test_target.clone(),
+        path_policy: policy.clone(),
+        baseline_ref: crate::context::baseline_ref_for_node(node),
+    };
+    let (check_results, index_generation, live_files_digest) =
+        run_gate_checks(provider, &gate_def, &check_req)?;
 
     let checks_params = Value::Array(
         machine_gate
@@ -399,30 +347,126 @@ pub(crate) fn handle_verify_with_failure_return(
         live_files_digest: live_files_digest.clone(),
     })?;
 
-    let (action_outcome, existing_running_trace_id) = execute_gate_call_if_configured(
-        backend,
-        &GateCallCtx {
-            provider,
-            layout: layout.as_ref(),
-            run_id,
-            node_id: &node_id,
-            req: &req,
-            captured: &captured,
-            cursor: &cursor,
-            gate_id: &gate_id,
-            gate_def: &gate_def,
-            primary: &primary,
-            target_worktree: &target_worktree,
-            admitted_scope: &admitted_scope,
-            execution_digest: &execution_digest,
-            resolved_commands: &resolved_commands,
-            test_target: req.test_target.as_deref(),
-            candidate_tree_before: &candidate_tree_before,
-            log_relpath: &log_relpath,
-            started_at: &started_at,
-            recovery_only,
-        },
-    )?;
+    let (action_outcome, existing_running_trace_id) =
+        (|| -> Result<(Option<ActionExecutionOutcome>, Option<i64>), StateError> {
+            let Some(ref call_ref) = gate_def.call else {
+                return Ok((None, None));
+            };
+            let cap = provider.action_capability(call_ref)?;
+            let with_params = gate_def.with.clone().unwrap_or_else(|| json!({}));
+            provider.validate_action_ref(call_ref, &with_params)?;
+            let idempotency_key = format!(
+                "{}:{}:{}:{}",
+                run_id, node_id, captured.claim_revision, execution_digest
+            );
+
+            let call_lock = acquire_repo_lock(layout.as_ref())?;
+            let call_snap = backend.load_run_graph(run_id)?.ok_or_else(|| {
+                StateError::new(ErrorCode::BackendConflict, "run disappeared before call")
+            })?;
+            let call_node = verify_active_node_cas(&call_snap, &node_id, &req, Some(&captured))?;
+            let mut prev_abort_row = None;
+            if let Some(prev) = backend.latest_trace(run_id, &node_id, call_node.claim_revision)? {
+                if prev.status == TraceStatus::Running {
+                    let prev_row_id = prev.trace_row_id.ok_or_else(|| {
+                        StateError::new(
+                            ErrorCode::BackendConflict,
+                            "running trace missing trace_row_id",
+                        )
+                    })?;
+                    if cap.mutating && prev.action_id.as_deref() == Some(call_ref.as_str()) {
+                        let prev_key = prev.idempotency_key;
+                        drop(call_lock);
+                        return Ok(recover_running_mutating_trace(
+                            provider,
+                            call_ref,
+                            cap,
+                            prev_key.as_deref(),
+                            prev_row_id,
+                            &idempotency_key,
+                        ));
+                    }
+                    prev_abort_row = Some(prev_row_id);
+                }
+            }
+            if recovery_only {
+                drop(call_lock);
+                return Ok((None, None));
+            }
+
+            let preconditions = crate::machine::graph::build_preconditions(
+                &call_snap,
+                &[call_node.node_id.as_str()],
+                Some(call_node),
+            );
+            let trace_row = exec_tx_with(backend, |tx| {
+                if let Some(prev_row_id) = prev_abort_row {
+                    tx.finish_trace(&TraceFinishInput {
+                        trace_row_id: prev_row_id,
+                        status: TraceStatus::Aborted,
+                        exit_code: None,
+                        passed_tests: Vec::new(),
+                        failed_tests: Vec::new(),
+                        check_results: Vec::new(),
+                        candidate_tree_after: Some(candidate_tree_before.clone()),
+                        finished_at: acdd_core::telemetry::now_utc_iso_ms(),
+                    })?;
+                }
+                tx.start_trace(
+                    &preconditions,
+                    &TraceStartInput {
+                        run_id: run_id.clone(),
+                        node_id: call_node.node_id.clone(),
+                        claim_revision: call_node.claim_revision,
+                        contract_revision: call_node.contract_revision,
+                        execution_digest: execution_digest.to_owned(),
+                        idempotency_key: Some(idempotency_key.clone()),
+                        command_id: gate_def.command.clone(),
+                        command_line: resolved_commands.first().cloned(),
+                        action_id: Some(call_ref.clone()),
+                        test_target: req.test_target.as_deref().map(str::to_owned),
+                        candidate_tree_before: candidate_tree_before.clone(),
+                        log_relpath: log_relpath.to_owned(),
+                        started_at: started_at.to_owned(),
+                    },
+                )
+            })?;
+            let trace_row_id = trace_row.trace_row_id.ok_or_else(|| {
+                StateError::new(ErrorCode::BackendConflict, "start_trace missing row id")
+            })?;
+            drop(call_lock);
+            acdd_core::failpoint::hit("verify_after_start_trace");
+
+            let action_req = DomainActionReq {
+                run_id: run_id.clone(),
+                node_cursor: cursor.clone(),
+                gate_id: gate_id.clone(),
+                worker_id: call_node.worker_id.clone(),
+                workspace_root: primary.to_path_buf(),
+                worktree: target_worktree.to_path_buf(),
+                admitted_scope: admitted_scope.to_vec(),
+            };
+            let outcome = match provider.execute_action(
+                call_ref,
+                &with_params,
+                &idempotency_key,
+                &action_req,
+            ) {
+                Ok(_res) => ActionExecutionOutcome::Succeeded,
+                Err(err) => {
+                    mark_trace_failed_if_contract_error(
+                        backend,
+                        layout.as_ref(),
+                        trace_row_id,
+                        &candidate_tree_before,
+                        &err,
+                    )?;
+                    ActionExecutionOutcome::Failed(err.to_string())
+                }
+            };
+
+            Ok((Some(outcome), Some(trace_row_id)))
+        })()?;
 
     let action_failed = matches!(
         action_outcome,
@@ -463,9 +507,9 @@ pub(crate) fn handle_verify_with_failure_return(
 
     // Phase 3 (re-acquire `repo.lock`): CAS-check node state, re-capture post-execution tree, persist trace.
     let post_lock = acquire_repo_lock(layout.as_ref())?;
-    let latest_snapshot = backend
-        .load_run_graph(run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::BackendConflict, "run disappeared during verify"))?;
+    let latest_snapshot = backend.load_run_graph(run_id)?.ok_or_else(|| {
+        StateError::new(ErrorCode::BackendConflict, "run disappeared during verify")
+    })?;
     let latest_node = verify_active_node_cas(&latest_snapshot, &node_id, &req, Some(&captured))?;
 
     let candidate_tree_after = current_scope_tree(&target_worktree, None, &policy)?;
@@ -484,31 +528,25 @@ pub(crate) fn handle_verify_with_failure_return(
         ..ValidatedObservations::default()
     };
 
-    let (
-        command_line,
-        exit_code,
-        timed_out,
-        aborted,
-        stderr_tail,
-        final_log_relpath,
-    ) = match cmd_outcome {
-        Some(c) => (
-            Some(c.command_line),
-            c.exit_code,
-            c.timed_out,
-            c.aborted,
-            c.stderr_tail,
-            c.log_relpath,
-        ),
-        None => (
-            resolved_commands.first().cloned(),
-            None,
-            false,
-            false,
-            String::new(),
-            log_relpath,
-        ),
-    };
+    let (command_line, exit_code, timed_out, aborted, stderr_tail, final_log_relpath) =
+        match cmd_outcome {
+            Some(c) => (
+                Some(c.command_line),
+                c.exit_code,
+                c.timed_out,
+                c.aborted,
+                c.stderr_tail,
+                c.log_relpath,
+            ),
+            None => (
+                resolved_commands.first().cloned(),
+                None,
+                false,
+                false,
+                String::new(),
+                log_relpath,
+            ),
+        };
 
     let verify_input = VerifyInput {
         node_cursor: cursor,
@@ -536,150 +574,15 @@ pub(crate) fn handle_verify_with_failure_return(
     };
 
     let res = persist_and_finalize_verify(
-        backend,
-        layout.as_ref(),
-        &primary,
         &latest_snapshot,
         &loaded.machine_profile,
         &post_obs,
         &verify_input,
         existing_running_trace_id,
-        return_on_failure_transition,
     );
     drop(post_lock);
     backend.after_commit_maintenance()?;
     res
-}
-
-#[allow(clippy::too_many_arguments)]
-fn persist_and_finalize_verify(
-    backend: &dyn StateBackend,
-    layout: Option<&RepoWorktreeLayout>,
-    primary: &Path,
-    snapshot: &RunGraphSnapshot,
-    machine_profile: &MachineProfileInput,
-    obs: &ValidatedObservations,
-    verify_input: &VerifyInput,
-    existing_running_trace_id: Option<i64>,
-    return_on_failure_transition: bool,
-) -> Result<VerifyResp, StateError> {
-    let eval = evaluate_verify(snapshot, machine_profile, obs, verify_input)?;
-
-    if let Err(err) = eval.outcome {
-        if err.code == ErrorCode::MutatingActionUncertainOutcome {
-            // Preserve the in-flight `running` trace row so retry / lookup_action_result can resolve it
-            // or `reopen` can advance `claim_revision` cleanly.
-            return Err(err);
-        }
-        return finish_and_return_verify(
-            backend,
-            layout,
-            primary,
-            snapshot,
-            verify_input,
-            existing_running_trace_id,
-            eval.preconditions,
-            eval.trace_start,
-            eval.trace_finish,
-            eval.failure_transition,
-            eval.execution_digest,
-            Err(err),
-            return_on_failure_transition,
-        );
-    }
-
-    finish_and_return_verify(
-        backend,
-        layout,
-        primary,
-        snapshot,
-        verify_input,
-        existing_running_trace_id,
-        eval.preconditions,
-        eval.trace_start,
-        eval.trace_finish,
-        eval.failure_transition,
-        eval.execution_digest,
-        Ok(()),
-        return_on_failure_transition,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finish_and_return_verify(
-    backend: &dyn StateBackend,
-    layout: Option<&RepoWorktreeLayout>,
-    primary: &Path,
-    snapshot: &RunGraphSnapshot,
-    verify_input: &VerifyInput,
-    existing_running_trace_id: Option<i64>,
-    preconditions: crate::types::StoragePreconditions,
-    trace_start: TraceStartInput,
-    trace_finish: TraceFinishInput,
-    failure_transition: Option<crate::types::TransitionPlan>,
-    execution_digest: String,
-    outcome: Result<(), StateError>,
-    return_on_failure_transition: bool,
-) -> Result<VerifyResp, StateError> {
-    let has_failure_transition = failure_transition.is_some();
-    exec_tx_with(backend, |tx| {
-        let trace_row_id = match existing_running_trace_id {
-            Some(id) => id,
-            None => {
-                let started = tx.start_trace(&preconditions, &trace_start)?;
-                started.trace_row_id.ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::BackendConflict,
-                        "start_trace returned no trace_row_id",
-                    )
-                })?
-            }
-        };
-        let mut finish = trace_finish.clone();
-        finish.trace_row_id = trace_row_id;
-        tx.finish_trace(&finish)?;
-
-        if let Some(ref failure_plan) = failure_transition {
-            tx.apply_transition_plan(&snapshot.run.run_id, failure_plan)?;
-        }
-        Ok(())
-    })?;
-
-    let _ = append_trace_event(
-        layout,
-        primary,
-        &snapshot.run.run_id,
-        &json!({
-            "kind": "gate_verify",
-            "run_id": snapshot.run.run_id.as_str(),
-            "node_cursor": verify_input.node_cursor.to_string(),
-            "claim_revision": trace_start.claim_revision,
-            "execution_digest": execution_digest,
-            "trace_status": trace_finish.status.as_str(),
-            "timestamp": trace_finish.finished_at,
-        }),
-    );
-
-    let passed = if outcome.is_ok() {
-        true
-    } else if return_on_failure_transition && has_failure_transition {
-        false
-    } else {
-        outcome?;
-        unreachable!()
-    };
-
-    Ok(VerifyResp {
-        run_id: snapshot.run.run_id.clone(),
-        node_cursor: verify_input.node_cursor.clone(),
-        claim_revision: trace_start.claim_revision,
-        trace_status: trace_finish.status,
-        execution_digest,
-        exit_code: trace_finish.exit_code,
-        check_results: trace_finish.check_results,
-        log_relpath: trace_start.log_relpath,
-        passed,
-    })
 }
 
 /// Resolve deterministic rendered command lines for a gate's `command:`.
@@ -695,7 +598,10 @@ pub(crate) fn resolve_commands(
     let cmd_def = profile.commands.get(cmd_id).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("gate '{}' references unknown command '{cmd_id}'", gate_def.id),
+            format!(
+                "gate '{}' references unknown command '{cmd_id}'",
+                gate_def.id
+            ),
         )
     })?;
     let invocations = resolve_command_for_scope(cmd_def, admitted_scope)?;
@@ -713,45 +619,26 @@ pub(crate) fn resolve_commands(
 
 type GateChecksOutput = (Vec<CheckResultRecord>, Option<String>, Option<String>);
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) fn split_qualified_check(check: &str) -> Result<(&str, &str), StateError> {
+    check.split_once('.').ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("check '{check}' must be qualified as '<domain>.<check>'"),
+        )
+    })
+}
+
 fn run_gate_checks(
     provider: &CompositeDomainProvider,
-    snapshot: &RunGraphSnapshot,
-    node: &GateNodeRecord,
-    cursor: &NodeCursor,
-    gate_id: &GateId,
     gate_def: &GateDef,
-    primary: &Path,
-    target_worktree: &Path,
-    admitted_scope: &[String],
-    changed_paths: &[String],
-    test_target: Option<&str>,
-    policy: &WorkspacePathPolicy,
+    req: &DomainCheckReq,
 ) -> Result<GateChecksOutput, StateError> {
     let mut results = Vec::with_capacity(gate_def.checks.len());
     let mut index_generations = Vec::new();
     let mut salts = Vec::new();
-    let req = DomainCheckReq {
-        run_id: snapshot.run.run_id.clone(),
-        node_cursor: cursor.clone(),
-        gate_id: gate_id.clone(),
-        workspace_root: primary.to_path_buf(),
-        worktree: target_worktree.to_path_buf(),
-        admitted_scope: admitted_scope.to_vec(),
-        changed_paths: changed_paths.to_vec(),
-        test_target: test_target.map(str::to_owned),
-        path_policy: policy.clone(),
-        baseline_ref: crate::context::baseline_ref_for_node(node),
-    };
-
     for chk in &gate_def.checks {
-        let (domain, check_name) = chk.check.split_once('.').ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("check '{}' must be qualified as '<domain>.<check>'", chk.check),
-            )
-        })?;
-        match provider.run_check(&chk.check, &chk.with, &req) {
+        let (domain, check_name) = split_qualified_check(&chk.check)?;
+        match provider.run_check(&chk.check, &chk.with, req) {
             Ok(DomainCheckOutcome::Passed {
                 summary,
                 execution_digest_salt,
@@ -759,7 +646,7 @@ fn run_gate_checks(
                 if let Ok(FreshnessObservation::Passed {
                     index_generation: Some(gen),
                     ..
-                }) = provider.observe_freshness(&chk.check, &chk.with, &req)
+                }) = provider.observe_freshness(&chk.check, &chk.with, req)
                 {
                     index_generations.push(format!("{}:{gen}", chk.check));
                 }
@@ -824,7 +711,10 @@ fn recover_running_mutating_trace(
             }
         }
     }
-    (Some(ActionExecutionOutcome::UncertainCrash), Some(prev_row_id))
+    (
+        Some(ActionExecutionOutcome::UncertainCrash),
+        Some(prev_row_id),
+    )
 }
 
 fn mark_trace_failed_if_contract_error(
@@ -859,144 +749,6 @@ fn mark_trace_failed_if_contract_error(
     drop(fail_lock);
     let _ = backend.after_commit_maintenance();
     Err(se.clone())
-}
-
-struct GateCallCtx<'a> {
-    provider: &'a CompositeDomainProvider,
-    layout: Option<&'a RepoWorktreeLayout>,
-    run_id: &'a acdd_core::ids::RunId,
-    node_id: &'a str,
-    req: &'a VerifyReq,
-    captured: &'a CapturedVerifyClaim,
-    cursor: &'a NodeCursor,
-    gate_id: &'a GateId,
-    gate_def: &'a GateDef,
-    primary: &'a Path,
-    target_worktree: &'a Path,
-    admitted_scope: &'a [String],
-    execution_digest: &'a str,
-    resolved_commands: &'a [String],
-    test_target: Option<&'a str>,
-    candidate_tree_before: &'a acdd_core::ids::TreeOid,
-    log_relpath: &'a str,
-    started_at: &'a str,
-    recovery_only: bool,
-}
-
-fn execute_gate_call_if_configured(
-    backend: &dyn StateBackend,
-    ctx: &GateCallCtx<'_>,
-) -> Result<(Option<ActionExecutionOutcome>, Option<i64>), StateError> {
-    let Some(ref call_ref) = ctx.gate_def.call else {
-        return Ok((None, None));
-    };
-    let cap = ctx.provider.action_capability(call_ref)?;
-    let with_params = ctx.gate_def.with.clone().unwrap_or_else(|| json!({}));
-    ctx.provider.validate_action_ref(call_ref, &with_params)?;
-    let idempotency_key = format!(
-        "{}:{}:{}:{}",
-        ctx.run_id, ctx.node_id, ctx.captured.claim_revision, ctx.execution_digest
-    );
-
-    let call_lock = acquire_repo_lock(ctx.layout)?;
-    let call_snap = backend
-        .load_run_graph(ctx.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::BackendConflict, "run disappeared before call"))?;
-    let node = verify_active_node_cas(&call_snap, ctx.node_id, ctx.req, Some(ctx.captured))?;
-    let mut prev_abort_row = None;
-    if let Some(prev) = backend.latest_trace(ctx.run_id, ctx.node_id, node.claim_revision)? {
-        if prev.status == TraceStatus::Running {
-            let prev_row_id = prev.trace_row_id.ok_or_else(|| {
-                StateError::new(ErrorCode::BackendConflict, "running trace missing trace_row_id")
-            })?;
-            if cap.mutating && prev.action_id.as_deref() == Some(call_ref.as_str()) {
-                let prev_key = prev.idempotency_key;
-                // Drop `repo.lock` before external provider lookup so I/O or lock-taking providers cannot stall/deadlock.
-                drop(call_lock);
-                return Ok(recover_running_mutating_trace(
-                    ctx.provider,
-                    call_ref,
-                    cap,
-                    prev_key.as_deref(),
-                    prev_row_id,
-                    &idempotency_key,
-                ));
-            }
-            prev_abort_row = Some(prev_row_id);
-        }
-    }
-    if ctx.recovery_only {
-        drop(call_lock);
-        return Ok((None, None));
-    }
-
-    let preconditions =
-        crate::machine::graph::build_preconditions(&call_snap, &[node.node_id.as_str()], Some(&node));
-    let trace_row = exec_tx_with(backend, |tx| {
-        if let Some(prev_row_id) = prev_abort_row {
-            tx.finish_trace(&TraceFinishInput {
-                trace_row_id: prev_row_id,
-                status: TraceStatus::Aborted,
-                exit_code: None,
-                passed_tests: Vec::new(),
-                failed_tests: Vec::new(),
-                check_results: Vec::new(),
-                candidate_tree_after: Some(ctx.candidate_tree_before.clone()),
-                finished_at: acdd_core::telemetry::now_utc_iso_ms(),
-            })?;
-        }
-        tx.start_trace(
-            &preconditions,
-            &TraceStartInput {
-                run_id: ctx.run_id.clone(),
-                node_id: node.node_id.clone(),
-                claim_revision: node.claim_revision,
-                contract_revision: node.contract_revision,
-                execution_digest: ctx.execution_digest.to_owned(),
-                idempotency_key: Some(idempotency_key.clone()),
-                command_id: ctx.gate_def.command.clone(),
-                command_line: ctx.resolved_commands.first().cloned(),
-                action_id: Some(call_ref.clone()),
-                test_target: ctx.test_target.map(str::to_owned),
-                candidate_tree_before: ctx.candidate_tree_before.clone(),
-                log_relpath: ctx.log_relpath.to_owned(),
-                started_at: ctx.started_at.to_owned(),
-            },
-        )
-    })?;
-    let trace_row_id = trace_row.trace_row_id.ok_or_else(|| {
-        StateError::new(ErrorCode::BackendConflict, "start_trace missing row id")
-    })?;
-    drop(call_lock);
-    acdd_core::failpoint::hit("verify_after_start_trace");
-
-    let action_req = DomainActionReq {
-        run_id: ctx.run_id.clone(),
-        node_cursor: ctx.cursor.clone(),
-        gate_id: ctx.gate_id.clone(),
-        worker_id: node.worker_id.clone(),
-        workspace_root: ctx.primary.to_path_buf(),
-        worktree: ctx.target_worktree.to_path_buf(),
-        admitted_scope: ctx.admitted_scope.to_vec(),
-    };
-    let outcome = match ctx
-        .provider
-        .execute_action(call_ref, &with_params, &idempotency_key, &action_req)
-    {
-        Ok(_res) => ActionExecutionOutcome::Succeeded,
-        Err(err) => {
-            mark_trace_failed_if_contract_error(
-                backend,
-                ctx.layout,
-                trace_row_id,
-                ctx.candidate_tree_before,
-                &err,
-            )?;
-            ActionExecutionOutcome::Failed(err.to_string())
-        }
-    };
-
-    Ok((Some(outcome), Some(trace_row_id)))
 }
 
 pub(crate) fn find_machine_gate<'a>(

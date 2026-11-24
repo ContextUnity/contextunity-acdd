@@ -1,30 +1,27 @@
 //! Submit preflight, trace freshness verification, and `need:` drift stale-marking.
 
 use crate::git_ops::commit::find_claim_commit_in_range;
-use crate::git_ops::snapshot::{
-    current_scope_tree, diff_scope_changed_paths,
-};
+use crate::git_ops::snapshot::{current_scope_tree, diff_scope_changed_paths};
 use crate::machine::verify::detect_scope_violations;
 use crate::machine::{
-    compute_execution_digest, container_scope, evaluate_submit,
-    ExecutionDigestInput, MachineGateDef, MachineGraphItem, MachineProfileInput, MachineProofKind,
-    SubmitEvaluation, SubmitInput,
+    compute_execution_digest, container_scope, evaluate_submit, ExecutionDigestInput,
+    MachineGateDef, MachineGraphItem, MachineProfileInput, MachineProofKind, SubmitEvaluation,
+    SubmitInput,
 };
 use crate::profile::ResolvedGateProfile;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    GateNodeRecord, GateTraceRecord, NodeKind, NodeStatus,
-    RunGraphSnapshot, SaveAction,
+    GateNodeRecord, GateTraceRecord, NodeKind, NodeStatus, RunGraphSnapshot, SaveAction,
     SubmitAction, TraceStatus, ValidatedObservations,
 };
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
-    compute_archive_relpath, load_active_run_graph,
-    parse_cursor_for_snapshot, resolve_node_worktree,
+    compute_archive_relpath, load_active_run_graph, parse_cursor_for_snapshot,
+    resolve_node_worktree,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::verify::{find_machine_gate, resolve_commands};
-use crate::usecases::config::StateEngineConfig;
+use crate::usecases::verify::{find_machine_gate, resolve_commands, split_qualified_check};
 use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
@@ -33,7 +30,6 @@ use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{CompositeDomainProvider, DomainCheckReq, FreshnessObservation};
 use serde_json::json;
 use std::path::Path;
-
 
 pub(super) struct SubmitPreflight {
     pub(super) primary: std::path::PathBuf,
@@ -55,15 +51,17 @@ pub(super) fn inspect_submit_preflight(
     primary: &Path,
     req: &SubmitReq,
 ) -> Result<Option<SubmitPreflight>, StateError> {
-    let loaded = load_active_run_graph(
-        config,
-        backend,
-        req.run.as_deref(),
-        req.worktree.as_deref(),
-    )?;
+    let loaded =
+        load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
-    let Some(node) = loaded.snapshot.nodes.iter().find(|n| n.node_id == node_id).cloned() else {
+    let Some(node) = loaded
+        .snapshot
+        .nodes
+        .iter()
+        .find(|n| n.node_id == node_id)
+        .cloned()
+    else {
         return Ok(None);
     };
     if node.status != NodeStatus::InProgress
@@ -79,10 +77,16 @@ pub(super) fn inspect_submit_preflight(
     let target_worktree =
         resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
 
-    if machine_gate.save.archive && !loaded.snapshot.run.is_ephemeral && machine_gate.save.post == SaveAction::Commit {
+    if machine_gate.save.archive
+        && !loaded.snapshot.run.is_ephemeral
+        && machine_gate.save.post == SaveAction::Commit
+    {
         if let Some(ref spec_rel) = loaded.snapshot.run.spec_path {
-            let archive_rel =
-                compute_archive_relpath(config, loaded.snapshot.run.collection.as_deref(), spec_rel)?;
+            let archive_rel = compute_archive_relpath(
+                config,
+                loaded.snapshot.run.collection.as_deref(),
+                spec_rel,
+            )?;
             let trailer_needle = format!(
                 "{CLAIM_TRAILER_KEY}: {}/{}/{}",
                 loaded.snapshot.run.run_id, node.node_id, node.claim_revision
@@ -144,12 +148,8 @@ pub(super) fn inspect_submit_preflight(
         return Ok(None);
     }
 
-    let existing_fresh = select_fresh_candidate_trace(
-        &loaded.snapshot,
-        &node,
-        TraceStatus::Passed,
-        &current_tree,
-    );
+    let existing_fresh =
+        select_fresh_candidate_trace(&loaded.snapshot, &node, TraceStatus::Passed, &current_tree);
 
     Ok(Some(SubmitPreflight {
         primary: primary.to_path_buf(),
@@ -187,21 +187,24 @@ fn select_fresh_candidate_trace(
         .cloned()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn observe_existing_trace_freshness(
     provider: &CompositeDomainProvider,
-    primary: &Path,
-    target_worktree: &Path,
-    snapshot: &RunGraphSnapshot,
-    node: &GateNodeRecord,
-    resolved_profile: &ResolvedGateProfile,
-    machine_gate: &MachineGateDef,
-    cursor: &NodeCursor,
-    admitted_scope: &[String],
-    policy: &WorkspacePathPolicy,
+    preflight: &SubmitPreflight,
     req: &SubmitReq,
     tr: &GateTraceRecord,
 ) -> Result<Option<String>, StateError> {
+    let SubmitPreflight {
+        primary,
+        target_worktree,
+        snapshot,
+        resolved_profile,
+        node,
+        machine_gate,
+        cursor,
+        admitted_scope,
+        policy,
+        ..
+    } = preflight;
     let gate_def = find_profile_gate_def(resolved_profile, cursor).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
@@ -244,23 +247,20 @@ pub(super) fn observe_existing_trace_freshness(
     let mut live_index_gens = Vec::new();
     let mut live_salts = Vec::new();
     for chk in &gate_def.checks {
-        let (domain, check_name) = chk.check.split_once('.').ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("check '{}' must be qualified as '<domain>.<check>'", chk.check),
-            )
-        })?;
+        let (domain, check_name) = split_qualified_check(&chk.check)?;
         match provider
             .observe_freshness(&chk.check, &chk.with, &check_req)
             .map_err(|err| {
                 StateError::from_anyhow(&err).cloned().unwrap_or_else(|| {
                     StateError::new(
                         ErrorCode::GateVerificationFailed,
-                        format!("domain check '{}' freshness check errored: {err}", chk.check),
+                        format!(
+                            "domain check '{}' freshness check errored: {err}",
+                            chk.check
+                        ),
                     )
                 })
-            })?
-        {
+            })? {
             FreshnessObservation::Passed {
                 index_generation,
                 execution_digest_salt,
@@ -292,16 +292,12 @@ pub(super) fn observe_existing_trace_freshness(
     Ok((tr.execution_digest == expected_digest).then_some(expected_digest))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn mark_drifted_need_predecessors_stale(
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     machine_profile: &MachineProfileInput,
     node: &GateNodeRecord,
-    cursor: &NodeCursor,
-    current_tree: &TreeOid,
-    changed_paths: &[String],
-    policy: &WorkspacePathPolicy,
+    observations: &ValidatedObservations,
     req: &SubmitReq,
 ) -> Result<(), StateError> {
     let mut probe_profile = machine_profile.clone();
@@ -323,16 +319,8 @@ fn mark_drifted_need_predecessors_stale(
             }
         }
     }
-    let now_utc = acdd_core::telemetry::now_utc_iso_ms();
-    let probe_obs = ValidatedObservations {
-        current_tree: Some(current_tree.clone()),
-        changed_paths: changed_paths.to_vec(),
-        path_policy: Some(policy.clone()),
-        now_utc: now_utc.clone(),
-        ..ValidatedObservations::default()
-    };
     let probe_input = SubmitInput {
-        node_cursor: cursor.clone(),
+        node_cursor: NodeCursor::from_node_id(&node.node_id)?,
         action: SubmitAction::Pass,
         worker_id: req.worker_id.clone(),
         claim_revision: req.claim_revision,
@@ -344,14 +332,19 @@ fn mark_drifted_need_predecessors_stale(
         snapshot_commit: None,
         summary: req.summary.clone(),
     };
-    match evaluate_submit(snapshot, &probe_profile, &probe_obs, &probe_input) {
+    match evaluate_submit(snapshot, &probe_profile, observations, &probe_input) {
         Ok(SubmitEvaluation::MarkStaleAndReject {
             stale_node_ids,
             preconditions,
             ..
         }) => {
             exec_tx_with(backend, |tx| {
-                tx.mark_nodes_stale(&snapshot.run.run_id, &preconditions, &stale_node_ids, &now_utc)
+                tx.mark_nodes_stale(
+                    &snapshot.run.run_id,
+                    &preconditions,
+                    &stale_node_ids,
+                    &observations.now_utc,
+                )
             })?;
         }
         Err(err) if err.code == ErrorCode::OutOfScopeChanges => {
@@ -386,10 +379,13 @@ pub(super) fn ensure_fresh_trace_or_auto_verify(
                     snapshot,
                     machine_profile,
                     node,
-                    cursor,
-                    current_tree,
-                    changed_paths,
-                    policy,
+                    &ValidatedObservations {
+                        current_tree: Some(current_tree.clone()),
+                        changed_paths: changed_paths.to_vec(),
+                        path_policy: Some(policy.clone()),
+                        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+                        ..ValidatedObservations::default()
+                    },
                     req,
                 )?;
                 return Err(StateError::new(

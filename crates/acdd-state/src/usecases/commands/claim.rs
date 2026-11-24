@@ -9,34 +9,30 @@ use crate::git_ops::worktree::{
     RepoWorktreeLayout,
 };
 use crate::machine::{
-    evaluate_transition, ClaimDecision, ClaimInput, TransitionInput,
-    TransitionOutcome,
+    evaluate_transition, ClaimDecision, ClaimInput, TransitionInput, TransitionOutcome,
 };
-use crate::profile::{GateDef, ResolvedGateProfile};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     GateNodeRecord, IsolationMode, NodeKind, NodeStatus, NodeStatusPatch, NodeVersionExpectation,
-    RunGraphSnapshot, StoragePreconditions, TransitionPlan, ValidatedObservations,
-    WorktreeLifecycle,
+    StoragePreconditions, TransitionPlan, ValidatedObservations, WorktreeLifecycle,
 };
-use crate::usecases::dto::ClaimReq;
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
+use crate::usecases::dto::ClaimReq;
 use crate::usecases::lifecycle::{
-    append_trace_event, auto_select_ready_cursor,
-    compute_unintegrated_tasks, current_session_fingerprint, is_local_pid_alive,
-    load_active_run_graph, parse_cursor_for_snapshot, resolve_node_worktree, with_repo_lock_and_maintenance,
+    append_trace_event, auto_select_ready_cursor, compute_unintegrated_tasks,
+    current_session_fingerprint, is_local_pid_alive, load_active_run_graph,
+    parse_cursor_for_snapshot, resolve_node_worktree, with_repo_lock_and_maintenance,
     LoadedRunGraph,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::WORKTREES_DIR;
-use acdd_core::telemetry::SpanId;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{NodeCursor, TreeOid};
+use acdd_core::ids::TreeOid;
 use acdd_core::ports::CompositeDomainProvider;
+use acdd_core::telemetry::SpanId;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-
 
 pub(crate) fn handle_claim_dyn(
     config: &StateEngineConfig,
@@ -49,46 +45,26 @@ pub(crate) fn handle_claim_dyn(
     })
 }
 
-struct PreparedClaimTarget {
-    loaded: LoadedRunGraph,
-    sched_obs: ValidatedObservations,
-    cursor: NodeCursor,
-    node: GateNodeRecord,
-    gate_def: GateDef,
-    session_fp: Option<String>,
-    previous_local_pid_alive: Option<bool>,
-    span_id: String,
-    planned_wt: PathBuf,
-    planned_branch: Option<String>,
-    create_wt_req: Option<CreateWorktreeReq>,
-}
-
-fn prepare_claim_target(
+fn claim_holding_repo_lock(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
     layout: Option<&RepoWorktreeLayout>,
     primary: &Path,
-    req: &ClaimReq,
-) -> Result<PreparedClaimTarget, StateError> {
-    let loaded = load_active_run_graph(
-        config,
-        backend,
-        req.run.as_deref(),
-        req.worktree.as_deref(),
-    )?;
+    req: ClaimReq,
+) -> Result<crate::context::ClaimResp, StateError> {
+    let loaded =
+        load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let run_id = loaded.snapshot.run.run_id.clone();
     let ext_deps = collect_external_satisfied_deps(config, &loaded.snapshot)?;
     let unintegrated_tasks = compute_unintegrated_tasks(config, &loaded.snapshot)?;
-    let now_utc = acdd_core::telemetry::now_utc_iso_ms();
-
     let sched_obs = ValidatedObservations {
         external_satisfied_deps: ext_deps,
         external_deps_authoritative: true,
         unintegrated_tasks,
-        now_utc,
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
-
     let cursor = match req.node {
         Some(ref raw) => parse_cursor_for_snapshot(&loaded.snapshot, raw)?,
         None => auto_select_ready_cursor(&loaded.snapshot, &sched_obs)?,
@@ -99,22 +75,18 @@ fn prepare_claim_target(
         .nodes
         .iter()
         .find(|n| n.node_id == node_id)
-        .cloned()
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 format!("node '{cursor}' does not exist in run '{run_id}'"),
             )
         })?;
-    let gate_def = find_profile_gate_def(&loaded.profile, &cursor)
-        .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("no gate definition found for '{cursor}'"),
-            )
-        })?
-        .clone();
-
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
+    })?;
     let session_fp = req
         .session_fingerprint
         .clone()
@@ -125,17 +97,14 @@ fn prepare_claim_target(
         None
     };
     let span_id = SpanId::new().to_string();
-
     let (planned_wt, planned_branch, create_wt_req) = plan_claim_worktree(
         config,
         primary,
         layout.is_some(),
-        &loaded.snapshot,
-        &loaded.profile,
-        &node,
+        &loaded,
+        node,
         req.worktree.as_deref(),
     )?;
-
     if create_wt_req.is_some() {
         let precheck_input = ClaimInput {
             node_cursor: cursor.clone(),
@@ -157,45 +126,6 @@ fn prepare_claim_target(
             &TransitionInput::Claim(precheck_input),
         )?;
     }
-
-    Ok(PreparedClaimTarget {
-        loaded,
-        sched_obs,
-        cursor,
-        node,
-        gate_def,
-        session_fp,
-        previous_local_pid_alive,
-        span_id,
-        planned_wt,
-        planned_branch,
-        create_wt_req,
-    })
-}
-
-fn claim_holding_repo_lock(
-    config: &StateEngineConfig,
-    backend: &dyn StateBackend,
-    provider: &CompositeDomainProvider,
-    layout: Option<&RepoWorktreeLayout>,
-    primary: &Path,
-    req: ClaimReq,
-) -> Result<crate::context::ClaimResp, StateError> {
-    let PreparedClaimTarget {
-        loaded,
-        sched_obs,
-        cursor,
-        node,
-        gate_def,
-        session_fp,
-        previous_local_pid_alive,
-        span_id,
-        planned_wt,
-        planned_branch,
-        create_wt_req,
-    } = prepare_claim_target(config, backend, layout, primary, &req)?;
-    let gate_def = &gate_def;
-    let run_id = loaded.snapshot.run.run_id.clone();
     let now_utc = sched_obs.now_utc.clone();
 
     let (target_worktree, target_branch, created_managed) = if let Some(ref wt_req) = create_wt_req
@@ -245,28 +175,27 @@ fn claim_holding_repo_lock(
 
         match *decision {
             ClaimDecision::Idempotent(existing) => {
-                let ctx_req = GateContextAssembler::build_request_from_snapshot(
-                    SnapshotContextInput {
+                let ctx_req =
+                    GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
                         config,
                         reader: backend,
                         snapshot: &loaded.snapshot,
-                        node: &node,
-                        gate: gate_def.clone(),
-                        profile: loaded.profile,
+                        node,
+                        gate: &gate_def,
+                        profile: &loaded.profile,
                         claim_revision: existing.claim_revision,
                         worker_id: req.worker_id,
                         worktree: target_worktree,
                         candidate_tree: existing.claim_tree,
                         path_policy: policy,
                         primary,
-                    },
-                )?;
+                    })?;
                 GateContextAssembler::assemble(&ctx_req, provider)
             }
             ClaimDecision::Admit { claim, transition } => {
                 // Assemble full gate context BEFORE committing irreversible claim state so
                 // budget/provider failures leave SQLite untouched and trigger worktree rollback.
-                let mut candidate_node = node.clone();
+                let mut candidate_node = (*node).clone();
                 candidate_node.status = NodeStatus::InProgress;
                 candidate_node.claim_revision = claim.claim_revision;
                 candidate_node.worker_id = Some(claim.worker_id.clone());
@@ -277,22 +206,21 @@ fn claim_holding_repo_lock(
                 candidate_node.claim_tree = Some(claim.claim_tree.clone());
                 candidate_node.active_span_id = Some(claim.span_id.clone());
 
-                let ctx_req = GateContextAssembler::build_request_from_snapshot(
-                    SnapshotContextInput {
+                let ctx_req =
+                    GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
                         config,
                         reader: backend,
                         snapshot: &loaded.snapshot,
                         node: &candidate_node,
-                        gate: gate_def.clone(),
-                        profile: loaded.profile,
+                        gate: &gate_def,
+                        profile: &loaded.profile,
                         claim_revision: claim.claim_revision,
                         worker_id: req.worker_id,
                         worktree: target_worktree,
                         candidate_tree: claim.claim_tree.clone(),
                         path_policy: policy,
                         primary,
-                    },
-                )?;
+                    })?;
                 let claim_resp = GateContextAssembler::assemble(&ctx_req, provider)?;
 
                 let parent_patches: Vec<NodeStatusPatch> = transition
@@ -303,7 +231,11 @@ fn claim_holding_repo_lock(
                     .collect();
 
                 exec_tx_with(backend, |tx| {
-                    tx.admit_claim(&loaded.snapshot.run.run_id, &transition.preconditions, &claim)?;
+                    tx.admit_claim(
+                        &loaded.snapshot.run.run_id,
+                        &transition.preconditions,
+                        &claim,
+                    )?;
                     if !parent_patches.is_empty() {
                         let parent_versions: Vec<NodeVersionExpectation> = parent_patches
                             .iter()
@@ -379,16 +311,16 @@ fn claim_holding_repo_lock(
     Ok(claim_resp)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn plan_claim_worktree(
     config: &StateEngineConfig,
     primary: &Path,
     has_git: bool,
-    snapshot: &RunGraphSnapshot,
-    profile: &ResolvedGateProfile,
+    loaded: &LoadedRunGraph,
     node: &GateNodeRecord,
     override_wt: Option<&Path>,
 ) -> Result<(PathBuf, Option<String>, Option<CreateWorktreeReq>), StateError> {
+    let snapshot = &loaded.snapshot;
+    let profile = &loaded.profile;
     if let Some(wt) = override_wt {
         let canon = canonicalize_macos_var(wt);
         let branch = if has_git && canon.exists() {

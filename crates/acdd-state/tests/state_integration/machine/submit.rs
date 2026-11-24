@@ -3,8 +3,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::NodeCursor;
 use acdd_state::types::{
     ArtifactKind, BlackboardTopic, FindingItem, FindingSeverity, IsolationMode, NodeStatus,
-    RejectionFindings, RejectionKind, ReviewContourResult, ReviewEvidence,
-    SubmitAction,
+    RejectionFindings, RejectionKind, ReviewContourResult, ReviewEvidence, SubmitAction,
 };
 use std::collections::BTreeMap;
 
@@ -22,7 +21,8 @@ fn evaluate_submit_plan(
 
 #[test]
 fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closure() {
-    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t_a = tree('a');
     let t_b = tree('b');
     let obs_a = obs_with_tree(t_a.clone());
@@ -151,8 +151,20 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     let rev_ev = ReviewEvidence {
         decision: SubmitAction::Pass,
         contours: BTreeMap::from([
-            ("paths".to_owned(), ReviewContourResult { applicable: true, evidence: "ok".to_owned() }),
-            ("claims".to_owned(), ReviewContourResult { applicable: true, evidence: "ok".to_owned() }),
+            (
+                "paths".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "ok".to_owned(),
+                },
+            ),
+            (
+                "claims".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "ok".to_owned(),
+                },
+            ),
         ]),
         summary: "ok".to_owned(),
         notes: None,
@@ -234,7 +246,9 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
             assert_eq!(stale_node_ids, vec!["task:T1:build".to_owned()]);
             assert_eq!(error.code, ErrorCode::TaskCandidateMismatch);
         }
-        other => panic!("expected MarkStaleAndReject when both need: and immutable drift, got {other:?}"),
+        other => {
+            panic!("expected MarkStaleAndReject when both need: and immutable drift, got {other:?}")
+        }
     }
 
     // When `need:` matches `t_b` while `claim_tree` is still `t_a`, `immutable: true` still rejects directly.
@@ -371,13 +385,29 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
         apply_plan_in_memory(&mut snap, &rej);
         if attempt < 3 {
             // Re-claim & re-pass build for next cycle
-            snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().status = NodeStatus::Completed;
-            snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().accepted_tree = Some(t_a.clone());
-            snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review").unwrap().status = NodeStatus::Ready;
+            snap.nodes
+                .iter_mut()
+                .find(|n| n.node_id == "task:T1:build")
+                .unwrap()
+                .status = NodeStatus::Completed;
+            snap.nodes
+                .iter_mut()
+                .find(|n| n.node_id == "task:T1:build")
+                .unwrap()
+                .accepted_tree = Some(t_a.clone());
+            snap.nodes
+                .iter_mut()
+                .find(|n| n.node_id == "task:T1:review")
+                .unwrap()
+                .status = NodeStatus::Ready;
         }
     }
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T1:review").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:review")
+            .unwrap()
+            .status,
         NodeStatus::Escalated
     );
 
@@ -509,19 +539,40 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     apply_plan_in_memory(&mut snap, &p_d);
 
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T1").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1")
+            .unwrap()
+            .status,
         NodeStatus::Completed
     );
-    assert!(snap.dependencies.iter().find(|d| d.task_ref == t("T2")).unwrap().satisfied);
+    assert!(
+        snap.dependencies
+            .iter()
+            .find(|d| d.task_ref == t("T2"))
+            .unwrap()
+            .satisfied
+    );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T2").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T2:build").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2:build")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
-    assert!(snap.artifacts.iter().any(|a| a.node_id == "task:T1:deliver" && a.kind == ArtifactKind::Receipt));
+    assert!(snap
+        .artifacts
+        .iter()
+        .any(|a| a.node_id == "task:T1:deliver" && a.kind == ArtifactKind::Receipt));
 
     // Verify blackboard cleanup helper (notes/draft -> Resolved, deferred -> CarriedOver).
     let bb_items = vec![
@@ -595,12 +646,21 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     let mut d_snap = build_initial_run_graph(&drift_profile, &drift_input).unwrap();
     // Simulate completed build & active review on T1, then reject with ArchitecturalDrift.
     {
-        let build_n = d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap();
+        let build_n = d_snap
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_id == "task:T1:build")
+            .unwrap();
         build_n.status = NodeStatus::Completed;
         build_n.accepted_tree = Some(t_a.clone());
         build_n.accepted_definition_digest = Some("def:build".to_owned());
         build_n.worker_id = Some(w("b1"));
-        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review").unwrap().status = NodeStatus::Ready;
+        d_snap
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_id == "task:T1:review")
+            .unwrap()
+            .status = NodeStatus::Ready;
     }
     let c_dr = admit_claim(
         &d_snap,
@@ -663,10 +723,19 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     assert_eq!(f_json["reset_worker_context"], true);
     assert_eq!(f_json["reset_gate_id"], "build");
     assert_eq!(
-        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:rearchitect").unwrap().status,
+        d_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:rearchitect")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
-    let reset_build = d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap();
+    let reset_build = d_snap
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:T1:build")
+        .unwrap();
     assert_eq!(reset_build.status, NodeStatus::Pending);
     assert_eq!(reset_build.accepted_tree, None);
     assert_eq!(reset_build.accepted_definition_digest, None);
@@ -674,7 +743,12 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     assert_eq!(reset_build.session_fingerprint, None);
     assert_eq!(reset_build.active_span_id, None);
     assert_eq!(
-        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:review").unwrap().status,
+        d_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:review")
+            .unwrap()
+            .status,
         NodeStatus::Pending
     );
 
@@ -720,7 +794,12 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     .unwrap();
     apply_plan_in_memory(&mut d_snap, &pass_arch);
     assert_eq!(
-        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().status,
+        d_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:build")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
 
@@ -738,8 +817,12 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
                 n.worker_id = Some(w("b2"));
             }
         }
-        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T2:deliver").unwrap().status =
-            NodeStatus::Ready;
+        d_snap
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_id == "task:T2:deliver")
+            .unwrap()
+            .status = NodeStatus::Ready;
     }
     let c_d2 = admit_claim(
         &d_snap,
@@ -782,20 +865,39 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     .unwrap();
     apply_plan_in_memory(&mut d_snap, &pass_d2);
     assert_eq!(
-        d_snap.nodes.iter().find(|n| n.node_id == "task:T2:rearchitect").unwrap().status,
+        d_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2:rearchitect")
+            .unwrap()
+            .status,
         NodeStatus::Cancelled
     );
 
     // ArchitecturalDrift when `fail_drift` sibling (`rearchitect`) was excluded by `when:` falls back to `fail` (`build`).
     d_snap.nodes.retain(|n| n.node_id != "task:T1:rearchitect");
     d_snap.claims.retain(|c| c.node_id != "task:T1:rearchitect");
-    d_snap.artifacts.retain(|a| a.node_id != "task:T1:rearchitect");
-    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().status =
-        NodeStatus::Completed;
-    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().accepted_tree =
-        Some(t_a.clone());
-    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review").unwrap().status =
-        NodeStatus::Ready;
+    d_snap
+        .artifacts
+        .retain(|a| a.node_id != "task:T1:rearchitect");
+    d_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:build")
+        .unwrap()
+        .status = NodeStatus::Completed;
+    d_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:build")
+        .unwrap()
+        .accepted_tree = Some(t_a.clone());
+    d_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:review")
+        .unwrap()
+        .status = NodeStatus::Ready;
     let c_rev_fallback = admit_claim(
         &d_snap,
         &drift_profile,
@@ -847,7 +949,12 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     .unwrap();
     apply_plan_in_memory(&mut d_snap, &rej_fallback);
     assert_eq!(
-        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().status,
+        d_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:build")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
     let fb_art = d_snap
@@ -860,4 +967,3 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     assert_eq!(fb_stored["reset_worker_context"], serde_json::json!(true));
     assert_eq!(fb_stored["reset_gate_id"], serde_json::json!("build"));
 }
-

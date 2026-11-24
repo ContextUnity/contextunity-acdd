@@ -13,11 +13,11 @@ use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
 use crate::types::{NodeStatus, RunGraphSnapshot, RunTombstoneRecord, TerminalStatus};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::lifecycle::{
     effective_spec_collections, list_all_runs, list_all_tombstones, primary_workspace_root,
     read_confined_utf8,
 };
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::canonical_root;
@@ -53,7 +53,9 @@ fn verify_archived_task_completed(
             read_confined_utf8(ws_path, arch_rel).map_err(|err| {
                 StateError::new(
                     ErrorCode::GateVerificationFailed,
-                    format!("spec dependency '{dep_label}' archive '{arch_rel}' is unreadable: {err}"),
+                    format!(
+                        "spec dependency '{dep_label}' archive '{arch_rel}' is unreadable: {err}"
+                    ),
                 )
             })?
         }
@@ -71,7 +73,11 @@ fn verify_archived_task_completed(
             format!("spec dependency '{dep_label}' archive '{arch_rel}' is invalid: {err}"),
         )
     })?;
-    let Some(task) = parsed.tasks.iter().find(|t| t.task_ref.as_str() == task_ref) else {
+    let Some(task) = parsed
+        .tasks
+        .iter()
+        .find(|t| t.task_ref.as_str() == task_ref)
+    else {
         return Err(StateError::new(
             ErrorCode::GateVerificationFailed,
             format!(
@@ -106,8 +112,15 @@ pub(crate) fn collect_external_satisfied_deps_with_owned(
     collect_external_satisfied_deps_cached(config, graph, owned, &mut BTreeMap::new())
 }
 
-pub(crate) type ExternalDepCache =
-    BTreeMap<(PathBuf, String), (PathBuf, SqliteStateReader, BTreeMap<String, SpecCollectionConfig>, DepSnapshot)>;
+pub(crate) type ExternalDepCache = BTreeMap<
+    (PathBuf, String),
+    (
+        PathBuf,
+        SqliteStateReader,
+        BTreeMap<String, SpecCollectionConfig>,
+        DepSnapshot,
+    ),
+>;
 
 pub(crate) fn collect_external_satisfied_deps_cached(
     config: &StateEngineConfig,
@@ -129,14 +142,19 @@ pub(crate) fn collect_external_satisfied_deps_cached(
 
     for dep in &graph.dependencies {
         let requested = Path::new(&dep.depends_on_workspace);
-        let scoped = requested != Path::new(".") && owned.iter().any(|checkout| checkout == requested);
+        let scoped =
+            requested != Path::new(".") && owned.iter().any(|checkout| checkout == requested);
         let is_satisfied = if dep.satisfied && !scoped {
             true
         } else if dep.depends_on_run_id == graph.run.run_id {
             false
         } else {
             let key = (
-                if dep.depends_on_workspace == "." { config.worktree.clone() } else { PathBuf::new() },
+                if dep.depends_on_workspace == "." {
+                    config.worktree.clone()
+                } else {
+                    PathBuf::new()
+                },
                 dep.depends_on_workspace.clone(),
             );
             if !contexts.contains_key(&key) {
@@ -149,10 +167,7 @@ pub(crate) fn collect_external_satisfied_deps_cached(
                     resolve_observation_context(ws_path, &primary, &config, Some(owned))?;
                 let reader = SqliteStateReader::new(db_path);
                 let (snapshot, _) = load_dep_snapshot(&checkout, &collections, &reader)?;
-                contexts.insert(
-                    key.clone(),
-                    (checkout, reader, collections, snapshot),
-                );
+                contexts.insert(key.clone(), (checkout, reader, collections, snapshot));
             }
             let (checkout, reader, collections, snapshot) = &contexts[&key];
             let preloaded = snapshot.context();
@@ -350,12 +365,16 @@ fn resolve_archived_tombstone_task(
     preloaded: Option<&PreloadedDepContext<'_>>,
 ) -> Result<(), StateError> {
     if let Some(ctx) = preloaded {
-        let checkout_doc = latest.closed_commit.is_none().then(|| {
-            ctx.archived_specs
-                .values()
-                .find(|(rel, _)| rel == arch_rel)
-                .map(|(_, doc)| doc)
-        }).flatten();
+        let checkout_doc = latest
+            .closed_commit
+            .is_none()
+            .then(|| {
+                ctx.archived_specs
+                    .values()
+                    .find(|(rel, _)| rel == arch_rel)
+                    .map(|(_, doc)| doc)
+            })
+            .flatten();
         if let Some(doc) = checkout_doc {
             return archived_task_outcome(doc, arch_rel, t_ref, dep_label);
         }
@@ -369,7 +388,13 @@ fn resolve_archived_tombstone_task(
             };
         }
     }
-    verify_archived_task_completed(ws_path, arch_rel, latest.closed_commit.as_ref(), t_ref, dep_label)
+    verify_archived_task_completed(
+        ws_path,
+        arch_rel,
+        latest.closed_commit.as_ref(),
+        t_ref,
+        dep_label,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -416,10 +441,12 @@ pub(crate) fn resolve_dep_target(
     }
 
     if let Some(ctx) = preloaded {
-        return Ok(ctx.archived_specs.get(run_sel).map_or(
-            DepTargetResolution::NotFound,
-            |(path, doc)| archived_resolution(doc, path.clone(), task_sel),
-        ));
+        return Ok(ctx
+            .archived_specs
+            .get(run_sel)
+            .map_or(DepTargetResolution::NotFound, |(path, doc)| {
+                archived_resolution(doc, path.clone(), task_sel)
+            }));
     }
     let mut scratch_warnings = Vec::new();
     if let Some(found) = visit_archived_specs(
@@ -459,10 +486,7 @@ fn is_external_task_satisfied(
     } else {
         Some(target_task_ref.as_str())
     };
-    let persisted = preloaded
-        .runs
-        .iter()
-        .find(|r| r.run_id == *target_run_id);
+    let persisted = preloaded.runs.iter().find(|r| r.run_id == *target_run_id);
     let target = checkout_scoped_target_selector(persisted, target_run_id.as_str(), run_checkout);
     match resolve_dep_target(
         ws_path,

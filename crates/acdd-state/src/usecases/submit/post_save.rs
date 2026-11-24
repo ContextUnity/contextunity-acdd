@@ -1,11 +1,14 @@
 //! Post-save Git persistence (`save.post`) and container blackboard cleanup.
 
+use crate::context::slices::extract_predecessor_gate_proofs;
 use crate::git_ops::commit::{
     archive_spec_with_git, create_scoped_commit_with_expected, current_branch_name,
     current_head_commit, is_protected_main_branch, ArchiveCommitReq, ScopedCommitReq,
 };
 use crate::git_ops::snapshot::{save_task_snapshot, snapshot_prefix};
-use crate::git_ops::worktree::{cleanup_locked_refs, lock_cleanup_repos, try_lock_secondary_repo, RepoWorktreeLayout};
+use crate::git_ops::worktree::{
+    cleanup_locked_refs, lock_cleanup_repos, try_lock_secondary_repo, RepoWorktreeLayout,
+};
 use crate::machine::{plan_container_blackboard_cleanup, MachineGateDef};
 use crate::spec::{is_safe_path_segment_id, render_archive_markdown};
 use crate::store::traits::StateBackend;
@@ -14,10 +17,11 @@ use crate::types::{
     RunGraphSnapshot, SaveAction, TransitionPlan,
 };
 use crate::usecases::archive_notes::{build_archive_render_input, build_provisional_receipt};
-use crate::usecases::dto::SubmitReq;
-use crate::usecases::lifecycle::{compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout};
-use crate::context::slices::extract_predecessor_gate_proofs;
 use crate::usecases::config::StateEngineConfig;
+use crate::usecases::dto::SubmitReq;
+use crate::usecases::lifecycle::{
+    compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout,
+};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, is_normalized_relative};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, SubtaskRef, TreeOid};
@@ -51,15 +55,26 @@ pub(super) fn execute_post_save_git(
 ) -> Result<PersistPostSaveOutcome, StateError> {
     let should_commit = machine_gate.save.post == SaveAction::Commit;
     let should_snapshot = machine_gate.save.post == SaveAction::Snapshot;
-    let snapshot_task = node.task_ref.as_ref().filter(|_| should_snapshot || machine_gate.receipt);
-    let target = snapshot_task.map(|_| snapshot_worktree_layout(config, locked, target_worktree)).transpose()?;
+    let snapshot_task = node
+        .task_ref
+        .as_ref()
+        .filter(|_| should_snapshot || machine_gate.receipt);
+    let target = snapshot_task
+        .map(|_| snapshot_worktree_layout(config, locked, target_worktree))
+        .transpose()?;
     let repos = if snapshot_task.is_some() && machine_gate.receipt {
-        Some(lock_cleanup_repos(locked, config.linked_workspaces.values())?)
+        Some(lock_cleanup_repos(
+            locked,
+            config.linked_workspaces.values(),
+        )?)
     } else {
         None
     };
     let _guard = if repos.is_none() {
-        target.as_ref().map(|layout| try_lock_secondary_repo(locked, layout)).transpose()?
+        target
+            .as_ref()
+            .map(|layout| try_lock_secondary_repo(locked, layout))
+            .transpose()?
     } else {
         None
     };
@@ -82,7 +97,10 @@ pub(super) fn execute_post_save_git(
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!("save.report target '{}' must be a regular file", dest.display()),
+                    format!(
+                        "save.report target '{}' must be a regular file",
+                        dest.display()
+                    ),
                 ));
             }
             Ok(_) => {}
@@ -121,16 +139,8 @@ pub(super) fn execute_post_save_git(
         let original_raw = read_confined_utf8(target_worktree, spec_rel)
             .or_else(|_| read_confined_utf8(primary, spec_rel))?;
 
-        let provisional_receipt = build_provisional_receipt(
-            snapshot,
-            node,
-            machine_gate,
-            cursor,
-            current_tree,
-            None,
-            now_utc,
-            req,
-        );
+        let provisional_receipt =
+            build_provisional_receipt(snapshot, node, current_tree, None, now_utc, req)?;
         let blackboard_items = list_all_blackboard_items(config, backend, &snapshot.run.run_id)?;
         let render_input = build_archive_render_input(
             snapshot,
@@ -239,7 +249,14 @@ pub(super) fn execute_post_save_git(
             save_task_snapshot(target_worktree, &reference, expected_scoped_tree, false)?;
         }
         if machine_gate.receipt {
-            cleanup_locked_refs(repos.as_ref().expect("receipt repositories locked"), &snapshot.run.run_id, Some(prefix), None, None, None)?;
+            cleanup_locked_refs(
+                repos.as_ref().expect("receipt repositories locked"),
+                &snapshot.run.run_id,
+                Some(prefix),
+                None,
+                None,
+                None,
+            )?;
         }
     }
 
@@ -362,18 +379,18 @@ fn render_gate_report(
             .and_then(|rev| serde_json::to_value(rev).ok())
     });
     let predecessor_proofs = extract_predecessor_gate_proofs(snapshot, node);
-    let receipt = machine_gate.receipt.then(|| {
-        build_provisional_receipt(
+    let receipt = if machine_gate.receipt {
+        Some(build_provisional_receipt(
             snapshot,
             node,
-            machine_gate,
-            cursor,
             current_tree,
             committed_oid.cloned(),
             now_utc,
             req,
-        )
-    });
+        )?)
+    } else {
+        None
+    };
     let blackboard_items = list_all_blackboard_items(config, backend, &snapshot.run.run_id)?;
     let highlights: Vec<&BlackboardRecord> = blackboard_items
         .iter()
@@ -535,8 +552,7 @@ pub(super) fn attach_container_blackboard_cleanup(
     let all_items = list_all_blackboard_items(config, backend, &snapshot.run.run_id)?;
     let patches = plan_container_blackboard_cleanup(snapshot, container_id, &all_items);
 
-    let mut seen_patch_ids: BTreeSet<i64> =
-        plan.blackboard_patches.iter().map(|p| p.id).collect();
+    let mut seen_patch_ids: BTreeSet<i64> = plan.blackboard_patches.iter().map(|p| p.id).collect();
     for patch in patches {
         if seen_patch_ids.insert(patch.id) {
             plan.blackboard_patches.push(patch);
@@ -696,8 +712,10 @@ mod tests {
         let mut gate = MachineGateDef::minimal(GateId::new("deliver").expect("gate_id"));
         gate.receipt = true;
 
-        attach_container_blackboard_cleanup(&config, &backend, &snapshot, deliver, &gate, &mut plan)
-            .expect("cleanup pagination");
+        attach_container_blackboard_cleanup(
+            &config, &backend, &snapshot, deliver, &gate, &mut plan,
+        )
+        .expect("cleanup pagination");
 
         // All 105 drafts + 1 deferred container item are patched (> 100!).
         assert_eq!(plan.blackboard_patches.len(), 106);

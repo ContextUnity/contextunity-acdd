@@ -7,10 +7,10 @@ use super::schema::{
 use super::shell_template::{glob_specificity, validate_shell_template_placeholders};
 use super::when::WhenExpr;
 use crate::types::SaveAction;
-use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::ports::{is_builtin_mcp_tool, CompositeDomainProvider};
+use acdd_core::subsystems::SubsystemRegistry;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -86,13 +86,18 @@ pub fn validate_profile(
         if !is_subsystem_effectively_enabled(req, &profile.modules, opts.acdd_modules) {
             return Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
-                format!("required subsystem '{req}' is disabled in effective modules configuration"),
+                format!(
+                    "required subsystem '{req}' is disabled in effective modules configuration"
+                ),
             ));
         }
     }
 
     if profile.save == SaveAction::Snapshot {
-        return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "snapshot save is only allowed on leaf task gates"));
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            "snapshot save is only allowed on leaf task gates",
+        ));
     }
     validate_limits(&profile.limits)?;
     validate_protected_paths(profile)?;
@@ -104,7 +109,13 @@ pub fn validate_profile(
     let providers = opts.domain_providers.unwrap_or(&empty_providers);
 
     for tool in &profile.default_tools {
-        validate_tool_name(tool, &profile.modules, opts.acdd_modules, providers, "default_tools")?;
+        validate_tool_name(
+            tool,
+            &profile.modules,
+            opts.acdd_modules,
+            providers,
+            "default_tools",
+        )?;
     }
 
     let task_gate_ids = collect_all_task_gate_ids(&profile.gates);
@@ -113,7 +124,6 @@ pub fn validate_profile(
         &profile.gates,
         GateScopeKind::Root,
         &task_gate_ids,
-        providers,
         opts,
     )?;
 
@@ -179,7 +189,8 @@ fn validate_proof_catalog(profile: &ResolvedGateProfile) -> Result<(), StateErro
                 format!("proof catalog entry '{name}' uses a reserved or legacy proof name"),
             ));
         }
-        def.schema.validate_schema(&format!("proofs.{name}.schema"))?;
+        def.schema
+            .validate_schema(&format!("proofs.{name}.schema"))?;
     }
     Ok(())
 }
@@ -263,11 +274,7 @@ fn validate_commands(profile: &ResolvedGateProfile) -> Result<(), StateError> {
                             format!("{path}.timeout_seconds must be > 0"),
                         ));
                     }
-                    validate_command_string(
-                        &entry.command,
-                        entry.test_filter.as_ref(),
-                        &path,
-                    )?;
+                    validate_command_string(&entry.command, entry.test_filter.as_ref(), &path)?;
                     validate_scope_args_map(
                         &entry.scope_args_by_pattern,
                         &format!("{path}.scope_args_by_pattern"),
@@ -357,7 +364,6 @@ fn validate_gate_container(
     gates: &[GateDef],
     scope_kind: GateScopeKind,
     task_gate_ids: &BTreeSet<String>,
-    providers: &CompositeDomainProvider,
     opts: &ProfileValidationOptions<'_>,
 ) -> Result<(), StateError> {
     let mut sibling_ids = BTreeSet::new();
@@ -382,9 +388,17 @@ fn validate_gate_container(
 
     for gate in gates {
         if gate.save.post == Some(SaveAction::Snapshot)
-            && (scope_kind != GateScopeKind::TaskGate || gate.is_tasks_block() || !gate.gates.is_empty())
+            && (scope_kind != GateScopeKind::TaskGate
+                || gate.is_tasks_block()
+                || !gate.gates.is_empty())
         {
-            return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, format!("gate '{}': snapshot save is only allowed on leaf task gates", gate.id)));
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!(
+                    "gate '{}': snapshot save is only allowed on leaf task gates",
+                    gate.id
+                ),
+            ));
         }
         if let Some(tb) = &gate.tasks {
             if scope_kind != GateScopeKind::Root {
@@ -423,7 +437,6 @@ fn validate_gate_container(
                 &tb.gates,
                 GateScopeKind::TaskGate,
                 task_gate_ids,
-                providers,
                 opts,
             )?;
             continue;
@@ -460,14 +473,7 @@ fn validate_gate_container(
                 }
                 GateScopeKind::TaskGate => GateScopeKind::TaskGate,
             };
-            validate_gate_container(
-                profile,
-                &gate.gates,
-                child_kind,
-                task_gate_ids,
-                providers,
-                opts,
-            )?;
+            validate_gate_container(profile, &gate.gates, child_kind, task_gate_ids, opts)?;
         }
 
         validate_single_gate(
@@ -477,7 +483,6 @@ fn validate_gate_container(
             is_container,
             &sibling_ids,
             task_gate_ids,
-            providers,
             opts,
         )?;
     }
@@ -529,7 +534,6 @@ fn validate_gate_transitions(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_single_gate(
     profile: &ResolvedGateProfile,
     gate: &GateDef,
@@ -537,9 +541,10 @@ fn validate_single_gate(
     is_container: bool,
     sibling_ids: &BTreeSet<String>,
     task_gate_ids: &BTreeSet<String>,
-    providers: &CompositeDomainProvider,
     opts: &ProfileValidationOptions<'_>,
 ) -> Result<(), StateError> {
+    let empty_providers = CompositeDomainProvider::default();
+    let providers = opts.domain_providers.unwrap_or(&empty_providers);
     let ctx = format!("gate '{}'", gate.id);
 
     if gate.max_attempts < 1 {
@@ -576,7 +581,14 @@ fn validate_single_gate(
     }
 
     for sel in &gate.need {
-        validate_gate_selector(sel, &gate.id, scope_kind, sibling_ids, task_gate_ids, "need")?;
+        validate_gate_selector(
+            sel,
+            &gate.id,
+            scope_kind,
+            sibling_ids,
+            task_gate_ids,
+            "need",
+        )?;
     }
     for sel in &gate.independent_from {
         validate_gate_selector(
@@ -781,7 +793,9 @@ fn validate_gate_selector(
             if scope_kind != GateScopeKind::Root {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!("gate '{self_id}': '{field}' selector '{sel}' is only valid on root gates"),
+                    format!(
+                        "gate '{self_id}': '{field}' selector '{sel}' is only valid on root gates"
+                    ),
                 ));
             }
             let leaf = parts.last().map(|g| g.as_str()).unwrap_or("");
@@ -941,7 +955,6 @@ fn ensure_domain_enabled(
     Ok(())
 }
 
-
 /// Resolve a `CommandDef` into deduplicated invocations for `scope_paths`.
 ///
 /// For `CommandDef::Pattern`, scope paths are sorted lexicographically, each path selects the
@@ -1056,7 +1069,12 @@ pub fn resolve_and_budget_guidance(
         guidance_bytes += text.len();
         rendered.push(text);
     }
-    check_guidance_budget(contract_bytes, guidance_bytes, &profile.limits, response_max_bytes)?;
+    check_guidance_budget(
+        contract_bytes,
+        guidance_bytes,
+        &profile.limits,
+        response_max_bytes,
+    )?;
     Ok(rendered)
 }
 

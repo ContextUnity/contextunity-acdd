@@ -2,30 +2,30 @@
 
 use crate::git_ops::commit::find_claim_commit_in_range;
 use crate::git_ops::snapshot::current_scope_tree;
-use acdd_core::git::read_git_blob_utf8;
 use crate::git_ops::worktree::RepoWorktreeLayout;
-use crate::machine::{
-    MachineGateDef, MachineProfileInput,
-};
+use crate::machine::{MachineGateDef, MachineProfileInput};
 use crate::observability::build_completed_run_digest;
-use crate::spec::{parse_spec, render_archive_markdown, ArchiveTaskUpdate, SpecDocument, SpecStatus};
+use crate::spec::{
+    parse_spec, render_archive_markdown, ArchiveTaskUpdate, SpecDocument, SpecStatus,
+};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    GateNodeRecord, NodeStatus, NodeVersionExpectation,
-    RunGraphSnapshot, RunTombstoneRecord, SaveAction, StoragePreconditions, TerminalStatus, TransitionPlan,
+    GateNodeRecord, NodeStatus, NodeVersionExpectation, RunGraphSnapshot, RunTombstoneRecord,
+    SaveAction, StoragePreconditions, TerminalStatus, TransitionPlan,
 };
 use crate::usecases::archive_notes::{build_archive_render_input, build_provisional_receipt};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
     build_tombstone_cleanup_manifest_from_snapshot, compute_archive_relpath, read_confined_utf8,
     resume_pending_tombstone_cleanups_dyn,
 };
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
-use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
+use acdd_core::git::read_git_blob_utf8;
+use acdd_core::ids::{CommitOid, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,21 +40,21 @@ pub(super) struct RecoveredArchiveGitState {
     pub(super) current_tree: TreeOid,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn probe_interrupted_archive(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    target_worktree: &Path,
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
     machine_gate: &MachineGateDef,
-    cursor: &NodeCursor,
     req: &SubmitReq,
     policy: &WorkspacePathPolicy,
 ) -> Result<Option<RecoveredArchiveGitState>, StateError> {
     if !machine_gate.save.archive || snapshot.run.is_ephemeral {
         return Ok(None);
     }
+    let target_worktree =
+        super::resolve_node_worktree(config, &snapshot.run, node, req.worktree.as_deref());
+    let target_worktree = target_worktree.as_path();
     let Some(ref spec_rel) = snapshot.run.spec_path else {
         return Ok(None);
     };
@@ -232,16 +232,8 @@ pub(super) fn probe_interrupted_archive(
         }
     }
 
-    let provisional = build_provisional_receipt(
-        snapshot,
-        node,
-        machine_gate,
-        cursor,
-        &current_tree,
-        None,
-        &closure.closed_at,
-        req,
-    );
+    let provisional =
+        build_provisional_receipt(snapshot, node, &current_tree, None, &closure.closed_at, req)?;
     let blackboard_items = list_all_blackboard_items(config, backend, &snapshot.run.run_id)?;
     let render_input = build_archive_render_input(
         snapshot,
@@ -378,8 +370,11 @@ fn load_spec_for_tombstone(
 }
 
 fn is_git_tracked(worktree: &Path, rel_path: &str) -> bool {
-    acdd_core::git::git_command(worktree, &["ls-files", "--cached", "--error-unmatch", "--", rel_path])
-        .is_ok_and(|out| out.status.success())
+    acdd_core::git::git_command(
+        worktree,
+        &["ls-files", "--cached", "--error-unmatch", "--", rel_path],
+    )
+    .is_ok_and(|out| out.status.success())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -395,7 +390,8 @@ pub(super) fn finalize_with_prune(
     closed_commit: Option<CommitOid>,
     now_utc: &str,
 ) -> Result<(), StateError> {
-    let mut cleanup_manifest = build_tombstone_cleanup_manifest_from_snapshot(config, snapshot, primary);
+    let mut cleanup_manifest =
+        build_tombstone_cleanup_manifest_from_snapshot(config, snapshot, primary);
     if archive_path.is_none() {
         cleanup_manifest.retain(|e| e.kind != "spec_file");
     } else if let Some(ref spec_rel) = snapshot.run.spec_path {
@@ -404,7 +400,10 @@ pub(super) fn finalize_with_prune(
         // When an isolated worktree run archived via a commit (`closed_commit`), never delete a
         // Git-tracked `spec_rel` from `primary` before the run branch is merged — doing so leaves
         // `main` dirty with an unstaged deletion (`D <spec_rel>`).
-        if closed_commit.is_some() && canon_target != canon_primary && is_git_tracked(primary, spec_rel) {
+        if closed_commit.is_some()
+            && canon_target != canon_primary
+            && is_git_tracked(primary, spec_rel)
+        {
             cleanup_manifest.retain(|e| !(e.kind == "spec_file" && e.workspace.is_none()));
         }
         // Only remove UNTRACKED `spec_rel` copies from managed worktrees before `git worktree remove`.
@@ -420,7 +419,8 @@ pub(super) fn finalize_with_prune(
             candidate_wts.push(canon_target);
         }
         for wt_path in candidate_wts {
-            let should_remove = checked_child(&wt_path, Path::new(spec_rel)).is_ok_and(|p| p.exists())
+            let should_remove = checked_child(&wt_path, Path::new(spec_rel))
+                .is_ok_and(|p| p.exists())
                 && (closed_commit.is_none() || !is_git_tracked(&wt_path, spec_rel));
             if should_remove {
                 let canon_ws = acdd_core::fs::canonicalize_macos_var(&wt_path)

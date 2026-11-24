@@ -46,7 +46,6 @@ pub(crate) fn handle_roadmap(
     let graph = build_dependency_graph(
         &discovered,
         &primary_canon,
-        &collections,
         config,
         reader,
         &active_runs_by_spec,

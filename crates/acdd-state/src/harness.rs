@@ -16,7 +16,9 @@ use crate::types::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::ScopedTempDir;
-use acdd_core::ids::{CommitOid, GateId, GateSelector, RunId, RunName, SubtaskRef, TaskRef, TreeOid};
+use acdd_core::ids::{
+    CommitOid, GateId, GateSelector, RunId, RunName, SubtaskRef, TaskRef, TreeOid,
+};
 use acdd_core::schema::SchemaDef;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -51,7 +53,7 @@ impl RunHarness {
     pub fn on_disk(spec_collection_paths: Vec<String>) -> Result<Self, StateError> {
         let temp_guard = ScopedTempDir::create("acdd-state-harness").map_err(|err| {
             StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::ExternalGitDrift,
                 format!("failed to create RunHarness tempdir: {err}"),
             )
         })?;
@@ -60,13 +62,13 @@ impl RunHarness {
         let backup_dir = root.join("git-common/acdd");
         std::fs::create_dir_all(&workspace_root).map_err(|err| {
             StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::ExternalGitDrift,
                 format!("failed to create harness workspace dir: {err}"),
             )
         })?;
         std::fs::create_dir_all(&backup_dir).map_err(|err| {
             StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::ExternalGitDrift,
                 format!("failed to create harness backup dir: {err}"),
             )
         })?;
@@ -581,9 +583,9 @@ mod tests {
         StoragePreconditions, SubtaskRecord, SubtaskStatus, TerminalStatus, TraceFinishInput,
         TraceStartInput, TraceStatus, TransitionPlan,
     };
+    use acdd_core::git::git_command;
     use acdd_core::ids::{SubtaskRef, WorkerId};
     use std::fs;
-    use acdd_core::git::git_command;
 
     fn oid_tree(ch: char) -> TreeOid {
         TreeOid::new(ch.to_string().repeat(40)).unwrap()
@@ -612,7 +614,10 @@ mod tests {
         let mem = MemoryStateBackend::new().unwrap();
         let tables = mem.table_names().unwrap();
         for domain in DOMAIN_TABLES {
-            assert!(tables.contains(&domain.to_owned()), "missing table {domain}");
+            assert!(
+                tables.contains(&domain.to_owned()),
+                "missing table {domain}"
+            );
         }
         assert!(tables.contains(&"_sqlite_meta".to_owned()));
         assert!(!tables.contains(&"op_intents".to_owned()));
@@ -853,7 +858,11 @@ mod tests {
             NodeStatus::Stale
         );
         assert_eq!(
-            harness.latest_claim(&rid, t1_build).unwrap().unwrap().outcome,
+            harness
+                .latest_claim(&rid, t1_build)
+                .unwrap()
+                .unwrap()
+                .outcome,
             ClaimOutcome::Reopened
         );
 
@@ -1219,7 +1228,13 @@ mod tests {
             })
             .unwrap();
         assert!(harness.load_run_graph(&rid).unwrap().is_none());
-        assert!(!harness.load_tombstone(&rid).unwrap().unwrap().cleanup_pending);
+        assert!(
+            !harness
+                .load_tombstone(&rid)
+                .unwrap()
+                .unwrap()
+                .cleanup_pending
+        );
         assert_eq!(
             harness.max_spec_number("milestones", "AC").unwrap(),
             Some(2)
@@ -1246,7 +1261,13 @@ mod tests {
                 .load_run_graph(&RunId::new("run-1").unwrap())
                 .unwrap()
                 .is_none());
-            assert_eq!(ro_missing.list_runs(&ListRunsReq::default()).unwrap().total_runs, 0);
+            assert_eq!(
+                ro_missing
+                    .list_runs(&ListRunsReq::default())
+                    .unwrap()
+                    .total_runs,
+                0
+            );
             assert_eq!(ro_missing.observability_snapshot().unwrap().active_runs, 0);
             assert!(!missing_db.exists());
             assert!(!root.join("never-created").exists());
@@ -1275,10 +1296,12 @@ mod tests {
             let ws = root.join("repo");
             fs::create_dir_all(ws.join("docs/milestones/archive")).unwrap();
             assert!(git_command(&ws, &["init"]).unwrap().status.success());
-            assert!(git_command(&ws, &["config", "user.email", "test@example.com"])
-                .unwrap()
-                .status
-                .success());
+            assert!(
+                git_command(&ws, &["config", "user.email", "test@example.com"])
+                    .unwrap()
+                    .status
+                    .success()
+            );
             assert!(git_command(&ws, &["config", "user.name", "Test"])
                 .unwrap()
                 .status
@@ -1312,9 +1335,15 @@ mod tests {
             // Verify PRAGMAs on both writer and read-only reader
             backend
                 .inspect_writer(|conn| {
-                    let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
-                    let jm: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
-                    let sync: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+                    let fk: i64 = conn
+                        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                        .unwrap();
+                    let jm: String = conn
+                        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                        .unwrap();
+                    let sync: i64 = conn
+                        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+                        .unwrap();
                     assert_eq!(fk, 1);
                     assert_eq!(jm.to_ascii_lowercase(), "wal");
                     assert_eq!(sync, 1); // NORMAL
@@ -1323,8 +1352,12 @@ mod tests {
                 .unwrap();
             backend
                 .inspect_read_only(|conn| {
-                    let qo: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0)).unwrap();
-                    let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+                    let qo: i64 = conn
+                        .query_row("PRAGMA query_only", [], |r| r.get(0))
+                        .unwrap();
+                    let fk: i64 = conn
+                        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                        .unwrap();
                     assert_eq!(qo, 1);
                     assert_eq!(fk, 1);
                     Ok(())

@@ -332,11 +332,11 @@ pub fn generate_run_id(prefix: &str) -> Result<RunId, StateError> {
 
 /// Collect `TaskIntegrationCheckInput` descriptors for all completed tasks in `snapshot`.
 pub fn collect_integration_inputs(snapshot: &RunGraphSnapshot) -> Vec<TaskIntegrationCheckInput> {
-    let completed_tasks: BTreeMap<TaskRef, &GateNodeRecord> = snapshot
+    let completed_tasks: BTreeMap<&TaskRef, &GateNodeRecord> = snapshot
         .nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Task && n.status == NodeStatus::Completed)
-        .filter_map(|n| n.task_ref.as_ref().map(|tr| (tr.clone(), n)))
+        .filter_map(|n| n.task_ref.as_ref().map(|tr| (tr, n)))
         .collect();
 
     let mut out = Vec::new();
@@ -350,11 +350,11 @@ pub fn collect_integration_inputs(snapshot: &RunGraphSnapshot) -> Vec<TaskIntegr
         let mut downstream = Vec::new();
         for other_ref in completed_tasks.keys() {
             if other_ref != tref && is_transitively_dependent(snapshot, other_ref, tref) {
-                downstream.push(other_ref.clone());
+                downstream.push((*other_ref).clone());
             }
         }
         out.push(TaskIntegrationCheckInput {
-            task_ref: tref.clone(),
+            task_ref: (*tref).clone(),
             initial_claim_tree: initial_claim_tree.clone(),
             accepted_tree: accepted_tree.clone(),
             admitted_scope: container_scope(snapshot, task_node),
@@ -364,23 +364,23 @@ pub fn collect_integration_inputs(snapshot: &RunGraphSnapshot) -> Vec<TaskIntegr
     out
 }
 
-fn is_transitively_dependent(
-    snapshot: &RunGraphSnapshot,
-    candidate_downstream: &TaskRef,
-    ancestor: &TaskRef,
+fn is_transitively_dependent<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    candidate_downstream: &'a TaskRef,
+    ancestor: &'a TaskRef,
 ) -> bool {
-    let mut visited = BTreeSet::new();
-    let mut stack = vec![candidate_downstream.clone()];
+    let mut visited: BTreeSet<&TaskRef> = BTreeSet::new();
+    let mut stack = vec![candidate_downstream];
     while let Some(cur) = stack.pop() {
-        if !visited.insert(cur.clone()) {
+        if !visited.insert(cur) {
             continue;
         }
         for dep in &snapshot.dependencies {
-            if dep.task_ref == cur && dep.depends_on_run_id == snapshot.run.run_id {
+            if dep.task_ref == *cur && dep.depends_on_run_id == snapshot.run.run_id {
                 if &dep.depends_on_ref == ancestor {
                     return true;
                 }
-                stack.push(dep.depends_on_ref.clone());
+                stack.push(&dep.depends_on_ref);
             }
         }
     }

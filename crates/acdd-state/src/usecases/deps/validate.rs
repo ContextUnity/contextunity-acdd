@@ -55,11 +55,195 @@ pub fn validate_spec_dependencies(
     let local_primary = acdd_core::git::primary_worktree_root(&local_checkout)
         .unwrap_or_else(|| local_checkout.clone());
     let local_db = resolve_effective_state_db_path(&local_primary, state_db_override, adapter);
-    let mut contexts = ValidationContexts {
-        local_checkout,
-        local_primary,
-        local_db,
-        workspaces: BTreeMap::new(),
+    let mut workspaces = BTreeMap::new();
+    let mut validate_external_dep_ref = |local_reader: Option<&dyn StateReader>,
+                                         trimmed: &str,
+                                         require_task: bool|
+     -> Result<(), StateError> {
+        let primary_collections = &adapter.specs;
+        let self_spec_id = doc.id.as_str();
+        let (alias, run_and_task) = trimmed.split_once('/').unwrap_or(("", trimmed));
+        if !workspaces.contains_key(alias) {
+            let ws_path = if alias.is_empty() {
+                local_checkout.clone()
+            } else {
+                resolve_linked_workspace_root(alias, trimmed, &linked_workspaces, &spec_repos)?
+            };
+            let is_primary = ws_path == local_checkout;
+            let (db, collections) = if is_primary {
+                (local_db.clone(), primary_collections.clone())
+            } else {
+                resolve_ws_context_canon(&ws_path, Some((&local_primary, &local_db)))?
+            };
+            let active = if is_primary {
+                active_specs.to_vec()
+            } else {
+                let scan = collect_workspace_specs(&ws_path, &collections);
+                if let Some(first_err) = scan.errors.into_iter().next() {
+                    return Err(StateError::new(first_err.code, first_err.message));
+                }
+                scan.specs.into_iter().map(|s| s.doc).collect()
+            };
+            let owned_reader = SqliteStateReader::new(&db);
+            let reader = local_reader
+                .filter(|_| db == local_db)
+                .unwrap_or(&owned_reader);
+            let (snapshot, _) = load_dep_snapshot(&ws_path, &collections, reader)?;
+            let checkout_scoped = !alias.is_empty()
+                && acdd_core::git::primary_worktree_root(&ws_path).as_deref()
+                    == Some(&local_primary);
+            workspaces.insert(
+                alias.to_owned(),
+                ValidationWorkspace {
+                    path: ws_path,
+                    db,
+                    collections,
+                    active,
+                    snapshot,
+                    checkout_scoped,
+                },
+            );
+        }
+        let workspace = &workspaces[alias];
+        let ws_path = &workspace.path;
+        let is_primary = *ws_path == local_checkout;
+
+        let (run_sel, task_sel) = match run_and_task.split_once(':') {
+            Some((r, t)) => {
+                if r.trim().is_empty() {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!("dependency '{trimmed}' is missing target run or spec ID"),
+                    ));
+                }
+                let _ = TaskRef::new(t)?;
+                (r.trim(), Some(t))
+            }
+            None => {
+                if require_task {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!("task dependency '{trimmed}' must specify ':<task_ref>'"),
+                    ));
+                }
+                (run_and_task.trim(), None)
+            }
+        };
+
+        if is_primary && run_sel == self_spec_id {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("spec '{self_spec_id}' cannot depend on itself via '{trimmed}'"),
+            ));
+        }
+
+        let owned_reader = SqliteStateReader::new(&workspace.db);
+        let reader = local_reader
+            .filter(|_| workspace.db == local_db)
+            .unwrap_or(&owned_reader);
+        let preloaded = workspace.snapshot.context();
+
+        match resolve_dep_target(
+            ws_path,
+            &workspace.collections,
+            Some(reader),
+            Some(&workspace.active),
+            run_sel,
+            task_sel,
+            trimmed,
+            workspace.checkout_scoped.then_some(ws_path.as_path()),
+            Some(&preloaded),
+        )? {
+            DepTargetResolution::ActiveSpec {
+                cancelled,
+                task_exists,
+            } => {
+                if cancelled {
+                    return Err(StateError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!("dependency '{trimmed}' targets cancelled spec '{run_sel}'"),
+                    ));
+                }
+                if let Some(t_ref) = task_sel {
+                    if !task_exists {
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "dependency '{trimmed}' references unknown task '{t_ref}' in spec '{run_sel}'"
+                            ),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            DepTargetResolution::ActiveRun {
+                run_id,
+                task_exists,
+                ..
+            } => {
+                if let Some(t_ref) = task_sel {
+                    if !task_exists {
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "dependency '{trimmed}' references unknown task '{t_ref}' in active run '{run_id}'"
+                            ),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            DepTargetResolution::Tombstone {
+                cleared,
+                task_outcome,
+            } => {
+                if cleared {
+                    return Err(StateError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!(
+                            "dependency '{trimmed}' targets cleared run (terminal_status='cleared')"
+                        ),
+                    ));
+                }
+                task_outcome
+            }
+            DepTargetResolution::ArchivedSpec {
+                rel_path,
+                completed_doc,
+                task_exists,
+                task_completed,
+            } => {
+                if !completed_doc {
+                    return Err(StateError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!(
+                            "dependency '{trimmed}' targets non-completed archive '{rel_path}'"
+                        ),
+                    ));
+                }
+                if let Some(t_ref) = task_sel {
+                    if !task_exists {
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "dependency '{trimmed}' references unknown task '{t_ref}' in archive '{rel_path}'"
+                            ),
+                        ));
+                    }
+                    if !task_completed {
+                        return Err(StateError::new(
+                            ErrorCode::GateVerificationFailed,
+                            format!("dependency '{trimmed}' task '{t_ref}' is not completed"),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            DepTargetResolution::NotFound => Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("dependency '{trimmed}' target '{run_sel}' was not found"),
+            )),
+        }
     };
 
     // 1. Validate intra-spec task DAG and external task.depends_on entries.
@@ -83,18 +267,7 @@ pub fn validate_spec_dependencies(
             }
             if trimmed.contains(':') || trimmed.contains('/') {
                 let require_task = trimmed.contains(':');
-                if let Err(err) = validate_external_dep_ref(
-                    root,
-                    adapter,
-                    local_reader,
-                    &linked_workspaces,
-                    &spec_repos,
-                    active_specs,
-                    &doc.id,
-                    trimmed,
-                    require_task,
-                    &mut contexts,
-                ) {
+                if let Err(err) = validate_external_dep_ref(local_reader, trimmed, require_task) {
                     issues.push(DepValidationIssue::new(err.code, err.to_string()));
                 }
                 continue;
@@ -102,7 +275,10 @@ pub fn validate_spec_dependencies(
             if let Err(err) = TaskRef::new(trimmed) {
                 issues.push(DepValidationIssue::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!("task '{}' depends_on '{trimmed}' is invalid: {err}", t.task_ref),
+                    format!(
+                        "task '{}' depends_on '{trimmed}' is invalid: {err}",
+                        t.task_ref
+                    ),
                 ));
                 continue;
             }
@@ -114,18 +290,7 @@ pub fn validate_spec_dependencies(
                 continue;
             }
             if !task_refs.contains(trimmed) {
-                if let Err(err) = validate_external_dep_ref(
-                    root,
-                    adapter,
-                    local_reader,
-                    &linked_workspaces,
-                    &spec_repos,
-                    active_specs,
-                    &doc.id,
-                    trimmed,
-                    false,
-                    &mut contexts,
-                ) {
+                if let Err(err) = validate_external_dep_ref(local_reader, trimmed, false) {
                     issues.push(DepValidationIssue::new(
                         err.code,
                         format!(
@@ -177,18 +342,7 @@ pub fn validate_spec_dependencies(
             ));
             continue;
         }
-        if let Err(err) = validate_external_dep_ref(
-            root,
-            adapter,
-            local_reader,
-            &linked_workspaces,
-            &spec_repos,
-            active_specs,
-            &doc.id,
-            trimmed,
-            false,
-            &mut contexts,
-        ) {
+        if let Err(err) = validate_external_dep_ref(local_reader, trimmed, false) {
             issues.push(DepValidationIssue::new(err.code, err.to_string()));
         }
     }
@@ -196,7 +350,10 @@ pub fn validate_spec_dependencies(
     if has_cross_spec_cycle(root, &linked_workspaces, doc, active_specs) {
         issues.push(DepValidationIssue::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("spec '{}' depends_on forms a cross-spec dependency cycle", doc.id),
+            format!(
+                "spec '{}' depends_on forms a cross-spec dependency cycle",
+                doc.id
+            ),
         ));
     }
 
@@ -233,15 +390,15 @@ fn parse_dep_node(
     if trimmed.is_empty() {
         return None;
     }
-    let (target_ws, target_str, allow_bare) = if let Some((ws_alias, rest)) = trimmed.split_once('/')
-    {
-        let resolved =
-            resolve_linked_workspace_root(ws_alias, trimmed, ws_linked, spec_repos).ok()?;
-        let canon = canonical_root(&resolved).unwrap_or(resolved);
-        (canon, rest.trim(), false)
-    } else {
-        (current_ws.to_path_buf(), trimmed, allow_bare_task)
-    };
+    let (target_ws, target_str, allow_bare) =
+        if let Some((ws_alias, rest)) = trimmed.split_once('/') {
+            let resolved =
+                resolve_linked_workspace_root(ws_alias, trimmed, ws_linked, spec_repos).ok()?;
+            let canon = canonical_root(&resolved).unwrap_or(resolved);
+            (canon, rest.trim(), false)
+        } else {
+            (current_ws.to_path_buf(), trimmed, allow_bare_task)
+        };
     if target_str.is_empty() {
         return None;
     }
@@ -448,211 +605,4 @@ struct ValidationWorkspace {
     active: Vec<SpecDocument>,
     snapshot: DepSnapshot,
     checkout_scoped: bool,
-}
-
-struct ValidationContexts {
-    local_checkout: PathBuf,
-    local_primary: PathBuf,
-    local_db: PathBuf,
-    workspaces: BTreeMap<String, ValidationWorkspace>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn validate_external_dep_ref(
-    _primary_root: &Path,
-    primary_adapter: &Adapter,
-    local_reader: Option<&dyn StateReader>,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
-    spec_repos: &BTreeMap<String, PathBuf>,
-    primary_active_specs: &[SpecDocument],
-    self_spec_id: &str,
-    trimmed: &str,
-    require_task: bool,
-    contexts: &mut ValidationContexts,
-) -> Result<(), StateError> {
-    let (alias, run_and_task) = trimmed.split_once('/').unwrap_or(("", trimmed));
-    if !contexts.workspaces.contains_key(alias) {
-        let ws_path = if alias.is_empty() {
-            contexts.local_checkout.clone()
-        } else {
-            resolve_linked_workspace_root(alias, trimmed, linked_workspaces, spec_repos)?
-        };
-        let is_primary = ws_path == contexts.local_checkout;
-        let (db, collections) = if is_primary {
-            (contexts.local_db.clone(), primary_adapter.specs.clone())
-        } else {
-            resolve_ws_context_canon(
-                &ws_path,
-                Some((&contexts.local_primary, &contexts.local_db)),
-            )?
-        };
-        let active = if is_primary {
-            primary_active_specs.to_vec()
-        } else {
-            let scan = collect_workspace_specs(&ws_path, &collections);
-            if let Some(first_err) = scan.errors.into_iter().next() {
-                return Err(StateError::new(first_err.code, first_err.message));
-            }
-            scan.specs.into_iter().map(|s| s.doc).collect()
-        };
-        let owned_reader = SqliteStateReader::new(&db);
-        let reader = local_reader
-            .filter(|_| db == contexts.local_db)
-            .unwrap_or(&owned_reader);
-        let (snapshot, _) = load_dep_snapshot(&ws_path, &collections, reader)?;
-        let checkout_scoped = !alias.is_empty()
-            && acdd_core::git::primary_worktree_root(&ws_path).as_deref()
-                == Some(&contexts.local_primary);
-        contexts.workspaces.insert(
-            alias.to_owned(),
-            ValidationWorkspace {
-                path: ws_path,
-                db,
-                collections,
-                active,
-                snapshot,
-                checkout_scoped,
-            },
-        );
-    }
-    let workspace = &contexts.workspaces[alias];
-    let ws_path = &workspace.path;
-    let is_primary = *ws_path == contexts.local_checkout;
-
-    let (run_sel, task_sel) = match run_and_task.split_once(':') {
-        Some((r, t)) => {
-            if r.trim().is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("dependency '{trimmed}' is missing target run or spec ID"),
-                ));
-            }
-            let _ = TaskRef::new(t)?;
-            (r.trim(), Some(t))
-        }
-        None => {
-            if require_task {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("task dependency '{trimmed}' must specify ':<task_ref>'"),
-                ));
-            }
-            (run_and_task.trim(), None)
-        }
-    };
-
-    if is_primary && run_sel == self_spec_id {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("spec '{self_spec_id}' cannot depend on itself via '{trimmed}'"),
-        ));
-    }
-
-    let owned_reader = SqliteStateReader::new(&workspace.db);
-    let reader = local_reader
-        .filter(|_| workspace.db == contexts.local_db)
-        .unwrap_or(&owned_reader);
-    let preloaded = workspace.snapshot.context();
-
-    match resolve_dep_target(
-        ws_path,
-        &workspace.collections,
-        Some(reader),
-        Some(&workspace.active),
-        run_sel,
-        task_sel,
-        trimmed,
-        workspace.checkout_scoped.then_some(ws_path.as_path()),
-        Some(&preloaded),
-    )? {
-        DepTargetResolution::ActiveSpec {
-            cancelled,
-            task_exists,
-        } => {
-            if cancelled {
-                return Err(StateError::new(
-                    ErrorCode::GateVerificationFailed,
-                    format!("dependency '{trimmed}' targets cancelled spec '{run_sel}'"),
-                ));
-            }
-            if let Some(t_ref) = task_sel {
-                if !task_exists {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "dependency '{trimmed}' references unknown task '{t_ref}' in spec '{run_sel}'"
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        }
-        DepTargetResolution::ActiveRun {
-            run_id,
-            task_exists,
-            ..
-        } => {
-            if let Some(t_ref) = task_sel {
-                if !task_exists {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "dependency '{trimmed}' references unknown task '{t_ref}' in active run '{run_id}'"
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        }
-        DepTargetResolution::Tombstone {
-            cleared,
-            task_outcome,
-        } => {
-            if cleared {
-                return Err(StateError::new(
-                    ErrorCode::GateVerificationFailed,
-                    format!(
-                        "dependency '{trimmed}' targets cleared run (terminal_status='cleared')"
-                    ),
-                ));
-            }
-            task_outcome
-        }
-        DepTargetResolution::ArchivedSpec {
-            rel_path,
-            completed_doc,
-            task_exists,
-            task_completed,
-        } => {
-            if !completed_doc {
-                return Err(StateError::new(
-                    ErrorCode::GateVerificationFailed,
-                    format!(
-                        "dependency '{trimmed}' targets non-completed archive '{rel_path}'"
-                    ),
-                ));
-            }
-            if let Some(t_ref) = task_sel {
-                if !task_exists {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "dependency '{trimmed}' references unknown task '{t_ref}' in archive '{rel_path}'"
-                        ),
-                    ));
-                }
-                if !task_completed {
-                    return Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!("dependency '{trimmed}' task '{t_ref}' is not completed"),
-                    ));
-                }
-            }
-            Ok(())
-        }
-        DepTargetResolution::NotFound => Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("dependency '{trimmed}' target '{run_sel}' was not found"),
-        )),
-    }
 }

@@ -376,14 +376,14 @@ pub(super) fn apply_tier5_blackboard(
 
 fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
     let mut combined = Vec::new();
-    let mut seen = BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     for path in &req.node.scope {
-        if seen.insert(path.clone()) {
+        if seen.insert(path.as_str()) {
             combined.push(path.clone());
         }
     }
     for ext in &req.node.extended_scope {
-        if seen.insert(ext.path.clone()) {
+        if seen.insert(ext.path.as_str()) {
             combined.push(ext.path.clone());
         }
     }
@@ -391,12 +391,12 @@ fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
         if let (Some(tref), Some(spec)) = (&req.node.task_ref, &req.spec) {
             if let Some(task) = spec.tasks.iter().find(|t| &t.task_ref == tref) {
                 for path in &task.scope {
-                    if seen.insert(path.clone()) {
+                    if seen.insert(path.as_str()) {
                         combined.push(path.clone());
                     }
                 }
                 for ext in &task.extended_scope {
-                    if seen.insert(ext.path.clone()) {
+                    if seen.insert(ext.path.as_str()) {
                         combined.push(ext.path.clone());
                     }
                 }

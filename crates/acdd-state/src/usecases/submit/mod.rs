@@ -16,32 +16,29 @@ use crate::git_ops::worktree::RepoWorktreeLayout;
 use crate::machine::graph::is_post_task_root_node;
 use crate::machine::verify::detect_scope_violations;
 use crate::machine::{
-    container_scope, evaluate_submit, MachineProfileInput,
-    SubmitEvaluation, SubmitInput,
+    container_scope, evaluate_submit, MachineProfileInput, SubmitEvaluation, SubmitInput,
 };
 use crate::profile::ResolvedGateProfile;
 use crate::spec::Receipt;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    ArtifactKind, GateNodeRecord, NodeKind, NodeStatus,
-    RunGraphSnapshot, RunStatus,
-    SaveAction, SubmitAction, TransitionPlan, ValidatedObservations,
+    ArtifactKind, GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunStatus, SaveAction,
+    SubmitAction, TransitionPlan, ValidatedObservations,
 };
-use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
+use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event,
-    collect_integration_inputs, ensure_state_enabled,
+    acquire_repo_lock, append_trace_event, collect_integration_inputs, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
     resolve_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
 };
-use acdd_core::path_policy::WorkspacePathPolicy;
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, handle_verify_dyn};
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
+use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
 use std::path::Path;
@@ -77,20 +74,7 @@ pub(crate) fn handle_submit_dyn(
     // Phase 2 (no `repo.lock`): check domain freshness or run unlocked auto-verify outside `repo.lock`.
     let verified_hint = if let Some(pf) = preflight {
         let fresh_digest = match pf.existing_fresh {
-            Some(ref tr) => observe_existing_trace_freshness(
-                provider,
-                &pf.primary,
-                &pf.target_worktree,
-                &pf.snapshot,
-                &pf.node,
-                &pf.resolved_profile,
-                &pf.machine_gate,
-                &pf.cursor,
-                &pf.admitted_scope,
-                &pf.policy,
-                &req,
-                tr,
-            )?,
+            Some(ref tr) => observe_existing_trace_freshness(provider, &pf, &req, tr)?,
             None => None,
         };
         if let Some(digest) = fresh_digest {
@@ -117,13 +101,7 @@ pub(crate) fn handle_submit_dyn(
 
     // Phase 3 (`repo.lock` + maintenance): final CAS checks, scoped commit/snapshot/archive, SQLite commit.
     with_repo_lock_and_maintenance(config, backend, |_primary, lock_layout| {
-        submit_holding_repo_lock(
-            config,
-            backend,
-            lock_layout,
-            req,
-            verified_hint.as_ref(),
-        )
+        submit_holding_repo_lock(config, backend, lock_layout, req, verified_hint.as_ref())
     })
 }
 
@@ -144,7 +122,14 @@ fn prepare_submit_observations<'m>(
     recovered: Option<&RecoveredArchiveGitState>,
     req: &SubmitReq,
     verified_hint: Option<&(TreeOid, String)>,
-) -> Result<(ValidatedObservations, Option<String>, std::borrow::Cow<'m, MachineProfileInput>), StateError> {
+) -> Result<
+    (
+        ValidatedObservations,
+        Option<String>,
+        std::borrow::Cow<'m, MachineProfileInput>,
+    ),
+    StateError,
+> {
     if recovered.is_some_and(|rec| rec.already_committed) {
         let mut relaxed = machine_profile.clone();
         relax_need_for_node(&mut relaxed, &node.gate_id);
@@ -215,11 +200,16 @@ fn prepare_submit_observations<'m>(
         Vec::new()
     };
     let external_satisfied_deps = collect_external_satisfied_deps(config, snapshot)?;
-    let container_tree = if admitted_scope.is_empty() && machine_gate.save.post != SaveAction::Snapshot {
-        None
-    } else {
-        Some(current_scope_tree(target_worktree, Some(admitted_scope), policy)?)
-    };
+    let container_tree =
+        if admitted_scope.is_empty() && machine_gate.save.post != SaveAction::Snapshot {
+            None
+        } else {
+            Some(current_scope_tree(
+                target_worktree,
+                Some(admitted_scope),
+                policy,
+            )?)
+        };
     let obs = ValidatedObservations {
         current_tree: Some(current_tree.clone()),
         container_tree,
@@ -231,7 +221,11 @@ fn prepare_submit_observations<'m>(
         path_policy: Some(policy.clone()),
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
     };
-    Ok((obs, expected_digest, std::borrow::Cow::Borrowed(machine_profile)))
+    Ok((
+        obs,
+        expected_digest,
+        std::borrow::Cow::Borrowed(machine_profile),
+    ))
 }
 
 /// Core `submit` implementation executed while `repo.lock` is held.
@@ -242,12 +236,8 @@ pub(crate) fn submit_holding_repo_lock(
     req: SubmitReq,
     verified_hint: Option<&(TreeOid, String)>,
 ) -> Result<SubmitResp, StateError> {
-    let loaded = load_active_run_graph(
-        config,
-        backend,
-        req.run.as_deref(),
-        req.worktree.as_deref(),
-    )?;
+    let loaded =
+        load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let snapshot = loaded.snapshot;
     let resolved_profile = loaded.profile;
     let machine_profile = loaded.machine_profile;
@@ -262,7 +252,6 @@ pub(crate) fn submit_holding_repo_lock(
             &snapshot,
             &machine_profile,
             &cursor,
-            &node_id,
             req,
         );
     }
@@ -274,21 +263,23 @@ pub(crate) fn submit_holding_repo_lock(
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("node '{node_id}' not found in run '{}'", snapshot.run.run_id),
+                format!(
+                    "node '{node_id}' not found in run '{}'",
+                    snapshot.run.run_id
+                ),
             )
-        })?
-        .clone();
+        })?;
     let _gate_def = find_profile_gate_def(&resolved_profile, &cursor).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
-    let machine_gate = find_machine_gate(&machine_profile, &node)?.clone();
+    let machine_gate = find_machine_gate(&machine_profile, node)?;
 
     let primary = primary_workspace_root(config);
     let target_worktree =
-        resolve_node_worktree(config, &snapshot.run, &node, req.worktree.as_deref());
+        resolve_node_worktree(config, &snapshot.run, node, req.worktree.as_deref());
     let policy = crate::usecases::lifecycle::build_path_policy(
         config,
         backend,
@@ -301,16 +292,14 @@ pub(crate) fn submit_holding_repo_lock(
     let recovered = probe_interrupted_archive(
         config,
         backend,
-        &target_worktree,
         &snapshot,
-        &node,
-        &machine_gate,
-        &cursor,
+        node,
+        machine_gate,
         &req,
         &policy,
     )?;
 
-    let admitted_scope = container_scope(&snapshot, &node);
+    let admitted_scope = container_scope(&snapshot, node);
     let current_tree = match recovered.as_ref() {
         Some(rec) => rec.current_tree.clone(),
         None => current_scope_tree(&target_worktree, None, &policy)?,
@@ -322,8 +311,8 @@ pub(crate) fn submit_holding_repo_lock(
         &snapshot,
         &resolved_profile,
         &machine_profile,
-        &node,
-        &machine_gate,
+        node,
+        machine_gate,
         &cursor,
         &target_worktree,
         &admitted_scope,
@@ -336,78 +325,85 @@ pub(crate) fn submit_holding_repo_lock(
 
     let expected_scoped_tree = obs.container_tree.as_ref().unwrap_or(&current_tree);
     let was_recovered = recovered.is_some();
-    let (committed_oid, archive_path_written, report_path_written) =
-        if let Some(rec) = recovered {
-            (rec.committed_oid, Some(rec.archive_rel), None)
-        } else {
-            // Pre-save pure evaluation before mutating Git state.
-            let pre_input = make_submit_pass_input(&cursor, &req, expected_digest.clone(), None);
-            let _ = eval_submit_or_mark_stale(
-                backend,
-                &snapshot,
-                effective_machine_profile.as_ref(),
-                &obs,
-                &pre_input,
-            )?;
+    let mut submit_input = make_submit_pass_input(&cursor, &req, expected_digest, None);
+    let (committed_oid, archive_path_written, report_path_written) = if let Some(rec) = recovered {
+        (rec.committed_oid, Some(rec.archive_rel), None)
+    } else {
+        // Pre-save pure evaluation before mutating Git state.
+        let _ = eval_submit_or_mark_stale(
+            backend,
+            &snapshot,
+            effective_machine_profile.as_ref(),
+            &obs,
+            &submit_input,
+        )?;
 
-            let is_drift_target = effective_machine_profile.gates.iter().any(|item| match item {
+        let is_drift_target = effective_machine_profile
+            .gates
+            .iter()
+            .any(|item| match item {
                 crate::machine::MachineGraphItem::TasksBlock(tb) => tb
                     .gates
                     .iter()
                     .any(|g| g.fail_drift.as_deref() == Some(machine_gate.id.as_str())),
                 crate::machine::MachineGraphItem::Gate(_) => false,
             });
-            let is_task_impl_gate = node.kind == NodeKind::TaskGate
-                && !machine_gate.save.immutable
-                && !machine_gate.receipt
-                && machine_gate.independent_from.is_empty()
-                && machine_gate.need.is_empty()
-                && !is_drift_target;
-            if is_task_impl_gate {
-                enforce_blueprint_max_net_loc(
-                    config,
-                    backend,
-                    &snapshot,
-                    &node,
-                    machine_gate.role.as_deref(),
-                    &target_worktree,
-                    &current_tree,
-                    &admitted_scope,
-                    &policy,
-                )?;
-            }
-
-            execute_post_save_git(
+        let is_task_impl_gate = node.kind == NodeKind::TaskGate
+            && !machine_gate.save.immutable
+            && !machine_gate.receipt
+            && machine_gate.independent_from.is_empty()
+            && machine_gate.need.is_empty()
+            && !is_drift_target;
+        if is_task_impl_gate {
+            enforce_blueprint_max_net_loc(
                 config,
                 backend,
-                layout,
-                &primary,
-                &target_worktree,
                 &snapshot,
-                &node,
-                &machine_gate,
-                &cursor,
-                &admitted_scope,
-                &machine_profile.protected_paths,
-                &current_tree,
-                expected_scoped_tree,
-                &obs.now_utc,
-                &req,
-                &policy,
-            )?
-        };
+                node,
+                machine_gate,
+                &target_worktree,
+                &obs,
+            )?;
+        }
+
+        execute_post_save_git(
+            config,
+            backend,
+            layout,
+            &primary,
+            &target_worktree,
+            &snapshot,
+            node,
+            machine_gate,
+            &cursor,
+            &admitted_scope,
+            &machine_profile.protected_paths,
+            &current_tree,
+            expected_scoped_tree,
+            &obs.now_utc,
+            &req,
+            &policy,
+        )?
+    };
 
     // Single shared submit evaluation, container blackboard cleanup, and SQLite finalizer.
-    let final_input = make_submit_pass_input(&cursor, &req, expected_digest, committed_oid.clone());
+    submit_input.snapshot_commit = committed_oid.clone();
     let mut plan = eval_submit_or_mark_stale(
         backend,
         &snapshot,
         effective_machine_profile.as_ref(),
         &obs,
-        &final_input,
+        &submit_input,
     )?;
 
-    attach_container_blackboard_cleanup(config, backend, &snapshot, &node, &machine_gate, &mut plan)?;
+    attach_container_blackboard_cleanup(
+        config,
+        backend,
+        &snapshot,
+        node,
+        machine_gate,
+        &mut plan,
+    )?;
     let emitted_receipt = extract_receipt_from_plan(&plan);
 
     let final_run_status = if machine_gate.save.prune {
@@ -425,7 +421,9 @@ pub(crate) fn submit_holding_repo_lock(
         )?;
         RunStatus::Completed
     } else {
-        exec_tx_with(backend, |tx| tx.apply_transition_plan(&snapshot.run.run_id, &plan))?;
+        exec_tx_with(backend, |tx| {
+            tx.apply_transition_plan(&snapshot.run.run_id, &plan)
+        })?;
         plan.new_run_status.unwrap_or(snapshot.run.status)
     };
 
@@ -470,7 +468,6 @@ pub(crate) fn submit_holding_repo_lock(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_reject(
     backend: &dyn StateBackend,
     layout: Option<&RepoWorktreeLayout>,
@@ -478,9 +475,9 @@ fn handle_reject(
     snapshot: &RunGraphSnapshot,
     machine_profile: &MachineProfileInput,
     cursor: &NodeCursor,
-    node_id: &str,
     req: SubmitReq,
 ) -> Result<SubmitResp, StateError> {
+    let node_id = cursor.to_node_id()?;
     let obs = ValidatedObservations {
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
@@ -504,7 +501,9 @@ fn handle_reject(
         SubmitEvaluation::MarkStaleAndReject { error, .. } => return Err(error),
     };
 
-    exec_tx_with(backend, |tx| tx.apply_transition_plan(&snapshot.run.run_id, &plan))?;
+    exec_tx_with(backend, |tx| {
+        tx.apply_transition_plan(&snapshot.run.run_id, &plan)
+    })?;
 
     let new_node_status = plan
         .node_patches
@@ -512,7 +511,7 @@ fn handle_reject(
         .find(|p| p.node_id == node_id)
         .map(|p| p.new_status)
         .unwrap_or(NodeStatus::Pending);
-    let unblocked_nodes = collect_unblocked_cursors(&plan, node_id)?;
+    let unblocked_nodes = collect_unblocked_cursors(&plan, &node_id)?;
 
     let primary = primary_workspace_root(config);
     let _ = append_trace_event(

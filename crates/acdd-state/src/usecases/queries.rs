@@ -223,7 +223,6 @@ fn handle_show(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_node_context_request(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
@@ -256,8 +255,8 @@ fn build_node_context_request(
         reader,
         snapshot: graph,
         node,
-        gate: gate_def,
-        profile,
+        gate: &gate_def,
+        profile: &profile,
         claim_revision,
         worker_id,
         worktree,

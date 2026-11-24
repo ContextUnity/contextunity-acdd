@@ -267,7 +267,8 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
         domain: "code".to_owned(),
         lenses,
     });
-    let provider = CompositeDomainProvider::new(vec![code_provider]).unwrap();
+    let provider =
+        CompositeDomainProvider::with_module_flags(vec![code_provider], BTreeMap::new()).unwrap();
 
     tiered_req.gate.context = vec![
         "code.zebra".to_owned(),
@@ -428,8 +429,8 @@ fn profile_gates_claim_context_window_budget_matrix() {
         .join("..")
         .join("..");
     let profile_dirs = vec![".acdd/profiles".to_owned()];
-    let provider = CompositeDomainProvider::new(vec![
-        Arc::new(LensMockProvider {
+    let provider = CompositeDomainProvider::with_module_flags(
+        vec![Arc::new(LensMockProvider {
             domain: "docs".to_owned(),
             lenses: BTreeMap::from([
                 (
@@ -491,8 +492,9 @@ fn profile_gates_claim_context_window_budget_matrix() {
                     json!({"items": [{"symbol": "crate::foo", "path": "src/lib.rs", "caller_files": ["src/main.rs"]}]}),
                 ),
             ]),
-        }),
-    ])
+        })],
+        BTreeMap::new(),
+    )
     .unwrap();
 
     for (label, profile_ref) in [

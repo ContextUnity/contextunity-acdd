@@ -1,15 +1,12 @@
 //! Blueprint `max_net_loc` enforcement and container budget override checks.
 
-use acdd_core::git::git_command;
 use crate::store::traits::StateBackend;
 use crate::types::{
-    BlackboardStatus,
-    BlackboardTopic,
-    GateNodeRecord,
-    RunGraphSnapshot,
+    BlackboardStatus, BlackboardTopic, GateNodeRecord, RunGraphSnapshot, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::git::git_command;
 use acdd_core::ids::TreeOid;
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
 use acdd_core::subsystems::SubsystemId;
@@ -18,17 +15,14 @@ use std::path::Path;
 
 use super::post_save::list_all_blackboard_items;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn enforce_blueprint_max_net_loc(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
-    gate_role: Option<&str>,
+    machine_gate: &crate::machine::MachineGateDef,
     target_worktree: &Path,
-    current_tree: &TreeOid,
-    admitted_scope: &[String],
-    policy: &WorkspacePathPolicy,
+    observations: &ValidatedObservations,
 ) -> Result<(), StateError> {
     if snapshot.run.is_ephemeral {
         return Ok(());
@@ -44,11 +38,24 @@ pub(super) fn enforce_blueprint_max_net_loc(
         return Ok(());
     };
 
+    let current_tree = observations.current_tree.as_ref().ok_or_else(|| {
+        StateError::new(
+            ErrorCode::BackendConflict,
+            "submit observations are missing current_tree",
+        )
+    })?;
+    let policy = observations.path_policy.as_ref().ok_or_else(|| {
+        StateError::new(
+            ErrorCode::BackendConflict,
+            "submit observations are missing path_policy",
+        )
+    })?;
+    let admitted_scope = crate::machine::container_scope(snapshot, node);
     let net_loc = compute_scoped_prod_net_loc(
         target_worktree,
         baseline_commit.as_str(),
         current_tree,
-        admitted_scope,
+        &admitted_scope,
         policy,
     )?;
     if net_loc <= max_net_loc {
@@ -60,7 +67,7 @@ pub(super) fn enforce_blueprint_max_net_loc(
         backend,
         snapshot,
         node,
-        gate_role,
+        machine_gate.role.as_deref(),
         task_ref.as_str(),
         net_loc,
     )? {
@@ -232,7 +239,11 @@ fn has_container_budget_decision(
 fn is_explicit_budget_override(payload: &str, net_loc: i64) -> bool {
     let trimmed = payload.trim();
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if val.get("budget_override").and_then(serde_json::Value::as_bool) == Some(true) {
+        if val
+            .get("budget_override")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
             return true;
         }
         if val

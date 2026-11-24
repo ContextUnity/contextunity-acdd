@@ -76,19 +76,13 @@ fn reset_container_children<'a>(
     }
 }
 
-struct ReopenAcc<'a> {
-    watch_ids: BTreeSet<&'a str>,
-    claim_patches: Vec<ClaimOutcomePatch>,
-    patches_by_id: Vec<NodeStatusPatch>,
-    dependency_patches: Vec<DependencySatisfiedPatch>,
-}
-
 fn reopen_completed_task_dependents<'a>(
     snapshot: &'a RunGraphSnapshot,
     now_utc: &str,
     task_node: &'a GateNodeRecord,
     cascade: bool,
-    acc: &mut ReopenAcc<'a>,
+    watch_ids: &mut BTreeSet<&'a str>,
+    transition: &mut TransitionPlan,
 ) -> Result<(), StateError> {
     if task_node.status != NodeStatus::Completed {
         return Ok(());
@@ -96,11 +90,13 @@ fn reopen_completed_task_dependents<'a>(
     let Some(ref task_ref) = task_node.task_ref else {
         return Ok(());
     };
-    acc.dependency_patches.push(DependencySatisfiedPatch {
-        depends_on_ref: task_ref.clone(),
-        dependent_task_ref: None,
-        satisfied: false,
-    });
+    transition
+        .dependency_patches
+        .push(DependencySatisfiedPatch {
+            depends_on_ref: task_ref.clone(),
+            dependent_task_ref: None,
+            satisfied: false,
+        });
 
     for dep_ref in collect_transitive_dependents(snapshot, task_ref) {
         let Some(dep_task) = snapshot
@@ -130,40 +126,50 @@ fn reopen_completed_task_dependents<'a>(
             .with_hint("re-run reopen with --cascade to mark dependent tasks stale"));
         }
 
-        acc.watch_ids.insert(dep_task.node_id.as_str());
+        watch_ids.insert(dep_task.node_id.as_str());
         if has_active_or_done {
             if dep_task.status == NodeStatus::Completed {
-                acc.dependency_patches.push(DependencySatisfiedPatch {
-                    depends_on_ref: dep_ref,
-                    dependent_task_ref: None,
-                    satisfied: false,
-                });
+                transition
+                    .dependency_patches
+                    .push(DependencySatisfiedPatch {
+                        depends_on_ref: dep_ref,
+                        dependent_task_ref: None,
+                        satisfied: false,
+                    });
             }
-            close_active_claim_at(snapshot, now_utc, &dep_task.node_id, &mut acc.claim_patches);
+            close_active_claim_at(
+                snapshot,
+                now_utc,
+                &dep_task.node_id,
+                &mut transition.claim_patches,
+            );
             let mut dp = NodeStatusPatch::status_only(&dep_task.node_id, NodeStatus::Stale);
             dp.accepted_tree = Some(None);
-            acc.patches_by_id.push(dp);
+            transition.node_patches.push(dp);
             for child in snapshot
                 .nodes
                 .iter()
                 .filter(|c| c.parent_id.as_deref() == Some(dep_task.node_id.as_str()))
             {
-                acc.watch_ids.insert(child.node_id.as_str());
-                close_active_claim_at(snapshot, now_utc, &child.node_id, &mut acc.claim_patches);
-                let child_status = if matches!(
-                    child.status,
-                    NodeStatus::InProgress | NodeStatus::Completed
-                ) {
-                    NodeStatus::Stale
-                } else {
-                    NodeStatus::Pending
-                };
+                watch_ids.insert(child.node_id.as_str());
+                close_active_claim_at(
+                    snapshot,
+                    now_utc,
+                    &child.node_id,
+                    &mut transition.claim_patches,
+                );
+                let child_status =
+                    if matches!(child.status, NodeStatus::InProgress | NodeStatus::Completed) {
+                        NodeStatus::Stale
+                    } else {
+                        NodeStatus::Pending
+                    };
                 let mut cp = NodeStatusPatch::status_only(&child.node_id, child_status);
                 cp.accepted_tree = Some(None);
-                acc.patches_by_id.push(cp);
+                transition.node_patches.push(cp);
             }
         } else if dep_task.status == NodeStatus::Ready {
-            acc.patches_by_id.push(NodeStatusPatch::status_only(
+            transition.node_patches.push(NodeStatusPatch::status_only(
                 &dep_task.node_id,
                 NodeStatus::Pending,
             ));
@@ -173,8 +179,8 @@ fn reopen_completed_task_dependents<'a>(
                 .filter(|c| c.parent_id.as_deref() == Some(dep_task.node_id.as_str()))
                 .filter(|c| c.status == NodeStatus::Ready)
             {
-                acc.watch_ids.insert(child.node_id.as_str());
-                acc.patches_by_id.push(NodeStatusPatch::status_only(
+                watch_ids.insert(child.node_id.as_str());
+                transition.node_patches.push(NodeStatusPatch::status_only(
                     &child.node_id,
                     NodeStatus::Pending,
                 ));
@@ -265,11 +271,7 @@ pub(crate) fn plan_reopen(
     obs: &ValidatedObservations,
     input: &ReopenInput,
 ) -> Result<TransitionPlan, StateError> {
-    let target = crate::machine::require_active_node(
-        snapshot,
-        &input.node_cursor,
-        "reopen node",
-    )?;
+    let target = crate::machine::require_active_node(snapshot, &input.node_cursor, "reopen node")?;
     let target_id = target.node_id.as_str();
 
     if target.kind == NodeKind::Container && target.node_id.starts_with("tasks#") {
@@ -279,25 +281,43 @@ pub(crate) fn plan_reopen(
         ));
     }
 
-    let mut patches_by_id: Vec<NodeStatusPatch> = Vec::new();
-    let mut claim_patches: Vec<ClaimOutcomePatch> = Vec::new();
-    let mut dependency_patches: Vec<DependencySatisfiedPatch> = Vec::new();
+    let mut transition = TransitionPlan {
+        preconditions: build_preconditions(snapshot, &[], None),
+        bump_run_generation: true,
+        new_run_status: None,
+        new_root_cycle_count: None,
+        completed_at: None,
+        node_patches: Vec::new(),
+        dependency_patches: Vec::new(),
+        claim_patches: Vec::new(),
+        new_artifacts: Vec::new(),
+        new_blackboard: Vec::new(),
+        blackboard_patches: Vec::new(),
+        new_subtasks: Vec::new(),
+        significant_transition: true,
+    };
     let mut watch_ids: BTreeSet<&str> = BTreeSet::new();
-    let mut new_root_cycle_count: Option<u32> = None;
 
     watch_ids.insert(target.node_id.as_str());
 
     match target.kind {
         NodeKind::Task => {
-            close_active_claim_at(snapshot, &obs.now_utc, &target.node_id, &mut claim_patches);
-            patches_by_id.push(make_reset_patch(target, NodeStatus::Ready, true));
+            close_active_claim_at(
+                snapshot,
+                &obs.now_utc,
+                &target.node_id,
+                &mut transition.claim_patches,
+            );
+            transition
+                .node_patches
+                .push(make_reset_patch(target, NodeStatus::Ready, true));
             reset_container_children(
                 snapshot,
                 &obs.now_utc,
                 &target.node_id,
                 &mut watch_ids,
-                &mut claim_patches,
-                &mut patches_by_id,
+                &mut transition.claim_patches,
+                &mut transition.node_patches,
             );
         }
         NodeKind::TaskGate => reset_task_gate_reopen(
@@ -305,31 +325,38 @@ pub(crate) fn plan_reopen(
             &obs.now_utc,
             target,
             &mut watch_ids,
-            &mut claim_patches,
-            &mut patches_by_id,
+            &mut transition.claim_patches,
+            &mut transition.node_patches,
         )?,
         NodeKind::Container => {
-            new_root_cycle_count = Some(0);
-            close_active_claim_at(snapshot, &obs.now_utc, &target.node_id, &mut claim_patches);
-            patches_by_id.push(make_reset_patch(target, NodeStatus::Ready, true));
+            transition.new_root_cycle_count = Some(0);
+            close_active_claim_at(
+                snapshot,
+                &obs.now_utc,
+                &target.node_id,
+                &mut transition.claim_patches,
+            );
+            transition
+                .node_patches
+                .push(make_reset_patch(target, NodeStatus::Ready, true));
             reset_container_children(
                 snapshot,
                 &obs.now_utc,
                 &target.node_id,
                 &mut watch_ids,
-                &mut claim_patches,
-                &mut patches_by_id,
+                &mut transition.claim_patches,
+                &mut transition.node_patches,
             );
         }
         NodeKind::RootGate => {
-            new_root_cycle_count = Some(0);
+            transition.new_root_cycle_count = Some(0);
             reset_root_gate_reopen(
                 snapshot,
                 &obs.now_utc,
                 target,
                 &mut watch_ids,
-                &mut claim_patches,
-                &mut patches_by_id,
+                &mut transition.claim_patches,
+                &mut transition.node_patches,
             )?;
         }
     }
@@ -345,24 +372,14 @@ pub(crate) fn plan_reopen(
     };
 
     if let Some(task_node) = reopened_task {
-        let mut acc = ReopenAcc {
-            watch_ids: std::mem::take(&mut watch_ids),
-            claim_patches: std::mem::take(&mut claim_patches),
-            patches_by_id: std::mem::take(&mut patches_by_id),
-            dependency_patches: std::mem::take(&mut dependency_patches),
-        };
-        let res = reopen_completed_task_dependents(
+        reopen_completed_task_dependents(
             snapshot,
             &obs.now_utc,
             task_node,
             input.cascade,
-            &mut acc,
-        );
-        watch_ids = acc.watch_ids;
-        claim_patches = acc.claim_patches;
-        patches_by_id = acc.patches_by_id;
-        dependency_patches = acc.dependency_patches;
-        res?;
+            &mut watch_ids,
+            &mut transition,
+        )?;
 
         // Reopening any task (completed or active/pending) invalidates post-task root gates if they advanced.
         for post in &snapshot.nodes {
@@ -372,7 +389,7 @@ pub(crate) fn plan_reopen(
             match post.status {
                 NodeStatus::Ready => {
                     watch_ids.insert(post.node_id.as_str());
-                    patches_by_id.push(NodeStatusPatch::status_only(
+                    transition.node_patches.push(NodeStatusPatch::status_only(
                         &post.node_id,
                         NodeStatus::Pending,
                     ));
@@ -388,10 +405,15 @@ pub(crate) fn plan_reopen(
                         ));
                     }
                     watch_ids.insert(post.node_id.as_str());
-                    close_active_claim_at(snapshot, &obs.now_utc, &post.node_id, &mut claim_patches);
+                    close_active_claim_at(
+                        snapshot,
+                        &obs.now_utc,
+                        &post.node_id,
+                        &mut transition.claim_patches,
+                    );
                     let mut p = NodeStatusPatch::status_only(&post.node_id, NodeStatus::Stale);
                     p.accepted_tree = Some(None);
-                    patches_by_id.push(p);
+                    transition.node_patches.push(p);
                 }
                 _ => {}
             }
@@ -399,39 +421,24 @@ pub(crate) fn plan_reopen(
     }
 
     let watch_vec: Vec<&str> = watch_ids.into_iter().collect();
-    let preconditions = build_preconditions(snapshot, &watch_vec, None);
-
-    Ok(TransitionPlan {
-        preconditions,
-        bump_run_generation: true,
-        new_run_status: None,
-        new_root_cycle_count,
-        completed_at: None,
-        node_patches: patches_by_id,
-        dependency_patches,
-        claim_patches,
-        new_artifacts: Vec::new(),
-        new_blackboard: Vec::new(),
-        blackboard_patches: Vec::new(),
-        new_subtasks: Vec::new(),
-        significant_transition: true,
-    })
+    transition.preconditions = build_preconditions(snapshot, &watch_vec, None);
+    Ok(transition)
 }
 
 fn collect_transitive_dependents(snapshot: &RunGraphSnapshot, root_task: &TaskRef) -> Vec<TaskRef> {
-    let mut visited = BTreeSet::new();
+    let mut visited: BTreeSet<&TaskRef> = BTreeSet::new();
     let mut queue = VecDeque::new();
     let mut order = Vec::new();
-    queue.push_back(root_task.clone());
+    queue.push_back(root_task);
 
     while let Some(cur) = queue.pop_front() {
         for dep in &snapshot.dependencies {
             if dep.depends_on_run_id == snapshot.run.run_id
-                && dep.depends_on_ref == cur
-                && visited.insert(dep.task_ref.clone())
+                && dep.depends_on_ref == *cur
+                && visited.insert(&dep.task_ref)
             {
                 order.push(dep.task_ref.clone());
-                queue.push_back(dep.task_ref.clone());
+                queue.push_back(&dep.task_ref);
             }
         }
     }

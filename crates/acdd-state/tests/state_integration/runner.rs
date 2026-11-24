@@ -210,8 +210,8 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
         max_log_bytes: 1_048_576,
         max_line_bytes: 65_536,
     };
-    let err = spawn_role_runner_borrowed(&missing_runner, &mut cache)
-        .expect_err("must require runner");
+    let err =
+        spawn_role_runner_borrowed(&missing_runner, &mut cache).expect_err("must require runner");
     assert_eq!(err.code, ErrorCode::WorkflowRunnerRequired);
 
     // Case 2: Large stdin prompt (> 130KB) + full ACDD_* env injection + reuse_on_reject matrix.
@@ -311,7 +311,10 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
             .join(&r_no_reasoning.log_relpath),
     )
     .unwrap();
-    assert!(log_no_reasoning.contains("|inline|m3|m3|\n"), "{log_no_reasoning}");
+    assert!(
+        log_no_reasoning.contains("|inline|m3|m3|\n"),
+        "{log_no_reasoning}"
+    );
 
     // Re-spawning builder in the same (run_id, node_container_id, role) with reuse_on_reject=true reuses session ID.
     builder_req.claim_revision = 2;
@@ -344,7 +347,11 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
         exit_code: Some(1),
         ..ok_outcome.clone()
     };
-    let cases: &[(&RoleSpawnOutcome, Option<ClaimOutcome>, Result<(), ErrorCode>)] = &[
+    let cases: &[(
+        &RoleSpawnOutcome,
+        Option<ClaimOutcome>,
+        Result<(), ErrorCode>,
+    )] = &[
         (&ok_outcome, Some(ClaimOutcome::Passed), Ok(())),
         (&ok_outcome, Some(ClaimOutcome::Rejected), Ok(())),
         (
@@ -352,11 +359,7 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
             Some(ClaimOutcome::Active),
             Err(ErrorCode::RunnerNoSubmission),
         ),
-        (
-            &ok_outcome,
-            None,
-            Err(ErrorCode::RunnerNoSubmission),
-        ),
+        (&ok_outcome, None, Err(ErrorCode::RunnerNoSubmission)),
         (
             &nonzero_outcome,
             Some(ClaimOutcome::Passed),
@@ -406,36 +409,16 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
         ),
         // #9: Empty args remove only `{scope_target}` + one adjacent space (preserving `a  b`),
         // and non-empty args expand EVERY active `{scope_target}` placeholder.
-        (
-            &["tests/*.rs"],
-            "echo {scope_target} a  b",
-            &["echo a  b"],
-        ),
-        (
-            &["tests/*.rs"],
-            "a  b {scope_target}",
-            &["a  b"],
-        ),
+        (&["tests/*.rs"], "echo {scope_target} a  b", &["echo a  b"]),
+        (&["tests/*.rs"], "a  b {scope_target}", &["a  b"]),
         (
             &["src/lib.rs"],
             "a {scope_target} && b {scope_target}",
             &["a --file 'src/lib.rs' && b --file 'src/lib.rs'"],
         ),
-        (
-            &["tests/*.rs"],
-            "left {scope_target}right",
-            &["left right"],
-        ),
-        (
-            &["tests/*.rs"],
-            "left{scope_target} right",
-            &["left right"],
-        ),
-        (
-            &["tests/*.rs"],
-            "x{scope_target} {scope_target}y",
-            &["x y"],
-        ),
+        (&["tests/*.rs"], "left {scope_target}right", &["left right"]),
+        (&["tests/*.rs"], "left{scope_target} right", &["left right"]),
+        (&["tests/*.rs"], "x{scope_target} {scope_target}y", &["x y"]),
     ];
 
     for &(raw_paths, tpl, expected) in cases {
@@ -500,8 +483,14 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
     };
     let out = execute_gate_commands(&exec_req).expect("quoted scope command runs");
     assert_eq!(out.exit_code, Some(0));
-    assert!(!worktree.join("pwned").exists(), "$(touch pwned) must not execute");
-    assert!(!worktree.join("pwned2").exists(), "$(touch pwned2) must not execute");
+    assert!(
+        !worktree.join("pwned").exists(),
+        "$(touch pwned) must not execute"
+    );
+    assert!(
+        !worktree.join("pwned2").exists(),
+        "$(touch pwned2) must not execute"
+    );
     let log_text = fs::read_to_string(
         worktree
             .join(".acdd/run")

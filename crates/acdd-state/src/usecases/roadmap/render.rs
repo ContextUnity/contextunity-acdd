@@ -209,7 +209,6 @@ fn sort_spec_entries(entries: &mut [RoadmapSpecEntry]) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_spec_entry(
     config: &StateEngineConfig,
     info: &SpecInfo,

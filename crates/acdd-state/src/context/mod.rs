@@ -58,7 +58,7 @@ impl GateContextAssembler {
             primary,
             profile.limits.diagnostic_inline_bytes,
         );
-        let context_reset_required = is_context_reset_required(snapshot, node, &gate);
+        let context_reset_required = is_context_reset_required(snapshot, node, gate);
         let (pre_task_slice, dependency_receipts, blackboard_items) = if skip_enrichment {
             (None, Vec::new(), Vec::new())
         } else {
@@ -121,8 +121,8 @@ impl GateContextAssembler {
         Ok(ClaimContextRequest {
             run: snapshot.run.clone(),
             node: node.clone(),
-            gate,
-            profile,
+            gate: gate.clone(),
+            profile: profile.clone(),
             spec,
             live_subtasks,
             claim_revision,

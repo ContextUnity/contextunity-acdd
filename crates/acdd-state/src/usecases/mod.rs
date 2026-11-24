@@ -87,16 +87,14 @@ impl StateEngine {
             .values()
             .flat_map(|c| c.patterns().into_iter().map(str::to_owned))
             .collect();
-        let backend = SqliteStateBackend::open_with_reconciler(
-            config.sqlite_options(backup_dir),
-            |runs| {
+        let backend =
+            SqliteStateBackend::open_with_reconciler(config.sqlite_options(backup_dir), |runs| {
                 lifecycle::reconcile_restored_runs_with_archives(
                     runs,
                     Some(&config.workspace_root),
                     &collection_paths,
                 )
-            },
-        )?;
+            })?;
         Ok(Self {
             config,
             backend: Arc::new(backend),
@@ -151,11 +149,16 @@ pub(crate) fn execute_on<B: StateBackend + Send + Sync>(
 }
 
 /// Run `snapshot` without creating `.acdd/state.sqlite`.
-pub fn execute_snapshot_readonly(config: &StateEngineConfig, req: SnapshotReq) -> Result<StateCommandOutput, StateError> {
+pub fn execute_snapshot_readonly(
+    config: &StateEngineConfig,
+    req: SnapshotReq,
+) -> Result<StateCommandOutput, StateError> {
     lifecycle::ensure_state_enabled(config)?;
-    acdd_core::fs::check_git_entry_no_symlinks(&config.workspace_root).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    acdd_core::fs::check_git_entry_no_symlinks(&config.workspace_root)
+        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let wt = req.worktree.as_deref().unwrap_or(&config.worktree);
-    acdd_core::fs::check_git_entry_no_symlinks(wt).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    acdd_core::fs::check_git_entry_no_symlinks(wt)
+        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let reader = crate::store::sqlite::SqliteStateReader::new(config.resolved_state_db_path().0);
     commands::task_ops::handle_snapshot_dyn(config, &reader, req).map(StateCommandOutput::Snapshot)
 }
@@ -172,9 +175,13 @@ fn execute_on_dyn(
         _ => lifecycle::ensure_state_enabled(config)?,
     }
     match cmd {
-        StateCommand::Start(req) => Ok(StateCommandOutput::Start(Box::new(
-            handle_start_dyn(config, backend, provider, req, source_override)?,
-        ))),
+        StateCommand::Start(req) => Ok(StateCommandOutput::Start(Box::new(handle_start_dyn(
+            config,
+            backend,
+            provider,
+            req,
+            source_override,
+        )?))),
         StateCommand::Draft(req) => Ok(StateCommandOutput::Draft(commands::handle_draft_dyn(
             config, backend, req,
         )?)),
@@ -194,11 +201,15 @@ fn execute_on_dyn(
             config, backend, req,
         )?)),
         StateCommand::Sync(req) => Ok(StateCommandOutput::Sync(handle_sync_dyn(
-            config, backend, provider, req, source_override,
+            config,
+            backend,
+            provider,
+            req,
+            source_override,
         )?)),
-        StateCommand::Subtask(req) => Ok(StateCommandOutput::Subtask(commands::handle_subtask_dyn(
-            config, backend, req,
-        )?)),
+        StateCommand::Subtask(req) => Ok(StateCommandOutput::Subtask(
+            commands::handle_subtask_dyn(config, backend, req)?,
+        )),
         StateCommand::BlackboardPost(req) => Ok(StateCommandOutput::BlackboardPost(
             commands::handle_blackboard_post_dyn(config, backend, req)?,
         )),

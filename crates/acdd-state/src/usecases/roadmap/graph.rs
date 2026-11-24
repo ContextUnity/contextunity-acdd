@@ -26,167 +26,160 @@ use acdd_core::ids::{RunId, TaskRef};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-#[allow(clippy::too_many_arguments)]
-fn process_dep_edge(
-    raw: &str,
-    source: &SpecInfo,
-    source_task_ref: Option<&str>,
-    local_refs: &BTreeSet<&str>,
-    annotation_run: Option<&RunId>,
-    discovered: &DiscoveredWorkspace,
-    root: &Path,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
-    config: &StateEngineConfig,
-    reader: &dyn StateReader,
-    linked_cache: &mut LinkedWsCache,
-    graph: &mut DependencyGraphData,
-    warnings: &mut Vec<String>,
-) -> Result<(Option<ParsedDepSyntax>, RoadmapDepEntry), StateError> {
-    let source_spec_id = &source.spec_id;
-    let record_in_graph = !source.is_archived && annotation_run.is_none();
-    let mut parsed = match parse_dep_syntax(raw, local_refs) {
-        Ok(p) => p,
-        Err(err) => {
-            let ctx = match source_task_ref {
-                Some(t) => format!("spec '{source_spec_id}' task '{t}'"),
-                None => format!("spec '{source_spec_id}'"),
-            };
-            warnings.push(format!("{ctx} malformed depends_on '{raw}': {err}"));
-            if record_in_graph && source_task_ref.is_none() {
-                graph
-                    .has_unsatisfied_external_blocker
-                    .insert(source_spec_id.to_owned(), true);
-            }
-            return Ok((
-                None,
-                RoadmapDepEntry {
-                    raw: raw.to_owned(),
-                    status: "invalid".to_owned(),
-                    satisfied: false,
-                },
-            ));
-        }
-    };
-
-    let resolution = resolve_dep_entry(
-        raw,
-        &mut parsed,
-        source,
-        root,
-        annotation_run.is_some(),
-        collections,
-        config,
-        reader,
-        discovered,
-        linked_cache,
-        warnings,
-    );
-    let (entry, active_target) = match (resolution, annotation_run) {
-        (Ok(resolved), _) => resolved,
-        (Err(err), Some(run_id)) => {
-            warnings.push(format!(
-                "spec '{source_spec_id}' run '{run_id}' depends_on '{raw}': {err}"
-            ));
-            return Ok((
-                None,
-                RoadmapDepEntry {
-                    raw: raw.to_owned(),
-                    status: "invalid".to_owned(),
-                    satisfied: false,
-                },
-            ));
-        }
-        (Err(err), None) => return Err(err),
-    };
-
-    if record_in_graph {
-        record_reverse_block(
-            &parsed,
-            source_spec_id,
-            source_task_ref,
-            &mut graph.spec_blocks,
-            &mut graph.task_blocks,
-        );
-        if let Some(target_run) = &active_target {
-            let label = source_task_ref.map_or_else(
-                || source_spec_id.to_owned(),
-                |source_task| format!("{source_spec_id}:{source_task}"),
-            );
-            graph
-                .active_spec_blocks
-                .entry(target_run.clone())
-                .or_default()
-                .insert(label);
-        }
-        if let (
-            Some(target_run),
-            ParsedDepSyntax::LocalSpec {
-                task_ref: Some(task_ref),
-                ..
-            }
-            | ParsedDepSyntax::LinkedSpec {
-                task_ref: Some(task_ref),
-                ..
-            },
-        ) = (active_target, &parsed)
-        {
-            let label = source_task_ref.map_or_else(
-                || source_spec_id.to_owned(),
-                |source_task| format!("{source_spec_id}:{source_task}"),
-            );
-            graph
-                .active_task_blocks
-                .entry((target_run, TaskRef::new(task_ref)?))
-                .or_default()
-                .insert(label);
-        }
-        if !entry.satisfied && !matches!(parsed, ParsedDepSyntax::LocalTask(_)) {
-            match &parsed {
-                ParsedDepSyntax::LocalSpec {
-                    spec_id: target_spec,
-                    ..
-                } if discovered.specs_by_id.contains_key(target_spec)
-                    && (target_spec != source_spec_id || source_task_ref.is_none()) =>
-                {
-                    graph
-                        .forward_spec_edges
-                        .entry(target_spec.clone())
-                        .or_default()
-                        .insert(source_spec_id.to_owned());
-                    if source_task_ref.is_none() {
-                        graph
-                            .unsatisfied_blockers
-                            .entry(source_spec_id.to_owned())
-                            .or_default()
-                            .insert(target_spec.clone());
-                    }
-                }
-                _ => {
-                    if source_task_ref.is_none() {
-                        graph
-                            .has_unsatisfied_external_blocker
-                            .insert(source_spec_id.to_owned(), true);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok((Some(parsed), entry))
+struct DependencyGraphBuilder<'a> {
+    discovered: &'a DiscoveredWorkspace,
+    root: &'a Path,
+    reader: &'a dyn StateReader,
+    linked_cache: LinkedWsCache,
+    graph: DependencyGraphData,
+    warnings: Vec<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
+impl DependencyGraphBuilder<'_> {
+    fn process_dep_edge(
+        &mut self,
+        raw: &str,
+        source: &SpecInfo,
+        source_task_ref: Option<&str>,
+        local_refs: &BTreeSet<&str>,
+        annotation_run: Option<&RunId>,
+        config: &StateEngineConfig,
+    ) -> Result<(Option<ParsedDepSyntax>, RoadmapDepEntry), StateError> {
+        let discovered = self.discovered;
+        let source_spec_id = &source.spec_id;
+        let record_in_graph = !source.is_archived && annotation_run.is_none();
+        let mut parsed = match parse_dep_syntax(raw, local_refs) {
+            Ok(p) => p,
+            Err(err) => {
+                let ctx = match source_task_ref {
+                    Some(t) => format!("spec '{source_spec_id}' task '{t}'"),
+                    None => format!("spec '{source_spec_id}'"),
+                };
+                self.warnings
+                    .push(format!("{ctx} malformed depends_on '{raw}': {err}"));
+                if record_in_graph && source_task_ref.is_none() {
+                    self.graph
+                        .has_unsatisfied_external_blocker
+                        .insert(source_spec_id.to_owned(), true);
+                }
+                return Ok((
+                    None,
+                    RoadmapDepEntry {
+                        raw: raw.to_owned(),
+                        status: "invalid".to_owned(),
+                        satisfied: false,
+                    },
+                ));
+            }
+        };
+
+        let resolution =
+            self.resolve_dep_entry(raw, &mut parsed, source, annotation_run.is_some(), config);
+        let (entry, active_target) = match (resolution, annotation_run) {
+            (Ok(resolved), _) => resolved,
+            (Err(err), Some(run_id)) => {
+                self.warnings.push(format!(
+                    "spec '{source_spec_id}' run '{run_id}' depends_on '{raw}': {err}"
+                ));
+                return Ok((
+                    None,
+                    RoadmapDepEntry {
+                        raw: raw.to_owned(),
+                        status: "invalid".to_owned(),
+                        satisfied: false,
+                    },
+                ));
+            }
+            (Err(err), None) => return Err(err),
+        };
+
+        if record_in_graph {
+            record_reverse_block(
+                &parsed,
+                source_spec_id,
+                source_task_ref,
+                &mut self.graph.spec_blocks,
+                &mut self.graph.task_blocks,
+            );
+            if let Some(target_run) = &active_target {
+                let label = source_task_ref.map_or_else(
+                    || source_spec_id.to_owned(),
+                    |source_task| format!("{source_spec_id}:{source_task}"),
+                );
+                self.graph
+                    .active_spec_blocks
+                    .entry(target_run.clone())
+                    .or_default()
+                    .insert(label);
+            }
+            if let (
+                Some(target_run),
+                ParsedDepSyntax::LocalSpec {
+                    task_ref: Some(task_ref),
+                    ..
+                }
+                | ParsedDepSyntax::LinkedSpec {
+                    task_ref: Some(task_ref),
+                    ..
+                },
+            ) = (active_target, &parsed)
+            {
+                let label = source_task_ref.map_or_else(
+                    || source_spec_id.to_owned(),
+                    |source_task| format!("{source_spec_id}:{source_task}"),
+                );
+                self.graph
+                    .active_task_blocks
+                    .entry((target_run, TaskRef::new(task_ref)?))
+                    .or_default()
+                    .insert(label);
+            }
+            if !entry.satisfied && !matches!(parsed, ParsedDepSyntax::LocalTask(_)) {
+                match &parsed {
+                    ParsedDepSyntax::LocalSpec {
+                        spec_id: target_spec,
+                        ..
+                    } if discovered.specs_by_id.contains_key(target_spec)
+                        && (target_spec != source_spec_id || source_task_ref.is_none()) =>
+                    {
+                        self.graph
+                            .forward_spec_edges
+                            .entry(target_spec.clone())
+                            .or_default()
+                            .insert(source_spec_id.to_owned());
+                        if source_task_ref.is_none() {
+                            self.graph
+                                .unsatisfied_blockers
+                                .entry(source_spec_id.to_owned())
+                                .or_default()
+                                .insert(target_spec.clone());
+                        }
+                    }
+                    _ => {
+                        if source_task_ref.is_none() {
+                            self.graph
+                                .has_unsatisfied_external_blocker
+                                .insert(source_spec_id.to_owned(), true);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((Some(parsed), entry))
+    }
+}
+
 pub(super) fn build_dependency_graph(
     discovered: &DiscoveredWorkspace,
     root: &Path,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     active_runs_by_spec: &ActiveRunMap,
     include_archived: bool,
     warnings: &mut Vec<String>,
 ) -> Result<DependencyGraphData, StateError> {
-    let mut graph = DependencyGraphData {
+    let graph = DependencyGraphData {
         spec_deps_resolved: BTreeMap::new(),
         active_spec_deps_resolved: BTreeMap::new(),
         task_deps_resolved: BTreeMap::new(),
@@ -210,7 +203,12 @@ pub(super) fn build_dependency_graph(
     let has_task_deps = discovered
         .specs_by_id
         .values()
-        .chain(discovered.archived_by_id.values().filter(|_| include_archived))
+        .chain(
+            discovered
+                .archived_by_id
+                .values()
+                .filter(|_| include_archived),
+        )
         .chain(discovered.specs_by_run.values())
         .any(|info| {
             info.doc.depends_on.iter().any(|d| d.contains(':'))
@@ -225,6 +223,14 @@ pub(super) fn build_dependency_graph(
         linked_cache.tombstone_archives = load_tombstone_archives(root, &linked_cache.tombstones);
     }
     let empty_refs = BTreeSet::new();
+    let mut builder = DependencyGraphBuilder {
+        discovered,
+        root,
+        reader,
+        linked_cache,
+        graph,
+        warnings: Vec::new(),
+    };
 
     let planned = discovered
         .specs_by_id
@@ -254,35 +260,27 @@ pub(super) fn build_dependency_graph(
             })
             .transpose()?;
         let spec_config = effective.as_deref().unwrap_or(config);
-        let spec_collections = effective
-            .as_ref()
-            .map(|cfg| effective_spec_collections(cfg));
         let mut deps_out = Vec::with_capacity(info.doc.depends_on.len());
         for raw in &info.doc.depends_on {
-            let (_, entry) = process_dep_edge(
+            let (_, entry) = builder.process_dep_edge(
                 raw,
                 info,
                 None,
                 &empty_refs,
                 run.map(|run| &run.run_id),
-                discovered,
-                root,
-                spec_collections.as_ref().unwrap_or(collections),
                 spec_config,
-                reader,
-                &mut linked_cache,
-                &mut graph,
-                warnings,
             )?;
             deps_out.push(entry);
         }
         if let Some(run) = run {
-            graph
+            builder
+                .graph
                 .active_spec_deps_resolved
                 .insert(run.run_id.clone(), deps_out);
             continue;
         }
-        graph
+        builder
+            .graph
             .spec_deps_resolved
             .insert(info.spec_id.clone(), deps_out);
 
@@ -292,29 +290,19 @@ pub(super) fn build_dependency_graph(
             let t_ref = task.task_ref.as_str();
             let mut t_entries = Vec::with_capacity(task.depends_on.len());
             for raw in &task.depends_on {
-                let (parsed_opt, entry) = process_dep_edge(
-                    raw,
-                    info,
-                    Some(t_ref),
-                    &local_refs,
-                    None,
-                    discovered,
-                    root,
-                    collections,
-                    config,
-                    reader,
-                    &mut linked_cache,
-                    &mut graph,
-                    warnings,
-                )?;
+                let (parsed_opt, entry) =
+                    builder.process_dep_edge(raw, info, Some(t_ref), &local_refs, None, config)?;
                 t_entries.push((parsed_opt, entry));
             }
-            graph
+            builder
+                .graph
                 .task_deps_resolved
                 .insert((info.spec_id.clone(), t_ref.to_owned()), t_entries);
         }
     }
 
+    warnings.extend(builder.warnings);
+    let mut graph = builder.graph;
     record_active_blocks(config, discovered, root, active_runs_by_spec, &mut graph)?;
     Ok(graph)
 }
@@ -590,202 +578,200 @@ fn map_dep_resolution(resolution: DepTargetResolution) -> (&'static str, bool) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn resolve_dep_entry(
-    raw: &str,
-    parsed: &mut ParsedDepSyntax,
-    source: &SpecInfo,
-    root: &Path,
-    active_annotation: bool,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
-    config: &StateEngineConfig,
-    reader: &dyn StateReader,
-    discovered: &DiscoveredWorkspace,
-    linked_cache: &mut LinkedWsCache,
-    warnings: &mut Vec<String>,
-) -> Result<(RoadmapDepEntry, Option<RunId>), StateError> {
-    let to_entry = |(status, satisfied): (&str, bool)| RoadmapDepEntry {
-        raw: raw.to_owned(),
-        status: status.to_owned(),
-        satisfied,
-    };
-    let local_checkout = if active_annotation {
-        &config.worktree
-    } else {
-        root
-    };
-    let mut qualified = None;
-    let (spec_id, task_ref) = match parsed {
-        ParsedDepSyntax::LocalTask(t_ref) => {
-            let completed = source.doc.tasks.iter().any(|task| {
-                task.task_ref.as_str() == t_ref && task.status == crate::spec::SpecStatus::Completed
-            });
-            return Ok((
-                to_entry((if completed { "satisfied" } else { "planned" }, completed)),
-                None,
-            ));
-        }
-        ParsedDepSyntax::LocalSpec { spec_id, task_ref } => (spec_id, task_ref),
-        ParsedDepSyntax::LinkedSpec {
-            ws_alias,
-            spec_id,
-            task_ref,
-        } => {
-            let key = (
-                source.checkout.clone(),
-                source.spec_id.clone(),
-                config.worktree.clone(),
-                ws_alias.clone(),
-            );
-            if !linked_cache.aliases.contains_key(&key) {
-                let spec_repos = resolve_spec_repositories(&source.checkout, &source.doc);
-                let checkout = if config.linked_workspaces.contains_key(ws_alias)
-                    || spec_repos.contains_key(ws_alias)
-                {
-                    Some(resolve_linked_workspace_root(
-                        ws_alias,
-                        raw,
-                        &config.linked_workspaces,
-                        &spec_repos,
-                    )?)
-                } else {
-                    None
-                };
-                linked_cache.aliases.insert(key.clone(), checkout);
+impl DependencyGraphBuilder<'_> {
+    fn resolve_dep_entry(
+        &mut self,
+        raw: &str,
+        parsed: &mut ParsedDepSyntax,
+        source: &SpecInfo,
+        active_annotation: bool,
+        config: &StateEngineConfig,
+    ) -> Result<(RoadmapDepEntry, Option<RunId>), StateError> {
+        let collections = effective_spec_collections(config);
+        let to_entry = |(status, satisfied): (&str, bool)| RoadmapDepEntry {
+            raw: raw.to_owned(),
+            status: status.to_owned(),
+            satisfied,
+        };
+        let local_checkout = if active_annotation {
+            &config.worktree
+        } else {
+            self.root
+        };
+        let mut qualified = None;
+        let (spec_id, task_ref) = match parsed {
+            ParsedDepSyntax::LocalTask(t_ref) => {
+                let completed = source.doc.tasks.iter().any(|task| {
+                    task.task_ref.as_str() == t_ref
+                        && task.status == crate::spec::SpecStatus::Completed
+                });
+                return Ok((
+                    to_entry((if completed { "satisfied" } else { "planned" }, completed)),
+                    None,
+                ));
             }
-            let Some(checkout) = linked_cache.aliases[&key].clone() else {
-                return Ok((to_entry(("missing", false)), None));
+            ParsedDepSyntax::LocalSpec { spec_id, task_ref } => (spec_id, task_ref),
+            ParsedDepSyntax::LinkedSpec {
+                ws_alias,
+                spec_id,
+                task_ref,
+            } => {
+                let key = (
+                    source.checkout.clone(),
+                    source.spec_id.clone(),
+                    config.worktree.clone(),
+                    ws_alias.clone(),
+                );
+                if !self.linked_cache.aliases.contains_key(&key) {
+                    let spec_repos = resolve_spec_repositories(&source.checkout, &source.doc);
+                    let checkout = if config.linked_workspaces.contains_key(ws_alias)
+                        || spec_repos.contains_key(ws_alias)
+                    {
+                        Some(resolve_linked_workspace_root(
+                            ws_alias,
+                            raw,
+                            &config.linked_workspaces,
+                            &spec_repos,
+                        )?)
+                    } else {
+                        None
+                    };
+                    self.linked_cache.aliases.insert(key.clone(), checkout);
+                }
+                let Some(checkout) = self.linked_cache.aliases[&key].clone() else {
+                    return Ok((to_entry(("missing", false)), None));
+                };
+                if checkout != self.root && !self.discovered.owned_worktrees.contains(&checkout) {
+                    let outcome = resolve_linked_dep(
+                        raw,
+                        ws_alias,
+                        spec_id,
+                        task_ref.as_deref(),
+                        checkout,
+                        &mut self.linked_cache,
+                        &mut self.warnings,
+                    )?;
+                    return Ok((to_entry(outcome), None));
+                }
+                qualified = Some((checkout, ws_alias.as_str()));
+                (spec_id, task_ref)
+            }
+        };
+        if let Some((checkout, alias)) = &qualified {
+            if !self.discovered.checkout_specs.contains_key(checkout) {
+                self.linked_cache.workspace(
+                    checkout,
+                    alias,
+                    Some((local_checkout, &collections)),
+                    &mut self.warnings,
+                )?;
+            }
+        }
+        let (checkout, target_collections, active_docs): (
+            &Path,
+            &BTreeMap<String, SpecCollectionConfig>,
+            &[SpecDocument],
+        ) = if let Some((checkout, _)) = &qualified {
+            let scoped = match self.discovered.checkout_specs.get(checkout) {
+                Some(scoped) => scoped,
+                None => &self.linked_cache.workspaces[checkout].0,
             };
-            if checkout != root && !discovered.owned_worktrees.contains(&checkout) {
-                let outcome = resolve_linked_dep(
-                    raw,
-                    ws_alias,
+            (checkout.as_path(), &scoped.collections, &scoped.active_docs)
+        } else {
+            (
+                local_checkout,
+                &collections,
+                self.discovered
+                    .checkout_specs
+                    .get(local_checkout)
+                    .map_or(&[][..], |scoped| scoped.active_docs.as_slice()),
+            )
+        };
+        let empty_archives = BTreeMap::new();
+        let archived_specs = self.discovered
+            .checkout_archives
+            .get(checkout)
+            .unwrap_or(&empty_archives);
+        let preloaded = PreloadedDepContext {
+            workspace: self.root,
+            runs: &self.linked_cache.runs,
+            task_statuses: &self.linked_cache.task_statuses,
+            tombstones: &self.linked_cache.tombstones,
+            tombstone_archives: &self.linked_cache.tombstone_archives,
+            archived_specs,
+        };
+        let mut resolved = resolve_dep_target(
+            checkout,
+            target_collections,
+            Some(self.reader),
+            Some(active_docs),
+            spec_id,
+            task_ref.as_deref(),
+            raw,
+            qualified.as_ref().map(|(checkout, _)| checkout.as_path()),
+            Some(&preloaded),
+        )?;
+        if qualified.is_none() && matches!(resolved, DepTargetResolution::NotFound) {
+            if let Some(sibling) = self.discovered
+                .sibling_candidates
+                .get(spec_id)
+                .and_then(|paths| paths.iter().find(|path| path.as_path() != checkout))
+            {
+                let scoped = &self.discovered.checkout_specs[sibling];
+                let sibling_context = PreloadedDepContext {
+                    archived_specs: self.discovered
+                        .checkout_archives
+                        .get(sibling)
+                        .unwrap_or(&empty_archives),
+                    ..preloaded
+                };
+                resolved = resolve_dep_target(
+                    sibling,
+                    &scoped.collections,
+                    None,
+                    Some(&scoped.active_docs),
                     spec_id,
                     task_ref.as_deref(),
-                    checkout,
-                    linked_cache,
-                    warnings,
+                    raw,
+                    None,
+                    Some(&sibling_context),
                 )?;
-                return Ok((to_entry(outcome), None));
             }
-            qualified = Some((checkout, ws_alias.as_str()));
-            (spec_id, task_ref)
         }
-    };
-    if let Some((checkout, alias)) = &qualified {
-        if !discovered.checkout_specs.contains_key(checkout) {
-            linked_cache.workspace(
-                checkout,
-                alias,
-                Some((local_checkout, collections)),
-                warnings,
-            )?;
-        }
-    }
-    let (checkout, target_collections, active_docs): (
-        &Path,
-        &BTreeMap<String, SpecCollectionConfig>,
-        &[SpecDocument],
-    ) = if let Some((checkout, _)) = &qualified {
-        let scoped = match discovered.checkout_specs.get(checkout) {
-            Some(scoped) => scoped,
-            None => &linked_cache.workspaces[checkout].0,
+        let mut active_target = None;
+        let target_in_checkout = match &resolved {
+            DepTargetResolution::ActiveRun {
+                run_id,
+                spec_id: resolved_spec,
+                task_exists,
+                ..
+            } => {
+                let matches_checkout = qualified.is_none() || *task_exists;
+                if matches_checkout {
+                    active_target = Some(run_id.clone());
+                }
+                if let Some(resolved_spec) = resolved_spec {
+                    spec_id.clone_from(resolved_spec);
+                }
+                matches_checkout
+            }
+            DepTargetResolution::ActiveSpec { task_exists, .. } => *task_exists,
+            _ => false,
         };
-        (checkout.as_path(), &scoped.collections, &scoped.active_docs)
-    } else {
-        (
-            local_checkout,
-            collections,
-            discovered
-                .checkout_specs
-                .get(local_checkout)
-                .map_or(&[][..], |scoped| scoped.active_docs.as_slice()),
-        )
-    };
-    let empty_archives = BTreeMap::new();
-    let archived_specs = discovered
-        .checkout_archives
-        .get(checkout)
-        .unwrap_or(&empty_archives);
-    let preloaded = PreloadedDepContext {
-        workspace: root,
-        runs: &linked_cache.runs,
-        task_statuses: &linked_cache.task_statuses,
-        tombstones: &linked_cache.tombstones,
-        tombstone_archives: &linked_cache.tombstone_archives,
-        archived_specs,
-    };
-    let mut resolved = resolve_dep_target(
-        checkout,
-        target_collections,
-        Some(reader),
-        Some(active_docs),
-        spec_id,
-        task_ref.as_deref(),
-        raw,
-        qualified.as_ref().map(|(checkout, _)| checkout.as_path()),
-        Some(&preloaded),
-    )?;
-    if qualified.is_none() && matches!(resolved, DepTargetResolution::NotFound) {
-        if let Some(sibling) = discovered
-            .sibling_candidates
-            .get(spec_id)
-            .and_then(|paths| paths.iter().find(|path| path.as_path() != checkout))
-        {
-            let scoped = &discovered.checkout_specs[sibling];
-            let sibling_context = PreloadedDepContext {
-                archived_specs: discovered
-                    .checkout_archives
-                    .get(sibling)
-                    .unwrap_or(&empty_archives),
-                ..preloaded
+        let local_vertex = qualified.is_some()
+            && target_in_checkout
+            && self.discovered
+                .specs_by_id
+                .get(spec_id)
+                .is_some_and(|info| info.checkout == checkout);
+        if local_vertex {
+            *parsed = ParsedDepSyntax::LocalSpec {
+                spec_id: std::mem::take(spec_id),
+                task_ref: task_ref.take(),
             };
-            resolved = resolve_dep_target(
-                sibling,
-                &scoped.collections,
-                None,
-                Some(&scoped.active_docs),
-                spec_id,
-                task_ref.as_deref(),
-                raw,
-                None,
-                Some(&sibling_context),
-            )?;
         }
+        Ok((to_entry(map_dep_resolution(resolved)), active_target))
     }
-    let mut active_target = None;
-    let target_in_checkout = match &resolved {
-        DepTargetResolution::ActiveRun {
-            run_id,
-            spec_id: resolved_spec,
-            task_exists,
-            ..
-        } => {
-            let matches_checkout = qualified.is_none() || *task_exists;
-            if matches_checkout {
-                active_target = Some(run_id.clone());
-            }
-            if let Some(resolved_spec) = resolved_spec {
-                spec_id.clone_from(resolved_spec);
-            }
-            matches_checkout
-        }
-        DepTargetResolution::ActiveSpec { task_exists, .. } => *task_exists,
-        _ => false,
-    };
-    let local_vertex = qualified.is_some()
-        && target_in_checkout
-        && discovered
-            .specs_by_id
-            .get(spec_id)
-            .is_some_and(|info| info.checkout == checkout);
-    if local_vertex {
-        *parsed = ParsedDepSyntax::LocalSpec {
-            spec_id: std::mem::take(spec_id),
-            task_ref: task_ref.take(),
-        };
-    }
-    Ok((to_entry(map_dep_resolution(resolved)), active_target))
 }
 
 fn resolve_linked_dep(
@@ -850,8 +836,13 @@ impl LinkedWsCache {
                         (specs, Some(SqliteStateReader::new(db_path)))
                     }
                 };
-                let scanned =
-                    scan_checkout_specs(checkout, alias, &collections, warnings, &mut BTreeMap::new())?;
+                let scanned = scan_checkout_specs(
+                    checkout,
+                    alias,
+                    &collections,
+                    warnings,
+                    &mut BTreeMap::new(),
+                )?;
                 Ok(entry.insert((checkout_specs_from(&collections, &scanned), reader)))
             }
         }

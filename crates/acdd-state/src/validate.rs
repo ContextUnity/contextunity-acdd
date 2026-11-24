@@ -6,21 +6,22 @@
 use crate::machine::{effective_task_tags, matches_when};
 use crate::profile::{
     resolve_optional_profile_ref_with_dirs, resolve_profile_from_str_with_dirs,
-    resolve_profile_ref_with_dirs, validate_profile, ProfileValidationOptions,
-    ResolvedGateProfile,
+    resolve_profile_ref_with_dirs, validate_profile, ProfileValidationOptions, ResolvedGateProfile,
 };
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
 use crate::types::{NodeStatus, RunStatus};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::{collect_workspace_specs, validate_spec_dependencies};
 use crate::usecases::dto::{ValidateDiagnostic, ValidateResp, ValidateSummary};
 use crate::usecases::lifecycle::{
     effective_modules_for_profile, effective_spec_collections, match_spec_collection,
     read_confined_utf8, validate_profile_fail_closed,
 };
-use crate::usecases::config::StateEngineConfig;
-use acdd_core::config::{load_adapter_report, Adapter, SpecCollectionConfig, ACDD_CONFIG_FILE, ACDD_DIR};
+use acdd_core::config::{
+    load_adapter_report, Adapter, SpecCollectionConfig, ACDD_CONFIG_FILE, ACDD_DIR,
+};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::path_policy::{is_valid_scope_glob, scopes_overlap};
@@ -114,7 +115,8 @@ pub fn validate_workspace(
     };
 
     let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
-    let (scanned_specs, scan_failed_count) = scan_collection_specs(root, &adapter, &mut diagnostics);
+    let (scanned_specs, scan_failed_count) =
+        scan_collection_specs(root, &adapter, &mut diagnostics);
     let active_docs: Vec<SpecDocument> = scanned_specs.iter().map(|s| s.doc.clone()).collect();
     let docs_count = scanned_specs.len() + scan_failed_count;
 
@@ -273,8 +275,7 @@ pub fn validate_document(
                     doc: doc.clone(),
                 });
             }
-            let active_docs: Vec<SpecDocument> =
-                scanned_specs.into_iter().map(|s| s.doc).collect();
+            let active_docs: Vec<SpecDocument> = scanned_specs.into_iter().map(|s| s.doc).collect();
             let col = match_spec_collection(&adapter.specs, &rel_display)
                 .and_then(|k| adapter.specs.get(&k));
             let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
@@ -564,8 +565,7 @@ fn validate_parsed_spec(
             Some(&adapter.profiles_dirs),
         ) {
             Ok(p) => {
-                let effective_mods =
-                    effective_modules_for_profile(&adapter.modules, &p.modules);
+                let effective_mods = effective_modules_for_profile(&adapter.modules, &p.modules);
                 let opts = ProfileValidationOptions {
                     domain_providers: Some(providers),
                     acdd_modules: Some(&effective_mods),
@@ -637,13 +637,7 @@ fn validate_parsed_spec(
         spec,
         active_docs,
     ) {
-        diagnostics.push(fail(
-            issue.code.as_str(),
-            rel_path,
-            1,
-            1,
-            issue.message,
-        ));
+        diagnostics.push(fail(issue.code.as_str(), rel_path, 1, 1, issue.message));
         doc_failed = true;
     }
 
@@ -751,10 +745,9 @@ fn load_reconciled_task_statuses(
     else {
         return reconciled_statuses;
     };
-    let Some(run) = runs
-        .into_iter()
-        .find(|r| r.spec_id.as_deref() == Some(spec_id) || r.spec_path.as_deref() == Some(rel_path))
-    else {
+    let Some(run) = runs.into_iter().find(|r| {
+        r.spec_id.as_deref() == Some(spec_id) || r.spec_path.as_deref() == Some(rel_path)
+    }) else {
         return reconciled_statuses;
     };
     let Ok(Some(snap)) = reader.load_run_graph(&run.run_id) else {
@@ -796,7 +789,10 @@ fn validate_planned_spec_task_statuses(
                 reconciled_statuses.get(task.task_ref.as_str()).copied(),
             ),
             (SpecStatus::Completed, Some(NodeStatus::Completed))
-                | (SpecStatus::Active, Some(NodeStatus::InProgress | NodeStatus::Ready))
+                | (
+                    SpecStatus::Active,
+                    Some(NodeStatus::InProgress | NodeStatus::Ready)
+                )
         );
         if !reconciled {
             diagnostics.push(fail(

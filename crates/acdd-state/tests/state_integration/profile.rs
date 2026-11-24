@@ -108,8 +108,11 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
             }],
         },
     );
-    CompositeDomainProvider::new(vec![Arc::new(code), Arc::new(docs), Arc::new(http)])
-        .expect("mock providers valid")
+    CompositeDomainProvider::with_module_flags(
+        vec![Arc::new(code), Arc::new(docs), Arc::new(http)],
+        BTreeMap::from([("http".to_owned(), true)]),
+    )
+    .expect("mock providers valid")
 }
 
 fn disabled_code_and_docs_modules() -> SubsystemRegistry {

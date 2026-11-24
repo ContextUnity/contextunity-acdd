@@ -550,12 +550,11 @@ fn evaluate_pass(
     )?;
 
     // 5. Proof evidence validation (`review` / `CustomSchema`) + `accepted_snapshot`.
-    let mut new_artifacts = collect_pass_proof_artifacts(
+    let new_artifacts = collect_pass_proof_artifacts(
         snapshot,
         profile,
         node,
         gate,
-        claim_revision,
         current_tree,
         input,
         obs,
@@ -563,18 +562,28 @@ fn evaluate_pass(
 
     // 6. Compute node, dependency, blackboard, and run transitions.
     let mut watch_ids = vec![node.node_id.as_str()];
-    let mut node_patches = Vec::new();
-    let mut dependency_patches = Vec::new();
-    let blackboard_patches = Vec::new();
-    let mut new_run_status = None;
-    let mut completed_at = None;
+    let mut transition = TransitionPlan {
+        preconditions: build_preconditions(snapshot, &watch_ids, Some(node)),
+        bump_run_generation: true,
+        new_run_status: None,
+        new_root_cycle_count: None,
+        completed_at: None,
+        node_patches: Vec::new(),
+        dependency_patches: Vec::new(),
+        claim_patches: Vec::new(),
+        new_artifacts,
+        new_blackboard: Vec::new(),
+        blackboard_patches: Vec::new(),
+        new_subtasks: Vec::new(),
+        significant_transition: true,
+    };
 
     let mut complete_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Completed);
     complete_patch.accepted_tree = Some(Some(current_tree.clone()));
     complete_patch.accepted_definition_digest = Some(Some(gate.definition_digest.clone()));
     complete_patch.worker_id = Some(Some(input.worker_id.clone()));
     complete_patch.active_span_id = Some(None);
-    node_patches.push(complete_patch);
+    transition.node_patches.push(complete_patch);
 
     // Advance `pass:` target inside the same container/level.
     if let Some(ref pass_id) = gate.pass {
@@ -592,7 +601,9 @@ fn evaluate_pass(
                 )
             })?;
         watch_ids.push(next_node.node_id.as_str());
-        node_patches.push(NodeStatusPatch::status_only(&next_node.node_id, NodeStatus::Ready));
+        transition
+            .node_patches
+            .push(NodeStatusPatch::status_only(&next_node.node_id, NodeStatus::Ready));
     }
 
     // Handle `receipt: true` container completion & readiness fan-out.
@@ -602,26 +613,19 @@ fn evaluate_pass(
                 snapshot,
                 obs,
                 node,
-                gate,
-                claim_revision,
                 current_tree,
                 input,
                 &mut watch_ids,
-                &mut node_patches,
-                &mut dependency_patches,
-                &mut new_artifacts,
+                &mut transition,
             )?,
             NodeKind::RootGate => handle_root_receipt_completion(
                 snapshot,
                 obs,
                 node,
                 gate,
-                claim_revision,
                 current_tree,
                 input,
-                &mut new_artifacts,
-                &mut new_run_status,
-                &mut completed_at,
+                &mut transition,
             )?,
             _ => {}
         }
@@ -635,32 +639,18 @@ fn evaluate_pass(
         gate,
         current_tree,
         &mut watch_ids,
-        &mut node_patches,
+        &mut transition.node_patches,
     );
 
-    let mut preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
-    preconditions.required_predecessor_trees = required_predecessor_trees;
-
-    Ok(SubmitEvaluation::Apply(TransitionPlan {
-        preconditions,
-        bump_run_generation: true,
-        new_run_status,
-        new_root_cycle_count: None,
-        completed_at,
-        node_patches,
-        dependency_patches,
-        claim_patches: vec![ClaimOutcomePatch {
+    transition.preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
+    transition.preconditions.required_predecessor_trees = required_predecessor_trees;
+    transition.claim_patches = vec![ClaimOutcomePatch {
             node_id: node.node_id.clone(),
             claim_revision,
             outcome: ClaimOutcome::Passed,
             ended_at: obs.now_utc.clone(),
-        }],
-        new_artifacts,
-        new_blackboard: Vec::new(),
-        blackboard_patches,
-        new_subtasks: Vec::new(),
-        significant_transition: true,
-    }))
+        }];
+    Ok(SubmitEvaluation::Apply(transition))
 }
 
 fn verify_pass_trace(
@@ -737,13 +727,11 @@ fn verify_pass_trace(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collect_pass_proof_artifacts(
     snapshot: &RunGraphSnapshot,
     profile: &MachineProfileInput,
     node: &GateNodeRecord,
     gate: &MachineGateDef,
-    claim_revision: u32,
     current_tree: &TreeOid,
     input: &SubmitInput,
     obs: &ValidatedObservations,
@@ -761,7 +749,6 @@ fn collect_pass_proof_artifacts(
             new_artifacts.push(make_gate_artifact(
                 snapshot,
                 node,
-                claim_revision,
                 ArtifactKind::Proof,
                 rev,
                 input,
@@ -789,7 +776,6 @@ fn collect_pass_proof_artifacts(
             new_artifacts.push(make_gate_artifact(
                 snapshot,
                 node,
-                claim_revision,
                 ArtifactKind::Proof,
                 val,
                 input,
@@ -809,7 +795,6 @@ fn collect_pass_proof_artifacts(
     new_artifacts.push(make_gate_artifact(
         snapshot,
         node,
-        claim_revision,
         ArtifactKind::AcceptedSnapshot,
         &snapshot_payload,
         input,
@@ -819,11 +804,9 @@ fn collect_pass_proof_artifacts(
     Ok(new_artifacts)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn make_gate_artifact<T: serde::Serialize>(
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
-    claim_revision: u32,
     kind: ArtifactKind,
     payload: &T,
     input: &SubmitInput,
@@ -833,7 +816,7 @@ fn make_gate_artifact<T: serde::Serialize>(
     Ok(GateArtifactRecord {
         run_id: snapshot.run.run_id.clone(),
         node_id: node.node_id.clone(),
-        claim_revision,
+        claim_revision: node.claim_revision,
         kind,
         payload_json: serde_json::to_string(payload).map_err(|err| {
             StateError::new(
@@ -846,19 +829,14 @@ fn make_gate_artifact<T: serde::Serialize>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_task_receipt_completion<'a>(
     snapshot: &'a RunGraphSnapshot,
     obs: &ValidatedObservations,
     node: &GateNodeRecord,
-    gate: &MachineGateDef,
-    claim_revision: u32,
     current_tree: &TreeOid,
     input: &SubmitInput,
     watch_ids: &mut Vec<&'a str>,
-    node_patches: &mut Vec<NodeStatusPatch>,
-    dependency_patches: &mut Vec<DependencySatisfiedPatch>,
-    new_artifacts: &mut Vec<GateArtifactRecord>,
+    transition: &mut TransitionPlan,
 ) -> Result<(), StateError> {
     let parent_id = node.parent_id.as_deref().ok_or_else(|| {
         StateError::new(
@@ -905,7 +883,7 @@ fn handle_task_receipt_completion<'a>(
         }
     }
     task_patch.invariants = Some(inv.clone());
-    node_patches.push(task_patch);
+    transition.node_patches.push(task_patch);
 
     for sibling in &snapshot.nodes {
         if sibling.kind == NodeKind::TaskGate
@@ -914,14 +892,14 @@ fn handle_task_receipt_completion<'a>(
             && sibling.status == NodeStatus::Pending
         {
             watch_ids.push(sibling.node_id.as_str());
-            node_patches.push(NodeStatusPatch::status_only(
+            transition.node_patches.push(NodeStatusPatch::status_only(
                 &sibling.node_id,
                 NodeStatus::Cancelled,
             ));
         }
     }
 
-    dependency_patches.push(DependencySatisfiedPatch {
+    transition.dependency_patches.push(DependencySatisfiedPatch {
         depends_on_ref: task_ref.clone(),
         dependent_task_ref: None,
         satisfied: true,
@@ -930,9 +908,9 @@ fn handle_task_receipt_completion<'a>(
     let receipt_payload = json!({
         "run_id": snapshot.run.run_id.as_str(),
         "node_cursor": input.node_cursor.to_string(),
-        "gate_id": gate.id.as_str(),
+        "gate_id": node.gate_id,
         "worker_id": input.worker_id.as_str(),
-        "claim_revision": claim_revision,
+        "claim_revision": node.claim_revision,
         "contract_revision": node.contract_revision,
         "candidate_tree": current_tree.as_str(),
         "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
@@ -942,10 +920,9 @@ fn handle_task_receipt_completion<'a>(
             "review_summary": input.summary,
         }
     });
-    new_artifacts.push(make_gate_artifact(
+    transition.new_artifacts.push(make_gate_artifact(
         snapshot,
         node,
-        claim_revision,
         ArtifactKind::Receipt,
         &receipt_payload,
         input,
@@ -953,7 +930,7 @@ fn handle_task_receipt_completion<'a>(
         "task receipt",
     )?);
 
-    unblock_newly_ready_tasks(snapshot, task_ref, obs, watch_ids, node_patches);
+    unblock_newly_ready_tasks(snapshot, task_ref, obs, watch_ids, &mut transition.node_patches);
 
     let others_done = snapshot.nodes.iter().all(|n| {
         n.kind != NodeKind::Task
@@ -971,7 +948,7 @@ fn handle_task_receipt_completion<'a>(
         {
             if first_post.status == NodeStatus::Pending {
                 watch_ids.push(first_post.node_id.as_str());
-                node_patches.push(NodeStatusPatch::status_only(
+                transition.node_patches.push(NodeStatusPatch::status_only(
                     &first_post.node_id,
                     NodeStatus::Ready,
                 ));
@@ -981,18 +958,14 @@ fn handle_task_receipt_completion<'a>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_root_receipt_completion(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
     node: &GateNodeRecord,
     gate: &MachineGateDef,
-    claim_revision: u32,
     current_tree: &TreeOid,
     input: &SubmitInput,
-    new_artifacts: &mut Vec<GateArtifactRecord>,
-    new_run_status: &mut Option<RunStatus>,
-    completed_at: &mut Option<String>,
+    transition: &mut TransitionPlan,
 ) -> Result<(), StateError> {
     if is_post_task_root_node(snapshot, node) {
         if !all_non_cancelled_tasks_completed(snapshot) {
@@ -1009,7 +982,7 @@ fn handle_root_receipt_completion(
         "node_cursor": input.node_cursor.to_string(),
         "gate_id": gate.id.as_str(),
         "worker_id": input.worker_id.as_str(),
-        "claim_revision": claim_revision,
+        "claim_revision": node.claim_revision,
         "contract_revision": node.contract_revision,
         "candidate_tree": current_tree.as_str(),
         "committed_oid": input.snapshot_commit.as_ref().map(|c| c.as_str()),
@@ -1022,10 +995,9 @@ fn handle_root_receipt_completion(
             "review_summary": input.summary,
         }
     });
-    new_artifacts.push(make_gate_artifact(
+    transition.new_artifacts.push(make_gate_artifact(
         snapshot,
         node,
-        claim_revision,
         ArtifactKind::Receipt,
         &receipt_payload,
         input,
@@ -1034,8 +1006,8 @@ fn handle_root_receipt_completion(
     )?);
 
     if gate.pass.is_none() {
-        *new_run_status = Some(RunStatus::Completed);
-        *completed_at = Some(obs.now_utc.clone());
+        transition.new_run_status = Some(RunStatus::Completed);
+        transition.completed_at = Some(obs.now_utc.clone());
     }
     Ok(())
 }

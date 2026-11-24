@@ -26,12 +26,19 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 fn make_temp_dir(label: &str) -> TempDir {
-    tempfile::Builder::new().prefix(&format!("acdd-usecases-{label}-")).tempdir().expect("create tempdir")
+    tempfile::Builder::new()
+        .prefix(&format!("acdd-usecases-{label}-"))
+        .tempdir()
+        .expect("create tempdir")
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> String {
     let out = git_command(dir, args).expect("spawn git");
-    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim_end().to_owned()
 }
 
@@ -65,40 +72,57 @@ fn unit_config(root: &Path) -> StateEngineConfig {
 
 fn empty_preconditions(expected_run_generation: u64) -> StoragePreconditions {
     StoragePreconditions {
-        expected_run_generation, expected_node_versions: Vec::new(),
-        expected_claim_revision: None, expected_contract_revision: None,
-        expected_worker_id: None, required_predecessor_trees: Vec::new(),
+        expected_run_generation,
+        expected_node_versions: Vec::new(),
+        expected_claim_revision: None,
+        expected_contract_revision: None,
+        expected_worker_id: None,
+        required_predecessor_trees: Vec::new(),
     }
 }
 
 fn exec_start(eng: &StateEngine, spec_path: &str, profile: &str) -> StartResp {
-    match eng.execute(StateCommand::Start(StartReq {
-        spec_path: Some(spec_path.to_owned()),
-        profile: Some(profile.to_owned()),
-        in_place: true,
-        ..StartReq::default()
-    })).unwrap() {
+    match eng
+        .execute(StateCommand::Start(StartReq {
+            spec_path: Some(spec_path.to_owned()),
+            profile: Some(profile.to_owned()),
+            in_place: true,
+            ..StartReq::default()
+        }))
+        .unwrap()
+    {
         StateCommandOutput::Start(resp) => *resp,
         other => panic!("expected StartResp, got {other:?}"),
     }
 }
 
 fn exec_claim(eng: &StateEngine, rid: &str, node: &str, worker: &str) -> u32 {
-    match eng.execute(StateCommand::Claim(ClaimReq {
-        run: Some(rid.to_owned()),
-        node: Some(node.to_owned()),
-        worker_id: WorkerId::new(worker).unwrap(),
-        session_fingerprint: None,
-        force: false,
-        steal_remote: false,
-        worktree: None,
-    })).unwrap() {
+    match eng
+        .execute(StateCommand::Claim(ClaimReq {
+            run: Some(rid.to_owned()),
+            node: Some(node.to_owned()),
+            worker_id: WorkerId::new(worker).unwrap(),
+            session_fingerprint: None,
+            force: false,
+            steal_remote: false,
+            worktree: None,
+        }))
+        .unwrap()
+    {
         StateCommandOutput::Claim(resp) => resp.claim_revision,
         other => panic!("expected ClaimResp, got {other:?}"),
     }
 }
 
-fn exec_submit(eng: &StateEngine, rid: &str, node: &str, worker: &str, rev: Option<u32>, action: SubmitAction, findings: Option<RejectionFindings>) -> Result<SubmitResp, StateError> {
+fn exec_submit(
+    eng: &StateEngine,
+    rid: &str,
+    node: &str,
+    worker: &str,
+    rev: Option<u32>,
+    action: SubmitAction,
+    findings: Option<RejectionFindings>,
+) -> Result<SubmitResp, StateError> {
     match eng.execute(StateCommand::Submit(Box::new(SubmitReq {
         run: Some(rid.to_owned()),
         node: node.to_owned(),
@@ -126,7 +150,6 @@ fn write_profile(root: &Path, name: &str, yaml: &str) -> String {
     format!(".acdd/profiles/{name}")
 }
 
-
 fn empty_provider() -> Arc<CompositeDomainProvider> {
     Arc::new(CompositeDomainProvider::default())
 }
@@ -146,8 +169,18 @@ fn check_post_runner_completion_tombstone_matrix() {
         log_relpath: "logs/run.log".to_owned(),
     };
     for (idx, (rid_str, rname, st, expect_ok)) in [
-        ("run-pruned-done", "AC-DONE", TerminalStatus::Completed, true),
-        ("run-pruned-cleared", "AC-CLR", TerminalStatus::Cleared, false),
+        (
+            "run-pruned-done",
+            "AC-DONE",
+            TerminalStatus::Completed,
+            true,
+        ),
+        (
+            "run-pruned-cleared",
+            "AC-CLR",
+            TerminalStatus::Cleared,
+            false,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -223,19 +256,22 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
     let dr_eng = StateEngine::open(dr_cfg.clone(), dr_prov.clone()).unwrap();
     let dr_start = exec_start(&dr_eng, "docs/milestones/AC-DR.md", &dr_p);
     let dr_rid = dr_start.run.run_id.clone();
-    let dr_profile = crate::usecases::lifecycle::parse_profile_from_run(&dr_start.run).unwrap();
     let session_cache = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
     // Helper closure triggers builder execution via `execute_gate_node` (returns RunnerNoSubmission after spawn).
     let run_builder_step = || {
         let snap = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
+        let node = snap
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "task:t1:build")
+            .unwrap();
         let err = crate::usecases::run::execute_gate_node(
             &dr_cfg,
             dr_eng.backend(),
             &dr_prov,
-            &dr_profile,
             &snap,
-            "task:t1:build",
+            node,
             true,
             &session_cache,
         )
@@ -246,8 +282,22 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
     // Pass 1: fresh builder session created & cached.
     run_builder_step();
     let snap_b1 = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
-    let rev_b1 = snap_b1.nodes.iter().find(|n| n.node_id == "task:t1:build").unwrap().claim_revision;
-    exec_submit(&dr_eng, dr_rid.as_str(), "t1.build", "runner-builder", Some(rev_b1), SubmitAction::Pass, None).unwrap();
+    let rev_b1 = snap_b1
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:t1:build")
+        .unwrap()
+        .claim_revision;
+    exec_submit(
+        &dr_eng,
+        dr_rid.as_str(),
+        "t1.build",
+        "runner-builder",
+        Some(rev_b1),
+        SubmitAction::Pass,
+        None,
+    )
+    .unwrap();
 
     // Reject review with `defect` -> cached session MUST be reused on next builder step.
     let rc1 = exec_claim(&dr_eng, dr_rid.as_str(), "t1.review", "rev-1");
@@ -273,8 +323,22 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
     .unwrap();
     run_builder_step();
     let snap_b2 = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
-    let rev_b2 = snap_b2.nodes.iter().find(|n| n.node_id == "task:t1:build").unwrap().claim_revision;
-    exec_submit(&dr_eng, dr_rid.as_str(), "t1.build", "runner-builder", Some(rev_b2), SubmitAction::Pass, None).unwrap();
+    let rev_b2 = snap_b2
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:t1:build")
+        .unwrap()
+        .claim_revision;
+    exec_submit(
+        &dr_eng,
+        dr_rid.as_str(),
+        "t1.build",
+        "runner-builder",
+        Some(rev_b2),
+        SubmitAction::Pass,
+        None,
+    )
+    .unwrap();
 
     // Reject review with `architectural_drift` -> triggers `rearchitect` & invalidates poisoned session.
     let rc2 = exec_claim(&dr_eng, dr_rid.as_str(), "t1.review", "rev-2");
@@ -299,14 +363,29 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
     )
     .unwrap();
     let arch_c = exec_claim(&dr_eng, dr_rid.as_str(), "t1.rearchitect", "arch-1");
-    exec_submit(&dr_eng, dr_rid.as_str(), "t1.rearchitect", "arch-1", Some(arch_c), SubmitAction::Pass, None).unwrap();
+    exec_submit(
+        &dr_eng,
+        dr_rid.as_str(),
+        "t1.rearchitect",
+        "arch-1",
+        Some(arch_c),
+        SubmitAction::Pass,
+        None,
+    )
+    .unwrap();
 
     run_builder_step();
     let sessions_raw = fs::read_to_string(&dr_sessions_log).unwrap();
     let sessions: Vec<&str> = sessions_raw.lines().collect();
     assert_eq!(sessions.len(), 3);
-    assert_eq!(sessions[0], sessions[1], "defect rejection must reuse builder session");
-    assert_ne!(sessions[1], sessions[2], "architectural_drift must rotate poisoned builder session");
+    assert_eq!(
+        sessions[0], sessions[1],
+        "defect rejection must reuse builder session"
+    );
+    assert_ne!(
+        sessions[1], sessions[2],
+        "architectural_drift must rotate poisoned builder session"
+    );
     let prompts_raw = fs::read_to_string(&dr_prompts_log).unwrap();
     assert!(prompts_raw.contains("CONTEXT RESET REQUIRED"));
 }
@@ -327,7 +406,11 @@ fn resume_pending_tombstone_cleanups_handles_linked_and_missing_worktree() {
     let linked_spec = cs_root.join("linked-wt/docs/milestones/AC-LNK.md");
     fs::create_dir_all(linked_spec.parent().unwrap()).unwrap();
     fs::write(&linked_spec, "# linked spec\n").unwrap();
-    fs::write(cs_root.join("docs/milestones/AC-LNK.md"), "---\nid: AC-LNK\ntitle: Linked Spec Replay\nstatus: planned\n---\n# Empty\n").unwrap();
+    fs::write(
+        cs_root.join("docs/milestones/AC-LNK.md"),
+        "---\nid: AC-LNK\ntitle: Linked Spec Replay\nstatus: planned\n---\n# Empty\n",
+    )
+    .unwrap();
     let linked_wt_abs = cs_root.join("linked-wt").canonicalize().unwrap();
     let lnk_s = exec_start(&cs_eng, "docs/milestones/AC-LNK.md", &cskip_p);
     let link_tomb = RunTombstoneRecord {
@@ -347,17 +430,54 @@ fn resume_pending_tombstone_cleanups_handles_linked_and_missing_worktree() {
         closed_commit: None,
         cleanup_pending: true,
         cleanup_manifest: vec![
-            ArchiveCleanupEntry { kind: "spec_file".to_owned(), path_or_ref: "docs/milestones/AC-LNK.md".to_owned(), workspace: Some(linked_wt_abs.to_string_lossy().into_owned()), force: false },
-            ArchiveCleanupEntry { kind: "spec_file".to_owned(), path_or_ref: "docs/milestones/AC-LNK.md".to_owned(), workspace: Some(cs_root.parent().unwrap().join("removed-wt-gone").to_string_lossy().into_owned()), force: false },
+            ArchiveCleanupEntry {
+                kind: "spec_file".to_owned(),
+                path_or_ref: "docs/milestones/AC-LNK.md".to_owned(),
+                workspace: Some(linked_wt_abs.to_string_lossy().into_owned()),
+                force: false,
+            },
+            ArchiveCleanupEntry {
+                kind: "spec_file".to_owned(),
+                path_or_ref: "docs/milestones/AC-LNK.md".to_owned(),
+                workspace: Some(
+                    cs_root
+                        .parent()
+                        .unwrap()
+                        .join("removed-wt-gone")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                force: false,
+            },
         ],
         summary_json: "{}".to_owned(),
         metrics_json: "{}".to_owned(),
         closed_at: "2026-11-17T10:00:00.000Z".to_owned(),
     };
-    cs_eng.backend().exec_tx(|tx| tx.archive_and_prune_run(&empty_preconditions(lnk_s.run.generation), &link_tomb)).unwrap();
-    let cleaned_spec = crate::usecases::lifecycle::resume_pending_tombstone_cleanups_dyn(&cs_cfg, cs_eng.backend(), None).unwrap();
-    assert!(cleaned_spec.iter().any(|p| p == "docs/milestones/AC-LNK.md"));
-    assert!(!linked_spec.exists() && !cs_eng.backend().load_tombstone(&lnk_s.run.run_id).unwrap().unwrap().cleanup_pending);
+    cs_eng
+        .backend()
+        .exec_tx(|tx| {
+            tx.archive_and_prune_run(&empty_preconditions(lnk_s.run.generation), &link_tomb)
+        })
+        .unwrap();
+    let cleaned_spec = crate::usecases::lifecycle::resume_pending_tombstone_cleanups_dyn(
+        &cs_cfg,
+        cs_eng.backend(),
+        None,
+    )
+    .unwrap();
+    assert!(cleaned_spec
+        .iter()
+        .any(|p| p == "docs/milestones/AC-LNK.md"));
+    assert!(
+        !linked_spec.exists()
+            && !cs_eng
+                .backend()
+                .load_tombstone(&lnk_s.run.run_id)
+                .unwrap()
+                .unwrap()
+                .cleanup_pending
+    );
 }
 
 #[test]
@@ -383,7 +503,8 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
     let loc_start = exec_start(&loc_eng, "docs/milestones/AC-LOC.md", &loc_p);
     let loc_rid = loc_start.run.run_id.clone();
     // `{scope_target}` changes rendered command lines inside `resolve_commands` (`execution_digest` sensitivity).
-    let mut scope_prof: ResolvedGateProfile = serde_json::from_str(&loc_start.run.profile_json).unwrap();
+    let mut scope_prof: ResolvedGateProfile =
+        serde_json::from_str(&loc_start.run.profile_json).unwrap();
     scope_prof.commands.insert(
         "scoped".to_owned(),
         CommandDef::Detailed(Box::new(crate::profile::schema::DetailedCommandDef {
@@ -417,7 +538,12 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
 
     // Custom non-`builder` role context reset uses persisted `reset_gate_id` when present, falling back to `builder` only when absent.
     let mut reset_snap = loc_eng.backend().load_run_graph(&loc_rid).unwrap().unwrap();
-    let impl_node = reset_snap.nodes.iter().find(|n| n.node_id == "task:t1:build").unwrap().clone();
+    let impl_node = reset_snap
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:t1:build")
+        .unwrap()
+        .clone();
     let mut impl_gate = crate::profile::GateDef {
         id: "build".to_owned(),
         role: Some("implementer".to_owned()),
@@ -439,7 +565,11 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
         snapshot_commit: None,
         created_at: "2099-01-01T00:00:00Z".to_owned(),
     });
-    assert!(crate::usecases::commands::is_context_reset_required(&reset_snap, &impl_node, &impl_gate));
+    assert!(crate::usecases::commands::is_context_reset_required(
+        &reset_snap,
+        &impl_node,
+        &impl_gate
+    ));
     reset_snap.artifacts.last_mut().unwrap().payload_json = json!({
         "kind": "architectural_drift",
         "reset_worker_context": true,
@@ -447,7 +577,15 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
         "items": [{ "severity": "high", "message": "drift", "remediation": "rebuild" }]
     })
     .to_string();
-    assert!(!crate::usecases::commands::is_context_reset_required(&reset_snap, &impl_node, &impl_gate));
+    assert!(!crate::usecases::commands::is_context_reset_required(
+        &reset_snap,
+        &impl_node,
+        &impl_gate
+    ));
     impl_gate.role = Some("builder".to_owned());
-    assert!(crate::usecases::commands::is_context_reset_required(&reset_snap, &impl_node, &impl_gate));
+    assert!(crate::usecases::commands::is_context_reset_required(
+        &reset_snap,
+        &impl_node,
+        &impl_gate
+    ));
 }
