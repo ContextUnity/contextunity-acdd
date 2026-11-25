@@ -150,6 +150,20 @@ fn operand(node: Option<Syntax<'_>>, source: &str) -> SymbolOperand {
         })
 }
 
+fn record_unique_value<'tree>(
+    pair: Syntax<'tree>,
+    found: &mut Option<Syntax<'tree>>,
+) -> Result<(), ()> {
+    if found.is_some() {
+        return Err(());
+    }
+    *found = pair.child_by_field_name("value");
+    if found.is_none() {
+        return Err(());
+    }
+    Ok(())
+}
+
 fn keyword<'tree>(
     call: Syntax<'tree>,
     source: &str,
@@ -165,13 +179,7 @@ fn keyword<'tree>(
             return Err(());
         }
         if argument.kind() == "keyword_argument" && field(argument, source, "name") == Some(name) {
-            if found.is_some() {
-                return Err(());
-            }
-            found = argument.child_by_field_name("value");
-            if found.is_none() {
-                return Err(());
-            }
+            record_unique_value(argument, &mut found)?;
         }
     }
     Ok(found)
@@ -209,10 +217,7 @@ fn slot<'tree>(
             }
             let mut cursor = dictionary.walk();
             let mut found = None;
-            for pair in dictionary.named_children(&mut cursor) {
-                if pair.kind() == "comment" {
-                    continue;
-                }
+            for pair in super::common::non_comment_named_children(dictionary, &mut cursor) {
                 if pair.kind() != "pair" {
                     return Err(());
                 }
@@ -222,13 +227,7 @@ fn slot<'tree>(
                     return Err(());
                 };
                 if value == *member {
-                    if found.is_some() {
-                        return Err(());
-                    }
-                    found = pair.child_by_field_name("value");
-                    if found.is_none() {
-                        return Err(());
-                    }
+                    record_unique_value(pair, &mut found)?;
                 }
             }
             Ok(found)

@@ -134,9 +134,12 @@ impl<'a> LinkerInterner<'a> {
             .map(|(_, &id)| id)
     }
 
-    /// Interns a borrowed symbol string using single-hash lookup/insert, returning its `SymbolId`.
     #[inline]
-    pub fn intern_symbol(&mut self, s: &'a str) -> SymbolId {
+    fn intern_symbol_with(
+        &mut self,
+        s: &str,
+        make_symbol: impl FnOnce() -> InternedSymbol<'a>,
+    ) -> SymbolId {
         let hash = self.prehash_symbol(s);
         let next_id = SymbolId(self.id_to_symbol.len() as u32);
         let entry = self
@@ -146,7 +149,7 @@ impl<'a> LinkerInterner<'a> {
         match entry {
             hashbrown::hash_map::RawEntryMut::Occupied(occupied) => *occupied.get(),
             hashbrown::hash_map::RawEntryMut::Vacant(vacant) => {
-                let symbol = InternedSymbol::Borrowed(s);
+                let symbol = make_symbol();
                 vacant.insert_hashed_nocheck(hash, symbol.clone(), next_id);
                 self.id_to_symbol.push(symbol);
                 next_id
@@ -154,16 +157,23 @@ impl<'a> LinkerInterner<'a> {
         }
     }
 
+    /// Interns a borrowed symbol string using single-hash lookup/insert, returning its `SymbolId`.
+    #[inline]
+    pub fn intern_symbol(&mut self, s: &'a str) -> SymbolId {
+        self.intern_symbol_with(s, || InternedSymbol::Borrowed(s))
+    }
+
     /// Interns a registry-owned symbol without borrowing from a temporary context handle.
     #[inline]
     pub fn intern_owned_symbol(&mut self, symbol: impl Into<Arc<str>>) -> SymbolId {
-        let symbol = symbol.into();
-        let hash = self.prehash_symbol(&symbol);
+        let symbol: Arc<str> = symbol.into();
+        let slice: &str = &symbol;
+        let hash = self.prehash_symbol(slice);
         let next_id = SymbolId(self.id_to_symbol.len() as u32);
         let entry = self
             .symbol_to_id
             .raw_entry_mut()
-            .from_hash(hash, |key| key.as_str() == &*symbol);
+            .from_hash(hash, |key| key.as_str() == slice);
         match entry {
             hashbrown::hash_map::RawEntryMut::Occupied(occupied) => *occupied.get(),
             hashbrown::hash_map::RawEntryMut::Vacant(vacant) => {
@@ -178,21 +188,7 @@ impl<'a> LinkerInterner<'a> {
     /// Interns a borrowed registry symbol without allocating when it is already present.
     #[inline]
     pub fn intern_owned_symbol_str(&mut self, symbol: &str) -> SymbolId {
-        let hash = self.prehash_symbol(symbol);
-        let next_id = SymbolId(self.id_to_symbol.len() as u32);
-        let entry = self
-            .symbol_to_id
-            .raw_entry_mut()
-            .from_hash(hash, |key| key.as_str() == symbol);
-        match entry {
-            hashbrown::hash_map::RawEntryMut::Occupied(occupied) => *occupied.get(),
-            hashbrown::hash_map::RawEntryMut::Vacant(vacant) => {
-                let owned = InternedSymbol::Owned(Arc::from(symbol));
-                vacant.insert_hashed_nocheck(hash, owned.clone(), next_id);
-                self.id_to_symbol.push(owned);
-                next_id
-            }
-        }
+        self.intern_symbol_with(symbol, || InternedSymbol::Owned(Arc::from(symbol)))
     }
 
     /// Looks up a symbol string by value without allocating.
@@ -263,12 +259,14 @@ impl<'a> LinkerInterner<'a> {
     }
 
     /// Returns the number of interned symbols.
+    #[cfg(test)]
     #[inline]
     pub fn symbol_count(&self) -> usize {
         self.id_to_symbol.len()
     }
 
     /// Returns the number of interned paths.
+    #[cfg(test)]
     #[inline]
     pub fn path_count(&self) -> usize {
         self.id_to_path.len()

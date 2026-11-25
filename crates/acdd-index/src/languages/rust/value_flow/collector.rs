@@ -161,13 +161,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
             }
             other => other,
         };
-        let mut nominal = annotation;
-        while nominal.kind() == "reference_type" {
-            let Some(inner) = nominal.child_by_field_name("type") else {
-                break;
-            };
-            nominal = inner;
-        }
+        let nominal = super::types::unwrap_reference_type(annotation);
         if (nominal.kind() == "primitive_type" && text(nominal, source) != "str")
             || matches!(resolved, TypeExpr::Unknown)
         {

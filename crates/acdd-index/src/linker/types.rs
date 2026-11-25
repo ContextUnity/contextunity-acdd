@@ -16,6 +16,18 @@ pub(crate) fn has_node_binding(interner: &LinkerInterner<'_>, bindings: &NodeBin
     bindings.get(&owner).is_some_and(|bindings| bindings.binary_search(&name).is_ok())
 }
 
+pub(crate) fn shadowed_by_late_import(
+    alias_import_positions: &HashMap<(&str, &str), crate::semantic::SourcePosition>,
+    scope: &str, head: &str, line: usize, candidates: &mut Vec<&Node>,
+) -> bool {
+    let shadowed = !candidates.is_empty()
+        && alias_import_positions.get(&(scope, head)).is_some_and(|p| {
+            p.line <= line && candidates.iter().any(|c| c.line < p.line)
+        });
+    if shadowed { candidates.clear(); }
+    shadowed
+}
+
 /// Package re-exports indexed by interned owner file and imported name.
 pub type PackageExports<'a> = HashMap<PathId, HashMap<SymbolId, Option<&'a Node>>>;
 

@@ -449,9 +449,6 @@ operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], 
             ctx.syntax_activation_keys().attribute_prefixes,
             BTreeSet::from(["x-bind:".to_owned(), "x-on:".to_owned()])
         );
-        assert!(ctx.syntax_activation_keys().matches_attribute("x-data"));
-        assert!(ctx.syntax_activation_keys().matches_attribute("x-on:click"));
-        assert!(!ctx.syntax_activation_keys().matches_attribute("class"));
 
         let empty_signals = FileActivationSignals::default();
         let x_data_signals = FileActivationSignals {

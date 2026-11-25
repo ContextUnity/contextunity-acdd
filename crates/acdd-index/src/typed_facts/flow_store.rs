@@ -507,13 +507,7 @@ impl FlowStore {
             }
         };
         self.entries.insert(id.to_owned(), merged);
-        if invalid_carrier {
-            self.invalid_uncertainty_carriers.insert(id.to_owned());
-        }
-        self.merge_uncertainties(id, incoming_markers);
-        if incoming_fault {
-            self.uncertainty_faults.insert(id.to_owned());
-        }
+        self.merge_uncertainty_state(id, invalid_carrier, incoming_markers, incoming_fault);
     }
 
     pub fn append(&mut self, other: &mut Self) {

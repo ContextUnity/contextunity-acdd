@@ -65,45 +65,14 @@ pub fn evaluate_verify(
     obs: &ValidatedObservations,
     input: &VerifyInput,
 ) -> Result<VerifyEvaluation, StateError> {
-    let node = crate::machine::require_active_claimable_node(
+    let node = crate::machine::require_claimed_in_progress(
         snapshot,
         &input.node_cursor,
-        "verify node",
+        "verify",
+        input.claim_revision,
+        input.worker_id.as_ref(),
     )?;
-    let node_id = node.node_id.as_str();
-
-    if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
-            ErrorCode::StaleClaimRevision,
-            format!(
-                "node '{node_id}' must be in_progress with an active claim before verify (status: {}, claim_revision: {})",
-                node.status, node.claim_revision
-            ),
-        ));
-    }
-
-    if let Some(expected_rev) = input.claim_revision {
-        if expected_rev != node.claim_revision {
-            return Err(StateError::new(
-                ErrorCode::StaleClaimRevision,
-                format!(
-                    "verify claim_revision {expected_rev} does not match active claim_revision {} on '{node_id}'",
-                    node.claim_revision
-                ),
-            ));
-        }
-    }
-
-    if let Some(ref worker) = input.worker_id {
-        if node.worker_id.as_ref() != Some(worker) {
-            return Err(StateError::new(
-                ErrorCode::TaskAlreadyClaimed,
-                format!(
-                    "worker '{worker}' does not hold the active claim on '{node_id}'"
-                ),
-            ));
-        }
-    }
+    let _node_id = node.node_id.as_str();
 
     let gate = resolve_gate_def(profile, node)?;
     let admitted_scope = container_scope(snapshot, node);
@@ -418,13 +387,11 @@ pub(super) fn reset_fail_target_and_intermediates<'a>(
         })?;
     watch_ids.push(target.node_id.as_str());
 
-    let mut target_patch = NodeStatusPatch::status_only(&target.node_id, NodeStatus::Ready);
-    target_patch.accepted_tree = Some(None);
-    target_patch.accepted_definition_digest = Some(None);
-    target_patch.worker_id = Some(None);
-    target_patch.session_fingerprint = Some(None);
-    target_patch.active_span_id = Some(None);
-    node_patches.push(target_patch);
+    node_patches.push(super::clear_claim_patch(
+        &target.node_id,
+        NodeStatus::Ready,
+        true,
+    ));
 
     if target.seq_order <= node.seq_order {
         for mid in &snapshot.nodes {
@@ -433,14 +400,14 @@ pub(super) fn reset_fail_target_and_intermediates<'a>(
                 && mid.seq_order < node.seq_order
             {
                 watch_ids.push(mid.node_id.as_str());
-                let mut mid_patch = NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
-                mid_patch.accepted_tree = Some(None);
-                mid_patch.accepted_definition_digest = Some(None);
-                if clear_mid_claims {
-                    mid_patch.worker_id = Some(None);
-                    mid_patch.session_fingerprint = Some(None);
-                    mid_patch.active_span_id = Some(None);
-                }
+                let mid_patch = if clear_mid_claims {
+                    super::clear_claim_patch(&mid.node_id, NodeStatus::Pending, true)
+                } else {
+                    let mut p = NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
+                    p.accepted_tree = Some(None);
+                    p.accepted_definition_digest = Some(None);
+                    p
+                };
                 node_patches.push(mid_patch);
             }
         }
@@ -483,13 +450,14 @@ fn build_mechanical_failure_transition(
     let mut watch_ids = vec![node.node_id.as_str()];
     let mut node_patches = Vec::new();
 
-    if exceeded {
-        let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Escalated);
+    let cleared_patch = |status: NodeStatus| {
+        let mut patch = super::clear_claim_patch(&node.node_id, status, false);
         patch.cycle_count = new_node_cycle_count;
-        patch.worker_id = Some(None);
-        patch.session_fingerprint = Some(None);
-        patch.active_span_id = Some(None);
-        node_patches.push(patch);
+        patch
+    };
+
+    if exceeded {
+        node_patches.push(cleared_patch(NodeStatus::Escalated));
     } else {
         let target = reset_fail_target_and_intermediates(
             snapshot,
@@ -501,12 +469,7 @@ fn build_mechanical_failure_transition(
         )?;
 
         if target.node_id != node.node_id {
-            let mut cur_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Pending);
-            cur_patch.cycle_count = new_node_cycle_count;
-            cur_patch.worker_id = Some(None);
-            cur_patch.session_fingerprint = Some(None);
-            cur_patch.active_span_id = Some(None);
-            node_patches.push(cur_patch);
+            node_patches.push(cleared_patch(NodeStatus::Pending));
         } else {
             // Self-loop fallback (rare, update cycle_count on target_patch).
             if let Some(first) = node_patches.first_mut() {

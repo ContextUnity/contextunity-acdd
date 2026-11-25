@@ -473,30 +473,48 @@ where
         if let Some(scope_nodes) = ctx.input.by_qual.get(scope) {
             if !ctx.profile.is_some_and(|p| p.class_scope())
                 && !definition_scope
-                && q.owner.is_some_and(|n| {
+                && ((q.owner.is_some_and(|n| {
                     matches!(
                         n.kind.as_str(),
                         k if k == NodeKind::Function.as_str() || k == NodeKind::Method.as_str()
                     )
-                })
-                && scope_nodes.iter().any(|n| {
+                }) && scope_nodes.iter().any(|n| {
                     n.path == *ctx.path
                         && matches!(
                             n.kind.as_str(),
                             k if k == NodeKind::Class.as_str() || k == NodeKind::Impl.as_str()
                         )
-                })
+                })) || (q.r.kind == EdgeKind::Calls.as_str()
+                    && q.tail.is_empty()
+                    && scope_nodes.iter().any(|n| {
+                        n.path == *ctx.path
+                            && matches!(
+                                n.kind.as_str(),
+                                k if k == NodeKind::Struct.as_str() || k == NodeKind::Enum.as_str()
+                            )
+                    })))
             {
                 scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
                 continue;
             }
             if ctx.profile.is_none_or(|p| p.value_binding_applies(q.r)) {
                 let mut binding_owners = scope_nodes.iter().filter(|node| {
+                    let node_flow = ctx
+                        .input
+                        .interner
+                        .lookup_symbol(&node.id)
+                        .and_then(|id| ctx.input.flows.and_then(|flows| flows.get(&id)).copied());
                     node.path == *ctx.path
                         && has_node_binding(
                             ctx.input.interner,
                             ctx.input.node_bindings,
                             node.id.as_str(),
+                            q.first,
+                        )
+                        && ctx.language_linker.lexical_binding_active(
+                            q.r,
+                            node,
+                            node_flow,
                             q.first,
                         )
                         && !q.owner.is_some_and(|owner| {

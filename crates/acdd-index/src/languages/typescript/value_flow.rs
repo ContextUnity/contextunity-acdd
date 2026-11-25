@@ -8,6 +8,22 @@ use crate::semantic::{
 };
 use std::collections::{BTreeMap, HashSet};
 
+pub(super) fn single_non_null_union_member<'t>(
+    union_node: Syntax<'t>,
+    source: &str,
+) -> Option<Syntax<'t>> {
+    let mut cursor = union_node.walk();
+    let non_null: Vec<_> = union_node
+        .named_children(&mut cursor)
+        .filter(|child| {
+            let txt = text(*child, source).trim();
+            !matches!(txt, "null" | "undefined" | "void")
+                && !matches!(child.kind(), "null_type" | "undefined_type" | "void_type")
+        })
+        .collect();
+    (non_null.len() == 1).then(|| non_null[0])
+}
+
 /// Builds the same bounded call-result receiver identity for calls and property reads.
 pub(super) fn computed_member_hint(
     node: Syntax<'_>,
@@ -135,19 +151,8 @@ fn type_expr(node: Syntax<'_>, source: &str, depth: usize) -> TypeExpr {
             });
     }
     if node.kind() == "union_type" {
-        let mut cursor = node.walk();
-        let non_null: Vec<_> = node
-            .named_children(&mut cursor)
-            .filter(|child| {
-                let txt = text(*child, source).trim();
-                !matches!(txt, "null" | "undefined" | "void")
-                    && !matches!(child.kind(), "null_type" | "undefined_type" | "void_type")
-            })
-            .collect();
-        if non_null.len() == 1 {
-            return type_expr(non_null[0], source, depth + 1);
-        }
-        return TypeExpr::Unknown;
+        return single_non_null_union_member(node, source)
+            .map_or(TypeExpr::Unknown, |inner| type_expr(inner, source, depth + 1));
     }
     let value = text(node, source).trim().trim_start_matches(':').trim();
     if !value.is_empty()

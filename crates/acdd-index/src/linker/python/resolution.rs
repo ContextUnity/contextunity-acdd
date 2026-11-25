@@ -333,18 +333,7 @@ where
         {
             candidates.extend(nodes.iter().copied().filter(|node| node.path == path));
         }
-        if !candidates.is_empty()
-            && context
-                .alias_import_positions
-                .get(&(scope, head))
-                .is_some_and(|position| {
-                    position.line <= reference.line
-                        && candidates
-                            .iter()
-                            .any(|candidate| candidate.line < position.line)
-                })
-        {
-            candidates.clear();
+        if crate::linker::types::shadowed_by_late_import(context.alias_import_positions, scope, head, reference.line, candidates) {
             constructor_shadowed = true;
             break;
         }

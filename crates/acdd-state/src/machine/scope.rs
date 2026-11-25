@@ -1,9 +1,9 @@
 //! Pure `extend_scope` planning, `is_agent_writable` / `protected_paths` validation,
 //! and `TASK_SCOPE_CONFLICT` checks against already-claimed unfinished tasks.
 
-use crate::machine::graph::{build_preconditions, container_scope, find_node};
+use crate::machine::graph::{build_preconditions, find_node};
 use crate::machine::inputs::{ExtendScopeInput, MachineProfileInput};
-use crate::machine::schedule::{is_task_claimed_unfinished, scopes_overlap};
+use crate::machine::schedule::check_task_scope_overlap;
 use crate::types::{
     ExtendedScopeEntry, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan,
     ValidatedObservations,
@@ -118,23 +118,12 @@ pub(crate) fn plan_extend_scope_with_obs(
         }
 
         // Check conflict against other already-claimed unfinished tasks ONLY.
-        for other in &snapshot.nodes {
-            if other.kind != NodeKind::Task || other.node_id == task_node.node_id {
-                continue;
-            }
-            if is_task_claimed_unfinished(snapshot, other) {
-                let other_scope = container_scope(snapshot, other);
-                if scopes_overlap(std::slice::from_ref(&norm), &other_scope) {
-                    return Err(StateError::new(
-                        ErrorCode::TaskScopeConflict,
-                        format!(
-                            "extend_scope path '{norm}' conflicts with already-claimed unfinished task '{}'",
-                            other.node_id
-                        ),
-                    ));
-                }
-            }
-        }
+        check_task_scope_overlap(
+            snapshot,
+            &task_node.node_id,
+            std::slice::from_ref(&norm),
+            &format!("extend_scope path '{norm}' conflicts with"),
+        )?;
         normalized_paths.push(norm);
     }
 

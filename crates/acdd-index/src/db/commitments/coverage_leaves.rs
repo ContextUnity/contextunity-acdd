@@ -33,27 +33,37 @@ fn encode_coverage_prefix(
     encode_text(hasher, evidence);
 }
 
+fn collect_dictionary_rows(
+    mut rows: rusqlite::Rows<'_>,
+    dictionary: &mut HashMap<i64, String>,
+) -> Result<bool> {
+    while let Some(row) = rows.next()? {
+        let (ValueRef::Integer(id), ValueRef::Text(text)) = (row.get_ref(0)?, row.get_ref(1)?)
+        else {
+            return Ok(false);
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            return Ok(false);
+        };
+        dictionary.insert(id, text.to_owned());
+    }
+    Ok(true)
+}
+
 fn coverage_dictionary(
     conn: &Connection,
     sql: &str,
     encoded: Option<&str>,
 ) -> Result<Option<HashMap<i64, String>>> {
     let mut statement = conn.prepare_cached(sql)?;
-    let mut rows = if let Some(encoded) = encoded {
+    let rows = if let Some(encoded) = encoded {
         statement.query([encoded])?
     } else {
         statement.query([])?
     };
     let mut dictionary = HashMap::new();
-    while let Some(row) = rows.next()? {
-        let (ValueRef::Integer(id), ValueRef::Text(text)) = (row.get_ref(0)?, row.get_ref(1)?)
-        else {
-            return Ok(None);
-        };
-        let Ok(text) = std::str::from_utf8(text) else {
-            return Ok(None);
-        };
-        dictionary.insert(id, text.to_owned());
+    if !collect_dictionary_rows(rows, &mut dictionary)? {
+        return Ok(None);
     }
     Ok(Some(dictionary))
 }
@@ -96,16 +106,9 @@ fn owner_language_expression_dictionary(
             "SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN ({placeholders})"
         );
         let mut statement = conn.prepare_cached(&sql)?;
-        let mut rows = statement.query(rusqlite::params_from_iter(ids.iter()))?;
-        while let Some(row) = rows.next()? {
-            let (ValueRef::Integer(id), ValueRef::Text(value)) = (row.get_ref(0)?, row.get_ref(1)?)
-            else {
-                return Ok(None);
-            };
-            let Ok(value) = std::str::from_utf8(value) else {
-                return Ok(None);
-            };
-            dictionary.insert(id, value.to_owned());
+        let rows = statement.query(rusqlite::params_from_iter(ids.iter()))?;
+        if !collect_dictionary_rows(rows, &mut dictionary)? {
+            return Ok(None);
         }
     }
     Ok(Some(dictionary))

@@ -12,6 +12,43 @@ use crate::linker::{
 use hashbrown::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[allow(clippy::too_many_arguments)]
+fn record_python_class_attribute<'a, 'b>(
+    occurrences: &'b mut OccurrenceTable,
+    by_id: &HashMap<SymbolId, &'a Node>,
+    attribute_counts: &BTreeMap<(SymbolId, &str), usize>,
+    fact: &languages::semantic::SemanticFact,
+    relation: languages::semantic::SemanticRelation,
+    attribute: &str,
+    path: &str,
+    interner: &LinkerInterner<'_>,
+) -> Option<(&'a Node, &'b mut crate::linker::semantic_facts::OccurrenceValue)> {
+    let owner = interner
+        .lookup_symbol(&fact.occurrence.owner_id)
+        .expect("semantic owner");
+    let caller = by_id.get(&owner).copied().filter(|node| {
+        node.path == path
+            && node.language == crate::models::tags::LanguageId::Python
+            && node.kind == crate::models::tags::NodeKind::Class
+    })?;
+    let entry = occurrences.entry(
+        owner,
+        fact.occurrence.line,
+        fact.occurrence.column,
+        relation,
+        &fact.expression,
+        interner,
+    );
+    if attribute_counts
+        .get(&(owner, attribute))
+        .is_some_and(|count| *count > 1)
+    {
+        entry.2 = true;
+        return None;
+    }
+    Some((caller, entry))
+}
+
 pub(in crate::linker) fn compose_file_relations<'a>(
     path: &str,
     by_id: &HashMap<SymbolId, &'a Node>,
@@ -65,9 +102,9 @@ pub(in crate::linker) fn compose_file_relations<'a>(
             &fact.expression,
             interner,
         );
-        if fact.identity.scope != file_scope
-            || !by_id.get(&owner).is_some_and(|owner| owner.path == path)
-            || !interner
+        let eligible = fact.identity.scope == file_scope
+            && by_id.get(&owner).is_some_and(|owner| owner.path == path)
+            && interner
                 .lookup_node(by_id, import_owner.as_str())
                 .is_some_and(|owner| {
                     owner.path == path
@@ -81,12 +118,11 @@ pub(in crate::linker) fn compose_file_relations<'a>(
                                 column: fact.occurrence.column,
                             },
                         )
-                })
-        {
-            continue;
-        }
-        if let Some(targets) = semantic_targets.get(&fact.identity) {
-            entry.1.extend(targets.iter().cloned());
+                });
+        if eligible {
+            if let Some(targets) = semantic_targets.get(&fact.identity) {
+                entry.1.extend(targets.iter().cloned());
+            }
         }
     }
     occurrences.emit_all(
@@ -116,31 +152,19 @@ pub(in crate::linker) fn compose_file_relations<'a>(
         {
             continue;
         }
-        let owner = interner
-            .lookup_symbol(&fact.occurrence.owner_id)
-            .expect("semantic owner");
-        if !by_id.get(&owner).is_some_and(|owner| {
-            owner.path == path && owner.language == crate::models::tags::LanguageId::Python && owner.kind == crate::models::tags::NodeKind::Class
-        }) {
-            continue;
-        }
-        let entry = class_file_occurrences.entry(
-            owner,
-            fact.occurrence.line,
-            fact.occurrence.column,
+        if let Some((_, entry)) = record_python_class_attribute(
+            &mut class_file_occurrences,
+            by_id,
+            &attribute_counts,
+            fact,
             *relation,
-            &fact.expression,
+            attribute.as_str(),
+            path,
             interner,
-        );
-        if attribute_counts
-            .get(&(owner, attribute.as_str()))
-            .is_some_and(|count| *count > 1)
-        {
-            entry.2 = true;
-            continue;
-        }
-        if let Some(targets) = semantic_targets.get(&fact.identity) {
-            entry.1.extend(targets.iter().cloned());
+        ) {
+            if let Some(targets) = semantic_targets.get(&fact.identity) {
+                entry.1.extend(targets.iter().cloned());
+            }
         }
     }
     class_file_occurrences.emit_all(
@@ -632,29 +656,18 @@ pub(crate) fn compose_symbol_relations<'a>(
         {
             continue;
         }
-        let owner = interner
-            .lookup_symbol(&fact.occurrence.owner_id)
-            .expect("semantic owner");
-        let Some(caller) = by_id.get(&owner).copied().filter(|owner| {
-            owner.path == path && owner.language == crate::models::tags::LanguageId::Python && owner.kind == crate::models::tags::NodeKind::Class
-        }) else {
+        let Some((caller, entry)) = record_python_class_attribute(
+            &mut model_occurrences,
+            by_id,
+            &attribute_counts,
+            fact,
+            *relation,
+            attribute.as_str(),
+            path,
+            interner,
+        ) else {
             continue;
         };
-        let entry = model_occurrences.entry(
-            owner,
-            fact.occurrence.line,
-            fact.occurrence.column,
-            *relation,
-            &fact.expression,
-            interner,
-        );
-        if attribute_counts
-            .get(&(owner, attribute.as_str()))
-            .is_some_and(|count| *count > 1)
-        {
-            entry.2 = true;
-            continue;
-        }
         let expression = fact.expression.as_str();
         let valid_expression = !expression.is_empty()
             && expression.split('.').all(|segment| {

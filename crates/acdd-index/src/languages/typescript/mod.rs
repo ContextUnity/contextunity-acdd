@@ -419,31 +419,11 @@ impl TypeScript {
                     .map(|node| text(node, source).trim().to_owned());
                 let ty = parameter.child_by_field_name("type").map(|node| {
                     let mut cursor = node.walk();
-                    let inner = if let Some(union_node) =
-                        (node.kind() == "union_type").then_some(node).or_else(|| {
-                            node.named_children(&mut cursor)
-                                .find(|c| c.kind() == "union_type")
-                        }) {
-                        let mut ucursor = union_node.walk();
-                        let non_null: Vec<_> = union_node
-                            .named_children(&mut ucursor)
-                            .filter(|c| {
-                                let t = text(*c, source).trim();
-                                !matches!(t, "null" | "undefined" | "void")
-                                    && !matches!(
-                                        c.kind(),
-                                        "null_type" | "undefined_type" | "void_type"
-                                    )
-                            })
-                            .collect();
-                        if non_null.len() == 1 {
-                            non_null[0]
-                        } else {
-                            node
-                        }
-                    } else {
-                        node
-                    };
+                    let inner = (node.kind() == "union_type")
+                        .then_some(node)
+                        .or_else(|| node.named_children(&mut cursor).find(|c| c.kind() == "union_type"))
+                        .and_then(|union_node| value_flow::single_non_null_union_member(union_node, source))
+                        .unwrap_or(node);
                     text(inner, source)
                         .trim()
                         .trim_start_matches(':')

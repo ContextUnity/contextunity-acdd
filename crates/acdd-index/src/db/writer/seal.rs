@@ -249,6 +249,24 @@ fn node_lookup_maps<'a>(
     Ok((file_by_hash, entry_languages))
 }
 
+fn encode_edge_core(
+    hasher: &mut sha2::Sha256,
+    edge: &crate::models::compact_graph::CompactEdge,
+    owner: &str,
+) -> Result<()> {
+    encode_text(hasher, edge.src.as_ref());
+    encode_text(hasher, edge.dst.as_ref());
+    encode_text(hasher, edge.kind.as_str());
+    encode_text(hasher, owner);
+    encode_integer(
+        hasher,
+        i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
+    );
+    encode_text(hasher, edge.evidence.as_str());
+    encode_text(hasher, edge.confidence.as_str());
+    Ok(())
+}
+
 fn project_graph_domains<'a>(
     projection: GraphProjection<'a>,
     domains: &mut BTreeMap<&'static str, Leaves>,
@@ -272,24 +290,13 @@ fn project_graph_domains<'a>(
     for edge in &graph.edges {
         let owner = edge.path.as_ref();
         let ordinal = ordinals.entry(owner).or_default();
-        let src = edge.src.as_ref();
-        let dst = edge.dst.as_ref();
         let occurrence_hasher = occurrence_hashers
             .entry(owner)
             .or_insert_with(|| new_leaf_hasher("edge_occurrences", owner));
         occurrence_hasher.update([0xff]);
         encode_text(occurrence_hasher, owner);
         encode_integer(occurrence_hasher, *ordinal);
-        encode_text(occurrence_hasher, src);
-        encode_text(occurrence_hasher, dst);
-        encode_text(occurrence_hasher, edge.kind.as_str());
-        encode_text(occurrence_hasher, owner);
-        encode_integer(
-            occurrence_hasher,
-            i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
-        );
-        encode_text(occurrence_hasher, edge.evidence.as_str());
-        encode_text(occurrence_hasher, edge.confidence.as_str());
+        encode_edge_core(occurrence_hasher, edge, owner)?;
         *ordinal = (*ordinal)
             .checked_add(1)
             .context("edge occurrence ordinal overflow")?;
@@ -323,16 +330,7 @@ fn project_graph_domains<'a>(
                     .or_insert_with(|| new_leaf_hasher("edges", owner));
                 let edge = row.edge;
                 hasher.update([0xff]);
-                encode_text(hasher, row.edge.src.as_ref());
-                encode_text(hasher, row.edge.dst.as_ref());
-                encode_text(hasher, edge.kind.as_str());
-                encode_text(hasher, owner);
-                encode_integer(
-                    hasher,
-                    i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
-                );
-                encode_text(hasher, edge.evidence.as_str());
-                encode_text(hasher, edge.confidence.as_str());
+                encode_edge_core(hasher, edge, owner)?;
                 encode_integer(hasher, row.count);
             }
             Ok((

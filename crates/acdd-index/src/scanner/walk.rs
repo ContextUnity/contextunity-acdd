@@ -89,6 +89,34 @@ impl WatchedEntries {
     }
 }
 
+fn walk_non_symlinked(
+    root: &Path,
+    ignored_names: &BTreeSet<String>,
+    watch: Option<&std::sync::Arc<WatchedEntries>>,
+    base: &Path,
+    rel_prefix: &str,
+) -> ignore::Walk {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .same_file_system(true)
+        .git_ignore(true)
+        .require_git(false);
+    let ignored = ignored_names.clone();
+    let watch_entry = watch.cloned();
+    let watch_root = base.to_path_buf();
+    let watch_prefix = rel_prefix.to_owned();
+    builder.filter_entry(move |item| {
+        if let Some(watch) = &watch_entry {
+            watch.observe(item, &watch_root, &watch_prefix);
+        }
+        !item.path_is_symlink()
+            && !ignored.contains(&item.file_name().to_string_lossy().to_string())
+    });
+    builder.build()
+}
+
 struct CandidateWalker<'a, F> {
     adapter: &'a Adapter,
     watch: Option<&'a std::sync::Arc<WatchedEntries>>,
@@ -117,25 +145,7 @@ where
             if !source_root.exists() {
                 continue;
             }
-            let mut builder = WalkBuilder::new(source_root);
-            builder
-                .hidden(false)
-                .follow_links(false)
-                .same_file_system(true)
-                .git_ignore(true)
-                .require_git(false);
-            let ignored = ignored_names.clone();
-            let watch_entry = self.watch.cloned();
-            let watch_root = base.to_path_buf();
-            let watch_prefix = rel_prefix.to_owned();
-            builder.filter_entry(move |item| {
-                if let Some(watch) = &watch_entry {
-                    watch.observe(item, &watch_root, &watch_prefix);
-                }
-                !item.path_is_symlink()
-                    && !ignored.contains(&item.file_name().to_string_lossy().to_string())
-            });
-            for result in builder.build() {
+            for result in walk_non_symlinked(source_root, ignored_names, self.watch, base, rel_prefix) {
                 let item = result.map_err(|e| error(e.to_string()))?;
                 if item.path_is_symlink()
                     || ignored_names.contains(&item.file_name().to_string_lossy().to_string())
@@ -302,25 +312,7 @@ fn collect_documentation_paths(
     if ignored_names.contains("docs") || !docs_root.is_dir() || docs_root.is_symlink() {
         return Ok(());
     }
-    let mut builder = WalkBuilder::new(&docs_root);
-    builder
-        .hidden(false)
-        .follow_links(false)
-        .same_file_system(true)
-        .git_ignore(true)
-        .require_git(false);
-    let ignored = ignored_names.clone();
-    let watch_entry = watch.cloned();
-    let watch_root = workspace_root.to_path_buf();
-    let watch_prefix = prefix.to_owned();
-    builder.filter_entry(move |item| {
-        if let Some(watch) = &watch_entry {
-            watch.observe(item, &watch_root, &watch_prefix);
-        }
-        !item.path_is_symlink()
-            && !ignored.contains(&item.file_name().to_string_lossy().to_string())
-    });
-    for result in builder.build() {
+    for result in walk_non_symlinked(&docs_root, ignored_names, watch, workspace_root, prefix) {
         let item = result.map_err(|walk_error| error(walk_error.to_string()))?;
         if item.path_is_symlink()
             || !item.file_type().is_some_and(|kind| kind.is_file())

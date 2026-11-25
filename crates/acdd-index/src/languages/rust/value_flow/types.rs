@@ -548,6 +548,16 @@ fn collect_function_type_params(
         .collect()
 }
 
+pub(super) fn unwrap_reference_type(mut node: Node<'_>) -> Node<'_> {
+    while node.kind() == "reference_type" {
+        let Some(inner) = node.child_by_field_name("type") else {
+            break;
+        };
+        node = inner;
+    }
+    node
+}
+
 /// Extracts higher-order callback metadata (`is_callable`, `callback_params`)
 /// for a parameter type node, resolving direct `fn(...)`, `impl/dyn Fn*`, boxed
 /// trait objects, and `<F: Fn*>` / `where F: Fn*` bounds.
@@ -560,13 +570,7 @@ pub(super) fn inspect_callable_param_type(
     if let Some(fn_type) = extract_function_type_node(annotation, source) {
         return (true, collect_function_type_params(fn_type, source, generic_names));
     }
-    let mut base = annotation;
-    while base.kind() == "reference_type" {
-        let Some(inner) = base.child_by_field_name("type") else {
-            break;
-        };
-        base = inner;
-    }
+    let base = unwrap_reference_type(annotation);
     if base.kind() == "type_identifier" {
         let param_ty_name = text(base, source).trim();
         if generic_names.contains(param_ty_name) {
@@ -694,28 +698,21 @@ pub(crate) fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
 
 fn parse_generic_text_args(inner: &str, depth: usize) -> Vec<TypeExpr> {
     let mut args = Vec::new();
-    let mut start = 0usize;
-    let mut angle = 0usize;
-    let mut paren = 0usize;
-    for (idx, ch) in inner.char_indices() {
-        match ch {
-            '<' => angle += 1,
-            '>' => angle = angle.saturating_sub(1),
-            '(' => paren += 1,
-            ')' => paren = paren.saturating_sub(1),
-            ',' if angle == 0 && paren == 0 => {
-                let arg = inner[start..idx].trim();
-                if !arg.starts_with('\'') {
-                    args.push(parse_rust_type_text(arg, depth + 1));
-                }
-                start = idx + 1;
+    let _ = crate::languages::types::split_top_level_delimited(
+        inner,
+        crate::languages::types::DelimitedSplitOptions {
+            delimiter: ',',
+            track_angles: true,
+            track_brackets: false,
+            track_quotes: false,
+            strict: false,
+        },
+        |arg, is_tail| {
+            if (!is_tail || !arg.is_empty()) && !arg.starts_with('\'') {
+                args.push(parse_rust_type_text(arg, depth + 1));
             }
-            _ => {}
-        }
-    }
-    let last = inner[start..].trim();
-    if !last.is_empty() && !last.starts_with('\'') {
-        args.push(parse_rust_type_text(last, depth + 1));
-    }
+            Ok(())
+        },
+    );
     args
 }

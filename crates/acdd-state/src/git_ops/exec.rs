@@ -2,6 +2,7 @@
 
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{canonicalize_macos_var, ScopedTempDir};
+use acdd_core::ids::CommitOid;
 use acdd_core::path_policy::normalize_rel_path;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -80,6 +81,20 @@ pub(super) fn commit_has_exact_trailer(
         ErrorCode::ExternalGitDrift,
     )?;
     Ok(msg.lines().any(|line| line.trim() == trailer_line))
+}
+
+pub(super) fn first_commit_with_exact_trailer(
+    worktree: &Path,
+    rev_list_stdout: &[u8],
+    trailer_line: &str,
+) -> Result<Option<CommitOid>, StateError> {
+    let stdout = String::from_utf8_lossy(rev_list_stdout);
+    for oid in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if commit_has_exact_trailer(worktree, oid, trailer_line)? {
+            return Ok(Some(CommitOid::new(oid)?));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn sync_default_index_paths(

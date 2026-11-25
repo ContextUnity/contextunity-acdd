@@ -48,44 +48,14 @@ pub fn evaluate_submit(
     obs: &ValidatedObservations,
     input: &SubmitInput,
 ) -> Result<SubmitEvaluation, StateError> {
-    let node = crate::machine::require_active_claimable_node(
+    let node = crate::machine::require_claimed_in_progress(
         snapshot,
         &input.node_cursor,
-        "submit gate",
+        "submit",
+        input.claim_revision,
+        Some(&input.worker_id),
     )?;
     let node_id = node.node_id.as_str();
-
-    if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
-            ErrorCode::StaleClaimRevision,
-            format!(
-                "node '{node_id}' is not in_progress with an active claim (status: {})",
-                node.status
-            ),
-        ));
-    }
-
-    if let Some(expected_rev) = input.claim_revision {
-        if expected_rev != node.claim_revision {
-            return Err(StateError::new(
-                ErrorCode::StaleClaimRevision,
-                format!(
-                    "submit claim_revision {expected_rev} does not match active claim_revision {} on '{node_id}'",
-                    node.claim_revision
-                ),
-            ));
-        }
-    }
-
-    if node.worker_id.as_ref() != Some(&input.worker_id) {
-        return Err(StateError::new(
-            ErrorCode::TaskAlreadyClaimed,
-            format!(
-                "worker '{}' does not hold the active claim on '{node_id}'",
-                input.worker_id
-            ),
-        ));
-    }
 
     let active_claim = active_claim_for_node(snapshot, node_id).ok_or_else(|| {
         StateError::new(
@@ -348,12 +318,10 @@ fn evaluate_reject(
     let mut node_patches = Vec::new();
 
     if escalated {
-        let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Escalated);
+        let mut patch =
+            crate::machine::clear_claim_patch(&node.node_id, NodeStatus::Escalated, false);
         patch.attempt = Some(new_attempt);
         patch.cycle_count = new_cycle_count;
-        patch.worker_id = Some(None);
-        patch.session_fingerprint = Some(None);
-        patch.active_span_id = Some(None);
         node_patches.push(patch);
     } else if let Some(fail_id) = target_fail_id {
         let target = super::verify::reset_fail_target_and_intermediates(
@@ -390,28 +358,21 @@ fn evaluate_reject(
                     && prev.node_id != node.node_id
                 {
                     watch_ids.push(prev.node_id.as_str());
-                    let mut prev_patch =
-                        NodeStatusPatch::status_only(&prev.node_id, NodeStatus::Pending);
-                    prev_patch.accepted_tree = Some(None);
-                    prev_patch.accepted_definition_digest = Some(None);
-                    prev_patch.worker_id = Some(None);
-                    prev_patch.session_fingerprint = Some(None);
-                    prev_patch.active_span_id = Some(None);
-                    node_patches.push(prev_patch);
+                    node_patches.push(crate::machine::clear_claim_patch(
+                        &prev.node_id,
+                        NodeStatus::Pending,
+                        true,
+                    ));
                 }
             }
             }
         }
 
         if target.node_id != node.node_id {
-            let mut cur_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Pending);
+            let mut cur_patch =
+                crate::machine::clear_claim_patch(&node.node_id, NodeStatus::Pending, true);
             cur_patch.attempt = Some(new_attempt);
             cur_patch.cycle_count = new_cycle_count;
-            cur_patch.accepted_tree = Some(None);
-            cur_patch.accepted_definition_digest = Some(None);
-            cur_patch.worker_id = Some(None);
-            cur_patch.session_fingerprint = Some(None);
-            cur_patch.active_span_id = Some(None);
             node_patches.push(cur_patch);
         } else if let Some(first) = node_patches.first_mut() {
             first.attempt = Some(new_attempt);
@@ -419,11 +380,9 @@ fn evaluate_reject(
         }
     } else {
         // Reject without explicit `fail:`: keep node ready for retry.
-        let mut cur_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Ready);
+        let mut cur_patch =
+            crate::machine::clear_claim_patch(&node.node_id, NodeStatus::Ready, false);
         cur_patch.attempt = Some(new_attempt);
-        cur_patch.worker_id = Some(None);
-        cur_patch.session_fingerprint = Some(None);
-        cur_patch.active_span_id = Some(None);
         node_patches.push(cur_patch);
     }
 

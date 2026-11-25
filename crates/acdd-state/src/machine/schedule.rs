@@ -7,7 +7,7 @@ use crate::types::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TaskRef;
-pub use acdd_core::path_policy::scopes_overlap;
+use acdd_core::path_policy::scopes_overlap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,7 +30,7 @@ pub struct ScheduleReport {
 
 /// Return `true` if a task has already been claimed (`claim_revision >= 1` on task or any child gate)
 /// and has not yet reached a terminal state (`Completed` or `Cancelled`).
-pub fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeRecord) -> bool {
+fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeRecord) -> bool {
     if matches!(task_node.status, NodeStatus::Completed | NodeStatus::Cancelled) {
         return false;
     }
@@ -41,6 +41,33 @@ pub fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateN
         n.parent_id.as_deref() == Some(task_node.node_id.as_str())
             && (n.claim_revision >= 1 || n.status == NodeStatus::InProgress)
     })
+}
+
+/// Reject `candidate_scope` if it overlaps any other already-claimed unfinished task.
+pub(crate) fn check_task_scope_overlap(
+    snapshot: &RunGraphSnapshot,
+    excluding_task_id: &str,
+    candidate_scope: &[String],
+    conflict_prefix: &str,
+) -> Result<(), StateError> {
+    for other in &snapshot.nodes {
+        if other.kind != NodeKind::Task || other.node_id == excluding_task_id {
+            continue;
+        }
+        if is_task_claimed_unfinished(snapshot, other) {
+            let other_scope = container_scope(snapshot, other);
+            if scopes_overlap(candidate_scope, &other_scope) {
+                return Err(StateError::new(
+                    ErrorCode::TaskScopeConflict,
+                    format!(
+                        "{conflict_prefix} already-claimed unfinished task '{}'",
+                        other.node_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Return `true` if any node in the run is currently `InProgress`.

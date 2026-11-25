@@ -130,6 +130,19 @@ pub fn aggregate_domain_digest(table: &str, entries: &BTreeMap<String, String>) 
     hex::encode(h.finalize())
 }
 
+fn update_sorted_pairs(h: &mut Sha256, pairs: &[(String, String)], prefix_value_len: bool) {
+    let mut sorted = pairs.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (k, v) in sorted {
+        h.update((k.len() as u64).to_le_bytes());
+        h.update(k);
+        if prefix_value_len {
+            h.update((v.len() as u64).to_le_bytes());
+        }
+        h.update(v);
+    }
+}
+
 /// Computes the Merkle root digest over domain commitments and metadata in canonical order.
 pub fn compute_merkle_root(
     domain_commitments: &[(String, String)],
@@ -137,20 +150,7 @@ pub fn compute_merkle_root(
 ) -> String {
     let mut h = Sha256::new();
     h.update(ALGORITHM);
-    let mut sorted_domains = domain_commitments.to_vec();
-    sorted_domains.sort_by(|a, b| a.0.cmp(&b.0));
-    for (k, v) in sorted_domains {
-        h.update((k.len() as u64).to_le_bytes());
-        h.update(k);
-        h.update(v);
-    }
-    let mut sorted_meta = metadata_entries.to_vec();
-    sorted_meta.sort_by(|a, b| a.0.cmp(&b.0));
-    for (k, v) in sorted_meta {
-        h.update((k.len() as u64).to_le_bytes());
-        h.update(k);
-        h.update((v.len() as u64).to_le_bytes());
-        h.update(v);
-    }
+    update_sorted_pairs(&mut h, domain_commitments, false);
+    update_sorted_pairs(&mut h, metadata_entries, true);
     hex::encode(h.finalize())
 }

@@ -47,11 +47,6 @@ impl PipelineTestHooks {
         }
     }
 
-    /// Creates overlap synchronization hooks.
-    pub fn overlap() -> Arc<Self> {
-        Arc::new(Self::new_base(true, false))
-    }
-
     /// Creates consumer-failure fault injection hooks.
     pub fn fail_consumer() -> Arc<Self> {
         Arc::new(Self::new_base(false, true))

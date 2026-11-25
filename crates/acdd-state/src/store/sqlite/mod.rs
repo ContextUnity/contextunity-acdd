@@ -272,11 +272,6 @@ impl SqliteStateReader {
         }
     }
 
-    /// Return the configured database path.
-    pub fn db_path(&self) -> &Path {
-        &self.db_path
-    }
-
     fn with_conn_or_default<T>(
         &self,
         default: T,
@@ -553,6 +548,7 @@ impl SqliteStateBackend {
     }
 
     /// Return the canonical confined path of `state.sqlite`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn db_path(&self) -> &Path {
         &self.options.db_path
     }

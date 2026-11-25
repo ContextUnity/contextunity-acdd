@@ -664,11 +664,6 @@ impl DependencyRegistry {
             })
     }
 
-    /// Exposes the deterministic digest of bundled standard framework manifests.
-    pub fn standard_manifests_digest(&self) -> &str {
-        Self::standard_manifests_digest_static()
-    }
-
     /// Exposes the static deterministic digest of bundled standard framework manifests.
     pub fn standard_manifests_digest_static() -> &'static str {
         STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {

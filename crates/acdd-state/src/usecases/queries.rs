@@ -543,9 +543,10 @@ fn handle_context(
     Ok(resp)
 }
 
-fn collect_ready_cursors(
+pub(crate) fn collect_ready_cursors_with_fallback(
     graph: &RunGraphSnapshot,
     obs: &ValidatedObservations,
+    include_fallback_tref: bool,
 ) -> Result<Vec<String>, StateError> {
     let schedule = compute_schedule(graph, obs)?;
     let mut out = Vec::new();
@@ -565,11 +566,18 @@ fn collect_ready_cursors(
             .min_by_key(|n| n.seq_order)
         {
             out.push(NodeCursor::from_node_id(&gate.node_id)?.to_string());
-        } else {
+        } else if include_fallback_tref {
             out.push(tref.as_str().to_owned());
         }
     }
     Ok(out)
+}
+
+fn collect_ready_cursors(
+    graph: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+) -> Result<Vec<String>, StateError> {
+    collect_ready_cursors_with_fallback(graph, obs, true)
 }
 
 fn read_spec_status_readonly(
@@ -586,33 +594,47 @@ fn read_spec_status_readonly(
     }
 }
 
+/// Borrow the root [`GateDef`] inside `profile` along `gates`.
+pub fn find_root_gate_def_ref<'a>(
+    profile: &'a ResolvedGateProfile,
+    gates: &[acdd_core::ids::GateId],
+    skip_tasks_blocks: bool,
+) -> Option<&'a GateDef> {
+    let first = gates.first()?;
+    let mut current = profile
+        .gates
+        .iter()
+        .find(|g| (!skip_tasks_blocks || !g.is_tasks_block()) && g.id == first.as_str())?;
+    for next in &gates[1..] {
+        current = current.gates.iter().find(|g| g.id == next.as_str())?;
+    }
+    Some(current)
+}
+
+/// Borrow the task-block [`GateDef`] inside `profile` matching `gate_id`.
+pub fn find_task_block_gate_def_ref<'a>(
+    profile: &'a ResolvedGateProfile,
+    gate_id: &str,
+) -> Option<&'a GateDef> {
+    for item in &profile.gates {
+        if let Some(ref tb) = item.tasks {
+            if let Some(found) = tb.gates.iter().find(|g| g.id == gate_id) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 /// Borrow the [`GateDef`] inside `profile` corresponding to `cursor`.
-pub(crate) fn find_profile_gate_def_ref<'a>(
+pub fn find_profile_gate_def_ref<'a>(
     profile: &'a ResolvedGateProfile,
     cursor: &NodeCursor,
 ) -> Option<&'a GateDef> {
     match cursor {
-        NodeCursor::Root(gates) => {
-            let first = gates.first()?;
-            let mut current = profile
-                .gates
-                .iter()
-                .find(|g| !g.is_tasks_block() && g.id == first.as_str())?;
-            for next in &gates[1..] {
-                current = current.gates.iter().find(|g| g.id == next.as_str())?;
-            }
-            Some(current)
-        }
+        NodeCursor::Root(gates) => find_root_gate_def_ref(profile, gates, true),
         NodeCursor::Task { gates, .. } => {
-            let target_gate = gates.last()?;
-            for item in &profile.gates {
-                if let Some(ref tb) = item.tasks {
-                    if let Some(found) = tb.gates.iter().find(|g| g.id == target_gate.as_str()) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
+            find_task_block_gate_def_ref(profile, gates.last()?.as_str())
         }
     }
 }

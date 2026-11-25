@@ -141,27 +141,27 @@ fn build_centered_preview(
     let min_start = matched_line.saturating_sub(2).max(1);
     let max_end = (matched_line + 4).min(lines.len());
 
+    let try_expand = |edge: &mut usize, candidate_ln: usize, total_bytes: &mut usize| -> bool {
+        let entry = format!("{candidate_ln}: {}", lines[candidate_ln - 1]);
+        let extra = entry.len() + usize::from(!entry.ends_with('\n'));
+        if *total_bytes + extra <= max_bytes {
+            *edge = candidate_ln;
+            *total_bytes += extra;
+            true
+        } else {
+            false
+        }
+    };
+
     loop {
         let mut expanded = false;
         if win_start > min_start {
-            let candidate_ln = win_start - 1;
-            let entry = format!("{candidate_ln}: {}", lines[candidate_ln - 1]);
-            let extra = entry.len() + usize::from(!entry.ends_with('\n'));
-            if total_bytes + extra <= max_bytes {
-                win_start = candidate_ln;
-                total_bytes += extra;
-                expanded = true;
-            }
+            let prev = win_start - 1;
+            expanded |= try_expand(&mut win_start, prev, &mut total_bytes);
         }
         if win_end < max_end {
-            let candidate_ln = win_end + 1;
-            let entry = format!("{candidate_ln}: {}", lines[candidate_ln - 1]);
-            let extra = entry.len() + usize::from(!entry.ends_with('\n'));
-            if total_bytes + extra <= max_bytes {
-                win_end = candidate_ln;
-                total_bytes += extra;
-                expanded = true;
-            }
+            let next = win_end + 1;
+            expanded |= try_expand(&mut win_end, next, &mut total_bytes);
         }
         if !expanded {
             break;

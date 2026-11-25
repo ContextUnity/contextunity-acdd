@@ -110,6 +110,19 @@ impl<'a> TemplateRootRegistry<'a> {
     }
 }
 
+fn python_module_scope<'a, 'd>(
+    path: &str,
+    facts: &'a crate::models::Facts,
+    dependencies: &'d languages::dependency_registry::DependencyRegistry,
+) -> Option<(&'a Node, &'d str, std::sync::Arc<languages::context::LanguageContext>)> {
+    let module = facts.nodes.iter().find(|node| {
+        node.kind == crate::models::tags::NodeKind::Module
+            && node.language == crate::models::tags::LanguageId::Python
+    })?;
+    let scope = dependencies.nearest_manifest_scope_for_path(LanguageFamily("python"), path)?;
+    Some((module, scope, dependencies.language_context_for_path(path)))
+}
+
 fn source_imports_are_external(
     owner: &str,
     node: &Node,
@@ -332,19 +345,7 @@ impl<'a> TemplateRegistry<'a> {
     ) -> Self {
         let mut by_scope: HashMap<String, HashMap<&'a str, Vec<Library<'a>>>> = HashMap::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts
-                .nodes
-                .iter()
-                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
-            else {
-                continue;
-            };
-            let Some(scope) =
-                dependencies.nearest_manifest_scope_for_path(LanguageFamily("python"), path)
-            else {
-                continue;
-            };
-            let rules = dependencies.language_context_for_path(path);
+            let Some((module, scope, rules)) = python_module_scope(path, facts, dependencies) else { continue; };
             let mut cached_flow = None;
             let mut cached_functions: Option<Vec<&'a Node>> = None;
             for rule in &rules.syntax_rules {
@@ -759,19 +760,7 @@ impl<'a> RenderContextRegistry<'a> {
         let mut by_template: HashMap<&'a str, Vec<usize>> = HashMap::new();
         let mut by_provider: HashMap<&'a str, Vec<(usize, &'a Node)>> = HashMap::new();
         for (path, source) in all.iter_facts() {
-            let Some(import_owner) = source
-                .nodes
-                .iter()
-                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
-            else {
-                continue;
-            };
-            let Some(scope) =
-                dependencies.nearest_manifest_scope_for_path(LanguageFamily("python"), path)
-            else {
-                continue;
-            };
-            let rules = dependencies.language_context_for_path(path);
+            let Some((import_owner, scope, rules)) = python_module_scope(path, source, dependencies) else { continue; };
             let workspace = languages::workspace_path(path).0;
             for node in source.nodes.iter().filter(|node| {
                 node.language == crate::models::tags::LanguageId::Python

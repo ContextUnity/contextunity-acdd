@@ -665,6 +665,69 @@ impl CompiledSyntaxKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DelimitedSplitError {
+    UnbalancedClose(char),
+    UnbalancedOpen,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DelimitedSplitOptions {
+    pub(crate) delimiter: char,
+    pub(crate) track_angles: bool,
+    pub(crate) track_brackets: bool,
+    pub(crate) track_quotes: bool,
+    pub(crate) strict: bool,
+}
+
+pub(crate) fn split_top_level_delimited<'a>(
+    input: &'a str,
+    options: DelimitedSplitOptions,
+    mut on_piece: impl FnMut(&'a str, bool) -> Result<(), &'static str>,
+) -> Result<(), Result<DelimitedSplitError, &'static str>> {
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut in_quotes = false;
+    let mut start = 0usize;
+    let close_step = |count: &mut usize, ch: char| -> Result<(), DelimitedSplitError> {
+        if options.strict {
+            *count = count
+                .checked_sub(1)
+                .ok_or(DelimitedSplitError::UnbalancedClose(ch))?;
+        } else {
+            *count = count.saturating_sub(1);
+        }
+        Ok(())
+    };
+    for (idx, ch) in input.char_indices() {
+        if ch == '"' && options.track_quotes {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if in_quotes {
+            continue;
+        }
+        match ch {
+            '<' if options.track_angles => angle += 1,
+            '>' if options.track_angles => close_step(&mut angle, ch).map_err(Ok)?,
+            '(' => paren += 1,
+            ')' => close_step(&mut paren, ch).map_err(Ok)?,
+            '[' if options.track_brackets => bracket += 1,
+            ']' if options.track_brackets => close_step(&mut bracket, ch).map_err(Ok)?,
+            _ if ch == options.delimiter && angle == 0 && paren == 0 && bracket == 0 => {
+                on_piece(input[start..idx].trim(), false).map_err(Err)?;
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if options.strict && (angle != 0 || paren != 0 || bracket != 0) {
+        return Err(Ok(DelimitedSplitError::UnbalancedOpen));
+    }
+    on_piece(input[start..].trim(), true).map_err(Err)
+}
+
 impl CompiledSyntaxGrammar {
     pub(crate) fn classify(&self, kind_id: u16) -> Option<CompiledSyntaxKind> {
         self.kinds.get(usize::from(kind_id)).copied().flatten()

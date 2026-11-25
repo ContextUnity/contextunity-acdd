@@ -7,14 +7,45 @@ use crate::machine::graph::{
 };
 use crate::machine::inputs::{ClaimDecision, ClaimInput, MachineProfileInput};
 use crate::machine::schedule::{
-    check_post_task_integration_barrier, is_task_claimed_unfinished, pre_task_barrier_satisfied,
-    scopes_overlap, task_dependencies_satisfied,
+    check_post_task_integration_barrier, check_task_scope_overlap, pre_task_barrier_satisfied,
+    task_dependencies_satisfied,
 };
 use crate::types::{
     ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch, IsolationMode, NodeKind, NodeStatus,
     NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
+
+fn build_claim_admission(
+    node: &crate::types::GateNodeRecord,
+    new_claim_rev: u32,
+    input: &ClaimInput,
+    claimed_at: &str,
+) -> (ClaimInsertInput, NodeStatusPatch) {
+    let claim_insert = ClaimInsertInput {
+        node_id: node.node_id.clone(),
+        claim_revision: new_claim_rev,
+        worker_id: input.worker_id.clone(),
+        session_fingerprint: input.session_fingerprint.clone(),
+        worktree: input.worktree.clone(),
+        branch: input.branch.clone(),
+        baseline_commit: input.baseline_commit.clone(),
+        span_id: input.span_id.clone(),
+        claim_tree: input.claim_tree.clone(),
+        claimed_at: claimed_at.to_owned(),
+    };
+
+    let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::InProgress);
+    patch.claim_revision = Some(new_claim_rev);
+    patch.worker_id = Some(Some(input.worker_id.clone()));
+    patch.session_fingerprint = Some(input.session_fingerprint.clone());
+    patch.worktree = Some(Some(input.worktree.clone()));
+    patch.branch = Some(input.branch.clone());
+    patch.baseline_commit = Some(input.baseline_commit.clone());
+    patch.claim_tree = Some(Some(input.claim_tree.clone()));
+    patch.active_span_id = Some(Some(input.span_id.clone()));
+    (claim_insert, patch)
+}
 
 fn admit_reclaim_in_progress(
     snapshot: &RunGraphSnapshot,
@@ -69,28 +100,7 @@ fn admit_reclaim_in_progress(
     }
     let preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
 
-    let claim_insert = ClaimInsertInput {
-        node_id: node.node_id.clone(),
-        claim_revision: new_claim_rev,
-        worker_id: input.worker_id.clone(),
-        session_fingerprint: input.session_fingerprint.clone(),
-        worktree: input.worktree.clone(),
-        branch: input.branch.clone(),
-        baseline_commit: input.baseline_commit.clone(),
-        span_id: input.span_id.clone(),
-        claim_tree: input.claim_tree.clone(),
-        claimed_at: obs.now_utc.clone(),
-    };
-
-    let mut patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::InProgress);
-    patch.claim_revision = Some(new_claim_rev);
-    patch.worker_id = Some(Some(input.worker_id.clone()));
-    patch.session_fingerprint = Some(input.session_fingerprint.clone());
-    patch.worktree = Some(Some(input.worktree.clone()));
-    patch.branch = Some(input.branch.clone());
-    patch.baseline_commit = Some(input.baseline_commit.clone());
-    patch.claim_tree = Some(Some(input.claim_tree.clone()));
-    patch.active_span_id = Some(Some(input.span_id.clone()));
+    let (claim_insert, patch) = build_claim_admission(node, new_claim_rev, input, &obs.now_utc);
 
     let mut node_patches = vec![patch];
     if node.kind == NodeKind::TaskGate {
@@ -261,23 +271,12 @@ pub fn admit_claim(
 
         // Non-overlapping scope check against already-claimed unfinished tasks.
         let my_scope = container_scope(snapshot, node);
-        for other in &snapshot.nodes {
-            if other.kind != NodeKind::Task || other.node_id == parent_task.node_id {
-                continue;
-            }
-            if is_task_claimed_unfinished(snapshot, other) {
-                let other_scope = container_scope(snapshot, other);
-                if scopes_overlap(&my_scope, &other_scope) {
-                    return Err(StateError::new(
-                        ErrorCode::TaskScopeConflict,
-                        format!(
-                            "task '{task_ref}' scope overlaps already-claimed unfinished task '{}'",
-                            other.node_id
-                        ),
-                    ));
-                }
-            }
-        }
+        check_task_scope_overlap(
+            snapshot,
+            &parent_task.node_id,
+            &my_scope,
+            &format!("task '{task_ref}' scope overlaps"),
+        )?;
 
         if parent_task.status == NodeStatus::Ready {
             let mut parent_patch =
@@ -298,28 +297,7 @@ pub fn admit_claim(
     let new_claim_rev = node.claim_revision + 1;
     let preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
 
-    let claim_insert = ClaimInsertInput {
-        node_id: node.node_id.clone(),
-        claim_revision: new_claim_rev,
-        worker_id: input.worker_id.clone(),
-        session_fingerprint: input.session_fingerprint.clone(),
-        worktree: input.worktree.clone(),
-        branch: input.branch.clone(),
-        baseline_commit: input.baseline_commit.clone(),
-        span_id: input.span_id.clone(),
-        claim_tree: input.claim_tree.clone(),
-        claimed_at: obs.now_utc.clone(),
-    };
-
-    let mut gate_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::InProgress);
-    gate_patch.claim_revision = Some(new_claim_rev);
-    gate_patch.worker_id = Some(Some(input.worker_id.clone()));
-    gate_patch.session_fingerprint = Some(input.session_fingerprint.clone());
-    gate_patch.worktree = Some(Some(input.worktree.clone()));
-    gate_patch.branch = Some(input.branch.clone());
-    gate_patch.baseline_commit = Some(input.baseline_commit.clone());
-    gate_patch.claim_tree = Some(Some(input.claim_tree.clone()));
-    gate_patch.active_span_id = Some(Some(input.span_id.clone()));
+    let (claim_insert, gate_patch) = build_claim_admission(node, new_claim_rev, input, &obs.now_utc);
     node_patches.push(gate_patch);
 
     let transition = TransitionPlan {

@@ -403,7 +403,17 @@ fn wire_value_expr_callbacks<F: FnMut(&str, &str, i64)>(
 ) {
     match expr {
         ValueExpr::Alias { name } => wire(owner_id, name, line),
-        ValueExpr::Await { value } | ValueExpr::Scoped { value, .. } | ValueExpr::RustField { value, .. } | ValueExpr::RustProject { value, .. } => {
+        ValueExpr::Call { callee, site } => {
+            wire(owner_id, callee, line);
+            if let Some(receiver) = site.as_ref().and_then(|s| s.receiver.as_deref()) {
+                wire_value_expr_callbacks(owner_id, receiver, line, wire);
+            }
+        }
+        ValueExpr::Await { value }
+        | ValueExpr::Scoped { value, .. }
+        | ValueExpr::Project { value, .. }
+        | ValueExpr::RustField { value, .. }
+        | ValueExpr::RustProject { value, .. } => {
             wire_value_expr_callbacks(owner_id, value, line, wire);
         }
         ValueExpr::BranchJoin { alternatives } => {

@@ -209,6 +209,13 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
         impl Target { fn target_only(&self) {} }
         struct CustomClone;
         impl CustomClone { fn clone(&self) -> Target { Target } }
+        struct Builder;
+        impl Builder {
+            fn build() -> Self { Self }
+            fn with_step(self) -> Self { self }
+            fn finish_step(&self) {}
+        }
+        fn comb_cb(x: u16) -> u16 { x }
         enum Format { Json, JSON, A }
         impl Format { fn tag(&self) {} }
         fn probe(
@@ -231,6 +238,8 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
             bad.tag();
             nc.clone().ping();
             cc.clone().target_only();
+            Builder::build().with_step().finish_step();
+            let _ = Some(1u16).map(comb_cb);
         }
     "#;
     let facts = acdd_index::ast::extract("src/ac1_ac2.rs", "rust", source).unwrap();
@@ -269,6 +278,9 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
         ("Format::JSON.tag", "resolved"),
         ("Format::A.tag", "resolved"),
         ("cc.clone().target_only", "resolved"),
+        ("Builder::build().with_step", "resolved"),
+        ("Builder::build().with_step().finish_step", "resolved"),
+        ("comb_cb", "resolved"),
         ("bad.tag", "unresolved"),
         ("nc.clone().ping", "unresolved"),
     ] {

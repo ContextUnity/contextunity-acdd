@@ -623,13 +623,18 @@ where
             }
         }
     }
-    if candidates.is_empty() {
+    if needs_explicit_reexport(candidates) {
         let phase = ctx.reference_phase(graph, q.r, q.owner, ctx.profile);
-        candidates.extend(ctx.language_linker.imported_callable(&phase, imported, q.tail));
-        if candidates.is_empty() {
+        let callable = ctx.language_linker.imported_callable(&phase, imported, q.tail);
+        if !callable.is_empty() {
+            candidates.retain(|n| !matches!(n.kind, NodeKind::Module | NodeKind::ModuleDeclaration));
+            candidates.extend(callable);
+        }
+        if needs_explicit_reexport(candidates) {
             if let [module] = imported.as_slice() {
                 if module.kind == NodeKind::Module
-                    && !crate::languages::by_id(module.language.as_str()).is_some_and(|profile| profile.linker().imported_module_first())
+                    && !crate::languages::by_id(module.language.as_str())
+                        .is_some_and(|profile| profile.linker().imported_module_first())
                 {
                     candidates.extend(ctx.language_linker.resolve_imported_member(
                         ctx.input.interner,
@@ -720,6 +725,36 @@ fn push_explicit_constant_member<'a, 'res>(
     );
 }
 
+fn needs_explicit_reexport(candidates: &[&Node]) -> bool {
+    candidates.is_empty()
+        || candidates
+            .iter()
+            .all(|n| matches!(n.kind, NodeKind::Module | NodeKind::ModuleDeclaration))
+}
+
+fn extend_explicit_reexports<'a, 'file, 'res>(
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    target: &crate::linker::traits::ExplicitModuleTarget,
+    candidates: &mut Vec<&'res Node>,
+    lookup_key: &mut String,
+) where
+    'a: 'file,
+    'file: 'res,
+{
+    let reexported = ctx.language_linker.explicit_reexport_targets(
+        crate::linker::traits::ExplicitReexport {
+            input: ctx.input,
+            file_module: ctx.file_module,
+            target,
+            lookup_key,
+        },
+    );
+    if !reexported.is_empty() {
+        candidates.retain(|n| !matches!(n.kind, NodeKind::Module | NodeKind::ModuleDeclaration));
+        candidates.extend(reexported);
+    }
+}
+
 fn resolve_explicit_paths<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
     owner: Option<&'res Node>,
@@ -738,10 +773,8 @@ where
         candidates.clear();
         if let Some(target) = module_target {
             candidates.extend_from_slice(ctx.lookup(target.namespace.as_str()));
-            if candidates.is_empty() {
-                candidates.extend(ctx.language_linker.explicit_reexport_targets(crate::linker::traits::ExplicitReexport {
-                    input: ctx.input, file_module: ctx.file_module, target, lookup_key,
-                }));
+            if needs_explicit_reexport(candidates) {
+                extend_explicit_reexports(ctx, target, candidates, lookup_key);
             }
             if candidates.is_empty() {
                 push_explicit_constant_member(ctx, owner, &target.namespace, candidates);
@@ -751,8 +784,8 @@ where
         && state.imported.is_none()
         && state.typed_receiver.is_none()
         && state.receiver_member.is_none()
-        && !state.lexical_head_declared
-        && candidates.is_empty()
+        && (!state.lexical_head_declared || module_target.is_some())
+        && needs_explicit_reexport(candidates)
     {
         if let Some(target) = module_target {
             candidates.extend(
@@ -765,10 +798,8 @@ where
                         })
                     }),
             );
-            if candidates.is_empty() {
-                candidates.extend(ctx.language_linker.explicit_reexport_targets(crate::linker::traits::ExplicitReexport {
-                    input: ctx.input, file_module: ctx.file_module, target, lookup_key,
-                }));
+            if needs_explicit_reexport(candidates) {
+                extend_explicit_reexports(ctx, target, candidates, lookup_key);
             }
             explicit_address = !candidates.is_empty();
         }

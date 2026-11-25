@@ -239,10 +239,7 @@ fn branch_exports(
     let mut bindings: HashMap<String, (String, Option<String>)> = HashMap::new();
     let mut cursor = block.walk();
     let mut result = None;
-    for statement in block.named_children(&mut cursor) {
-        if statement.kind() == "comment" {
-            continue;
-        }
+    for statement in super::common::non_comment_named_children(block, &mut cursor) {
         if statement.kind() == "return_statement" {
             if result.is_some() {
                 return None;

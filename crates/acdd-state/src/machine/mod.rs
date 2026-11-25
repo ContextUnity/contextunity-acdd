@@ -32,9 +32,67 @@ pub use submit::{evaluate_submit, plan_container_blackboard_cleanup};
 pub(crate) use sync::plan_sync;
 pub use verify::{compute_execution_digest, evaluate_verify, ExecutionDigestInput};
 
-use crate::types::{GateNodeRecord, NodeKind, RunGraphSnapshot, RunStatus, ValidatedObservations};
+use crate::types::{GateNodeRecord, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, ValidatedObservations};
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::NodeCursor;
+use acdd_core::ids::{NodeCursor, WorkerId};
+
+/// Construct a [`NodeStatusPatch`] that clears active claim ownership (and optionally accepted tree/digest).
+pub(crate) fn clear_claim_patch(
+    node_id: &str,
+    status: NodeStatus,
+    clear_accepted: bool,
+) -> NodeStatusPatch {
+    let mut patch = NodeStatusPatch::status_only(node_id, status);
+    if clear_accepted {
+        patch.accepted_tree = Some(None);
+        patch.accepted_definition_digest = Some(None);
+    }
+    patch.worker_id = Some(None);
+    patch.session_fingerprint = Some(None);
+    patch.active_span_id = Some(None);
+    patch
+}
+
+/// Verify the node is claimed in_progress, matches any expected `claim_revision`, and belongs to `worker_id`.
+pub(crate) fn require_claimed_in_progress<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    cursor: &NodeCursor,
+    action_label: &str,
+    expected_rev: Option<u32>,
+    worker_id: Option<&WorkerId>,
+) -> Result<&'a GateNodeRecord, StateError> {
+    let node = require_active_claimable_node(snapshot, cursor, action_label)?;
+    let node_id = node.node_id.as_str();
+    if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
+        return Err(StateError::new(
+            ErrorCode::StaleClaimRevision,
+            format!(
+                "node '{node_id}' must be in_progress with an active claim before {action_label} (status: {}, claim_revision: {})",
+                node.status, node.claim_revision
+            ),
+        ));
+    }
+    if let Some(expected) = expected_rev {
+        if expected != node.claim_revision {
+            return Err(StateError::new(
+                ErrorCode::StaleClaimRevision,
+                format!(
+                    "{action_label} claim_revision {expected} does not match active claim_revision {} on '{node_id}'",
+                    node.claim_revision
+                ),
+            ));
+        }
+    }
+    if let Some(worker) = worker_id {
+        if node.worker_id.as_ref() != Some(worker) {
+            return Err(StateError::new(
+                ErrorCode::TaskAlreadyClaimed,
+                format!("worker '{worker}' does not hold the active claim on '{node_id}'"),
+            ));
+        }
+    }
+    Ok(node)
+}
 
 /// Verify the run is active, resolve `cursor` to a canonical `node_id`, and return the [`GateNodeRecord`].
 pub(crate) fn require_active_node<'a>(

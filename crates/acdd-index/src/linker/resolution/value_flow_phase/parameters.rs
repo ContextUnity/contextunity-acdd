@@ -53,18 +53,7 @@ where
                 .copied()
                 .filter(|candidate| candidate.path == *ctx.path),
         );
-        if !type_candidates.is_empty()
-            && ctx
-                .alias_import_positions
-                .get(&(scope, head))
-                .is_some_and(|position| {
-                    position.line <= node.line
-                        && type_candidates
-                            .iter()
-                            .any(|candidate| candidate.line < position.line)
-                })
-        {
-            type_candidates.clear();
+        if crate::linker::types::shadowed_by_late_import(&ctx.alias_import_positions, scope, head, node.line, type_candidates) {
             annotation_shadowed = true;
             break;
         }

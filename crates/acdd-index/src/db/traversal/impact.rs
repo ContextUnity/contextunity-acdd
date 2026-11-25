@@ -206,18 +206,15 @@ fn traverse_with_path_options_dto<'a>(
     }
     // Reuse the bounded reachability result for the exact count, page, and path evidence.
     let columns = paging::nodes("n", options.detail);
-    let (forward_from, forward_to, reverse_from, reverse_to) = if direction.is_inbound() {
-        ("src_hash", "dst_hash", "dst_hash", "src_hash")
-    } else {
-        ("dst_hash", "src_hash", "src_hash", "dst_hash")
-    };
-    let reverse_union = if reverse.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({reverse})"
-        )
-    };
+    let (forward_from, forward_to, reverse_from, reverse_to) =
+        super::predecessor_endpoints(direction);
+    let reverse_union = super::reverse_predecessor_union(
+        &reverse,
+        reverse_from,
+        reverse_to,
+        "p.distance",
+        "p.__hash",
+    );
     let sql = if immediate <= 3 && options.offset == 0 {
         format!(
             "WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), \

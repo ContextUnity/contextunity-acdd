@@ -513,45 +513,40 @@ impl<'de> Deserialize<'de> for ReturnTypeSpec {
 
 fn split_top_level_args(input: &str) -> Result<Vec<&str>> {
     let mut parts = Vec::new();
-    let mut angle = 0usize;
-    let mut paren = 0usize;
-    let mut bracket = 0usize;
-    let mut start = 0usize;
-    for (idx, ch) in input.char_indices() {
-        match ch {
-            '<' => angle += 1,
-            '>' => {
-                ensure!(angle > 0, "unbalanced '>' in return type");
-                angle -= 1;
-            }
-            '(' => paren += 1,
-            ')' => {
-                ensure!(paren > 0, "unbalanced ')' in return type");
-                paren -= 1;
-            }
-            '[' => bracket += 1,
-            ']' => {
-                ensure!(bracket > 0, "unbalanced ']' in return type");
-                bracket -= 1;
-            }
-            ',' if angle == 0 && paren == 0 && bracket == 0 => {
-                let piece = input[start..idx].trim();
-                ensure!(!piece.is_empty(), "empty type argument in return type");
+    let res = crate::languages::types::split_top_level_delimited(
+        input,
+        crate::languages::types::DelimitedSplitOptions {
+            delimiter: ',',
+            track_angles: true,
+            track_brackets: true,
+            track_quotes: false,
+            strict: true,
+        },
+        |piece, is_tail| {
+            if is_tail {
+                if !piece.is_empty() {
+                    parts.push(piece);
+                } else if !parts.is_empty() {
+                    return Err("trailing comma in return type");
+                }
+            } else {
+                if piece.is_empty() {
+                    return Err("empty type argument in return type");
+                }
                 parts.push(piece);
-                start = idx + 1;
             }
-            _ => {}
-        }
-    }
-    ensure!(
-        angle == 0 && paren == 0 && bracket == 0,
-        "unbalanced delimiters in return type"
+            Ok(())
+        },
     );
-    let tail = input[start..].trim();
-    if !tail.is_empty() {
-        parts.push(tail);
-    } else if !parts.is_empty() {
-        anyhow::bail!("trailing comma in return type");
+    match res {
+        Ok(()) => {}
+        Err(Ok(crate::languages::types::DelimitedSplitError::UnbalancedClose(ch))) => {
+            anyhow::bail!("unbalanced '{ch}' in return type");
+        }
+        Err(Ok(crate::languages::types::DelimitedSplitError::UnbalancedOpen)) => {
+            anyhow::bail!("unbalanced delimiters in return type");
+        }
+        Err(Err(msg)) => anyhow::bail!("{msg}"),
     }
     ensure!(parts.len() <= 16, "return type arity exceeds bound");
     Ok(parts)

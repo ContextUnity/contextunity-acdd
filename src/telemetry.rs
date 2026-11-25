@@ -93,6 +93,7 @@ impl SpanGuard {
     }
 
     /// Override the maximum retained trace disk budget in MiB.
+    #[cfg(test)]
     pub fn with_max_retained_trace_mib(mut self, max_mib: u64) -> Self {
         self.max_retained_trace_mib = max_mib.max(1);
         self
@@ -109,6 +110,7 @@ impl SpanGuard {
     }
 
     /// Return the W3C `traceparent` header value (`00-<trace_id>-<span_id>-01`).
+    #[cfg(test)]
     pub fn traceparent(&self) -> String {
         TraceParent::new(self.trace_id, self.span_id).to_string()
     }

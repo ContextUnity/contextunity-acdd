@@ -186,6 +186,14 @@ fn graph_evidence<'a>(
     }
 }
 
+fn dict_entry<'a>(map: &'a HashMap<i64, String>, id: i64, label: &str, role: &str) -> Result<&'a str> {
+    map.get(&id).with_context(|| format!("{label} commitment references missing {role} {id}")).map(String::as_str)
+}
+
+fn row_i64_quad(row: &rusqlite::Row<'_>) -> rusqlite::Result<[i64; 4]> {
+    Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?])
+}
+
 pub(super) fn leaves_edge_occurrences(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
@@ -212,33 +220,15 @@ pub(super) fn leaves_edge_occurrences(
     let mut current_owner_path = "";
 
     while let Some(row) = rows.next()? {
-        let owner_id: i64 = row.get(0)?;
-        let ordinal: i64 = row.get(1)?;
-        let src_hash: i64 = row.get(2)?;
-        let dst_hash: i64 = row.get(3)?;
+        let [owner_id, ordinal, src_hash, dst_hash] = row_i64_quad(row)?;
         let kind = row.get_ref(4)?.as_str()?;
         let line: i64 = row.get(5)?;
         let evidence = graph_evidence(row.get_ref(6)?, &evidence_map)?;
         let confidence = graph_evidence(row.get_ref(7)?, &evidence_map)?;
 
-        let owner_path = path_map
-            .get(&owner_id)
-            .with_context(|| {
-                format!("edge occurrence commitment references missing owner path {owner_id}")
-            })?
-            .as_str();
-        let src = node_map
-            .get(&src_hash)
-            .with_context(|| {
-                format!("edge occurrence commitment references missing source node {src_hash}")
-            })?
-            .as_str();
-        let dst = node_map
-            .get(&dst_hash)
-            .with_context(|| {
-                format!("edge occurrence commitment references missing destination node {dst_hash}")
-            })?
-            .as_str();
+        let owner_path = dict_entry(path_map, owner_id, "edge occurrence", "owner path")?;
+        let src = dict_entry(&node_map, src_hash, "edge occurrence", "source node")?;
+        let dst = dict_entry(&node_map, dst_hash, "edge occurrence", "destination node")?;
 
         if current_owner_id != Some(owner_id) {
             if current_owner_id.is_some() {
@@ -316,20 +306,9 @@ pub(super) fn leaves_edges(
         let confidence = text.push(graph_evidence(row.get_ref(6)?, &evidence_map)?);
         let count: i64 = row.get(7)?;
 
-        let path = path_map
-            .get(&path_id)
-            .with_context(|| format!("edge commitment references missing owner path {path_id}"))?
-            .as_str();
-        let src = node_map
-            .get(&src_hash)
-            .with_context(|| format!("edge commitment references missing source node {src_hash}"))?
-            .as_str();
-        let dst = node_map
-            .get(&dst_hash)
-            .with_context(|| {
-                format!("edge commitment references missing destination node {dst_hash}")
-            })?
-            .as_str();
+        let path = dict_entry(path_map, path_id, "edge", "owner path")?;
+        let src = dict_entry(&node_map, src_hash, "edge", "source node")?;
+        let dst = dict_entry(&node_map, dst_hash, "edge", "destination node")?;
 
         by_owner.entry(path).or_default().push(EdgeRow {
             src,
@@ -407,10 +386,7 @@ pub(super) fn leaves_shared_owners(
     let mut by_owner: HashMap<&str, Vec<SharedOwnerRow<'_>>> = HashMap::new();
 
     while let Some(row) = rows.next()? {
-        let kind_id: i64 = row.get(0)?;
-        let key_hash: i64 = row.get(1)?;
-        let owner_id: i64 = row.get(2)?;
-        let ordinal: i64 = row.get(3)?;
+        let [kind_id, key_hash, owner_id, ordinal] = row_i64_quad(row)?;
         let owner = path_map
             .get(&owner_id)
             .with_context(|| {

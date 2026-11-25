@@ -141,6 +141,11 @@ impl<'a> Context<'a> {
     }
 
     fn step_rust_module_member(&self, owner: &'a Node, target: &'a Node, segment: &str, next: &mut Vec<&'a Node>) {
+        let visible = self.import_state("rust").map_or(&[][..], |state| state.targets(target, segment, &owner.qualname));
+        if !visible.is_empty() {
+            next.extend_from_slice(visible);
+            return;
+        }
         if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
             if imported.iter().all(|node| node.kind == crate::models::tags::NodeKind::Module) {
                 next.extend(imported.iter().copied().filter(|node| {
@@ -149,24 +154,15 @@ impl<'a> Context<'a> {
                 return;
             }
         }
-        let visible = self.import_state("rust").map_or(&[][..], |state| state.targets(target, segment, &owner.qualname));
-        if visible.is_empty() {
-            let sub_qual = format!("{}.{}", target.qualname, segment);
-            let target_pkg = target.path.split_once("/src/").map_or("", |(p, _)| p);
-            if let Some(candidates) = self.by_qual.get(sub_qual.as_str()) {
-                next.extend(candidates.iter().copied().filter(|node| {
-                    node.language == crate::models::tags::LanguageId::Rust
-                        && node.kind == crate::models::tags::NodeKind::Module
-                        && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
-                        && self.import_state("rust").is_none_or(|state| state.module_path_visible(&node.qualname, &owner.qualname))
-                }));
-            }
-            return;
-        }
-        if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
-            next.extend(imported.iter().copied());
-        } else {
-            next.extend_from_slice(visible);
+        let sub_qual = format!("{}.{}", target.qualname, segment);
+        let target_pkg = target.path.split_once("/src/").map_or("", |(p, _)| p);
+        if let Some(candidates) = self.by_qual.get(sub_qual.as_str()) {
+            next.extend(candidates.iter().copied().filter(|node| {
+                node.language == crate::models::tags::LanguageId::Rust
+                    && node.kind == crate::models::tags::NodeKind::Module
+                    && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
+                    && self.import_state("rust").is_none_or(|state| state.module_path_visible(&node.qualname, &owner.qualname))
+            }));
         }
     }
 
@@ -190,6 +186,8 @@ impl<'a> Context<'a> {
                             .and_then(|profile| profile.linker().explicit_constant_member(target, segment, owner, self))
                         { next.push(method); }
                     } else if let Symbol::Callable(method) = self.member(target, segment, true, owner) {
+                        next.push(method);
+                    } else if let Symbol::Callable(method) = self.member(target, segment, false, owner) {
                         next.push(method);
                     }
                 }

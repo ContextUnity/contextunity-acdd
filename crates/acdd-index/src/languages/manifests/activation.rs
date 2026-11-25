@@ -44,15 +44,6 @@ impl SyntaxActivationKeys {
     pub fn is_empty(&self) -> bool {
         self.exact_attributes.is_empty() && self.attribute_prefixes.is_empty()
     }
-
-    /// Reports whether `attribute` matches any registered exact key or prefix.
-    pub fn matches_attribute(&self, attribute: &str) -> bool {
-        self.exact_attributes.contains(attribute)
-            || self
-                .attribute_prefixes
-                .iter()
-                .any(|prefix| attribute.starts_with(prefix.as_str()))
-    }
 }
 
 /// Per-file syntax activation signals observed during single-pass extraction.

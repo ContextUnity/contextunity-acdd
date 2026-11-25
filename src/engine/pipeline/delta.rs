@@ -428,6 +428,25 @@ struct TemplateFrontierOutputs {
     load_owners: BTreeSet<String>,
 }
 
+fn load_frontier_local_facts<'a>(
+    admitted: &rusqlite::Connection,
+    paths: impl Iterator<Item = &'a str>,
+) -> Result<Vec<(String, TypedFacts)>> {
+    populate_temp_text_frontier(admitted, "delta_frontier_text", paths)?;
+    let mut st = admitted.prepare(
+        "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+    )?;
+    let raw_blobs = st
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    raw_blobs
+        .into_par_iter()
+        .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
+        .collect()
+}
+
 fn extract_modified_and_detect_resolution_changes(
     admission: &DeltaAdmission,
     cache_dir: Option<&Path>,
@@ -480,24 +499,10 @@ fn extract_modified_and_detect_resolution_changes(
     let old_modified_facts: BTreeMap<String, TypedFacts> = if existing_modified.is_empty() {
         BTreeMap::new()
     } else {
-        populate_temp_text_frontier(
-            admitted,
-            "delta_frontier_text",
-            existing_modified.iter().copied(),
-        )?;
-        let mut st = admitted.prepare(
-            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
-        )?;
-        let raw_blobs = st
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let decoded: Vec<(String, TypedFacts)> = raw_blobs
-            .into_par_iter()
-            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
-            .collect::<Result<_>>()?;
-        let map: BTreeMap<String, TypedFacts> = decoded.into_iter().collect();
+        let map: BTreeMap<String, TypedFacts> =
+            load_frontier_local_facts(admitted, existing_modified.iter().copied())?
+                .into_iter()
+                .collect();
         let identity_changed: Vec<String> = existing_modified
             .par_iter()
             .filter_map(|&path| {
@@ -1260,24 +1265,7 @@ fn hydrate_and_link_delta(
     let hydrating = Instant::now();
 
     if !load_owners.is_empty() {
-        populate_temp_text_frontier(
-            admitted,
-            "delta_frontier_text",
-            load_owners.iter().map(String::as_str),
-        )?;
-        let mut st = admitted.prepare(
-            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
-        )?;
-        let raw_blobs = st
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let decoded: Vec<(String, TypedFacts)> = raw_blobs
-            .into_par_iter()
-            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
-            .collect::<Result<_>>()?;
-        for (path, f) in decoded {
+        for (path, f) in load_frontier_local_facts(admitted, load_owners.iter().map(String::as_str))? {
             facts.insert(path, f);
             loaded_fact_files += 1;
         }

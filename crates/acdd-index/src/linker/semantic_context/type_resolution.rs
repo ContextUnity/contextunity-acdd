@@ -472,60 +472,18 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         receiver: &TypeTarget<'a>,
         member: &str,
         owner: &'a Node,
-        _at: SourcePosition,
+        at: SourcePosition,
     ) -> Symbol<'a> {
-        if let Some(next) = languages::by_id(owner.language.as_str())
-            .and_then(|profile| profile.linker().member_receiver(receiver, member))
-        {
-            return next.map_or(Symbol::Unknown, |target| self.resolve_member(target, member, owner, _at));
-        }
-        match receiver {
-            TypeTarget::ConfiguredReceiver {
-                authority,
-                fallback,
-                ..
-            } => {
-                if let super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
-                    receiver: nominal,
-                    ..
-                } = authority.as_ref()
-                {
-                    if let Some(name) = nominal.rule.properties.get(member) {
-                        return Symbol::Type(self.resolve_nominal_target(
-                            owner,
-                            name,
-                            receiver,
-                            false,
-                        ));
-                    }
-                }
-                if let Some(target) = languages::by_id(owner.language.as_str())
-                    .and_then(|profile| profile.linker().synthetic_property_result(owner, receiver, member))
-                {
-                    return Symbol::Type(target);
-                }
-                fallback.as_deref().map_or(Symbol::Unknown, |fallback| {
-                    self.resolve_member(fallback, member, owner, _at)
-                })
-            }
-            TypeTarget::Builtin(receiver) => self
-                .property_type_for_path(&owner.path, receiver, member)
-                .map_or(Symbol::Unknown, |name| {
-                    Symbol::Type(TypeTarget::Builtin(name))
-                }),
-            TypeTarget::Local(node) => self.member(node, member, false, owner),
-            TypeTarget::Object(members) => match members.get(member) {
-                Some(node) => Symbol::Callable(node),
-                None => Symbol::Unknown,
-            },
-            TypeTarget::ClassType(inner) if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().class_type_uses_associated_lookup()) => {
-                self.resolve_member(inner, member, owner, _at)
-            }
-            TypeTarget::External { .. } if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().external_field_projection()) => self
-                .resolve_member_result(receiver, member, owner, _at)
-                .map_or(Symbol::Unknown, Symbol::Type),
-            _ => Symbol::Unknown,
-        }
+        self.resolve_member_with_mode(receiver, member, owner, at, false)
+    }
+    fn resolve_associated_member(
+        &self,
+        receiver: &TypeTarget<'a>,
+        member: &str,
+        owner: &'a Node,
+        at: SourcePosition,
+    ) -> Symbol<'a> {
+        self.resolve_member_with_mode(receiver, member, owner, at, true)
     }
     fn resolve_super_member(&self, owner: &'a Node, member: &str) -> Symbol<'a> {
         languages::by_id(owner.language.as_str()).map_or(Symbol::Unknown, |profile| {
@@ -594,6 +552,70 @@ struct ReturnProjection<'p, 'a> {
 }
 
 impl<'a> Context<'a> {
+    fn resolve_member_with_mode(
+        &self,
+        receiver: &TypeTarget<'a>,
+        member: &str,
+        owner: &'a Node,
+        _at: SourcePosition,
+        associated: bool,
+    ) -> Symbol<'a> {
+        if let Some(next) = languages::by_id(owner.language.as_str())
+            .and_then(|profile| profile.linker().member_receiver(receiver, member))
+        {
+            return next.map_or(Symbol::Unknown, |target| {
+                self.resolve_member_with_mode(target, member, owner, _at, associated)
+            });
+        }
+        match receiver {
+            TypeTarget::ConfiguredReceiver {
+                authority,
+                fallback,
+                ..
+            } => {
+                if let super::super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                    receiver: nominal,
+                    ..
+                } = authority.as_ref()
+                {
+                    if let Some(name) = nominal.rule.properties.get(member) {
+                        return Symbol::Type(self.resolve_nominal_target(
+                            owner,
+                            name,
+                            receiver,
+                            false,
+                        ));
+                    }
+                }
+                if let Some(target) = languages::by_id(owner.language.as_str())
+                    .and_then(|profile| profile.linker().synthetic_property_result(owner, receiver, member))
+                {
+                    return Symbol::Type(target);
+                }
+                fallback.as_deref().map_or(Symbol::Unknown, |fallback| {
+                    self.resolve_member_with_mode(fallback, member, owner, _at, associated)
+                })
+            }
+            TypeTarget::Builtin(receiver) => self
+                .property_type_for_path(&owner.path, receiver, member)
+                .map_or(Symbol::Unknown, |name| {
+                    Symbol::Type(TypeTarget::Builtin(name))
+                }),
+            TypeTarget::Local(node) => self.member(node, member, associated, owner),
+            TypeTarget::Object(members) => match members.get(member) {
+                Some(node) => Symbol::Callable(node),
+                None => Symbol::Unknown,
+            },
+            TypeTarget::ClassType(inner) if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().class_type_uses_associated_lookup()) => {
+                self.resolve_member_with_mode(inner, member, owner, _at, associated)
+            }
+            TypeTarget::External { .. } if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().external_field_projection()) => self
+                .resolve_member_result(receiver, member, owner, _at)
+                .map_or(Symbol::Unknown, Symbol::Type),
+            _ => Symbol::Unknown,
+        }
+    }
+
     fn same_nominal_authority(
         a: &super::super::value_flow::ConfiguredReceiverAuthority,
         b: &super::super::value_flow::ConfiguredReceiverAuthority,
@@ -1295,6 +1317,41 @@ impl<'a> Context<'a> {
                 .filter(|node| node.path == owner.path && Self::visible(owner, node, at, role));
             if local.clone().next().is_some() {
                 return self.classify(local, role);
+            }
+            if !member.is_empty() {
+                let owner_ws = languages::workspace_path(&owner.path).0;
+                if let Some(submodules) = self
+                    .by_qual
+                    .get(super::super::qualified(&mut lookup_key, scope, head))
+                {
+                    let eof = SourcePosition {
+                        line: usize::MAX,
+                        column: usize::MAX,
+                    };
+                    let mut nested_key = String::with_capacity(64);
+                    for module in submodules.iter().copied().filter(|node| {
+                        node.kind == crate::models::tags::NodeKind::Module
+                            && node.language == owner.language
+                            && languages::workspace_path(&node.path).0 == owner_ws
+                    }) {
+                        let (sub_head, sub_tail) = member.split_once('.').unwrap_or((member, ""));
+                        if let Some(symbol) = self.resolve_symbol_in_node(
+                            module,
+                            module,
+                            module.qualname.as_str(),
+                            member,
+                            sub_head,
+                            sub_tail,
+                            eof,
+                            role,
+                            &mut nested_key,
+                        ) {
+                            if !matches!(symbol, Symbol::Unknown) {
+                                return symbol;
+                            }
+                        }
+                    }
+                }
             }
             if scope_nodes_shadow_value(owner, raw_name, head, role, scope_nodes) {
                 return Symbol::Unknown;

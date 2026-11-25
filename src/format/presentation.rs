@@ -614,6 +614,17 @@ pub(crate) fn render_with_acdd_read_hints(value: &Value, opts: PresentationOptio
     }
 }
 
+fn render_fitting_budget(
+    value: &mut Value,
+    opts: PresentationOptions<'_>,
+    budget: usize,
+    measure_bytes: &dyn Fn(&str) -> usize,
+) -> Option<String> {
+    compact(value, opts.operation, opts.explain);
+    let rendered = render_with_acdd_read_hints(value, opts);
+    (measure_bytes(&rendered) <= budget).then_some(rendered)
+}
+
 pub(crate) fn present_value_bounded(
     mut value: Value,
     budget: usize,
@@ -637,9 +648,7 @@ pub(crate) fn present_value_bounded(
     }
 
     let saved_generations = GenerationSnapshot::capture(&value);
-    compact(&mut value, opts.operation, opts.explain);
-    let rendered = render_with_acdd_read_hints(&value, opts);
-    if measure_bytes(&rendered) <= budget {
+    if let Some(rendered) = render_fitting_budget(&mut value, opts, budget, measure_bytes) {
         return BoundedPresentation::Ok(rendered);
     }
 
@@ -662,9 +671,9 @@ pub(crate) fn present_value_bounded(
                 measure_bytes,
             ));
         }
-        compact(&mut value, opts.operation, opts.explain);
-        let rendered = render_with_acdd_read_hints(&value, opts);
-        return if measure_bytes(&rendered) <= budget {
+        return if let Some(rendered) =
+            render_fitting_budget(&mut value, opts, budget, measure_bytes)
+        {
             BoundedPresentation::Ok(rendered)
         } else {
             BoundedPresentation::Oversized(oversized_response_message(
@@ -682,9 +691,7 @@ pub(crate) fn present_value_bounded(
         OperationKind::Navigation | OperationKind::Sql
     );
     while trim_page_tails(&mut value, allow_tasks, allow_items) {
-        compact(&mut value, opts.operation, opts.explain);
-        let candidate = render_with_acdd_read_hints(&value, opts);
-        if measure_bytes(&candidate) <= budget {
+        if let Some(candidate) = render_fitting_budget(&mut value, opts, budget, measure_bytes) {
             return BoundedPresentation::Ok(candidate);
         }
         if let Some(snapshot) = &saved_generations {
@@ -969,6 +976,29 @@ fn snippet_source_candidate(
     serde_json::to_value(candidate).ok()
 }
 
+fn update_trimmed_page_tail_fields<T>(
+    items_slot: &mut Option<Vec<T>>,
+    [returned_slot, byte_omitted_slot, has_more_slot, next_offset_slot]: [&mut Option<Value>; 4],
+    offset: u64,
+    total: Option<u64>,
+    fallback_has_more: bool,
+) -> Option<(u64, bool)> {
+    let items = items_slot.as_mut()?;
+    if items.len() <= 1 {
+        return None;
+    }
+    items.pop();
+    let returned = items.len() as u64;
+    let next = offset.saturating_add(returned);
+    let has_more = total.map_or(fallback_has_more, |total| next < total);
+    let omitted = byte_omitted_slot.as_ref().and_then(Value::as_u64).unwrap_or(0);
+    *returned_slot = Some(json!(returned));
+    *byte_omitted_slot = Some(json!(omitted.saturating_add(1)));
+    *has_more_slot = Some(json!(has_more));
+    *next_offset_slot = has_more.then(|| json!(next));
+    Some((next, has_more))
+}
+
 fn trim_tasks_page_tail(value: &mut Value) -> bool {
     if !value.is_object() {
         return false;
@@ -989,25 +1019,17 @@ fn trim_tasks_page_tail(value: &mut Value) -> bool {
     if !page_is_continuable {
         return false;
     }
-    let Some(tasks) = page_dto.tasks.as_mut() else {
+    let offset = pagination.offset.as_ref().and_then(Value::as_u64).unwrap_or(0);
+    let total = pagination.total.as_ref().and_then(Value::as_u64);
+    let Some((next, has_more)) = update_trimmed_page_tail_fields(
+        &mut page_dto.tasks,
+        [&mut pagination.returned, &mut pagination.byte_omitted, &mut pagination.has_more, &mut pagination.next_offset],
+        offset,
+        total,
+        false,
+    ) else {
         return false;
     };
-    if tasks.len() <= 1 {
-        return false;
-    }
-    tasks.pop();
-    let returned = tasks.len() as u64;
-    let offset = pagination.offset.as_ref().and_then(Value::as_u64).unwrap_or(0);
-    let total = pagination.total.as_ref().and_then(Value::as_u64).unwrap_or(returned);
-    let next = offset.saturating_add(returned);
-    pagination.returned = Some(json!(returned));
-    let omitted = pagination
-        .byte_omitted
-        .as_ref()
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    pagination.byte_omitted = Some(json!(omitted.saturating_add(1)));
-    pagination.has_more = Some(json!(next < total));
     let filters = pagination.filters.clone().unwrap_or(Value::Null);
     let generation = pagination
         .generation
@@ -1015,8 +1037,7 @@ fn trim_tasks_page_tail(value: &mut Value) -> bool {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if next < total {
-        pagination.next_offset = Some(json!(next));
+    if has_more {
         if let Some(hint_val) = pagination
             .continuation_hint
             .as_ref()
@@ -1034,7 +1055,6 @@ fn trim_tasks_page_tail(value: &mut Value) -> bool {
             )));
         }
     } else {
-        pagination.next_offset = None;
         pagination.continuation_hint = Some(json!(format!(
             "No next page. Repeat the same tool with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
         )));
@@ -1068,22 +1088,19 @@ fn trim_items_page_tail(value: &mut Value) -> bool {
     {
         return false;
     }
-    let Some(items) = page.items.as_mut() else {
+    let items_tail_offset = offset.unwrap_or_default();
+    let mut items = page.items.take();
+    let Some((next, has_more)) = update_trimmed_page_tail_fields(
+        &mut items,
+        [&mut page.returned, &mut page.byte_omitted, &mut page.has_more, &mut page.next_offset],
+        items_tail_offset,
+        total,
+        has_more,
+    ) else {
         return false;
     };
-    if items.len() <= 1 {
-        return false;
-    }
-    items.pop();
-    let returned = items.len() as u64;
-    let next = offset.unwrap_or_default().saturating_add(returned);
-    let has_more = total.map_or(has_more, |total| next < total);
-    let omitted = page.byte_omitted.as_ref().and_then(Value::as_u64).unwrap_or(0);
-    page.returned = Some(json!(returned));
-    page.byte_omitted = Some(json!(omitted.saturating_add(1)));
-    page.has_more = Some(json!(has_more));
+    page.items = items;
     if has_more {
-        page.next_offset = Some(json!(next));
         page.byte_limited = Some(json!(true));
         let generation = generation.unwrap_or_default();
         let filters = page
@@ -1099,7 +1116,6 @@ fn trim_items_page_tail(value: &mut Value) -> bool {
             .unwrap_or(json!("the original request filters"));
         page.continuation_hint = Some(json!(format!("Repeat the same tool and filters ({filters}) with generation={generation} and offset={next}; whole items after this offset were omitted to respect max_output_bytes.")));
     } else {
-        page.next_offset = None;
         page.continuation_hint = None;
     }
     if let Ok(encoded) = serde_json::to_value(page) {

@@ -980,6 +980,7 @@ impl LanguageProfile for Rust {
                 .and_then(|function| value_flow::callee_name(function, ctx.source))
             {
                 let callee = callee.into_owned();
+                extract_combinator_callback_args(ctx.node, ctx.source, ctx.owner, &callee, facts);
                 let receiver_hint = if callee.contains("::") && callee.contains('.') {
                     call_result_hint(ctx.node, ctx.source).map(|(hint, _)| hint)
                 } else {
@@ -1008,6 +1009,10 @@ impl LanguageProfile for Rust {
                     }
                     reference.receiver_hint = Some(hint);
                 }
+                if let Some(reference) = facts.references.get(previous) {
+                    let callee = reference.expression.clone();
+                    extract_combinator_callback_args(ctx.node, ctx.source, ctx.owner, &callee, facts);
+                }
             }
         } else if ctx.node.kind() == "macro_invocation" {
             super::sql::extract_macro_type(ctx, facts);
@@ -1030,6 +1035,16 @@ impl LanguageProfile for Rust {
                 let text = relations::type_name(name, ctx.source);
                 let clean = text.split('<').next().unwrap_or(text).trim();
                 relations::reference(facts, ctx.owner, clean, "references", ctx.line());
+            }
+            if let Some(body) = ctx.node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.named_children(&mut cursor) {
+                    if child.kind() == "field_initializer" {
+                        if let Some(val) = child.child_by_field_name("value") {
+                            emit_callable_arg(val, ctx.source, ctx.owner, facts, false);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1717,6 +1732,129 @@ fn unquote_rust_string<'a>(node: Syntax<'_>, source: &'a str) -> Option<std::bor
     Some(std::borrow::Cow::Owned(out))
 }
 
+fn is_combinator_callback_name(tail: &str) -> bool {
+    matches!(
+        tail,
+        "map"
+            | "map_err"
+            | "map_or"
+            | "map_or_else"
+            | "and_then"
+            | "or_else"
+            | "ok_or_else"
+            | "unwrap_or_else"
+            | "filter"
+            | "filter_map"
+            | "find"
+            | "find_map"
+            | "flat_map"
+            | "any"
+            | "all"
+            | "for_each"
+            | "try_for_each"
+            | "inspect"
+            | "inspect_err"
+            | "map_rows"
+            | "query_map"
+            | "sort_by"
+            | "sort_by_key"
+            | "sort_by_cached_key"
+            | "dedup_by"
+            | "is_some_and"
+            | "is_none_or"
+            | "retain"
+            | "retain_mut"
+            | "partition"
+            | "fold"
+            | "try_fold"
+            | "reduce"
+            | "then"
+            | "then_some"
+    )
+}
+
+fn is_file_declared_callable(facts: &Facts, name: &str) -> bool {
+    facts.nodes.iter().any(|n| {
+        n.name == name
+            && matches!(
+                n.kind,
+                crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
+            )
+    })
+}
+
+fn is_lowercase_scoped_callable(raw: &str, allow_upper: bool) -> bool {
+    if raw.is_empty()
+        || raw.starts_with("std::")
+        || raw.starts_with("core::")
+        || raw.starts_with("alloc::")
+    {
+        return false;
+    }
+    allow_upper
+        || raw
+            .rsplit("::")
+            .next()
+            .and_then(|seg| seg.chars().next())
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_')
+}
+
+fn emit_callable_arg(
+    mut arg: Syntax<'_>,
+    source: &str,
+    owner: &str,
+    facts: &mut Facts,
+    combinator: bool,
+) {
+    let mut is_ref = false;
+    while arg.kind() == "reference_expression" {
+        is_ref = true;
+        let Some(inner) = arg
+            .child_by_field_name("value")
+            .or_else(|| arg.named_child(0))
+        else {
+            return;
+        };
+        arg = inner;
+    }
+    let raw = text(arg, source).trim();
+    let is_callable_arg = match arg.kind() {
+        "identifier" => {
+            !matches!(raw, "self" | "true" | "false" | "_")
+                && (combinator || is_ref || is_file_declared_callable(facts, raw))
+        }
+        "scoped_identifier" => is_lowercase_scoped_callable(raw, combinator),
+        _ => false,
+    };
+    if is_callable_arg && !raw.is_empty() {
+        relations::reference(facts, owner, raw, "calls", arg.start_position().row + 1);
+    }
+}
+
+fn extract_combinator_callback_args(
+    call_node: Syntax<'_>,
+    source: &str,
+    owner: &str,
+    callee: &str,
+    facts: &mut Facts,
+) {
+    let tail = callee
+        .rsplit("::")
+        .next()
+        .unwrap_or(callee)
+        .rsplit('.')
+        .next()
+        .unwrap_or(callee);
+    let combinator = is_combinator_callback_name(tail);
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cursor = args.walk();
+    for arg in args.named_children(&mut cursor) {
+        emit_callable_arg(arg, source, owner, facts, combinator);
+    }
+}
+
 fn extract_serde_callable_references(
     attr: Syntax<'_>,
     source: &str,
@@ -1732,7 +1870,9 @@ fn extract_serde_callable_references(
         return;
     };
     let attr_name = text(path_node, source).trim();
-    if attr_name != "serde" && !attr_name.ends_with("::serde") {
+    let is_serde = attr_name == "serde" || attr_name.ends_with("::serde");
+    let is_schemars = attr_name == "schemars" || attr_name.ends_with("::schemars");
+    if !is_serde && !is_schemars {
         return;
     }
     let Some(token_tree) = attr_node
@@ -1752,13 +1892,18 @@ fn extract_serde_callable_references(
         let [key_node, eq_node, val_node] = window else {
             continue;
         };
-        if !matches!(key_node.kind(), "identifier" | "default")
-            || text(*eq_node, source) != "="
-            || !matches!(val_node.kind(), "string_literal" | "raw_string_literal")
-            || !matches!(
+        let key_ok = if is_serde {
+            matches!(
                 text(*key_node, source),
                 "default" | "skip_serializing_if" | "serialize_with" | "deserialize_with" | "with"
             )
+        } else {
+            text(*key_node, source) == "schema_with"
+        };
+        if !matches!(key_node.kind(), "identifier" | "default")
+            || text(*eq_node, source) != "="
+            || !matches!(val_node.kind(), "string_literal" | "raw_string_literal")
+            || !key_ok
         {
             continue;
         }
@@ -1884,11 +2029,47 @@ fn extract_scoped_identifier_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     relations::reference(facts, ctx.owner, raw, "references", ctx.line());
 }
 
+fn read_scoped_token_path(tokens: &[Syntax<'_>], start: usize, source: &str) -> (String, usize) {
+    let (mut end, mut path) = (start, text(tokens[start], source).to_owned());
+    while end + 2 < tokens.len()
+        && text(tokens[end + 1], source) == "::"
+        && matches!(tokens[end + 2].kind(), "identifier" | "type_identifier" | "super" | "self")
+    {
+        path.push_str("::");
+        path.push_str(text(tokens[end + 2], source));
+        end += 2;
+    }
+    (path, end)
+}
+
+fn emit_macro_combinator_callbacks(args_tree: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
+    let tokens: Vec<_> = args_tree.children(&mut args_tree.walk()).collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        if !matches!(tok.kind(), "identifier" | "type_identifier" | "crate" | "super" | "self") {
+            i += 1;
+            continue;
+        }
+        let first = text(tok, source);
+        let (path, end) = read_scoped_token_path(&tokens, i, source);
+        let prev_ok = i == 0 || matches!(text(tokens[i - 1], source), "(" | ",");
+        let next_ok = end + 1 >= tokens.len() || matches!(text(tokens[end + 1], source), ")" | ",");
+        if prev_ok
+            && next_ok
+            && ((end > i && is_lowercase_scoped_callable(&path, true))
+                || (end == i && !matches!(first, "self" | "true" | "false" | "_")))
+        {
+            relations::reference(facts, owner, &path, "calls", tok.start_position().row + 1);
+        }
+        i = end + 1;
+    }
+}
+
 fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
     let mut pending = vec![tree];
     while let Some(node) = pending.pop() {
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.children(&mut cursor).collect();
+        let children: Vec<_> = node.children(&mut node.walk()).collect();
         let mut i = 0;
         while i < children.len() {
             if children[i].kind() == "token_tree" {
@@ -1901,24 +2082,65 @@ fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, f
                 continue;
             }
             let first = text(children[i], source);
-            let mut end = i;
-            let mut path = first.to_owned();
-            while end + 2 < children.len()
-                && text(children[end + 1], source) == "::"
-                && matches!(children[end + 2].kind(), "identifier" | "super" | "self")
+            let (path, end) = read_scoped_token_path(&children, i, source);
+            let line = children[i].start_position().row + 1;
+            let prev_tok = i.checked_sub(1).map(|prev| text(children[prev], source));
+            let next_tok = children.get(end + 1).copied();
+            let next_call_tree = next_tok.filter(|next| {
+                next.kind() == "token_tree" && text(*next, source).trim_start().starts_with('(')
+            });
+            if end > i && !matches!(first, "std" | "core" | "alloc") {
+                let kind = if next_call_tree.is_some() { "calls" } else { "references" };
+                relations::reference(facts, owner, &path, kind, line);
+            } else if end == i && prev_tok == Some(".") && next_call_tree.is_some() {
+                if is_combinator_callback_name(first) {
+                    if let Some(args_tree) = next_call_tree {
+                        emit_macro_combinator_callbacks(args_tree, source, owner, facts);
+                    }
+                }
+                let mut start = i;
+                while start >= 2
+                    && text(children[start - 1], source) == "."
+                    && matches!(children[start - 2].kind(), "identifier" | "self")
+                {
+                    start -= 2;
+                }
+                if start < i {
+                    let mut dotted = text(children[start], source).to_owned();
+                    for k in ((start + 2)..=i).step_by(2) {
+                        dotted.push('.');
+                        dotted.push_str(text(children[k], source));
+                    }
+                    relations::reference(facts, owner, &dotted, "calls", line);
+                }
+            } else if end == i
+                && first.starts_with(|ch: char| ch.is_ascii_lowercase())
+                && ((prev_tok == Some("=>") && next_tok.is_none_or(|n| matches!(text(n, source), "," | ")")))
+                    || (prev_tok == Some(",") && next_tok.is_some_and(|n| {
+                        n.kind() == "token_tree" && text(n, source).trim_start().starts_with('{')
+                    })))
             {
-                path.push_str("::");
-                path.push_str(text(children[end + 2], source));
-                end += 2;
-            }
-            if end > i && !matches!(first, "std" | "core" | "alloc" | "Self") {
-                relations::reference(
-                    facts,
-                    owner,
-                    &path,
-                    "references",
-                    children[i].start_position().row + 1,
-                );
+                relations::reference(facts, owner, first, "calls", line);
+            } else if end == i
+                && matches!(first, "default" | "skip_serializing_if" | "serialize_with" | "deserialize_with" | "with")
+                && i + 2 < children.len()
+                && text(children[i + 1], source) == "="
+                && matches!(children[i + 2].kind(), "string_literal" | "raw_string_literal")
+            {
+                if let Some(trimmed) = unquote_rust_string(children[i + 2], source).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+                    relations::reference(facts, owner, &trimmed, "calls", line);
+                }
+            } else if end == i
+                && !matches!(prev_tok, Some("::" | "."))
+                && next_call_tree.is_some()
+                && !matches!(
+                    first,
+                    "Some" | "Ok" | "Err" | "None" | "Box" | "Vec" | "if" | "while" | "for"
+                        | "match" | "return" | "let" | "mut" | "ref" | "pub" | "fn"
+                        | "crate" | "super" | "self" | "Self" | "true" | "false"
+                )
+            {
+                relations::reference(facts, owner, first, "calls", line);
             }
             i = end + 1;
         }

@@ -6,8 +6,8 @@ use super::snapshot::{
 };
 use super::exec::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, failpoint_hit,
-    format_message_with_trailer, run_git_checked, run_git_raw, run_git_stdout,
-    sync_default_index_paths,
+    first_commit_with_exact_trailer, format_message_with_trailer, run_git_checked, run_git_raw,
+    run_git_stdout, sync_default_index_paths,
 };
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -622,11 +622,5 @@ pub(crate) fn find_claim_commit_in_range(
     if !rev_out.status.success() {
         return Ok(None);
     }
-    let stdout = String::from_utf8_lossy(&rev_out.stdout);
-    for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if commit_has_exact_trailer(worktree, line, claim_trailer)? {
-            return Ok(Some(CommitOid::new(line)?));
-        }
-    }
-    Ok(None)
+    first_commit_with_exact_trailer(worktree, &rev_out.stdout, claim_trailer)
 }

@@ -824,6 +824,41 @@ fn is_export_default_config_call(node: Syntax<'_>, source: &str, config_callee: 
             .is_some_and(|callee| text(callee, source) == config_callee)
 }
 
+fn export_default_config_object<'tree>(
+    node: Syntax<'tree>,
+    source: &str,
+    config_callee: &str,
+) -> Option<Option<Syntax<'tree>>> {
+    if !is_export_default_config_call(node, source, config_callee) {
+        return None;
+    }
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return Some(None);
+    };
+    let mut cursor = args.walk();
+    let mut values = args.named_children(&mut cursor);
+    let config = values
+        .next()
+        .filter(|value| value.kind() == "object")
+        .filter(|_| values.next().is_none());
+    Some(config)
+}
+
+fn scan_config_object_pairs<'tree>(
+    config: Syntax<'tree>,
+    mut visit: impl FnMut(Syntax<'tree>) -> bool,
+) -> bool {
+    for pair in config.named_children(&mut config.walk()) {
+        if pair.kind() == "comment" {
+            continue;
+        }
+        if pair.kind() != "pair" || !visit(pair) {
+            return false;
+        }
+    }
+    true
+}
+
 pub(super) fn configuration_module_declared(
     node: Syntax<'_>,
     source: &str,
@@ -831,28 +866,11 @@ pub(super) fn configuration_module_declared(
     modules_key: &str,
     module_name: &str,
 ) -> bool {
-    if !is_export_default_config_call(node, source, config_callee) {
-        return false;
-    }
-    let Some(args) = node.child_by_field_name("arguments") else {
+    let Some(Some(config)) = export_default_config_object(node, source, config_callee) else {
         return false;
     };
-    let mut cursor = args.walk();
-    let mut values = args.named_children(&mut cursor);
-    let Some(config) = values.next().filter(|value| value.kind() == "object") else {
-        return false;
-    };
-    if values.next().is_some() {
-        return false;
-    }
     let mut modules = None;
-    for pair in config.named_children(&mut config.walk()) {
-        if pair.kind() == "comment" {
-            continue;
-        }
-        if pair.kind() != "pair" {
-            return false;
-        }
+    if !scan_config_object_pairs(config, |pair| {
         if pair
             .child_by_field_name("key")
             .is_some_and(|key| text(key, source) == modules_key)
@@ -867,6 +885,9 @@ pub(super) fn configuration_module_declared(
                 return false;
             }
         }
+        true
+    }) {
+        return false;
     }
     let Some(modules) = modules else {
         return false;
@@ -887,46 +908,34 @@ pub(super) fn configuration_components_enabled(
     config_callee: &str,
     enabled_key: &str,
 ) -> Option<bool> {
-    if !is_export_default_config_call(node, source, config_callee) {
-        return None;
-    }
-    let arguments = node.child_by_field_name("arguments")?;
-    if arguments.named_child_count() != 1 {
-        return Some(false);
-    }
-    let config = arguments.named_child(0)?;
-    if config.kind() != "object" {
-        return Some(false);
-    }
+    let config = match export_default_config_object(node, source, config_callee)? {
+        Some(config) => config,
+        None => return Some(false),
+    };
     let mut enabled = true;
     let mut seen = false;
-    for property in config.named_children(&mut config.walk()) {
-        if property.kind() == "comment" {
-            continue;
-        }
-        if property.kind() != "pair" {
-            return Some(false);
-        }
-        let Some(key) = property.child_by_field_name("key") else {
-            return Some(false);
+    let valid = scan_config_object_pairs(config, |pair| {
+        let Some(key) = pair.child_by_field_name("key") else {
+            return false;
         };
         let name = match key.kind() {
             "property_identifier" => text(key, source),
             "string" => text(key, source).trim_matches(['\'', '"']),
-            _ => return Some(false),
+            _ => return false,
         };
         if name != enabled_key {
-            continue;
+            return true;
         }
         if seen {
-            return Some(false);
+            return false;
         }
         seen = true;
-        enabled = property
+        enabled = pair
             .child_by_field_name("value")
             .is_some_and(|value| text(value, source) == "true");
-    }
-    Some(enabled)
+        true
+    });
+    Some(valid && enabled)
 }
 
 fn configuration_callable_imports(

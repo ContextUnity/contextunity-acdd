@@ -41,6 +41,14 @@ pub(super) fn module_scope(node: Syntax<'_>) -> bool {
     false
 }
 
+pub(super) fn non_comment_named_children<'c, 'a>(
+    node: Syntax<'a>,
+    cursor: &'c mut tree_sitter::TreeCursor<'a>,
+) -> impl Iterator<Item = Syntax<'a>> + 'c {
+    node.named_children(cursor)
+        .filter(|child| child.kind() != "comment")
+}
+
 pub(super) fn direct_module_assignment(node: Syntax<'_>) -> bool {
     node.kind() == "assignment"
         && node
@@ -61,32 +69,25 @@ pub(super) fn typing_name(value: &str) -> &str {
 }
 
 pub(crate) fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
-    let mut depth = 0_usize;
-    let mut start = 0_usize;
     let mut parts = Vec::new();
-    for (index, character) in annotation.char_indices() {
-        match character {
-            '[' | '(' => depth = depth.checked_add(1)?,
-            ']' | ')' => depth = depth.checked_sub(1)?,
-            '|' if depth == 0 => {
-                let part = annotation[start..index].trim();
-                if part.is_empty() {
-                    return None;
-                }
-                parts.push(part);
-                start = index + character.len_utf8();
+    crate::languages::types::split_top_level_delimited(
+        annotation,
+        crate::languages::types::DelimitedSplitOptions {
+            delimiter: '|',
+            track_angles: false,
+            track_brackets: true,
+            track_quotes: false,
+            strict: true,
+        },
+        |piece, is_tail| {
+            if piece.is_empty() || (is_tail && parts.is_empty()) {
+                return Err("");
             }
-            _ => {}
-        }
-    }
-    if depth != 0 || parts.is_empty() {
-        return None;
-    }
-    let last = annotation[start..].trim();
-    if last.is_empty() {
-        return None;
-    }
-    parts.push(last);
+            parts.push(piece);
+            Ok(())
+        },
+    )
+    .ok()?;
     Some(parts)
 }
 

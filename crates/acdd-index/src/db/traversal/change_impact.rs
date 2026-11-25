@@ -600,16 +600,14 @@ fn changed_nodes_page(
         "CASE WHEN r.distance=1 THEN (SELECT json_object('src_public_id',(SELECT id FROM nodes WHERE node_hash=e.src_hash),'dst_public_id',(SELECT id FROM nodes WHERE node_hash=e.dst_hash),'kind',e.kind,'path',(SELECT path FROM path_dictionary WHERE path_id=e.path_id),'line',e.line,'confidence',(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),'occurrence_count',e.occurrence_count,'direction',CASE WHEN e.src_hash IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) THEN 'outbound' ELSE 'inbound' END{evidence}) FROM edges e WHERE ((e.{from} IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) AND e.{to}=n.node_hash AND e.kind IN({forward})){reverse_edge}) ORDER BY e.kind,e.src_hash,e.dst_hash,e.path_id,e.line,e.evidence_id LIMIT 1) END AS __edge"
     );
     let (forward_current, forward_predecessor, reverse_current, reverse_predecessor) =
-        if direction.is_inbound() {
-            ("src_hash", "dst_hash", "dst_hash", "src_hash")
-        } else {
-            ("dst_hash", "src_hash", "src_hash", "dst_hash")
-        };
-    let reverse_via = if reverse.is_empty() {
-        String::new()
-    } else {
-        format!(" UNION ALL SELECT prior_node.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_predecessor} AND prior.distance=r.distance-1 JOIN nodes prior_node ON prior_node.node_hash=prior.id WHERE e.{reverse_current}=n.node_hash AND e.kind IN({reverse})")
-    };
+        super::predecessor_endpoints(direction);
+    let reverse_via = super::reverse_predecessor_union(
+        &reverse,
+        reverse_current,
+        reverse_predecessor,
+        "r.distance",
+        "n.node_hash",
+    );
     let via = format!(
         "CASE WHEN r.distance>1 THEN (SELECT json_array(predecessor,edge_kind) FROM (SELECT prior_node.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_predecessor} AND prior.distance=r.distance-1 JOIN nodes prior_node ON prior_node.node_hash=prior.id WHERE e.{forward_current}=n.node_hash AND e.kind IN({forward}){reverse_via}) ORDER BY predecessor,edge_kind LIMIT 1) END AS __via"
     );

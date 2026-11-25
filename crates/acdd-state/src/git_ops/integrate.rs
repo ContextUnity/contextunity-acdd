@@ -3,8 +3,9 @@
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
 use super::snapshot::tree_entry_at;
 use super::exec::{
-    commit_has_exact_trailer, create_scoped_temp_dir, ensure_non_empty_git_identity, failpoint_hit,
-    format_message_with_trailer, git_dir_path, run_git_checked, run_git_raw, run_git_stdout,
+    create_scoped_temp_dir, ensure_non_empty_git_identity, failpoint_hit,
+    first_commit_with_exact_trailer, format_message_with_trailer, git_dir_path, run_git_checked,
+    run_git_raw, run_git_stdout,
 };
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -376,13 +377,7 @@ fn find_integrated_commit(
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    for oid in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if commit_has_exact_trailer(worktree, oid, trailer)? {
-            return Ok(Some(CommitOid::new(oid)?));
-        }
-    }
-    Ok(None)
+    first_commit_with_exact_trailer(worktree, &out.stdout, trailer)
 }
 
 fn collect_conflicting_paths(worktree: &Path) -> Vec<String> {

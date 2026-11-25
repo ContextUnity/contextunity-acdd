@@ -449,7 +449,7 @@ impl SinglePassExtractor<'_> {
         let module = &mut facts.nodes[module_index];
         #[cfg(feature = "lang-python")]
         if context.language == "python" {
-            let factories = crate::languages::python::logging_factories(
+            let factories = crate::languages::python::collect_logging_factories(
                 node,
                 context.source,
                 context.offset,

@@ -787,8 +787,10 @@ fn collect_file_impl_receivers<'a>(
         let raw_receiver = owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str();
         let local_receiver = raw_receiver
             .and_then(|name| {
-                let nominal = if owner.detail_entry(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL) == true {
-                    name.split_once('<').map_or(name, |(base, _)| base)
+                let nominal = if owner.detail_entry(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL) == true
+                    || !super::linker_impl::rust_has_non_lifetime_generics(name)
+                {
+                    name.split_once('<').map_or(name, |(base, _)| base.trim())
                 } else {
                     name
                 };

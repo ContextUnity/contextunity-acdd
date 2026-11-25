@@ -130,6 +130,26 @@ fn normalize_single_rust_import(
     profile.normalize_import_with_root(ctx.root, path, module)
 }
 
+fn value_expr_mentions(expr: &crate::semantic::ValueExpr, name: &str) -> bool {
+    use crate::semantic::ValueExpr;
+    match expr {
+        ValueExpr::Alias { name: n } => n == name,
+        ValueExpr::Call { callee, site } => {
+            callee == name
+                || site
+                    .as_ref()
+                    .and_then(|s| s.receiver.as_deref())
+                    .is_some_and(|r| value_expr_mentions(r, name))
+        }
+        ValueExpr::Await { value }
+        | ValueExpr::Scoped { value, .. }
+        | ValueExpr::Project { value, .. }
+        | ValueExpr::RustField { value, .. }
+        | ValueExpr::RustProject { value, .. } => value_expr_mentions(value, name),
+        _ => false,
+    }
+}
+
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
@@ -296,11 +316,57 @@ impl LanguageLinker for RustLinker {
         at: crate::semantic::SourcePosition,
         resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
     ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
-        use crate::linker::value_flow::TypeTarget;
+        use crate::linker::value_flow::{Symbol, TypeTarget};
         match resolver.resolve_member_result(receiver, member, owner, at) {
             Some(target @ (TypeTarget::RustWrapper { .. } | TypeTarget::RustIterator { .. } | TypeTarget::RustTuple(_))) => Some(target),
-            _ => self.declared_adapter_value(receiver, member, owner, at, resolver),
+            _ => self
+                .declared_adapter_value(receiver, member, owner, at, resolver)
+                .or_else(|| {
+                    let base = match receiver {
+                        TypeTarget::RustReference { target, .. } => target.as_ref(),
+                        other => other,
+                    };
+                    let TypeTarget::Local(_) = base else {
+                        return None;
+                    };
+                    let Symbol::Callable(callable) = resolver.resolve_member(base, member, owner, at) else {
+                        return None;
+                    };
+                    resolver
+                        .value_flow(callable)
+                        .and_then(|flow| flow.return_type.as_ref())
+                        .filter(|ret| matches!(ret, crate::semantic::TypeExpr::Named { name } if name == "Self"))
+                        .map(|_| base.clone())
+                }),
         }
+    }
+    fn lexical_binding_active(
+        &self,
+        reference: &crate::models::Reference,
+        binding_owner: &Node,
+        flow: Option<&crate::typed_facts::FlowState>,
+        first: &str,
+    ) -> bool {
+        if binding_owner.parameter_types().any(|(param, _)| param == first) {
+            return true;
+        }
+        let Some(crate::typed_facts::FlowState::Valid { facts, .. }) = flow else {
+            return true;
+        };
+        let mut has_fact = false;
+        for binding in &facts.bindings {
+            if binding.name != first {
+                continue;
+            }
+            has_fact = true;
+            if binding.position.line < reference.line
+                || (binding.position.line == reference.line
+                    && !value_expr_mentions(&binding.value, first))
+            {
+                return true;
+            }
+        }
+        !has_fact
     }
     fn project_fields<'a>(&self, fields: &mut hashbrown::HashMap<&'a str, hashbrown::HashMap<String, crate::linker::value_flow::TypeTarget<'a>>>, owners: &[&'a Node], resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) {
         super::value_flow::project_deref_fields(fields, owners, resolver);
@@ -821,7 +887,14 @@ impl LanguageLinker for RustLinker {
             .into_iter()
             .flatten()
             .copied()
-            .filter(|node| node.qualname == lookup_key.as_str() && node.kind != crate::models::tags::NodeKind::Module)
+            .filter(|node| {
+                node.qualname == lookup_key.as_str()
+                    && !matches!(
+                        node.kind,
+                        crate::models::tags::NodeKind::Module
+                            | crate::models::tags::NodeKind::ModuleDeclaration
+                    )
+            })
             .collect();
         if !direct.is_empty() {
             return direct;
@@ -875,9 +948,6 @@ impl LanguageLinker for RustLinker {
                     && matches!(node.kind.as_str(), "macro" | "function")
             })
             .collect();
-        if let [single] = items.as_slice() {
-            return vec![single];
-        }
         items
             .into_iter()
             .filter(|node| node.name == member)
@@ -1005,7 +1075,7 @@ impl LanguageLinker for RustLinker {
     fn disambiguate_candidates(&self, candidates: &mut Vec<&Node>) { disambiguate_rust_cfg_siblings(candidates); }
 }
 
-fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
+pub(super) fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
     let Some(name) = crate::linker::types::strip_rust_references(annotation, true) else {
         return false;
     };
@@ -1385,28 +1455,22 @@ fn parse_cfg_expr(input: &str) -> Option<CfgExpr> {
 
 fn split_cfg_args(input: &str) -> Vec<&str> {
     let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut in_quotes = false;
-    let mut start = 0usize;
-    for (idx, ch) in input.char_indices() {
-        match ch {
-            '"' => in_quotes = !in_quotes,
-            '(' if !in_quotes => depth += 1,
-            ')' if !in_quotes => depth = depth.saturating_sub(1),
-            ',' if !in_quotes && depth == 0 => {
-                let item = input[start..idx].trim();
-                if !item.is_empty() {
-                    parts.push(item);
-                }
-                start = idx + 1;
+    let _ = crate::languages::types::split_top_level_delimited(
+        input,
+        crate::languages::types::DelimitedSplitOptions {
+            delimiter: ',',
+            track_angles: false,
+            track_brackets: false,
+            track_quotes: true,
+            strict: false,
+        },
+        |item, _| {
+            if !item.is_empty() {
+                parts.push(item);
             }
-            _ => {}
-        }
-    }
-    let tail = input[start..].trim();
-    if !tail.is_empty() {
-        parts.push(tail);
-    }
+            Ok(())
+        },
+    );
     parts
 }
 

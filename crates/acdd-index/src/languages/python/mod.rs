@@ -141,7 +141,7 @@ mod projections;
 mod syntax_operations;
 mod template_loaders;
 
-pub(crate) fn logging_factories(
+pub(crate) fn collect_logging_factories(
     root: Syntax<'_>,
     source: &str,
     offset: usize,

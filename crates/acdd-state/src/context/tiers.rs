@@ -159,31 +159,20 @@ pub(super) fn apply_tier2_findings(
         .failed_trace_log_tail
         .as_deref()
         .map(|s| utf8_tail(s, req.profile.limits.diagnostic_inline_bytes));
-
     // `,"unresolved_findings":` = 23 bytes
-    let full_payload = json!({
-        "findings": req.unresolved_findings,
-        "failed_trace_log_tail": tail,
-    });
-    let full_delta = 23 + estimate_json_bytes(&full_payload);
-    if *running_bytes + full_delta <= req.response_max_bytes {
-        resp.unresolved_findings = Some(full_payload);
-        *running_bytes += full_delta;
-        return;
-    }
-
-    if req.unresolved_findings.is_some() && tail.is_some() {
-        let findings_only = json!({
-            "findings": req.unresolved_findings,
-        });
-        let findings_delta = 23 + estimate_json_bytes(&findings_only);
-        if *running_bytes + findings_delta <= req.response_max_bytes {
-            resp.unresolved_findings = Some(findings_only);
-            *running_bytes += findings_delta;
+    let candidates = [
+        Some(json!({ "findings": req.unresolved_findings, "failed_trace_log_tail": tail })),
+        (req.unresolved_findings.is_some() && tail.is_some())
+            .then(|| json!({ "findings": req.unresolved_findings })),
+    ];
+    for payload in candidates.into_iter().flatten() {
+        let delta = 23 + estimate_json_bytes(&payload);
+        if *running_bytes + delta <= req.response_max_bytes {
+            resp.unresolved_findings = Some(payload);
+            *running_bytes += delta;
             return;
         }
     }
-
     add_omitted_section(resp, running_bytes, "unresolved_findings", req.response_max_bytes);
 }
 
@@ -377,30 +366,14 @@ pub(super) fn apply_tier5_blackboard(
 fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
     let mut combined = Vec::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for path in &req.node.scope {
+    let task = (req.node.scope.is_empty() && req.node.extended_scope.is_empty())
+        .then(|| req.node.task_ref.as_ref().zip(req.spec.as_ref()))
+        .flatten()
+        .and_then(|(tref, spec)| spec.tasks.iter().find(|t| &t.task_ref == tref));
+    let (scope, ext) = task.map_or((&req.node.scope, &req.node.extended_scope), |t| (&t.scope, &t.extended_scope));
+    for path in scope.iter().chain(ext.iter().map(|ext| &ext.path)) {
         if seen.insert(path.as_str()) {
             combined.push(path.clone());
-        }
-    }
-    for ext in &req.node.extended_scope {
-        if seen.insert(ext.path.as_str()) {
-            combined.push(ext.path.clone());
-        }
-    }
-    if combined.is_empty() {
-        if let (Some(tref), Some(spec)) = (&req.node.task_ref, &req.spec) {
-            if let Some(task) = spec.tasks.iter().find(|t| &t.task_ref == tref) {
-                for path in &task.scope {
-                    if seen.insert(path.as_str()) {
-                        combined.push(path.clone());
-                    }
-                }
-                for ext in &task.extended_scope {
-                    if seen.insert(ext.path.as_str()) {
-                        combined.push(ext.path.clone());
-                    }
-                }
-            }
         }
     }
     combined

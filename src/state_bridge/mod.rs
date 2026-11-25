@@ -126,26 +126,13 @@ fn find_gate_in_profile<'a>(
 ) -> Option<&'a acdd_state::profile::GateDef> {
     match cursor {
         acdd_core::ids::NodeCursor::Root(gates) => {
-            let mut list = &profile.gates;
-            for (idx, g) in gates.iter().enumerate() {
-                let found = list.iter().find(|def| def.id == g.as_str())?;
-                if idx + 1 == gates.len() {
-                    return Some(found);
-                }
-                list = &found.gates;
-            }
-            None
+            acdd_state::usecases::queries::find_root_gate_def_ref(profile, gates, false)
         }
         acdd_core::ids::NodeCursor::Task { gates, .. } => {
-            let first = gates.first()?;
-            for item in &profile.gates {
-                if let Some(ref tasks_block) = item.tasks {
-                    if let Some(found) = tasks_block.gates.iter().find(|def| def.id == first.as_str()) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
+            acdd_state::usecases::queries::find_task_block_gate_def_ref(
+                profile,
+                gates.first()?.as_str(),
+            )
         }
     }
 }

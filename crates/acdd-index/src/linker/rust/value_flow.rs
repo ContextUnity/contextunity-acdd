@@ -150,7 +150,7 @@ fn constructor_local_result<'a>(
             return Some(result);
         }
     }
-    let callable = match resolver.resolve_member(target, member, owner, at) {
+    let callable = match resolver.resolve_associated_member(target, member, owner, at) {
         Symbol::Callable(callable) => callable,
         _ => match resolver.resolve_symbol(owner, callee_clean, at, SymbolRole::Callable) {
             Symbol::Callable(callable) => callable,
@@ -172,9 +172,6 @@ fn constructor_local_result<'a>(
         if let Some(resolved) = synth_return_target(synth, target) {
             return Some(resolved);
         }
-    }
-    if !matches!(member, "new" | "default" | "create" | "current" | "none") {
-        return None;
     }
     resolver
         .value_flow(callable)

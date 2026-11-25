@@ -188,6 +188,17 @@ fn resolve_typescript_config(
     resolved
 }
 
+fn advance_json_string(byte: u8, out: &mut Vec<u8>, quoted: &mut bool, escaped: &mut bool) {
+    out.push(byte);
+    if *escaped {
+        *escaped = false;
+    } else if byte == b'\\' {
+        *escaped = true;
+    } else if byte == b'"' {
+        *quoted = false;
+    }
+}
+
 fn parse_jsonc(content: &str) -> Option<serde_json::Value> {
     if let Ok(value) = serde_json::from_str(content) {
         return Some(value);
@@ -200,14 +211,7 @@ fn parse_jsonc(content: &str) -> Option<serde_json::Value> {
     while index < bytes.len() {
         let byte = bytes[index];
         if quoted {
-            cleaned.push(byte);
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
-            }
+            advance_json_string(byte, &mut cleaned, &mut quoted, &mut escaped);
             index += 1;
             continue;
         }
@@ -243,14 +247,7 @@ fn parse_jsonc(content: &str) -> Option<serde_json::Value> {
     let mut escaped = false;
     for (index, &byte) in cleaned.iter().enumerate() {
         if quoted {
-            without_trailing.push(byte);
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
-            }
+            advance_json_string(byte, &mut without_trailing, &mut quoted, &mut escaped);
             continue;
         }
         if byte == b'"' {

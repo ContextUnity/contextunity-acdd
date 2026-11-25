@@ -2075,10 +2075,56 @@ mod tests {
         "#[cfg(test)]\nmod tests {\n    use crate::cyc_a;\n    pub fn tb() { cyc_a::tests::ta(); }\n}\n",
     );
     ws.write(
+        "crates/pkg_a/src/reexports/mod.rs",
+        r#"mod reexport_fn;
+mod builder_def;
+mod builder_impl;
+pub(crate) use reexport_fn::reexport_fn;
+pub(in crate) use builder_def::Builder;
+impl builder_def::Builder {
+    pub(in crate) fn finish_step(self) {}
+}
+"#,
+    );
+    ws.write(
+        "crates/pkg_a/src/reexports/reexport_fn.rs",
+        "pub(crate) fn reexport_fn() {}\n",
+    );
+    ws.write(
+        "crates/pkg_a/src/reexports/builder_def.rs",
+        r#"pub(crate) struct Builder;
+impl Builder {
+    pub(crate) fn with_step(self) -> Self { self }
+}
+"#,
+    );
+    ws.write(
+        "crates/pkg_a/src/reexports/builder_impl.rs",
+        r#"use super::builder_def::Builder;
+impl Builder {
+    pub(crate) fn build() -> Self { Self }
+}
+"#,
+    );
+    ws.write(
         "crates/pkg_a/src/main.rs",
-        r#"pub struct UnknownApi;
+        r#"pub mod reexports;
+pub struct UnknownApi;
 pub fn on_event(v: i32) -> i32 { v + 1 }
 pub fn register(_f: fn(i32) -> i32) {}
+fn comb_cb(v: i32) -> i32 { v + 2 }
+fn depth() -> i32 { 2 }
+fn schemars_cb() -> i32 { 3 }
+fn tokens(s: &str) -> &str { s }
+fn macro_guard_fn(v: i32) -> bool { v > 0 }
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AttrHolder {
+    #[serde(default = "depth")]
+    pub depth: i32,
+    #[schemars(schema_with = "schemars_cb")]
+    pub extra: i32,
+}
 
 pub struct Holder;
 impl Holder {
@@ -2089,6 +2135,14 @@ pub fn main_wire(ext: UnknownApi) {
     let cb = on_event;
     register(cb);
     ext.custom_hook();
+    let _ = [1].into_iter().map(comb_cb).count();
+    let tokens = tokens("SELECT 1");
+    let _ = tokens;
+    let _ = matches!(Some(1), Some(v) if macro_guard_fn(v));
+    let _ = core::mem::size_of::<AttrHolder>();
+    reexports::reexport_fn();
+    let builder = reexports::Builder::build().with_step().finish_step();
+    let _ = builder;
 }
 
 fn main() {
@@ -2201,7 +2255,19 @@ doc_type: architecture
         "test-only and archive import cycles must be filtered from cycles.scc: {items:?}"
     );
 
-    for live_fn in ["on_event", "custom_hook"] {
+    for live_fn in [
+        "on_event",
+        "custom_hook",
+        "comb_cb",
+        "depth",
+        "schemars_cb",
+        "tokens",
+        "macro_guard_fn",
+        "reexport_fn",
+        "build",
+        "with_step",
+        "finish_step",
+    ] {
         assert!(
             !items.iter().any(|v| {
                 v["category"] == "dead_tails"

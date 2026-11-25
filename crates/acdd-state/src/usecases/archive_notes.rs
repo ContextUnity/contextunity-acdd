@@ -52,6 +52,23 @@ fn push_unique_string(target: &mut Vec<String>, candidate: &str) {
     }
 }
 
+fn collect_rollup_notes(
+    rollup: Option<&ReceiptRollup>,
+    decisions: &mut Vec<String>,
+    deferred_findings: &mut Vec<String>,
+) {
+    if let Some(rollup) = rollup {
+        rollup
+            .decisions
+            .iter()
+            .for_each(|d| push_unique_string(decisions, d));
+        rollup
+            .deferred_findings
+            .iter()
+            .for_each(|d| push_unique_string(deferred_findings, d));
+    }
+}
+
 pub(super) fn build_archive_render_input(
     snapshot: &RunGraphSnapshot,
     closing_receipt: Option<&Receipt>,
@@ -110,14 +127,11 @@ pub(super) fn build_archive_render_input(
             .max_by_key(|a| a.claim_revision)
             .and_then(|a| serde_json::from_str::<Receipt>(&a.payload_json).ok());
         if let Some(ref rec) = task_receipt {
-            if let Some(ref rollup) = rec.rollup {
-                for dec in &rollup.decisions {
-                    push_unique_string(&mut decisions, dec);
-                }
-                for def in &rollup.deferred_findings {
-                    push_unique_string(&mut deferred_findings, def);
-                }
-            }
+            collect_rollup_notes(
+                rec.rollup.as_ref(),
+                &mut decisions,
+                &mut deferred_findings,
+            );
             task_receipts.insert(tref.clone(), rec.clone());
         }
 
@@ -133,14 +147,11 @@ pub(super) fn build_archive_render_input(
     }
 
     if let Some(closing) = closing_receipt {
-        if let Some(ref rollup) = closing.rollup {
-            for dec in &rollup.decisions {
-                push_unique_string(&mut decisions, dec);
-            }
-            for def in &rollup.deferred_findings {
-                push_unique_string(&mut deferred_findings, def);
-            }
-        }
+        collect_rollup_notes(
+            closing.rollup.as_ref(),
+            &mut decisions,
+            &mut deferred_findings,
+        );
     }
 
     for item in blackboard_items {

@@ -349,7 +349,7 @@ fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() -> anyho
         Some(&adapter),
     );
     let registry_digest = registry.digest().to_owned();
-    let manifests_digest = registry.standard_manifests_digest().to_owned();
+    let manifests_digest = acdd_index::languages::dependency_registry::DependencyRegistry::standard_manifests_digest_static().to_owned();
 
     let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     assert_ne!(

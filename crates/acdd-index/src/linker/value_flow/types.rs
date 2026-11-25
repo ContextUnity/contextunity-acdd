@@ -330,6 +330,16 @@ pub trait SemanticResolver<'a> {
     ) -> Symbol<'a> {
         Symbol::Unknown
     }
+    /// Resolves an associated member (`Type::member`) on `receiver`, defaulting to `resolve_member`.
+    fn resolve_associated_member(
+        &self,
+        receiver: &TypeTarget<'a>,
+        member: &str,
+        scope: &'a Node,
+        at: SourcePosition,
+    ) -> Symbol<'a> {
+        self.resolve_member(receiver, member, scope, at)
+    }
     fn resolve_applied(
         &self,
         _scope: &'a Node,

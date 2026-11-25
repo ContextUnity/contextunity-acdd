@@ -760,10 +760,27 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
             return Some(result);
         }
         let facts = self.all.get_facts(module.path.as_str())?;
+        let is_private_mod_decl = |reference: &crate::models::Reference| -> bool {
+            let Some(alias) = reference.alias.as_deref() else {
+                return false;
+            };
+            facts.nodes.iter().any(|node| {
+                node.kind == crate::models::tags::NodeKind::ModuleDeclaration
+                    && node.line == reference.line
+                    && node.name == alias
+                    && node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) != true
+                    && node
+                        .detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
+                        .as_str()
+                        .and_then(|sig| restricted_scope(sig, &module.qualname, &node.path))
+                        .is_none()
+            })
+        };
         let named = facts.references.iter().any(|reference| {
             reference.kind == "imports"
                 && reference.source == module.id
                 && reference.alias.as_deref() == Some(name)
+                && (!public_only || !is_private_mod_decl(reference))
         });
         if module_declaration && !named {
             return None;
@@ -802,6 +819,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
             reference.kind == "imports"
                 && reference.source == module.id
                 && reference.alias.as_deref() == Some(if named { name } else { "*" })
+                && (!public_only || !is_private_mod_decl(reference))
                 && (!public_only
                     || named
                     || is_public_glob(
@@ -859,7 +877,17 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         if public_only && !candidates.is_empty() {
             match self.resolve(module, name, false, depth) {
                 Some(local)
-                    if local.nodes.len() == candidates.len()
+                    if (!module_declaration && local.nodes.len() == candidates.len()
+                        || (module_declaration
+                            && local
+                                .nodes
+                                .iter()
+                                .filter(|node| {
+                                    node.kind != crate::models::tags::NodeKind::Module
+                                        || candidates.iter().any(|c| c.id == node.id)
+                                })
+                                .count()
+                                == candidates.len()))
                         && candidates.iter().all(|candidate| {
                             local.nodes.iter().any(|node| node.id == candidate.id)
                         }) => {}

@@ -471,6 +471,15 @@ pub(crate) trait LanguageLinker: Send + Sync {
     ) -> bool { false }
     fn lexical_receiver_field(&self, _owner: &Node, _receiver: &str) -> bool { false }
     fn value_shadows_role(&self, _name: &str, _role: crate::linker::value_flow::SymbolRole) -> bool { true }
+    fn lexical_binding_active(
+        &self,
+        _reference: &Reference,
+        _binding_owner: &Node,
+        _flow: Option<&crate::typed_facts::FlowState>,
+        _first: &str,
+    ) -> bool {
+        true
+    }
     fn external_field_projection(&self) -> bool { false }
     fn builtin_field_projection(&self, _owner: &Node) -> bool { false }
     fn payload_uses_async_return(&self) -> bool { false }
@@ -1157,6 +1166,47 @@ pub(crate) fn resolve_default_import<'ctx, 'a, 'input>(
     resolve_default_import_with_options(context, false)
 }
 
+fn collect_module_candidates<'ctx, 'a, 'input>(
+    context: &mut ImportContext<'ctx, 'a, 'input>,
+    owner_prefix: Option<&str>,
+    target_tail: &str,
+    default_export_only: bool,
+) {
+    for module in context.modules.iter().copied() {
+        context.lookup_key.clear();
+        context.lookup_key.push_str(&module.qualname);
+        if let Some(prefix_tail) = owner_prefix {
+            if !prefix_tail.is_empty() {
+                context.lookup_key.push('.');
+                context.lookup_key.push_str(prefix_tail);
+            }
+            context.lookup_key.push('.');
+        } else {
+            context.lookup_key.push('.');
+            context.lookup_key.push_str(target_tail);
+        }
+        let target = context.lookup_key.as_str();
+        context.candidates.extend(
+            context
+                .by_module
+                .get(module.path.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|node| {
+                    if owner_prefix.is_some() {
+                        node.kind != NodeKind::Component && node.qualname.starts_with(target)
+                    } else if default_export_only {
+                        *node.detail_entry(crate::models::details::NodeDetailKey::DEFAULT_EXPORT)
+                            == true
+                    } else {
+                        node.kind != NodeKind::Component && node.qualname == target
+                    }
+                }),
+        );
+    }
+}
+
 pub(crate) fn resolve_default_import_with_options<'ctx, 'a, 'input>(
     context: &mut ImportContext<'ctx, 'a, 'input>,
     allow_multi_file: bool,
@@ -1172,52 +1222,10 @@ pub(crate) fn resolve_default_import_with_options<'ctx, 'a, 'input>(
         return ImportResolution::default();
     }
     if let Some(owner_tail) = tail.strip_suffix(".*") {
-        for module in context.modules.iter().copied() {
-            context.lookup_key.clear();
-            context.lookup_key.push_str(&module.qualname);
-            if !owner_tail.is_empty() {
-                context.lookup_key.push('.');
-                context.lookup_key.push_str(owner_tail);
-            }
-            context.lookup_key.push('.');
-            let prefix = context.lookup_key.as_str();
-            context.candidates.extend(
-                context
-                    .by_module
-                    .get(module.path.as_str())
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|node| {
-                        node.kind != NodeKind::Component
-                            && node.qualname.starts_with(prefix)
-                    }),
-            );
-        }
+        collect_module_candidates(context, Some(owner_tail), "", false);
         return ImportResolution::default();
     }
-    for module in context.modules.iter().copied() {
-        context.lookup_key.clear();
-        context.lookup_key.push_str(&module.qualname);
-        context.lookup_key.push('.');
-        context.lookup_key.push_str(&tail);
-        let target = context.lookup_key.as_str();
-        context.candidates.extend(
-            context
-                .by_module
-                .get(module.path.as_str())
-                .into_iter()
-                .flatten()
-                .copied()
-                .filter(|node| {
-                    if tail == "default" {
-                        *node.detail_entry(crate::models::details::NodeDetailKey::DEFAULT_EXPORT) == true
-                    } else {
-                        node.kind != NodeKind::Component && node.qualname == target
-                    }
-                }),
-        );
-    }
+    collect_module_candidates(context, None, &tail, tail == "default");
     ImportResolution::default()
 }
 

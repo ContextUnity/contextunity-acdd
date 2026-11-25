@@ -5,7 +5,7 @@ use crate::git_ops::worktree::{
     canonicalize_macos_var, create_managed_worktree, create_run_worktree,
     remove_worktree_and_branch, CreateWorktreeReq, RepoWorktreeLayout,
 };
-use crate::machine::{build_initial_run_graph, compute_schedule, BuildGraphInput};
+use crate::machine::{build_initial_run_graph, BuildGraphInput};
 use crate::profile::{resolve_optional_profile_ref_with_dirs, ResolvedGateProfile};
 use crate::spec::{materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus};
 use crate::store::traits::{exec_tx_with, StateBackend};
@@ -24,7 +24,7 @@ use crate::usecases::lifecycle::{
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child};
-use acdd_core::ids::{NodeCursor, RunId, RunName, TaskRef};
+use acdd_core::ids::{RunId, RunName, TaskRef};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::telemetry::TraceId;
 use serde_json::json;
@@ -376,26 +376,8 @@ fn start_holding_repo_lock(
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
-    let schedule = compute_schedule(&graph, &obs)?;
-    let mut ready_nodes = Vec::new();
-    for nid in &schedule.ready_root_nodes {
-        ready_nodes.push(NodeCursor::from_node_id(nid)?.to_string());
-    }
-    for tref in &schedule.ready_tasks {
-        let parent_id = format!("task:{tref}");
-        if let Some(g) = graph
-            .nodes
-            .iter()
-            .filter(|n| {
-                n.kind == NodeKind::TaskGate
-                    && n.parent_id.as_deref() == Some(parent_id.as_str())
-                    && n.status == NodeStatus::Ready
-            })
-            .min_by_key(|n| n.seq_order)
-        {
-            ready_nodes.push(NodeCursor::from_node_id(&g.node_id)?.to_string());
-        }
-    }
+    let ready_nodes =
+        crate::usecases::queries::collect_ready_cursors_with_fallback(&graph, &obs, false)?;
 
     let created_managed = if let Some(ref wt_req) = managed_wt_req {
         let created = if spec_source == primary {

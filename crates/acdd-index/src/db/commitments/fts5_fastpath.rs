@@ -278,6 +278,43 @@ fn decode_fts5_doc_postings(
     Some(())
 }
 
+fn advance_term_or_delta(
+    cursor: &mut Fts5SegCursor<'_>,
+    page: &[u8],
+    sz: usize,
+    mut off: usize,
+    check_first_be: bool,
+) -> Option<bool> {
+    if off >= cursor.eod {
+        let (ft_off, _) = decode_fts5_varint32(page.get(sz..)?)?;
+        let n_keep = if off == usize::try_from(ft_off).ok()? {
+            0
+        } else {
+            usize::try_from(next_v32(&page[..sz], &mut off)?).ok()?
+        };
+        cursor.off = off;
+        cursor.load_term(n_keep)?;
+    } else {
+        let first = usize::from(u16::from_be_bytes([page[0], page[1]]));
+        let start = off;
+        let value = next_v64(&page[..sz], &mut off)?;
+        cursor.rowid = if check_first_be && start == first {
+            value as i64
+        } else {
+            if value == 0 {
+                return None;
+            }
+            let next = cursor.rowid.wrapping_add_unsigned(value);
+            if next <= cursor.rowid {
+                return None;
+            }
+            next
+        };
+        cursor.off = off;
+    }
+    Some(true)
+}
+
 fn advance_fts5_cursor(
     pages: &[Vec<u8>],
     cursor: &mut Fts5SegCursor<'_>,
@@ -285,30 +322,9 @@ fn advance_fts5_cursor(
 ) -> Option<bool> {
     let p = pages.get(cursor.leaf)?;
     let sz_leaf = Fts5SegCursor::page_sz(p)?;
-    let mut i_off = cursor.off.checked_add(n_pos)?;
+    let i_off = cursor.off.checked_add(n_pos)?;
     if i_off < sz_leaf {
-        if i_off >= cursor.eod {
-            let (ft_off, _) = decode_fts5_varint32(p.get(sz_leaf..)?)?;
-            let n_keep = if i_off != usize::try_from(ft_off).ok()? {
-                usize::try_from(next_v32(&p[..sz_leaf], &mut i_off)?).ok()?
-            } else {
-                0
-            };
-            cursor.off = i_off;
-            cursor.load_term(n_keep)?;
-        } else {
-            let delta = next_v64(&p[..sz_leaf], &mut i_off)?;
-            if delta == 0 {
-                return None;
-            }
-            let next = cursor.rowid.wrapping_add_unsigned(delta);
-            if next <= cursor.rowid {
-                return None;
-            }
-            cursor.rowid = next;
-            cursor.off = i_off;
-        }
-        return Some(true);
+        return advance_term_or_delta(cursor, p, sz_leaf, i_off, false);
     }
 
     let mut rem = i_off - sz_leaf;
@@ -323,34 +339,7 @@ fn advance_fts5_cursor(
             rem -= sz - 4;
             continue;
         }
-        let mut landing = 4 + rem;
-        if landing >= cursor.eod {
-            let (ft_off, _) = decode_fts5_varint32(np.get(sz..)?)?;
-            let n_keep = if landing == usize::try_from(ft_off).ok()? {
-                0
-            } else {
-                usize::try_from(next_v32(&np[..sz], &mut landing)?).ok()?
-            };
-            cursor.off = landing;
-            cursor.load_term(n_keep)?;
-        } else {
-            let first = usize::from(u16::from_be_bytes([np[0], np[1]]));
-            let value = next_v64(&np[..sz], &mut landing)?;
-            cursor.rowid = if 4 + rem == first {
-                value as i64
-            } else {
-                if value == 0 {
-                    return None;
-                }
-                let next = cursor.rowid.wrapping_add_unsigned(value);
-                if next <= cursor.rowid {
-                    return None;
-                }
-                next
-            };
-            cursor.off = landing;
-        }
-        return Some(true);
+        return advance_term_or_delta(cursor, np, sz, 4 + rem, true);
     }
 }
 

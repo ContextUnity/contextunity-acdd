@@ -35,17 +35,12 @@ fn make_reset_patch(
     status: NodeStatus,
     bump_claim_rev: bool,
 ) -> NodeStatusPatch {
-    let mut p = NodeStatusPatch::status_only(&n.node_id, status);
+    let mut p = crate::machine::clear_claim_patch(&n.node_id, status, true);
     p.attempt = Some(0);
     p.cycle_count = Some(0);
     if bump_claim_rev {
         p.claim_revision = Some(n.claim_revision + 1);
     }
-    p.accepted_tree = Some(None);
-    p.accepted_definition_digest = Some(None);
-    p.worker_id = Some(None);
-    p.session_fingerprint = Some(None);
-    p.active_span_id = Some(None);
     p
 }
 
