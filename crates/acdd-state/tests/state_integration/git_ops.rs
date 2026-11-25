@@ -1013,6 +1013,179 @@ fn integrate_rebase_ff_conflict_abort_and_completeness_matrix() {
     assert!(!abort_in_progress_git_ops(mrepo).expect("abort check"));
     assert!(m_git_dir.join("SQUASH_MSG").is_file());
     assert!(git_ok(mrepo, &["diff", "--cached", "--name-only"]).contains("src/lib.rs"));
+
+    // #7: Rule (a) fallback to `Acdd-Claim: <run_id>/task:<task_ref>:deliver/<rev>` with
+    // post-delivery polish, anti-revert guard, and rejection of foreign run_id / non-deliver gates.
+    {
+        let claim_tmp = TempDir::new().expect("claim tempdir");
+        let crepo = claim_tmp.path();
+        let _ = init_test_repo(crepo);
+        git_ok(crepo, &["checkout", "-b", "milestone/claim-rule-a"]);
+
+        let claim_run_id = RunId::new("run-claim-07").expect("claim run_id");
+        let t_claim = TaskRef::new("t-claim").expect("t-claim");
+        let init_tree = current_scope_tree(crepo, None, &policy).expect("init tree");
+        let base_head = CommitOid::new(git_ok(crepo, &["rev-parse", "HEAD"]).trim()).expect("head");
+
+        fs::write(
+            crepo.join("src/lib.rs"),
+            "pub fn delivered() -> i32 { 1 }\n",
+        )
+        .unwrap();
+        let acc_tree = current_scope_tree(crepo, None, &policy).expect("acc tree");
+        create_scoped_commit_with_expected(
+            &ScopedCommitReq {
+                worktree: crepo.to_path_buf(),
+                run_id: claim_run_id.clone(),
+                node_id: "task:t-claim:deliver".to_owned(),
+                claim_revision: 1,
+                base_head,
+                admitted_scope: vec!["src/**".to_owned()],
+                path_policy: policy.clone(),
+                message: "deliver t-claim".to_owned(),
+                allow_main: false,
+            },
+            None,
+        )
+        .expect("deliver commit");
+
+        // Follow-up polish/fmt commit modifying the delivered file passes Rule (a) via Acdd-Claim.
+        fs::write(
+            crepo.join("src/lib.rs"),
+            "pub fn delivered() -> i32 {\n    1\n}\n",
+        )
+        .unwrap();
+        git_ok(crepo, &["add", "src/lib.rs"]);
+        git_ok(crepo, &["commit", "-m", "cargo fmt polish"]);
+
+        let check_input = [TaskIntegrationCheckInput {
+            task_ref: t_claim.clone(),
+            initial_claim_tree: init_tree.clone(),
+            accepted_tree: acc_tree.clone(),
+            admitted_scope: vec!["src/**".to_owned()],
+            downstream_tasks: vec![],
+        }];
+        assert_eq!(
+            verify_tasks_integrated(&claim_run_id, crepo, &check_input).expect("claim polish pass"),
+            Vec::<TaskRef>::new()
+        );
+
+        // Different run_id MUST NOT match the Acdd-Claim deliver trailer.
+        let other_run = RunId::new("run-other-99").expect("other run_id");
+        assert_eq!(
+            verify_tasks_integrated(&other_run, crepo, &check_input).expect("foreign run reject"),
+            vec![t_claim.clone()]
+        );
+
+        // Non-deliver gates (`build`, `review`) MUST NOT satisfy Rule (a).
+        for gate in ["build", "review"] {
+            let t_gate = TaskRef::new(format!("t-{gate}")).expect("t-gate");
+            let file_rel = format!("src/{gate}_only.rs");
+            let gate_init = current_scope_tree(crepo, None, &policy).expect("gate init");
+            let gate_head =
+                CommitOid::new(git_ok(crepo, &["rev-parse", "HEAD"]).trim()).expect("head");
+            fs::write(
+                crepo.join(&file_rel),
+                format!("pub fn {gate}() -> i32 {{ 1 }}\n"),
+            )
+            .unwrap();
+            let gate_acc = current_scope_tree(crepo, None, &policy).expect("gate acc");
+            create_scoped_commit_with_expected(
+                &ScopedCommitReq {
+                    worktree: crepo.to_path_buf(),
+                    run_id: claim_run_id.clone(),
+                    node_id: format!("task:t-{gate}:{gate}"),
+                    claim_revision: 1,
+                    base_head: gate_head,
+                    admitted_scope: vec!["src/**".to_owned()],
+                    path_policy: policy.clone(),
+                    message: format!("{gate} commit"),
+                    allow_main: false,
+                },
+                None,
+            )
+            .expect("non-deliver commit");
+            fs::write(
+                crepo.join(&file_rel),
+                format!("pub fn {gate}() -> i32 {{ 2 }}\n"),
+            )
+            .unwrap();
+            git_ok(crepo, &["add", &file_rel]);
+            git_ok(crepo, &["commit", "-m", "modify non-deliver file"]);
+            assert_eq!(
+                verify_tasks_integrated(
+                    &claim_run_id,
+                    crepo,
+                    &[TaskIntegrationCheckInput {
+                        task_ref: t_gate.clone(),
+                        initial_claim_tree: gate_init,
+                        accepted_tree: gate_acc,
+                        admitted_scope: vec!["src/**".to_owned()],
+                        downstream_tasks: vec![],
+                    }],
+                )
+                .expect("non-deliver reject"),
+                vec![t_gate],
+                "non-deliver gate {gate} must not satisfy Rule (a)"
+            );
+        }
+
+        // Invalid deliver revision suffixes (`0`, `abc`, `1/extra`) MUST NOT satisfy Rule (a).
+        for (idx, bad_rev) in ["0", "abc", "1/extra"].iter().enumerate() {
+            let t_bad = TaskRef::new(format!("t-bad-{idx}")).expect("t-bad");
+            let file_rel = format!("src/bad_{idx}.rs");
+            let bad_init = current_scope_tree(crepo, None, &policy).expect("bad init");
+            fs::write(
+                crepo.join(&file_rel),
+                format!("pub fn bad_{idx}() -> i32 {{ 1 }}\n"),
+            )
+            .unwrap();
+            let bad_acc = current_scope_tree(crepo, None, &policy).expect("bad acc");
+            git_ok(crepo, &["add", &file_rel]);
+            git_ok(
+                crepo,
+                &[
+                    "commit",
+                    "-m",
+                    &format!(
+                        "bad rev commit\n\nAcdd-Claim: {}/task:t-bad-{idx}:deliver/{bad_rev}",
+                        claim_run_id.as_str()
+                    ),
+                ],
+            );
+            fs::write(
+                crepo.join(&file_rel),
+                format!("pub fn bad_{idx}() -> i32 {{ 2 }}\n"),
+            )
+            .unwrap();
+            git_ok(crepo, &["add", &file_rel]);
+            git_ok(crepo, &["commit", "-m", "modify bad rev file"]);
+            assert_eq!(
+                verify_tasks_integrated(
+                    &claim_run_id,
+                    crepo,
+                    &[TaskIntegrationCheckInput {
+                        task_ref: t_bad.clone(),
+                        initial_claim_tree: bad_init,
+                        accepted_tree: bad_acc,
+                        admitted_scope: vec!["src/**".to_owned()],
+                        downstream_tasks: vec![],
+                    }],
+                )
+                .expect("bad rev reject"),
+                vec![t_bad],
+                "invalid deliver revision '{bad_rev}' must not satisfy Rule (a)"
+            );
+        }
+
+        // Reverting `src/lib.rs` back to initial_claim_tree still fails TASK_NOT_INTEGRATED.
+        git_ok(crepo, &["checkout", "main", "--", "src/lib.rs"]);
+        git_ok(crepo, &["commit", "-m", "revert delivered file to initial"]);
+        assert_eq!(
+            verify_tasks_integrated(&claim_run_id, crepo, &check_input).expect("revert reject"),
+            vec![t_claim]
+        );
+    }
 }
 
 #[test]

@@ -3,8 +3,7 @@
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
 use super::exec::{
     create_scoped_temp_dir, ensure_non_empty_git_identity, failpoint_hit,
-    first_commit_with_exact_trailer, format_message_with_trailer, git_dir_path, run_git_checked,
-    run_git_raw, run_git_stdout,
+    format_message_with_trailer, git_dir_path, run_git_checked, run_git_raw, run_git_stdout,
 };
 use super::snapshot::tree_entry_at;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -295,7 +294,23 @@ pub fn verify_tasks_integrated(
             task.task_ref.as_str(),
             task.accepted_tree.as_str()
         );
-        let integrated_commit = find_integrated_commit(run_worktree, &trailer)?;
+        let integrated_commit =
+            match find_commit_with_trailer(run_worktree, &trailer, |line| line == trailer)? {
+                Some(oid) => Some(oid),
+                None => {
+                    let claim_prefix = format!(
+                        "Acdd-Claim: {}/task:{}:deliver/",
+                        run_id.as_str(),
+                        task.task_ref.as_str()
+                    );
+                    find_commit_with_trailer(run_worktree, &claim_prefix, |line| {
+                        line.strip_prefix(&claim_prefix).is_some_and(|rev| {
+                            rev.bytes().all(|b| b.is_ascii_digit())
+                                && rev.parse::<u32>().is_ok_and(|n| n > 0)
+                        })
+                    })?
+                }
+            };
 
         let mut task_ok = true;
         for path in &changed_paths {
@@ -332,7 +347,7 @@ pub fn verify_tasks_integrated(
                 continue;
             }
 
-            // Rule (a): Acdd-Integrated trailer in HEAD history without later revert of `path` to initial_claim_tree.
+            // Rule (a): Acdd-Integrated or delivered Acdd-Claim trailer in HEAD history without later revert of `path` to initial_claim_tree.
             if let Some(ref int_oid) = integrated_commit {
                 let initial_entry =
                     tree_entry_at(run_worktree, task.initial_claim_tree.as_str(), path)?;
@@ -363,14 +378,18 @@ pub fn verify_tasks_integrated(
     Ok(missing)
 }
 
-fn find_integrated_commit(worktree: &Path, trailer: &str) -> Result<Option<CommitOid>, StateError> {
+fn find_commit_with_trailer(
+    worktree: &Path,
+    grep_needle: &str,
+    matches_line: impl Fn(&str) -> bool,
+) -> Result<Option<CommitOid>, StateError> {
     let out = run_git_checked(
         worktree,
         &[
             "log",
             "--fixed-strings",
             "--grep",
-            trailer,
+            grep_needle,
             "--format=%H",
             "HEAD",
         ],
@@ -378,7 +397,19 @@ fn find_integrated_commit(worktree: &Path, trailer: &str) -> Result<Option<Commi
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-    first_commit_with_exact_trailer(worktree, &out.stdout, trailer)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for oid in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let msg = run_git_stdout(
+            worktree,
+            &["show", "-s", "--format=%B", oid],
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?;
+        if msg.lines().any(|line| matches_line(line.trim())) {
+            return Ok(Some(CommitOid::new(oid)?));
+        }
+    }
+    Ok(None)
 }
 
 fn collect_conflicting_paths(worktree: &Path) -> Vec<String> {
