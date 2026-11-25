@@ -303,7 +303,7 @@ fn query_path_qualified_candidates(
     if candidates.is_empty() {
         candidates = rows(
             conn,
-            "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/' OR (substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/'))) AND (n.qualname=?2 OR (length(n.qualname)>length(?2) AND substr(n.qualname,-length(?2))=?2 AND substr(n.qualname,length(n.qualname)-length(?2),1)='.')) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
+            "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/' OR (substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/'))) AND (n.qualname=?2 OR (length(n.qualname)>length(?2) AND substr(n.qualname,-length(?2))=?2 AND substr(n.qualname,length(n.qualname)-length(?2),1) IN ('.','#'))) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
             &[&prefix, &symbol, &path_kind, &scope],
             101,
         )?;
@@ -345,15 +345,16 @@ fn query_selector_candidates(
     normalized: &str,
     scope: &str,
 ) -> Result<(Vec<Value>, bool)> {
-    let (prefix_part, symbol_part, is_double_colon) = if let Some((p, rest)) = normalized.split_once(':') {
-        if let Some(s) = rest.strip_prefix(':') {
-            (Some(p), s, true)
+    let (prefix_part, symbol_part, is_double_colon) =
+        if let Some((p, rest)) = normalized.split_once(':') {
+            if let Some(s) = rest.strip_prefix(':') {
+                (Some(p), s, true)
+            } else {
+                (Some(p), rest, false)
+            }
         } else {
-            (Some(p), rest, false)
-        }
-    } else {
-        (None, normalized, false)
-    };
+            (None, normalized, false)
+        };
 
     let Some(prefix) = prefix_part else {
         let matches = query_unqualified_candidates(conn, normalized, normalized, scope)?;
@@ -415,7 +416,7 @@ fn apply_suffix_fallback(
     let (kind_filter, clean_target) = split_kind_and_dotted(normalized);
     let suffix_matches = rows(
         conn,
-        "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?3='' OR n.kind=?3) AND (n.qualname=?1 OR (length(n.qualname)>length(?1) AND substr(n.qualname,-length(?1))=?1 AND substr(n.qualname,length(n.qualname)-length(?1),1)='.') OR (?3='' AND (p.path=?1 OR (length(p.path)>length(?1) AND substr(p.path,-length(?1))=?1 AND substr(p.path,length(p.path)-length(?1),1)='/')))) AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') ORDER BY n.id LIMIT 101",
+        "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?3='' OR n.kind=?3) AND (n.qualname=?1 OR (length(n.qualname)>length(?1) AND substr(n.qualname,-length(?1))=?1 AND substr(n.qualname,length(n.qualname)-length(?1),1) IN ('.','#')) OR (?3='' AND (p.path=?1 OR (length(p.path)>length(?1) AND substr(p.path,-length(?1))=?1 AND substr(p.path,length(p.path)-length(?1),1)='/')))) AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') ORDER BY n.id LIMIT 101",
         &[&clean_target, &scope, &kind_filter],
         101,
     )?;

@@ -704,7 +704,8 @@ pub fn search_with_options(
             let mut hit: SearchHitDto =
                 serde_json::from_value(item.clone()).context("invalid search result")?;
             let _ = (&hit.bm25_rank, &hit.rrf_score);
-            if options.detail == Detail::Compact && hit.match_reason.as_deref() == Some("name_pattern")
+            if options.detail == Detail::Compact
+                && hit.match_reason.as_deref() == Some("name_pattern")
             {
                 hit.match_reason = None;
             }

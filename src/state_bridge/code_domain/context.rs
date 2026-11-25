@@ -251,8 +251,8 @@ impl CodeDomainProvider {
             .into_iter()
             .enumerate()
             .map(|(idx, (not_target, _, not_exported, _, val))| {
-                let tier = if !not_target { 10_000 } else { 0 }
-                    + if !not_exported { 2_000 } else { 500 };
+                let tier =
+                    if !not_target { 10_000 } else { 0 } + if !not_exported { 2_000 } else { 500 };
                 let score = tier + u64::try_from(total - idx).unwrap_or(1);
                 (score, val)
             })
@@ -347,7 +347,10 @@ impl CodeDomainProvider {
 
             let mut deleted_keys: BTreeSet<(String, String)> = BTreeSet::new();
             for head_node in head_nodes {
-                let key = (head_node.kind.as_str().to_owned(), head_node.qualname.clone());
+                let key = (
+                    head_node.kind.as_str().to_owned(),
+                    head_node.qualname.clone(),
+                );
                 if cur_keys.contains(&key) || !deleted_keys.insert(key) {
                     continue;
                 }
@@ -385,7 +388,11 @@ impl CodeDomainProvider {
         }
 
         items.truncate(CODE_EXTERNAL_CALLERS_MAX_ITEMS);
-        Ok(budget_scored_items("external_callers", items, req.max_bytes))
+        Ok(budget_scored_items(
+            "external_callers",
+            items,
+            req.max_bytes,
+        ))
     }
 }
 

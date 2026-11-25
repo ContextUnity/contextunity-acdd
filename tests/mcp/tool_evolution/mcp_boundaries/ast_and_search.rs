@@ -334,7 +334,12 @@ fn ast_language_inference_and_actionable_diagnostics() {
         .unwrap();
     assert_eq!(mixed_caps.get("NAME"), Some(&json!("target")));
     assert!(!mixed_caps.contains_key(""), "{mixed}");
-    let paged = m.payload("ast_grep_search", json!({"pattern":"many_call($$$)","path":"many.py"})).expect("MCP");
+    let paged = m
+        .payload(
+            "ast_grep_search",
+            json!({"pattern":"many_call($$$)","path":"many.py"}),
+        )
+        .expect("MCP");
     assert_eq!(paged["matches"]["limit"], 12);
     assert_eq!(crate::json_array(&paged["matches"]["items"]).len(), 12);
     assert_eq!(paged["matches"]["has_more"], true);

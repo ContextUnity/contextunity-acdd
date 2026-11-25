@@ -379,8 +379,10 @@ fn is_hex_hash(v: &str) -> bool {
 
 fn is_noop_freshness(v: &Value) -> bool {
     v.as_object().is_some_and(|f| {
-        matches!(f.get("status").and_then(Value::as_str), Some("matched" | "source_inventory_matched"))
-            && f.get("refresh").and_then(Value::as_str) == Some("none")
+        matches!(
+            f.get("status").and_then(Value::as_str),
+            Some("matched" | "source_inventory_matched")
+        ) && f.get("refresh").and_then(Value::as_str) == Some("none")
     })
 }
 
@@ -390,7 +392,9 @@ fn compact_for_format(value: &mut Value, opts: PresentationOptions<'_>) {
         && opts.operation == OperationKind::Navigation
         && value.get("freshness").is_some_and(is_noop_freshness)
     {
-        if let Some(obj) = value.as_object_mut() { obj.remove("freshness"); }
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("freshness");
+        }
     }
 }
 
@@ -402,42 +406,103 @@ fn render_acdd_read(value: &Value) -> String {
     };
     let mut out = if let Some(header) = text_field(value, "header") {
         format!("# acdd_read — {}\n", super::core::escape_text(header))
-    } else if let Some(path) = text_field(value, "path").or_else(|| obj.get("node").and_then(|n| text_field(n, "path"))) {
-        let mode = text_field(value, "mode").map(|m| format!(" (`{m}`)")).unwrap_or_default();
+    } else if let Some(path) =
+        text_field(value, "path").or_else(|| obj.get("node").and_then(|n| text_field(n, "path")))
+    {
+        let mode = text_field(value, "mode")
+            .map(|m| format!(" (`{m}`)"))
+            .unwrap_or_default();
         format!("# acdd_read — `{path}`{mode}\n")
     } else {
         String::from("# acdd_read\n")
     };
     let mut meta = Vec::new();
-    if let Some(scope) = text_field(value, "in_write_scope") { meta.push(format!("scope=`{scope}`")); }
-    if let Some(digest) = text_field(value, "content_digest") { meta.push(format!("digest=`{}`", shorten_hash(digest))); }
-    if let Some(pulse) = obj.get("graph_pulse").and_then(Value::as_object) {
-        let parts: Vec<String> = ["callers", "edges", "invariants"].into_iter()
-            .filter_map(|k| pulse.get(k).and_then(Value::as_u64).filter(|&n| n > 0).map(|n| format!("{n} {k}"))).collect();
-        if !parts.is_empty() { meta.push(format!("pulse={}", parts.join(", "))); }
+    if let Some(scope) = text_field(value, "in_write_scope") {
+        meta.push(format!("scope=`{scope}`"));
     }
-    if obj.get("truncated") == Some(&Value::Bool(true)) { meta.push("truncated=true".to_owned()); }
+    if let Some(digest) = text_field(value, "content_digest") {
+        meta.push(format!("digest=`{}`", shorten_hash(digest)));
+    }
+    if let Some(pulse) = obj.get("graph_pulse").and_then(Value::as_object) {
+        let parts: Vec<String> = ["callers", "edges", "invariants"]
+            .into_iter()
+            .filter_map(|k| {
+                pulse
+                    .get(k)
+                    .and_then(Value::as_u64)
+                    .filter(|&n| n > 0)
+                    .map(|n| format!("{n} {k}"))
+            })
+            .collect();
+        if !parts.is_empty() {
+            meta.push(format!("pulse={}", parts.join(", ")));
+        }
+    }
+    if obj.get("truncated") == Some(&Value::Bool(true)) {
+        meta.push("truncated=true".to_owned());
+    }
     if let Some(p) = obj.get("source_preview").and_then(Value::as_object) {
-        if let (Some(s), Some(e)) = (p.get("start_line").and_then(Value::as_u64), p.get("end_line").and_then(Value::as_u64)) {
+        if let (Some(s), Some(e)) = (
+            p.get("start_line").and_then(Value::as_u64),
+            p.get("end_line").and_then(Value::as_u64),
+        ) {
             meta.push(format!("lines={s}-{e}"));
         }
-        if let Some(bo) = p.get("body_offset").and_then(Value::as_u64).filter(|&n| n > 0) {
+        if let Some(bo) = p
+            .get("body_offset")
+            .and_then(Value::as_u64)
+            .filter(|&n| n > 0)
+        {
             meta.push(format!("**body_offset**: `{bo}`"));
         }
         if p.get("has_more") == Some(&Value::Bool(true)) {
             let bl = p.get("body_lines").and_then(Value::as_u64).unwrap_or(0);
-            let tbl = p.get("total_body_lines").and_then(Value::as_u64).unwrap_or(0);
-            let next = p.get("next_source_offset").and_then(Value::as_u64).unwrap_or(0);
-            let gen = text_field(value, "generation").map(|g| if is_hex_hash(g) { shorten_hash(g) } else { g }).unwrap_or("unavailable");
+            let tbl = p
+                .get("total_body_lines")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let next = p
+                .get("next_source_offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let gen = text_field(value, "generation")
+                .map(|g| if is_hex_hash(g) { shorten_hash(g) } else { g })
+                .unwrap_or("unavailable");
             meta.push(format!("**body_lines**: `{bl}` | **total_body_lines**: `{tbl}` | **next_source_offset**: `{next}` | **generation**: `\"{gen}\"`"));
         }
     }
-    if !meta.is_empty() { out.push_str(&format!("{}\n", meta.join(" | "))); }
-    const CONSUMED: &[&str] = &["mode", "path", "header", "in_write_scope", "content_digest", "graph_pulse", "truncated", "source_preview", "node", "generation", "content", "source", "footer"];
-    for (k, child) in ordered_fields(obj) { if !CONSUMED.contains(&k) { render_field(&mut out, k, child, 0); } }
+    if !meta.is_empty() {
+        out.push_str(&format!("{}\n", meta.join(" | ")));
+    }
+    const CONSUMED: &[&str] = &[
+        "mode",
+        "path",
+        "header",
+        "in_write_scope",
+        "content_digest",
+        "graph_pulse",
+        "truncated",
+        "source_preview",
+        "node",
+        "generation",
+        "content",
+        "source",
+        "footer",
+    ];
+    for (k, child) in ordered_fields(obj) {
+        if !CONSUMED.contains(&k) {
+            render_field(&mut out, k, child, 0);
+        }
+    }
     let lang = infer_read_language(obj);
-    for k in ["content", "source"] { if let Some(code) = obj.get(k).and_then(Value::as_str) { append_fenced_block(&mut out, lang, code, 0); } }
-    if let Some(footer) = text_field(value, "footer") { out.push_str(&format!("{footer}\n")); }
+    for k in ["content", "source"] {
+        if let Some(code) = obj.get(k).and_then(Value::as_str) {
+            append_fenced_block(&mut out, lang, code, 0);
+        }
+    }
+    if let Some(footer) = text_field(value, "footer") {
+        out.push_str(&format!("{footer}\n"));
+    }
     out
 }
 

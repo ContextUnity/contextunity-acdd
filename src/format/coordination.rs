@@ -63,11 +63,18 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
                 render_page_metadata(&mut output, "Candidate page", candidates);
                 for (i, cand) in page_items(candidates).unwrap_or(&[]).iter().enumerate() {
                     output.push_str(&format!("### Candidate {}\n\n", i + 1));
-                    for (field, label) in [("source", "Claim source"), ("target", "Possible target")] {
+                    for (field, label) in
+                        [("source", "Claim source"), ("target", "Possible target")]
+                    {
                         if let Some(entity) = cand.get(field) {
                             output.push_str(&format!("**{label}**\n\n"));
                             render_entity_link(&mut output, entity, true);
-                            render_markdown_fields(&mut output, entity, 0, &["uri", "path", "line", "end_line"]);
+                            render_markdown_fields(
+                                &mut output,
+                                entity,
+                                0,
+                                &["uri", "path", "line", "end_line"],
+                            );
                         }
                     }
                     render_markdown_fields(&mut output, cand, 0, &["source", "target"]);

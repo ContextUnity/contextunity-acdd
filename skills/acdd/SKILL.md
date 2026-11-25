@@ -20,7 +20,7 @@ test, load `test-suite-rules`.
 
 ## Orient and select workspace
 
-Start with `code_map_overview()` to verify the root, components, languages, and
+Start with `code_map_overview()` (optionally scoped with `path="..."`) to verify the root, components, languages, and
 coverage before assuming a symbol or dependency is absent. Pass `worktree` when
 targeting another checkout; omitting `worktree` uses the canonical server root
 regardless of active claims.
@@ -61,7 +61,7 @@ Always investigate codebases and documentation using ACDD's structural graph and
    - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `tests`, `prove_removal`, `query`, and `acdd_read`.)*
 3. **Discover & read documentation (`search_docs`, `get_doc`)**:
    - Search guides, ADRs, and architecture docs with `search_docs(query=..., include_excerpt=true)`.
-   - Inspect structure with `get_doc(path_or_id=..., detail="compact")` (accepts `path`, `file_path`, `doc_id`, or `selector`), then read only the needed section via `get_doc(path_or_id=..., section="...")`. Archived `*/archive/` docs are excluded from default search and emit no graph edges.
+   - Inspect structure with `get_doc(path_or_id=..., detail="compact")` (accepts `path`, `file_path`, `doc_id`, or `selector`), then read only the needed section via `get_doc(path_or_id=..., section="...")` (pass `include_candidates=true` only when ambiguous symbol candidates are needed). Archived `*/archive/` docs are excluded from default search and emit no graph edges.
 4. **Targeted `acdd_read` — ONLY for concrete scenarios**:
    - **Full symbol body (`selector=` / `symbol=`)**: Use `acdd_read(selector="SymbolName")` (optionally `path="..."`) ONLY after locating the symbol via `code_map_*` when its full body is needed beyond `search`/`inspect` previews; follow `source_offset` + `generation`.
    - **File outline (`mode="outline"`)**: Use `acdd_read(path=..., mode="outline")` when you need a quick declaration/heading map of one known file.
@@ -84,8 +84,8 @@ Always investigate codebases and documentation using ACDD's structural graph and
 - **SQL & bounds**: Supply one alias per parameter (`sql` or `query` for read-only
   `SELECT`/`WITH` joins over `path_dictionary` and `node_hash`; see
   [tool catalog](references/tool-catalog.md#sql-columns-and-joins-code-mapsqlite)).
-  Queries have a 2s budget, 96 KiB cap, and default page size 30 (max 100); continue
-  with the returned `next_offset` / `next_source_offset` and `generation`.
+  Queries have a 2s budget, 96 KiB cap, and default page size 12 (max 100); continue
+  with the returned `next_offset` / `next_source_offset` and `generation` (`>= 8`-char prefix).
 
 ## ACDD profiles and task operations
 

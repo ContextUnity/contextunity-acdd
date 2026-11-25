@@ -368,7 +368,10 @@ pub(super) fn source_preview(
         .context("source continuation offset overflow")?;
     let has_more = next < body.len();
     let hint = if has_more {
-        Some("Continue with show_source=true, source_offset=next_source_offset, and generation.".to_owned())
+        Some(
+            "Continue with show_source=true, source_offset=next_source_offset, and generation."
+                .to_owned(),
+        )
     } else {
         None
     };

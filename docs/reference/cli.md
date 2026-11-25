@@ -52,7 +52,7 @@ acdd read notes.txt --mode delta --baseline HEAD
 acdd read notes.txt --mode raw --output-file exports/read.txt
 ```
 
-- **`read <path>`**: shares the same layered reader, response detail policy (`response.detail`, `compact` by default), and budgets as MCP `acdd_read` (see [layered file reader](mcp-tools.md#layered-file-reader)).
+- **`read <path>`**: shares the same layered reader, response detail policy (`response.detail`, `compact` by default), and budgets as MCP `acdd_read` (`lines`/`search` default `line_count` `100`; `search` defaults to `--context 0`, groups directory matches under `## <path>`, and excludes `**/archive/**` unless targeting `archive`; see [layered file reader](mcp-tools.md#layered-file-reader)).
 - **Auto mode**: selects `snippet` when `--selector` is given, `search` when `--pattern` is given, and `lines` otherwise (or pass a symbol selector directly with `--mode snippet`).
 - **Index requirements**: `lines`, `raw`, `search`, and `delta` run without an index; Markdown `outline` requires `docs`; code `outline` and `snippet` require the code index.
 - **Symbol paging**: bound output with `--max-body-lines` and `--leading-lines`, and continue across pages using `--source-offset` + `--generation`.
@@ -106,8 +106,8 @@ acdd docs get 'docs/architecture/indexing.md' --section 'Ownership and data flow
 acdd ast grep 'print($VALUE)' --lang python --path src
 ```
 
-- **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`).
-- **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (infers compatible language(s) from `--path` or pattern grammar when `--lang` is omitted, dropping `yaml`/`json`/`toml` whenever at least one programming language parses cleanly; omits empty capture entries for anonymous `$$$` wildcards; `--limit 1..=100` matches MCP page objects while defaulting to `100` on CLI vs `15` on MCP `ast_grep_search`, and `101..=10000` returns CLI-only aggregate matches).
+- **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`); pass `--include-candidates` on `acdd docs get` to opt into ambiguous documentary symbol reference candidates (omitted by default).
+- **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (infers compatible language(s) from `--path` or pattern grammar when `--lang` is omitted, dropping `yaml`/`json`/`toml` whenever at least one programming language parses cleanly; omits empty capture entries for anonymous `$$$` wildcards; `--limit 1..=100` matches MCP page objects while defaulting to `100` on CLI vs `min(15, response.page_size)` (`12` by default) on MCP `ast_grep_search`, and `101..=10000` returns CLI-only aggregate matches).
 
 ### Unified architectural and documentation lint (`acdd lint`)
 

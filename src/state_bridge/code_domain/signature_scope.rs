@@ -197,7 +197,10 @@ fn find_external_callers_in_index(
              ORDER BY tp.path, target.qualname, cp.path"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<SqlValue> = chunk.iter().map(|p| SqlValue::Text((*p).to_owned())).collect();
+        let params: Vec<SqlValue> = chunk
+            .iter()
+            .map(|p| SqlValue::Text((*p).to_owned()))
+            .collect();
         let rows = stmt.query_map(params_from_iter(params), |row| {
             Ok((
                 row.get::<_, String>(0)?,

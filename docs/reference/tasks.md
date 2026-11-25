@@ -133,7 +133,8 @@ required before `submit` whenever the gate declares `command:`, `call:`,
    `Decisions` and `Blockers` before filling remaining slots with newest `Notes`.
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
    (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
-   given proportional per-lens budgets and skipping empty `items: []` lenses cleanly
+   given proportional per-lens budgets, packing relevance-scored candidates with deterministic 0-1
+   knapsack selection (`pack_knapsack_indices`), and skipping empty `items: []` lenses cleanly
    without mutating `omitted_sections` (`omitted_sections` records only actual budget omissions).
    `code.external_callers` surfaces non-test external consumers for both public callables and
    scoped `.sql` `table` nodes (active or baseline-deleted) across `defines_table`,

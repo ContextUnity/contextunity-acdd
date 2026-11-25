@@ -437,7 +437,10 @@ fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<Value> {
     obj.insert("items".to_owned(), json!([]));
     obj.insert("truncated".to_owned(), json!(true));
     let base_bytes = estimate_json_bytes(&Value::Object(obj.clone()));
-    let capacity = max_bytes.checked_sub(base_bytes).filter(|&r| r > 0)?.saturating_add(1);
+    let capacity = max_bytes
+        .checked_sub(base_bytes)
+        .filter(|&r| r > 0)?
+        .saturating_add(1);
     let candidates: Vec<_> = items
         .iter()
         .enumerate()
@@ -446,11 +449,18 @@ fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<Value> {
             score: u64::try_from(total - idx).unwrap_or(u64::MAX),
         })
         .collect();
-    let mut selected = pack_knapsack_indices(&candidates, capacity).into_iter().peekable();
+    let mut selected = pack_knapsack_indices(&candidates, capacity)
+        .into_iter()
+        .peekable();
     let kept: Vec<_> = items
         .into_iter()
         .enumerate()
-        .filter_map(|(idx, item)| (selected.peek() == Some(&idx)).then(|| { selected.next(); item }))
+        .filter_map(|(idx, item)| {
+            (selected.peek() == Some(&idx)).then(|| {
+                selected.next();
+                item
+            })
+        })
         .collect();
     if kept.is_empty() {
         return None;
@@ -468,10 +478,19 @@ fn omit_context_lens(
 ) {
     if let Some(old_val) = resp.context_lenses.shift_remove(qualified_lens) {
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
-        let sep = if resp.context_lenses.is_empty() { CONTEXT_LENSES_OVERHEAD } else { 1 };
+        let sep = if resp.context_lenses.is_empty() {
+            CONTEXT_LENSES_OVERHEAD
+        } else {
+            1
+        };
         *running_bytes -= estimate_json_bytes(&old_val) + key_bytes + sep;
     }
-    add_omitted_section(resp, running_bytes, &format!("context:{qualified_lens}"), max_bytes);
+    add_omitted_section(
+        resp,
+        running_bytes,
+        &format!("context:{qualified_lens}"),
+        max_bytes,
+    );
 }
 
 pub(super) fn apply_tier6_context_lenses(
@@ -497,7 +516,11 @@ pub(super) fn apply_tier6_context_lenses(
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
         let effective_base = resp.context_lenses.get(qualified_lens).map_or_else(
             || {
-                let sep = if resp.context_lenses.is_empty() { CONTEXT_LENSES_OVERHEAD } else { 1 };
+                let sep = if resp.context_lenses.is_empty() {
+                    CONTEXT_LENSES_OVERHEAD
+                } else {
+                    1
+                };
                 *running_bytes + key_bytes + sep
             },
             |old_val| *running_bytes - estimate_json_bytes(old_val),
@@ -574,7 +597,8 @@ pub(super) fn apply_tier6_context_lenses(
             })
         };
         if let Some((accepted_val, accepted_bytes)) = accepted {
-            resp.context_lenses.insert(qualified_lens.clone(), accepted_val);
+            resp.context_lenses
+                .insert(qualified_lens.clone(), accepted_val);
             *running_bytes = effective_base + accepted_bytes;
         } else {
             omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);

@@ -52,7 +52,8 @@ modules:
 # MCP response policy
 response:
   detail: compact
-  page_size: 30
+  page_size: 12
+  file_uris: false
   max_output_bytes: 65536
 
 # Optional architectural zones, rules, and syntax invariant configuration

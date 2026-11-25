@@ -26,10 +26,7 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
         "pkg/provider.py",
         "def helper():\n    return 42\n\ndef local_wins():\n    return 'provider'\n",
     );
-    workspace.write(
-        "pkg/barrel.py",
-        "from pkg.provider import helper\n",
-    );
+    workspace.write("pkg/barrel.py", "from pkg.provider import helper\n");
     workspace.write(
         "pkg/consumer.py",
         "from pkg.provider import helper, local_wins\n\ndef local_wins():\n    return 'consumer'\n",
@@ -50,13 +47,22 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
         ("Engine.run", Some("src/engine.rs"), "src/engine.rs", "run"),
         ("src/engine.rs:Engine::run", None, "src/engine.rs", "run"),
         ("src/engine.rs::Engine::run", None, "src/engine.rs", "run"),
-        ("helper", Some("pkg/consumer.py"), "pkg/provider.py", "helper"),
+        (
+            "helper",
+            Some("pkg/consumer.py"),
+            "pkg/provider.py",
+            "helper",
+        ),
         ("helper", Some("pkg/barrel.py"), "pkg/provider.py", "helper"),
-        ("local_wins", Some("pkg/consumer.py"), "pkg/consumer.py", "local_wins"),
+        (
+            "local_wins",
+            Some("pkg/consumer.py"),
+            "pkg/consumer.py",
+            "local_wins",
+        ),
     ] {
-        let inspected =
-            reader::inspect_paged_with_path(&conn, selector, path, false, &options(10))
-                .unwrap_or_else(|err| panic!("selector={selector:?} path={path:?} failed: {err}"));
+        let inspected = reader::inspect_paged_with_path(&conn, selector, path, false, &options(10))
+            .unwrap_or_else(|err| panic!("selector={selector:?} path={path:?} failed: {err}"));
         assert_eq!(
             inspected["node"]["path"], expected_path,
             "selector={selector:?} path={path:?}"
@@ -68,9 +74,14 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
     }
 
     // Dot-boundary suffix guard: "ngine::run" must not match "Engine.run"
-    let boundary_err =
-        reader::inspect_paged_with_path(&conn, "ngine::run", Some("src/engine.rs"), false, &options(10))
-            .unwrap_err();
+    let boundary_err = reader::inspect_paged_with_path(
+        &conn,
+        "ngine::run",
+        Some("src/engine.rs"),
+        false,
+        &options(10),
+    )
+    .unwrap_err();
     assert!(
         boundary_err
             .downcast_ref::<SelectorError>()

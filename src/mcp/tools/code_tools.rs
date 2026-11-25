@@ -112,12 +112,7 @@ fn responding_with_presentation(
                         attach_presentation_uris(&server.root, &adapter, value, kind);
                     } else if matches!(title, "search_docs" | "get_doc") {
                         if let Ok(value) = &mut value {
-                            attach_document_presentation_uris(
-                                &server.root,
-                                &adapter,
-                                value,
-                                title,
-                            );
+                            attach_document_presentation_uris(&server.root, &adapter, value, title);
                         }
                     } else if title == "code_map_lint" {
                         if let Ok(value) = &mut value {
@@ -136,11 +131,7 @@ fn responding_with_presentation(
                         )
                     {
                         if let Ok(value) = &mut value {
-                            attach_traversal_presentation_uris(
-                                &server.root,
-                                &adapter,
-                                value,
-                            );
+                            attach_traversal_presentation_uris(&server.root, &adapter, value);
                         }
                     }
                 }
@@ -184,7 +175,14 @@ pub(super) async fn code_map_overview(server: &Server, p: OverviewInput) -> Call
 
 pub(super) async fn code_map_inspect(server: &Server, p: Inspect) -> CallToolResult {
     let format = p.page.output_format();
-    responding_blocking(server, format, p.page.uri_options(None), OperationKind::Navigation, "code_map_inspect", Some(false), Some(DiscoveryKind::Inspect),
+    responding_blocking(
+        server,
+        format,
+        p.page.uri_options(None),
+        OperationKind::Navigation,
+        "code_map_inspect",
+        Some(false),
+        Some(DiscoveryKind::Inspect),
         move |server, adapter, policy| {
             let selector = p.selector()?;
             let path = p.path()?;

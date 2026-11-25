@@ -1000,9 +1000,7 @@ fn flush_prior_context(
         } else {
             0
         };
-        if *n > *last
-            && *kept < count
-            && output.len() + header_cost + text.len() + 32 <= max_bytes
+        if *n > *last && *kept < count && output.len() + header_cost + text.len() + 32 <= max_bytes
         {
             push_formatted_match_line(output, group_path, wrote_header, *n, text);
             *kept += 1;

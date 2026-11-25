@@ -229,7 +229,10 @@ fn module_indexed_text_and_snippetless_hits_are_deprioritized() {
     .unwrap();
     assert_eq!(raw["pattern"], "quartztoken");
     let raw_items = raw["nodes"]["items"].as_array().unwrap();
-    assert!(raw_items.len() >= 2, "expected concrete + module hits: {raw}");
+    assert!(
+        raw_items.len() >= 2,
+        "expected concrete + module hits: {raw}"
+    );
     assert_eq!(
         raw_items[0]["name"], "concrete_consumer",
         "concrete symbol indexed_text hit must outrank module indexed_text hit: {raw}"
@@ -238,7 +241,10 @@ fn module_indexed_text_and_snippetless_hits_are_deprioritized() {
     // Also verify navigation-layer deprioritization when a snippetless module indexed_text
     // hit is forced ahead of a snippet-bearing hit.
     let mut synthetic = raw.clone();
-    synthetic["nodes"]["items"].as_array_mut().unwrap().reverse();
+    synthetic["nodes"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
     let nav = symbols::search_results_with_navigation(&conn, ws.root(), synthetic, false).unwrap();
     let nav_items = nav["nodes"]["items"].as_array().unwrap();
     assert_eq!(

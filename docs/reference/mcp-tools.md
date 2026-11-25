@@ -31,6 +31,7 @@ MCP navigation accepts unified parameter spellings alongside the canonical field
 
 | Tool | Canonical field | Accepted aliases |
 | --- | --- | --- |
+| `code_map_overview` | `path` | `file_path` (optional workspace-relative directory or file scope) |
 | `code_map_search` | `pattern`, `path` | `query`, `file_path` respectively |
 | `code_map_inspect` | `selector`, `path` | `symbol`, `file_path` respectively |
 | `code_map_explain` | `selector`, `path` | `symbol`, `file_path` respectively |
@@ -51,7 +52,7 @@ normalize these fields before querying. Supply one spelling per value; a nonempt
 canonical field together with an alias is a duplicate-field error. Unrecognized
 parameters fail fast with `rejected_arguments`, returning supported parameters,
 fuzzy matches, and cross-tool or parameter redirect hints when common mismatches
-occur (such as `path` on `code_map_overview` or `query` on `get_doc`).
+occur (such as `query` on `get_doc`).
 `code_map_query` resolves its separate optional fields as described under
 [SQL](#sql-queries).
 
@@ -98,9 +99,9 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
 
 - **Modes (`mode`)**:
   - `auto` (default): selects `snippet` when `selector` is set, `search` when `pattern` is set, and `lines` otherwise.
-  - `lines`: 1-based numbered source lines (`start_line`, `line_count` `1..=10,000`, default `200`; works without an index).
+  - `lines`: 1-based numbered source lines (`start_line`, `line_count` `1..=10,000`, default `100`; works without an index).
   - `raw`: exact text preserving original line endings (works without an index).
-  - `search`: substring or `regex: true` search starting at `start_line` with `context` lines (`0..=100`, default `2`).
+  - `search`: substring or `regex: true` search starting at `start_line` with `context` lines (`0..=100`, default `0`) and `line_count` default `100`; directory/glob searches group hits under `## <path>` headers and exclude `**/archive/**` unless `path` targets `archive`.
   - `delta`: unified Git diff against `baseline`, the active task's candidate baseline, or `HEAD`.
   - `outline`: Markdown heading tree (`docs` module) or AST declaration list (`code` module); `paths: [...]` batches multiple files.
   - `snippet`: complete digest-verified symbol body (`selector` or alias `symbol`, optional `path` to disambiguate), paged cleanly via `source_offset` + `generation`.
@@ -109,7 +110,7 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
   - `lines`: range string (`"100-200"`, `"100..200"`) or integer count.
   - `max_lines` / `file_path` / `query` / `symbol`: aliases for `line_count`, `path`, `pattern`, and `selector` (passing both canonical and alias non-null values is rejected).
   - **Workspace-prefix stripping**: absolute paths inside the workspace automatically normalize to relative paths.
-  - **Enclosing symbol footer**: reading raw lines inside an indexed function/struct appends a `💡 Enclosing symbol` hint with its exact `selector`.
+  - **Enclosing symbol footer**: reading raw lines inside an indexed function/struct appends a compact `Enclosing: \`<kind> <name>\` — acdd_read(...)` hint with its exact `selector`.
 - **Safety & bounds**:
   - **Text cap**: `lines`, `raw`, and `search` cap output at `48 KiB` (`truncated: true`); lines above `1 MiB` error cleanly.
   - **Binary & secret guards**: NUL bytes in the first `8 KiB` return `BINARY_FILE`; symlinks, path traversal, and `sensitive` patterns are blocked on both reads and `output_file` exports (see [sensitive paths](configuration.md#sensitive-reader-paths)).
@@ -121,8 +122,8 @@ Every static capability runs over identical index and state engines on both surf
 
 | MCP Tool | CLI Equivalent | Purpose |
 | --- | --- | --- |
-| `code_map_overview` | `acdd query overview` | Summarize workspace-wide counts, languages, docs hubs, entrypoints, topology, and per-workspace coverage (no `path` filter). |
-| `code_map_search` | `acdd query search` | Search symbols by exact name, prefix (`parse*`), FTS5 BM25 query, `kind`, `classification` (`production`, `test`, `documentation`), or type filter (`takes:`, `returns:`). |
+| `code_map_overview` | `acdd query overview` | Summarize workspace-wide counts, languages, docs hubs, entrypoints, topology, and per-workspace coverage, or scope counts/languages/files to one `path` / `file_path`. |
+| `code_map_search` | `acdd query search` | Search symbols via weighted RRF (`k = 60` over structural tier, FTS5 BM25, and bounded graph degree), exact name, prefix (`parse*`), `kind`, `classification` (`production`, `test`, `documentation`), or type filter (`takes:`, `returns:`), with optional `include_pulse`. |
 | `code_map_inspect` | `acdd query inspect` | Inspect one symbol's signature, docstring, caller/callee summary, governing invariants, and linked docs (`include_coverage` off by default). |
 | `acdd_read` | `acdd read` | Read line slices, search matches, Git deltas, outlines, or digest-verified symbol bodies (plus `output_file` export). |
 | `code_map_explain` | `acdd query explain` | List direct `incoming`, `outgoing`, or `both` relationship edges and analysis gaps for a symbol. |
@@ -134,7 +135,7 @@ Every static capability runs over identical index and state engines on both surf
 | `code_map_analyze` | `acdd query analyze` | Aggregate workspace/file resolver gaps, `untested_public_surface`, `doc_diagnostics`, stored syntax lint, and cycles. |
 | `ast_grep_search` | `acdd ast grep` | Match structural Tree-sitter patterns (`$NAME`, `$$$SEQ`) narrowed by indexed file candidates. |
 | `search_docs` | `acdd docs search` | Search indexed Markdown/MDX heading sections with BM25 ranking and optional `include_excerpt`. |
-| `get_doc` | `acdd docs get` | Read a document outline, specific heading section, citations, and verified/candidate symbol references. |
+| `get_doc` | `acdd docs get` | Read a document outline, specific heading section, citations, verified symbol references, and opt-in ambiguous candidates (`include_candidates: true`). |
 | `acdd_guide` | `acdd guide` | Return capability-filtered usage guidance across 11 built-in topics (`query`, `code`, `ast`, `docs`, `acdd`, ...). |
 | `acdd_state` | `acdd start\|draft\|status\|...` | Drive run lifecycle actions (`start`, `draft`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `sync`, `clear`, `run`). |
 | `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` context envelope. |
@@ -194,7 +195,7 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
 - **Selector syntax**:
   - **Known symbol / file**: pass a unique symbol name directly (or an identifier returned by `code_map_search`), or pass a file path to select that module/file.
-  - **Qualified selectors**: `path:name`, `path::name`, `path:known_kind:name` (for registered node kinds), or `path:line` / `path#Lline` (narrowest symbol covering that line).
+  - **Qualified selectors**: `path:name`, `path::name`, `path:known_kind:name` (for registered node kinds), `Type::method` / `path + Type.method`, or `path:line` / `path#Lline` (narrowest symbol covering that line); when scoped by `path`, unresolved symbols also check 1-hop `imports`/`references` targets.
   - **Prefixes & ambiguity**: relative paths accept `./`, `file:`, or `file://`. Add the path when a bare name matches both a module and a symbol. Markdown belongs in `get_doc` / `search_docs`.
 
 - **`code_map_query` operations & aliases**:
@@ -210,6 +211,7 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 - **`code_map_search`**:
   - **`pattern` / `query`**: `query` is an alias for `pattern`. Use `pattern: "*"` with a non-empty `path` or `kind` to enumerate symbols in that scope (`path: ""` searches the whole workspace; bare/repeated `*` is rejected).
   - **Type & decorator filters**: searches indexed parameter types, return types, and decorators via `takes:GateProfile`, `returns:Result`, or `@pytest.fixture` (wildcards rejected in type filters; `exact: true` matches names unless a type filter is given).
+  - **Pulse & count horizon**: `include_pulse` (`true`/`false`) includes or suppresses the top-hit `graph_pulse` summary; results exceeding the 1,000-row count horizon render `1000+` in Markdown.
 
 - **Impact, slice, tests & removal details**:
   - **`code_map_impact` & `slice`**: mark the seed node with `is_seed=true` and annotate multi-hop nodes with `via` (shortest path predecessor + edge kind). A directory selector in `slice` lists internal nodes (`graph_depth_applied=0`) plus a `boundary_contract`; unique directory suffixes are accepted.
@@ -244,6 +246,7 @@ breadcrumb. JSON continues to return the structured semantic result.
   - **TypeScript / JavaScript**: explicit named/default exports and public/default-public members of exported classes (excluding `private`/`protected`/`#private`, type-only declarations).
 
 - **`code_map_overview` & `explain` / `inspect` details**:
+  - **Path-scoped overview**: passing `path` (alias `file_path`) returns scoped `counts`, `languages`, and paged `files` for that workspace-relative directory or file prefix.
   - **Database aspects**: `counts`, `components`, `languages`, `coverage_by_workspace`, `cycles`, `entrypoints`, `entrypoints_with_tests`, `topology`, `compiled_profiles`, and `metadata`.
   - **Discovery aspects**: `discovery`, `manifest_components`, `documentation_hubs`, `runs`, and `milestones`.
   - **Default selection**: omitting `aspects` includes all database aspects + `discovery` except opt-in `cycles`, `topology`, `entrypoints`, and `entrypoints_with_tests` (`entrypoints_with_tests` includes tests; repeat the aspect when paging). Unsupported aspects fail listing valid choices.
@@ -274,10 +277,11 @@ breadcrumb. JSON continues to return the structured semantic result.
 
 - **`acdd_state(action: "snapshot")`**: manages checkpoints via `snapshot_action: "save" | "restore" | "clear" | "list"` (`delete: true` aliases `"clear"`), optional `task_ref`, `name`, `all`, `rev`, `run`, `older_than`, and `worktree` (see [task snapshots](tasks.md#task-snapshots)).
 - **Preview & line bounds**:
-  - `code_map_inspect` / `code_map_explain`: clamp `leading_lines` (`0..=20`, default `5`) and `max_body_lines` (`1..=500`, default from `response.source_context.max_body_lines` or `200`) with an `8 KiB` source sub-budget.
+  - `code_map_inspect` / `code_map_explain`: clamp `leading_lines` (`0..=20`, default `5`) and `max_body_lines` (`1..=500`, default from `response.source_context.max_body_lines` or `100`) with an `8 KiB` source sub-budget.
   - `acdd_read`: returns the full selected symbol when it fits `max_output_bytes` (`1,024–98,304`), honoring explicit `max_body_lines >= 1` and paging strictly on complete line boundaries (oversized single lines return a budget error + local-file hint).
-- **Pagination & generations**:
-  - Code-map tools use `limit` (`1..=100`, default `30`, or `15` for `ast_grep_search`), `offset`, `next_offset`, and code-index `generation` (`source_offset > 0` always requires the previous page's `generation`).
+- **Pagination, links & generations**:
+  - Code-map tools use `limit` (`1..=100`, default `12`; `ast_grep_search` defaults to `min(15, response.page_size)`), `offset`, `next_offset`, and code-index `generation` (`>= 8`-char prefix accepted; compact Markdown renders 8-char tokens; `source_offset > 0` always requires the previous page's `generation`).
+  - Compact Markdown omits `file://` URIs by default (`response.file_uris: false`); pass `file_uris: true` or `detail: "full"` to opt into workspace-confined `file:///` links.
   - Completed zero-result code-map pages return `total` and `items` cleanly without pagination fields; trimming removes tail records cleanly and advances `next_offset`.
   - Task-list pagination (`acdd_state`) reports `total`, `limit`, `offset`, `returned`, `has_more`, and a separate `runs.generation` bound to task/subtask state.
 - **Search previews (`code_map_search`)**:
@@ -286,7 +290,7 @@ breadcrumb. JSON continues to return the structured semantic result.
 
 ## AST pattern capabilities
 
-- **`ast_grep_search.language`**: accepts any compiled profile ID (`python`, `rust`, `typescript`, etc.) or infers compatible language(s) automatically when omitted (`path` extension if recognized, otherwise every indexed language in scope whose grammar accepts `pattern`, dropping `yaml`/`json`/`toml` when at least one programming language parses cleanly). Default `limit` is `15` in MCP (`100` in CLI `acdd ast grep`).
+- **`ast_grep_search.language`**: accepts any compiled profile ID (`python`, `rust`, `typescript`, etc.) or infers compatible language(s) automatically when omitted (`path` extension if recognized, otherwise every indexed language in scope whose grammar accepts `pattern`, dropping `yaml`/`json`/`toml` when at least one programming language parses cleanly). Default `limit` is `min(15, response.page_size)` (`12` by default) in MCP (`100` in CLI `acdd ast grep`).
 
 Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
@@ -375,7 +379,7 @@ candidates are navigation, not verified references or governance edges.
   - Relative links and wikilinks create `cites_doc` / `cited_by_doc` edges only when resolving to one indexed section.
   - Code claims check eligibility first (explicit file target or source document's workspace, excluding doc/invariant/component nodes), then select a singleton winner from the first non-empty tier: exact normalized `qualname` (`::` == `.`), exact declared `name`, then qualified segment suffix.
 - **Ambiguous candidates (`referenced_symbol_candidates`)**:
-  - Full detail exposes paged `source` + `target` candidate rows for navigation only (zero `documents` or `governs` edges). Compact detail omits candidate rows with a hint; `docs get` requests full detail.
+  - Opt-in via `include_candidates: true` (CLI `acdd docs get --include-candidates`, default `false`, decoupled from `detail: "full"`) to expose paged `source` + `target` candidate rows for navigation only (zero `documents` or `governs` edges). When omitted, `referenced_symbol_candidates` returns `{ "omitted": true, "hint": ... }`.
 - **Reverse links & doc diagnostics**:
   - `code_map_inspect` deduplicates `documented_in` sections per cited section/line (avoiding duplicate `documents` tables); `code_map_explain` keeps `documents`; `code_map_impact` lists `affected_docs`.
   - `code_map_analyze` reports `broken_doc_link`, `dead_doc_symbol` (with optional `suggested_symbol`), and `stale_doc_sections` (disjoint source line ranges).

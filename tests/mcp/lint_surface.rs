@@ -171,19 +171,31 @@ message: "avoid direct connect calls"
         .text("code_map_lint", json!({"format": "markdown"}))
         .expect("MCP markdown");
     let mcp_md_uris = mcp
-        .text("code_map_lint", json!({"format": "markdown", "file_uris": true}))
+        .text(
+            "code_map_lint",
+            json!({"format": "markdown", "file_uris": true}),
+        )
         .expect("MCP markdown with URIs");
 
-    let expected_prefix = format!(
-        "file://{}",
-        ws.root().canonicalize().unwrap().display()
-    );
-    for (surface, md) in [("CLI", cli_md_text.as_ref()), ("MCP", mcp_md_compact.as_str())] {
+    let expected_prefix = format!("file://{}", ws.root().canonicalize().unwrap().display());
+    for (surface, md) in [
+        ("CLI", cli_md_text.as_ref()),
+        ("MCP", mcp_md_compact.as_str()),
+    ] {
         assert!(md.contains("INV-TEST-CORE-ISOLATION"), "{surface}: {md}");
-        assert!(!md.contains("file://"), "{surface} compact default omits file:// URIs: {md}");
-        assert!(!md.contains(".."), "{surface} leaked parent traversal: {md}");
+        assert!(
+            !md.contains("file://"),
+            "{surface} compact default omits file:// URIs: {md}"
+        );
+        assert!(
+            !md.contains(".."),
+            "{surface} leaked parent traversal: {md}"
+        );
     }
-    assert!(mcp_md_uris.contains(&expected_prefix), "MCP opt-in missing confined file:/// URI: {mcp_md_uris}");
+    assert!(
+        mcp_md_uris.contains(&expected_prefix),
+        "MCP opt-in missing confined file:/// URI: {mcp_md_uris}"
+    );
 
     // Response budgeting & paging under configured 2048-byte limit.
     let mut big_src = String::from("use crate::infra::db::connect;\n");

@@ -159,10 +159,20 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
 }
 
 /// Read a bounded overview scoped to one workspace-relative directory or file prefix.
-pub fn overview_for_path(conn: &Connection, raw_path: &str, options: &QueryOptions) -> Result<Value> {
+pub fn overview_for_path(
+    conn: &Connection,
+    raw_path: &str,
+    options: &QueryOptions,
+) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let norm = raw_path.trim().trim_start_matches("./").trim_end_matches('/');
-    anyhow::ensure!(!norm.is_empty() && !norm.split('/').any(|s| s == ".."), "invalid overview path '{raw_path}'; expected a workspace-relative path");
+    let norm = raw_path
+        .trim()
+        .trim_start_matches("./")
+        .trim_end_matches('/');
+    anyhow::ensure!(
+        !norm.is_empty() && !norm.split('/').any(|s| s == ".."),
+        "invalid overview path '{raw_path}'; expected a workspace-relative path"
+    );
     let (start, end) = super::selectors::path_bounds(norm);
     let cond = "p.path=?1 OR (p.path>=?2 AND p.path<?3)";
     let fcond = "path=?1 OR (path>=?2 AND path<?3)";
@@ -177,7 +187,9 @@ pub fn overview_for_path(conn: &Connection, raw_path: &str, options: &QueryOptio
     )?.remove(0);
     let languages = paging::query(conn, "SELECT language,count(*) files FROM files WHERE path=?1 OR (path>=?2 AND path<?3) GROUP BY language ORDER BY files DESC,language", &[&norm, &start, &end], options)?;
     let files = paging::query(conn, "SELECT f.path,f.language,(SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=f.path) symbols FROM files f WHERE f.path=?1 OR (f.path>=?2 AND f.path<?3) ORDER BY f.path", &[&norm, &start, &end], options)?;
-    Ok(json!({"path": norm, "counts": counts, "languages": languages, "files": files, "generation": generation}))
+    Ok(
+        json!({"path": norm, "counts": counts, "languages": languages, "files": files, "generation": generation}),
+    )
 }
 
 // Compute a module once for each path and aggregate graph statistics in SQLite.

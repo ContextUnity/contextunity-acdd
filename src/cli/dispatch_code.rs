@@ -500,7 +500,14 @@ fn dispatch_query(
                 None,
                 generation,
             )?;
-            crate::state_bridge::overview(conn, ctx.root, Some(ctx.adapter), aspects.as_deref(), None, &page)
+            crate::state_bridge::overview(
+                conn,
+                ctx.root,
+                Some(ctx.adapter),
+                aspects.as_deref(),
+                None,
+                &page,
+            )
         }
         QueryCommand::Inspect {
             selector,

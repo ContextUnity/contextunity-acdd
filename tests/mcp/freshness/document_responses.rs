@@ -218,13 +218,19 @@ fn explain_document_controls_and_direction_aliases_preserve_the_graph() {
 
 #[test]
 fn get_doc_large_doc_decouples_candidates_and_read_engine_defaults() {
-    let mut big_doc = String::from("---\ntitle: Large Doc\ndoc_type: reference\n---\n# Large Doc\n");
+    let mut big_doc =
+        String::from("---\ntitle: Large Doc\ndoc_type: reference\n---\n# Large Doc\n");
     for i in 0..80 {
-        big_doc.push_str(&format!("\n## Section {i}\nReferences `shared` and `helper`.\n"));
+        big_doc.push_str(&format!(
+            "\n## Section {i}\nReferences `shared` and `helper`.\n"
+        ));
     }
     let long_file: String = (1..=125).map(|i| format!("line_{i}\n")).collect();
     let (ws, harness) = McpTestHarness::with_files(&[
-        ("src/a.py", "def shared():\n    return 'a'\n\ndef helper():\n    return 'needle_hit'\n"),
+        (
+            "src/a.py",
+            "def shared():\n    return 'a'\n\ndef helper():\n    return 'needle_hit'\n",
+        ),
         ("src/b.py", "def shared():\n    return 'b'\n"),
         ("docs/archive/old.md", "archived needle_hit\n"),
         ("docs/large.md", &big_doc),
@@ -264,25 +270,46 @@ fn get_doc_large_doc_decouples_candidates_and_read_engine_defaults() {
         .expect("search should succeed");
     let content = search_default["content"].as_str().unwrap();
     assert!(content.contains("## src/a.py\n5: "), "{content}");
-    assert!(!content.contains("4: "), "default context must be 0: {content}");
-    assert!(!content.contains("docs/archive/old.md"), "archive must be excluded by default: {content}");
+    assert!(
+        !content.contains("4: "),
+        "default context must be 0: {content}"
+    );
+    assert!(
+        !content.contains("docs/archive/old.md"),
+        "archive must be excluded by default: {content}"
+    );
 
     let search_ctx = client
-        .payload("acdd_read", json!({"path":"src/a.py","mode":"search","pattern":"needle_hit","context":1}))
+        .payload(
+            "acdd_read",
+            json!({"path":"src/a.py","mode":"search","pattern":"needle_hit","context":1}),
+        )
         .expect("explicit context override");
-    assert!(search_ctx["content"].as_str().unwrap().contains("4: def helper():"));
+    assert!(search_ctx["content"]
+        .as_str()
+        .unwrap()
+        .contains("4: def helper():"));
 
     let search_archive = client
-        .payload("acdd_read", json!({"path":"docs/archive","mode":"search","pattern":"needle_hit"}))
+        .payload(
+            "acdd_read",
+            json!({"path":"docs/archive","mode":"search","pattern":"needle_hit"}),
+        )
         .expect("explicit archive search");
-    assert!(search_archive["content"].as_str().unwrap().contains("## docs/archive/old.md\n1: archived needle_hit"));
+    assert!(search_archive["content"]
+        .as_str()
+        .unwrap()
+        .contains("## docs/archive/old.md\n1: archived needle_hit"));
 
     // 3. acdd_read default line_count=100 vs explicit override
     let default_lines = client
         .payload("acdd_read", json!({"path":"src/long.txt"}))
         .expect("default lines read");
     assert_eq!(default_lines["truncated"], true);
-    assert_eq!(default_lines["content"].as_str().unwrap().lines().count(), 100);
+    assert_eq!(
+        default_lines["content"].as_str().unwrap().lines().count(),
+        100
+    );
 
     let full_lines = client
         .payload("acdd_read", json!({"path":"src/long.txt","line_count":130}))
@@ -295,7 +322,9 @@ fn get_doc_large_doc_decouples_candidates_and_read_engine_defaults() {
         .payload("acdd_read", json!({"path":"src/a.py","selector":"helper"}))
         .expect("snippet read");
     let preview = snippet["source_preview"].as_object().unwrap();
-    assert!(!preview.contains_key("next_source_offset") && !preview.contains_key("continuation_hint"));
+    assert!(
+        !preview.contains_key("next_source_offset") && !preview.contains_key("continuation_hint")
+    );
     assert!(!preview.contains_key("omitted_leading_lines"));
     let _ = ws;
     client.finish().expect("server must finish successfully");

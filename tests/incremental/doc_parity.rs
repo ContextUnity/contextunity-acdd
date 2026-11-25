@@ -273,7 +273,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "explicit file claim failed to resolve despite a same-name symbol elsewhere: {exact}"
         ));
     }
-    let missing = reader::get_doc_paged(&live, "docs/missing-file.md", None, false, &options).unwrap();
+    let missing =
+        reader::get_doc_paged(&live, "docs/missing-file.md", None, false, &options).unwrap();
     if missing["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -284,7 +285,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "explicit missing file promoted a symbol from another file: {missing}"
         ));
     }
-    let unique = reader::get_doc_paged(&live, "docs/unique-file.md", None, false, &options).unwrap();
+    let unique =
+        reader::get_doc_paged(&live, "docs/unique-file.md", None, false, &options).unwrap();
     if !unique["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -345,7 +347,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "a missing same-token link must not erase or authorize another path; edges store one row per document-section/symbol, so line 2 is the valid canonical source line, got {mixed_lines:?}: {mixed_occurrences}"
         ));
     }
-    let module = reader::get_doc_paged(&live, "docs/module-identity.md", None, false, &options).unwrap();
+    let module =
+        reader::get_doc_paged(&live, "docs/module-identity.md", None, false, &options).unwrap();
     if !module["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -360,7 +363,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "exact module identity was replaced by the same-basename declaration: {module}"
         ));
     }
-    let path_tier = reader::get_doc_paged(&live, "docs/path-tier.md", None, false, &options).unwrap();
+    let path_tier =
+        reader::get_doc_paged(&live, "docs/path-tier.md", None, false, &options).unwrap();
     if !path_tier["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -371,7 +375,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "global exact qualified identity suppressed an eligible path-local suffix: {path_tier}"
         ));
     }
-    let unsafe_path = reader::get_doc_paged(&live, "docs/unsafe-file.md", None, false, &options).unwrap();
+    let unsafe_path =
+        reader::get_doc_paged(&live, "docs/unsafe-file.md", None, false, &options).unwrap();
     if unsafe_path["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -382,7 +387,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "unsafe explicit path fell back to a workspace declaration: {unsafe_path}"
         ));
     }
-    let qualified = reader::get_doc_paged(&live, "docs/dot-qualified.md", None, false, &options).unwrap();
+    let qualified =
+        reader::get_doc_paged(&live, "docs/dot-qualified.md", None, false, &options).unwrap();
     if !qualified["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -434,7 +440,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "exact qualified target must beat deeper suffix for dot and :: spellings: refs={qualified_priority_refs}, diagnostics={qualified_priority}"
         ));
     }
-    let suffix_only = reader::get_doc_paged(&live, "docs/suffix-only.md", None, false, &options).unwrap();
+    let suffix_only =
+        reader::get_doc_paged(&live, "docs/suffix-only.md", None, false, &options).unwrap();
     if !suffix_only["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -496,7 +503,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "after document delta, explicit file claim failed to resolve: {exact}"
         ));
     }
-    let missing = reader::get_doc_paged(&live, "docs/missing-file.md", None, false, &options).unwrap();
+    let missing =
+        reader::get_doc_paged(&live, "docs/missing-file.md", None, false, &options).unwrap();
     if missing["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -507,7 +515,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "after document delta, explicit missing file promoted another file: {missing}"
         ));
     }
-    let qualified = reader::get_doc_paged(&live, "docs/dot-qualified.md", None, false, &options).unwrap();
+    let qualified =
+        reader::get_doc_paged(&live, "docs/dot-qualified.md", None, false, &options).unwrap();
     if !qualified["referenced_symbols"]["items"]
         .as_array()
         .unwrap()

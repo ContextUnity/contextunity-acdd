@@ -38,7 +38,7 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 ## Query and source safety
 
 - **Read-only SQL (`code_map_analyze`)**: accepts one read-only `SELECT` or `WITH` statement (`include_cycles=true` computes structural cycles separately). Structural results reflect indexed syntax, not runtime behavior.
-- **Inspect/explain source previews**: omitted by default; when enabled, default to `5` leading lines and configured `max_body_lines` (default `200`, valid `1..=500`).
+- **Inspect/explain source previews**: omitted by default; when enabled, default to `5` leading lines and configured `max_body_lines` (default `100`, valid `1..=500`).
 - **`acdd_read` symbol paging**: returns the entire symbol when serialized output fits `max_output_bytes` (`1,024–98,304`); otherwise pages cleanly at complete line boundaries requiring `generation` on continuations (an explicit `max_body_lines` is normalized to `>= 1`; an oversized single line returns a budget error + recovery hint).
 - **Read-only state reads**: `acdd status|list|show|next|blackboard --action read`, `acdd_state` reads, and `acdd_blackboard(action="read")` open `state.sqlite` strictly via `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` without creating missing DB files (`list` and `blackboard` bind `runs.generation`). See [MCP tools](../reference/mcp-tools.md).
 

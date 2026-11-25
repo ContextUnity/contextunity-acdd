@@ -78,9 +78,10 @@ fn sample_claim_request(
     let tree = TreeOid::new("1".repeat(40)).unwrap();
     let commit = CommitOid::new("2".repeat(40)).unwrap();
     let mut profile = ResolvedGateProfile::default();
-    profile
-        .guidance
-        .insert("g1".to_owned(), GuidanceEntry::Text("Follow rules".to_owned()));
+    profile.guidance.insert(
+        "g1".to_owned(),
+        GuidanceEntry::Text("Follow rules".to_owned()),
+    );
     profile
         .roles
         .insert("builder".to_owned(), RoleDef::default());
@@ -233,7 +234,13 @@ fn knapsack_packs_relevance_within_the_byte_budget() {
     ]
     .map(|(weight, score)| KnapsackItem { weight, score });
     assert_eq!(pack_knapsack_indices(&unequal_cardinality, 3), [0, 2]);
-    let many = vec![KnapsackItem { weight: 1, score: 1 }; 32_768];
+    let many = vec![
+        KnapsackItem {
+            weight: 1,
+            score: 1
+        };
+        32_768
+    ];
     assert_eq!(pack_knapsack_indices(&many, 1), [0]);
     assert_eq!(pack_knapsack_indices(&many, 2), [0, 1]);
     assert_eq!(
@@ -257,9 +264,8 @@ fn knapsack_packs_relevance_within_the_byte_budget() {
             let score: u64 = chosen.iter().map(|&i| items[i].score).sum();
             let oracle = (0..1 << items.len())
                 .filter_map(|mask| {
-                    let indices: Vec<usize> = (0..items.len())
-                        .filter(|&i| mask & (1 << i) != 0)
-                        .collect();
+                    let indices: Vec<usize> =
+                        (0..items.len()).filter(|&i| mask & (1 << i) != 0).collect();
                     let (w, s) = indices.iter().fold((0, 0), |(w, s), &i| {
                         (w + items[i].weight, s + items[i].score)
                     });
@@ -321,7 +327,9 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
         32_768,
     );
     let full = GateContextAssembler::assemble(&full_req, &real_provider).unwrap();
-    let full_syms = full.context_lenses["code.symbols"]["items"].as_array().unwrap();
+    let full_syms = full.context_lenses["code.symbols"]["items"]
+        .as_array()
+        .unwrap();
     assert_eq!(full_syms.len(), 3);
 
     // Budget tightly: enough for Tier 1 + docs.instructions + two target symbols, too tight for all 3.
@@ -344,10 +352,24 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
         .iter()
         .filter_map(|v| v["qualname"].as_str())
         .collect();
-    assert!(sym_names.iter().any(|n| n.ends_with("pack_target_alpha")), "{sym_names:?}");
-    assert!(sym_names.iter().any(|n| n.ends_with("pack_target_beta")), "{sym_names:?}");
-    assert!(!sym_names.iter().any(|n| n.ends_with("oversized_unrelated_symbol")), "{sym_names:?}");
-    assert_eq!(tight.context_lenses["code.symbols"]["truncated"], json!(true));
+    assert!(
+        sym_names.iter().any(|n| n.ends_with("pack_target_alpha")),
+        "{sym_names:?}"
+    );
+    assert!(
+        sym_names.iter().any(|n| n.ends_with("pack_target_beta")),
+        "{sym_names:?}"
+    );
+    assert!(
+        !sym_names
+            .iter()
+            .any(|n| n.ends_with("oversized_unrelated_symbol")),
+        "{sym_names:?}"
+    );
+    assert_eq!(
+        tight.context_lenses["code.symbols"]["truncated"],
+        json!(true)
+    );
 
     // 2. Tier 6 fallback packing, exhausted-lens omission, non-items blob omission, and fail-closed error:
     let custom = Arc::new(StaticLensProvider {
@@ -369,8 +391,11 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
             ("huge_blob".to_owned(), json!({"blob": "z".repeat(900)})),
         ]),
     });
-    let custom_provider =
-        CompositeDomainProvider::with_module_flags(vec![custom], BTreeMap::from([("custom".to_owned(), true)])).unwrap();
+    let custom_provider = CompositeDomainProvider::with_module_flags(
+        vec![custom],
+        BTreeMap::from([("custom".to_owned(), true)]),
+    )
+    .unwrap();
     let tier6_budget = bare.total_bytes + 320;
     let tier6_req = sample_claim_request(
         root.to_path_buf(),
@@ -390,11 +415,18 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
         tier6.context_lenses["custom.oversized_first"]["items"],
         json!(["fit-a", "fit-b"])
     );
-    assert_eq!(tier6.context_lenses["custom.oversized_first"]["truncated"], json!(true));
+    assert_eq!(
+        tier6.context_lenses["custom.oversized_first"]["truncated"],
+        json!(true)
+    );
     assert!(!tier6.context_lenses.contains_key("custom.exhausted"));
     assert!(!tier6.context_lenses.contains_key("custom.huge_blob"));
-    assert!(tier6.omitted_sections.contains(&"context:custom.exhausted".to_owned()));
-    assert!(tier6.omitted_sections.contains(&"context:custom.huge_blob".to_owned()));
+    assert!(tier6
+        .omitted_sections
+        .contains(&"context:custom.exhausted".to_owned()));
+    assert!(tier6
+        .omitted_sections
+        .contains(&"context:custom.huge_blob".to_owned()));
 
     // Missing lens still fails closed with DomainCapabilityUnavailable.
     let missing_req = sample_claim_request(
@@ -543,7 +575,10 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
         "CREATE TABLE orders (id INT PRIMARY KEY, total INT, currency TEXT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\n",
     )
     .unwrap();
-    assert!(matches!(check_signature_scope(), DomainCheckOutcome::Passed { .. }));
+    assert!(matches!(
+        check_signature_scope(),
+        DomainCheckOutcome::Passed { .. }
+    ));
 
     // 3. Deleted .sql table: stale index still surfaces consumers, and refreshed index falls back to baseline.
     std::fs::remove_file(root.join("migrations/001_orders.sql")).unwrap();

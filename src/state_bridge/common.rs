@@ -312,11 +312,7 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
     sha256_hex(buf.as_bytes())
 }
 
-pub(super) fn budget_scored_items(
-    kind: &str,
-    items: Vec<(u64, Value)>,
-    max_bytes: usize,
-) -> Value {
+pub(super) fn budget_scored_items(kind: &str, items: Vec<(u64, Value)>, max_bytes: usize) -> Value {
     let total = items.len();
     let mut envelope = serde_json::Map::new();
     envelope.insert("kind".to_owned(), json!(kind));
@@ -383,7 +379,9 @@ fn budget_items_packs_ordered_candidates_within_budget() {
             (500, json!("hi-1")),
             (500, json!("hi-2")),
         ],
-        estimate_json_bytes(&json!({"kind":"symbols","items":["hi-1","hi-2"],"total":3,"truncated":false})),
+        estimate_json_bytes(
+            &json!({"kind":"symbols","items":["hi-1","hi-2"],"total":3,"truncated":false}),
+        ),
     );
     assert_eq!(scored["items"], json!(["hi-1", "hi-2"]));
     assert_eq!(scored["truncated"], true);

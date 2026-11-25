@@ -187,20 +187,22 @@ modules:
 ```yaml
 response:
   detail: compact
-  page_size: 30
+  page_size: 12
+  file_uris: false
   max_output_bytes: 98304
   source_context:
     enabled_by_default: false
     leading_lines: 5
-    max_body_lines: 35
+    max_body_lines: 100
 ```
 
 - **`detail`**: `compact` (default) or `full`.
-- **`page_size`**: items per page (`1..=100`, default `30`).
+- **`page_size`**: items per page (`1..=100`, default `12`).
+- **`file_uris`**: emit workspace-confined `file:///` links in compact Markdown (`false` by default; `detail: full` or per-call `file_uris: true` opts in).
 - **`max_output_bytes`**: serialized response cap (`1,024..=98,304`, default `98,304`); oversized pages trim whole tail items cleanly and advance `next_offset`.
 - **`source_context.enabled_by_default`**: includes or omits source snippets on `code_map_inspect` / `code_map_explain` (`false` by default).
 - **`source_context.leading_lines`**: context lines shown above a symbol (`0..=20`, default `5`).
-- **`source_context.max_body_lines`**: preview line limit for `inspect` / `explain` (`1..=500`, default `200`).
+- **`source_context.max_body_lines`**: preview line limit for `inspect` / `explain` (`1..=500`, default `100`).
 - **`acdd_read` symbol bodies**: returns the full symbol when it fits `max_output_bytes`, otherwise pages cleanly on line boundaries.
 
 ## Declarative ACDD profile and role configuration

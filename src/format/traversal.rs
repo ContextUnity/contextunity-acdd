@@ -248,7 +248,11 @@ fn write_page_stats(out: &mut String, page: &Value, items: Option<&[Value]>) {
     }
     if has_more {
         if let Some(gen) = text_field(page, "generation") {
-            let gen = if gen.len() == 64 && gen.bytes().all(|b| b.is_ascii_hexdigit()) { &gen[..8] } else { gen };
+            let gen = if gen.len() == 64 && gen.bytes().all(|b| b.is_ascii_hexdigit()) {
+                &gen[..8]
+            } else {
+                gen
+            };
             out.push_str(&format!(" | **generation**: `{gen}`"));
         }
     }
@@ -387,7 +391,10 @@ fn render_record(out: &mut String, value: &Value, fallback: &str, extra_excluded
 }
 
 fn short_symbol_id(id: &str) -> &str {
-    id.rsplit(':').next().filter(|s| !s.is_empty()).unwrap_or(id)
+    id.rsplit(':')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(id)
 }
 
 fn render_record_heading(out: &mut String, item: &Value, fallback: &str, include_role: bool) {
@@ -396,9 +403,15 @@ fn render_record_heading(out: &mut String, item: &Value, fallback: &str, include
         .unwrap_or(fallback);
     out.push_str("- ");
     render_name(out, name, text_field(item, "uri"), true);
-    if include_role { if let Some(r) = text_field(item, "test_role") { out.push_str(&format!(" ({})", inline_code(r))); } }
+    if include_role {
+        if let Some(r) = text_field(item, "test_role") {
+            out.push_str(&format!(" ({})", inline_code(r)));
+        }
+    }
     if text_field(item, "path").is_none() {
-        if let Some(id) = text_field(item, "id") { out.push_str(&format!(" — id {}", inline_code(id))); }
+        if let Some(id) = text_field(item, "id") {
+            out.push_str(&format!(" — id {}", inline_code(id)));
+        }
     }
     append_location(out, item, " — ");
     out.push('\n');
@@ -431,25 +444,43 @@ fn render_impact_node(out: &mut String, value: &Value) {
         render_markdown_fields(out, value, 1, &[]);
         return;
     }
-    let name = text_field(value, "name").or_else(|| text_field(value, "qualname")).unwrap_or("reached node");
+    let name = text_field(value, "name")
+        .or_else(|| text_field(value, "qualname"))
+        .unwrap_or("reached node");
     out.push_str("- ");
     render_name(out, name, text_field(value, "uri"), true);
     let mut tags = Vec::new();
-    if let Some(k) = text_field(value, "kind") { tags.push(k.to_owned()); }
-    if let Some(d) = u64_field(value, "distance") { tags.push(format!("d={d}")); }
-    if value.get("is_seed") == Some(&Value::Bool(true)) { tags.push("seed".to_owned()); }
-    if !tags.is_empty() { out.push_str(&format!(" ({})", tags.join(", "))); }
+    if let Some(k) = text_field(value, "kind") {
+        tags.push(k.to_owned());
+    }
+    if let Some(d) = u64_field(value, "distance") {
+        tags.push(format!("d={d}"));
+    }
+    if value.get("is_seed") == Some(&Value::Bool(true)) {
+        tags.push("seed".to_owned());
+    }
+    if !tags.is_empty() {
+        out.push_str(&format!(" ({})", tags.join(", ")));
+    }
     append_location(out, value, " — ");
     out.push('\n');
     let mut excl = record_exclusions(value);
-    excl.extend(["edge", "via", "distance", "end_line", "is_seed", "kind", "language", "qualname"]);
+    excl.extend([
+        "edge", "via", "distance", "end_line", "is_seed", "kind", "language", "qualname",
+    ]);
     render_markdown_fields(out, value, 1, &excl);
-    if let Some(edge) = value.get("edge") { render_edge(out, edge); }
+    if let Some(edge) = value.get("edge") {
+        render_edge(out, edge);
+    }
     if let Some(via) = value.get("via") {
         if via.is_object() {
             let pred = short_symbol_id(text_field(via, "id").unwrap_or("unknown"));
             let rel = text_field(via, "kind").unwrap_or("relation");
-            out.push_str(&format!("  - Via {} using {}; this depth-grouped path has no call-site coordinate.\n", inline_code(pred), inline_code(rel)));
+            out.push_str(&format!(
+                "  - Via {} using {}; this depth-grouped path has no call-site coordinate.\n",
+                inline_code(pred),
+                inline_code(rel)
+            ));
             render_markdown_fields(out, via, 2, &["id", "kind"]);
         } else {
             out.push_str("  - Via details: ");
@@ -469,12 +500,23 @@ fn render_edge(out: &mut String, edge: &Value) {
         _ => "",
     };
     out.push_str(&format!("  - {badge}{}", inline_code(kind)));
-    if let Some(s) = text_field(edge, "src_public_id") { out.push_str(&format!(" from {}", inline_code(short_symbol_id(s)))); }
-    if let Some(t) = text_field(edge, "dst_public_id") { out.push_str(&format!(" to {}", inline_code(short_symbol_id(t)))); }
-    if let Some(d) = text_field(edge, "direction") { out.push_str(&format!(" ({})", escape_text(d))); }
+    if let Some(s) = text_field(edge, "src_public_id") {
+        out.push_str(&format!(" from {}", inline_code(short_symbol_id(s))));
+    }
+    if let Some(t) = text_field(edge, "dst_public_id") {
+        out.push_str(&format!(" to {}", inline_code(short_symbol_id(t))));
+    }
+    if let Some(d) = text_field(edge, "direction") {
+        out.push_str(&format!(" ({})", escape_text(d)));
+    }
     append_location(out, edge, " at ");
-    if let Some(c) = confidence { out.push_str(&format!("; {c}")); }
-    if let Some(n) = edge.get("occurrence_count").filter(|v| v.as_u64() != Some(1)) {
+    if let Some(c) = confidence {
+        out.push_str(&format!("; {c}"));
+    }
+    if let Some(n) = edge
+        .get("occurrence_count")
+        .filter(|v| v.as_u64() != Some(1))
+    {
         out.push_str(&format!("; x{}", scalar_text(n)));
     }
     out.push('\n');
@@ -497,30 +539,60 @@ fn render_edge(out: &mut String, edge: &Value) {
 }
 
 fn render_test_item(out: &mut String, item: &Value, response: &Value) {
-    let name = text_field(item, "name").or_else(|| text_field(item, "qualname")).unwrap_or("test result");
+    let name = text_field(item, "name")
+        .or_else(|| text_field(item, "qualname"))
+        .unwrap_or("test result");
     let conn = item.get("connection");
     let relation = conn.and_then(|c| text_field(c, "relation"));
     out.push_str("- ");
     render_name(out, name, text_field(item, "uri"), true);
     let mut tags = Vec::new();
-    if let Some(r) = text_field(item, "test_role") { tags.push(format!("Supplied role: `{r}`")); }
-    if let Some(rel) = relation { tags.push(rel.to_owned()); }
+    if let Some(r) = text_field(item, "test_role") {
+        tags.push(format!("Supplied role: `{r}`"));
+    }
+    if let Some(rel) = relation {
+        tags.push(rel.to_owned());
+    }
     if !tags.is_empty() {
         out.push_str(&format!(" ({})", tags.join(", ")));
     }
     append_location(out, item, " — ");
     let mut conn_excl: Vec<&str> = relation.map(|_| "relation").into_iter().collect();
     if let Some(conn) = conn {
-        if text_field(response, "direction") == Some("inbound") && text_field(response, "discovery_method") == Some("graph") {
-            if let (Some(ids), Some(nodes)) = (conn.get("call_path").and_then(Value::as_array), conn.get("verified_call_path_nodes").and_then(Value::as_array)) {
-                if ids.len() == nodes.len() && !nodes.is_empty() && ids.iter().zip(nodes).all(|(id, n)| id.as_str().is_some() && n.get("id") == Some(id)) {
+        if text_field(response, "direction") == Some("inbound")
+            && text_field(response, "discovery_method") == Some("graph")
+        {
+            if let (Some(ids), Some(nodes)) = (
+                conn.get("call_path").and_then(Value::as_array),
+                conn.get("verified_call_path_nodes")
+                    .and_then(Value::as_array),
+            ) {
+                if ids.len() == nodes.len()
+                    && !nodes.is_empty()
+                    && ids
+                        .iter()
+                        .zip(nodes)
+                        .all(|(id, n)| id.as_str().is_some() && n.get("id") == Some(id))
+                {
                     out.push_str(" | Verified call path: ");
                     for (i, node) in nodes.iter().enumerate() {
-                        if i > 0 { out.push_str(" -> "); }
-                        let hop = text_field(node, "name").or_else(|| text_field(node, "qualname")).or_else(|| text_field(node, "id")).unwrap_or("node");
+                        if i > 0 {
+                            out.push_str(" -> ");
+                        }
+                        let hop = text_field(node, "name")
+                            .or_else(|| text_field(node, "qualname"))
+                            .or_else(|| text_field(node, "id"))
+                            .unwrap_or("node");
                         render_name(out, hop, text_field(node, "uri"), false);
-                        if let Some(r) = text_field(node, "test_role") { out.push_str(&format!(" ({r})")); }
-                        if i + 1 == nodes.len() && text_field(node, "id").is_some_and(|id| response["selector"]["id"].as_str() == Some(id)) { out.push_str(" (target)"); }
+                        if let Some(r) = text_field(node, "test_role") {
+                            out.push_str(&format!(" ({r})"));
+                        }
+                        if i + 1 == nodes.len()
+                            && text_field(node, "id")
+                                .is_some_and(|id| response["selector"]["id"].as_str() == Some(id))
+                        {
+                            out.push_str(" (target)");
+                        }
                     }
                     conn_excl.extend(["call_path", "verified_call_path_nodes"]);
                 }
@@ -529,12 +601,22 @@ fn render_test_item(out: &mut String, item: &Value, response: &Value) {
     }
     out.push('\n');
     if let Some(conn) = conn {
-        if conn.as_object().is_some_and(|f| f.keys().any(|k| !conn_excl.contains(&k.as_str()))) {
+        if conn
+            .as_object()
+            .is_some_and(|f| f.keys().any(|k| !conn_excl.contains(&k.as_str())))
+        {
             render_markdown_fields(out, conn, 1, &conn_excl);
         }
     }
     let mut excluded = record_exclusions(item);
-    excluded.extend(["connection", "kind", "qualname", "line", "end_line", "language"]);
+    excluded.extend([
+        "connection",
+        "kind",
+        "qualname",
+        "line",
+        "end_line",
+        "language",
+    ]);
     render_markdown_fields(out, item, 1, &excluded);
 }
 
@@ -582,10 +664,28 @@ fn render_page(
         return;
     }
     out.push_str(&format!("\n## {}\n\n", escape_text(heading)));
-    let Some(items) = items else { render_markdown_fields(out, page, 0, &[]); return; };
+    let Some(items) = items else {
+        render_markdown_fields(out, page, 0, &[]);
+        return;
+    };
     write_page_stats(out, page, Some(items));
-    render_markdown_fields(out, page, 0, &["items", "total", "offset", "limit", "has_more", "next_offset", "generation"]);
-    for item in items { render_item(out, item); }
+    render_markdown_fields(
+        out,
+        page,
+        0,
+        &[
+            "items",
+            "total",
+            "offset",
+            "limit",
+            "has_more",
+            "next_offset",
+            "generation",
+        ],
+    );
+    for item in items {
+        render_item(out, item);
+    }
 }
 
 fn append_location(out: &mut String, item: &Value, prefix: &str) {

@@ -4,8 +4,7 @@ use super::common::{
     budget_items, budget_scored_items, build_composite_providers, combine_file_hashes,
     open_code_db_readonly, resolve_worktree_adapter, truncate_single_line,
     unsupported_domain_action, DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INSTRUCTION_MAX_HEADINGS,
-    DOCS_INVARIANT_FALLBACK_ITEM_LIMIT,
-    DOCS_INVARIANT_MAX_RULE_CHARS,
+    DOCS_INVARIANT_FALLBACK_ITEM_LIMIT, DOCS_INVARIANT_MAX_RULE_CHARS,
 };
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -371,9 +370,15 @@ impl DocsDomainProvider {
             .into_iter()
             .enumerate()
             .map(|(idx, item)| {
-                let scoped = u64::from(item.get("scope_match").and_then(Value::as_bool) == Some(true)) * 4_000;
-                let enforced = u64::from(item.get("enforced").and_then(Value::as_bool) == Some(true)) * 2_000;
-                (500 + scoped + enforced + u64::try_from(total - idx).unwrap_or(1), item)
+                let scoped =
+                    u64::from(item.get("scope_match").and_then(Value::as_bool) == Some(true))
+                        * 4_000;
+                let enforced =
+                    u64::from(item.get("enforced").and_then(Value::as_bool) == Some(true)) * 2_000;
+                (
+                    500 + scoped + enforced + u64::try_from(total - idx).unwrap_or(1),
+                    item,
+                )
             })
             .collect();
         Ok(budget_scored_items("invariants", scored, req.max_bytes))
