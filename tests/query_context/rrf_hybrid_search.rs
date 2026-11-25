@@ -222,18 +222,28 @@ fn module_indexed_text_and_snippetless_hits_are_deprioritized() {
         "pkg/concrete.py",
         "def concrete_consumer():\n    \"\"\"quartztoken processor\"\"\"\n    return 2\n",
     );
+    for index in 0..500 {
+        ws.write(
+            format!("cutoff/quartztoken_azuretoken_dir/m{index:03}.py"),
+            "# module without token\n",
+        );
+    }
+    ws.write(
+        "cutoff/concrete.py",
+        "def concrete_consumer():\n    \"\"\"quartztoken processor\"\"\"\n    return 2\n",
+    );
     ws.build();
     let mut client = McpTestHarness::new(&ws).unwrap();
-    let mut search = |limit, offset, generation| {
+    let mut search = |path, limit, offset, generation| {
         client
             .payload(
                 "code_map_search",
-                json!({"pattern":pattern,"path":"pkg","detail":"full",
+                json!({"pattern":pattern,"path":path,"detail":"full",
                        "limit":limit,"offset":offset,"generation":generation,"include_pulse":false}),
             )
             .unwrap()
     };
-    let full = search(10, 0, Value::Null);
+    let full = search("pkg", 10, 0, Value::Null);
     assert_eq!(full["pattern"], pattern);
     let nav_items = full["nodes"]["items"].as_array().unwrap();
     let concrete = nav_items
@@ -261,13 +271,42 @@ fn module_indexed_text_and_snippetless_hits_are_deprioritized() {
     let mut offset = 0;
     let mut generation = Value::Null;
     for expected in nav_items {
-        let page = search(1, offset, generation);
+        let page = search("pkg", 1, offset, generation);
         assert_eq!(page["nodes"]["items"][0]["id"], expected["id"], "{page}");
         assert_eq!(page["nodes"]["total"], full["nodes"]["total"]);
         offset = page["nodes"]["next_offset"].as_u64().unwrap_or_default();
         generation = page["nodes"]["generation"].clone();
     }
     assert_eq!(offset, 0, "last page must terminate");
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut offset = 0;
+    let mut generation = Value::Null;
+    loop {
+        // Reach the cutoff with two-hit pages at offsets 496 and 498.
+        let limit = if offset < 496 { 31 } else { 2 };
+        let page = search("cutoff", limit, offset, generation);
+        let nodes = &page["nodes"];
+        let items = nodes["items"].as_array().unwrap();
+        assert_eq!(nodes["total"], 501, "offset {offset}");
+        if offset == 0 {
+            assert_eq!(items[0]["name"], "concrete_consumer");
+            assert_eq!(items[0]["path"], "cutoff/concrete.py");
+        }
+        for item in items {
+            assert!(
+                seen.insert(item["path"].as_str().unwrap().to_owned()),
+                "repeated hit at offset {offset}: {item}"
+            );
+        }
+        let Some(next_offset) = nodes["next_offset"].as_u64() else {
+            break;
+        };
+        assert_eq!(next_offset, offset + items.len() as u64);
+        offset = next_offset;
+        generation = nodes["generation"].clone();
+    }
+    assert_eq!(seen.len(), 501, "paging must reach every matching path");
     client.finish().unwrap();
 }
 

@@ -7,7 +7,8 @@ use crate::types::GateNodeRecord;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::estimate_json_bytes;
 use acdd_core::ids::NodeCursor;
-use serde_json::{json, Value};
+use acdd_core::{pack_knapsack_indices, KnapsackItem};
+use serde_json::{json, Map, Value};
 
 /// Maximum blackboard messages included in Tier 5 (`ADR-0006`).
 pub const MAX_BLACKBOARD_ITEMS: usize = 15;
@@ -158,6 +159,63 @@ pub(super) fn add_omitted_section(
         *running_bytes += delta;
         resp.omitted_sections.push(section.to_owned());
     }
+}
+
+/// Packs scored items into a JSON lens, preserving any prior truncation and
+/// counting the compact envelope and array separators against the byte limit.
+pub fn pack_json_lens(
+    mut envelope: Map<String, Value>,
+    items: impl ExactSizeIterator<Item = (u64, Value)>,
+    max_bytes: usize,
+) -> (Value, usize) {
+    let total = items.len();
+    let already_truncated = envelope.get("truncated").and_then(Value::as_bool) == Some(true);
+    envelope.entry("total").or_insert_with(|| json!(total));
+    envelope.insert("truncated".into(), json!(already_truncated));
+    envelope.insert("items".into(), Value::Array(Vec::new()));
+    let items: Vec<_> = items.collect();
+    let candidates: Vec<_> = items
+        .iter()
+        .map(|(score, item)| KnapsackItem {
+            weight: estimate_json_bytes(item).saturating_add(1),
+            score: *score,
+        })
+        .collect();
+    let sum = candidates.iter().fold(0_usize, |sum, candidate| {
+        sum.saturating_add(candidate.weight)
+    });
+    let complete_bytes = estimate_json_bytes(&envelope).saturating_add(sum.saturating_sub(1));
+    let kept = if total == 0
+        || (complete_bytes <= max_bytes && candidates.iter().all(|item| item.score > 0))
+    {
+        items.into_iter().map(|(_, item)| item).collect()
+    } else {
+        envelope.insert("truncated".into(), json!(true));
+        let mut capacity = max_bytes
+            .checked_sub(estimate_json_bytes(&envelope))
+            .map_or(0, |remaining| remaining.saturating_add(1));
+        // A complete lens must fit with its longer `false` flag.
+        if !already_truncated {
+            capacity = capacity.min(sum.saturating_sub(1));
+        }
+        let mut selected = pack_knapsack_indices(&candidates, capacity)
+            .into_iter()
+            .peekable();
+        items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, (_, item))| {
+                (selected.peek() == Some(&index)).then(|| {
+                    selected.next();
+                    item
+                })
+            })
+            .collect()
+    };
+    envelope.insert("items".into(), Value::Array(kept));
+    let packed = Value::Object(envelope);
+    let packed_bytes = estimate_json_bytes(&packed);
+    (packed, packed_bytes)
 }
 
 fn build_contract_value(req: &ClaimContextRequest) -> Value {

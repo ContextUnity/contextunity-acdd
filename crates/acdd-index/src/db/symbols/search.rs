@@ -30,6 +30,7 @@ const RRF_STRUCTURAL_WEIGHT: &str = "2.0";
 const RRF_BM25_WEIGHT: &str = "1.0";
 const RRF_AND_MATCH_WEIGHT: &str = "1.0";
 const RRF_GRAPH_WEIGHT: &str = "0.75";
+const RRF_CANDIDATE_LIMIT: usize = 500;
 const GRAPH_DEGREE_WINDOW: usize = 50;
 
 #[derive(Deserialize, Serialize)]
@@ -576,16 +577,10 @@ pub fn search_with_options(
             bail!("pattern must contain a symbol fragment");
         }
         let prefix = format!("{}%", escape_like(pattern));
-        let candidate_limit = i64::try_from(
-            options
-                .offset
-                .saturating_add(options.limit)
-                .saturating_add(1)
-                .max(500),
-        )
-        .context("search offset exceeds SQLite integer range")?;
+        // Bound the scoring shortlist independently of the requested page.
+        // Keep all matching IDs in the domain that the final sort paginates.
         let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
-        let filters = scope_filter_sql(2, 3, 8, 12);
+        let filters = scope_filter_sql(2, 3, 8, 11);
         let match_rank_expr = "CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 \
             WHEN n.qualname=?6 COLLATE NOCASE THEN 2 \
             WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 \
@@ -597,36 +592,35 @@ pub fn search_with_options(
             fts_and_raw AS MATERIALIZED (
                 SELECT n.node_id,bm25(node_search) AS bm25_val
                 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
-                WHERE ?11=1 AND node_search MATCH ?10 AND {filters}
-                ORDER BY bm25_val ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT ?9
+                WHERE ?10=1 AND node_search MATCH ?9 AND {filters}
+                ORDER BY bm25_val ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT {RRF_CANDIDATE_LIMIT}
             ), fts_and_ranked AS MATERIALIZED (
                 SELECT node_id,RANK() OVER (ORDER BY bm25_val ASC) AS and_rank
                 FROM fts_and_raw
-            ), fts_raw AS MATERIALIZED (
-                SELECT n.node_id,bm25(node_search) AS bm25_val
+            ), fts_matches AS MATERIALIZED (
+                SELECT n.node_id,bm25(node_search) AS bm25_val,pd.path,n.line,n.id
                 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE node_search MATCH ?1 AND {filters}
-                ORDER BY bm25_val ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT ?9
+            ), fts_raw AS MATERIALIZED (
+                SELECT node_id,bm25_val FROM fts_matches
+                ORDER BY bm25_val ASC,path ASC,line ASC,id ASC LIMIT {RRF_CANDIDATE_LIMIT}
             ), fts_ranked AS MATERIALIZED (
                 SELECT node_id,RANK() OVER (ORDER BY bm25_val ASC) AS bm25_rank
                 FROM fts_raw
-            ), fts_probe AS MATERIALIZED (
-                SELECT n.node_id FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
-                WHERE node_search MATCH ?1 AND {filters} LIMIT 1001
             ), structural_all AS MATERIALIZED (
                 SELECT n.node_id,pd.path,n.line,n.id,{match_rank_expr} AS match_rank
                 FROM ({structural_candidates}) s JOIN nodes n ON n.node_id=s.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE {filters}
             ), structural AS MATERIALIZED (
                 SELECT node_id FROM structural_all
-                ORDER BY match_rank ASC,path ASC,line ASC,id ASC LIMIT ?9
+                ORDER BY match_rank ASC,path ASC,line ASC,id ASC LIMIT {RRF_CANDIDATE_LIMIT}
             ), candidate_ids AS MATERIALIZED (
                 SELECT node_id FROM fts_raw UNION SELECT node_id FROM structural
+            ), matched_ids AS MATERIALIZED (
+                SELECT node_id FROM fts_matches UNION SELECT node_id FROM structural_all
             ), result_total AS (
-                SELECT CASE WHEN (SELECT count(*) FROM fts_probe)>=1001 THEN NULL
-                    ELSE (SELECT count(*) FROM (
-                        SELECT node_id FROM fts_probe UNION SELECT node_id FROM structural_all
-                    )) END AS search_total
+                SELECT CASE WHEN (SELECT count(*) FROM (SELECT 1 FROM fts_matches LIMIT 1001))>=1001 THEN NULL
+                    ELSE (SELECT count(*) FROM matched_ids) END AS search_total
             ), base_candidates AS MATERIALIZED (
                 SELECT n.node_id,n.node_hash,n.kind,pd.path,n.line,n.id,
                        {match_rank_expr} AS match_rank,
@@ -649,16 +643,20 @@ pub fn search_with_options(
                  ORDER BY module_text ASC,base_rrf DESC,
                          match_rank ASC,path ASC,line ASC,id ASC
                 LIMIT {GRAPH_DEGREE_WINDOW}
-            ), {graph_ctes}, scored AS (
-                 SELECT p.node_id,p.match_rank,p.module_text,
-                        (p.base_rrf + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END) AS rrf_score,
-                       t.search_total
-                FROM pre_scored p
-                LEFT JOIN graph_ranked gr ON gr.node_id=p.node_id
-                CROSS JOIN result_total t
-            ) SELECT {columns},c.match_rank,c.rrf_score,c.search_total
+            ), {graph_ctes}, matched_ranks AS (
+                SELECT n.node_id,n.kind,{match_rank_expr} AS match_rank
+                FROM matched_ids m JOIN nodes n ON n.node_id=m.node_id
+            ), scored AS (
+                SELECT m.node_id,m.match_rank,
+                       (m.match_rank=4 AND m.kind='{module_kind}') AS module_text,
+                       (COALESCE(p.base_rrf,0.0) + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END) AS rrf_score
+                FROM matched_ranks m
+                LEFT JOIN pre_scored p ON p.node_id=m.node_id
+                LEFT JOIN graph_ranked gr ON gr.node_id=m.node_id
+            ) SELECT {columns},c.match_rank,c.rrf_score,t.search_total
             FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
-             ORDER BY c.module_text ASC,c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
+            CROSS JOIN result_total t
+            ORDER BY c.module_text ASC,c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         );
         let and_query = terms.join(" AND ");
         let or_query = terms.join(" OR ");
@@ -678,7 +676,6 @@ pub fn search_with_options(
                     &pattern,
                     &prefix,
                     &include_docs,
-                    &candidate_limit,
                     &and_query,
                     &and_bonus,
                     &classification_code,
@@ -735,7 +732,8 @@ fn ranked_search_page(
     let generation = paging::generation(conn, options)?;
     let limit = i64::try_from(options.limit.saturating_add(1))
         .context("search limit exceeds SQLite integer range")?;
-    let offset = options.offset as i64;
+    let offset =
+        i64::try_from(options.offset).context("search offset exceeds SQLite integer range")?;
     let mut bindings = params.to_vec();
     bindings.extend([&limit as &dyn ToSql, &offset]);
     let limit_param = params.len() + 1;

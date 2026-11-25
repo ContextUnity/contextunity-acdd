@@ -1,7 +1,7 @@
 //! Deterministic hashing, canonical JSON, byte estimation, and UTF-8 boundary primitives.
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 
@@ -133,65 +133,6 @@ pub fn estimate_json_bytes<T: Serialize + ?Sized>(val: &T) -> usize {
     } else {
         0
     }
-}
-
-/// Packs scored items into a JSON lens, preserving any prior truncation and
-/// counting the compact envelope and array separators against the byte limit.
-pub fn pack_json_lens(
-    mut envelope: Map<String, Value>,
-    items: impl ExactSizeIterator<Item = (u64, Value)>,
-    max_bytes: usize,
-) -> (Value, usize) {
-    use crate::response::{pack_knapsack_indices, KnapsackItem};
-
-    let total = items.len();
-    let already_truncated = envelope.get("truncated").and_then(Value::as_bool) == Some(true);
-    envelope.entry("total").or_insert_with(|| json!(total));
-    envelope.insert("truncated".into(), json!(already_truncated));
-    envelope.insert("items".into(), Value::Array(Vec::new()));
-    let items: Vec<_> = items.collect();
-    let candidates: Vec<_> = items
-        .iter()
-        .map(|(score, item)| KnapsackItem {
-            weight: estimate_json_bytes(item).saturating_add(1),
-            score: *score,
-        })
-        .collect();
-    let sum = candidates.iter().fold(0_usize, |sum, candidate| {
-        sum.saturating_add(candidate.weight)
-    });
-    let complete_bytes = estimate_json_bytes(&envelope).saturating_add(sum.saturating_sub(1));
-    let kept = if total == 0
-        || (complete_bytes <= max_bytes && candidates.iter().all(|item| item.score > 0))
-    {
-        items.into_iter().map(|(_, item)| item).collect()
-    } else {
-        envelope.insert("truncated".into(), json!(true));
-        let mut capacity = max_bytes
-            .checked_sub(estimate_json_bytes(&envelope))
-            .map_or(0, |remaining| remaining.saturating_add(1));
-        // A complete lens must fit with its longer `false` flag.
-        if !already_truncated {
-            capacity = capacity.min(sum.saturating_sub(1));
-        }
-        let mut selected = pack_knapsack_indices(&candidates, capacity)
-            .into_iter()
-            .peekable();
-        items
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, (_, item))| {
-                (selected.peek() == Some(&index)).then(|| {
-                    selected.next();
-                    item
-                })
-            })
-            .collect()
-    };
-    envelope.insert("items".into(), Value::Array(kept));
-    let packed = Value::Object(envelope);
-    let packed_bytes = estimate_json_bytes(&packed);
-    (packed, packed_bytes)
 }
 
 /// Returns the largest byte index `<= max_bytes` (and `<= s.len()`) on a valid UTF-8 boundary.

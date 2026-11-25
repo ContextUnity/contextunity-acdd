@@ -1,8 +1,8 @@
 //! Tier 2–6 `ClaimResp` section assembly, rework diagnostics, blackboard filtering, and context lenses.
 
 use super::budget::{
-    add_omitted_section, is_pre_task_root_in_profile, MAX_BLACKBOARD_CHARS, MAX_BLACKBOARD_ITEMS,
-    MIN_LENS_BUDGET_BYTES,
+    add_omitted_section, is_pre_task_root_in_profile, pack_json_lens, MAX_BLACKBOARD_CHARS,
+    MAX_BLACKBOARD_ITEMS, MIN_LENS_BUDGET_BYTES,
 };
 use super::types::{baseline_ref_for_node, ClaimContextRequest, ClaimResp};
 use crate::profile::GateDef;
@@ -13,7 +13,7 @@ use crate::types::{
 };
 use acdd_core::config::ACDD_DIR;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::{estimate_json_bytes, pack_json_lens, utf8_tail};
+use acdd_core::format::{estimate_json_bytes, utf8_tail};
 use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor};
 use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};

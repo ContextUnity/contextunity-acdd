@@ -3,11 +3,11 @@
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
-use acdd_core::pack_json_lens;
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
+use acdd_state::context::budget::pack_json_lens;
 use acdd_state::usecases::{
     StateCommand, StateCommandOutput, StateEngine, StateEngineConfig, StateQuery, StateQueryEngine,
     StateQueryOutput,
