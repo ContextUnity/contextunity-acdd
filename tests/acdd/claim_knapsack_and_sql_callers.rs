@@ -407,3 +407,165 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
     let err = GateContextAssembler::assemble(&missing_req, &custom_provider).unwrap_err();
     assert_eq!(err.code, ErrorCode::DomainCapabilityUnavailable);
 }
+
+#[test]
+fn sql_table_external_callers_and_signature_scope_seam_matrix() {
+    let ws = crate::common::Workspace::new();
+    let root = ws.root();
+    let run_git = |args: &[&str]| {
+        let out = acdd_core::git::git_command(root, args).unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    run_git(&["config", "user.name", "Test"]);
+
+    std::fs::create_dir_all(root.join("migrations")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::write(
+        root.join("migrations/001_orders.sql"),
+        "CREATE TABLE orders (id INT PRIMARY KEY, total INT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("migrations/002_items.sql"),
+        "CREATE TABLE order_items (id INT PRIMARY KEY, order_id INT REFERENCES orders(id));\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/reader.rs"),
+        "pub fn read_orders() -> &'static str { \"SELECT id FROM orders\" }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn test_audit() { let _ = \"SELECT id FROM audit_log\"; }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/writer.rs"),
+        "pub fn write_order() -> &'static str { \"INSERT INTO orders (id, total) VALUES (1, 10)\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/bootstrap.py"),
+        "def init_schema(db):\n    db.execute(\"CREATE TABLE orders (id INT)\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/unrelated.rs"),
+        "pub fn orders() -> i32 { 1 }\npub fn call_orders() -> i32 { orders() }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tests/orders_test.rs"),
+        "#[test]\nfn test_orders_sql() { let _ = \"SELECT * FROM orders\"; }\n",
+    )
+    .unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "init"]);
+    let head_oid = String::from_utf8(
+        acdd_core::git::git_command(root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let head_commit = CommitOid::new(head_oid).unwrap();
+
+    let adapter = Adapter::default();
+    let provider = build_domain_providers(root, &adapter, None, Vec::new()).unwrap();
+    let expected_callers = json!([
+        "migrations/002_items.sql",
+        "src/bootstrap.py",
+        "src/reader.rs",
+        "src/writer.rs"
+    ]);
+    let assemble_sql_callers = || {
+        let mut req = sample_claim_request(
+            root.to_path_buf(),
+            vec!["code.external_callers".to_owned()],
+            vec!["migrations/001_orders.sql".to_owned()],
+            "Update orders SQL table schema",
+            32_768,
+        );
+        req.run.target_base_commit = Some(head_commit.clone());
+        req.node.baseline_commit = Some(head_commit.clone());
+        let resp = GateContextAssembler::assemble(&req, &provider).unwrap();
+        resp.context_lenses
+            .get("code.external_callers")
+            .and_then(|v| v["items"].as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let check_signature_scope = || {
+        provider
+            .run_check(
+                "code.signature_scope",
+                &json!({}),
+                &DomainCheckReq {
+                    run_id: RunId::new("run-sql").unwrap(),
+                    node_cursor: "t1.build".parse().unwrap(),
+                    gate_id: "build".parse().unwrap(),
+                    workspace_root: root.to_path_buf(),
+                    worktree: root.to_path_buf(),
+                    admitted_scope: vec!["migrations/001_orders.sql".to_owned()],
+                    changed_paths: vec!["migrations/001_orders.sql".to_owned()],
+                    test_target: None,
+                    path_policy: WorkspacePathPolicy::default(),
+                    baseline_ref: None,
+                },
+            )
+            .unwrap()
+    };
+
+    // 1. Unindexed baseline fallback (no code-map.sqlite).
+    let unindexed = assemble_sql_callers();
+    assert_eq!(unindexed.len(), 1, "{unindexed:?}");
+    assert_eq!(unindexed[0]["symbol"], json!("orders"));
+    assert_eq!(unindexed[0]["signature_changed"], json!(false));
+    assert_eq!(unindexed[0]["external_callers"], expected_callers);
+
+    // 2. Live indexed code-map.sqlite across all 4 SQL table edge kinds, plus unchanged signature_scope.
+    let db_path = root.join(".acdd/code-map.sqlite");
+    contextunity_acdd::engine::pipeline::build(root, &db_path, None).unwrap();
+    let indexed = assemble_sql_callers();
+    assert_eq!(indexed.len(), 1, "{indexed:?}");
+    assert_eq!(indexed[0]["symbol"], json!("orders"));
+    assert_eq!(indexed[0]["signature_changed"], json!(false));
+    assert_eq!(indexed[0]["external_callers"], expected_callers);
+
+    // Schema column edit must NOT fail code.signature_scope.
+    std::fs::write(
+        root.join("migrations/001_orders.sql"),
+        "CREATE TABLE orders (id INT PRIMARY KEY, total INT, currency TEXT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\n",
+    )
+    .unwrap();
+    assert!(matches!(check_signature_scope(), DomainCheckOutcome::Passed { .. }));
+
+    // 3. Deleted .sql table: stale index still surfaces consumers, and refreshed index falls back to baseline.
+    std::fs::remove_file(root.join("migrations/001_orders.sql")).unwrap();
+    for label in ["deleted-stale-index", "deleted-refreshed-index"] {
+        if label == "deleted-refreshed-index" {
+            contextunity_acdd::engine::pipeline::build(root, &db_path, None).unwrap();
+        }
+        let items = assemble_sql_callers();
+        let orders = items
+            .iter()
+            .find(|item| item["symbol"] == json!("orders"))
+            .unwrap_or_else(|| panic!("{label}: missing orders in {items:?}"));
+        assert_eq!(orders["signature_changed"], json!(true), "{label}");
+        assert_eq!(orders["external_callers"], expected_callers, "{label}");
+        let audit = items
+            .iter()
+            .find(|item| item["symbol"] == json!("audit_log"))
+            .unwrap_or_else(|| panic!("{label}: missing audit_log in {items:?}"));
+        assert_eq!(audit["external_callers"], json!([]), "{label}");
+        assert!(
+            matches!(check_signature_scope(), DomainCheckOutcome::Passed { .. }),
+            "{label}: signature_scope must stay callable-only"
+        );
+    }
+}

@@ -135,6 +135,10 @@ required before `submit` whenever the gate declares `command:`, `call:`,
    (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
    given proportional per-lens budgets and skipping empty `items: []` lenses cleanly
    without mutating `omitted_sections` (`omitted_sections` records only actual budget omissions).
+   `code.external_callers` surfaces non-test external consumers for both public callables and
+   scoped `.sql` `table` nodes (active or baseline-deleted) across `defines_table`,
+   `queries_table`, `mutates_table`, and `references_table` incoming edges (falling back to
+   baseline lookup when unindexed), while `code.signature_scope` remains callable-only.
 
 ---
 

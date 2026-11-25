@@ -18,7 +18,8 @@ use acdd_core::response::{QueryOptions, ResponsePolicy};
 use acdd_index::ast::extract_typed;
 use acdd_index::db::symbols;
 use acdd_index::languages;
-use acdd_index::models::Node;
+use acdd_index::models::tags::NodeKind;
+use acdd_index::models::{Facts, Node};
 use anyhow::Result;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -113,6 +114,20 @@ fn collect_live_test_items(
             }
         }
     }
+}
+
+fn external_caller_target_nodes(facts: &Facts, lang_id: &str) -> Vec<Node> {
+    let mut nodes = public_callable_nodes(facts);
+    if lang_id == "sql" {
+        nodes.extend(
+            facts
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Table && !n.is_test && !n.generated)
+                .cloned(),
+        );
+    }
+    nodes
 }
 
 impl CodeDomainProvider {
@@ -293,8 +308,7 @@ impl CodeDomainProvider {
             policy,
             baseline,
         ));
-        let mut items = Vec::new();
-
+        let mut candidates: Vec<(Node, bool, bool)> = Vec::new();
         for rel in &scoped_set {
             let Some(lang) = languages::for_path(Path::new(rel)) else {
                 continue;
@@ -303,7 +317,7 @@ impl CodeDomainProvider {
                 .ok()
                 .flatten()
                 .and_then(|head_src| extract_typed(rel, lang.id(), &head_src).ok())
-                .map(|typed| public_callable_nodes(&typed.into_public()))
+                .map(|typed| external_caller_target_nodes(&typed.into_public(), lang.id()))
                 .unwrap_or_default();
             let head_sigs: BTreeMap<(String, String), String> = head_nodes
                 .iter()
@@ -317,60 +331,53 @@ impl CodeDomainProvider {
 
             let mut cur_keys: BTreeSet<(String, String)> = BTreeSet::new();
             if let Some(parsed) = snapshot.parsed.get(rel) {
-                for node in public_callable_nodes(&parsed.facts) {
-                    cur_keys.insert((node.kind.as_str().to_owned(), node.qualname.clone()));
+                for node in external_caller_target_nodes(&parsed.facts, lang.id()) {
+                    let key = (node.kind.as_str().to_owned(), node.qualname.clone());
+                    if !cur_keys.insert(key.clone()) {
+                        continue;
+                    }
                     let cur_sig =
                         normalize_sig(node.details["signature"].as_str().unwrap_or_default());
                     let signature_changed = head_sigs
-                        .get(&(node.kind.as_str().to_owned(), node.qualname.clone()))
+                        .get(&key)
                         .is_some_and(|head_sig| head_sig != &cur_sig);
-
-                    let callers = super::signature_scope::find_external_callers(
-                        &req.worktree,
-                        conn.as_ref(),
-                        &node,
-                        &scope_for_external,
-                        policy,
-                        baseline,
-                    )?;
-                    if !callers.is_empty() || signature_changed {
-                        let caller_bonus = u64::try_from(callers.len().min(100)).unwrap_or(100) * 50;
-                        let score = if signature_changed { 5_000 } else { 500 } + caller_bonus;
-                        items.push((
-                            score,
-                            json!({
-                                "path": node.path,
-                                "symbol": node.qualname,
-                                "signature_changed": signature_changed,
-                                "external_callers": callers.into_iter().collect::<Vec<_>>(),
-                            }),
-                        ));
-                    }
+                    candidates.push((node, signature_changed, false));
                 }
             }
 
+            let mut deleted_keys: BTreeSet<(String, String)> = BTreeSet::new();
             for head_node in head_nodes {
-                if cur_keys.contains(&(
-                    head_node.kind.as_str().to_owned(),
-                    head_node.qualname.clone(),
-                )) {
+                let key = (head_node.kind.as_str().to_owned(), head_node.qualname.clone());
+                if cur_keys.contains(&key) || !deleted_keys.insert(key) {
                     continue;
                 }
-                let callers = super::signature_scope::find_external_callers(
-                    &req.worktree,
-                    conn.as_ref(),
-                    &head_node,
-                    &scope_for_external,
-                    policy,
-                    baseline,
-                )?;
+                candidates.push((head_node, true, true));
+            }
+        }
+
+        let target_refs: Vec<&Node> = candidates.iter().map(|(node, _, _)| node).collect();
+        let mut callers_by_target = super::signature_scope::find_external_callers(
+            &req.worktree,
+            conn.as_ref(),
+            &target_refs,
+            &scope_for_external,
+            policy,
+            baseline,
+        )?;
+        let mut items = Vec::new();
+        for (node, signature_changed, is_deleted) in candidates {
+            let callers = callers_by_target
+                .remove(&super::signature_scope::external_caller_target_key(&node))
+                .unwrap_or_default();
+            if is_deleted || !callers.is_empty() || signature_changed {
                 let caller_bonus = u64::try_from(callers.len().min(100)).unwrap_or(100) * 50;
+                let score = if signature_changed { 5_000 } else { 500 } + caller_bonus;
                 items.push((
-                    5_000 + caller_bonus,
+                    score,
                     json!({
-                        "path": head_node.path,
-                        "symbol": head_node.qualname,
-                        "signature_changed": true,
+                        "path": node.path,
+                        "symbol": node.qualname,
+                        "signature_changed": signature_changed,
                         "external_callers": callers.into_iter().collect::<Vec<_>>(),
                     }),
                 ));
