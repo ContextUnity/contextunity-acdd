@@ -26,6 +26,7 @@ scope_args_by_pattern:
   "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
   "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
   "crates/acdd-state/**/*.rs": "--package acdd-state --lib"
+  "crates/acdd-state/tests/**/*.rs": "--package acdd-state --test state_integration"
   "tests/*.rs": "--test {file_stem}"
   "tests/acdd/**/*.rs": "--test acdd"
   "tests/common/**/*.rs": "--all-targets"

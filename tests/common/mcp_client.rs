@@ -35,16 +35,18 @@ pub fn in_process_server(workspace: &Workspace) -> Server {
 
 /// Runs the shipped CLI against the same isolated workspace used by test clients.
 pub fn run_cli(workspace: &Workspace, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_acdd"))
-        .arg("--root")
-        .arg(workspace.root())
-        .env(
-            "ACDD_EXTRACTION_CACHE_DIR",
-            workspace.path(".acdd/extraction-cache"),
-        )
-        .args(args)
-        .output()
-        .expect("could not run acdd")
+    super::isolate_acdd_env(
+        Command::new(env!("CARGO_BIN_EXE_acdd"))
+            .arg("--root")
+            .arg(workspace.root())
+            .env(
+                "ACDD_EXTRACTION_CACHE_DIR",
+                workspace.path(".acdd/extraction-cache"),
+            )
+            .args(args),
+    )
+    .output()
+    .expect("could not run acdd")
 }
 
 #[derive(Debug)]
@@ -137,6 +139,7 @@ impl StdioClient {
     }
 
     pub fn with_pending_initialization(command: &mut Command) -> StdioResult<Self> {
+        super::isolate_acdd_env(command);
         let spawn_deadline = std::time::Instant::now() + Duration::from_secs(1);
         let mut child = loop {
             match command

@@ -9,6 +9,20 @@ pub mod workspace;
 
 pub use workspace::Workspace;
 
+/// Removes ambient `ACDD_*` and `GIT_*` environment variables not explicitly configured on `command`.
+#[allow(dead_code)]
+pub fn isolate_acdd_env(command: &mut std::process::Command) -> &mut std::process::Command {
+    let explicit: std::collections::HashSet<_> =
+        command.get_envs().map(|(key, _)| key.to_os_string()).collect();
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if (name.starts_with("ACDD_") || name.starts_with("GIT_")) && !explicit.contains(&key) {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 /// Test helper wrapping [`acdd_index::linker::link_with_registry`] without shipping a test-only
 /// convenience wrapper in `acdd_index`.
 #[allow(dead_code)]

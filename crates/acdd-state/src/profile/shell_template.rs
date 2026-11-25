@@ -384,6 +384,27 @@ fn expand_matched_scope_arg(path: &str, entry: &ValidatedScopeArg<'_>) -> Option
     (!expanded.is_empty()).then_some(expanded)
 }
 
+fn scope_entry_matches_path(entry: &ValidatedScopeArg<'_>, path: &str) -> bool {
+    if entry.pattern == path || glob_matches(entry.pattern, path) {
+        return true;
+    }
+    if !entry.placeholders.is_empty() {
+        return false;
+    }
+    if path.ends_with('/') {
+        return glob_matches(entry.pattern, &format!("{path}__scope__.rs"));
+    }
+    if let Some(prefix) = path.strip_suffix("/**") {
+        return glob_matches(entry.pattern, &format!("{prefix}/__scope__.rs"));
+    }
+    !path.contains(['*', '?', '[', '{'])
+        && Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| !name.contains('.'))
+        && glob_matches(entry.pattern, &format!("{path}/__scope__.rs"))
+}
+
 fn select_scope_args(
     validated_args: &[ValidatedScopeArg<'_>],
     paths: &[String],
@@ -397,7 +418,7 @@ fn select_scope_args(
     for path in paths {
         let mut best: Option<(Specificity, &ValidatedScopeArg<'_>)> = None;
         for entry in validated_args {
-            if entry.pattern == path.as_str() || glob_matches(entry.pattern, path) {
+            if scope_entry_matches_path(entry, path) {
                 let spec = glob_specificity(entry.pattern);
                 if best.is_none_or(|(best_spec, _)| spec > best_spec) {
                     best = Some((spec, entry));

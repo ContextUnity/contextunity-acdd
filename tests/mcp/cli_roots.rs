@@ -18,7 +18,8 @@ fn cli(workspace: &Workspace, args: &[&str]) -> std::process::Output {
 }
 
 fn cli_with_explicit_roots(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_acdd"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+    crate::common::isolate_acdd_env(&mut cmd)
         .args(args)
         .output()
         .unwrap()
@@ -176,7 +177,8 @@ fn cli_rejects_fifo_database_without_blocking() {
         .unwrap()
         .success());
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_acdd"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+    let mut child = crate::common::isolate_acdd_env(&mut cmd)
         .args(["--root", workspace.root().to_str().unwrap(), "--db"])
         .arg(&fifo)
         .args(["query", "inspect", "sample.py:sample"])

@@ -377,6 +377,23 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
 
 #[test]
 fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
+    let directory_map = BTreeMap::from([
+        ("crates/acdd-index/**/*.rs".to_owned(), "--package acdd-index --lib".to_owned()),
+        ("tests/linker/**/*.rs".to_owned(), "--test linker".to_owned()),
+    ]);
+    for (path, expected) in [
+        ("crates/acdd-index/src/linker/", "cargo test --package acdd-index --lib"),
+        ("crates/acdd-index/src/languages", "cargo test --package acdd-index --lib"),
+        ("crates/acdd-index/src/languages/**", "cargo test --package acdd-index --lib"),
+        ("tests/linker/", "cargo test --test linker"),
+        ("tests/linker", "cargo test --test linker"),
+    ] {
+        assert_eq!(
+            acdd_state::profile::render_command_with_scope_target("cargo test {scope_target}", &directory_map, &[path.to_owned()]).unwrap(),
+            vec![expected],
+            "directory scope failed for {path}"
+        );
+    }
     let mut map = BTreeMap::new();
     map.insert("tests/*.rs".to_owned(), "--test {file_stem}".to_owned());
     map.insert("src/**/*.rs".to_owned(), "--file {path}".to_owned());

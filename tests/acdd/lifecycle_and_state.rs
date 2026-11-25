@@ -102,14 +102,14 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
         let (name, cwd, options, start_options) = case;
         let spec = if name == "configured" { "alternate-work/AC-004.md" } else { spec };
         let run_cli = |options: &[&str], args: &[&str], trailing: &[&str]| {
-            let result = Command::new(env!("CARGO_BIN_EXE_acdd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+            crate::common::isolate_acdd_env(&mut cmd)
                 .current_dir(cwd)
                 .args(["--format", "json"])
                 .args(options)
                 .args(args)
-                .args(trailing)
-                .output()
-                .unwrap();
+                .args(trailing);
+            let result = cmd.output().unwrap();
             assert!(
                 result.status.success(),
                 "{name} {args:?}: {}",
@@ -144,7 +144,8 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
                 StateCommandOutput::Claim(_)));
             let traces = primary.join(format!(".acdd/run/{}/traces.jsonl", started.run.run_id));
             let before = fs::read_to_string(&traces).unwrap().lines().count();
-            let status = Command::new(env!("CARGO_BIN_EXE_acdd"))
+            let mut status_cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+            let status = crate::common::isolate_acdd_env(&mut status_cmd)
                 .current_dir(&linked)
                 .args(["status", "--run", started.run.run_id.as_str()])
                 .output().unwrap();
@@ -155,7 +156,8 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
             fs::create_dir_all(&keep).unwrap();
             fs::write(keep.join("traces.jsonl"), "sentinel\n").unwrap();
             fs::write(primary.join("acdd.yaml"), "state_db: [invalid\n").unwrap();
-            let status = Command::new(env!("CARGO_BIN_EXE_acdd"))
+            let mut failed_status_cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+            let status = crate::common::isolate_acdd_env(&mut failed_status_cmd)
                 .current_dir(&linked)
                 .args(["status", "--run", started.run.run_id.as_str()])
                 .output().unwrap();

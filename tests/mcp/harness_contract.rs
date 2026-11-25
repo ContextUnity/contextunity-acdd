@@ -240,6 +240,12 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
                     json!({"node":"first.review","worker_id":"builder","worktree":workspace.root(),"format":"json"}),
                 )
                 .expect("MCP claim as builder");
+            reviewer
+                .payload(
+                    "acdd_verify",
+                    json!({"node":"first.review","worker_id":"builder","worktree":workspace.root()}),
+                )
+                .expect("MCP verify should succeed");
             let (_, same) = reviewer
                 .call(
                     "acdd_submit",
@@ -321,14 +327,24 @@ fn mcp_submission_uses_claimed_worker_proof_across_transports() {
                 json!({"node":"first.review","worker_id":"reviewer","worktree":workspace.root()}),
             )
             .expect("MCP reviewer claim should succeed");
-        if !automatic {
-            reviewer
-                .payload(
-                    "acdd_verify",
-                    json!({"node":"first.review","worker_id":"reviewer","worktree":workspace.root()}),
+        if automatic {
+            let (_, response) = reviewer
+                .call(
+                    "acdd_submit",
+                    json!({"node":"first.review","action":"pass","worker_id":"reviewer","claim_revision":review_claim["claim_revision"],"worktree":workspace.root()}),
                 )
-                .expect("MCP verify should succeed");
+                .expect("MCP transport");
+            assert!(
+                response.to_string().contains("TASK_PROOF_UNOBSERVED"),
+                "{response}"
+            );
         }
+        reviewer
+            .payload(
+                "acdd_verify",
+                json!({"node":"first.review","worker_id":"reviewer","worktree":workspace.root()}),
+            )
+            .expect("MCP verify should succeed");
         assert_eq!(
             reviewer
                 .payload(

@@ -401,7 +401,7 @@ scope: [src/core/scoped.rs]
             worktree: None,
         })))
         .unwrap_err();
-    assert_eq!(submit_err.code, ErrorCode::GateVerificationFailed);
+    assert_eq!(submit_err.code, ErrorCode::TaskProofUnobserved);
     ws.write("src/core/scoped.rs", &orig_src);
     engine
         .execute(StateCommand::Verify(VerifyReq {
@@ -577,14 +577,10 @@ scope: [src/core/scoped.rs]
                 worktree: None,
             })))
             .unwrap_err();
-        let expected_err = if expect_obs_err {
-            ErrorCode::ProfileSchemaInvalid
-        } else {
-            ErrorCode::GateVerificationFailed
-        };
+        let _ = expect_obs_err;
         assert_eq!(
             submit_err.code,
-            expected_err,
+            ErrorCode::TaskProofUnobserved,
             "expected fail-closed error (not OutOfScopeChanges) for {label}"
         );
 

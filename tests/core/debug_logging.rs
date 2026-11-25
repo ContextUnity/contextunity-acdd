@@ -109,7 +109,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                     )
                 };
                 let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
-                command
+                crate::common::isolate_acdd_env(&mut command)
                     .arg("--root")
                     .arg(ws.root())
                     .arg("--db")

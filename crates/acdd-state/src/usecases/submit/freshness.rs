@@ -64,6 +64,12 @@ pub(super) fn inspect_submit_preflight(
     else {
         return Ok(None);
     };
+    if node.status == NodeStatus::InProgress && node.worker_id.as_ref() != Some(&req.worker_id) {
+        return Err(StateError::new(
+            ErrorCode::TaskAlreadyClaimed,
+            format!("node '{}' is claimed by another worker", node.node_id),
+        ));
+    }
     if node.status != NodeStatus::InProgress
         || node.claim_revision == 0
         || node.worker_id.as_ref() != Some(&req.worker_id)
@@ -356,7 +362,7 @@ fn mark_drifted_need_predecessors_stale(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn ensure_fresh_trace_or_auto_verify(
+pub(super) fn ensure_fresh_trace(
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     resolved_profile: &ResolvedGateProfile,
@@ -427,9 +433,9 @@ pub(super) fn ensure_fresh_trace_or_auto_verify(
     }
 
     Err(StateError::new(
-        ErrorCode::TaskCandidateMismatch,
+        ErrorCode::TaskProofUnobserved,
         format!(
-            "working tree changed or verify trace became stale for '{}' before submit lock acquisition",
+            "no fresh passing verify trace for '{}'; run verify before submit",
             node.node_id
         ),
     ))

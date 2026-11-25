@@ -6,16 +6,18 @@ use std::{
 
 /// Executes the compiled `acdd` binary against `workspace`.
 pub fn run_cli(workspace: &Workspace, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_acdd"))
-        .arg("--root")
-        .arg(workspace.root())
-        .env(
-            "ACDD_EXTRACTION_CACHE_DIR",
-            workspace.path(".acdd/extraction-cache"),
-        )
-        .args(args)
-        .output()
-        .expect("could not run acdd")
+    super::isolate_acdd_env(
+        Command::new(env!("CARGO_BIN_EXE_acdd"))
+            .arg("--root")
+            .arg(workspace.root())
+            .env(
+                "ACDD_EXTRACTION_CACHE_DIR",
+                workspace.path(".acdd/extraction-cache"),
+            )
+            .args(args),
+    )
+    .output()
+    .expect("could not run acdd")
 }
 
 pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
@@ -25,8 +27,7 @@ pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
 }
 
 pub fn run_cli_args(args: &[OsString]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_acdd"))
-        .args(args)
+    super::isolate_acdd_env(Command::new(env!("CARGO_BIN_EXE_acdd")).args(args))
         .output()
         .expect("could not run acdd")
 }

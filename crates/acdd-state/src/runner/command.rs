@@ -66,6 +66,8 @@ pub(crate) fn sanitize_command_process(cmd: &mut Command) {
     for key in [
         "TRACEPARENT",
         "ACDD_CONFIG",
+        "ACDD_DB",
+        "ACDD_EXTRACTION_CACHE_DIR",
         "ACDD_PROFILE",
         "ACDD_STATE_DB",
         "ACDD_CODE_DB",
@@ -298,11 +300,13 @@ mod tests {
         let dir = acdd_core::fs::ScopedTempDir::create("acdd-sanitize-cmd").unwrap();
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(
-            "for k in TRACEPARENT ACDD_CONFIG ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
+            "for k in TRACEPARENT ACDD_CONFIG ACDD_DB ACDD_EXTRACTION_CACHE_DIR ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
         );
         cmd.current_dir(dir.path());
         cmd.env("TRACEPARENT", "00-1111-2222-01")
             .env("ACDD_CONFIG", "/x/acdd.yaml")
+            .env("ACDD_DB", "/x/code.sqlite")
+            .env("ACDD_EXTRACTION_CACHE_DIR", "/x/cache")
             .env("ACDD_PROFILE", "code")
             .env("ACDD_STATE_DB", "/x/state.sqlite")
             .env("ACDD_CODE_DB", "/x/code-map.sqlite")

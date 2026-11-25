@@ -125,9 +125,21 @@ impl MockHttpProvider {
     pub fn set_unsalted_check(&self, v: bool) { self.unsalted_check.store(v, Ordering::SeqCst); }
     pub fn set_fail_check(&self, v: bool) { self.fail_check.store(v, Ordering::SeqCst); }
     pub fn set_index_gen(&self, v: usize) { self.index_gen.store(v, Ordering::SeqCst); }
+    pub fn index_gen(&self) -> usize { self.index_gen.load(Ordering::SeqCst) }
     pub fn tool_calls(&self) -> usize { self.tool_calls.load(Ordering::SeqCst) }
     pub fn action_calls(&self) -> usize { self.action_calls.load(Ordering::SeqCst) }
     pub fn lookup_calls(&self) -> usize { self.lookup_calls.load(Ordering::SeqCst) }
+
+    fn evaluate_check(&self) -> DomainCheckOutcome {
+        if self.fail_check.load(Ordering::SeqCst) {
+            return DomainCheckOutcome::Failed {
+                summary: "headers check failed".to_owned(),
+                diagnostics: vec!["live endpoint unhealthy".to_owned()],
+            };
+        }
+        let salt = (!self.unsalted_check.load(Ordering::SeqCst)).then(|| "http-salt-v1".to_owned());
+        DomainCheckOutcome::Passed { summary: "headers valid".to_owned(), execution_digest_salt: salt }
+    }
 }
 
 impl DomainProvider for MockHttpProvider {
@@ -158,10 +170,16 @@ impl DomainProvider for MockHttpProvider {
                     supports_result_lookup: false,
                 },
             ],
-            checks: vec![CheckCapability {
-                name: "headers".to_owned(),
-                input_schema: SchemaDef::object(),
-            }],
+            checks: vec![
+                CheckCapability {
+                    name: "headers".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "bump_gen".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+            ],
             context_lenses: BTreeSet::from(["endpoint_summary".to_owned()]),
             tools: vec![DomainToolDef {
                 name: "probe".to_owned(),
@@ -206,26 +224,22 @@ impl DomainProvider for MockHttpProvider {
         }
     }
 
-    fn run_check(&self, _check: &str, _params: &Value, _req: &DomainCheckReq) -> Result<DomainCheckOutcome> {
-        if self.fail_check.load(Ordering::SeqCst) {
-            return Ok(DomainCheckOutcome::Failed {
-                summary: "headers check failed".to_owned(),
-                diagnostics: vec!["live endpoint unhealthy".to_owned()],
-            });
+    fn run_check(&self, check: &str, _params: &Value, _req: &DomainCheckReq) -> Result<DomainCheckOutcome> {
+        if check == "bump_gen" {
+            self.index_gen.fetch_add(1, Ordering::SeqCst);
         }
-        let salt = (!self.unsalted_check.load(Ordering::SeqCst)).then(|| "http-salt-v1".to_owned());
-        Ok(DomainCheckOutcome::Passed { summary: "headers valid".to_owned(), execution_digest_salt: salt })
+        Ok(self.evaluate_check())
     }
 
     fn observe_freshness(
         &self,
-        check: &str,
-        params: &Value,
-        req: &DomainCheckReq,
+        _check: &str,
+        _params: &Value,
+        _req: &DomainCheckReq,
     ) -> Result<acdd_core::ports::FreshnessObservation> {
         let idx = self.index_gen.load(Ordering::SeqCst);
         let index_generation = (idx > 0).then(|| format!("gen-{idx}"));
-        match self.run_check(check, params, req)? {
+        match self.evaluate_check() {
             DomainCheckOutcome::Passed { execution_digest_salt, .. } => {
                 Ok(acdd_core::ports::FreshnessObservation::Passed {
                     index_generation,

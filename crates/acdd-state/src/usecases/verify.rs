@@ -643,16 +643,6 @@ fn run_gate_checks(
                 summary,
                 execution_digest_salt,
             }) => {
-                if let Ok(FreshnessObservation::Passed {
-                    index_generation: Some(gen),
-                    ..
-                }) = provider.observe_freshness(&chk.check, &chk.with, req)
-                {
-                    index_generations.push(format!("{}:{gen}", chk.check));
-                }
-                if let Some(ref salt) = execution_digest_salt {
-                    salts.push(format!("{}:{salt}", chk.check));
-                }
                 results.push(CheckResultRecord {
                     domain: domain.to_owned(),
                     check: check_name.to_owned(),
@@ -683,6 +673,43 @@ fn run_gate_checks(
                     ErrorCode::GateVerificationFailed,
                     format!("domain check '{}' errored: {err}", chk.check),
                 ));
+            }
+        }
+    }
+
+    for (chk, result) in gate_def.checks.iter().zip(&mut results) {
+        if !result.passed {
+            continue;
+        }
+        match provider.observe_freshness(&chk.check, &chk.with, req) {
+            Ok(FreshnessObservation::Passed {
+                index_generation,
+                execution_digest_salt,
+            }) => {
+                if let Some(gen) = index_generation {
+                    index_generations.push(format!("{}:{gen}", chk.check));
+                }
+                if let Some(ref salt) = execution_digest_salt {
+                    salts.push(format!("{}:{salt}", chk.check));
+                }
+                result.execution_digest_salt = execution_digest_salt;
+            }
+            Ok(FreshnessObservation::Failed { summary }) => {
+                return Err(StateError::new(
+                    ErrorCode::GateVerificationFailed,
+                    format!(
+                        "domain check '{}' freshness failed after checks: {summary}",
+                        chk.check
+                    ),
+                ))
+            }
+            Err(err) => {
+                return Err(StateError::from_anyhow(&err).cloned().unwrap_or_else(|| {
+                    StateError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!("domain check '{}' freshness errored: {err}", chk.check),
+                    )
+                }))
             }
         }
     }

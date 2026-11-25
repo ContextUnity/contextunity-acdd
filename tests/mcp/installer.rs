@@ -929,9 +929,10 @@ fn verified_release_installs_real_binary_and_companion_skills_without_runtimes()
         );
         let version = Command::new(&binary).arg("--version").output().unwrap();
         assert!(version.status.success());
+        let mut version_ref_cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
         assert_eq!(
             version.stdout,
-            Command::new(env!("CARGO_BIN_EXE_acdd"))
+            crate::common::isolate_acdd_env(&mut version_ref_cmd)
                 .arg("--version")
                 .output()
                 .unwrap()

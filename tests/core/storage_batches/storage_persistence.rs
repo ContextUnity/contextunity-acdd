@@ -347,7 +347,7 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() -> anyho
                 .join(".acdd")
                 .join(format!("{label}.sqlite"));
             let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
-            command
+            crate::common::isolate_acdd_env(&mut command)
                 .arg("--format")
                 .arg("json")
                 .arg("build")

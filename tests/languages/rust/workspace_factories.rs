@@ -398,7 +398,8 @@ fn explicit_root_is_independent_of_process_cwd() {
             );
     for (index, cwd) in [workspace.root(), unrelated.root()].into_iter().enumerate() {
         let db_path = workspace.path(format!(".acdd/cwd-{index}.sqlite"));
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_acdd"))
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_acdd"));
+        let output = crate::common::isolate_acdd_env(&mut cmd)
             .arg("--root")
             .arg(workspace.root())
             .arg("--db")

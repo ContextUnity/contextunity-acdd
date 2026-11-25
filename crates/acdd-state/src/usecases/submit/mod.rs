@@ -27,14 +27,14 @@ use crate::types::{
 };
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
-use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
+use crate::usecases::dto::{SubmitReq, SubmitResp};
 use crate::usecases::lifecycle::{
     acquire_repo_lock, append_trace_event, collect_integration_inputs, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
     resolve_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use crate::usecases::verify::{find_machine_gate, handle_verify_dyn};
+use crate::usecases::verify::find_machine_gate;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
@@ -45,9 +45,7 @@ use std::path::Path;
 
 use archive::{finalize_with_prune, probe_interrupted_archive, relax_need_for_node};
 use budget::enforce_blueprint_max_net_loc;
-use freshness::{
-    ensure_fresh_trace_or_auto_verify, inspect_submit_preflight, observe_existing_trace_freshness,
-};
+use freshness::{ensure_fresh_trace, inspect_submit_preflight, observe_existing_trace_freshness};
 use post_save::{attach_container_blackboard_cleanup, execute_post_save_git};
 
 pub(crate) fn handle_submit_dyn(
@@ -71,30 +69,13 @@ pub(crate) fn handle_submit_dyn(
     let preflight = inspect_submit_preflight(config, backend, &primary, &req)?;
     drop(pre_lock);
 
-    // Phase 2 (no `repo.lock`): check domain freshness or run unlocked auto-verify outside `repo.lock`.
+    // Phase 2 (no `repo.lock`): check domain freshness without running verification.
     let verified_hint = if let Some(pf) = preflight {
         let fresh_digest = match pf.existing_fresh {
             Some(ref tr) => observe_existing_trace_freshness(provider, &pf, &req, tr)?,
             None => None,
         };
-        if let Some(digest) = fresh_digest {
-            Some((pf.current_tree, digest))
-        } else {
-            let verify_resp = handle_verify_dyn(
-                config,
-                backend,
-                provider,
-                VerifyReq {
-                    run: Some(pf.snapshot.run.run_id.as_str().to_owned()),
-                    node: pf.cursor.to_string(),
-                    worker_id: Some(req.worker_id.clone()),
-                    test_target: req.test_target.clone(),
-                    claim_revision: Some(pf.node.claim_revision),
-                    worktree: req.worktree.clone(),
-                },
-            )?;
-            Some((pf.current_tree, verify_resp.execution_digest))
-        }
+        fresh_digest.map(|digest| (pf.current_tree, digest))
     } else {
         None
     };
@@ -177,7 +158,35 @@ fn prepare_submit_observations<'m>(
         ));
     }
 
-    let expected_digest = ensure_fresh_trace_or_auto_verify(
+    if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
+        return Err(StateError::new(
+            ErrorCode::StaleClaimRevision,
+            format!(
+                "node '{}' must be in_progress with an active claim before submit (status: {}, claim_revision: {})",
+                node.node_id, node.status, node.claim_revision
+            ),
+        ));
+    }
+    if node.worker_id.as_ref() != Some(&req.worker_id) {
+        return Err(StateError::new(
+            ErrorCode::TaskAlreadyClaimed,
+            format!("node '{}' is claimed by another worker", node.node_id),
+        ));
+    }
+    if req
+        .claim_revision
+        .is_some_and(|expected| expected != node.claim_revision)
+    {
+        return Err(StateError::new(
+            ErrorCode::StaleClaimRevision,
+            format!(
+                "submit claim_revision does not match active claim_revision {} on '{}'",
+                node.claim_revision, node.node_id
+            ),
+        ));
+    }
+
+    let expected_digest = ensure_fresh_trace(
         backend,
         snapshot,
         resolved_profile,

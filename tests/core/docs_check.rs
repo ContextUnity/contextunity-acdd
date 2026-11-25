@@ -2,11 +2,11 @@ use crate::common::Workspace;
 use std::process::{Command, Output};
 
 fn check(workspace: &Workspace) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_acdd"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+    crate::common::isolate_acdd_env(&mut cmd)
         .args(["docs", "check", "--root"])
-        .arg(workspace.root())
-        .output()
-        .unwrap()
+        .arg(workspace.root());
+    cmd.output().unwrap()
 }
 
 #[test]
@@ -158,11 +158,11 @@ fn json_output_reports_success_and_failure() {
     let workspace = Workspace::new();
     workspace.write("README.md", "# Home\n");
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_acdd"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+        crate::common::isolate_acdd_env(&mut cmd)
             .args(["docs", "check", "--format", "json", "--root"])
-            .arg(workspace.root())
-            .output()
-            .unwrap()
+            .arg(workspace.root());
+        cmd.output().unwrap()
     };
     let output = run();
     assert!(output.status.success());
@@ -180,7 +180,8 @@ fn json_output_reports_success_and_failure() {
         .contains("missing.md"));
 
     // Missing root with --format json outputs structured JSON
-    let missing_root_output = Command::new(env!("CARGO_BIN_EXE_acdd"))
+    let mut missing_cmd = Command::new(env!("CARGO_BIN_EXE_acdd"));
+    let missing_root_output = crate::common::isolate_acdd_env(&mut missing_cmd)
         .args([
             "docs",
             "check",

@@ -132,10 +132,23 @@ gates:
     let rid = start_resp.run.run_id.to_string();
     assert_eq!(start_resp.ready_nodes, vec!["pre_verify".to_owned()]);
 
+    let unclaimed = pass_req(&rid, "pre_verify", "worker-pre", None, false);
+    assert_eq!(submit_req(&engine, unclaimed).unwrap_err().code, ErrorCode::StaleClaimRevision);
+
     let pre_claim = claim_node(&engine, &rid, "pre_verify", "worker-pre", Some("host-a:999999:1"), false, false, None).unwrap();
     assert!(pre_claim.context_lenses.contains_key("http.endpoint_summary"));
     assert_eq!(claim_node(&engine, &rid, "pre_verify", "worker-pre", Some("host-a:999999:1"), false, false, None).unwrap().claim_revision, pre_claim.claim_revision);
     assert_eq!(claim_node(&engine, &rid, "pre_verify", "thief", Some("host-b:111:1"), true, false, None).unwrap_err().code, ErrorCode::TaskAlreadyClaimed);
+
+    let wrong_worker = pass_req(&rid, "pre_verify", "thief", Some(pre_claim.claim_revision), false);
+    assert_eq!(submit_req(&engine, wrong_worker).unwrap_err().code, ErrorCode::TaskAlreadyClaimed);
+    let stale_rev = pass_req(&rid, "pre_verify", "worker-pre", Some(pre_claim.claim_revision + 1), false);
+    assert_eq!(submit_req(&engine, stale_rev).unwrap_err().code, ErrorCode::StaleClaimRevision);
+    let no_trace = pass_req(&rid, "pre_verify", "worker-pre", Some(pre_claim.claim_revision), false);
+    let err = submit_req(&engine, no_trace).unwrap_err();
+    assert_eq!(err.code, ErrorCode::TaskProofUnobserved);
+    assert!(err.message.contains("run verify"));
+    assert_eq!(mock.action_calls(), 0);
 
     let pre_verify_resp = verify_node(&engine, &rid, "pre_verify", "worker-pre", None, Some(pre_claim.claim_revision)).unwrap();
     assert!(pre_verify_resp.passed && pre_verify_resp.check_results.len() == 1 && mock.action_calls() == 1);
@@ -333,7 +346,7 @@ gates:
     nmock.set_fail_check(true);
     let mut unsalted_req = pass_req(&nrid, "pre", "w-nc", Some(pre_c.claim_revision), true);
     unsalted_req.test_target = Some("t_unsalted".to_owned());
-    assert_eq!(submit_req(&neng, unsalted_req).unwrap_err().code, ErrorCode::GateVerificationFailed);
+    assert_eq!(submit_req(&neng, unsalted_req).unwrap_err().code, ErrorCode::TaskProofUnobserved);
     nmock.set_fail_check(false);
     nmock.set_unsalted_check(false);
 
@@ -406,6 +419,7 @@ gates:
 
     let c1 = claim_node(&p7_eng, ip_rid.as_str(), "t1.build", "w-1", None, false, false, None).unwrap();
 
+    verify_node(&p7_eng, ip_rid.as_str(), "t1.build", "w-1", None, Some(c1.claim_revision)).unwrap();
     submit_req(&p7_eng, pass_req(ip_rid.as_str(), "t1.build", "w-1", Some(c1.claim_revision), true)).unwrap();
     let r1 = claim_node(&p7_eng, ip_rid.as_str(), "t1.review", "w-rev1", None, false, false, None).unwrap();
     fs::write(p7_root.join("src/a.rs"), "pub fn a() -> i32 { 999 }\n").unwrap();
@@ -441,7 +455,7 @@ gates:
     let cs_s = start_run(&cs_eng, StartReq { spec_path: Some("docs/milestones/AC-310.md".to_owned()), profile: Some(cskip_p.clone()), in_place: true, ..StartReq::default() }).unwrap();
     let cs_c = claim_node(&cs_eng, cs_s.run.run_id.as_str(), "handoff", "w-cs", None, false, false, None).unwrap();
     fs::write(cs_root.join("docs/milestones/archive/AC-310.md"), "---\nid: AC-310\ntitle: Commit Preflight Skip\nstatus: completed\nclosure:\n  status: completed\n  closed_at: '2026-01-01T00:00:00Z'\n---\n").unwrap();
-    assert_eq!(submit_req(&cs_eng, pass_req(cs_s.run.run_id.as_str(), "handoff", "w-cs", Some(cs_c.claim_revision), true)).unwrap_err().code, ErrorCode::GateVerificationFailed);
+    assert_eq!(submit_req(&cs_eng, pass_req(cs_s.run.run_id.as_str(), "handoff", "w-cs", Some(cs_c.claim_revision), true)).unwrap_err().code, ErrorCode::ExternalGitDrift);
     clear_run(&cs_eng, cs_s.run.run_id.as_str());
 
 
@@ -843,6 +857,8 @@ gates:
     w1_mock.set_index_gen(1);
     let v_gen1 = verify_node(&w1_eng, w1_rid, "t1.build", "w-1", None, Some(w1_c.claim_revision)).unwrap();
     w1_mock.set_index_gen(2);
+    let stale = pass_req(w1_rid, "t1.build", "w-1", Some(w1_c.claim_revision), false);
+    assert_eq!(submit_req(&w1_eng, stale).unwrap_err().code, ErrorCode::TaskProofUnobserved);
     let v_gen2 = verify_node(&w1_eng, w1_rid, "t1.build", "w-1", None, Some(w1_c.claim_revision)).unwrap();
     assert_ne!(
         v_gen1.execution_digest, v_gen2.execution_digest,
@@ -889,4 +905,30 @@ gates:
     git_ok(audit_root, &["worktree", "remove", "--force", alt_wt.to_str().unwrap()]);
     git_ok(audit_root, &["branch", "-D", "feat/alt-t1"]);
     let _ = acdd_state::git_ops::worktree::remove_worktree_and_branch(audit_root, Some(&task_wt_path), Some("task/w1-mgr-t1"), true);
+
+    // Multi-check verify -> submit preserves post-mutation `index_generation` from later checks.
+    let mc_p = write_profile(
+        audit_root,
+        "mc_gen.yaml",
+        "version: 2\ninherit: none\ngit: { isolation: in_place, worktrees: manual }\ngates:\n  - tasks:\n      gates:\n        - id: build\n          proof: none\n          checks: [{ check: http.headers }, { check: http.bump_gen }]\n          save: { post: none }\n",
+    );
+    let mc_s = start_run(&w1_eng, StartReq { spec_path: Some("docs/milestones/AC-W1.md".to_owned()), profile: Some(mc_p), in_place: true, ..StartReq::default() }).unwrap();
+    let mc_rid = mc_s.run.run_id.as_str();
+    let mc_c = claim_node(&w1_eng, mc_rid, "t1.build", "w-mc", None, false, false, None).unwrap();
+    w1_mock.set_index_gen(1);
+    assert_eq!(w1_mock.index_gen(), 1);
+    let mc_v = verify_node(&w1_eng, mc_rid, "t1.build", "w-mc", None, Some(mc_c.claim_revision)).unwrap();
+    assert!(mc_v.passed && mc_v.check_results.len() == 2);
+    assert_eq!(w1_mock.index_gen(), 2);
+    // Post-verify mutation must make submit recompute a newer generation and fail closed.
+    w1_mock.set_index_gen(3);
+    assert_eq!(
+        submit_req(&w1_eng, pass_req(mc_rid, "t1.build", "w-mc", Some(mc_c.claim_revision), false))
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskProofUnobserved
+    );
+    w1_mock.set_index_gen(2);
+    let mc_sub = submit_req(&w1_eng, pass_req(mc_rid, "t1.build", "w-mc", Some(mc_c.claim_revision), false)).unwrap();
+    assert_eq!(mc_sub.new_node_status, NodeStatus::Completed);
 }
