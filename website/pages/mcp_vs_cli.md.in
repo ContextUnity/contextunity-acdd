@@ -12,7 +12,7 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 
 | Capability | MCP Tool | CLI Equivalent | Typical Input |
 | --- | --- | --- | --- |
-| **Workspace summary** | `code_map_overview` | `acdd query overview` | Optional `aspects: ["entrypoints", "topology"]` |
+| **Workspace summary** | `code_map_overview` | `acdd query overview` | Optional `path` scope, `aspects: ["entrypoints", "topology"]` |
 | **Symbol search** | `code_map_search` | `acdd query search <pattern>` | `"parse*"`, `"takes:Config"`, `"returns:Result"` |
 | **Inspect declaration** | `code_map_inspect` | `acdd query inspect <selector>` | `"src/auth.rs:verify_token"`, `show_source: true` |
 | **Direct edges** | `code_map_explain` | `acdd query explain <selector>` | `direction: "incoming" \| "outgoing" \| "both"` |

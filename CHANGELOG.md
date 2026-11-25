@@ -6,7 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-26
+
 ### Added
+
+- **0-1 Knapsack Context Packing, RRF Search, SQL Table External Callers & Path Overview (`UX-003`)**:
+  - Added bounded deterministic 0-1 knapsack selection (`KnapsackItem`, `pack_knapsack_indices`) in `crates/acdd-core/src/response.rs` (re-exported at `acdd_core` root), consolidating serialized JSON lens byte accounting (`pack_json_lens` / `crates/acdd-state/src/context/budget.rs`) across `state_bridge` and Tier 6 lenses (`apply_tier6_context_lenses`) instead of truncating after the first oversized item.
+  - Added `OverviewInput.path` scoped overview (`code_map_overview(path=...)` / `acdd query overview --path`) backed by canonical relative-path validation in `crates/acdd-index/src/db/reader/search.rs`, plus `GetDocInput.include_candidates` (`false` default) and `CodeMapSearchInput.include_pulse` (`true` default) controls.
+  - Extended `code.external_callers` (`src/state_bridge/code_domain/{context,signature_scope}.rs`) to include active and baseline-deleted `.sql` `table` nodes across `defines_table`, `queries_table`, `mutates_table`, and `references_table` edges with canonical quote-aware `acdd_index::languages::sql::identifier_keys` fallback while keeping `code.signature_scope` callable-only.
+- **Parallel Verification Runner (`scripts/check-full-repo.sh`) & `polish_check`**:
+  - Added `.acdd/profile.yaml` `polish_check` (fast `commitment_integrity`, workspace Clippy `-D warnings`, `docs check`, and `validate` on `polish`), `./scripts/check-full-repo.sh` (fast sequential Phase 1 pre-checks followed by concurrent Linux `cargo test --workspace --all-targets` and `./scripts/test-macos-ssh.sh` using zero temporary files), and the explicit `repo.tests` rule prohibiting manual `cargo test --workspace` during task/polish iteration.
+- **AST `PERF-*` Rules & `classification` Search Filter**:
+  - Added `PERF-*` `ast_pattern` lint rules eliminating `ctx.node.parent()` hot-path scans, plus `classification` filtering (`production` / `test`) in `code_map_search` / `acdd query search` and multi-language `ast_grep_search` (`languages` list).
+
+### Changed
+
+- **Weighted RRF Search Ranking, Selector Resolution, `acdd_read` & `<4 KiB` Markdown Compaction (`UX-003`)**:
+  - Replaced hardcoded additive scoring constants and binary `graph_group` partitioning in `crates/acdd-index/src/db/symbols/search.rs` with weighted Reciprocal Rank Fusion (`k = 60`) over structural tier, FTS5 BM25, and bounded non-containment graph-degree centrality, fixed 500-hit shortlist generation-stable paging across cutoffs, pre-slice demotion of snippetless `module` rows, and strict `exact: true` / `include_pulse: false` SQLite graph isolation before `search_graph_pulse`.
+  - Tightened `crates/acdd-index/src/db/reader/selectors.rs` (`Type::method` `n.kind` fix, `#`/`.` suffix boundary fallback, canonical import/export-only 1-hop resolution), decoupled `get_doc` reference candidates onto `include_candidates`, switched `acdd_read` (`src/engine/reader.rs`) search default to `context = 0` with `## <path>` grouping, `**/archive/**` exclusion, and `line_count = 100`, and updated defaults (`ResponsePolicy::page_size = 12`, `max_body_lines = 100`, `file_uris = false`) while preserving ADR-0006 JSON field parity and compacting Markdown discovery/traversal/preview envelopes (`src/format/`).
+- **AST Search Capture Hygiene, MCP Schema Compaction & CLI Parity (`plan-hotfix-ast-schema-cli-ergonomics`)**:
+  - Dropped anonymous empty `""` wildcard captures in `structural_match`, excluded `yaml`/`json`/`toml` grammars when code grammars parse an `ast_grep_search` pattern without explicit `language`, defaulted MCP `ast_grep_search` `limit` to `15`, compacted repeated MCP JSON schema docstrings in `src/mcp/tools/inputs.rs`, added cross-tool `rejected_arguments` hints in `src/mcp/tools/dispatch.rs`, and aligned CLI `acdd read` / `acdd query inspect` defaults with MCP (`Detail` config + `include_coverage = false`).
+
+### Fixed
+
+- **Interactive Mechanical Verify Retry & Post-Delivery Trailer Integration (`fix-verify-integrated`, `fix-run-tests-retry`)**:
+  - Updated `crates/acdd-state/src/git_ops/integrate.rs::verify_tasks_integrated` Rule (a) to recognize `Acdd-Claim: <run_id>/task:<task_ref>:deliver/<rev>` trailers (`rev: u32 > 0`) when `Acdd-Integrated:` is absent (preserving the anti-revert check) so manual `rebase-ff`, rebases onto `main`, and post-delivery polish pass cleanly.
+  - Updated `crates/acdd-state/src/usecases/verify.rs::handle_verify_with_failure_return` so interactive CLI/MCP `acdd verify` failures record failed traces and keep mechanical gates (`run_tests`) `InProgress` at the same `claim_revision` for legal retry without bouncing to `polish`, while preserving `acdd run` (`execute_gate_node`) automatic `fail:` routing and explicit `submit --action reject`.
+
+### Added (Earlier Unreleased Milestones)
 
 - **Language-Agnostic Linker & Structural Lint Extensions (`AR-004`)**:
   - Added `ComplexityLimits` (`architecture.complexity`), opt-in `architecture.unused_public_api` (default `false`; enabled in `acdd.yaml`), and `ArchitectureConfig` validation in `crates/acdd-core/src/lint.rs`, plus `syntax.fact_budget_exceeded`, `syntax.intra_crate_type_homonym`, and `docs.unused_arch_zone` diagnostics in `crates/acdd-index/src/db/lint/`.
@@ -316,7 +343,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...v0.6.1

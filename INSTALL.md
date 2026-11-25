@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.7.0`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.7.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 

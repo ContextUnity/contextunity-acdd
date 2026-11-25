@@ -14,7 +14,7 @@ external_links_no_referrer = true
 theme = "catppuccin-mocha"
 
 [extra]
-version = "0.7.0"
+version = "0.7.1"
 github_url = "https://github.com/ContextUnity/contextunity-acdd"
 github_issues_url = "https://github.com/ContextUnity/contextunity-acdd/issues"
 install_cmd = "curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh"

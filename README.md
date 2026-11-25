@@ -151,14 +151,13 @@ Full schemas and flags: **[MCP Tools Reference](docs/reference/mcp-tools.md)** Â
 
 ## Roadmap
 
-Strategic direction and active specifications are tracked in **[`ROADMAP.md`](ROADMAP.md)** and [`docs/milestones/`](docs/milestones/README.md):
+Strategic direction and active specifications are tracked in **[`ROADMAP.md`](ROADMAP.md)** and [`docs/milestones/`](docs/milestones/README.md) (for shipped releases through `v0.7.1`, see [`CHANGELOG.md`](CHANGELOG.md)):
 
-- **`v0.7.0` (Current)**: Read-only cross-collection DAG wave planner (`acdd roadmap`), automatic per-task Git checkpoints (`acdd snapshot`), and batched Git tree/dependency inspection.
-- **`v0.7.1` (Next)**: Unified 6-category `acdd lint` + `documentation` profile, 21-language declarative parser/linker engine, 0-1 knapsack `ClaimResp` packing + Reciprocal Rank Fusion (`code_map_search`) + SQL table callers (`UX-003`), and FTS5/ingest pipeline optimizations.
-- **Upcoming Milestones**:
-  - **Unified Swarm Gates & Peer Board (`AC-005`)**: Unified `linear | parallel | swarm` gate execution, coordinator groups, and `@mention` + zero-token `wait` blackboard threads.
-  - **Repository Memory Synthesis (`AC-006`)**: Git-tracked `docs/memories/*.md` distilled from execution evidence and injected into `ClaimResp`.
-  - **Local Observability & Zero-Daemon Reactive Core (`AC-007`, `AC-008`)**: Read-only Live Gate Board Web UI, Prometheus/OTLP telemetry, `manual` approval gates, and zero-idle-RAM `acdd tick` timers & durable event inbox.
+- **`v0.8.0` (Next â€” Universal Specs, Swarm & Engine Changes)**:
+  - **Universal Spec Schemas, Named Path Sets & Memory Synthesis (`AC-006`)**: Profile-declared `specs:` schemas, named `paths.*` sets, `spec_deltas` verification, and spec-driven `memory_synthesis` ([ADR 0014](docs/adr/0014-declarative-spec-schemas-and-items.md)).
+  - **Unified Swarm Gates, Peer Board & Post-Delivery Engine Audit (`AC-005`)**: Unified `linear | parallel | swarm` gate execution, coordinator groups, `@mention` + zero-token `wait` blackboard threads, grouped `save: handoff`, and end-to-end terminal gate transition audit.
+- **Later & Future Milestones**:
+  - **Local Observability & Zero-Daemon Reactive Core (`AC-007`, `AC-008`)**: Read-only Live Gate Board Web UI, Prometheus/OTLP telemetry, `manual` deferred approvals, and zero-idle-RAM `acdd tick` timers & durable event inbox.
   - **Authenticated Ingress & Domain Crates (`AC-009`)**: Streamable HTTP MCP, interactive Web UI steering, HMAC webhook ingress, and modular `crates/acdd-domain-*` verification plugins.
 
 ---

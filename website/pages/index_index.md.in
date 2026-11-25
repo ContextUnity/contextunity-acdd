@@ -8,7 +8,7 @@
    - Walks admitted `roots:` and `docs:` declared in `acdd.yaml`.
    - Skips `ignore:` entries (`target`, `node_modules`, `.git`, `.acdd`) and enforces symlink-safe workspace confinement.
 2. **Tree-sitter AST extraction**:
-   - **Code languages**: parses 11 default languages (and 8 Tier-2 languages with `--features all-languages`) to extract declarations, imports, calls, inheritance, and tests.
+   - **Code languages**: parses 13 default languages (and 8 Tier-2 languages with `--features all-languages`) to extract declarations, imports, calls, inheritance, and tests.
    - **Template masking**: HTML, Vue, and Jinja/Django files pass through `TemplateMasker` so directive spans (`{% ... %}`, `{{ ... }}`) are masked byte-for-byte without shifting line numbers.
 3. **Cross-file linking & framework packs**:
    - **Language linkers**: resolve relative imports, type-aliased Python/TS paths, and method receivers.

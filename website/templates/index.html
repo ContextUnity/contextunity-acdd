@@ -340,7 +340,7 @@ verification_seam: tests/auth.rs::rejects_expired_token
         <a class="btn btn-glass btn-sm" href="{{ config.extra.github_issues_url }}" target="_blank" rel="noopener">Need another language? GitHub Issues →</a>
       </div>
       <div class="lang-pills">
-        <div class="lang-pill lang-default"><strong>Default (11):</strong> Rust · Python · TypeScript · Vue · Proto · HTML · YAML · TOML · Bash · CSS · JSON</div>
+        <div class="lang-pill lang-default"><strong>Default (13):</strong> Rust · Python · TypeScript · JavaScript · Vue · SQL · Proto · HTML/Jinja2 · Bash · CSS · JSON · YAML · TOML</div>
         <div class="lang-pill lang-tier2"><strong>Tier-2 (8, <code>--features all-languages</code>):</strong> Go · Java · C# · Kotlin · PHP · Ruby · C · C++</div>
       </div>
     </div>
@@ -953,6 +953,169 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="explorer-subhead">
+      <div class="eyebrow">Controlled A/B Benchmark · 966-File Rust Codebase</div>
+      <h3><code>rg</code> / <code>sed</code> vs. ACDD Coding Tools — up to 55% token savings</h3>
+      <p>
+        Measured side-by-side on the same model solving an end-to-end architecture &amp; enforcement trace across entrypoints, SQLite persistence, invariants, and test coverage (no manual hints).
+      </p>
+    </div>
+
+    <div class="dual-table-card">
+      <table class="dual-compare-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Baseline (<code>rg</code> + bounded <code>sed</code>)</th>
+            <th>ACDD MCP Tools (<code>v0.7.1</code>)</th>
+            <th>Delta</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Agent Turns</strong></td>
+            <td>27 turns</td>
+            <td><strong>16 turns</strong></td>
+            <td><strong>−41% turns</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Cached Input Tokens</strong></td>
+            <td>2.72M tokens</td>
+            <td><strong>1.24M tokens</strong></td>
+            <td><strong>−55% (2.2× less)</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Uncached Input Tokens</strong></td>
+            <td>193K tokens <em>(up to 444K in R4)</em></td>
+            <td><strong>148K tokens</strong></td>
+            <td><strong>−23% to −66%</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Tool Output Volume</strong></td>
+            <td>737 KB <em>(peak 105.8 KB)</em></td>
+            <td><strong>386 KB</strong> <em>(peak 19.1 KB)</em></td>
+            <td><strong>−48% bytes · 5.5× smaller peak</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Large Payloads (&gt;10 KB)</strong></td>
+            <td>7–20 offloads</td>
+            <td><strong>3 offloads</strong></td>
+            <td><strong>Up to −85% offloads</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="explorer-subhead">
+      <div class="eyebrow">High-Leverage Workflows</div>
+      <h3>Top 5 ACDD Commands &amp; MCP Tools</h3>
+      <p>
+        Five commands cover ~90% of daily codebase exploration, safe refactoring, and pre-commit verification.
+      </p>
+    </div>
+
+    <div class="dual-table-card">
+      <table class="dual-compare-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Tool &amp; CLI Equivalent</th>
+            <th>What It Does (Why It Beats Text Search)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1</strong></td>
+            <td><code>acdd_read</code> · <code>acdd read &lt;path&gt; --selector Symbol</code></td>
+            <td>Fetches an exact function, struct, or impl with SHA-256 verification, enclosing scope, and <code>ALLOWED</code> / <code>OUT_OF_SCOPE</code> write status in one call.</td>
+          </tr>
+          <tr>
+            <td><strong>2</strong></td>
+            <td><code>code_map_search</code> · <code>acdd query search &lt;pattern&gt;</code></td>
+            <td>Ranks matches with weighted RRF (structural tier + BM25 + graph centrality) and filters by <code>takes:</code>, <code>returns:</code>, or <code>classification: production</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>3</strong></td>
+            <td><code>code_map_impact</code> · <code>acdd query impact &lt;selector&gt;</code></td>
+            <td>Traces multi-hop callers/callees, governing Markdown docs, or live Git diffs (<code>unstaged</code> / <code>staged</code>) to expose full blast radius before editing.</td>
+          </tr>
+          <tr>
+            <td><strong>4</strong></td>
+            <td><code>ast_grep_search</code> · <code>acdd ast grep '&lt;pattern&gt;'</code></td>
+            <td>Runs Tree-sitter structural queries across 13+ languages, ignoring comments/strings and skipping YAML/TOML noise automatically on code patterns.</td>
+          </tr>
+          <tr>
+            <td><strong>5</strong></td>
+            <td><code>code_map_lint</code> · <code>acdd lint --categories all</code></td>
+            <td>Enforces zone rules, executable doc <code>acdd-rule</code> invariants, doc links/anchors, Type-2 AST clones, <code>dead_tails</code>, and module SCC cycles in one pass.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 6. COMING SOON (v0.8.0+) -->
+<section class="section section-theme section-theme-state" id="coming-soon">
+  <div class="container">
+    <div class="section-header">
+      <div class="eyebrow">Coming Soon · Roadmap</div>
+      <h2>What’s next in <code>v0.8.0</code> &amp; beyond</h2>
+      <p>
+        Next releases generalize the specification model, unify swarm execution in the state engine, and add zero-daemon local telemetry and HTTP ingress.
+      </p>
+    </div>
+
+    <div class="index-grid">
+      <article class="index-card">
+        <div class="index-kicker">01 · v0.8.0 · AC-006</div>
+        <h3>Universal Spec Builder &amp; Path Sets</h3>
+        <p>
+          Declare custom <code>specs:</code> schemas and named <code>paths.*</code> sets directly in <code>.acdd/profile.yaml</code>—typed frontmatter items, cross-spec DAGs, and verified <code>spec_deltas</code> replacing hardcoded repo layouts.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">02 · v0.8.0 · AC-006</div>
+        <h3>Spec-Driven Repository Memory</h3>
+        <p>
+          A dedicated <code>memory_synthesis</code> gate distills verified execution facts, architectural lessons, and findings into typed <code>memory</code> specs injected into future gates via <code>paths.memories</code>.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">03 · v0.8.0 · AC-005</div>
+        <h3>Unified Swarm Mode &amp; Engine Redesign</h3>
+        <p>
+          Replaces special-cased <code>- tasks:</code> blocks with one orthogonal <code>mode: linear | parallel | swarm</code> engine, lock-free <code>save: none</code> SQLite CAS, grouped <code>save: handoff</code>, coordinator groups, and zero-token <code>@mention</code> blackboard waits.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">04 · Later · AC-007</div>
+        <h3>Live Gate Board UI &amp; Telemetry</h3>
+        <p>
+          Separates explicit <code>acdd mcp</code> from read-only <code>acdd serve</code> on <code>127.0.0.1</code>—live SSE Gate Board Web UI, bounded-cardinality Prometheus <code>/metrics</code>, and OTLP trace relay.
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">05 · Later · AC-008</div>
+        <h3>Zero-Daemon Timers &amp; Approvals</h3>
+        <p>
+          Adds <code>AgentDef.mode: manual</code> sleep-at-zero-tokens approvals, claim lease TTLs, and durable SQLite timers/inbox driven by one-shot <code>acdd tick</code> pulses (<code>cron</code>, <code>systemd</code>, CI).
+        </p>
+      </article>
+
+      <article class="index-card">
+        <div class="index-kicker">06 · Future · AC-009</div>
+        <h3>Authenticated HTTP MCP &amp; Plugins</h3>
+        <p>
+          Streamable HTTP MCP, interactive Web UI steering, constant-time Bearer + HMAC webhook ingress, and pluggable <code>crates/acdd-domain-*</code> verification crates.
+        </p>
+      </article>
     </div>
   </div>
 </section>
