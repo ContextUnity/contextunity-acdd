@@ -742,6 +742,9 @@ pub enum DocsCommand {
         #[arg(long)]
         /// Optional exact section heading to return; omit to inspect the outline.
         section: Option<String>,
+        #[arg(long)]
+        /// Include ambiguous documentary symbol reference candidates.
+        include_candidates: bool,
     },
 }
 

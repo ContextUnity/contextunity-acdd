@@ -5,7 +5,10 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
     let ws = &reference_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let overview = client
-        .document("docs/reference/mcp-tools.md", json!({"limit":100}))
+        .document(
+            "docs/reference/mcp-tools.md",
+            json!({"limit":100,"include_candidates":true}),
+        )
         .expect("MCP tool should succeed");
     let reference_rows = overview["referenced_symbols"]["items"]
         .as_array()
@@ -79,19 +82,10 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
             );
             assert!(markdown.contains("## Verified referenced symbols"));
         } else {
-            assert_eq!(
-                markdown
-                    .matches("Request detail=full for documentary reference candidates")
-                    .count(),
-                1,
-                "compact omission hint: {markdown}"
-            );
-            assert_eq!(
-                markdown
-                    .matches("## Ambiguous symbol candidates (navigation only; unverified)")
-                    .count(),
-                1,
-                "compact candidate heading: {markdown}"
+            assert!(
+                !markdown.contains("## Ambiguous symbol candidates")
+                    && !markdown.contains("Request detail=full"),
+                "compact output strips candidate stubs: {markdown}"
             );
         }
     }

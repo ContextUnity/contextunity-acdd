@@ -216,6 +216,9 @@ pub(crate) fn select_detail_with_path(
 
     let (mut result, path_qualified) = query_selector_candidates(conn, normalized, &scope)?;
     result = apply_suffix_fallback(conn, normalized, &scope, path_qualified, result)?;
+    if result.is_empty() && !path_qualified && !scope.is_empty() {
+        result = query_imported_symbol_candidates(conn, normalized, &scope)?;
+    }
     result = disambiguate_selector_candidates(conn, normalized, result)?;
 
     match result.len() {
@@ -266,17 +269,23 @@ fn parse_line_target(unpeeled: &str) -> (&str, Option<i64>) {
     (clean_selector, None)
 }
 
+fn split_kind_and_dotted(normalized: &str) -> (&str, String) {
+    if let Some((kind, rest)) = normalized.split_once(':') {
+        if !rest.starts_with(':') && is_known_kind_name(kind) {
+            let canonical_kind = if kind == "fn" { "function" } else { kind };
+            return (canonical_kind, rest.replace("::", "."));
+        }
+    }
+    ("", normalized.replace("::", "."))
+}
+
 fn query_path_qualified_candidates(
     conn: &Connection,
     prefix: &str,
     symbol_part: &str,
     scope: &str,
 ) -> Result<Vec<Value>> {
-    let (path_kind, symbol) = symbol_part
-        .split_once(':')
-        .filter(|(kind, _)| is_known_kind_name(kind))
-        .map(|(kind, symbol)| (if kind == "fn" { "function" } else { kind }, symbol))
-        .unwrap_or(("", symbol_part));
+    let (path_kind, symbol) = split_kind_and_dotted(symbol_part);
     let mut candidates = rows(
         conn,
         "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/') AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY)) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
@@ -294,7 +303,7 @@ fn query_path_qualified_candidates(
     if candidates.is_empty() {
         candidates = rows(
             conn,
-            "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/' OR (substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/'))) AND substr(n.qualname,-length(?2))=?2 AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
+            "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/' OR (substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/'))) AND (n.qualname=?2 OR (length(n.qualname)>length(?2) AND substr(n.qualname,-length(?2))=?2 AND substr(n.qualname,length(n.qualname)-length(?2),1)='.')) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
             &[&prefix, &symbol, &path_kind, &scope],
             101,
         )?;
@@ -316,27 +325,38 @@ fn query_path_qualified_candidates(
     })
 }
 
+fn query_unqualified_candidates(
+    conn: &Connection,
+    target: &str,
+    normalized: &str,
+    scope: &str,
+) -> Result<Vec<Value>> {
+    let base_name = target.strip_prefix("./").unwrap_or(target);
+    rows(
+        conn,
+        "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?2 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?3 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY id LIMIT 101",
+        &[&base_name, &normalized, &format!("module:{normalized}"), &scope],
+        101,
+    )
+}
+
 fn query_selector_candidates(
     conn: &Connection,
     normalized: &str,
     scope: &str,
 ) -> Result<(Vec<Value>, bool)> {
-    let (prefix_part, symbol_part) = if let Some((p, s)) = normalized.split_once("::") {
-        (Some(p), s)
-    } else if let Some((p, s)) = normalized.split_once(':') {
-        (Some(p), s)
+    let (prefix_part, symbol_part, is_double_colon) = if let Some((p, rest)) = normalized.split_once(':') {
+        if let Some(s) = rest.strip_prefix(':') {
+            (Some(p), s, true)
+        } else {
+            (Some(p), rest, false)
+        }
     } else {
-        (None, normalized)
+        (None, normalized, false)
     };
 
     let Some(prefix) = prefix_part else {
-        let base_name = normalized.strip_prefix("./").unwrap_or(normalized);
-        let matches = rows(
-            conn,
-            "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?2 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?3 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY id LIMIT 101",
-            &[&base_name, &normalized, &format!("module:{normalized}"), &scope],
-            101,
-        )?;
+        let matches = query_unqualified_candidates(conn, normalized, normalized, scope)?;
         return Ok((matches, false));
     };
 
@@ -356,12 +376,18 @@ fn query_selector_candidates(
         let matches = query_path_qualified_candidates(conn, prefix, symbol_part, scope)?;
         return Ok((matches, true));
     }
+    if is_double_colon {
+        let dotted = normalized.replace("::", ".");
+        let matches = query_unqualified_candidates(conn, &dotted, normalized, scope)?;
+        return Ok((matches, false));
+    }
     if is_known_kind_name(prefix) {
         let kind = if prefix == "fn" { "function" } else { prefix };
+        let sym = symbol_part.replace("::", ".");
         let matches = rows(
             conn,
             "SELECT n.id, n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND n.kind=?2 AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') UNION SELECT n.id, n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND n.kind=?2 AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') ORDER BY id LIMIT 101",
-            &[&symbol_part, &kind, &scope],
+            &[&sym, &kind, &scope],
             101,
         )?;
         return Ok((matches, false));
@@ -383,17 +409,14 @@ fn apply_suffix_fallback(
     path_qualified: bool,
     result: Vec<Value>,
 ) -> Result<Vec<Value>> {
-    if !result.is_empty() || path_qualified || !scope.is_empty() {
+    if !result.is_empty() || path_qualified {
         return Ok(result);
     }
-    let clean_target = normalized
-        .trim_start_matches("module:")
-        .trim_start_matches("function:")
-        .trim_start_matches("class:");
+    let (kind_filter, clean_target) = split_kind_and_dotted(normalized);
     let suffix_matches = rows(
         conn,
-        "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (substr(n.qualname,-length(?1))=?1 OR substr(p.path,-length(?1))=?1) AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') ORDER BY n.id LIMIT 101",
-        &[&clean_target, &scope],
+        "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?3='' OR n.kind=?3) AND (n.qualname=?1 OR (length(n.qualname)>length(?1) AND substr(n.qualname,-length(?1))=?1 AND substr(n.qualname,length(n.qualname)-length(?1),1)='.') OR (?3='' AND (p.path=?1 OR (length(p.path)>length(?1) AND substr(p.path,-length(?1))=?1 AND substr(p.path,length(p.path)-length(?1),1)='/')))) AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') ORDER BY n.id LIMIT 101",
+        &[&clean_target, &scope, &kind_filter],
         101,
     )?;
     if suffix_matches.len() <= 1 {
@@ -404,7 +427,7 @@ fn apply_suffix_fallback(
         .filter(|v| {
             v["id"]
                 .as_str()
-                .is_some_and(|id| id.ends_with(clean_target))
+                .is_some_and(|id| id.ends_with(&clean_target))
         })
         .cloned()
         .collect();
@@ -413,6 +436,42 @@ fn apply_suffix_fallback(
     } else {
         suffix_matches
     })
+}
+
+fn query_imported_symbol_candidates(
+    conn: &Connection,
+    normalized: &str,
+    scope: &str,
+) -> Result<Vec<Value>> {
+    let (kind_filter, clean_target) = split_kind_and_dotted(normalized);
+    rows(
+        conn,
+        "WITH scoped_nodes(node_hash) AS (\
+             SELECT n.node_hash FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id \
+             WHERE p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/'\
+         ), imported_targets(id,kind,name,qualname,path_id) AS (\
+             SELECT DISTINCT dst.id,dst.kind,dst.name,dst.qualname,dst.path_id \
+             FROM scoped_nodes s \
+             JOIN edges e ON e.src_hash=s.node_hash AND e.kind IN ('imports','references') \
+             JOIN nodes dst ON dst.node_hash=e.dst_hash\
+         ), imported_paths(path_id) AS (\
+             SELECT DISTINCT path_id FROM imported_targets WHERE kind IN ('module','file','component')\
+         ) \
+         SELECT id,kind FROM imported_targets \
+         WHERE kind NOT IN ('module','file','component') AND (?3='' OR kind=?3) \
+           AND ((name=?2 COLLATE NOCASE AND name=?2 COLLATE BINARY) \
+             OR (qualname=?2 COLLATE NOCASE AND qualname=?2 COLLATE BINARY) \
+             OR (length(qualname)>length(?2) AND substr(qualname,-length(?2))=?2 AND substr(qualname,length(qualname)-length(?2),1)='.')) \
+         UNION \
+         SELECT n.id,n.kind FROM imported_paths ip JOIN nodes n ON n.path_id=ip.path_id \
+         WHERE n.kind NOT IN ('module','file','component') AND (?3='' OR n.kind=?3) \
+           AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) \
+             OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY) \
+             OR (length(n.qualname)>length(?2) AND substr(n.qualname,-length(?2))=?2 AND substr(n.qualname,length(n.qualname)-length(?2),1)='.')) \
+         ORDER BY id LIMIT 101",
+        &[&scope, &clean_target, &kind_filter],
+        101,
+    )
 }
 
 fn disambiguate_selector_candidates(

@@ -433,6 +433,7 @@ pub fn get_doc_paged(
     conn: &Connection,
     path: &str,
     section: Option<&str>,
+    include_candidates: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
     let section = section.unwrap_or("");
@@ -455,7 +456,7 @@ pub fn get_doc_paged(
     }
     const MAX_RELATION_SCOPE_SECTIONS: usize = 1000;
     let relation_scope_limit = (MAX_RELATION_SCOPE_SECTIONS + 1) as i64;
-    let relation_scope_sql = if options.detail == Detail::Full {
+    let relation_scope_sql = if include_candidates {
         "SELECT d.doc_id,d.path,n.details,n.line AS node_line,d.referenced_symbols FROM doc_sections d JOIN nodes n ON n.id=d.doc_id WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid LIMIT ?3"
     } else {
         "SELECT d.doc_id,d.path FROM doc_sections d WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid LIMIT ?3"
@@ -501,10 +502,10 @@ pub fn get_doc_paged(
         &[&encoded_hashes],
         options,
     )?;
-    let referenced_symbol_candidates = if options.detail == Detail::Full {
+    let referenced_symbol_candidates = if include_candidates {
         document_reference_candidate_page(conn, &selected_sections, &source_workspace, options)?
     } else {
-        json!({"omitted":true,"hint":"Request detail=full for documentary reference candidates"})
+        json!({"omitted":true,"hint":"Request include_candidates=true for documentary reference candidates"})
     };
     Ok(
         json!({"sections":sections,"cites_doc":cites_doc,"cited_by_doc":cited_by_doc,"referenced_symbols":referenced_symbols,"referenced_symbol_candidates":referenced_symbol_candidates}),

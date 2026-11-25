@@ -131,7 +131,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
         let result = identity_client
             .payload(
                 "get_doc",
-                json!({"path_or_id":path,"detail":"full","limit":100}),
+                json!({"path_or_id":path,"detail":"full","include_candidates":true,"limit":100}),
             )
             .expect("MCP tool should succeed");
         let actual_paths = crate::json_array(&result["referenced_symbols"]["items"])
@@ -161,7 +161,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
     let header = identity_client
         .document(
             "[library]/docs/header.md",
-            json!({"section":"Header","detail":"full","limit":100}),
+            json!({"section":"Header","detail":"full","include_candidates":true,"limit":100}),
         )
         .expect("MCP tool should succeed");
     let header_candidates = header["referenced_symbol_candidates"]["items"]
@@ -202,18 +202,18 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
         !(compact_header["referenced_symbol_candidates"]["omitted"] != true
             || !compact_header["referenced_symbol_candidates"]["hint"]
                 .as_str()
-                .is_some_and(|hint| hint.contains("detail=full"))),
-        "compact get_doc must omit heavy claim discovery with a full-detail hint: {compact_header}"
+                .is_some_and(|hint| hint.contains("include_candidates=true"))),
+        "get_doc without include_candidates must omit heavy claim discovery with an opt-in hint: {compact_header}"
     );
     let first_candidate = identity_client
         .document(
             "[library]/docs/header.md",
-            json!({"section":"Header","detail":"full","limit":1}),
+            json!({"section":"Header","detail":"full","include_candidates":true,"limit":1}),
         )
         .expect("MCP tool should succeed");
     if let Some(generation) = first_candidate["referenced_symbol_candidates"]["generation"].as_str()
     {
-        let next_candidate = identity_client.document("[library]/docs/header.md", json!({"section":"Header","detail":"full","limit":1,"offset":1,"generation":generation})).expect("MCP tool should succeed");
+        let next_candidate = identity_client.document("[library]/docs/header.md", json!({"section":"Header","detail":"full","include_candidates":true,"limit":1,"offset":1,"generation":generation})).expect("MCP tool should succeed");
         let combined = [
             first_candidate["referenced_symbol_candidates"]["items"][0].clone(),
             next_candidate["referenced_symbol_candidates"]["items"][0].clone(),
@@ -237,7 +237,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
     let candidate_markdown = response_text(
         &mut identity_client,
         "get_doc",
-        json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"format":"markdown"}),
+        json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","include_candidates":true,"limit":1,"format":"markdown"}),
     );
     assert!(
         candidate_markdown.contains("Ambiguous symbol candidates (navigation only; unverified)")
@@ -263,7 +263,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
             && candidate_markdown.contains("[\\[library\\]/frontend/header.ts](file://"),
         "candidate source and target links resolve against their linked roots: {candidate_markdown}"
     );
-    let stale_candidate_page = identity_client.request_value("tools/call", json!({"name":"get_doc","arguments":{"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"offset":1,"generation":"stale-candidate-generation"}})).expect("MCP transport");
+    let stale_candidate_page = identity_client.request_value("tools/call", json!({"name":"get_doc","arguments":{"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","include_candidates":true,"limit":1,"offset":1,"generation":"stale-candidate-generation"}})).expect("MCP transport");
     assert_eq!(
         stale_candidate_page["result"]["isError"], true,
         "{stale_candidate_page}"
@@ -275,6 +275,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
             "[library]/docs/header.md",
             "--section",
             "Header",
+            "--include-candidates",
         ])
         .expect("CLI should succeed");
     assert!(

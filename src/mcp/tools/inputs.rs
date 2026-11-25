@@ -678,6 +678,9 @@ pub struct GetDoc {
     pub selector: Option<String>,
     /// Exact section title; omit with detail='compact' for outline.
     pub section: Option<String>,
+    /// Include ambiguous documentary symbol reference candidates (default false).
+    #[serde(default)]
+    pub include_candidates: bool,
     #[serde(flatten)]
     /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,

@@ -707,7 +707,13 @@ pub(super) async fn get_doc(server: &Server, p: GetDoc) -> CallToolResult {
                 page.detail = Detail::Full;
             }
             server.read_with_adapter(adapter, |c| {
-                reader::get_doc_paged(c, p.path_or_id()?, p.section.as_deref(), &page)
+                reader::get_doc_paged(
+                    c,
+                    p.path_or_id()?,
+                    p.section.as_deref(),
+                    p.include_candidates,
+                    &page,
+                )
             })
         },
     )

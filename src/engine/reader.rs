@@ -32,14 +32,14 @@ pub struct ReadRequest {
     pub mode: ReadMode,
     /// One-based first line.
     pub start_line: Option<usize>,
-    /// Maximum lines, default 200 for text modes.
+    /// Maximum lines, default 100 for text modes.
     pub line_count: Option<usize>,
     /// Search pattern, interpreted literally unless regex is true.
     pub pattern: Option<String>,
     /// Interpret the search pattern as a regular expression.
     #[serde(default)]
     pub regex: bool,
-    /// Search context lines on each side, default 2.
+    /// Search context lines on each side, default 0.
     pub context: Option<usize>,
     /// Git revision for delta; defaults to the active task baseline or HEAD.
     pub baseline: Option<String>,
@@ -625,7 +625,7 @@ fn acdd_read_single(
                     other => other,
                 };
                 format!(
-                    "💡 Enclosing symbol: '{kind_label} {name}'. To read this entire symbol safely with verified digest, use acdd_read(path=\"{path}\", selector=\"{name}\")"
+                    "Enclosing: `{kind_label} {name}` — acdd_read(path=\"{path}\", selector=\"{name}\")"
                 )
             })
         } else {
@@ -863,13 +863,14 @@ fn search_directory_or_glob(
 ) -> Result<(String, bool)> {
     const MAX_SEARCH_BYTES: usize = 48 * 1024;
     let start = bounds.start_line.unwrap_or(1);
-    let count = bounds.line_count.unwrap_or(200);
+    let count = bounds.line_count.unwrap_or(100);
     ensure!(
         start > 0 && count > 0 && count <= 10000,
         "line bounds require start_line >= 1 and line_count 1..=10000"
     );
     let matcher = SearchMatcher::new(request)?;
-    let context = request.context.unwrap_or(2).min(100);
+    let context = request.context.unwrap_or(0).min(100);
+    let targets_archive = raw_path.split('/').any(|segment| segment == "archive");
     let Some(scope) = resolve_search_scope(root, adapter, raw_path)? else {
         return Ok((String::new(), false));
     };
@@ -890,9 +891,9 @@ fn search_directory_or_glob(
     let walker = ignore::WalkBuilder::new(&walk_dir)
         .follow_links(false)
         .standard_filters(true)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             let name = entry.file_name();
-            name != ".git" && name != ".acdd"
+            name != ".git" && name != ".acdd" && (targets_archive || name != "archive")
         })
         .sort_by_file_name(|a, b| a.cmp(b))
         .build();
@@ -910,6 +911,9 @@ fn search_directory_or_glob(
             continue;
         };
         let rel_str = normalize_rel_display(rel);
+        if !targets_archive && (rel_str.starts_with("archive/") || rel_str.contains("/archive/")) {
+            continue;
+        }
         if let Some(ref ov) = glob_matcher {
             if !ov.matched(Path::new(&rel_str), false).is_whitelist() {
                 continue;
@@ -961,15 +965,21 @@ fn search_directory_or_glob(
 
 fn push_formatted_match_line(
     output: &mut String,
-    path_prefix: Option<&str>,
+    group_path: Option<&str>,
+    wrote_header: &mut bool,
     number: usize,
     text: &str,
 ) {
-    if let Some(p) = path_prefix {
-        output.push_str(&format!("{p}:{number}: {text}"));
-    } else {
-        output.push_str(&format!("{number}: {text}"));
+    if let Some(p) = group_path {
+        if !*wrote_header {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&format!("## {p}\n"));
+            *wrote_header = true;
+        }
     }
+    output.push_str(&format!("{number}: {text}"));
     if !output.ends_with('\n') {
         output.push('\n');
     }
@@ -979,13 +989,22 @@ fn flush_prior_context(
     prior: &std::collections::VecDeque<(usize, String)>,
     last: &mut usize,
     kept: &mut usize,
-    (count, max_bytes, prefix_len): (usize, usize, usize),
-    path_prefix: Option<&str>,
+    (count, max_bytes): (usize, usize),
+    group_path: Option<&str>,
+    wrote_header: &mut bool,
     output: &mut String,
 ) {
     for (n, text) in prior {
-        if *n > *last && *kept < count && output.len() + prefix_len + text.len() + 32 <= max_bytes {
-            push_formatted_match_line(output, path_prefix, *n, text);
+        let header_cost = if !*wrote_header {
+            group_path.map_or(0, |p| p.len() + 5)
+        } else {
+            0
+        };
+        if *n > *last
+            && *kept < count
+            && output.len() + header_cost + text.len() + 32 <= max_bytes
+        {
+            push_formatted_match_line(output, group_path, wrote_header, *n, text);
             *kept += 1;
             *last = *n;
         }
@@ -1007,10 +1026,10 @@ fn scan_matching_lines(
     let mut prior: std::collections::VecDeque<(usize, String)> = std::collections::VecDeque::new();
     let mut after = 0;
     let mut last = 0;
+    let mut wrote_header = false;
     let mut reader = BufReader::new(File::open(file)?);
     let mut raw_line = Vec::new();
     let mut number = 0;
-    let prefix_len = path_prefix.map_or(0, |p| p.len() + 1);
     let saved_len = output.len();
     let saved_kept = *kept;
     loop {
@@ -1055,15 +1074,21 @@ fn scan_matching_lines(
                     &prior,
                     &mut last,
                     kept,
-                    (count, max_bytes, prefix_len),
+                    (count, max_bytes),
                     path_prefix,
+                    &mut wrote_header,
                     output,
                 );
             }
-            if *kept >= count || output.len() + prefix_len + line.len() + 32 > max_bytes {
+            let header_cost = if !wrote_header {
+                path_prefix.map_or(0, |p| p.len() + 5)
+            } else {
+                0
+            };
+            if *kept >= count || output.len() + header_cost + line.len() + 32 > max_bytes {
                 return Ok(true);
             }
-            push_formatted_match_line(output, path_prefix, number, &line);
+            push_formatted_match_line(output, path_prefix, &mut wrote_header, number, &line);
             *kept += 1;
             last = number;
         }
@@ -1084,7 +1109,7 @@ fn extract_file_slice(
 ) -> Result<(String, bool)> {
     const MAX_SLICE_BYTES: usize = 48 * 1024;
     let start = bounds.start_line.unwrap_or(1);
-    let count = bounds.line_count.unwrap_or(200);
+    let count = bounds.line_count.unwrap_or(100);
     ensure!(
         start > 0 && count > 0 && count <= 10000,
         "line bounds require start_line >= 1 and line_count 1..=10000"
@@ -1092,7 +1117,7 @@ fn extract_file_slice(
     let matcher = (mode == ReadMode::Search)
         .then(|| SearchMatcher::new(request))
         .transpose()?;
-    let context = request.context.unwrap_or(2).min(100);
+    let context = request.context.unwrap_or(0).min(100);
     let mut output = String::new();
     let mut kept = 0;
     if let Some(ref matcher) = matcher {

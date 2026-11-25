@@ -368,7 +368,7 @@ pub(super) fn source_preview(
         .context("source continuation offset overflow")?;
     let has_more = next < body.len();
     let hint = if has_more {
-        Some("Repeat the same tool and selector with show_source=true, next_source_offset as source_offset, and this generation.".to_owned())
+        Some("Continue with show_source=true, source_offset=next_source_offset, and generation.".to_owned())
     } else {
         None
     };
@@ -390,10 +390,30 @@ pub(super) fn source_preview(
         )
     };
     let start_line = (!output.is_empty()).then_some(source_start_line);
-    Ok((
-        output,
-        json!({"start_line":start_line,"end_line":end_line,"total_body_lines":body.len(),"body_offset":options.offset,"body_lines":emitted,"leading_lines":leading_count,"next_source_offset":has_more.then_some(next),"has_more":has_more,"omitted_leading_lines":available_leading.saturating_sub(leading_count),"omitted_body_lines":body.len().saturating_sub(next),"truncated_line":false,"continuation_hint":hint}),
-    ))
+    let mut preview = serde_json::Map::new();
+    preview.insert("start_line".into(), json!(start_line));
+    preview.insert("end_line".into(), json!(end_line));
+    preview.insert("total_body_lines".into(), json!(body.len()));
+    preview.insert("body_offset".into(), json!(options.offset));
+    preview.insert("body_lines".into(), json!(emitted));
+    preview.insert("leading_lines".into(), json!(leading_count));
+    if has_more {
+        preview.insert("next_source_offset".into(), json!(next));
+    }
+    preview.insert("has_more".into(), json!(has_more));
+    let omitted_leading = available_leading.saturating_sub(leading_count);
+    if omitted_leading > 0 {
+        preview.insert("omitted_leading_lines".into(), json!(omitted_leading));
+    }
+    preview.insert(
+        "omitted_body_lines".into(),
+        json!(body.len().saturating_sub(next)),
+    );
+    preview.insert("truncated_line".into(), json!(false));
+    if let Some(hint) = hint {
+        preview.insert("continuation_hint".into(), json!(hint));
+    }
+    Ok((output, Value::Object(preview)))
 }
 
 fn escaped_char_cost(ch: char) -> usize {

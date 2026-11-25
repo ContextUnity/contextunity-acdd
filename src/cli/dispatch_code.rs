@@ -398,10 +398,17 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                 DocsCommand::Get {
                     path_or_id,
                     section,
+                    include_candidates,
                 } => {
                     let mut options = cli_page(100)?;
                     options.detail = Detail::Full;
-                    reader::get_doc_paged(&conn, &path_or_id, section.as_deref(), &options)?
+                    reader::get_doc_paged(
+                        &conn,
+                        &path_or_id,
+                        section.as_deref(),
+                        include_candidates,
+                        &options,
+                    )?
                 }
             }
         }

@@ -26,7 +26,7 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
         output.push_str("## Search results\n\n");
         render_search_section_page(&mut output, &value["sections"]);
     } else {
-        render_section_page(&mut output, "Document sections", &value["sections"], false);
+        render_section_page(&mut output, "Document sections", &value["sections"]);
         for (field, heading, line_is_coord) in [
             ("cites_doc", "Verified document citations", false),
             (
@@ -56,23 +56,22 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
             }
         }
         if let Some(candidates) = value.get("referenced_symbol_candidates") {
-            output.push_str("## Ambiguous symbol candidates (navigation only; unverified)\n\n");
-            render_page_metadata(&mut output, "Candidate page", candidates);
-            for (i, cand) in page_items(candidates).unwrap_or(&[]).iter().enumerate() {
-                output.push_str(&format!("### Candidate {}\n\n", i + 1));
-                for (field, label) in [("source", "Claim source"), ("target", "Possible target")] {
-                    if let Some(entity) = cand.get(field) {
-                        output.push_str(&format!("**{label}**\n\n"));
-                        render_entity_link(&mut output, entity, true);
-                        render_markdown_fields(
-                            &mut output,
-                            entity,
-                            0,
-                            &["uri", "path", "line", "end_line"],
-                        );
+            if candidates.get("omitted") != Some(&Value::Bool(true))
+                && u64_field(candidates, "total").unwrap_or(0) > 0
+            {
+                output.push_str("## Ambiguous symbol candidates (navigation only; unverified)\n\n");
+                render_page_metadata(&mut output, "Candidate page", candidates);
+                for (i, cand) in page_items(candidates).unwrap_or(&[]).iter().enumerate() {
+                    output.push_str(&format!("### Candidate {}\n\n", i + 1));
+                    for (field, label) in [("source", "Claim source"), ("target", "Possible target")] {
+                        if let Some(entity) = cand.get(field) {
+                            output.push_str(&format!("**{label}**\n\n"));
+                            render_entity_link(&mut output, entity, true);
+                            render_markdown_fields(&mut output, entity, 0, &["uri", "path", "line", "end_line"]);
+                        }
                     }
+                    render_markdown_fields(&mut output, cand, 0, &["source", "target"]);
                 }
-                render_markdown_fields(&mut output, cand, 0, &["source", "target"]);
             }
         }
     }
@@ -109,29 +108,19 @@ fn render_search_section_page(output: &mut String, page: &Value) {
             .or_else(|| text_field(section, "path"))
             .unwrap_or("Document section");
         let path = text_field(section, "path").unwrap_or_default();
-        let doc_id = text_field(section, "doc_id").unwrap_or_default();
         let doc_type = text_field(section, "doc_type").unwrap_or_default();
         let is_inv = u64_field(section, "is_invariant") == Some(1)
             || section.get("is_invariant").and_then(Value::as_bool) == Some(true);
         output.push_str(&format!("- **{}** — `{path}`", escape_text(title)));
-        if !doc_id.is_empty() || !doc_type.is_empty() || is_inv {
+        if !doc_type.is_empty() || is_inv {
             output.push_str(" (");
-            let mut first = true;
-            if !doc_id.is_empty() {
-                output.push_str(&inline_code(doc_id));
-                first = false;
-            }
             if !doc_type.is_empty() {
-                if !first {
+                output.push_str(doc_type);
+                if is_inv {
                     output.push_str(", ");
                 }
-                output.push_str(doc_type);
-                first = false;
             }
             if is_inv {
-                if !first {
-                    output.push_str(", ");
-                }
                 output.push_str("invariant");
             }
             output.push(')');
@@ -145,7 +134,7 @@ fn render_search_section_page(output: &mut String, page: &Value) {
     }
 }
 
-fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpts: bool) {
+fn render_section_page(output: &mut String, heading: &str, page: &Value) {
     render_page_metadata(output, heading, page);
     for section in page_items(page).unwrap_or(&[]) {
         let title = text_field(section, "section_title")
@@ -157,7 +146,18 @@ fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpt
             output,
             section,
             0,
-            &["content", "excerpt", "uri", "path", "line", "end_line"],
+            &[
+                "content",
+                "excerpt",
+                "uri",
+                "path",
+                "line",
+                "end_line",
+                "doc_id",
+                "section_title",
+                "doc_type",
+                "is_invariant",
+            ],
         );
         if let Some(content) = text_field(section, "content") {
             output.push_str("\n#### Source Markdown\n\n");
@@ -166,13 +166,6 @@ fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpt
                 output.push('\n');
             }
             output.push('\n');
-        }
-        if excerpts {
-            if let Some(excerpt) = text_field(section, "excerpt") {
-                output.push_str("**Match excerpt**\n\n");
-                append_fenced_block(output, "text", excerpt, 0);
-                output.push('\n');
-            }
         }
     }
 }

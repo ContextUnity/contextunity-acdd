@@ -503,7 +503,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
         1
     );
     reader::inspect_paged_with_path(&conn, "target", None, false, &options(30)).unwrap();
-    let docs = reader::get_doc_paged(&conn, "README.md", None, &options(30)).unwrap();
+    let docs = reader::get_doc_paged(&conn, "README.md", None, false, &options(30)).unwrap();
     assert!(docs["sections"]["items"][0].get("content").is_none());
     reader::search_docs_with_options(
         &conn,
@@ -531,7 +531,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
         }
     )
     .is_err());
-    assert!(reader::get_doc_paged(&conn, "README.md", None, &full).is_err());
+    assert!(reader::get_doc_paged(&conn, "README.md", None, false, &full).is_err());
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     let full_node = reader::inspect_paged_with_path(&conn, "target", None, false, &full).unwrap();
     assert!(full_node["node"]["details"].is_object());

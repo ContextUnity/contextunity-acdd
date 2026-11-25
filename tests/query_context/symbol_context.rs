@@ -99,10 +99,23 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
 
     let mut full_doc_options = options(20);
     full_doc_options.detail = Detail::Full;
+    let default_full_document = reader::get_doc_paged(
+        &conn,
+        "docs/reference/mcp-tools.md",
+        None,
+        false,
+        &full_doc_options,
+    )
+    .unwrap();
+    assert_eq!(
+        default_full_document["referenced_symbol_candidates"]["omitted"],
+        true
+    );
     let document = reader::get_doc_paged(
         &conn,
         "docs/reference/mcp-tools.md",
         None,
+        true,
         &full_doc_options,
     )
     .unwrap();
@@ -145,6 +158,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         &fallback_conn,
         "docs/reference/mcp-tools.md",
         None,
+        true,
         &full_doc_options,
     )
     .unwrap();
@@ -200,6 +214,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         &conn,
         "docs/reference/mcp-tools.md",
         None,
+        false,
         &compact_doc_options,
     )
     .unwrap();
@@ -223,6 +238,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
             &conn,
             "docs/reference/mcp-tools.md",
             None,
+            false,
             &citation_page_options,
         )
         .unwrap();

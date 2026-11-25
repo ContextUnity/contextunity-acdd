@@ -72,6 +72,17 @@ fn document_detail_preserves_full_content_and_compact_outline_across_formats() {
     assert!(full_markdown.contains("Source Markdown"));
     assert!(full_markdown.contains("documented contract"));
     assert!(full_markdown.contains("[README.md](file://"));
+    let sections_slice = full_markdown
+        .split("## Verified referenced symbols")
+        .next()
+        .unwrap_or(&full_markdown);
+    assert!(
+        !full_markdown.contains("## Ambiguous symbol candidates")
+            && !sections_slice.contains("**doc_id**")
+            && !sections_slice.contains("**is_invariant**"),
+        "default get_doc markdown strips candidate stubs and raw DB metadata: {full_markdown}"
+    );
+    assert_eq!(document["referenced_symbol_candidates"]["omitted"], true);
     let outline_markdown = response_text(
         &mut client,
         "get_doc",
@@ -79,19 +90,10 @@ fn document_detail_preserves_full_content_and_compact_outline_across_formats() {
     );
     assert!(outline_markdown.contains("Document sections"));
     assert!(!outline_markdown.contains("Source Markdown"));
-    assert_eq!(
-        outline_markdown
-            .matches("Request detail=full for documentary reference candidates")
-            .count(),
-        1,
-        "compact output prints the candidate omission hint once: {outline_markdown}"
-    );
-    assert_eq!(
-        outline_markdown
-            .matches("## Ambiguous symbol candidates (navigation only; unverified)")
-            .count(),
-        1,
-        "compact output uses one candidate heading: {outline_markdown}"
+    assert!(
+        !outline_markdown.contains("## Ambiguous symbol candidates")
+            && !outline_markdown.contains("Request detail=full"),
+        "compact output strips candidate stubs: {outline_markdown}"
     );
     client.finish().expect("server must finish successfully");
 }
@@ -123,11 +125,14 @@ fn document_search_markdown_preserves_page_metadata_excerpts_and_section_identit
         "Match excerpt",
         "# [Contract]\n\nThe `target` function preserves the [documented] [contract].",
         "— `README.md`",
-        section["doc_id"].as_str().unwrap(),
         section["doc_type"].as_str().unwrap(),
     ] {
         assert!(markdown.contains(token), "{token}: {markdown}");
     }
+    assert!(
+        !markdown.contains(section["doc_id"].as_str().unwrap()),
+        "search_docs markdown must not duplicate path via doc_id: {markdown}"
+    );
     assert!(
         !markdown.contains("file://"),
         "search_docs markdown must use repo-relative paths: {markdown}"
@@ -198,5 +203,90 @@ fn explain_document_controls_and_direction_aliases_preserve_the_graph() {
         assert_eq!(alias_result[canonical], canonical_result[canonical]);
         assert_eq!(alias_result[omitted]["omitted"], true);
     }
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn get_doc_large_doc_decouples_candidates_and_read_engine_defaults() {
+    let mut big_doc = String::from("---\ntitle: Large Doc\ndoc_type: reference\n---\n# Large Doc\n");
+    for i in 0..80 {
+        big_doc.push_str(&format!("\n## Section {i}\nReferences `shared` and `helper`.\n"));
+    }
+    let long_file: String = (1..=125).map(|i| format!("line_{i}\n")).collect();
+    let (ws, harness) = McpTestHarness::with_files(&[
+        ("src/a.py", "def shared():\n    return 'a'\n\ndef helper():\n    return 'needle_hit'\n"),
+        ("src/b.py", "def shared():\n    return 'b'\n"),
+        ("docs/archive/old.md", "archived needle_hit\n"),
+        ("docs/large.md", &big_doc),
+        ("src/long.txt", &long_file),
+    ]);
+    let mut client = harness.expect("MCP initialize");
+    // Prime index before measuring the 2s SQLite query boundary on get_doc
+    ws.build();
+
+    // 1. Large-doc get_doc default (include_candidates: false) stays well below 2s SQLite boundary and omits candidates
+    let started = std::time::Instant::now();
+    let default_doc = client
+        .document("docs/large.md", json!({}))
+        .expect("default get_doc should succeed");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "default get_doc exceeded 2s boundary: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(default_doc["referenced_symbol_candidates"]["omitted"], true);
+    assert!(default_doc["referenced_symbol_candidates"]["hint"]
+        .as_str()
+        .is_some_and(|h| h.contains("include_candidates=true")));
+
+    // Opt-in include_candidates returns ambiguous candidates
+    let with_candidates = client
+        .document(
+            "docs/large.md",
+            json!({"section":"Section 0","include_candidates":true}),
+        )
+        .expect("opt-in get_doc should succeed");
+    assert_eq!(with_candidates["referenced_symbol_candidates"]["total"], 2);
+
+    // 2. acdd_read mode="search" defaults: context=0, ## <path> grouping, **/archive/** exclusion, explicit overrides
+    let search_default = client
+        .payload("acdd_read", json!({"mode":"search","pattern":"needle_hit"}))
+        .expect("search should succeed");
+    let content = search_default["content"].as_str().unwrap();
+    assert!(content.contains("## src/a.py\n5: "), "{content}");
+    assert!(!content.contains("4: "), "default context must be 0: {content}");
+    assert!(!content.contains("docs/archive/old.md"), "archive must be excluded by default: {content}");
+
+    let search_ctx = client
+        .payload("acdd_read", json!({"path":"src/a.py","mode":"search","pattern":"needle_hit","context":1}))
+        .expect("explicit context override");
+    assert!(search_ctx["content"].as_str().unwrap().contains("4: def helper():"));
+
+    let search_archive = client
+        .payload("acdd_read", json!({"path":"docs/archive","mode":"search","pattern":"needle_hit"}))
+        .expect("explicit archive search");
+    assert!(search_archive["content"].as_str().unwrap().contains("## docs/archive/old.md\n1: archived needle_hit"));
+
+    // 3. acdd_read default line_count=100 vs explicit override
+    let default_lines = client
+        .payload("acdd_read", json!({"path":"src/long.txt"}))
+        .expect("default lines read");
+    assert_eq!(default_lines["truncated"], true);
+    assert_eq!(default_lines["content"].as_str().unwrap().lines().count(), 100);
+
+    let full_lines = client
+        .payload("acdd_read", json!({"path":"src/long.txt","line_count":130}))
+        .expect("explicit line_count override");
+    assert_eq!(full_lines["truncated"], false);
+    assert_eq!(full_lines["content"].as_str().unwrap().lines().count(), 125);
+
+    // 4. Concise enclosing footer + trimmed source_preview defaults
+    let snippet = client
+        .payload("acdd_read", json!({"path":"src/a.py","selector":"helper"}))
+        .expect("snippet read");
+    let preview = snippet["source_preview"].as_object().unwrap();
+    assert!(!preview.contains_key("next_source_offset") && !preview.contains_key("continuation_hint"));
+    assert!(!preview.contains_key("omitted_leading_lines"));
+    let _ = ws;
     client.finish().expect("server must finish successfully");
 }

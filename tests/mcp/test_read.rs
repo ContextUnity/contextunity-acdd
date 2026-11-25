@@ -401,17 +401,17 @@ fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
     for (args, expected, forbidden) in [
         (
             json!({"path": "src", "mode": "search", "pattern": "needle", "context": 0}),
-            "src/nested/beta.rs:2:",
+            "## src/nested/beta.rs\n2:",
             ".env",
         ),
         (
             json!({"path": "src/**/*.rs", "mode": "search", "pattern": "needle", "context": 0}),
-            "src/alpha.rs:2:",
+            "## src/alpha.rs\n2:",
             "src/notes.txt",
         ),
         (
             json!({"mode": "search", "pattern": "needle", "context": 0}),
-            "src/alpha.rs:2:",
+            "## src/alpha.rs\n2:",
             "SECRET=needle",
         ),
     ] {
@@ -945,7 +945,7 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
         .as_str()
         .expect("footer should be present");
     assert!(
-        footer.contains("💡 Enclosing symbol: 'fn compute_total'"),
+        footer.contains("Enclosing: `fn compute_total`"),
         "unexpected footer: {footer}"
     );
     assert!(
@@ -963,7 +963,7 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
         .as_str()
         .unwrap();
     assert!(
-        markdown.contains("💡 Enclosing symbol: 'fn compute_total'"),
+        markdown.contains("Enclosing: `fn compute_total`"),
         "unexpected markdown: {markdown}"
     );
 
@@ -975,7 +975,7 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
         .as_str()
         .expect("footer should be present for method");
     assert!(
-        footer.contains("💡 Enclosing symbol: 'fn calculate_tax'"),
+        footer.contains("Enclosing: `fn calculate_tax`"),
         "unexpected footer: {footer}"
     );
     assert!(
