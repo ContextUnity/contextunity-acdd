@@ -500,7 +500,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         ("acdd.yaml", "roots: [src/]\ndocs: [docs/]\nmodules:\n  domains:\n    probe: true\n"),
         ("src/lib.rs", "pub fn target_fn() -> i32 { 42 }\n#[cfg(test)]\nmod tests { #[test] fn covers_target() { assert_eq!(super::target_fn(), 42); } }\n"),
         ("docs/adr/0001-custom-db.md", "---\ntitle: Custom DB ADR\ndoc_type: adr\n---\n# Custom DB ADR\n"),
-        (".acdd/profile.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: [probe.ping]\n    context: [probe.status]\n    save:\n      post: none\n      prune: true\n"),
+        (".acdd/profile.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: []\n    context: [docs.adrs]\n    save:\n      post: none\n      prune: true\n"),
     ]);
     workspace.seed_git().unwrap();
     let rel_wt = workspace.path(".worktrees/wt-rel");
@@ -519,8 +519,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         .with_invocation_settings(InvocationSettings {
             root: workspace.root().to_path_buf(), config: None, profile: None,
             state_db: Some(custom_state_db.clone()), code_db: custom_code_db.clone(),
-        })
-        .with_domain_providers(vec![Arc::new(ProbeProvider)]);
+        });
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let call_json = |id: i64, name: &str, args: Value| -> Value {
         rt.block_on(async {
@@ -542,7 +541,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         let run_id = call_json(base, "acdd_state", json!({"action":"start","goal":label,"run_name":format!("run-{label}"),"scope":["src/lib.rs"],"in_place":true,"worktree":wt_sel,"format":"json"}))["run"]["run_id"].as_str().unwrap().to_owned();
         assert_eq!(call_json(base + 1, "acdd_state", json!({"action":"status","run":&run_id,"worktree":wt_sel,"format":"json"}))["run"]["run_id"], run_id);
         let claim = call_json(base + 2, "acdd_claim", json!({"run":&run_id,"node":"execute","worker_id":"builder","worktree":wt_sel,"format":"json"}));
-        assert_eq!(claim["context_lenses"]["probe.status"], json!({"ok": true, "worktree": exp_wt.display().to_string()}));
+        assert!(claim["context_lenses"]["docs.adrs"]["items"].as_array().is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
         assert_eq!(resolve_worktree_span_context(workspace.root(), exp_wt, Some(&custom_state_db), &adapter).unwrap().unwrap().run_id.as_str(), run_id);
         assert_eq!(call_json(base + 3, "acdd_read", json!({"path":"src/lib.rs","worktree":wt_sel,"format":"json"}))["in_write_scope"], "ALLOWED");
         let post = call_json(base + 4, "acdd_blackboard", json!({"action":"post","run":&run_id,"topic":"notes","payload":label,"worktree":wt_sel,"format":"json"}));
@@ -562,9 +561,21 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         workspace.root(),
         &adapter,
         Some(custom_code_db.as_path()),
-        Vec::new(),
+        vec![Arc::new(ProbeProvider)],
     )
     .unwrap();
+    assert_eq!(
+        custom_providers.provide_context("probe.status", &DomainContextReq {
+            run_id: "custom-db-check".parse().unwrap(), node_cursor: "execute".parse().unwrap(), gate_id: "execute".parse().unwrap(),
+            workspace_root: workspace.root().to_path_buf(), worktree: canon_wt.clone(), admitted_scope: vec!["src/lib.rs".into()],
+            target: None, max_bytes: 16_384, path_policy: Default::default(), baseline_ref: None,
+        }).unwrap(),
+        json!({ "ok": true, "worktree": canon_wt.display().to_string() })
+    );
+    assert!(matches!(
+        custom_providers.run_check("probe.ping", &json!({}), &check_req).unwrap(),
+        DomainCheckOutcome::Passed { .. }
+    ));
     let default_providers =
         build_domain_providers(workspace.root(), &adapter, None, Vec::new()).unwrap();
     let FreshnessObservation::Passed { execution_digest_salt: Some(custom_salt), .. } = custom_providers.observe_freshness("code.seam", &json!({}), &check_req).unwrap() else { panic!("expected custom salt"); };

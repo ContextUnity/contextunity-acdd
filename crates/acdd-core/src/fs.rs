@@ -245,7 +245,7 @@ fn ensure_target_not_symlink(absolute: &Path) -> Result<()> {
     }
 }
 
-/// Performs atomic write.
+/// Atomically writes `bytes` to `path` via a confined temporary sibling file and rename.
 pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
     reject_parent_dir_components(path)?;
     let absolute = if path.is_absolute() {

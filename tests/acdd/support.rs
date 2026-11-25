@@ -140,8 +140,11 @@ impl TestProvider {
             },
         };
         Arc::new(
-            CompositeDomainProvider::new(vec![Arc::new(code), Arc::new(docs), Arc::new(http)])
-                .expect("composite provider valid"),
+            CompositeDomainProvider::with_module_flags(
+                vec![Arc::new(code), Arc::new(docs), Arc::new(http)],
+                BTreeMap::from([("http".to_owned(), true)]),
+            )
+            .expect("composite provider valid"),
         )
     }
 }

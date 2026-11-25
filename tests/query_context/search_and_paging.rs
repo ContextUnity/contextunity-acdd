@@ -347,8 +347,8 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
         None,
         &traversal::TraversalOptions {
             depth: 2,
-            inbound: false,
-            mode: None,
+            direction: traversal::ImpactDirection::Outbound,
+            mode: traversal::TraversalMode::Calls,
             edge_types: None,
             page: &options(100),
         },
@@ -369,8 +369,8 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
             None,
             &traversal::TraversalOptions {
                 depth: 2,
-                inbound: false,
-                mode: None,
+                direction: traversal::ImpactDirection::Outbound,
+                mode: traversal::TraversalMode::Calls,
                 edge_types: None,
                 page: &query,
             },
@@ -413,8 +413,8 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
         None,
         &traversal::TraversalOptions {
             depth: 2,
-            inbound: false,
-            mode: None,
+            direction: traversal::ImpactDirection::Outbound,
+            mode: traversal::TraversalMode::Calls,
             edge_types: None,
             page: &options(10),
         },
@@ -430,8 +430,8 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
         None,
         &traversal::TraversalOptions {
             depth: 1,
-            inbound: false,
-            mode: None,
+            direction: traversal::ImpactDirection::Outbound,
+            mode: traversal::TraversalMode::Calls,
             edge_types: None,
             page: &options(10),
         },

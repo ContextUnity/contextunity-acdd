@@ -9,7 +9,7 @@ use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list
 use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{
     load_adapter, resolve_effective_state_db_path, resolve_state_db_path, Adapter,
-    SpecCollectionConfig, ACDD_CONFIG_FILE,
+    SpecCollectionConfig,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::canonical_root;
@@ -197,16 +197,7 @@ pub(crate) fn resolve_spec_repositories(
 }
 
 pub(crate) fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
-    load_adapter(ws_root, None).map_err(|err| {
-        if let Some(se) = err.get_ref().and_then(|inner| inner.downcast_ref::<StateError>()) {
-            se.clone()
-        } else {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to load {ACDD_CONFIG_FILE} in '{}': {err}", ws_root.display()),
-            )
-        }
-    })
+    load_adapter(ws_root, None)
 }
 
 /// Resolve the explicit or owning-primary state database without guessing on invalid configuration.

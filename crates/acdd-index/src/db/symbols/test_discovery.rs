@@ -7,6 +7,7 @@ use crate::models::{
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -264,27 +265,32 @@ fn page_call_nodes(
             })
             .collect::<Vec<_>>();
         let direct = path.hashes.len() == 2;
-        let mut connection = json!({
-            "relation": if direct {"direct"} else {"transitive"},
-            "call_path": call_path,
-            "verified_call_path_nodes": verified_call_path_nodes
-        });
-        if direct {
-            connection["edge_kind"] = json!("calls");
-            if let Some((edge_path, _)) = path.edges.first() {
-                connection["path"] = json!(edge_path);
-                if compact
-                    && (edge_path == selected_path
-                        || edge_path == item["path"].as_str().unwrap_or_default())
-                {
-                    connection
-                        .as_object_mut()
-                        .context("invalid direct call connection")?
-                        .remove("path");
-                }
-            }
+        #[derive(Serialize)]
+        struct CallConnectionDto<'a> {
+            relation: &'static str,
+            call_path: Vec<String>,
+            verified_call_path_nodes: Vec<Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            edge_kind: Option<&'static str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: Option<&'a str>,
         }
-        item["connection"] = connection;
+        let item_path = item["path"].as_str().unwrap_or_default();
+        let connection_path = if direct {
+            path.edges.first().map(|(edge_path, _)| edge_path.as_str()).filter(
+                |edge_path| !(compact && (*edge_path == selected_path || *edge_path == item_path)),
+            )
+        } else {
+            None
+        };
+        let connection = CallConnectionDto {
+            relation: if direct { "direct" } else { "transitive" },
+            call_path,
+            verified_call_path_nodes,
+            edge_kind: direct.then_some("calls"),
+            path: connection_path,
+        };
+        item["connection"] = serde_json::to_value(connection)?;
     }
     Ok(paging::value(items, total, options, generation))
 }

@@ -1,10 +1,10 @@
 //! Adapter schema definitions, spec collection configuration, and validation.
 
 use super::constants::{
-    error, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES,
-    DEFAULT_MAX_TOTAL_BYTES, DEFAULT_RETAIN_TRACES, DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB,
-    MAX_METADATA_BYTES,
+    DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_TOTAL_BYTES,
+    DEFAULT_RETAIN_TRACES, DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB, MAX_METADATA_BYTES,
 };
+use crate::errors::{AcddError, ErrorCode};
 use crate::fs::checked_child;
 use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
@@ -152,7 +152,9 @@ impl SpecCollectionConfig {
         let mut dirs = BTreeSet::new();
         for pat in self.patterns() {
             for variant in crate::path_policy::expand_glob_braces(pat) {
-                let norm = normalize_spec_collection_path(&variant)?;
+                let norm = normalize_spec_collection_path(&variant).map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+                })?;
                 let segs: Vec<&str> = norm.split('/').collect();
                 expand_spec_dir_segments(root, Path::new(""), &segs, &mut dirs)?;
             }
@@ -178,10 +180,13 @@ fn expand_spec_dir_segments(
         let candidate = checked_child(root, current_rel)?;
         match fs::symlink_metadata(&candidate) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(error(format!(
-                    "spec collection '{}' must not be a symlink",
-                    current_rel.to_string_lossy()
-                )));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "spec collection '{}' must not be a symlink",
+                        current_rel.to_string_lossy()
+                    ),
+                ));
             }
             Ok(meta) if meta.is_dir() => {
                 out.insert(candidate);
@@ -261,7 +266,7 @@ pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
     ])
 }
 
-fn normalize_spec_collection_path(raw: &str) -> std::io::Result<String> {
+fn normalize_spec_collection_path(raw: &str) -> std::result::Result<String, AcddError> {
     let normalized = raw
         .trim()
         .replace('\\', "/")
@@ -269,26 +274,32 @@ fn normalize_spec_collection_path(raw: &str) -> std::io::Result<String> {
         .trim_end_matches('/')
         .to_owned();
     if normalized.is_empty() || !crate::path_policy::is_valid_scope_glob(&normalized) {
-        return Err(error(format!(
-            "spec collection path '{raw}' must be a normalized workspace-relative path or glob"
-        )));
+        return Err(AcddError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "spec collection path '{raw}' must be a normalized workspace-relative path or glob"
+            ),
+        ));
     }
     Ok(normalized)
 }
 
 pub(super) fn validate_and_normalize_specs(
     specs: &mut BTreeMap<String, SpecCollectionConfig>,
-) -> std::io::Result<()> {
+) -> std::result::Result<(), AcddError> {
     let mut normalized_entries: Vec<(String, Vec<String>)> = Vec::with_capacity(specs.len());
     for (name, cfg) in specs.iter_mut() {
         if name.trim().is_empty() {
-            return Err(error("spec collection name must not be empty"));
+            return Err(AcddError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                "spec collection name must not be empty",
+            ));
         }
         if !(1..=16).contains(&cfg.digits) {
-            return Err(error(format!(
-                "specs.{name}.digits must be in 1..=16, got {}",
-                cfg.digits
-            )));
+            return Err(AcddError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("specs.{name}.digits must be in 1..=16, got {}", cfg.digits),
+            ));
         }
         if let Some(ref mut p) = cfg.path {
             *p = normalize_spec_collection_path(p)?;
@@ -298,9 +309,10 @@ pub(super) fn validate_and_normalize_specs(
         }
         let pats: Vec<String> = cfg.patterns().into_iter().map(str::to_owned).collect();
         if pats.is_empty() {
-            return Err(error(format!(
-                "specs.{name} must configure 'path' or non-empty 'paths'"
-            )));
+            return Err(AcddError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("specs.{name} must configure 'path' or non-empty 'paths'"),
+            ));
         }
         normalized_entries.push((name.clone(), pats));
     }
@@ -309,9 +321,12 @@ pub(super) fn validate_and_normalize_specs(
             for pat_a in left_pats {
                 for pat_b in right_pats {
                     if crate::path_policy::patterns_overlap(pat_a, pat_b) {
-                        return Err(error(format!(
-                            "specs.{left_name} pattern '{pat_a}' overlaps specs.{right_name} pattern '{pat_b}'"
-                        )));
+                        return Err(AcddError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "specs.{left_name} pattern '{pat_a}' overlaps specs.{right_name} pattern '{pat_b}'"
+                            ),
+                        ));
                     }
                 }
             }
@@ -338,22 +353,22 @@ fn default_max_metadata_bytes() -> usize {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-/// Represents scanner limits data.
+/// Resource ceilings enforced during repository scanning and metadata serialization.
 pub struct ScannerLimits {
     #[serde(default = "default_max_files")]
-    /// The max files value.
+    /// Maximum number of source/doc files admitted per scan.
     pub max_files: usize,
     #[serde(default = "default_max_file_bytes")]
-    /// The max file bytes value.
+    /// Maximum byte size of a single indexed file.
     pub max_file_bytes: u64,
     #[serde(default = "default_max_total_bytes")]
-    /// The max total bytes value.
+    /// Maximum cumulative source bytes admitted across a scan.
     pub max_total_bytes: u64,
     #[serde(default = "default_max_metadata_bytes")]
     /// Authoritative maximum size in bytes for metadata and notes.
     pub max_metadata_bytes: usize,
     #[serde(default)]
-    /// Whether allow broad root applies.
+    /// Whether broad root paths (e.g. `.`) are permitted without error.
     pub allow_broad_root: bool,
     #[serde(default, skip_serializing)]
     /// Optional transient memory budget in MiB; YAML takes precedence over the environment.
@@ -416,7 +431,7 @@ impl Default for ScannerLimits {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-/// Represents adapter file YAML representation.
+/// Raw deserialized `acdd.yaml` workspace adapter manifest.
 pub struct AdapterFile {
     /// Workspace-relative glob patterns blocked by the reader.
     #[serde(default)]
@@ -527,67 +542,67 @@ where
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-/// Configures linked workspace operations.
+/// Raw YAML configuration entry for one linked secondary workspace.
 pub struct LinkedWorkspaceConfig {
-    /// The name value.
+    /// Unique alias referencing this linked workspace.
     pub name: String,
-    /// The path value.
+    /// Relative or canonical filesystem path to the linked workspace root.
     pub path: String,
     #[serde(default)]
-    /// Optional enabled value.
+    /// Optional flag to disable linking without deleting the config block.
     pub enabled: Option<bool>,
     #[serde(default)]
-    /// Optional roots value.
+    /// Optional source root overrides for the linked workspace.
     pub roots: Option<Vec<String>>,
     #[serde(default, alias = "doc_roots")]
-    /// Optional docs value.
+    /// Optional documentation root overrides for the linked workspace.
     pub docs: Option<Vec<String>>,
     #[serde(default)]
-    /// Optional ignore value.
+    /// Optional directory/file names ignored when scanning the linked workspace.
     pub ignore: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Represents linked workspace data.
+/// Normalized and resolved secondary workspace configuration.
 pub struct LinkedWorkspace {
-    /// The name value.
+    /// Unique alias referencing this linked workspace.
     pub name: String,
-    /// The path value.
+    /// Canonical filesystem root of the linked workspace.
     pub path: PathBuf,
-    /// The roots value.
+    /// Resolved source roots inside the linked workspace.
     pub roots: Vec<PathBuf>,
-    /// The ignored names value.
+    /// Directory and file names ignored when scanning this workspace.
     pub ignored_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
-/// Represents workspace adapter configuration.
+/// Validated, normalized workspace adapter configuration resolved from `acdd.yaml`.
 pub struct Adapter {
     /// Workspace-relative glob patterns blocked by the reader.
     pub sensitive: Vec<String>,
-    /// Optional adapter path value.
+    /// Resolved path to the `acdd.yaml` manifest, if present.
     pub adapter_path: Option<PathBuf>,
-    /// The response value.
+    /// Response pagination and byte-budget defaults.
     pub response: ResponsePolicy,
     /// Enabled ACDD MCP subsystems.
     pub modules: SubsystemRegistry,
-    /// The limits value.
+    /// File count and byte-size limits for workspace scanning.
     pub limits: ScannerLimits,
-    /// The roots value.
+    /// Normalized source roots admitted for indexing.
     pub roots: Vec<PathBuf>,
     /// Configured documentation root patterns/files (`docs:`).
     pub docs: Vec<String>,
-    /// The ignored names value.
+    /// Exact directory/file names excluded from workspace scans.
     pub ignored_names: BTreeSet<String>,
-    /// Optional adapter version value.
+    /// Optional `adapter_version` pin declared in `acdd.yaml`.
     pub adapter_version: Option<String>,
-    /// The digest value.
+    /// Content hash of the normalized adapter configuration.
     pub digest: String,
-    /// The linked workspaces value.
+    /// Resolved linked secondary workspaces.
     pub linked_workspaces: Vec<LinkedWorkspace>,
-    /// The owners value.
+    /// Path-pattern to owner-name mappings (`owners:`).
     pub owners: BTreeMap<String, String>,
-    /// The aliases value.
+    /// Path/symbol alias mappings (`aliases:`).
     pub aliases: BTreeMap<String, String>,
     /// Milestone directories for task discovery; Markdown documents remain indexed.
     pub milestones: Vec<String>,
@@ -603,7 +618,7 @@ pub struct Adapter {
     pub retain_traces: usize,
     /// Configured architectural zones and static lint rules.
     pub architecture: ArchitectureConfig,
-    /// Whether debug applies.
+    /// Enables daily redacted JSONL CLI/MCP telemetry logs under `.acdd/logs/`.
     pub debug: bool,
 }
 

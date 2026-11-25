@@ -6,10 +6,7 @@ pub(crate) mod docs_domain;
 mod overview;
 
 pub(crate) use code_domain::CodeDomainProvider;
-pub use common::{
-    execute_state_command, execute_state_query, resolve_effective_state_db, InvocationSettings,
-    WorktreeSpanContext,
-};
+pub use common::{execute_state_command, execute_state_query, InvocationSettings};
 pub(crate) use common::execute_state_command_with_config;
 #[cfg(test)]
 pub(crate) use common::state_engine_config;
@@ -21,6 +18,7 @@ use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
+use acdd_core::telemetry::WorktreeSpanContext;
 use acdd_state::types::NodeStatus;
 use acdd_state::usecases::StateEngineConfig;
 use std::path::Path;
@@ -260,7 +258,8 @@ pub fn resolve_worktree_span_context(
             "state subsystem is disabled in modules:",
         ));
     }
-    let resolved_state_db = resolve_effective_state_db(root, state_db, config)?;
+    let resolved_state_db =
+        acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
     let resolved = resolve_worktree_active_run_node(
         &resolved_state_db,
         worktree,
@@ -340,7 +339,13 @@ mod tests {
                 max_snapshot_file_bytes: None,
                 allowed_binary_extensions: None,
             },
-            Arc::new(CompositeDomainProvider::new(vec![]).unwrap()),
+            Arc::new(
+                CompositeDomainProvider::with_module_flags(
+                    vec![],
+                    std::collections::BTreeMap::new(),
+                )
+                .unwrap(),
+            ),
         )
         .unwrap();
         let started = engine

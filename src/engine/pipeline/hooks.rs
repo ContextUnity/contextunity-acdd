@@ -81,6 +81,7 @@ impl PipelineTestHooks {
     }
 
     /// Runs test actions immediately before delta persistence and after its failure.
+    #[cfg(test)]
     pub fn delta_failure(
         before: impl Fn(&Path) + Send + Sync + 'static,
         after: impl Fn(&Path) + Send + Sync + 'static,
@@ -92,6 +93,7 @@ impl PipelineTestHooks {
     }
 
     /// Adds a filesystem action before rollback receipt publication.
+    #[cfg(test)]
     pub fn delta_failure_before_publication(
         after: impl Fn(&Path) + Send + Sync + 'static,
         before_publication: impl Fn(&Path) + Send + Sync + 'static,
@@ -104,6 +106,7 @@ impl PipelineTestHooks {
     }
 
     /// Injects an identity change between rollback recovery samples.
+    #[cfg(test)]
     pub fn delta_failure_during_verification(
         after: impl Fn(&Path) + Send + Sync + 'static,
         during: impl Fn(&Path) + Send + Sync + 'static,

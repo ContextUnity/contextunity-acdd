@@ -471,12 +471,13 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
         .any(|s| s.spec_id == "AC-014"));
     assert!(cur_resp.warnings.is_empty());
 
-    let writer = StateEngine::open(base_config(main_root), provider).unwrap();
+    let writer_cfg = base_config(main_root);
+    let _writer = StateEngine::open(writer_cfg.clone(), provider).unwrap();
     let mut graph = build_rich_graph(main_root, "run-cleared-archive", acdd_state::types::IsolationMode::InPlace);
     graph.run.worktree = None;
     graph.run.run_name = RunName::new("cleared-archive").unwrap();
     let tombstone = sample_tombstone("run-cleared-archive", "cleared-archive", Some("AC-012"), acdd_state::types::TerminalStatus::Cleared, None);
-    writer.backend().exec_tx(|tx| {
+    backend_for(&writer_cfg).exec_tx(|tx| {
         tx.insert_run_graph(&graph)?;
         tx.archive_and_prune_run(&empty_preconditions(1), &tombstone)
     }).unwrap();
@@ -1701,7 +1702,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     );
     let ext_cfg = base_config(&lw_ext_pri);
     let (_, ext_provider) = build_provider_with_mock(&ext_cfg.modules);
-    let ext_rw = StateEngine::open(ext_cfg, ext_provider).unwrap();
+    let ext_rw = StateEngine::open(ext_cfg.clone(), ext_provider).unwrap();
     let ext_started = start_run(
         &ext_rw,
         StartReq {
@@ -1775,7 +1776,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     graph.run.worktree = None;
     let mut tomb = sample_tombstone("run-ext-closed", "ext-closed", Some("EXT-011"), acdd_state::types::TerminalStatus::Completed, Some(archive));
     tomb.closed_commit = Some(acdd_core::ids::CommitOid::new(closed.trim()).unwrap());
-    ext_rw.backend().exec_tx(|tx| {
+    backend_for(&ext_cfg).exec_tx(|tx| {
         tx.insert_run_graph(&graph)?;
         tx.archive_and_prune_run(&empty_preconditions(1), &tomb)
     }).unwrap();
@@ -1847,6 +1848,7 @@ struct MultiRunFixture {
     _tmp: TempDir,
     root: PathBuf,
     prof: String,
+    cfg: StateEngineConfig,
     rw: StateEngine,
     ro: StateQueryEngine,
 }
@@ -1866,8 +1868,8 @@ impl MultiRunFixture {
         git_commit_all(&root, "init");
         fs::create_dir(root.join(".acdd/state.sqlite")).unwrap();
         let rw = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
-        let ro = StateQueryEngine::open_read_only(cfg, provider).unwrap();
-        Self { _tmp: tmp, root, prof, rw, ro }
+        let ro = StateQueryEngine::open_read_only(cfg.clone(), provider).unwrap();
+        Self { _tmp: tmp, root, prof, cfg, rw, ro }
     }
 
     fn start_sibling_run(&self) -> (acdd_state::usecases::StartResp, PathBuf) {
@@ -2145,7 +2147,7 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         acdd_state::types::TerminalStatus::Completed,
         Some(tomb_rel),
     );
-    fx.rw.backend().exec_tx(|tx| {
+    backend_for(&fx.cfg).exec_tx(|tx| {
         tx.insert_run_graph(&tomb_graph)?;
         tx.archive_and_prune_run(&empty_preconditions(1), &tomb_record)
     }).unwrap();
@@ -2228,7 +2230,7 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         },
     )
     .unwrap();
-    let graph = fx.rw.backend().load_run_graph(&binding.run.run_id).unwrap().unwrap();
+    let graph = reader_for(&fx.cfg).load_run_graph(&binding.run.run_id).unwrap().unwrap();
     let dep = |task: &str| graph.dependencies.iter().find(|dep| dep.task_ref.as_str() == task).unwrap();
     assert_eq!(dep("T-01").depends_on_run_id, run_b.run.run_id);
     assert_eq!(dep("T-01").depends_on_workspace, wt_b.to_string_lossy());
@@ -2377,7 +2379,7 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
         },
     )
     .unwrap();
-    let late_graph = fx.rw.backend().load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
+    let late_graph = reader_for(&fx.cfg).load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
     assert_eq!(late_graph.dependencies[0].depends_on_run_id.as_str(), "AC-ABSENT");
     let late_producer = start_run(
         &fx.rw,
@@ -2398,7 +2400,7 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
                     rebind_profile: false,
                 }))
                 .unwrap();
-            let graph = fx.rw.backend().load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
+            let graph = reader_for(&fx.cfg).load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
             assert_eq!(graph.dependencies[0].depends_on_run_id, late_producer.run.run_id);
         }
         let StateQueryOutput::Roadmap(roadmap) = fx

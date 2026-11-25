@@ -1,6 +1,6 @@
-/// Implements response support.
+/// Bounded MCP JSON/Markdown response envelopes and stdio flush-reload framing.
 pub mod response;
-/// Implements server support.
+/// MCP server handle, SQLite reader admission, worktree resolution, and stdio session lifecycle.
 pub mod server;
-/// Implements tools support.
+/// MCP tool definitions, input schemas, and request dispatch.
 pub mod tools;

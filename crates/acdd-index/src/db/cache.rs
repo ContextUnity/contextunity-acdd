@@ -78,7 +78,7 @@ pub fn checkpoint(conn: &Connection, truncate: bool) -> Result<()> {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Represents file identity data.
+/// Stat fingerprint (`dev`, `ino`, `ctime`, `mtime`, `size`) for a SQLite or WAL file.
 pub struct FileIdentity {
     device: u64,
     inode: u64,
@@ -90,7 +90,7 @@ pub struct FileIdentity {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Represents identity data.
+/// Combined main-database and non-empty `-wal` file identity used to detect generation drift.
 pub struct Identity {
     main: FileIdentity,
     wal: Option<FileIdentity>,
@@ -171,7 +171,7 @@ pub fn exclusive_lock(path: &Path) -> Result<FileLockGuard> {
     generation_lock(path, true)
 }
 
-/// Performs identity.
+/// Samples the current filesystem [`Identity`] of the database at `path` and its `-wal` sidecar.
 pub fn identity(path: &Path) -> Result<Identity> {
     let main = file_identity(path)?;
     let wal_path = suffix(path, "-wal");
@@ -306,12 +306,12 @@ pub fn matches_with_reason(
     Ok(())
 }
 
-/// Performs publish verified.
+/// Publishes a `.verified.json` commitment receipt if the database identity remains unchanged.
 pub fn publish_verified(path: &Path, root: &Path, seal: &str) -> Result<bool> {
     let before = identity(path)?;
     publish_verified_identity(path, root, seal, &before)
 }
-/// Performs publish verified identity.
+/// Publishes a `.verified.json` receipt verified against a pre-sampled [`Identity`] baseline.
 pub fn publish_verified_identity(
     path: &Path,
     root: &Path,
@@ -345,7 +345,7 @@ pub fn publish_verified_identity(
     }
     Ok(true)
 }
-/// Performs invalidate.
+/// Best-effort deletion of a stale `.verified.json` receipt, logging any unexpected error.
 fn invalidate(path: &Path) {
     if let Err(error) = invalidate_checked(path) {
         eprintln!(

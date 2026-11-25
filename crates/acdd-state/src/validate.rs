@@ -392,19 +392,7 @@ fn load_strict_adapter(
             }
             Ok(report.adapter)
         }
-        Err(err) => {
-            if let Some(se) = err.get_ref().and_then(|e| e.downcast_ref::<StateError>()) {
-                Err(fail_state_err(&config_label, se, 1, 1))
-            } else {
-                Err(fail(
-                    ErrorCode::ProfileSchemaInvalid.as_str(),
-                    &config_label,
-                    1,
-                    1,
-                    format!("invalid {ACDD_CONFIG_FILE}: {err}"),
-                ))
-            }
-        }
+        Err(err) => Err(fail_state_err(&config_label, &err, 1, 1)),
     }
 }
 

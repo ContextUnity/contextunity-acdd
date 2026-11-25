@@ -216,6 +216,73 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         ErrorCode::TaskScopeConflict
     );
 
+    // 2b. `#459`: `extend_scope` supports non-terminal `root:polish`, rejects other `RootGate`s and `protected_paths`, and rejects terminal `root:polish`.
+    let mut polish_snap = snap.clone();
+    if let Some(existing) = polish_snap.nodes.iter_mut().find(|n| n.node_id == "root:polish") {
+        existing.status = NodeStatus::Ready;
+        existing.scope = vec!["docs/**".to_owned(), "ROADMAP.md".to_owned(), "TESTS.md".to_owned()];
+    } else {
+        let mut polish_node = polish_snap.nodes.iter().find(|n| n.node_id == "root:handoff").unwrap().clone();
+        polish_node.node_id = "root:polish".to_owned();
+        polish_node.gate_id = "polish".to_owned();
+        polish_node.status = NodeStatus::Ready;
+        polish_node.scope = vec!["docs/**".to_owned(), "ROADMAP.md".to_owned(), "TESTS.md".to_owned()];
+        polish_snap.nodes.push(polish_node);
+    }
+
+    let polish_ext = plan_extend_scope(
+        &polish_snap,
+        &profile,
+        &ExtendScopeInput {
+            node_cursor: NodeCursor::root(vec![g("polish")]).unwrap(),
+            paths: vec!["crates/polish-extra.md".to_owned()],
+            reason: "polish extra".to_owned(),
+            worker_id: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut polish_snap, &polish_ext);
+    let updated_polish = polish_snap.nodes.iter().find(|n| n.node_id == "root:polish").unwrap();
+    assert_eq!(updated_polish.contract_revision, 2);
+    assert!(acdd_state::machine::container_scope(&polish_snap, updated_polish).contains(&"crates/polish-extra.md".to_owned()));
+
+    for (cursor, path, exp_code) in [
+        (NodeCursor::root(vec![g("handoff")]).unwrap(), "docs/x.md", ErrorCode::ProfileSchemaInvalid),
+        (NodeCursor::root(vec![g("polish")]).unwrap(), "Cargo.toml", ErrorCode::OutOfScopeChanges),
+    ] {
+        assert_eq!(
+            plan_extend_scope(
+                &polish_snap,
+                &profile,
+                &ExtendScopeInput {
+                    node_cursor: cursor,
+                    paths: vec![path.to_owned()],
+                    reason: "negative check".to_owned(),
+                    worker_id: None,
+                },
+            )
+            .unwrap_err()
+            .code,
+            exp_code
+        );
+    }
+    polish_snap.nodes.iter_mut().find(|n| n.node_id == "root:polish").unwrap().status = NodeStatus::Completed;
+    assert_eq!(
+        plan_extend_scope(
+            &polish_snap,
+            &profile,
+            &ExtendScopeInput {
+                node_cursor: NodeCursor::root(vec![g("polish")]).unwrap(),
+                paths: vec!["docs/late.md".to_owned()],
+                reason: "terminal polish".to_owned(),
+                worker_id: None,
+            },
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::GateVerificationFailed
+    );
+
     // 3. `reopen` completed T1 when dependent T2 is `InProgress` requires `--cascade`.
     snap.nodes.iter_mut().find(|n| n.node_id == "task:T1").unwrap().status = NodeStatus::Completed;
     snap.dependencies[0].satisfied = true;

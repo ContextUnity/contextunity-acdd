@@ -843,10 +843,10 @@ pub struct ValidateResp {
     /// Aggregate summary counts.
     pub summary: ValidateSummary,
     /// Diagnostic list ordered deterministically.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub diagnostics: Vec<ValidateDiagnostic>,
     /// Structured advisory warnings (JSON objects).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub warnings: Vec<Value>,
 }
 

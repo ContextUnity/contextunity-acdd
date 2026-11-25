@@ -295,15 +295,8 @@ impl ArchRuleSpec {
 }
 
 /// Syntax invariant settings evaluated under `LintCategory::Syntax` (`syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ComplexityLimits {
-    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing; AST `cognitive_complexity` is recorded in `node.details` telemetry.
-    pub max_cognitive_complexity: usize,
-    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing; AST `max_nesting_depth` is recorded in `node.details` telemetry.
-    pub max_nesting_depth: usize,
-    /// Positive threshold retained for backward-compatible `acdd.yaml` parsing.
-    pub max_fanout: usize,
     /// Diagnostic severity emitted for syntax invariant violations (such as `syntax.fact_budget_exceeded`).
     #[serde(default)]
     pub severity: LintSeverity,
@@ -312,9 +305,55 @@ pub struct ComplexityLimits {
     pub invariant: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ComplexityLimitsWire {
+    max_cognitive_complexity: Option<usize>,
+    max_nesting_depth: Option<usize>,
+    max_fanout: Option<usize>,
+    severity: LintSeverity,
+    invariant: Option<String>,
+}
+
+impl Default for ComplexityLimitsWire {
+    fn default() -> Self {
+        Self {
+            max_cognitive_complexity: None,
+            max_nesting_depth: None,
+            max_fanout: None,
+            severity: LintSeverity::Warn,
+            invariant: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ComplexityLimits {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ComplexityLimitsWire::deserialize(deserializer)?;
+        for (field, value) in [
+            ("max_cognitive_complexity", wire.max_cognitive_complexity),
+            ("max_nesting_depth", wire.max_nesting_depth),
+            ("max_fanout", wire.max_fanout),
+        ] {
+            if value == Some(0) {
+                return Err(serde::de::Error::custom(format!(
+                    "architecture.complexity.{field} must be at least 1"
+                )));
+            }
+        }
+        Ok(Self {
+            severity: wire.severity,
+            invariant: wire.invariant,
+        })
+    }
+}
+
 impl Default for ComplexityLimits {
     fn default() -> Self {
-        Self { max_cognitive_complexity: 50, max_nesting_depth: 6, max_fanout: 40, severity: LintSeverity::Warn, invariant: None }
+        Self { severity: LintSeverity::Warn, invariant: None }
     }
 }
 
@@ -324,17 +363,8 @@ impl ComplexityLimits {
         *self == Self::default()
     }
 
-    /// Validate that all complexity limits are strictly positive and any invariant binding is non-empty.
+    /// Validate that any complexity invariant binding is non-empty.
     pub fn validate(&self) -> Result<(), StateError> {
-        for (field, value) in [
-            ("max_cognitive_complexity", self.max_cognitive_complexity),
-            ("max_nesting_depth", self.max_nesting_depth),
-            ("max_fanout", self.max_fanout),
-        ] {
-            if value == 0 {
-                return Err(schema_invalid(format!("architecture.complexity.{field} must be at least 1")));
-            }
-        }
         if self.invariant.as_deref().is_some_and(|v| v.trim().is_empty()) {
             return Err(schema_invalid("architecture.complexity.invariant must not be empty when specified"));
         }

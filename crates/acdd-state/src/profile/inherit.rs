@@ -293,18 +293,7 @@ fn effective_profiles_dirs(
     if let Some(dirs) = explicit_dirs {
         return Ok(dirs.to_vec());
     }
-    acdd_core::config::load_adapter(root, None)
-        .map(|a| a.profiles_dirs)
-        .map_err(|err| {
-            if let Some(se) = err.get_ref().and_then(|e| e.downcast_ref::<StateError>()) {
-                se.clone()
-            } else {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("failed to load acdd.yaml while resolving profiles_dirs: {err}"),
-                )
-            }
-        })
+    acdd_core::config::load_adapter(root, None).map(|a| a.profiles_dirs)
 }
 
 fn resolve_profile_path_in_workspace(

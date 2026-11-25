@@ -1,5 +1,6 @@
 //! Pure W3C Trace Context identifiers (`TraceId`, `SpanId`, `TraceParent`).
 
+use crate::ids::RunId;
 use anyhow::{bail, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -79,6 +80,19 @@ fn decode_lowercase_hex<const N: usize>(raw: &str, label: &str) -> anyhow::Resul
         "{label} must not be all zeros"
     );
     Ok(bytes)
+}
+
+/// Active W3C Trace Context span metadata resolved for an active worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeSpanContext {
+    /// Active run identifier.
+    pub run_id: RunId,
+    /// Active `in_progress` node ID bound to the worktree.
+    pub node_id: String,
+    /// Run root W3C 32-hex trace ID.
+    pub trace_id: String,
+    /// Active node W3C 16-hex span ID.
+    pub span_id: String,
 }
 
 /// 128-bit W3C Trace Context trace identifier (32 lowercase hex chars, non-zero).

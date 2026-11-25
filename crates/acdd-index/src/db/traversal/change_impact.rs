@@ -1,6 +1,7 @@
 use super::types::{
     decode_edge_descriptor, edge_endpoints, resolve_traversal_kinds, ImpactDirection,
-    TraversalMode, TraversalOptions, MAX_DEEP_TRAVERSAL_FRONTIER,
+    ReachedNodeDto, TraversalMode, TraversalOptions, ViaPredecessorDto,
+    MAX_DEEP_TRAVERSAL_FRONTIER,
 };
 use crate::db::{
     commitments::{self, read_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES},
@@ -615,36 +616,40 @@ fn changed_nodes_page(
     let sql = format!(
         "{cte} SELECT {columns},r.distance,{edge},{via} FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4"
     );
-    let mut items = reader::rows(
+    let raw_items = reader::rows(
         conn,
         &sql,
         &[&seed_json, &depth, &limit, &offset],
         options.limit,
     )?;
-    for item in &mut items {
-        let fields = item.as_object_mut().context("invalid change impact node")?;
-        let id = fields
+    let mut items = Vec::with_capacity(raw_items.len());
+    for raw in raw_items {
+        let mut row: ReachedNodeDto = serde_json::from_value(raw)?;
+        let id = row
+            .fields
             .get("id")
             .and_then(Value::as_str)
             .context("change impact node has no id")?;
         let is_seed = seed_ids.iter().any(|seed| seed == id);
-        let edge = decode_edge_descriptor(fields.remove("__edge").unwrap_or(Value::Null))?;
-        let via = fields
-            .remove("__via")
-            .and_then(|value| value.as_str().map(str::to_owned));
-        fields.insert("is_seed".into(), json!(is_seed));
+        let edge = decode_edge_descriptor(row.__edge.take().unwrap_or(Value::Null))?;
+        let via = row.__via.take();
+        row.is_seed = Some(is_seed);
         if !is_seed && !edge.is_null() {
-            fields.insert("edge".into(), edge);
+            row.edge = Some(edge);
         } else if !is_seed {
-            if fields.get("distance").and_then(Value::as_u64) == Some(1) {
+            if row.distance == Some(1) {
                 bail!("depth-one change impact node has no persisted edge evidence");
             }
-            let via = via
+            let (pred_id, pred_kind) = via
                 .map(|encoded| serde_json::from_str::<(String, String)>(&encoded))
                 .transpose()?
                 .context("reached change impact node has no predecessor")?;
-            fields.insert("via".into(), json!({"id":via.0,"kind":via.1}));
+            row.via = Some(ViaPredecessorDto {
+                id: pred_id,
+                kind: pred_kind,
+            });
         }
+        items.push(serde_json::to_value(row)?);
     }
     Ok(paging::value(items, total, options, generation))
 }
@@ -735,8 +740,8 @@ pub(super) fn changed_impact_with_path_options(
     if request.depth > 16 {
         bail!("depth must be <=16");
     }
-    let direction = ImpactDirection::from_inbound(request.inbound);
-    let traversal_mode = TraversalMode::parse_optional(request.mode);
+    let direction = request.direction;
+    let traversal_mode = request.mode;
     let snapshot = collect_change_snapshot(conn, root, mode, path_scope)?;
     let mut page = request.page.clone();
     page.generation = Some(read_metadata(conn, MetadataKey::OutputRoot)?);
@@ -808,7 +813,7 @@ pub(super) fn changed_impact_with_path_options(
         "selector":{"kind":"git_changes","mode":snapshot.mode},
         "direction":dir_str,
         "depth":request.depth,
-        "mode":request.mode.unwrap_or(traversal_mode.as_str()),
+        "mode":traversal_mode.as_str(),
         "generation":snapshot.fingerprint,
         "graph_generation":graph_generation,
         "changes":{"mode":snapshot.mode,"files":file_values},

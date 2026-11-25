@@ -1,6 +1,4 @@
-//! Shared adapter configuration constants and error constructors.
-
-use crate::errors::{ErrorCode, StateError};
+//! Shared adapter configuration constants.
 
 /// Canonical workspace adapter configuration filename.
 pub const ACDD_CONFIG_FILE: &str = "acdd.yaml";
@@ -65,14 +63,3 @@ pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
     "out",
     ".output",
 ];
-
-pub(super) fn error(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
-}
-
-pub(super) fn schema_error(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        StateError::new(ErrorCode::ProfileSchemaInvalid, message.into()),
-    )
-}

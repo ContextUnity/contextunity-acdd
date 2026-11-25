@@ -7,7 +7,17 @@ use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, ToSql};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+#[derive(Deserialize, Serialize)]
+struct DirectedEdgeDto<'a> {
+    #[serde(skip_deserializing)]
+    direction: &'a str,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
 
 /// Inspects symbols matching path or symbol selector with paging options.
 pub fn inspect_paged_with_path(
@@ -71,26 +81,29 @@ pub fn explain_with_path_options(
 ) -> Result<Value> {
     let show_doc = request.show_doc;
     let options = request.page;
-    let mut result = inspect_paged_with_path(conn, selector, path, show_doc, options)?;
+    let result = inspect_paged_with_path(conn, selector, path, show_doc, options)?;
     let id = result["node"]["id"]
         .as_str()
         .context("invalid node id")?
         .to_owned();
     let node_hash = crate::models::stable_hash64(&id);
+    let mut result = result;
     populate_edge_relations(conn, &mut result, node_hash, request.direction, options)?;
-    if let Some(gen) = result.as_object_mut().and_then(|m| m.remove("generation")) {
-        if let Some(m) = result.as_object_mut() {
-            m.insert("generation".into(), gen);
-        }
-    }
     Ok(result)
 }
 
 pub(crate) fn annotate_edge_direction(page: &mut Value, direction: &str) {
     if let Some(items) = page["items"].as_array_mut() {
         for item in items {
-            if let Some(edge) = item.as_object_mut() {
-                edge.insert("direction".into(), json!(direction));
+            let Ok(edge) = serde_json::from_value::<DirectedEdgeDto<'_>>(item.clone()) else {
+                continue;
+            };
+            let directed = DirectedEdgeDto {
+                direction,
+                fields: edge.fields,
+            };
+            if let Ok(encoded) = serde_json::to_value(directed) {
+                *item = encoded;
             }
         }
     }

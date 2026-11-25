@@ -615,8 +615,8 @@ fn dispatch_query(
             path.as_deref(),
             &traversal::TraversalOptions {
                 depth,
-                inbound: true,
-                mode: None,
+                direction: traversal::ImpactDirection::Inbound,
+                mode: traversal::TraversalMode::Calls,
                 edge_types: None,
                 page: &QueryOptions::resolve(
                     &ResponsePolicy::default(),
@@ -657,7 +657,7 @@ fn dispatch_query(
             None,
             &traversal::GraphQueryOptions {
                 depth: 2,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &cli_page(limit)?,
             },
@@ -697,7 +697,7 @@ fn dispatch_query(
                     path.as_deref(),
                     &traversal::GraphQueryOptions {
                         depth,
-                        direction: None,
+                        direction: traversal::ImpactDirection::Inbound,
                         coverage: CoverageOptions::default(),
                         page: &page,
                     },

@@ -155,7 +155,7 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
     .unwrap();
     let query_options = traversal::GraphQueryOptions {
         depth: 1,
-        direction: None,
+        direction: traversal::ImpactDirection::Inbound,
         coverage: Default::default(),
         page: &page,
     };

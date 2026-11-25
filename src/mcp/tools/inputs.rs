@@ -72,12 +72,12 @@ fn output_format_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 }
 
 #[derive(Default, Deserialize, JsonSchema)]
-/// Represents page input data.
+/// Shared pagination, detail-level, worktree, and output-format parameters.
 pub struct PageInput {
     /// Items per page (1..=100; default 30, 15 for ast_grep_search).
     pub limit: Option<usize>,
     #[serde(default)]
-    /// Zero-based page offset.
+    /// Zero-based item offset for paging through results.
     pub offset: usize,
     /// compact or full (subject to response byte limit).
     pub detail: Option<Detail>,
@@ -114,16 +114,16 @@ impl PageInput {
     }
 }
 #[derive(Default, Deserialize, JsonSchema)]
-/// Represents overview input data.
+/// Workspace overview request selecting summary aspects and pagination bounds.
 pub struct OverviewInput {
     /// Optional database ('counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'entrypoints_with_tests', 'topology', 'compiled_profiles', 'metadata') or discovery ('discovery', 'manifest_components', 'documentation_hubs', 'milestones') aspects.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents selector data.
+/// Target symbol selector with optional workspace-relative path scope.
 pub struct Selector {
     /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
     #[serde(default)]
@@ -135,7 +135,7 @@ pub struct Selector {
     /// Alias for path.
     pub file_path: Option<String>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Selector {
@@ -150,9 +150,9 @@ impl Selector {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Shared source preview and continuation options.
 pub struct SourceInput {
-    /// Include source body.
+    /// Override `response.source_context.enabled_by_default` to include or omit source text.
     pub show_source: Option<bool>,
-    /// Leading context lines (0..=20).
+    /// Leading context lines before the symbol declaration (`0..=20`).
     pub leading_lines: Option<usize>,
     /// Source body line limit (1..=500; default 200).
     pub max_body_lines: Option<usize>,
@@ -192,7 +192,7 @@ impl SourceInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
-/// Represents inspect data.
+/// Symbol inspection request covering metadata, linked docs, coverage, and source preview.
 pub struct Inspect {
     /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
     #[serde(default)]
@@ -204,7 +204,7 @@ pub struct Inspect {
     /// Alias for path.
     pub file_path: Option<String>,
     #[serde(default = "yes")]
-    /// Include linked documentation.
+    /// Include linked documentation sections in the inspection result.
     pub show_doc: bool,
     /// Include paged resolution coverage.
     #[serde(default)]
@@ -213,7 +213,7 @@ pub struct Inspect {
     /// Source preview and continuation options.
     pub source_input: SourceInput,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Inspect {
@@ -258,7 +258,7 @@ pub struct Snippet {
     /// Source preview and continuation options.
     pub source_input: SourceInput,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Snippet {
@@ -361,7 +361,7 @@ impl Snippet {
 }
 
 #[derive(Deserialize, JsonSchema)]
-/// Represents explain data.
+/// Relationship explanation request listing callers, callees, and type hierarchy links.
 pub struct Explain {
     /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
     #[serde(default)]
@@ -372,10 +372,10 @@ pub struct Explain {
     pub path: Option<String>,
     /// Alias for path.
     pub file_path: Option<String>,
-    /// Edge direction: incoming, outgoing, or both (default).
+    /// Edge direction filter (`incoming`, `outgoing`, or `both`).
     pub direction: Option<String>,
     #[serde(default = "yes")]
-    /// Include linked documentation.
+    /// Include linked documentation sections in the explain payload.
     pub show_doc: bool,
     /// Include paged resolution coverage.
     #[serde(default)]
@@ -384,7 +384,7 @@ pub struct Explain {
     /// Source preview and continuation options.
     pub source_input: SourceInput,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Explain {
@@ -397,7 +397,7 @@ impl Explain {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents search symbols data.
+/// Full-text and name-ranked symbol search parameters.
 pub struct SearchSymbols {
     /// Symbol pattern (alias: query). Use '*' with path or kind scope to list symbols.
     #[serde(default)]
@@ -407,7 +407,7 @@ pub struct SearchSymbols {
     /// Match complete name or qualname only.
     #[serde(default)]
     pub exact: bool,
-    /// Optional kind filter.
+    /// Optional symbol kind filter (e.g. `function`, `struct`, `class`).
     pub kind: Option<String>,
     /// Optional classification filter ('production', 'test', or 'documentation').
     pub classification: Option<SymbolClassification>,
@@ -425,7 +425,7 @@ pub struct SearchSymbols {
     #[serde(default)]
     pub include_preview: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl SearchSymbols {
@@ -438,7 +438,7 @@ impl SearchSymbols {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents tests data.
+/// Test discovery request finding tests covering or called by a target symbol.
 pub struct Tests {
     /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
     #[serde(default)]
@@ -450,10 +450,10 @@ pub struct Tests {
     /// Alias for path.
     pub file_path: Option<String>,
     #[serde(default = "inbound")]
-    /// Traversal direction: inbound (default) or outbound.
+    /// Traversal direction: `'inbound'` (covering tests) or `'outbound'` (tested targets).
     pub direction: String,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Tests {
@@ -466,7 +466,7 @@ impl Tests {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents impact data.
+/// Impact traversal request for a symbol selector or Git change view.
 pub struct Impact {
     /// Symbol ID or name (alias: symbol); provide one of selector or changes.
     pub selector: Option<String>,
@@ -489,7 +489,7 @@ pub struct Impact {
     /// Optional specific edge kinds to follow (e.g. ['calls', 'mutates', 'inherits', 'implements', 'imports']).
     pub edge_types: Option<Vec<String>>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Impact {
@@ -538,7 +538,7 @@ pub struct Query {
     /// Maximum graph depth for generic query operations; impact defaults to two.
     pub depth: u32,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Query {
@@ -559,7 +559,7 @@ impl Query {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents analyze data.
+/// Workspace or directory diagnostic analysis request covering syntax, resolution, and cycles.
 pub struct Analyze {
     /// Relative file/directory target or SQL statement (aliases: path, file_path, selector); omit for workspace totals.
     #[serde(default)]
@@ -570,13 +570,13 @@ pub struct Analyze {
     pub file_path: Option<String>,
     /// Alias for target.
     pub selector: Option<String>,
-    /// Whether include cycles applies.
+    /// Compute cross-module and cross-symbol dependency cycles in the selected scope.
     pub include_cycles: Option<bool>,
     /// Read stored syntax diagnostics only; does not run a linter or reparse source.
     #[serde(default)]
     pub lint: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Analyze {
@@ -594,7 +594,7 @@ impl Analyze {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents ast data.
+/// Structural tree-sitter AST pattern search parameters.
 pub struct Ast {
     /// AST pattern (alias: query).
     #[serde(default)]
@@ -603,12 +603,12 @@ pub struct Ast {
     pub query: Option<String>,
     /// Language profile ID (e.g. 'python', 'rust', 'typescript'); omitted infers from path or grammar.
     pub language: Option<String>,
-    /// Relative file or directory scope (alias: file_path).
+    /// Restrict the structural AST search to a workspace-relative file or directory (alias: `file_path`).
     pub path: Option<String>,
     /// Alias for path.
     pub file_path: Option<String>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Ast {
@@ -621,14 +621,14 @@ impl Ast {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents search docs data.
+/// Indexed Markdown documentation search parameters.
 pub struct SearchDocs {
     /// Documentation search query (alias: pattern).
     #[serde(default)]
     pub query: String,
     /// Alias for query.
     pub pattern: Option<String>,
-    /// Optional doc type filter.
+    /// Filter results by frontmatter `doc_type` (for example `architecture`, `adr`, `reference`).
     pub doc_type: Option<String>,
     /// Documentation component or directory prefix (aliases: path, file_path).
     pub component: Option<String>,
@@ -640,7 +640,7 @@ pub struct SearchDocs {
     #[serde(default)]
     pub include_excerpt: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl SearchDocs {
@@ -657,7 +657,7 @@ impl SearchDocs {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents get doc data.
+/// Indexed Markdown document or section retrieval parameters.
 pub struct GetDoc {
     /// Document path or ID (aliases: path, file_path, doc_id, selector).
     #[serde(default)]
@@ -673,7 +673,7 @@ pub struct GetDoc {
     /// Exact section title; omit with detail='compact' for outline.
     pub section: Option<String>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl GetDoc {
@@ -706,7 +706,7 @@ pub struct Lint {
     /// Optional minimum severity threshold (`warn` or `error`).
     pub severity: Option<LintSeverity>,
     #[serde(flatten)]
-    /// The page value.
+    /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
 }
 impl Lint {
@@ -719,13 +719,13 @@ impl Lint {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents guide data.
+/// Built-in ACDD topic guide and workspace config scaffolding parameters.
 pub struct Guide {
     #[serde(default)]
     /// Optional topic: query (default), lifecycle, acdd, gates, subtasks, code, docs, ast, adapter, init, or validate. The query index advertises enabled topics; known disabled topics return empty guidance.
     pub topic: Option<String>,
     #[serde(default)]
-    /// Whether force applies.
+    /// Overwrite existing scaffolded files when `topic == "init"`.
     pub force: bool,
     /// Worktree path or unique name/prefix selector; omit or '.' for server root.
     pub worktree: Option<String>,

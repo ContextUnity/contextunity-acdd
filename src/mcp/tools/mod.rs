@@ -212,7 +212,7 @@ mod tests {
             schema.properties.insert("url".into(), SchemaDef::string());
             schema
                 .properties
-                .insert("oversize".into(), SchemaDef::boolean());
+                .insert("oversize".into(), SchemaDef::of_type("boolean"));
             schema.required = vec!["url".into()];
             schema.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
             DomainCapabilities {
@@ -303,11 +303,11 @@ mod tests {
             "roots: [.]\nmodules:\n  domains:\n    http: true\n",
         )
         .unwrap();
-        let server = Server::new(
+        let mut server = Server::new(
             ws.path().to_path_buf(),
             ws.path().join(".acdd/code-map.sqlite"),
-        )
-        .with_domain_providers(vec![Arc::new(MockHttpProvider)]);
+        );
+        server.extra_domain_providers = vec![Arc::new(MockHttpProvider)];
 
         let info = server.get_info();
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
@@ -522,11 +522,11 @@ mod tests {
             let sub_ws =
                 acdd_core::fs::ScopedTempDir::create(&format!("acdd-mcp-tools-mod-{idx}")).unwrap();
             std::fs::write(sub_ws.path().join("acdd.yaml"), case.yaml).unwrap();
-            let s = Server::new(
+            let mut s = Server::new(
                 sub_ws.path().to_path_buf(),
                 sub_ws.path().join(".acdd/code-map.sqlite"),
-            )
-            .with_domain_providers(vec![Arc::new(MockHttpProvider)]);
+            );
+            s.extra_domain_providers = vec![Arc::new(MockHttpProvider)];
             let (_, _, ctx) = make_peer_ctx(100 + idx as i64).await;
             let listed = s.list_tools(None, ctx).await.unwrap();
             let names: BTreeSet<&str> = listed.tools.iter().map(|t| t.name.as_ref()).collect();

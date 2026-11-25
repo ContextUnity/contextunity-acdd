@@ -6,7 +6,7 @@ use acdd_index::{
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
-/// Searches indexed sources across one or more `languages` for AST `pattern`.
+/// Executes an unpaged structural AST pattern search across `languages` under `root`.
 pub(crate) fn search_languages_with_adapter(
     conn: &rusqlite::Connection,
     root: &Path,
@@ -598,7 +598,7 @@ fn compiled_languages_summary() -> String {
     }
 }
 
-/// Performs search paged.
+/// Loads workspace config and executes a paged structural AST search.
 #[cfg(test)]
 fn search_paged(
     conn: &rusqlite::Connection,
@@ -614,7 +614,7 @@ fn search_paged(
     search_paged_with_adapter(conn, &canon_root, &adapter, pattern, language, path, options)
 }
 
-/// Performs search paged using an already-loaded [`scanner::Adapter`].
+/// Executes a paged structural AST pattern search using an already-loaded [`scanner::Adapter`].
 #[cfg(test)]
 pub(crate) fn search_paged_with_adapter(
     conn: &rusqlite::Connection,

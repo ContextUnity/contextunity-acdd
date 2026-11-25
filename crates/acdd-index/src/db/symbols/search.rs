@@ -18,8 +18,114 @@ use acdd_core::response::{
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, ToSql};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
+
+#[derive(Deserialize, Serialize)]
+struct SearchHitDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    match_reason: Option<String>,
+    #[serde(default, skip_serializing)]
+    match_rank: Option<Value>,
+    #[serde(default, skip_serializing)]
+    bm25_rank: Option<Value>,
+    #[serde(default, skip_serializing)]
+    graph_boost: Option<Value>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RankedSearchHitDto {
+    #[serde(default, skip_serializing)]
+    search_total: Option<Value>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct InspectSelectorDto {
+    selector: String,
+    show_source: bool,
+}
+
+#[derive(Serialize)]
+struct SourcePreviewWindowDto {
+    start_line: usize,
+    end_line: usize,
+    body_lines: usize,
+    has_more: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SearchNavigationItemDto {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    qualname: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_line: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    match_reason: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inspect_selector: Option<InspectSelectorDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    is_test: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    classification: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    docstring_first_sentence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    match_snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    graph_pulse: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_preview: Option<Value>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
+struct SearchSourceCache<'a> {
+    conn: &'a Connection,
+    root: &'a Path,
+    files: HashMap<String, Option<String>>,
+    loader: VerifiedSourceCache,
+}
+
+impl<'a> SearchSourceCache<'a> {
+    fn new(conn: &'a Connection, root: &'a Path) -> Self {
+        Self {
+            conn,
+            root,
+            files: HashMap::new(),
+            loader: VerifiedSourceCache::new(),
+        }
+    }
+
+    fn read(&mut self, path: &str) -> Option<&str> {
+        self.files
+            .entry(path.to_owned())
+            .or_insert_with(|| self.loader.read(self.conn, self.root, path).ok())
+            .as_deref()
+    }
+}
 
 fn fts_tokens(pattern: &str) -> Vec<&str> {
     pattern
@@ -522,15 +628,14 @@ pub fn search_with_options(
     };
     if let Some(items) = nodes["items"].as_array_mut() {
         for item in items {
-            if options.detail == Detail::Compact && item["match_reason"] == "name_pattern" {
-                item.as_object_mut()
-                    .context("invalid search result")?
-                    .remove("match_reason");
-            }
-            if let Some(rank) = item
-                .as_object_mut()
-                .and_then(|item| item.remove("match_rank"))
+            let mut hit: SearchHitDto =
+                serde_json::from_value(item.clone()).context("invalid search result")?;
+            let _ = (&hit.bm25_rank, &hit.graph_boost);
+            if options.detail == Detail::Compact && hit.match_reason.as_deref() == Some("name_pattern")
             {
+                hit.match_reason = None;
+            }
+            if let Some(rank) = hit.match_rank.take() {
                 let reason = match rank.as_u64() {
                     Some(0) => "exact_name",
                     Some(1) => "name_prefix",
@@ -539,15 +644,10 @@ pub fn search_with_options(
                     _ => "indexed_text",
                 };
                 if options.detail == Detail::Full || !matches!(rank.as_u64(), Some(0..=1 | 3)) {
-                    item["match_reason"] = json!(reason);
+                    hit.match_reason = Some(reason.to_owned());
                 }
-                item.as_object_mut()
-                    .context("invalid search result")?
-                    .remove("bm25_rank");
-                item.as_object_mut()
-                    .context("invalid search result")?
-                    .remove("graph_boost");
             }
+            *item = serde_json::to_value(hit)?;
         }
     }
     Ok(json!({"pattern":pattern,"nodes":nodes}))
@@ -601,9 +701,10 @@ fn ranked_search_page(
             .unwrap_or_else(|| json!(0))
     };
     for item in &mut items {
-        item.as_object_mut()
-            .context("invalid search result")?
-            .remove("search_total");
+        let hit: RankedSearchHitDto =
+            serde_json::from_value(item.clone()).context("invalid search result")?;
+        let _ = &hit.search_total;
+        *item = serde_json::to_value(hit)?;
     }
     let has_more = items.len() > options.limit;
     items.truncate(options.limit);
@@ -618,63 +719,40 @@ fn ranked_search_page(
     }))
 }
 
-struct TextMatchPreviewParams<'a> {
-    conn: &'a Connection,
-    root: &'a Path,
-    pattern: &'a str,
-    previews_enabled: bool,
-    preview_hit_limit: usize,
-    preview_bytes_per_hit: usize,
-}
-
 fn apply_indexed_text_match_preview(
-    params: &TextMatchPreviewParams<'_>,
-    index: usize,
-    object: &mut serde_json::Map<String, Value>,
-    source_cache: &mut HashMap<String, Option<String>>,
-    source_loader: &mut VerifiedSourceCache,
-) -> Option<(String, Value)> {
-    let (Some(path), Some(start), Some(end)) = (
-        object
-            .get("path")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        object
-            .get("line")
-            .and_then(Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok()),
-        object
-            .get("end_line")
-            .and_then(Value::as_u64)
-            .and_then(|v| usize::try_from(v).ok()),
-    ) else {
-        return None;
-    };
-    let cached = source_cache
-        .entry(path.clone())
-        .or_insert_with(|| source_loader.read(params.conn, params.root, &path).ok());
-    let text = cached.as_deref()?;
-    let matched = resolve_indexed_text_match(
-        text,
-        start,
-        end,
-        params.pattern,
-        params.preview_bytes_per_hit,
-    )?;
-    object.insert("line".into(), json!(matched.line));
-    object.insert("match_snippet".into(), json!(matched.snippet));
-    if !params.previews_enabled || index >= params.preview_hit_limit {
+    sources: &mut SearchSourceCache<'_>,
+    item: &mut SearchNavigationItemDto,
+    pattern: &str,
+    include_preview: bool,
+    preview_bytes_per_hit: usize,
+) -> Option<(String, SourcePreviewWindowDto)> {
+    let path = item.path.clone()?;
+    let start = item
+        .line
+        .as_ref()
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())?;
+    let end = item
+        .end_line
+        .as_ref()
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())?;
+    let text = sources.read(&path)?;
+    let matched = resolve_indexed_text_match(text, start, end, pattern, preview_bytes_per_hit)?;
+    item.line = Some(json!(matched.line));
+    item.match_snippet = Some(matched.snippet);
+    if !include_preview {
         return None;
     }
     let (preview_src, win_start, win_end) = matched.preview?;
     Some((
         preview_src,
-        json!({
-            "start_line": win_start,
-            "end_line": win_end,
-            "body_lines": win_end.saturating_sub(win_start) + 1,
-            "has_more": false,
-        }),
+        SourcePreviewWindowDto {
+            start_line: win_start,
+            end_line: win_end,
+            body_lines: win_end.saturating_sub(win_start) + 1,
+            has_more: false,
+        },
     ))
 }
 
@@ -700,8 +778,7 @@ pub fn search_results_with_navigation(
         return Ok(result);
     }
 
-    let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
-    let mut source_loader = VerifiedSourceCache::new();
+    let mut sources = SearchSourceCache::new(conn, root);
 
     let ids = items
         .iter()
@@ -735,120 +812,93 @@ pub fn search_results_with_navigation(
     let previews_enabled = include_preview || has_small_total;
     let markdown = LanguageId::Markdown.as_str();
     for (index, item) in items.iter_mut().enumerate() {
-        let Some(object) = item.as_object_mut() else {
+        if !item.is_object() {
             continue;
-        };
-        let id = object
-            .get("id")
-            .and_then(Value::as_str)
-            .context("search result has no symbol id")?
-            .to_owned();
-        let (signature, is_test, docstring) =
-            metadata.get(&id).cloned().unwrap_or((None, None, None));
-        object.insert(
-            "signature".into(),
-            signature
-                .map(|value| {
-                    let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
-                    if value.chars().count() > SIGNATURE_CHAR_LIMIT {
-                        bounded.push('…');
-                    }
-                    json!(bounded)
-                })
-                .unwrap_or(Value::Null),
-        );
-        object.insert(
-            "inspect_selector".into(),
-            json!({"selector":id,"show_source":true}),
-        );
+        }
+        let mut dto: SearchNavigationItemDto =
+            serde_json::from_value(item.clone()).context("search result has no symbol id")?;
+        let (signature, is_test, docstring) = metadata
+            .get(&dto.id)
+            .cloned()
+            .unwrap_or((None, None, None));
+        dto.signature = signature.map(|value| {
+            let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
+            if value.chars().count() > SIGNATURE_CHAR_LIMIT {
+                bounded.push('…');
+            }
+            bounded
+        });
+        dto.inspect_selector = Some(InspectSelectorDto {
+            selector: dto.id.clone(),
+            show_source: true,
+        });
 
         if let Some(is_test) = is_test {
-            object.insert("is_test".into(), json!(is_test));
-            let classification =
-                if object.get("language").and_then(Value::as_str) == Some(markdown) {
-                    SymbolClassification::Documentation
-                } else if is_test {
-                    SymbolClassification::Test
-                } else {
-                    SymbolClassification::Production
-                };
-            object.insert("classification".into(), json!(classification.as_str()));
+            dto.is_test = Some(json!(is_test));
+            let classification = if dto.language.as_deref() == Some(markdown) {
+                SymbolClassification::Documentation
+            } else if is_test {
+                SymbolClassification::Test
+            } else {
+                SymbolClassification::Production
+            };
+            dto.classification = Some(classification.as_str().to_owned());
         }
         if let Some(docstring) = docstring.as_deref().and_then(first_docstring_sentence) {
-            object.insert("docstring_first_sentence".into(), json!(docstring));
+            dto.docstring_first_sentence = Some(docstring);
         }
 
-        let is_indexed_text =
-            object.get("match_reason").and_then(Value::as_str) == Some("indexed_text");
-        let is_markdown = object.get("language").and_then(Value::as_str) == Some(markdown);
+        let is_indexed_text = dto.match_reason.as_deref() == Some("indexed_text");
+        let is_markdown = dto.language.as_deref() == Some(markdown);
+        let item_preview_enabled = previews_enabled && index < PREVIEW_HIT_LIMIT;
         let matched_window = if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
             apply_indexed_text_match_preview(
-                &TextMatchPreviewParams {
-                    conn,
-                    root,
-                    pattern: &pattern,
-                    previews_enabled,
-                    preview_hit_limit: PREVIEW_HIT_LIMIT,
-                    preview_bytes_per_hit: PREVIEW_BYTES_PER_HIT,
-                },
-                index,
-                object,
-                &mut source_cache,
-                &mut source_loader,
+                &mut sources,
+                &mut dto,
+                &pattern,
+                item_preview_enabled,
+                PREVIEW_BYTES_PER_HIT,
             )
         } else {
             None
         };
 
         if index == 0 {
-            object.insert("graph_pulse".into(), search_graph_pulse(conn, &id));
+            dto.graph_pulse = Some(search_graph_pulse(conn, &dto.id));
         }
-        if !previews_enabled || index >= PREVIEW_HIT_LIMIT {
-            continue;
+        if item_preview_enabled {
+            if let Some((preview_src, preview_meta)) = matched_window {
+                dto.source = Some(preview_src);
+                dto.source_preview = Some(serde_json::to_value(preview_meta)?);
+            } else if dto.kind.as_ref().and_then(Value::as_str) != Some("file") {
+                let path = dto.path.clone().context("search result has no path")?;
+                if let Some(text) = sources.read(&path) {
+                    let node = json!({
+                        "id": dto.id,
+                        "kind": dto.kind,
+                        "name": dto.name,
+                        "qualname": dto.qualname,
+                        "path": path,
+                        "line": dto.line,
+                        "end_line": dto.end_line,
+                        "language": dto.language
+                    });
+                    let options = SourceOptions {
+                        enabled: true,
+                        leading_lines: 5,
+                        max_body_lines: 15,
+                        offset: 0,
+                    };
+                    if let Ok((source, preview)) =
+                        source_preview(conn, &node, text, &options, PREVIEW_BYTES_PER_HIT)
+                    {
+                        dto.source = Some(source);
+                        dto.source_preview = Some(preview);
+                    }
+                }
+            }
         }
-        if let Some((preview_src, preview_meta)) = matched_window {
-            object.insert("source".into(), json!(preview_src));
-            object.insert("source_preview".into(), preview_meta);
-            continue;
-        }
-        if object.get("kind").and_then(Value::as_str) == Some("file") {
-            // File rows span the whole file and their start line already resolves to line 1;
-            // skip symbol_range AST recovery rather than falling back to line 1 of an enclosing module container.
-            continue;
-        }
-        let path = object
-            .get("path")
-            .and_then(Value::as_str)
-            .context("search result has no path")?;
-        let Some(text) = source_cache
-            .entry(path.to_owned())
-            .or_insert_with(|| source_loader.read(conn, root, path).ok())
-            .clone()
-        else {
-            continue;
-        };
-        let node = json!({
-            "id": id,
-            "kind": object.get("kind"),
-            "name": object.get("name"),
-            "qualname": object.get("qualname"),
-            "path": path,
-            "line": object.get("line"),
-            "end_line": object.get("end_line"),
-            "language": object.get("language")
-        });
-        let options = SourceOptions {
-            enabled: true,
-            leading_lines: 5,
-            max_body_lines: 15,
-            offset: 0,
-        };
-        if let Ok((source, preview)) =
-            source_preview(conn, &node, &text, &options, PREVIEW_BYTES_PER_HIT)
-        {
-            object.insert("source".into(), json!(source));
-            object.insert("source_preview".into(), preview);
-        }
+        *item = serde_json::to_value(dto)?;
     }
     Ok(result)
 }

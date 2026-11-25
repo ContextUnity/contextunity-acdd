@@ -342,7 +342,7 @@ scope: [src/lib.rs]
 
     snapshot(Save, Some("t1"), false, Some(rev)).unwrap();
     pass("handoff", None);
-    let tomb = engine.backend().load_tombstone(&rid).unwrap().unwrap();
+    let tomb = reader_for(&cfg).load_tombstone(&rid).unwrap().unwrap();
     assert!(tomb.cleanup_manifest.is_empty() && !tomb.cleanup_pending && refs().is_empty());
 
     let commit_profile = write_profile(
@@ -418,7 +418,7 @@ scope: [src/lib.rs]
         ("delivery".to_owned(), delivery_repo.clone()),
         ("non-git".to_owned(), non_git.path().to_path_buf()),
     ]);
-    let linked = StateEngine::open(linked_config, provider.clone()).unwrap();
+    let linked = StateEngine::open(linked_config.clone(), provider.clone()).unwrap();
     submit_req(
         &linked,
         pass_req(
@@ -646,8 +646,7 @@ scope: [src/lib.rs]
         .is_err()
     );
     assert!(
-        linked
-            .backend()
+        reader_for(&linked_config)
             .load_tombstone(&rid)
             .unwrap()
             .unwrap()
@@ -668,8 +667,7 @@ scope: [src/lib.rs]
     .run
     .run_id;
     assert!(
-        !engine
-            .backend()
+        !reader_for(&cfg)
             .load_tombstone(&rid)
             .unwrap()
             .unwrap()
@@ -693,7 +691,7 @@ scope: [src/lib.rs]
     drop(engine);
     fs::remove_file(cfg.resolved_state_db_path().0).unwrap();
     let recovered = StateEngine::open(cfg.clone(), provider).unwrap();
-    let tomb = recovered.backend().load_tombstone(&next).unwrap().unwrap();
+    let tomb = reader_for(&cfg).load_tombstone(&next).unwrap().unwrap();
     assert!(tomb.cleanup_manifest.is_empty() && tomb.cleanup_pending);
     fs::write(repo.join(spec), planned).unwrap();
     let restarted = start_run(
@@ -706,8 +704,7 @@ scope: [src/lib.rs]
     )
     .unwrap();
     assert!(
-        !recovered
-            .backend()
+        !reader_for(&cfg)
             .load_tombstone(&next)
             .unwrap()
             .unwrap()
@@ -1406,7 +1403,7 @@ gates:
     let mut_cfg = base_config(mut_tmp.path());
     let (mut_mock, mut_prov) = build_provider_with_mock(&mut_cfg.modules);
     mut_mock.set_assert_repo_lock_free(mut_tmp.path().join(".git/acdd/repo.lock"));
-    let mut_engine = StateEngine::open(mut_cfg, mut_prov).unwrap();
+    let mut_engine = StateEngine::open(mut_cfg.clone(), mut_prov).unwrap();
     let mut_start = start_run(
         &mut_engine,
         StartReq {
@@ -1429,8 +1426,8 @@ gates:
         None,
     )
     .unwrap();
-    let before_snap = mut_engine
-        .backend()
+    let mut_backend = backend_for(&mut_cfg);
+    let before_snap = mut_backend
         .load_run_graph(&mut_rid)
         .unwrap()
         .unwrap();
@@ -1450,8 +1447,7 @@ gates:
         expected_worker_id: deploy_node.worker_id.clone(),
         required_predecessor_trees: Vec::new(),
     };
-    mut_engine
-        .backend()
+    mut_backend
         .exec_tx(|tx| {
             tx.start_trace(
                 &precond,
@@ -1500,8 +1496,7 @@ gates:
         assert_eq!(err.code, expect_code);
         assert_eq!(mut_mock.lookup_calls() - lb, expect_lookup_delta);
         assert_eq!(mut_mock.action_calls() - ab, 0);
-        let tr = mut_engine
-            .backend()
+        let tr = mut_backend
             .load_run_graph(&mut_rid)
             .unwrap()
             .unwrap()
@@ -1513,8 +1508,7 @@ gates:
         assert_eq!(tr.status, TraceStatus::Running);
     }
 
-    let tr_id = mut_engine
-        .backend()
+    let tr_id = mut_backend
         .load_run_graph(&mut_rid)
         .unwrap()
         .unwrap()
@@ -1525,8 +1519,7 @@ gates:
         .unwrap()
         .trace_row_id
         .unwrap();
-    mut_engine
-        .backend()
+    mut_backend
         .exec_tx(|tx| {
             tx.finish_trace(&TraceFinishInput {
                 trace_row_id: tr_id,
@@ -1615,7 +1608,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     cfg.linked_workspaces
         .insert("other".to_owned(), other_tmp.path().to_path_buf());
     let (_, provider) = build_provider_with_mock(&cfg.modules);
-    let engine = StateEngine::open(cfg, provider.clone()).unwrap();
+    let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
 
     let bound_p = write_profile(
         root_tmp.path(),
@@ -1677,7 +1670,9 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     )
     .unwrap();
 
-    let other_engine = StateEngine::open(base_config(other_tmp.path()), provider).unwrap();
+    let other_cfg = base_config(other_tmp.path());
+    let _other_engine = StateEngine::open(other_cfg.clone(), provider).unwrap();
+    let other_backend = backend_for(&other_cfg);
     let og1 = build_rich_graph(other_tmp.path(), "run-other-001", IsolationMode::InPlace);
     let tomb1 = sample_tombstone(
         "run-other-001",
@@ -1686,8 +1681,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
         TerminalStatus::Cleared,
         None,
     );
-    other_engine
-        .backend()
+    other_backend
         .exec_tx(|tx| {
             tx.insert_run_graph(&og1)?;
             tx.archive_and_prune_run(&empty_preconditions(1), &tomb1)
@@ -1720,8 +1714,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     tomb2.closed_at = "2026-11-17T10:20:00.000Z".to_owned();
     fs::create_dir_all(other_tmp.path().join("docs/milestones/archive")).unwrap();
     fs::write(other_tmp.path().join("docs/milestones/archive/AC-001.md"), "---\nid: AC-001\ntitle: Producer Completed\nstatus: completed\n---\n### task: t1\n```yaml\ntask_ref: t1\ntarget: Producer task\nscope: [src/]\nstatus: completed\n```\n").unwrap();
-    other_engine
-        .backend()
+    other_backend
         .exec_tx(|tx| {
             tx.insert_run_graph(&og2)?;
             tx.archive_and_prune_run(&empty_preconditions(1), &tomb2)
@@ -2054,8 +2047,8 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
         TerminalStatus::Completed,
         Some("work/archive/AC-PRODUCER.md"),
     );
-    shared
-        .backend()
+    let shared_backend = backend_for(&cfg);
+    shared_backend
         .exec_tx(|tx| {
             tx.insert_run_graph(&producer)?;
             tx.archive_and_prune_run(&empty_preconditions(1), &producer_tomb)
@@ -2244,8 +2237,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                 started_run = Some(run.run_id);
             } else if expected == &linked {
                 if name == "relative" || name == "relative-cwd" {
-                    let graph = shared
-                        .backend()
+                    let graph = shared_backend
                         .load_run_graph(&run.run_id)
                         .unwrap()
                         .unwrap();
@@ -2261,8 +2253,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     .unwrap();
                 }
                 if name == "configured" {
-                    let graph = shared
-                        .backend()
+                    let graph = shared_backend
                         .load_run_graph(&run.run_id)
                         .unwrap()
                         .unwrap();
@@ -2301,8 +2292,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     )
                     .unwrap();
                 } else if name == "alias-case" {
-                    let graph = shared
-                        .backend()
+                    let graph = shared_backend
                         .load_run_graph(&run.run_id)
                         .unwrap()
                         .unwrap();
@@ -2363,13 +2353,12 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                 "{name}"
             );
 
-            let mut graph = shared.backend().load_run_graph(run).unwrap().unwrap();
+            let mut graph = shared_backend.load_run_graph(run).unwrap().unwrap();
             graph.run.run_id = RunId::new(format!("invalid-{name}")).unwrap();
             graph.run.run_name = RunName::new(format!("invalid-{name}")).unwrap();
             graph.run.worktree = Some(caller.worktree.display().to_string());
             graph.nodes.clear();
-            shared
-                .backend()
+            shared_backend
                 .exec_tx(|tx| tx.insert_run_graph(&graph))
                 .unwrap();
             assert_eq!(
@@ -2378,8 +2367,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                 "{name}"
             );
             assert_eq!(
-                shared
-                    .backend()
+                shared_backend
                     .load_run_graph(&graph.run.run_id)
                     .unwrap()
                     .unwrap()
@@ -2793,12 +2781,15 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         StateCommandOutput::Start(s) => s.run.run_id,
         other => panic!("unexpected Start output: {other:?}"),
     };
-    let next_before = match engine
-        .query(StateQuery::Next(NextReq {
+    let next_before = match query_with(
+        &cfg,
+        &provider,
+        StateQuery::Next(NextReq {
             run: Some(ac5_run.as_str().to_owned()),
             limit: None,
-        }))
-        .unwrap()
+        }),
+    )
+    .unwrap()
     {
         StateQueryOutput::Next(n) => n.ready_cursors,
         other => panic!("unexpected Next output: {other:?}"),
@@ -2815,19 +2806,21 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         TerminalStatus::Completed,
         None,
     );
-    engine
-        .backend()
+    backend_for(&cfg)
         .exec_tx(|tx| {
             tx.insert_run_graph(&plan_graph)?;
             tx.archive_and_prune_run(&empty_preconditions(1), &plan_tomb)
         })
         .unwrap();
-    let next_after = match engine
-        .query(StateQuery::Next(NextReq {
+    let next_after = match query_with(
+        &cfg,
+        &provider,
+        StateQuery::Next(NextReq {
             run: Some(ac5_run.as_str().to_owned()),
             limit: None,
-        }))
-        .unwrap()
+        }),
+    )
+    .unwrap()
     {
         StateQueryOutput::Next(n) => n.ready_cursors,
         other => panic!("unexpected Next output: {other:?}"),

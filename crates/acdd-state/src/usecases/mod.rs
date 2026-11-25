@@ -102,16 +102,6 @@ impl StateEngine {
         })
     }
 
-    /// Access the engine configuration.
-    pub fn config(&self) -> &StateEngineConfig {
-        &self.config
-    }
-
-    /// Access the underlying [`SqliteStateBackend`].
-    pub fn backend(&self) -> &SqliteStateBackend {
-        self.backend.as_ref()
-    }
-
     /// Execute a mutating or plugin [`StateCommand`].
     pub fn execute(&self, cmd: StateCommand) -> Result<StateCommandOutput, StateError> {
         execute_on(&self.config, self.backend.as_ref(), &self.provider, cmd)
@@ -130,11 +120,6 @@ impl StateEngine {
             cmd,
             Some(source_override),
         )
-    }
-
-    /// Execute a read-only [`StateQuery`] via the underlying `StateReader`.
-    pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, StateError> {
-        queries::execute_query(&self.config, self.backend.as_ref(), &self.provider, query)
     }
 }
 

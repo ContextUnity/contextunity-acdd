@@ -16,6 +16,7 @@ use crate::models::{
 use acdd_core::response::{CoverageOptions, Detail, QueryOptions, SourceOptions, MAX_PAGE_SIZE};
 use anyhow::{ensure, Context, Result};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -34,7 +35,7 @@ pub fn inspect_with_path_options(
     with_source(conn, root, result, options.source, options.page, SourcePreviewMode::Configured)
 }
 
-/// Performs snippet paged.
+/// Reads a bounded source snippet around `selector` with line offsets and generation checks.
 #[cfg(test)]
 pub(crate) fn snippet_paged(
     conn: &Connection,
@@ -128,6 +129,25 @@ pub(crate) fn inspect_paged_response(
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }
 
+#[derive(Deserialize, Serialize)]
+struct DocumentedInItemDto {
+    doc_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SummarizedSymbolDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coverage: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<Value>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
 /// Attaches document contents to symbol inspect response.
 pub fn attach_inspect_document_contents(conn: &Connection, result: &mut Value) -> Result<()> {
     let Some(items) = result
@@ -190,22 +210,17 @@ pub fn attach_inspect_document_contents(conn: &Connection, result: &mut Value) -
         .and_then(Value::as_array_mut)
         .context("documented_in page items changed during content projection")?;
     for item in items {
-        let doc_id = item
-            .get("doc_id")
-            .and_then(Value::as_str)
-            .context("documented_in page item is missing doc_id")?
-            .to_owned();
-        let object = item
-            .as_object_mut()
-            .context("documented_in page item is not an object")?;
-        if attached.insert(doc_id.clone()) {
+        let mut dto: DocumentedInItemDto = serde_json::from_value(item.clone())
+            .context("documented_in page item is missing doc_id")?;
+        if attached.insert(dto.doc_id.clone()) {
             let content = contents
-                .get(&doc_id)
+                .get(&dto.doc_id)
                 .context("documented_in page has no matching document content")?;
-            object.insert("content".into(), json!(content));
+            dto.content = Some(content.clone());
         } else {
-            object.remove("content");
+            dto.content = None;
         }
+        *item = serde_json::to_value(dto)?;
     }
     Ok(())
 }
@@ -309,21 +324,20 @@ fn explain_without_coverage(
 
 fn summarize_symbol(
     conn: &Connection,
-    mut result: Value,
+    result: Value,
     include_coverage: bool,
     detail: Detail,
 ) -> Result<Value> {
+    let mut dto: SummarizedSymbolDto =
+        serde_json::from_value(result).context("invalid symbol result")?;
     if !include_coverage {
-        result
-            .as_object_mut()
-            .context("invalid symbol result")?
-            .remove("coverage");
+        dto.coverage = None;
     }
     if detail == Detail::Compact {
-        let summary = compact_summary(conn, &result["node"])?;
-        result["summary"] = summary;
+        let node = dto.fields.get("node").context("invalid symbol result")?;
+        dto.summary = Some(compact_summary(conn, node)?);
     }
-    Ok(result)
+    Ok(serde_json::to_value(dto)?)
 }
 
 fn resolve_method_receiver_container(

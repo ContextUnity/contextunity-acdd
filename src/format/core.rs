@@ -2,6 +2,27 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+
+#[derive(Deserialize, Serialize)]
+struct HashEnvelopeDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    freshness: Option<Value>,
+    #[serde(flatten)]
+    rest: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct HashMetadataDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    corpus_hash: Option<String>,
+    #[serde(flatten)]
+    rest: BTreeMap<String, Value>,
+}
 
 /// Selects the wire presentation without changing the semantic response value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
@@ -46,14 +67,39 @@ pub fn shorten_hash(hash: &str) -> &str {
     if hash.len() > 8 { hash.get(..8).unwrap_or(hash) } else { hash }
 }
 
+fn shorten_hash_dto(val: &mut Value) -> bool {
+    let Ok(mut dto) = serde_json::from_value::<HashMetadataDto>(val.clone()) else {
+        return false;
+    };
+    dto.output_root = dto.output_root.map(|h| shorten_hash(&h).to_owned());
+    dto.corpus_hash = dto.corpus_hash.map(|h| shorten_hash(&h).to_owned());
+    let Ok(encoded) = serde_json::to_value(dto) else {
+        return false;
+    };
+    *val = encoded;
+    true
+}
+
 /// Applies the legacy hash shortening helper only to explicit presentation metadata.
 pub fn shorten_metadata_hashes(value: &mut Value) {
-    let Some(root) = value.as_object_mut() else { return; };
-    if let Some(Value::Object(m)) = root.get_mut("metadata") {
-        if is_tool_metadata(m) { shorten_fields(m, &["output_root", "corpus_hash"]); }
+    let Ok(mut envelope) = serde_json::from_value::<HashEnvelopeDto>(value.clone()) else {
+        return;
+    };
+    let mut changed = false;
+    if let Some(meta_val) = &mut envelope.metadata {
+        if matches!(meta_val.as_object(), Some(m) if is_tool_metadata(m)) {
+            changed |= shorten_hash_dto(meta_val);
+        }
     }
-    if let Some(Value::Object(f)) = root.get_mut("freshness") {
-        if is_freshness_envelope(f, false) { shorten_fields(f, &["output_root", "corpus_hash"]); }
+    if let Some(fresh_val) = &mut envelope.freshness {
+        if matches!(fresh_val.as_object(), Some(f) if is_freshness_envelope(f, false)) {
+            changed |= shorten_hash_dto(fresh_val);
+        }
+    }
+    if changed {
+        if let Ok(encoded) = serde_json::to_value(envelope) {
+            *value = encoded;
+        }
     }
 }
 
@@ -203,10 +249,4 @@ pub(super) fn is_tool_metadata(object: &Map<String, Value>) -> bool {
         "files_checked" => v.as_u64().is_some(),
         _ => false,
     })
-}
-
-pub(super) fn shorten_fields(object: &mut Map<String, Value>, fields: &[&str]) {
-    for field in fields {
-        if let Some(Value::String(hash)) = object.get_mut(*field) { *hash = shorten_hash(hash).to_owned(); }
-    }
 }

@@ -305,12 +305,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "hashbrown 0.14.5",
  "hex",
  "ignore",
  "indexmap",
  "libc",
- "petgraph",
  "pulldown-cmark",
  "rayon",
  "regex",
@@ -325,7 +323,6 @@ dependencies = [
  "toml",
  "tree-sitter",
  "walkdir",
- "zstd",
 ]
 
 [[package]]

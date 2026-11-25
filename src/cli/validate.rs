@@ -5,7 +5,7 @@ use acdd_core::config::{load_adapter_report, Adapter};
 use acdd_state::usecases::dto::ValidateResp;
 use acdd_state::validate::{validate_document, validate_workspace};
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::Path;
 
 /// Validate one document or workspace with explicit `--config` and `--profile` overrides.
@@ -26,10 +26,5 @@ pub fn run_with_options(
         Some(rel) => validate_document(root, rel, explicit_config, explicit_profile, &providers)?,
         None => validate_workspace(root, explicit_config, explicit_profile, &providers)?,
     };
-    let mut value = serde_json::to_value(&resp)?;
-    if let Some(obj) = value.as_object_mut() {
-        obj.entry("diagnostics").or_insert_with(|| json!([]));
-        obj.entry("warnings").or_insert_with(|| json!([]));
-    }
-    Ok(value)
+    Ok(serde_json::to_value(&resp)?)
 }

@@ -114,7 +114,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(20),
         },
@@ -216,7 +216,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
                 None,
                 &traversal::GraphQueryOptions {
                     depth: 1,
-                    direction: None,
+                    direction: traversal::ImpactDirection::Inbound,
                     coverage: CoverageOptions::default(),
                     page: &page,
                 },
@@ -256,7 +256,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             None,
             &traversal::GraphQueryOptions {
                 depth: 1,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &page,
             },
@@ -417,7 +417,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &stale
         }
@@ -445,7 +445,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             None,
             &traversal::GraphQueryOptions {
                 depth: 1,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &options(20),
             },
@@ -461,7 +461,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(20),
         },
@@ -530,7 +530,7 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(20),
         },
@@ -553,7 +553,7 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(20),
         },
@@ -567,7 +567,7 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(20),
         },
@@ -596,7 +596,7 @@ fn large_directory_is_paged_without_graph_expansion() {
         None,
         &traversal::GraphQueryOptions {
             depth: 16,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(1),
         },
@@ -620,7 +620,7 @@ fn large_directory_is_paged_without_graph_expansion() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(1),
         },
@@ -645,7 +645,7 @@ fn large_directory_is_paged_without_graph_expansion() {
             None,
             &traversal::GraphQueryOptions {
                 depth: 2,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &options(1),
             },
@@ -660,7 +660,7 @@ fn large_directory_is_paged_without_graph_expansion() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(1),
         },
@@ -678,7 +678,7 @@ fn large_directory_is_paged_without_graph_expansion() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(1),
         },

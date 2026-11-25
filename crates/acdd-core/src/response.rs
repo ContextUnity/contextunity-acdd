@@ -1,11 +1,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The max output bytes value.
+/// Hard upper bound (96 KiB) on serialized response payloads.
 pub const MAX_OUTPUT_BYTES: usize = 96 * 1024;
-/// The max page size value.
+/// Maximum number of items returned in a single paged query response.
 pub const MAX_PAGE_SIZE: usize = 100;
-/// The min output bytes value.
+/// Lower bound (1 KiB) for configurable response byte budgets.
 const MIN_OUTPUT_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -74,11 +74,11 @@ impl std::str::FromStr for SymbolClassification {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-/// Represents source context policy data.
+/// Default source snippet extraction bounds for symbol inspection.
 pub struct SourceContextPolicy {
-    /// Whether enabled by default applies.
+    /// Whether symbol source previews are included when `show_source` is omitted.
     pub enabled_by_default: bool,
-    /// The leading lines value.
+    /// Number of leading context lines included before a symbol body (0 through 20).
     pub leading_lines: usize,
     /// Default source body lines, from 1 through 500.
     pub max_body_lines: usize,
@@ -96,15 +96,15 @@ impl Default for SourceContextPolicy {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-/// Represents response policy data.
+/// Response pagination, detail-level, and byte-budget defaults configured in `acdd.yaml`.
 pub struct ResponsePolicy {
-    /// The detail value.
+    /// Default output verbosity (`compact` or `full`).
     pub detail: Detail,
-    /// The page size value.
+    /// Default item count per page (1 through 100).
     pub page_size: usize,
-    /// The max output bytes value.
+    /// Configured maximum response size in bytes (1024 through 98304).
     pub max_output_bytes: usize,
-    /// The source context value.
+    /// Default source preview policy for symbol read/inspect responses.
     pub source_context: SourceContextPolicy,
 }
 
@@ -120,7 +120,7 @@ impl Default for ResponsePolicy {
 }
 
 impl ResponsePolicy {
-    /// Performs validate.
+    /// Validates `page_size`, `max_output_bytes`, and `source_context` bounds.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             (1..=MAX_PAGE_SIZE).contains(&self.page_size),
@@ -143,20 +143,20 @@ impl ResponsePolicy {
 }
 
 #[derive(Debug, Clone)]
-/// Configures query operations.
+/// Resolved pagination, detail verbosity, and generation cursor bounds for a query.
 pub struct QueryOptions {
-    /// The limit value.
+    /// Maximum number of items requested for this page (`1..=100`).
     pub limit: usize,
-    /// The offset value.
+    /// Zero-based item offset within the ordered query result.
     pub offset: usize,
-    /// The detail value.
+    /// Selected response detail verbosity (`Compact` or `Full`).
     pub detail: Detail,
-    /// Optional generation value.
+    /// Generation token from a preceding page when `offset > 0`.
     pub generation: Option<String>,
 }
 
 impl QueryOptions {
-    /// Performs resolve.
+    /// Validates and resolves caller pagination parameters against `policy` defaults.
     pub fn resolve(
         policy: &ResponsePolicy,
         limit: Option<usize>,
@@ -191,25 +191,25 @@ impl QueryOptions {
 /// Controls whether symbol queries include paged resolution coverage.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoverageOptions {
-    /// Whether include coverage applies.
+    /// Include paged resolution coverage entries alongside the compact summary.
     pub include_coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Configures source operations.
+/// Resolved source snippet extraction and pagination bounds for symbol previews.
 pub struct SourceOptions {
-    /// Whether enabled applies.
+    /// Whether source text and preview metadata should be attached to the response.
     pub enabled: bool,
-    /// The leading lines value.
+    /// Number of context lines included before the symbol start line (`0..=20`).
     pub leading_lines: usize,
-    /// The max body lines value.
+    /// Maximum symbol body lines included in one preview slice (`1..=500`).
     pub max_body_lines: usize,
-    /// The offset value.
+    /// Zero-based body line offset for continuing truncated previews.
     pub offset: usize,
 }
 
 impl SourceOptions {
-    /// Performs resolve.
+    /// Validates and resolves caller source-preview bounds against `policy.source_context`.
     pub fn resolve(
         policy: &ResponsePolicy,
         enabled: Option<bool>,

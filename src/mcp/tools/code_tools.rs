@@ -140,7 +140,7 @@ fn responding_with_presentation(
             )
         }
         Err(error) => response::result_for_presented(
-            Err(error.into()),
+            Err(error),
             &ResponsePolicy::default(),
             output_format,
             operation,
@@ -383,6 +383,8 @@ pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResul
             let path = p.path()?;
             let page = p.page.resolve(policy)?;
             server.read_with_adapter(adapter, |c| {
+                let direction = p.direction.parse::<traversal::ImpactDirection>()?;
+                let mode = traversal::TraversalMode::parse_optional(p.mode.as_deref());
                 traversal::impact_with_path_options(
                     c,
                     &server.root,
@@ -391,8 +393,8 @@ pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResul
                     path,
                     &traversal::TraversalOptions {
                         depth: p.depth,
-                        inbound: traversal::impact_inbound(Some(p.direction.as_str()))?,
-                        mode: p.mode.as_deref(),
+                        direction,
+                        mode,
                         edge_types: p.edge_types.as_deref(),
                         page: &page,
                     },
@@ -507,7 +509,9 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
                         path,
                         &traversal::GraphQueryOptions {
                             depth: p.depth,
-                            direction: p.direction.as_deref(),
+                            direction: traversal::ImpactDirection::parse_optional(
+                                p.direction.as_deref(),
+                            )?,
                             coverage: CoverageOptions {
                                 include_coverage: p.include_coverage,
                             },

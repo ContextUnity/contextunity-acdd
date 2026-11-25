@@ -3,8 +3,19 @@ use crate::models::tags::NodeKind;
 use acdd_core::response::{QueryOptions, SourceOptions};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{cell::RefCell, path::Path};
+use std::{cell::RefCell, collections::BTreeMap, path::Path};
+
+#[derive(Deserialize, Serialize)]
+struct SymbolWithSourceDto {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    source_preview: Value,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
 
 pub(super) struct IndexedTextMatch {
     pub(super) line: usize,
@@ -223,7 +234,7 @@ pub(super) enum SourcePreviewMode {
 pub(super) fn with_source(
     conn: &Connection,
     root: &Path,
-    mut result: Value,
+    result: Value,
     source: &SourceOptions,
     options: &QueryOptions,
     mode: SourcePreviewMode,
@@ -253,15 +264,10 @@ pub(super) fn with_source(
     let path = node["path"].as_str().context("invalid node path")?;
     let text = verified_source(conn, root, path)?;
     let (snippet, preview) = source_preview(conn, node, &text, source, source_bytes)?;
-    let gen = result.as_object_mut().and_then(|m| m.remove("generation"));
-    result["source"] = json!(snippet);
-    result["source_preview"] = preview;
-    if let Some(gen) = gen {
-        if let Some(m) = result.as_object_mut() {
-            m.insert("generation".into(), gen);
-        }
-    }
-    Ok(result)
+    let mut dto: SymbolWithSourceDto = serde_json::from_value(result)?;
+    dto.source = snippet;
+    dto.source_preview = preview;
+    Ok(serde_json::to_value(dto)?)
 }
 
 pub(super) fn source_preview(

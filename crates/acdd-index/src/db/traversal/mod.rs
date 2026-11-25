@@ -19,10 +19,10 @@ use serde_json::{json, Value};
 
 pub(crate) use dead_tails::dead_tails_paged;
 pub use duplicates::duplicates_paged;
-pub use impact::{impact_inbound, impact_with_path_options, removal_paged_with_path};
+pub use impact::{impact_with_path_options, removal_paged_with_path};
 use impact::traverse_with_path_options;
-pub use types::{GraphQueryOptions, TraversalOptions};
-use types::{GraphQueryOp, ImpactDirection};
+pub use types::{GraphQueryOptions, ImpactDirection, TraversalMode, TraversalOptions};
+use types::GraphQueryOp;
 
 fn sql_selector(selector: Option<&str>) -> Result<&str> {
     selector
@@ -76,8 +76,8 @@ pub fn query_with_path_options(
             path,
             &TraversalOptions {
                 depth,
-                inbound: ImpactDirection::parse_optional(direction)?.is_inbound(),
-                mode: None,
+                direction,
+                mode: TraversalMode::Calls,
                 edge_types: None,
                 page: options,
             },
@@ -132,7 +132,7 @@ pub fn query_with_path_options(
         GraphQueryOp::Duplicates => {
             let (target, level) = match selector {
                 Some("file") | Some("symbol") => (None, selector),
-                _ => (selector, direction),
+                _ => (selector, None),
             };
             duplicates_paged(
                 conn,
@@ -218,7 +218,7 @@ mod traversal_seam_tests {
                 None,
                 &GraphQueryOptions {
                     depth: 1,
-                    direction: None,
+                    direction: ImpactDirection::Inbound,
                     coverage: CoverageOptions::default(),
                     page: &page,
                 },
@@ -277,7 +277,7 @@ mod traversal_seam_tests {
                     None,
                     &GraphQueryOptions {
                         depth: 1,
-                        direction: None,
+                        direction: ImpactDirection::Inbound,
                         coverage: CoverageOptions::default(),
                         page: &page,
                     },

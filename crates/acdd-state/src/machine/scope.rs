@@ -39,7 +39,7 @@ pub(crate) fn plan_extend_scope_with_obs(
     }
 
     if let Some(ref worker) = input.worker_id {
-        if target_node.kind == NodeKind::TaskGate
+        if matches!(target_node.kind, NodeKind::TaskGate | NodeKind::RootGate)
             && target_node.status == NodeStatus::InProgress
             && target_node.worker_id.as_ref() != Some(worker)
         {
@@ -64,11 +64,12 @@ pub(crate) fn plan_extend_scope_with_obs(
             })?;
             find_node(snapshot, parent_id)?
         }
+        NodeKind::RootGate if target_node.node_id == "root:polish" => target_node,
         _ => {
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 format!(
-                    "extend_scope requires a task or task_gate cursor (got '{target_id}')"
+                    "extend_scope requires a task, task_gate, or root:polish cursor (got '{target_id}')"
                 ),
             ));
         }

@@ -596,3 +596,20 @@ pub fn build_rich_graph(root: &Path, run_id_str: &str, isolation: IsolationMode)
     }
 }
 
+pub fn reader_for(cfg: &StateEngineConfig) -> acdd_state::store::sqlite::SqliteStateReader {
+    acdd_state::store::sqlite::SqliteStateReader::new(cfg.resolved_state_db_path().0)
+}
+
+pub fn backend_for(cfg: &StateEngineConfig) -> acdd_state::store::sqlite::SqliteStateBackend {
+    acdd_state::store::sqlite::SqliteStateBackend::open_with_options(cfg.sqlite_options(None)).unwrap()
+}
+
+pub fn query_with(
+    cfg: &StateEngineConfig,
+    provider: &Arc<CompositeDomainProvider>,
+    query: acdd_state::usecases::StateQuery,
+) -> Result<acdd_state::usecases::StateQueryOutput, StateError> {
+    acdd_state::usecases::StateQueryEngine::open_read_only(cfg.clone(), provider.clone())?
+        .query(query)
+}
+

@@ -138,16 +138,28 @@ fn format_repo_location(item: &Value) -> Option<String> {
     })
 }
 
-fn render_duplicates(out: &mut String, value: &Value) {
-    out.push_str("## Duplicate code blocks\n\n");
-    let items = value.get("items").and_then(Value::as_array);
-    let total = u64_field(value, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
-    let has_more = value.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+fn page_has_no_display_entries(page: &Value, items: Option<&[Value]>) -> bool {
+    items.is_none_or(<[Value]>::is_empty)
+        && u64_field(page, "total") == Some(0)
+        && page.get("has_more") != Some(&Value::Bool(true))
+        && page.get("next_offset").is_none_or(Value::is_null)
+        && page.get("omitted") != Some(&Value::Bool(true))
+}
+
+fn write_page_stats(out: &mut String, page: &Value, items: Option<&[Value]>) {
+    let total = u64_field(page, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
+    let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
     out.push_str(&format!("- **total**: `{total}` | **has_more**: `{has_more}`"));
-    if let Some(next_offset) = u64_field(value, "next_offset") {
+    if let Some(next_offset) = u64_field(page, "next_offset") {
         out.push_str(&format!(" | **next_offset**: `{next_offset}`"));
     }
     out.push_str("\n\n");
+}
+
+fn render_duplicates(out: &mut String, value: &Value) {
+    out.push_str("## Duplicate code blocks\n\n");
+    let items = value.get("items").and_then(Value::as_array);
+    write_page_stats(out, value, items.map(Vec::as_slice));
     for item in items.into_iter().flatten() {
         let name = text_field(item, "name").unwrap_or("unnamed");
         let kind = text_field(item, "kind").unwrap_or("block");
@@ -205,23 +217,12 @@ fn render_dead_tails(out: &mut String, value: &Value) {
     ] {
         if let Some(page) = value.get(field) {
             let items = page_items(page);
-            if items.is_none_or(<[Value]>::is_empty)
-                && u64_field(page, "total") == Some(0)
-                && page.get("has_more") != Some(&Value::Bool(true))
-                && page.get("next_offset").is_none_or(Value::is_null)
-                && page.get("omitted") != Some(&Value::Bool(true))
-            {
+            if page_has_no_display_entries(page, items) {
                 consumed.push(field);
                 continue;
             }
             out.push_str(&format!("\n## {}\n\n", escape_text(heading)));
-            let total = u64_field(page, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
-            let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
-            out.push_str(&format!("- **total**: `{total}` | **has_more**: `{has_more}`"));
-            if let Some(next_offset) = u64_field(page, "next_offset") {
-                out.push_str(&format!(" | **next_offset**: `{next_offset}`"));
-            }
-            out.push_str("\n\n");
+            write_page_stats(out, page, items);
             for item in items.into_iter().flatten() {
                 match field {
                     "phantom_tested" => {
@@ -385,7 +386,7 @@ fn render_invariants(out: &mut String, value: &Value) {
 
 fn render_page(out: &mut String, heading: &str, page: &Value, mut render_item: impl FnMut(&mut String, &Value)) {
     let items = page_items(page);
-    if items.is_none_or(<[Value]>::is_empty) && u64_field(page, "total") == Some(0) && page.get("has_more") != Some(&Value::Bool(true)) && page.get("next_offset").is_none_or(Value::is_null) && page.get("omitted") != Some(&Value::Bool(true)) {
+    if page_has_no_display_entries(page, items) {
         return;
     }
     out.push_str(&format!("\n## {}\n\n", escape_text(heading)));

@@ -8,8 +8,32 @@ use crate::models::tags::{CoverageStatus, EdgeKind, NodeKind};
 use acdd_core::response::QueryOptions;
 use anyhow::Result;
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Serialize)]
+struct OverviewPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topology: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entrypoints: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    components: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counts: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    languages: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage_by_workspace: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiled_profiles: Option<BTreeSet<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycles: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<Vec<Value>>,
+    generation: String,
+}
 
 /// Read a bounded overview of selected workspace sections.
 pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -> Result<Value> {
@@ -28,45 +52,50 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     };
     let has_aspect = |aspect: OverviewAspect| selected.contains(&aspect);
 
-    let mut result = serde_json::Map::new();
-
-    if has_aspect(OverviewAspect::Topology) {
-        result.insert("topology".into(), module_topology(conn, options, &generation)?);
-    }
-    if has_aspect(OverviewAspect::Entrypoints) || has_aspect(OverviewAspect::EntrypointsWithTests) {
-        let entrypoints = paging::query(
-            conn,
-            &format!(
-                "SELECT json_extract(n.details,'$.{entrypoint}') category,n.id,n.kind,n.name,n.qualname,p.path,n.line AS start_line,json_extract(n.details,'$.{signature}') signature,(SELECT count(*) FROM edges e WHERE e.src_hash=n.node_hash AND e.kind='{calls}') outgoing_calls FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE json_extract(n.details,'$.{entrypoint}') IS NOT NULL AND (?1 OR json_extract(n.details,'$.{entrypoint}') <> 'test') ORDER BY category,outgoing_calls DESC,n.id ASC",
-                entrypoint = NodeDetailKey::ENTRYPOINT, signature = NodeDetailKey::SIGNATURE, calls = EdgeKind::Calls.as_str(),
-            ),
-            &[&has_aspect(OverviewAspect::EntrypointsWithTests)],
-            options,
-        )?;
-        result.insert("entrypoints".into(), entrypoints);
-    }
-    if has_aspect(OverviewAspect::Components) {
-        let components = paging::query(
-            conn,
-            &format!("SELECT n.id,n.name,p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='{}' ORDER BY p.path,n.id", NodeKind::Component.as_str()),
-            &[],
-            options,
-        )?;
-        result.insert("components".into(), components);
-    }
-    if has_aspect(OverviewAspect::Counts) {
-        let counts = rows(
-            conn,
-            &format!(
-                "SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('{unresolved}','{ambiguous}')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='{external}') external_imports",
-                unresolved = CoverageStatus::Unresolved.as_str(), ambiguous = CoverageStatus::Ambiguous.as_str(), external = CoverageStatus::External.as_str(),
-            ),
-            &[],
-            1,
-        )?.remove(0);
-        result.insert("counts".into(), counts);
-    }
-    if has_aspect(OverviewAspect::Languages) {
+    let topology = has_aspect(OverviewAspect::Topology)
+        .then(|| module_topology(conn, options, &generation))
+        .transpose()?;
+    let entrypoints =
+        (has_aspect(OverviewAspect::Entrypoints) || has_aspect(OverviewAspect::EntrypointsWithTests))
+            .then(|| {
+                paging::query(
+                    conn,
+                    &format!(
+                        "SELECT json_extract(n.details,'$.{entrypoint}') category,n.id,n.kind,n.name,n.qualname,p.path,n.line AS start_line,json_extract(n.details,'$.{signature}') signature,(SELECT count(*) FROM edges e WHERE e.src_hash=n.node_hash AND e.kind='{calls}') outgoing_calls FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE json_extract(n.details,'$.{entrypoint}') IS NOT NULL AND (?1 OR json_extract(n.details,'$.{entrypoint}') <> 'test') ORDER BY category,outgoing_calls DESC,n.id ASC",
+                        entrypoint = NodeDetailKey::ENTRYPOINT, signature = NodeDetailKey::SIGNATURE, calls = EdgeKind::Calls.as_str(),
+                    ),
+                    &[&has_aspect(OverviewAspect::EntrypointsWithTests)],
+                    options,
+                )
+            })
+            .transpose()?;
+    let components = has_aspect(OverviewAspect::Components)
+        .then(|| {
+            paging::query(
+                conn,
+                &format!("SELECT n.id,n.name,p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='{}' ORDER BY p.path,n.id", NodeKind::Component.as_str()),
+                &[],
+                options,
+            )
+        })
+        .transpose()?;
+    let counts = has_aspect(OverviewAspect::Counts)
+        .then(|| {
+            Ok::<_, anyhow::Error>(
+                rows(
+                    conn,
+                    &format!(
+                        "SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('{unresolved}','{ambiguous}')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='{external}') external_imports",
+                        unresolved = CoverageStatus::Unresolved.as_str(), ambiguous = CoverageStatus::Ambiguous.as_str(), external = CoverageStatus::External.as_str(),
+                    ),
+                    &[],
+                    1,
+                )?
+                .remove(0),
+            )
+        })
+        .transpose()?;
+    let languages = if has_aspect(OverviewAspect::Languages) {
         let (island, resolved, ambiguous, unresolved, external) = (
             NodeKind::IslandScope.as_str(), CoverageStatus::Resolved.as_str(),
             CoverageStatus::Ambiguous.as_str(), CoverageStatus::Unresolved.as_str(), CoverageStatus::External.as_str(),
@@ -77,24 +106,33 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
         let language_total = paging::count(conn, &format!("SELECT count(*) FROM (SELECT language FROM files UNION SELECT language FROM nodes WHERE kind='{island}' UNION SELECT language FROM coverage_owner_language)"), &[])?;
         let (limit, offset) = (options.limit as i64, options.offset as i64);
         let languages = rows(conn, &format!("{lang_sql} LIMIT ?1 OFFSET ?2"), &[&limit, &offset], options.limit)?;
-        result.insert("languages".into(), paging::value(languages, language_total, options, &generation));
-    }
-    if has_aspect(OverviewAspect::CoverageByWorkspace) {
-        result.insert("coverage_by_workspace".into(), workspace_coverage(conn, options, &generation)?);
-    }
-    if has_aspect(OverviewAspect::CompiledProfiles) {
-        let compiled_profiles: BTreeSet<_> = crate::languages::profiles().map(|p| p.id()).collect();
-        result.insert("compiled_profiles".into(), serde_json::to_value(compiled_profiles)?);
-    }
-    if has_aspect(OverviewAspect::Cycles) {
-        result.insert("cycles".into(), cycles::summary(conn, None)?);
-    }
-    if has_aspect(OverviewAspect::Metadata) {
-        let metadata = rows(conn, "SELECT key,value FROM metadata WHERE key IN(?1,?2) ORDER BY key", &[&MetadataKey::SchemaVersion.as_str(), &MetadataKey::WorkspaceRoot.as_str()], 2)?;
-        result.insert("metadata".into(), Value::Array(metadata));
-    }
-    result.insert("generation".into(), Value::String(generation));
-    Ok(Value::Object(result))
+        Some(paging::value(languages, language_total, options, &generation))
+    } else {
+        None
+    };
+    let coverage_by_workspace = has_aspect(OverviewAspect::CoverageByWorkspace)
+        .then(|| workspace_coverage(conn, options, &generation))
+        .transpose()?;
+    let compiled_profiles = has_aspect(OverviewAspect::CompiledProfiles)
+        .then(|| crate::languages::profiles().map(|p| p.id()).collect());
+    let cycles = has_aspect(OverviewAspect::Cycles)
+        .then(|| cycles::summary(conn, None))
+        .transpose()?;
+    let metadata = has_aspect(OverviewAspect::Metadata)
+        .then(|| rows(conn, "SELECT key,value FROM metadata WHERE key IN(?1,?2) ORDER BY key", &[&MetadataKey::SchemaVersion.as_str(), &MetadataKey::WorkspaceRoot.as_str()], 2))
+        .transpose()?;
+    Ok(serde_json::to_value(OverviewPayload {
+        topology,
+        entrypoints,
+        components,
+        counts,
+        languages,
+        coverage_by_workspace,
+        compiled_profiles,
+        cycles,
+        metadata,
+        generation,
+    })?)
 }
 
 // Compute a module once for each path and aggregate graph statistics in SQLite.

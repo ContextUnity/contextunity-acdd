@@ -12,10 +12,10 @@ fn architecture_complexity_limits_contract_and_locked_rule_kinds() {
     assert!(default_cfg.is_empty());
     assert!(!default_cfg.unused_public_api);
     default_cfg.validate().unwrap();
-    assert!(default_cfg.complexity.max_cognitive_complexity > 0);
-    assert!(default_cfg.complexity.max_nesting_depth > 0);
-    assert!(default_cfg.complexity.max_fanout > 0);
+    assert_eq!(default_cfg.complexity.severity, LintSeverity::Warn);
+    assert_eq!(default_cfg.complexity.invariant, None);
 
+    // Backward-compatible YAML deserialization ignores positive deprecated threshold keys.
     let custom_yaml = r#"
 unused_public_api: true
 complexity:
@@ -29,9 +29,6 @@ complexity:
     assert!(!custom.is_empty());
     assert!(custom.unused_public_api);
     custom.validate().unwrap();
-    assert_eq!(custom.complexity.max_cognitive_complexity, 42);
-    assert_eq!(custom.complexity.max_nesting_depth, 5);
-    assert_eq!(custom.complexity.max_fanout, 30);
     assert_eq!(custom.complexity.severity, LintSeverity::Error);
     assert_eq!(
         custom.complexity.invariant.as_deref(),
@@ -42,14 +39,19 @@ complexity:
         ("zero_cognitive", "complexity:\n  max_cognitive_complexity: 0\n"),
         ("zero_nesting", "complexity:\n  max_nesting_depth: 0\n"),
         ("zero_fanout", "complexity:\n  max_fanout: 0\n"),
-        ("empty_invariant", "complexity:\n  invariant: \"   \"\n"),
     ] {
-        let cfg: ArchitectureConfig = serde_yaml::from_str(bad_yaml).unwrap();
-        let err = cfg
-            .validate()
-            .expect_err(&format!("{label}: expected validation failure"));
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
+        assert!(
+            serde_yaml::from_str::<ArchitectureConfig>(bad_yaml).is_err(),
+            "{label}: expected deserialization failure for 0 deprecated threshold"
+        );
     }
+
+    let empty_inv: ArchitectureConfig =
+        serde_yaml::from_str("complexity:\n  invariant: \"   \"\n").unwrap();
+    let err = empty_inv
+        .validate()
+        .expect_err("empty_invariant: expected validation failure");
+    assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{err}");
 
     assert!(
         serde_yaml::from_str::<ComplexityLimits>("unknown_limit: 1\n").is_err(),

@@ -247,7 +247,7 @@ async fn run_state_blocking(
             Ok(adapter) => adapter,
             Err(err) => {
                 return response::state_result(
-                    Err(err.into()),
+                    Err(err),
                     &ResponsePolicy::default(),
                     output_format,
                     title,

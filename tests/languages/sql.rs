@@ -298,8 +298,8 @@ fn sql_impact_traversal_reaches_views_and_language_consumers() {
         None,
         &acdd_index::db::traversal::TraversalOptions {
             depth: 1,
-            inbound: true,
-            mode: None,
+            direction: acdd_index::db::traversal::ImpactDirection::Inbound,
+            mode: acdd_index::db::traversal::TraversalMode::Calls,
             edge_types: None,
             page: &page,
         },

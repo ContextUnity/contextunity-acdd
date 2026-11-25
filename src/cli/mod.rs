@@ -393,7 +393,7 @@ impl Cli {
             adapter.retain_traces,
         );
         if let Ok(db) =
-            crate::state_bridge::resolve_effective_state_db(&root, state_db.as_deref(), &adapter)
+            acdd_state::usecases::deps::try_resolve_effective_state_db(&root, state_db.as_deref())
         {
             span = span.with_state_db(db);
         }
@@ -904,7 +904,7 @@ mod tests {
             } else {
                 ws.path().to_path_buf()
             };
-            let cli = Cli::try_parse_from([
+            let argv = [
                 "fixture",
                 "--root",
                 target.to_str().unwrap(),
@@ -912,18 +912,31 @@ mod tests {
                 "json",
                 "docs",
                 "check",
-            ])
-            .unwrap();
-            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                rt.block_on(cli.run_with_writer(&mut FailingWriter(io::ErrorKind::BrokenPipe)))
-            }));
-            let panic = panic.expect_err(case);
-            let message = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .unwrap();
-            assert_eq!(message, "failed printing to stdout: output unavailable", "{case}");
+            ];
+            let result = rt.block_on(
+                Cli::try_parse_from(argv)
+                    .unwrap()
+                    .run_with_writer(&mut FailingWriter(io::ErrorKind::BrokenPipe)),
+            );
+            if case == "success" {
+                assert!(result.is_ok(), "{case}: {result:?}");
+            } else {
+                let err = result.expect_err(case);
+                assert!(
+                    err.to_string().contains("documentation check failed"),
+                    "{case}: {err}"
+                );
+            }
+            let non_pipe = rt.block_on(
+                Cli::try_parse_from(argv)
+                    .unwrap()
+                    .run_with_writer(&mut FailingWriter(io::ErrorKind::Other)),
+            );
+            assert_eq!(
+                non_pipe.unwrap_err().downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::Other,
+                "{case}"
+            );
         }
 
         // Verify guide CLI examples and core subcommands parse cleanly via Clap.

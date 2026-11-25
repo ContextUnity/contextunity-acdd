@@ -221,7 +221,7 @@ architecture:
           - "crates/acdd-core/src/git.rs"
           - "crates/acdd-core/src/sys.rs"
           - "crates/acdd-state/src/runner/**"
-          - "src/mcp/server.rs"
+          - "src/mcp/server/session.rs"
         languages: ["rust"]
       ast_pattern: "Command::new($PROGRAM)"
       message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
@@ -235,7 +235,7 @@ architecture:
           - "crates/acdd-core/src/git.rs"
           - "crates/acdd-core/src/sys.rs"
           - "crates/acdd-state/src/runner/**"
-          - "src/mcp/server.rs"
+          - "src/mcp/server/session.rs"
         languages: ["rust"]
       ast_pattern: "std::process::Command::new($PROGRAM)"
       message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
@@ -318,9 +318,9 @@ architecture:
       from:
         zones: [host_telemetry]
       to:
-        zones: [index, index_db, host_format, host_engine, host_cli, host_mcp]
+        zones: [index, index_db, host_format, host_engine, host_state_bridge, host_cli, host_mcp]
         external_symbols: ["rusqlite", "tree_sitter", "rmcp", "clap"]
-      message: "src/telemetry.rs must stay decoupled from index, db, and transport layers"
+      message: "src/telemetry.rs must stay decoupled from index, db, state_bridge, and transport layers"
 
     - id: ARCH-ZONE-DAG-ACYCLIC
       severity: error

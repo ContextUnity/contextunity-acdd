@@ -260,7 +260,7 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
 
     // Helper closure triggers builder execution via `execute_gate_node` (returns RunnerNoSubmission after spawn).
     let run_builder_step = || {
-        let snap = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
+        let snap = dr_eng.backend.load_run_graph(&dr_rid).unwrap().unwrap();
         let node = snap
             .nodes
             .iter()
@@ -268,7 +268,7 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
             .unwrap();
         let err = crate::usecases::run::execute_gate_node(
             &dr_cfg,
-            dr_eng.backend(),
+            dr_eng.backend.as_ref(),
             &dr_prov,
             &snap,
             node,
@@ -281,7 +281,7 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
 
     // Pass 1: fresh builder session created & cached.
     run_builder_step();
-    let snap_b1 = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
+    let snap_b1 = dr_eng.backend.load_run_graph(&dr_rid).unwrap().unwrap();
     let rev_b1 = snap_b1
         .nodes
         .iter()
@@ -322,7 +322,7 @@ fn execute_gate_node_session_cache_reuses_defect_and_rotates_on_drift() {
     )
     .unwrap();
     run_builder_step();
-    let snap_b2 = dr_eng.backend().load_run_graph(&dr_rid).unwrap().unwrap();
+    let snap_b2 = dr_eng.backend.load_run_graph(&dr_rid).unwrap().unwrap();
     let rev_b2 = snap_b2
         .nodes
         .iter()
@@ -455,14 +455,14 @@ fn resume_pending_tombstone_cleanups_handles_linked_and_missing_worktree() {
         closed_at: "2026-11-17T10:00:00.000Z".to_owned(),
     };
     cs_eng
-        .backend()
+        .backend
         .exec_tx(|tx| {
             tx.archive_and_prune_run(&empty_preconditions(lnk_s.run.generation), &link_tomb)
         })
         .unwrap();
     let cleaned_spec = crate::usecases::lifecycle::resume_pending_tombstone_cleanups_dyn(
         &cs_cfg,
-        cs_eng.backend(),
+        cs_eng.backend.as_ref(),
         None,
     )
     .unwrap();
@@ -472,7 +472,7 @@ fn resume_pending_tombstone_cleanups_handles_linked_and_missing_worktree() {
     assert!(
         !linked_spec.exists()
             && !cs_eng
-                .backend()
+                .backend
                 .load_tombstone(&lnk_s.run.run_id)
                 .unwrap()
                 .unwrap()
@@ -537,7 +537,7 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
     assert_ne!(cmds_src, cmds_docs);
 
     // Custom non-`builder` role context reset uses persisted `reset_gate_id` when present, falling back to `builder` only when absent.
-    let mut reset_snap = loc_eng.backend().load_run_graph(&loc_rid).unwrap().unwrap();
+    let mut reset_snap = loc_eng.backend.load_run_graph(&loc_rid).unwrap().unwrap();
     let impl_node = reset_snap
         .nodes
         .iter()

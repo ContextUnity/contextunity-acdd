@@ -1,6 +1,6 @@
 use super::{
     impact::traverse_with_path_options,
-    types::{ImpactDirection, TraversalOptions},
+    types::{ImpactDirection, TraversalMode, TraversalOptions},
 };
 use crate::db::{paging, reader};
 use crate::models::{
@@ -36,8 +36,8 @@ pub(super) fn slice_paged(
                 path,
                 &TraversalOptions {
                     depth,
-                    inbound: false,
-                    mode: None,
+                    direction: ImpactDirection::Outbound,
+                    mode: TraversalMode::Calls,
                     edge_types: None,
                     page: options,
                 },

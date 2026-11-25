@@ -1,13 +1,13 @@
 //! ContextUnity ACDD code graph, persistence, language analysis, and tool APIs.
 #![warn(missing_docs)]
 
-/// Implements cli support.
+/// CLI argument grammar, command dispatch, and output writing.
 pub mod cli;
-/// Implements engine support.
+/// Indexing pipeline, AST search, and documentation link verification engine.
 pub mod engine;
 /// Shared operation presentation and metadata compaction.
 pub mod format;
-/// Implements mcp support.
+/// MCP stdio server, workspace reader admission, and tool routing.
 pub mod mcp;
 /// Host DomainProvider implementations (`code`, `docs`) and state engine bridge.
 pub mod state_bridge;

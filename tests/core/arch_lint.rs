@@ -5,7 +5,7 @@ use acdd_core::response::{QueryOptions, ResponsePolicy};
 use acdd_index::db::{
     lint::{enforced_invariant_ids, run_lint, syntax_paged, LintRequest},
     reader::{self, analyze_paged},
-    traversal::{duplicates_paged, query_with_path_options, GraphQueryOptions},
+    traversal::{duplicates_paged, query_with_path_options, GraphQueryOptions, ImpactDirection},
 };
 use acdd_index::docs;
 use acdd_index::models::details::NodeDetailKey;
@@ -697,7 +697,7 @@ fn dead_helper() -> i32 {
         None,
         &GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: ImpactDirection::Inbound,
             coverage: Default::default(),
             page: &opts,
         },
@@ -906,9 +906,6 @@ fn structural_complexity_homonym_unused_zone_and_enforced_invariant_contract_mat
         r#"roots: [.]
 architecture:
   complexity:
-    max_cognitive_complexity: 4
-    max_nesting_depth: 2
-    max_fanout: 3
     severity: warn
     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
   zones:

@@ -2,8 +2,43 @@ use super::super::{paging, reader};
 use crate::models::tags::EdgeKind;
 use acdd_core::response::{CoverageOptions, QueryOptions};
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(super) struct ViaPredecessorDto {
+    pub(super) id: String,
+    pub(super) kind: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(super) struct ReachedNodeDto {
+    #[serde(default, skip_serializing)]
+    pub(super) __total: Option<u64>,
+    #[serde(default, skip_serializing)]
+    pub(super) __hash: Option<Value>,
+    #[serde(default, skip_serializing)]
+    pub(super) __edge: Option<Value>,
+    #[serde(default, skip_serializing)]
+    pub(super) __via: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(super) __reason: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(super) __predecessor: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(super) __edge_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) distance: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) is_seed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) edge: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) via: Option<ViaPredecessorDto>,
+    #[serde(flatten)]
+    pub(super) fields: BTreeMap<String, Value>,
+}
 
 pub(super) const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;
 
@@ -29,15 +64,6 @@ impl ImpactDirection {
     /// Returns `true` for [`ImpactDirection::Inbound`].
     pub const fn is_inbound(&self) -> bool {
         matches!(self, Self::Inbound)
-    }
-
-    /// Converts a boolean `inbound` flag into [`ImpactDirection`].
-    pub const fn from_inbound(inbound: bool) -> Self {
-        if inbound {
-            Self::Inbound
-        } else {
-            Self::Outbound
-        }
     }
 
     /// Parses an optional direction string, defaulting `None` to [`ImpactDirection::Inbound`].
@@ -151,10 +177,10 @@ impl FromStr for GraphQueryOp {
 pub struct TraversalOptions<'a> {
     /// Maximum graph depth.
     pub depth: u32,
-    /// Whether to follow incoming relationships.
-    pub inbound: bool,
-    /// Optional relationship mode.
-    pub mode: Option<&'a str>,
+    /// Incoming or outgoing traversal direction.
+    pub direction: ImpactDirection,
+    /// Relationship mode.
+    pub mode: TraversalMode,
     /// Optional exact relationship kinds.
     pub edge_types: Option<&'a [String]>,
     /// Bounded page and generation contract.
@@ -166,7 +192,7 @@ pub struct GraphQueryOptions<'a> {
     /// Maximum graph depth for traversal operations.
     pub depth: u32,
     /// Incoming or outgoing impact direction.
-    pub direction: Option<&'a str>,
+    pub direction: ImpactDirection,
     /// Optional resolution coverage.
     pub coverage: CoverageOptions,
     /// Bounded page and generation contract.

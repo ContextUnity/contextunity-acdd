@@ -76,21 +76,6 @@ impl SchemaDef {
         Self::of_type("string")
     }
 
-    /// Construct an `"integer"` schema.
-    pub fn integer() -> Self {
-        Self::of_type("integer")
-    }
-
-    /// Construct a `"number"` schema.
-    pub fn number() -> Self {
-        Self::of_type("number")
-    }
-
-    /// Construct a `"boolean"` schema.
-    pub fn boolean() -> Self {
-        Self::of_type("boolean")
-    }
-
     /// Construct an `"array"` schema with the given item schema.
     pub fn array(items: SchemaDef) -> Self {
         let mut schema = Self::of_type("array");
@@ -279,13 +264,13 @@ mod tests {
         let mut bad_array_no_items = SchemaDef::of_type("array");
         bad_array_no_items.items = None;
 
-        let mut bad_min_length = SchemaDef::integer();
+        let mut bad_min_length = SchemaDef::of_type("integer");
         bad_min_length.min_length = Some(1);
 
         let mut bad_minimum = SchemaDef::string();
         bad_minimum.minimum = Some(0.0);
 
-        let mut bad_minimum_nan = SchemaDef::number();
+        let mut bad_minimum_nan = SchemaDef::of_type("number");
         bad_minimum_nan.minimum = Some(f64::NAN);
 
         let mut bad_empty_enum = SchemaDef::string();
@@ -294,7 +279,7 @@ mod tests {
         let mut bad_scalar_with_props = SchemaDef::string();
         bad_scalar_with_props
             .properties
-            .insert("x".to_owned(), SchemaDef::boolean());
+            .insert("x".to_owned(), SchemaDef::of_type("boolean"));
 
         let cases: &[(&str, &SchemaDef, bool)] = &[
             ("valid_obj", &valid_obj, true),
@@ -321,10 +306,10 @@ mod tests {
         let mut status_schema = SchemaDef::string();
         status_schema.enum_values = Some(vec![json!("pass"), json!("reject")]);
 
-        let mut hops_schema = SchemaDef::integer();
+        let mut hops_schema = SchemaDef::of_type("integer");
         hops_schema.minimum = Some(1.0);
 
-        let mut version_schema = SchemaDef::integer();
+        let mut version_schema = SchemaDef::of_type("integer");
         version_schema.const_value = Some(json!(2));
 
         let mut summary_schema = SchemaDef::string();

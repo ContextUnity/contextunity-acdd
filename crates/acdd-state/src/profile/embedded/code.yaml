@@ -394,6 +394,8 @@ gates:
       - "skills/**"
       - "AGENTS.md"
       - "README.md"
+      - "ROADMAP.md"
+      - "TESTS.md"
       - ".gitignore"
     command: verify_all
     proof: command

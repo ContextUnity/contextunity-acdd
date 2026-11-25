@@ -480,7 +480,7 @@ pub enum Command {
     Reload,
     /// Build or rebuild `.acdd/code-map.sqlite`.
     Build {
-        /// Optional workspace root value.
+        /// Workspace root to index (defaults to `--root` or current directory).
         workspace_root: Option<PathBuf>,
         #[arg(long)]
         /// Optional output database path.
@@ -489,23 +489,23 @@ pub enum Command {
         /// Optional adapter config path.
         adapter: Option<PathBuf>,
         #[arg(long)]
-        /// Whether verbose applies.
+        /// Emit per-phase build diagnostics.
         verbose: bool,
     },
     /// Scan workspace files without writing the code-map database.
     Scan {
-        /// Optional workspace root value.
+        /// Workspace root to scan (defaults to `--root` or current directory).
         workspace_root: Option<PathBuf>,
         #[arg(long)]
         /// Optional adapter config path.
         adapter: Option<PathBuf>,
         #[arg(long)]
-        /// Whether pretty applies.
+        /// Pretty-print JSON output.
         pretty: bool,
     },
     /// Incrementally update `.acdd/code-map.sqlite` for modified files.
     Delta {
-        /// Optional workspace root value.
+        /// Workspace root whose index should be refreshed (defaults to `--root`).
         workspace_root: Option<PathBuf>,
         /// Modified workspace-relative files.
         modified_files: Vec<PathBuf>,
@@ -568,9 +568,9 @@ pub enum Command {
 }
 
 #[derive(Subcommand, Debug)]
-/// Enumerates the supported query command values.
+/// Subcommands for querying the indexed code graph and reading SQL/traversal outputs.
 pub enum QueryCommand {
-    /// Represents the overview case.
+    /// Summarize codebase counts, components, languages, and coverage.
     Overview {
         /// Comma-separated overview aspects.
         #[arg(long, value_delimiter = ',')]
@@ -585,18 +585,18 @@ pub enum QueryCommand {
         #[arg(long)]
         generation: Option<String>,
     },
-    /// Represents the inspect case.
+    /// Inspect a symbol's metadata, docs, resolution coverage, and optional source preview.
     Inspect {
-        /// The selector value.
+        /// Symbol ID, name, `path:name`, `path:line`, or `path#Lline` selector.
         selector: String,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
         path: Option<String>,
         #[arg(long,default_value_t=true,action=clap::ArgAction::Set,num_args=0..=1,default_missing_value="true")]
-        /// Whether show doc applies.
+        /// Include linked documentation sections.
         show_doc: bool,
         #[arg(long)]
-        /// Whether show source applies.
+        /// Include a bounded verified source preview.
         show_source: bool,
         #[arg(long, default_value_t = 0)]
         /// Source body offset returned by the prior preview.
@@ -605,35 +605,35 @@ pub enum QueryCommand {
         /// Generation returned by the prior source preview.
         generation: Option<String>,
     },
-    /// Represents the search case.
+    /// Full-text and name-ranked symbol search across the indexed graph.
     Search {
-        /// The pattern value.
+        /// Symbol name, qualified name, or full-text search pattern (`*` lists all in scope).
         pattern: String,
         #[arg(long)]
-        /// Optional kind value.
+        /// Optional node kind filter (for example `function`, `struct`, `class`).
         kind: Option<String>,
         #[arg(long)]
         /// Optional symbol classification filter (`production`, `test`, or `documentation`).
         classification: Option<String>,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of matching symbols to return.
         limit: usize,
     },
-    /// Represents the tests case.
+    /// Discover tests covering or called by a target symbol.
     Tests {
-        /// The selector value.
+        /// Target symbol ID, name, or `path:symbol` selector.
         selector: String,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
         path: Option<String>,
         #[arg(long, default_value = "inbound")]
-        /// The direction value.
+        /// Traversal direction (`inbound` callers/tests or `outbound` callees).
         direction: String,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of test entries to return.
         limit: usize,
     },
-    /// Represents the impact case.
+    /// Trace callers, callees, or Git-change blast radius across the dependency graph.
     Impact {
         /// Optional exact symbol selector; provide this or --changes.
         selector: Option<String>,
@@ -656,26 +656,26 @@ pub enum QueryCommand {
         /// Continuation generation from the preceding result page.
         generation: Option<String>,
     },
-    /// Represents the explain case.
+    /// Inspect incoming/outgoing edges and trait/inheritance relations for a symbol.
     Explain {
-        /// The selector value.
+        /// Symbol ID, name, `path:name`, or `path:line` selector.
         selector: String,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
         path: Option<String>,
     },
-    /// Represents the remove case.
+    /// Prove whether a symbol has remaining callers, tests, or references before deletion.
     Remove {
-        /// The selector value.
+        /// Symbol ID, name, `path:name`, or `path:line` selector.
         selector: String,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
         path: Option<String>,
     },
-    /// Represents the analyze case.
+    /// Analyze parse errors, unresolved references, untested surface, and cycles.
     Analyze {
         #[arg(default_value = "")]
-        /// The target value.
+        /// Workspace-relative file or directory scope (empty analyzes the whole workspace).
         target: String,
     },
     /// Execute a read-only SELECT/WITH SQL statement against the code graph.
@@ -683,14 +683,14 @@ pub enum QueryCommand {
         /// Read-only SELECT or WITH SQL statement.
         sql: String,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of result rows to return.
         limit: usize,
     },
-    /// Represents the run case.
+    /// Execute a named graph query (`slice`, `duplicates`, `dead_tails`, etc.) or SQL query.
     Run {
         /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', 'dead_tails', or a direct SELECT/WITH statement).
         operation: String,
-        /// Optional selector value.
+        /// Optional symbol/path selector or SQL query when `operation == "sql"`.
         selector: Option<String>,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
@@ -699,7 +699,7 @@ pub enum QueryCommand {
         /// Maximum graph depth for generic query operations; impact defaults to two.
         depth: u32,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of items per result page (1..=100).
         limit: usize,
         #[arg(long, default_value_t = 0)]
         /// Result page offset.
@@ -717,49 +717,49 @@ pub enum QueryCommand {
 }
 
 #[derive(Subcommand, Debug)]
-/// Enumerates the supported docs command values.
+/// Subcommands for validating, searching, and reading workspace Markdown documentation.
 pub enum DocsCommand {
     /// Check Markdown links and anchors in the workspace.
     Check,
-    /// Represents the search case.
+    /// Search indexed Markdown sections by terms, document type, or component.
     Search {
-        /// The query value.
+        /// Search query terms over indexed documentation titles and bodies.
         query: String,
         #[arg(long)]
-        /// Optional doc type value.
+        /// Filter results by frontmatter `doc_type` (for example `architecture`, `adr`, `reference`).
         doc_type: Option<String>,
         #[arg(long)]
-        /// Optional component value.
+        /// Restrict results to a component or documentation directory prefix.
         component: Option<String>,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of matching sections to return.
         limit: usize,
     },
-    /// Represents the get case.
+    /// Read a document outline or a specific section from an indexed Markdown file.
     Get {
-        /// The path or id value.
+        /// Indexed document path or document section ID.
         path_or_id: String,
         #[arg(long)]
-        /// Optional section value.
+        /// Optional exact section heading to return; omit to inspect the outline.
         section: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
-/// Enumerates the supported ast command values.
+/// Subcommands for structural tree-sitter AST pattern search.
 pub enum AstCommand {
-    /// Represents the grep case.
+    /// Search workspace files with a structural tree-sitter AST pattern.
     Grep {
-        /// The pattern value.
+        /// Tree-sitter AST pattern using `$METAVAR` placeholders.
         pattern: String,
         #[arg(long = "lang", alias = "language")]
         /// Optional language filter (inferred from --path or pattern grammar when omitted).
         language: Option<String>,
         #[arg(long)]
-        /// Optional path value.
+        /// Optional workspace-relative file or directory scope.
         path: Option<String>,
         #[arg(long, default_value_t = 100)]
-        /// The limit value.
+        /// Maximum number of AST pattern matches to return.
         limit: usize,
     },
 }

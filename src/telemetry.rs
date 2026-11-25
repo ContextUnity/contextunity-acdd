@@ -1,10 +1,9 @@
 //! W3C Trace Context span correlation (`SpanGuard`), `traces.jsonl` persistence, and debug logging.
 
-use crate::state_bridge::WorktreeSpanContext;
 use acdd_core::fs::{ensure_confined_dir_all, open_confined};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::lock::acquire_exclusive;
-use acdd_core::telemetry::{now_utc_iso_ms, SpanId, TraceId, TraceParent};
+use acdd_core::telemetry::{now_utc_iso_ms, SpanId, TraceId, TraceParent, WorktreeSpanContext};
 use acdd_state::git_ops::worktree::resolve_repo_layout;
 use acdd_state::store::sqlite::SqliteStateReader;
 use acdd_state::usecases::lifecycle::prune_old_run_trace_dirs;
@@ -428,34 +427,34 @@ fn write_entry_sync(root: &Path, date: &str, line: &str) {
 
 #[derive(Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
-/// Enumerates the supported debug log entry values.
+/// Structured event payload written to daily JSONL telemetry logs.
 enum DebugLogEntry<'a> {
-    /// Represents the cli case.
+    /// Entry emitted for a CLI command execution.
     Cli {
-        /// The timestamp value.
+        /// UTC timestamp (`HH:MM:SS.mmmZ`) when the CLI event was recorded.
         timestamp: String,
-        /// The command value.
+        /// Top-level CLI command name.
         command: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        /// Optional parameters value.
+        /// Redacted serialized CLI arguments when present.
         parameters: Option<serde_json::Value>,
-        /// The output value.
+        /// Redacted serialized command output or error summary.
         output: serde_json::Value,
     },
-    /// Represents the mcp case.
+    /// Entry emitted for an MCP tool invocation.
     Mcp {
-        /// The timestamp value.
+        /// UTC timestamp (`HH:MM:SS.mmmZ`) when the MCP event was recorded.
         timestamp: String,
-        /// The tool value.
+        /// MCP tool name.
         tool: &'a str,
-        /// The parameters value.
+        /// Redacted JSON tool call arguments.
         parameters: serde_json::Value,
-        /// The output value.
+        /// Redacted tool result payload or error summary.
         output: serde_json::Value,
     },
 }
 
-/// Performs log cli.
+/// Appends a redacted CLI execution record to today's debug log when `debug: true` is enabled.
 pub fn log_cli(
     root: &Path,
     command: &str,
@@ -477,9 +476,8 @@ pub fn log_cli(
 #[cfg(test)]
 mod tests {
     use super::SpanGuard;
-    use crate::state_bridge::WorktreeSpanContext;
     use acdd_core::fs::ScopedTempDir;
-    use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
+    use acdd_core::telemetry::{SpanId, TraceId, TraceParent, WorktreeSpanContext};
     use acdd_core::ids::RunId;
     use std::fs;
 

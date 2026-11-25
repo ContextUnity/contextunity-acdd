@@ -353,7 +353,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
                 None,
                 &traversal::GraphQueryOptions {
                     depth: 1,
-                    direction: None,
+                    direction: traversal::ImpactDirection::Inbound,
                     coverage: CoverageOptions {
                         include_coverage: true,
                     },
@@ -599,7 +599,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
             None,
             &traversal::GraphQueryOptions {
                 depth: 1,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &query,
             },
@@ -629,7 +629,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(6)
         }
@@ -642,7 +642,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(6)
         }
@@ -656,7 +656,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: None,
+            direction: traversal::ImpactDirection::Inbound,
             coverage: CoverageOptions::default(),
             page: &options(10),
         },
@@ -675,7 +675,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
-            direction: Some("outbound"),
+            direction: traversal::ImpactDirection::Outbound,
             coverage: CoverageOptions::default(),
             page: &options(10),
         },
@@ -687,19 +687,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         .unwrap()
         .iter()
         .any(|node| node["name"] == "helper"));
-    assert!(traversal::query_with_path_options(
-        &conn,
-        "impact",
-        Some("target"),
-        None,
-        &traversal::GraphQueryOptions {
-            depth: 1,
-            direction: Some("sideways"),
-            coverage: CoverageOptions::default(),
-            page: &options(10)
-        }
-    )
-    .is_err());
+    assert!("sideways".parse::<traversal::ImpactDirection>().is_err());
 }
 
 #[test]
@@ -1245,8 +1233,8 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
                 None,
                 &traversal::TraversalOptions {
                     depth: 1,
-                    inbound: false,
-                    mode: None,
+                    direction: traversal::ImpactDirection::Outbound,
+                    mode: traversal::TraversalMode::Calls,
                     edge_types: None,
                     page: &impact_page,
                 },
@@ -1296,8 +1284,8 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
                 None,
                 &traversal::TraversalOptions {
                     depth: 1,
-                    inbound: true,
-                    mode: None,
+                    direction: traversal::ImpactDirection::Inbound,
+                    mode: traversal::TraversalMode::Calls,
                     edge_types: None,
                     page: &options(10),
                 },

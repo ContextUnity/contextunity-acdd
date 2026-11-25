@@ -2,7 +2,8 @@ use super::{
     change_impact::changed_impact_with_path_options,
     types::{
         decode_edge_descriptor, edge_endpoints, normalize_scope, resolve_traversal_kinds,
-        ImpactDirection, TraversalMode, TraversalOptions, MAX_DEEP_TRAVERSAL_FRONTIER,
+        ImpactDirection, ReachedNodeDto, TraversalMode, TraversalOptions, ViaPredecessorDto,
+        MAX_DEEP_TRAVERSAL_FRONTIER,
     },
 };
 use crate::db::paging::{
@@ -17,13 +18,9 @@ use crate::models::{
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
-
-/// Parses an optional impact direction string into an inbound boolean.
-pub fn impact_inbound(direction: Option<&str>) -> Result<bool> {
-    Ok(ImpactDirection::parse_optional(direction)?.is_inbound())
-}
 
 fn admit_traversal(
     conn: &Connection,
@@ -61,26 +58,39 @@ pub(super) fn custom_dependency_steps(
     }
 }
 
-fn traversal_response(
+#[derive(Serialize)]
+struct TraversalResponseDto<'a> {
+    selector: Value,
+    direction: &'static str,
+    depth: u32,
+    mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge_types: Option<&'a [String]>,
+    nodes: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    governing_invariants: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    affected_docs: Option<Value>,
+}
+
+fn build_traversal_response(
     selector: Value,
     direction: ImpactDirection,
     depth: u32,
-    mode: &str,
+    mode: TraversalMode,
     edge_types: Option<&[String]>,
     nodes: Value,
-) -> Value {
-    let dir = direction.as_str();
-    let mut result = json!({
-        "selector": selector,
-        "direction": dir,
-        "depth": depth,
-        "mode": mode,
-        "nodes": nodes,
-    });
-    if let Some(types) = edge_types {
-        result["edge_types"] = json!(types);
+) -> TraversalResponseDto<'_> {
+    TraversalResponseDto {
+        selector,
+        direction: direction.as_str(),
+        depth,
+        mode: mode.as_str(),
+        edge_types,
+        nodes,
+        governing_invariants: None,
+        affected_docs: None,
     }
-    result
 }
 
 /// Traverse direct indexed relationships with path scoping and bounded paging.
@@ -90,9 +100,20 @@ pub fn traverse_with_path_options(
     path: Option<&str>,
     request: &TraversalOptions<'_>,
 ) -> Result<Value> {
+    Ok(serde_json::to_value(traverse_with_path_options_dto(
+        conn, selector, path, request,
+    )?)?)
+}
+
+fn traverse_with_path_options_dto<'a>(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    request: &'a TraversalOptions<'a>,
+) -> Result<TraversalResponseDto<'a>> {
     let depth = request.depth;
-    let direction = ImpactDirection::from_inbound(request.inbound);
-    let mode = TraversalMode::parse_optional(request.mode);
+    let direction = request.direction;
+    let mode = request.mode;
     let edge_types = request.edge_types;
     let options = request.page;
     if depth > 16 {
@@ -104,23 +125,21 @@ pub fn traverse_with_path_options(
     let id_hash = stable_hash64(id);
     let immediate = admit_traversal(conn, id, depth, direction)?;
     let (forward, reverse) = resolve_traversal_kinds(mode, edge_types, true);
-    let mode_str = request.mode.unwrap_or(mode.as_str());
 
     if depth == 0 || (depth > 1 && immediate == 0) {
         let items = if options.offset == 0 {
-            let mut seed = node.clone();
-            let seed_fields = seed.as_object_mut().context("invalid selected node")?;
-            seed_fields.insert("distance".into(), json!(0));
-            seed_fields.insert("is_seed".into(), json!(true));
-            vec![seed]
+            let mut seed: ReachedNodeDto = serde_json::from_value(node.clone())?;
+            seed.distance = Some(0);
+            seed.is_seed = Some(true);
+            vec![serde_json::to_value(seed)?]
         } else {
             Vec::new()
         };
-        return Ok(traversal_response(
+        return Ok(build_traversal_response(
             node,
             direction,
             depth,
-            mode_str,
+            mode,
             edge_types,
             paging::value(items, 1, options, &generation),
         ));
@@ -160,28 +179,27 @@ pub fn traverse_with_path_options(
         let page_sql = format!(
             "WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id) SELECT {columns},r.distance,{edge_json} FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4"
         );
-        let mut items = reader::rows(
+        let raw_items = reader::rows(
             conn,
             &page_sql,
             &[&id_hash, &depth, &limit, &offset],
             options.limit,
         )?;
-        for item in &mut items {
-            let fields = item.as_object_mut().context("invalid traversal node")?;
-            let edge = decode_edge_descriptor(fields.remove("__edge").unwrap_or(Value::Null))?;
-            fields.insert(
-                "is_seed".into(),
-                json!(fields.get("id").and_then(Value::as_str) == Some(id)),
-            );
+        let mut items = Vec::with_capacity(raw_items.len());
+        for raw in raw_items {
+            let mut row: ReachedNodeDto = serde_json::from_value(raw)?;
+            let edge = decode_edge_descriptor(row.__edge.take().unwrap_or(Value::Null))?;
+            row.is_seed = Some(row.fields.get("id").and_then(Value::as_str) == Some(id));
             if !edge.is_null() {
-                fields.insert("edge".into(), edge);
+                row.edge = Some(edge);
             }
+            items.push(serde_json::to_value(row)?);
         }
-        return Ok(traversal_response(
+        return Ok(build_traversal_response(
             node,
             direction,
             depth,
-            mode_str,
+            mode,
             edge_types,
             paging::value(items, total, options, &generation),
         ));
@@ -225,54 +243,52 @@ pub fn traverse_with_path_options(
     };
     let limit = i64::try_from(options.limit)?;
     let offset = i64::try_from(options.offset)?;
-    let mut items = reader::rows(
+    let raw_items = reader::rows(
         conn,
         &sql,
         &[&id_hash, &depth, &limit, &offset],
         options.limit,
     )?;
-    let total = items
+    let total = raw_items
         .first()
         .and_then(|row| row["__total"].as_u64())
         .context("traversal total is missing")?;
     let total = usize::try_from(total)?;
-    items.retain(|row| !row["id"].is_null());
-    for item in &mut items {
-        let item = item.as_object_mut().context("invalid traversal node")?;
-        item.remove("__total");
-        item.remove("__hash");
-        let reason = item
-            .remove("__reason")
-            .and_then(|value| value.as_str().map(str::to_owned));
-        let reason = reason
+    let mut items = Vec::with_capacity(raw_items.len());
+    for raw in raw_items {
+        if raw["id"].is_null() {
+            continue;
+        }
+        let mut row: ReachedNodeDto = serde_json::from_value(raw)?;
+        let reason = row
+            .__reason
+            .take()
             .map(|encoded| serde_json::from_str::<(String, String)>(&encoded))
             .transpose()?;
-        let predecessor = item
-            .remove("__predecessor")
-            .and_then(|value| value.as_str().map(str::to_owned))
+        let predecessor = row
+            .__predecessor
+            .take()
             .or_else(|| reason.as_ref().map(|pair| pair.0.clone()));
-        let edge_kind = item
-            .remove("__edge_kind")
-            .and_then(|value| value.as_str().map(str::to_owned))
+        let edge_kind = row
+            .__edge_kind
+            .take()
             .or_else(|| reason.map(|pair| pair.1));
-        if item.get("id").and_then(Value::as_str) == Some(id) {
-            item.insert("is_seed".into(), json!(true));
+        if row.fields.get("id").and_then(Value::as_str) == Some(id) {
+            row.is_seed = Some(true);
         } else {
-            item.insert("is_seed".into(), json!(false));
-            item.insert(
-                "via".into(),
-                json!({
-                    "id": predecessor.context("reached node has no predecessor")?,
-                    "kind": edge_kind.context("reached node has no edge kind")?
-                }),
-            );
+            row.is_seed = Some(false);
+            row.via = Some(ViaPredecessorDto {
+                id: predecessor.context("reached node has no predecessor")?,
+                kind: edge_kind.context("reached node has no edge kind")?,
+            });
         }
+        items.push(serde_json::to_value(row)?);
     }
-    Ok(traversal_response(
+    Ok(build_traversal_response(
         node,
         direction,
         depth,
-        mode_str,
+        mode,
         edge_types,
         paging::value(items, total, options, &generation),
     ))
@@ -293,25 +309,25 @@ pub fn impact_with_path_options(
         changes.filter(|value| !value.trim().is_empty()),
     ) {
         (Some(selector), None) => {
-            let mut result = traverse_with_path_options(conn, selector, path, request)?;
-            let selected_id = result["selector"]["id"]
+            let mut result = traverse_with_path_options_dto(conn, selector, path, request)?;
+            let selected_id = result.selector["id"]
                 .as_str()
-                .or_else(|| result["selector"]["node"]["id"].as_str())
+                .or_else(|| result.selector["node"]["id"].as_str())
                 .unwrap_or(selector)
                 .to_owned();
-            let selected_path = result["selector"]["path"]
+            let selected_path = result.selector["path"]
                 .as_str()
-                .or_else(|| result["selector"]["node"]["path"].as_str())
+                .or_else(|| result.selector["node"]["path"].as_str())
                 .unwrap_or(selector)
                 .to_owned();
-            result["governing_invariants"] = reader::governing_invariants(conn, &selected_id)?;
+            result.governing_invariants = Some(reader::governing_invariants(conn, &selected_id)?);
             let path_is_indexed: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM path_dictionary WHERE path=?1)",
                 [&selected_path],
                 |row| row.get(0),
             )?;
             let refs_doc = EdgeKind::ReferencesDoc.as_str();
-            result["affected_docs"] = if path_is_indexed {
+            result.affected_docs = Some(if path_is_indexed {
                 paging::query(
                     conn,
                     &format!(
@@ -329,8 +345,8 @@ pub fn impact_with_path_options(
                     &[&stable_hash64(&selected_id)],
                     request.page,
                 )?
-            };
-            Ok(result)
+            });
+            Ok(serde_json::to_value(result)?)
         }
         (None, Some(mode)) => changed_impact_with_path_options(conn, root, mode, path, request),
         (Some(_), Some(_)) => bail!("provide exactly one of selector or changes"),

@@ -334,6 +334,10 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert!(code_handoff.save.archive);
     assert!(code_handoff.save.prune);
 
+    let code_polish = code_p.gates.iter().find(|g| g.id == "polish").unwrap();
+    assert!(code_polish.scope.iter().any(|s| s == "ROADMAP.md"));
+    assert!(code_polish.scope.iter().any(|s| s == "TESTS.md"));
+
     let doc_p = resolve_profile_ref_with_dirs("documentation", None, None, None).unwrap();
     assert!(doc_p.tags.contains("docs"));
     assert_eq!(

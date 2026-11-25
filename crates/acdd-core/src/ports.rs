@@ -419,15 +419,6 @@ pub struct CompositeDomainProvider {
 }
 
 impl CompositeDomainProvider {
-    /// Register a list of domain providers with all domains enabled.
-    pub fn new(providers: Vec<Arc<dyn DomainProvider>>) -> std::result::Result<Self, StateError> {
-        let flags = providers
-            .iter()
-            .map(|p| (p.domain_id().to_owned(), true))
-            .collect();
-        Self::with_module_flags(providers, flags)
-    }
-
     /// Register domain providers while honoring explicit `modules:` enablement flags (`domain_id -> bool`).
     ///
     /// Built-in `"code"` and `"docs"` default to enabled (`true`) when absent from `enabled_flags`;
@@ -988,7 +979,11 @@ mod tests {
         ];
 
         for (label, providers, expected_err) in cases {
-            let res = CompositeDomainProvider::new(providers.clone());
+            let flags = providers
+                .iter()
+                .map(|p| (p.domain_id().to_owned(), true))
+                .collect();
+            let res = CompositeDomainProvider::with_module_flags(providers.clone(), flags);
             match expected_err {
                 None => assert!(res.is_ok(), "{label}: unexpected err {:?}", res.err()),
                 Some(code) => {
@@ -1167,8 +1162,11 @@ mod tests {
 
     #[test]
     fn resolve_capability_parity_across_validation_inspection_and_dispatch() {
-        let composite = CompositeDomainProvider::new(vec![sample_provider("http", &["request"])])
-            .unwrap();
+        let composite = CompositeDomainProvider::with_module_flags(
+            vec![sample_provider("http", &["request"])],
+            BTreeMap::from([("http".to_owned(), true)]),
+        )
+        .unwrap();
         let cap = composite.action_capability("http.probe").unwrap();
         assert_eq!(cap.name, "probe");
         assert!(cap.mutating);

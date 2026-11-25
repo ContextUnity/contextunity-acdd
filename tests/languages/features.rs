@@ -497,8 +497,8 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         .unwrap();
     let options = acdd_index::db::traversal::TraversalOptions {
         depth: 4,
-        inbound: true,
-        mode: None,
+        direction: acdd_index::db::traversal::ImpactDirection::Inbound,
+        mode: acdd_index::db::traversal::TraversalMode::Calls,
         edge_types: None,
         page: &acdd_core::response::QueryOptions::resolve(
             &acdd_core::response::ResponsePolicy::default(),

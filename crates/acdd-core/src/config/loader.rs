@@ -1,26 +1,33 @@
 //! Workspace adapter loading, strict validation, and SQLite policy serialization.
 
 use super::constants::{
-    error, schema_error, ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES, DEFAULT_RETAIN_TRACES,
-    DEFAULT_STATE_DB,
+    ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES, DEFAULT_RETAIN_TRACES, DEFAULT_STATE_DB,
 };
 use super::linked::resolve_linked_workspaces;
 use super::schema::{
     default_profiles_dirs, default_specs, validate_and_normalize_specs, Adapter, AdapterFile,
     LinkedWorkspace, ScannerLimits, SpecCollectionConfig, StrictAdapterReport,
 };
+use crate::errors::{AcddError, ErrorCode};
 use crate::fs::{checked_child, safe_relative};
 use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
 use crate::subsystems::{SubsystemId, SubsystemRegistry};
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn config_schema_err(message: impl Into<String>) -> AcddError {
+    AcddError::new(ErrorCode::ProfileSchemaInvalid, message)
+}
+
 /// Loads and normalizes workspace adapter configuration (logging linked-workspace warnings to stderr).
-pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
+pub fn load_adapter(
+    root: &Path,
+    adapter_path: Option<&Path>,
+) -> std::result::Result<Adapter, AcddError> {
     let report = load_adapter_inner(root, adapter_path)?;
     for msg in &report.linked_workspace_errors {
         eprintln!("[acdd] {msg}; skipping");
@@ -32,94 +39,104 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
 pub fn load_adapter_report(
     root: &Path,
     adapter_path: Option<&Path>,
-) -> std::io::Result<StrictAdapterReport> {
+) -> std::result::Result<StrictAdapterReport, AcddError> {
     load_adapter_inner(root, adapter_path)
 }
 
-struct ParsedAdapterConfig {
-    raw: AdapterFile,
-    identity: Option<serde_yaml::Value>,
-    adapter_version: Option<String>,
-    explicit_adapter_path: Option<PathBuf>,
+fn insert_if_some<T: serde::Serialize>(
+    map: &mut Map<String, Value>,
+    key: &str,
+    value: Option<&T>,
+) -> std::result::Result<(), AcddError> {
+    if let Some(val) = value {
+        let json_val =
+            serde_json::to_value(val).map_err(|e| config_schema_err(e.to_string()))?;
+        map.insert(key.to_owned(), json_val);
+    }
+    Ok(())
+}
+
+fn adapter_index_identity(raw: &AdapterFile) -> std::result::Result<Option<Value>, AcddError> {
+    let mut map = Map::new();
+    if !raw.sensitive.is_empty() {
+        insert_if_some(&mut map, "sensitive", Some(&raw.sensitive))?;
+    }
+    insert_if_some(&mut map, "limits", raw.limits.as_ref())?;
+    insert_if_some(&mut map, "adapter_version", raw.adapter_version.as_ref())?;
+    insert_if_some(&mut map, "roots", raw.roots.as_ref())?;
+    insert_if_some(&mut map, "ignore", raw.ignore.as_ref())?;
+    insert_if_some(&mut map, "eligible_roots", raw.eligible_roots.as_ref())?;
+    insert_if_some(&mut map, "docs", raw.docs.as_ref())?;
+    insert_if_some(
+        &mut map,
+        "excluded_directory_names",
+        raw.excluded_directory_names.as_ref(),
+    )?;
+    insert_if_some(
+        &mut map,
+        "excluded_file_names",
+        raw.excluded_file_names.as_ref(),
+    )?;
+    insert_if_some(&mut map, "linked_workspaces", raw.linked_workspaces.as_ref())?;
+    insert_if_some(&mut map, "workspaces", raw.workspaces.as_ref())?;
+    insert_if_some(&mut map, "owners", raw.owners.as_ref())?;
+    insert_if_some(&mut map, "aliases", raw.aliases.as_ref())?;
+    if !raw.architecture.is_empty() {
+        insert_if_some(&mut map, "architecture", Some(&raw.architecture))?;
+    }
+    Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
 
 fn parse_adapter_config_file(
     canonical_root: &Path,
     adapter_path: Option<&Path>,
     selected: Option<&Path>,
-) -> std::io::Result<ParsedAdapterConfig> {
+) -> std::result::Result<(AdapterFile, Option<PathBuf>), AcddError> {
     let Some(path) = selected else {
-        return Ok(ParsedAdapterConfig {
-            raw: AdapterFile::default(),
-            identity: None,
-            adapter_version: None,
-            explicit_adapter_path: None,
-        });
+        return Ok((AdapterFile::default(), None));
     };
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|e| config_schema_err(e.to_string()))?;
     if metadata.file_type().is_symlink() {
-        return Err(error("adapter must not be a symlink"));
+        return Err(config_schema_err("adapter must not be a symlink"));
     }
-    let canonical = path.canonicalize()?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| config_schema_err(e.to_string()))?;
     if !canonical.starts_with(canonical_root) {
-        return Err(error("adapter must be inside workspace root"));
+        return Err(config_schema_err("adapter must be inside workspace root"));
     }
     let explicit_adapter_path = adapter_path.is_some().then(|| canonical.clone());
-    let content = fs::read_to_string(&canonical)?;
-    let mut identity: serde_yaml::Value = serde_yaml::from_str(&content)
-        .map_err(|e| schema_error(format!("invalid acdd.yaml: {e}")))?;
-    if let Some(mapping) = identity.as_mapping_mut() {
-        for excluded in [
-            "response",
-            "DEBUG",
-            "debug",
-            "modules",
-            "profile",
-            "state_db",
-            "retain_traces",
-            "profiles_dirs",
-            "specs",
-        ] {
-            mapping.remove(serde_yaml::Value::String(excluded.into()));
-        }
-    }
+    let content =
+        fs::read_to_string(&canonical).map_err(|e| config_schema_err(e.to_string()))?;
     let parsed: AdapterFile = serde_yaml::from_str(&content)
-        .map_err(|e| schema_error(format!("invalid acdd.yaml schema: {e}")))?;
-    let version_str = parsed.adapter_version.as_ref().map(|v| match v {
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    });
-    Ok(ParsedAdapterConfig {
-        raw: parsed,
-        identity: Some(identity),
-        adapter_version: version_str,
-        explicit_adapter_path,
-    })
+        .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?;
+    Ok((parsed, explicit_adapter_path))
 }
 
 fn load_adapter_inner(
     root: &Path,
     adapter_path: Option<&Path>,
-) -> std::io::Result<StrictAdapterReport> {
+) -> std::result::Result<StrictAdapterReport, AcddError> {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let default_path = canonical_root.join(ACDD_CONFIG_FILE);
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
-    let ParsedAdapterConfig {
-        raw,
-        identity,
-        adapter_version,
-        explicit_adapter_path,
-    } = parse_adapter_config_file(&canonical_root, adapter_path, selected)?;
+    let (raw, explicit_adapter_path) =
+        parse_adapter_config_file(&canonical_root, adapter_path, selected)?;
+    let adapter_version = raw.adapter_version.as_ref().map(|v| match v {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
     raw.response
         .validate()
-        .map_err(|e| schema_error(e.to_string()))?;
-    raw.architecture
-        .validate()
-        .map_err(|e| schema_error(e.to_string()))?;
+        .map_err(|e| config_schema_err(e.to_string()))?;
+    raw.architecture.validate()?;
     if let Some(limits) = &raw.limits {
-        limits.validate().map_err(|e| schema_error(e.to_string()))?;
+        limits
+            .validate()
+            .map_err(|e| config_schema_err(e.to_string()))?;
     }
     let mut modules = raw.modules.clone();
     if let Some(profile) = raw.profile {
@@ -127,7 +144,7 @@ fn load_adapter_inner(
     }
     modules
         .validate()
-        .map_err(|e| schema_error(e.to_string()))?;
+        .map_err(|e| config_schema_err(e.to_string()))?;
     let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
     validate_and_normalize_specs(&mut specs)?;
     let profiles_dirs = raw
@@ -137,7 +154,7 @@ fn load_adapter_inner(
     for dir in &profiles_dirs {
         let trimmed = dir.trim();
         if trimmed.is_empty() || !safe_relative(Path::new(trimmed)) {
-            return Err(schema_error(format!(
+            return Err(config_schema_err(format!(
                 "profiles_dirs entry '{dir}' must be a relative plain path"
             )));
         }
@@ -147,13 +164,18 @@ fn load_adapter_inner(
         .clone()
         .unwrap_or_else(|| DEFAULT_STATE_DB.to_owned());
     if state_db.trim().is_empty() {
-        return Err(schema_error("state_db must not be empty"));
+        return Err(config_schema_err("state_db must not be empty"));
     }
     let retain_traces = raw.retain_traces.unwrap_or(DEFAULT_RETAIN_TRACES);
     if retain_traces == 0 {
-        return Err(schema_error("retain_traces must be at least 1"));
+        return Err(config_schema_err("retain_traces must be at least 1"));
     }
 
+    let identity = if selected.is_some() {
+        adapter_index_identity(&raw)?
+    } else {
+        None
+    };
     let code_enabled = modules.is_subsystem_enabled(SubsystemId::Code);
     let docs_enabled = modules.is_subsystem_enabled(SubsystemId::Docs);
     let specs_paths: BTreeMap<&str, Vec<&str>> = specs
@@ -165,26 +187,15 @@ fn load_adapter_inner(
         .iter()
         .map(|(k, v)| (k.as_str(), v.patterns()))
         .collect();
-    let identity_is_empty = identity
-        .as_ref()
-        .is_none_or(|val| val.is_null() || val.as_mapping().is_some_and(|m| m.is_empty()));
-    let digest = if identity_is_empty
+    let digest = if identity.is_none()
         && code_enabled
         && docs_enabled
         && specs_paths == default_specs_paths
     {
         String::new()
     } else {
-        let identity_json = match identity {
-            Some(ref val)
-                if !val.is_null() && !val.as_mapping().is_some_and(|m| m.is_empty()) =>
-            {
-                serde_json::to_value(val).map_err(|e| error(e.to_string()))?
-            }
-            _ => Value::Null,
-        };
         let payload = json!({
-            "identity": identity_json,
+            "identity": identity.unwrap_or(Value::Null),
             "modules_code": code_enabled,
             "modules_docs": docs_enabled,
             "specs_paths": specs_paths,
@@ -195,26 +206,27 @@ fn load_adapter_inner(
         .roots
         .or(raw.eligible_roots)
         .unwrap_or_else(|| vec![".".into()]);
-    let roots = roots.into_iter().try_fold(Vec::new(), |mut values, item| {
+    let mut roots = roots.into_iter().try_fold(Vec::new(), |mut values, item| {
         if item == "." {
             values.push(root.to_path_buf());
             return Ok(values);
         }
         let relative = Path::new(&item);
         if !safe_relative(relative) {
-            return Err(error("adapter roots must be relative plain paths"));
+            return Err(config_schema_err("adapter roots must be relative plain paths"));
         }
-        let candidate = checked_child(root, relative)?;
+        let candidate =
+            checked_child(root, relative).map_err(|e| config_schema_err(e.to_string()))?;
         if candidate.exists() {
-            let metadata = fs::symlink_metadata(&candidate)?;
+            let metadata =
+                fs::symlink_metadata(&candidate).map_err(|e| config_schema_err(e.to_string()))?;
             if metadata.file_type().is_symlink() {
-                return Err(error("adapter root must not be a symlink"));
+                return Err(config_schema_err("adapter root must not be a symlink"));
             }
             values.push(candidate);
         }
         Ok(values)
     })?;
-    let mut roots = roots;
     let raw_docs = raw.docs.unwrap_or_default();
     for item in &raw_docs {
         if item.contains('*') || item.contains('?') {
@@ -222,9 +234,12 @@ fn load_adapter_inner(
         }
         let relative = Path::new(item);
         if !safe_relative(relative) {
-            return Err(error("adapter document roots must be relative plain paths"));
+            return Err(config_schema_err(
+                "adapter document roots must be relative plain paths",
+            ));
         }
-        let candidate = checked_child(root, relative)?;
+        let candidate =
+            checked_child(root, relative).map_err(|e| config_schema_err(e.to_string()))?;
         if candidate.exists() {
             roots.push(candidate);
         }
@@ -444,7 +459,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
 mod tests {
     use super::super::paths::{resolve_code_db_path, resolve_state_db_path};
     use super::*;
-    use crate::errors::{ErrorCode, StateError};
+    use crate::errors::ErrorCode;
 
     #[test]
     fn specs_collections_and_adapter_digest_isolation_matrix() {
@@ -598,12 +613,11 @@ roots: [.]
             "not: [valid: yaml\n",
         ] {
             std::fs::write(dir.join(ACDD_CONFIG_FILE), bad_yaml).unwrap();
-            let err: anyhow::Error = load_adapter(&dir, None).unwrap_err().into();
-            let state_err = StateError::from_anyhow(&err).expect("StateError expected");
+            let err = load_adapter(&dir, None).unwrap_err();
             assert_eq!(
-                state_err.code,
+                err.code,
                 ErrorCode::ProfileSchemaInvalid,
-                "{bad_yaml}: {state_err}"
+                "{bad_yaml}: {err}"
             );
         }
 
@@ -625,12 +639,11 @@ roots: [.]
                 format!("{unknown_key}: legacy_val\n")
             };
             std::fs::write(dir.join(ACDD_CONFIG_FILE), &yaml).unwrap();
-            let err: anyhow::Error = load_adapter(&dir, None).unwrap_err().into();
-            let state_err = StateError::from_anyhow(&err).expect("StateError expected");
+            let err = load_adapter(&dir, None).unwrap_err();
             assert_eq!(
-                state_err.code,
+                err.code,
                 ErrorCode::ProfileSchemaInvalid,
-                "{unknown_key}: {state_err}"
+                "{unknown_key}: {err}"
             );
         }
 

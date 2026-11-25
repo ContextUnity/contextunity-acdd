@@ -16,7 +16,7 @@ use tokio::io::AsyncWrite;
 // The tool result is JSON inside a text block, then escaped by JSON-RPC again.
 const ENVELOPE_RESERVE: usize = 256;
 
-/// Performs result.
+/// Formats a test response value using the default output format (`Markdown`).
 #[cfg(test)]
 pub(crate) fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     result_with_format(value, policy, OutputFormat::default())
@@ -265,13 +265,13 @@ fn success_text_bytes(text: &str) -> usize {
     serialized_bytes(&result)
 }
 
-/// Performs serialized bytes.
+/// Computes the exact serialized JSON byte length of an MCP tool result.
 pub(crate) fn serialized_bytes(result: &CallToolResult) -> usize {
     let mut counter = acdd_core::format::JsonByteCounter::default();
     serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.0)
 }
 
-/// Performs enforce.
+/// Clamps an arbitrary MCP `CallToolResult` to the configured `policy.max_output_bytes` ceiling.
 pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     if serialized_bytes(&result) <= budget {
@@ -295,7 +295,7 @@ pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResul
     }
 }
 
-/// Performs bounded error.
+/// Truncates an error message along UTF-8 boundaries until its JSON envelope fits within `budget`.
 fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     let mut end = acdd_core::format::utf8_floor_boundary(message, budget);
     loop {
@@ -334,7 +334,7 @@ pub(crate) struct BoundedWriter<W> {
 }
 
 impl<W> BoundedWriter<W> {
-    /// Creates a new instance.
+    /// Wraps `writer` in a line-buffered JSON-RPC envelope guard.
     pub fn new(writer: W) -> Self {
         Self {
             writer,

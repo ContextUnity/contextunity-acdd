@@ -10,7 +10,7 @@ use acdd_state::usecases::dto::{
     BlackboardPostReq, ClaimReq, ListReq, RunReq, StartReq, SubmitReq, VerifyReq,
 };
 use acdd_state::usecases::{
-    StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryOutput,
+    StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryEngine, StateQueryOutput,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -92,7 +92,7 @@ scope: [src/lib.rs]
     git_cmd(ws.root(), &["commit", "-m", "add e2e spec and profile"]);
 
     let cfg = base_engine_config(ws.root());
-    let engine = StateEngine::open(cfg, TestProvider::full_composite()).unwrap();
+    let engine = StateEngine::open(cfg.clone(), TestProvider::full_composite()).unwrap();
 
     // Start managed worktree run off `main`.
     let StateCommandOutput::Start(started) = engine
@@ -501,7 +501,9 @@ scope: [src/lib.rs]
     assert!(ws.path("docs/milestones/archive/AC-010-e2e.md").is_file());
     assert!(!ws.path("docs/milestones/AC-010-e2e.md").exists());
 
-    let StateQueryOutput::List(listed) = engine
+    let query_engine =
+        StateQueryEngine::open_read_only(cfg, TestProvider::full_composite()).unwrap();
+    let StateQueryOutput::List(listed) = query_engine
         .query(StateQuery::List(ListReq {
             include_tombstones: true,
             ..ListReq::default()

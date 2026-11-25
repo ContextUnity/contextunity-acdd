@@ -127,7 +127,7 @@ gates:
 
     let cfg = base_config(repo);
     let (mock, provider) = build_provider_with_mock(&cfg.modules);
-    let engine = StateEngine::open(cfg, provider).unwrap();
+    let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
     let start_resp = start_run(&engine, StartReq { spec_path: Some("docs/milestones/AC-020-e2e.md".to_owned()), profile: Some(e2e_p), worktree: true, ..StartReq::default() }).unwrap();
     let rid = start_resp.run.run_id.to_string();
     assert_eq!(start_resp.ready_nodes, vec!["pre_verify".to_owned()]);
@@ -141,9 +141,10 @@ gates:
     assert!(pre_verify_resp.passed && pre_verify_resp.check_results.len() == 1 && mock.action_calls() == 1);
 
     // Inject interrupted Running trace and verify idempotency recovery.
-    let pre_snap = engine.backend().load_run_graph(&start_resp.run.run_id).unwrap().unwrap();
+    let pre_backend = backend_for(&cfg);
+    let pre_snap = pre_backend.load_run_graph(&start_resp.run.run_id).unwrap().unwrap();
     let pre_node = pre_snap.nodes.iter().find(|n| n.node_id == "root:pre_verify").unwrap().clone();
-    engine.backend().exec_tx(|tx| tx.start_trace(
+    pre_backend.exec_tx(|tx| tx.start_trace(
         &acdd_state::machine::graph::build_preconditions(&pre_snap, &[pre_node.node_id.as_str()], Some(&pre_node)),
         &TraceStartInput {
             run_id: start_resp.run.run_id.clone(), node_id: pre_node.node_id.clone(),
@@ -245,7 +246,7 @@ gates:
     let mut drift_req = pass_req(&rid, "handoff", "handoff-1", Some(h_claim.claim_revision), false);
     drift_req.summary = Some("should detect pre_verify drift".to_owned());
     assert_eq!(submit_req(&engine, drift_req).unwrap_err().code, ErrorCode::TaskCandidateMismatch);
-    assert_eq!(engine.backend().load_run_graph(&start_resp.run.run_id).unwrap().unwrap().nodes.iter().find(|n| n.node_id == "root:pre_verify").unwrap().status, NodeStatus::Stale);
+    assert_eq!(reader_for(&cfg).load_run_graph(&start_resp.run.run_id).unwrap().unwrap().nodes.iter().find(|n| n.node_id == "root:pre_verify").unwrap().status, NodeStatus::Stale);
 
     engine.execute(StateCommand::Reopen(ReopenReq {
         run: Some(rid.clone()), node: "pre_verify".to_owned(), cascade: false, reason: Some("reopen stale".to_owned()),
@@ -269,11 +270,11 @@ gates:
     assert!(git_ok(repo, &["show", &format!("{}:docs/milestones/archive/AC-020-e2e.md", closed_oid.as_str())]).contains("id: AC-020"));
 
     let pre_land_doc = acdd_state::spec::parse_spec("---\nid: AC-021\ntitle: Dependent Before Landing\nstatus: planned\ndepends_on: [\"AC-020:t1\"]\n---\n### task: t1\n```yaml\ntarget: consume AC-020\nscope: [src/]\n```\n").unwrap();
-    acdd_state::usecases::deps::verify_run_level_depends_on(engine.config(), engine.backend(), &pre_land_doc).expect("closed_commit archive satisfies depends_on before landing");
+    acdd_state::usecases::deps::verify_run_level_depends_on(&cfg, &reader_for(&cfg), &pre_land_doc).expect("closed_commit archive satisfies depends_on before landing");
     git_ok(repo, &["merge", "--ff-only", "refs/heads/run/AC-020"]);
     assert!(repo.join("docs/milestones/archive/AC-020-e2e.md").is_file());
     assert!(!repo.join("docs/milestones/AC-020-e2e.md").exists());
-    match engine.query(StateQuery::List(ListReq { include_tombstones: true, ..ListReq::default() })).unwrap() {
+    match query_with(&cfg, &provider, StateQuery::List(ListReq { include_tombstones: true, ..ListReq::default() })).unwrap() {
         StateQueryOutput::List(l) => {
             assert_eq!((l.page.total_runs, l.page.total_tombstones), (0, 1));
             assert_eq!(l.page.tombstones[0].spec_id.as_deref(), Some("AC-020"));
@@ -398,9 +399,9 @@ gates:
 
     let mut tiny_cfg = p7_cfg.clone();
     tiny_cfg.response_policy.max_output_bytes = 64;
-    let budget_eng = StateEngine::open(tiny_cfg, p7_prov).unwrap();
+    let budget_eng = StateEngine::open(tiny_cfg, p7_prov.clone()).unwrap();
     assert_eq!(claim_node(&budget_eng, ip_rid.as_str(), "t1.build", "w-budget", None, false, false, None).unwrap_err().code, ErrorCode::GuidanceBudgetExceeded);
-    let t1b_after_budget = p7_eng.backend().load_run_graph(&ip_rid).unwrap().unwrap().nodes.into_iter().find(|n| n.node_id == "task:t1:build").unwrap();
+    let t1b_after_budget = reader_for(&p7_cfg).load_run_graph(&ip_rid).unwrap().unwrap().nodes.into_iter().find(|n| n.node_id == "task:t1:build").unwrap();
     assert_eq!((t1b_after_budget.status, t1b_after_budget.claim_revision), (NodeStatus::Ready, 0));
 
     let c1 = claim_node(&p7_eng, ip_rid.as_str(), "t1.build", "w-1", None, false, false, None).unwrap();
@@ -409,7 +410,7 @@ gates:
     let r1 = claim_node(&p7_eng, ip_rid.as_str(), "t1.review", "w-rev1", None, false, false, None).unwrap();
     fs::write(p7_root.join("src/a.rs"), "pub fn a() -> i32 { 999 }\n").unwrap();
     assert_eq!(submit_req(&p7_eng, pass_req(ip_rid.as_str(), "t1.review", "w-rev1", Some(r1.claim_revision), true)).unwrap_err().code, ErrorCode::TaskCandidateMismatch);
-    assert_eq!(p7_eng.backend().load_run_graph(&ip_rid).unwrap().unwrap().nodes.iter().find(|n| n.node_id == "task:t1:build").unwrap().status, NodeStatus::Stale);
+    assert_eq!(reader_for(&p7_cfg).load_run_graph(&ip_rid).unwrap().unwrap().nodes.iter().find(|n| n.node_id == "task:t1:build").unwrap().status, NodeStatus::Stale);
     clear_run(&p7_eng, ip_rid.as_str());
 
     let mgr_s = start_run(&p7_eng, StartReq { spec_path: Some("docs/milestones/AC-700-seams.md".to_owned()), profile: Some(p7_managed_p.clone()), ..StartReq::default() }).unwrap();
@@ -456,7 +457,7 @@ gates:
     let mut np_pass = pass_req(np_s.run.run_id.as_str(), "handoff", "w-np", Some(np_c.claim_revision), true);
     np_pass.worktree = Some(np_linked_wt);
     submit_req(&cs_eng, np_pass).unwrap();
-    let np_tomb = cs_eng.backend().load_tombstone(&np_s.run.run_id).unwrap().unwrap();
+    let np_tomb = reader_for(&cs_cfg).load_tombstone(&np_s.run.run_id).unwrap().unwrap();
     assert!(!np_tomb.cleanup_manifest.iter().any(|e| e.kind == "spec_file"));
     assert!(cs_root.join("docs/milestones/AC-NP.md").exists() && np_linked_spec.exists());
 
@@ -764,7 +765,7 @@ gates:
             rebind_profile: true,
         }))
         .unwrap();
-    let rebound_run = audit_eng.backend().load_run_graph(&yip_s.run.run_id).unwrap().unwrap().run;
+    let rebound_run = reader_for(&audit_cfg).load_run_graph(&yip_s.run.run_id).unwrap().unwrap().run;
     let rebound_prof: ResolvedGateProfile = serde_json::from_str(&rebound_run.profile_json).unwrap();
     assert_eq!((rebound_prof.git.isolation, rebound_prof.save), (IsolationMode::InPlace, acdd_state::types::SaveAction::None));
     assert_eq!(rebound_prof.gates[0].save.post, Some(acdd_state::types::SaveAction::None));
@@ -862,11 +863,11 @@ gates:
         ErrorCode::ExternalGitDrift
     );
     assert!(
-        w1_eng.backend().load_run_graph(&w1_s.run.run_id).unwrap().is_some(),
+        reader_for(&audit_cfg).load_run_graph(&w1_s.run.run_id).unwrap().is_some(),
         "rejected non-force clear must NOT prune active run"
     );
     assert!(
-        w1_eng.backend().load_tombstone(&w1_s.run.run_id).unwrap().is_none(),
+        reader_for(&audit_cfg).load_tombstone(&w1_s.run.run_id).unwrap().is_none(),
         "rejected non-force clear must NOT emit a pending tombstone"
     );
     assert!(task_wt_path.join("dirty.txt").exists());
@@ -875,7 +876,7 @@ gates:
     let alt_wt = audit_root.join("alt-task-wt");
     git_ok(audit_root, &["worktree", "add", "-b", "feat/alt-t1", alt_wt.to_str().unwrap()]);
     let _ = claim_node(&w1_eng, w1_rid, "t1.build", "w-1", None, true, false, Some(alt_wt.clone())).unwrap();
-    let snap_after_force = w1_eng.backend().load_run_graph(&w1_s.run.run_id).unwrap().unwrap();
+    let snap_after_force = reader_for(&audit_cfg).load_run_graph(&w1_s.run.run_id).unwrap().unwrap();
     let parent_t1 = snap_after_force.nodes.iter().find(|n| n.node_id == "task:t1").unwrap();
     assert_eq!(parent_t1.branch.as_deref(), Some("feat/alt-t1"));
     assert_eq!(

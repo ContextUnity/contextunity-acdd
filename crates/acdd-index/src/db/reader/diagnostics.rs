@@ -6,8 +6,9 @@ use crate::models::tags::{CoverageStatus, EdgeKind};
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, ensure, Result};
 use rusqlite::{Connection, ToSql};
-use serde_json::{json, Map, Value};
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{collections::BTreeMap, path::Path};
 
 pub(super) fn is_query_budget_exhaustion(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
@@ -130,13 +131,13 @@ pub fn analyze_paged(
     } else {
         (format!("SELECT c.language,{status_sums} FROM (SELECT path_id FROM path_dictionary WHERE path=?1 OR (path>=?2 AND path<?3)) p JOIN coverage_language_counts c ON c.path_id=p.path_id GROUP BY c.language ORDER BY c.language LIMIT 100"), params)
     };
-    let mut resolution_languages = Map::new();
+    let mut resolution_languages = BTreeMap::new();
     for row in rows(conn, &language_sql, language_params, 100)? {
         if let Some(language) = row["language"].as_str() {
             resolution_languages.insert(language.to_owned(), json!({resolved:row[resolved],ambiguous:row[ambiguous],unresolved:row[unresolved],"external_imports":row["external_imports"]}));
         }
     }
-    result["resolution_languages"] = Value::Object(resolution_languages);
+    result["resolution_languages"] = serde_json::to_value(resolution_languages)?;
     if exact_file {
         let error_columns = if options.detail == Detail::Full { "*" } else { "path,line,substr(message,1,512) message,length(message)>512 message_truncated" };
         result["errors"] = paging::query(conn, &format!("SELECT {error_columns} FROM errors WHERE path=?1 ORDER BY line,message,rowid"), &[&path], options)?;
@@ -274,23 +275,36 @@ pub(super) fn resolution_cause_sql() -> &'static str {
     "CASE WHEN c.status='ambiguous' THEN 'ambiguous_candidates' WHEN e.evidence='computed receiver or dynamic callee; callable identity is unknown' THEN 'dynamic_callee' WHEN e.evidence='callee is shadowed by a parameter or local binding of unknown callable identity' THEN 'shadowed_binding' WHEN e.evidence LIKE 'call through external import %' THEN 'external_import_call' WHEN e.evidence LIKE 'import %: 1 modules, 0 alias targets' THEN 'alias_target_missing' WHEN e.evidence LIKE 'no indexed provider for absolute import %' THEN 'missing_indexed_import' WHEN e.evidence LIKE 'import %: 0 modules, %' THEN 'missing_indexed_import' WHEN e.evidence LIKE '0 lexically justified candidates;%' THEN 'no_lexical_candidate' ELSE 'other' END"
 }
 
+#[derive(Deserialize, Serialize)]
+struct AnnotatedDiagnosticRow {
+    #[serde(default, skip_serializing)]
+    __evidence: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    snippet: Option<String>,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
 fn annotate_diagnostic_page(page: &mut Value, source: &str) {
     let Some(items) = page["items"].as_array_mut() else {
         return;
     };
     for item in items {
-        let evidence = item
-            .get("__evidence")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let reason = diagnostic_reason(
-            item.get("status").and_then(Value::as_str),
-            item.get("cause").and_then(Value::as_str),
-            item.get("expression").and_then(Value::as_str),
-            &evidence,
-        );
-        let snippet = item
+        let Ok(mut row) = serde_json::from_value::<AnnotatedDiagnosticRow>(item.clone()) else {
+            continue;
+        };
+        let evidence = row.__evidence.as_deref().unwrap_or_default();
+        row.reason = diagnostic_reason(
+            row.fields.get("status").and_then(Value::as_str),
+            row.fields.get("cause").and_then(Value::as_str),
+            row.fields.get("expression").and_then(Value::as_str),
+            evidence,
+        )
+        .map(str::to_owned);
+        row.snippet = row
+            .fields
             .get("line")
             .and_then(Value::as_u64)
             .filter(|line| *line > 0)
@@ -301,16 +315,8 @@ fn annotate_diagnostic_page(page: &mut Value, source: &str) {
             })
             .map(|line| line.trim_end_matches(['\r', '\n']))
             .map(bounded_diagnostic_snippet);
-        if let Some(object) = item.as_object_mut() {
-            object.remove("__evidence");
-            object.insert(
-                "reason".into(),
-                reason.map_or(Value::Null, |reason| json!(reason)),
-            );
-            object.insert(
-                "snippet".into(),
-                snippet.map_or(Value::Null, |snippet| json!(snippet)),
-            );
+        if let Ok(encoded) = serde_json::to_value(row) {
+            *item = encoded;
         }
     }
 }

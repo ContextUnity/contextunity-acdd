@@ -559,224 +559,156 @@ fn validate_staged_file_counts(
     Ok(())
 }
 
-struct ChunkPersistSink<'a, 'data, 'tx> {
+fn persist_local_facts_entry<'tx>(
     tx: &'tx Connection,
-    path_cache: &'a mut PathDictionaryCache,
-    shared_key_cache: &'a mut SharedKeyCache<'tx>,
-    node_domain: &'a mut NodeDomain<'data>,
-    node_batch: MultiValueBatch<'tx, 14, BorrowedSqlValue<'data>>,
-    file_batch: &'a mut MultiValueBatch<'tx, 8, BorrowedSqlValue<'data>>,
-    source_inventory_batch: Option<&'a mut MultiValueBatch<'tx, 4, BorrowedSqlValue<'data>>>,
-    insert_local_facts_writer: &'a mut Option<LocalFactsBatchWriter<'tx>>,
-    replace_local_facts_writer: &'a mut Option<LocalFactsBatchWriter<'tx>>,
-    owned_search_batch: &'a mut Vec<SearchRow>,
-    reusable_search_buffers: &'a mut Vec<String>,
-    owned_search_batch_rows: usize,
-    shared_owner_rows: &'a mut Vec<[i64; 4]>,
-    shared_owner_batch: &'a mut MultiValueBatch<'tx, 4>,
-    doc_sections_batch: &'a mut MultiValueBatch<'tx, 10, BorrowedSqlValue<'static>>,
-    stmt_doc_search: &'a mut Option<rusqlite::Statement<'tx>>,
-    stmt_errors: &'a mut rusqlite::Statement<'tx>,
-    local_facts_leaves: &'a mut std::collections::BTreeMap<String, String>,
-    node_id: i64,
-    docs_count: usize,
-    fts_insert_ms: f64,
-    node_row_insert_ms: Option<f64>,
-    update_node_search: bool,
+    file: &FileEntry,
+    entry: &mut EncodedLocalFactsEntry,
+    local_facts_leaves: &mut std::collections::BTreeMap<String, String>,
+    insert_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
+    replace_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
+) -> Result<()> {
+    local_facts_leaves.insert(std::mem::take(&mut entry.leaf.0), std::mem::take(&mut entry.leaf.1));
+    let Some(blob) = entry.blob.take() else {
+        return Ok(());
+    };
+    if let Some(writer) = insert_writer.as_mut() {
+        writer.push(file, blob)?;
+    } else {
+        replace_writer
+            .get_or_insert(LocalFactsBatchWriter::new_replace(tx)?)
+            .push(file, blob)?;
+    }
+    Ok(())
 }
 
-impl<'a, 'data, 'tx> ChunkPersistSink<'a, 'data, 'tx> {
-    fn persist_local_facts(&mut self, file: &FileEntry, entry: &mut EncodedLocalFactsEntry) -> Result<()> {
-        self.local_facts_leaves
-            .insert(std::mem::take(&mut entry.leaf.0), std::mem::take(&mut entry.leaf.1));
-        let Some(blob) = entry.blob.take() else {
-            return Ok(());
-        };
-        if let Some(writer) = self.insert_local_facts_writer.as_mut() {
-            writer.push(file, blob)?;
-        } else {
-            self.replace_local_facts_writer
-                .get_or_insert(LocalFactsBatchWriter::new_replace(self.tx)?)
-                .push(file, blob)?;
-        }
-        Ok(())
+fn push_node_search_row(
+    tx: &Connection,
+    owned_search_batch: &mut Vec<SearchRow>,
+    reusable_search_buffers: &mut Vec<String>,
+    owned_search_batch_rows: usize,
+    fts_insert_ms: &mut f64,
+    search_id: i64,
+    text: String,
+) -> Result<()> {
+    owned_search_batch.push(SearchRow { search_id, text });
+    if owned_search_batch.len() == owned_search_batch_rows {
+        *fts_insert_ms += flush_owned_search_batch(tx, owned_search_batch, reusable_search_buffers)?;
     }
+    Ok(())
+}
 
-    fn persist_file_nodes(
-        &mut self,
-        file: &'data FileEntry,
-        f: &'data TypedFacts,
-        owner_id: i64,
-        search_texts: Option<&super::cache::PackedStrings>,
-        prepared_details: Vec<(usize, Vec<u8>)>,
-    ) -> Result<()> {
-        let node_id_start = self.node_id;
-        self.node_id = self
-            .node_id
-            .checked_add(i64::try_from(f.nodes.len())?)
-            .context("node ID overflow")?;
-        for (node_index, details_bytes) in prepared_details {
-            let n = &f.nodes[node_index];
-            let row_node_id = node_id_start
-                .checked_add(i64::try_from(node_index + 1)?)
-                .context("node ID overflow")?;
-            let search_id = stable_hash64(&n.id);
-            let node_path_id = if n.path == file.path {
-                owner_id
-            } else {
-                self.path_cache.get_or_insert(self.tx, &n.path)?
-            };
-            self.node_domain.push(&file.path, n, &details_bytes)?;
-            let started = Instant::now();
-            self.node_batch.push([
-                BorrowedSqlValue::Integer(row_node_id),
-                BorrowedSqlValue::Text(n.id.as_str()),
-                BorrowedSqlValue::Text(n.kind.as_str()),
-                BorrowedSqlValue::Text(n.name.as_str()),
-                BorrowedSqlValue::Text(n.qualname.as_str()),
-                BorrowedSqlValue::Integer(node_path_id),
-                BorrowedSqlValue::Integer(i64::try_from(n.line)?),
-                BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
-                BorrowedSqlValue::Integer(i64::from(n.is_test)),
-                BorrowedSqlValue::Text(n.language.as_str()),
-                BorrowedSqlValue::Integer(i64::from(n.generated)),
-                BorrowedSqlValue::OwnedJsonText(details_bytes),
-                BorrowedSqlValue::Integer(search_id),
-                BorrowedSqlValue::Integer(owner_id),
-            ])?;
-            if let Some(total_ms) = self.node_row_insert_ms.as_mut() {
-                *total_ms += started.elapsed().as_secs_f64() * 1000.;
-            }
-            if self.update_node_search {
-                let mut search = self.reusable_search_buffers.pop().unwrap_or_default();
-                if let Some(prepared) = search_texts {
-                    let text = prepared
-                        .get(node_index)
-                        .context("prepared search text index out of bounds")?;
-                    search.clear();
-                    search.push_str(text);
-                } else {
-                    write_node_search_text(&mut search, n, f);
-                }
-                self.owned_search_batch.push(SearchRow {
-                    search_id,
-                    text: search,
-                });
-                if self.owned_search_batch.len() == self.owned_search_batch_rows {
-                    self.fts_insert_ms += flush_owned_search_batch(
-                        self.tx,
-                        self.owned_search_batch,
-                        self.reusable_search_buffers,
-                    )?;
-                }
-            }
-            let key_hash = self.shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;
-            self.shared_owner_rows.push([
-                commitments::SharedOwnerKind::Symbol as i64,
-                key_hash,
-                owner_id,
-                row_node_id,
-            ]);
-        }
-        Ok(())
+fn persist_file_owners(
+    f: &TypedFacts,
+    owner_id: i64,
+    prepared_references: Option<&Vec<String>>,
+    shared_key_cache: &mut SharedKeyCache<'_>,
+    shared_owner_rows: &mut Vec<[i64; 4]>,
+    shared_owner_batch: &mut MultiValueBatch<'_, 4>,
+) -> Result<()> {
+    let keys = prepared_references.map_or_else(
+        || f.reference_keys(),
+        |keys| keys.iter().map(String::as_str).collect(),
+    );
+    for key in keys {
+        let key_hash = shared_key_cache.get_or_insert(key)?;
+        shared_owner_rows.push([
+            commitments::SharedOwnerKind::Reference as i64,
+            key_hash,
+            owner_id,
+            0,
+        ]);
     }
-
-    fn persist_file_owners_and_docs(
-        &mut self,
-        file: &FileEntry,
-        f: &TypedFacts,
-        owner_id: i64,
-        prepared_references: Option<&Vec<String>>,
-        mut doc_bodies: Option<&mut Vec<(String, Vec<String>)>>,
-    ) -> Result<()> {
-        let keys = prepared_references.map_or_else(
-            || f.reference_keys(),
-            |keys| keys.iter().map(String::as_str).collect(),
-        );
-        for key in keys {
-            let key_hash = self.shared_key_cache.get_or_insert(key)?;
-            self.shared_owner_rows.push([
-                commitments::SharedOwnerKind::Reference as i64,
+    for n in &f.nodes {
+        if *n.detail_entry(NodeDetailKey::DEFAULT_EXPORT) == true {
+            let key_hash = shared_key_cache.get_or_insert(&n.id)?;
+            shared_owner_rows.push([
+                commitments::SharedOwnerKind::DefaultExport as i64,
                 key_hash,
                 owner_id,
                 0,
             ]);
         }
-        for n in &f.nodes {
-            if *n.detail_entry(NodeDetailKey::DEFAULT_EXPORT) == true {
-                let key_hash = self.shared_key_cache.get_or_insert(&n.id)?;
-                self.shared_owner_rows.push([
-                    commitments::SharedOwnerKind::DefaultExport as i64,
-                    key_hash,
-                    owner_id,
-                    0,
-                ]);
-            }
-        }
-        if self.shared_owner_rows.len() >= 8192 {
-            self.shared_owner_rows.par_sort_unstable();
-        } else {
-            self.shared_owner_rows.sort_unstable();
-        }
-        for row in self.shared_owner_rows.drain(..) {
-            self.shared_owner_batch.push(row.map(SqlValue::Integer))?;
-        }
-        for (doc_index, d) in f.docs.iter().enumerate() {
-            self.docs_count += 1;
-            let (content, invariants) = if let Some(bodies) = doc_bodies.as_deref_mut() {
-                let (content, invariants) = std::mem::take(&mut bodies[doc_index]);
-                (content, serde_json::to_string(&invariants)?)
-            } else {
-                (d.content.clone(), serde_json::to_string(&d.invariants)?)
-            };
-            self.doc_sections_batch.push([
-                BorrowedSqlValue::OwnedText(d.doc_id.clone()),
-                BorrowedSqlValue::OwnedText(d.path.clone()),
-                BorrowedSqlValue::OwnedText(d.section_title.clone()),
-                BorrowedSqlValue::OwnedText(d.doc_type.clone()),
-                BorrowedSqlValue::OwnedText(content),
-                BorrowedSqlValue::OwnedText(invariants),
-                BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
-                BorrowedSqlValue::Real(d.mtime),
-                BorrowedSqlValue::Integer(i64::try_from(d.size)?),
-                BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
-            ])?;
-        }
-        if !f.docs.is_empty() {
-            if let Some(stmt) = self.stmt_doc_search.as_mut() {
-                self.doc_sections_batch.flush()?;
-                stmt.execute([&file.path])?;
-            }
-        }
-        for e in &f.errors {
-            self.stmt_errors.execute(params![e.path, e.line, e.message])?;
-        }
-        Ok(())
     }
+    if shared_owner_rows.len() >= 8192 {
+        shared_owner_rows.par_sort_unstable();
+    } else {
+        shared_owner_rows.sort_unstable();
+    }
+    for row in shared_owner_rows.drain(..) {
+        shared_owner_batch.push(row.map(SqlValue::Integer))?;
+    }
+    Ok(())
+}
 
-    fn persist_file_record(&mut self, file: &'data FileEntry, f: &'data TypedFacts) -> Result<i64> {
-        let owner_id = self.path_cache.get_or_insert(self.tx, &file.path)?;
-        if let Some(batch) = self.source_inventory_batch.as_deref_mut() {
-            batch.push([
-                BorrowedSqlValue::Text(&file.path),
-                BorrowedSqlValue::Text("indexed"),
-                BorrowedSqlValue::Text(&file.digest),
-                BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
-            ])?;
+fn persist_file_docs_and_errors(
+    file: &FileEntry,
+    f: &TypedFacts,
+    mut doc_bodies: Option<&mut Vec<(String, Vec<String>)>>,
+    doc_sections_batch: &mut MultiValueBatch<'_, 10, BorrowedSqlValue<'static>>,
+    stmt_doc_search: &mut Option<rusqlite::Statement<'_>>,
+    stmt_errors: &mut rusqlite::Statement<'_>,
+    docs_count: &mut usize,
+) -> Result<()> {
+    for (doc_index, d) in f.docs.iter().enumerate() {
+        *docs_count += 1;
+        let (content, invariants) = if let Some(bodies) = doc_bodies.as_deref_mut() {
+            let (content, invariants) = std::mem::take(&mut bodies[doc_index]);
+            (content, serde_json::to_string(&invariants)?)
+        } else {
+            (d.content.clone(), serde_json::to_string(&d.invariants)?)
+        };
+        doc_sections_batch.push([
+            BorrowedSqlValue::OwnedText(d.doc_id.clone()),
+            BorrowedSqlValue::OwnedText(d.path.clone()),
+            BorrowedSqlValue::OwnedText(d.section_title.clone()),
+            BorrowedSqlValue::OwnedText(d.doc_type.clone()),
+            BorrowedSqlValue::OwnedText(content),
+            BorrowedSqlValue::OwnedText(invariants),
+            BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
+            BorrowedSqlValue::Real(d.mtime),
+            BorrowedSqlValue::Integer(i64::try_from(d.size)?),
+            BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
+        ])?;
+    }
+    if !f.docs.is_empty() {
+        if let Some(stmt) = stmt_doc_search.as_mut() {
+            doc_sections_batch.flush()?;
+            stmt.execute([&file.path])?;
         }
-        self.file_batch.push([
+    }
+    for e in &f.errors {
+        stmt_errors.execute(params![e.path, e.line, e.message])?;
+    }
+    Ok(())
+}
+
+fn persist_file_record<'data, 'tx>(
+    tx: &'tx Connection,
+    path_cache: &mut PathDictionaryCache,
+    file_batch: &mut MultiValueBatch<'tx, 8, BorrowedSqlValue<'data>>,
+    source_inventory_batch: Option<&mut MultiValueBatch<'tx, 4, BorrowedSqlValue<'data>>>,
+    file: &'data FileEntry,
+) -> Result<i64> {
+    let owner_id = path_cache.get_or_insert(tx, &file.path)?;
+    if let Some(batch) = source_inventory_batch {
+        batch.push([
             BorrowedSqlValue::Text(&file.path),
             BorrowedSqlValue::Text("indexed"),
             BorrowedSqlValue::Text(&file.digest),
             BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
-            BorrowedSqlValue::Text(&file.language),
-            BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
-            BorrowedSqlValue::Integer(0),
-            BorrowedSqlValue::Integer(stable_hash64(&file.path)),
         ])?;
-        let _ = f;
-        Ok(owner_id)
     }
+    file_batch.push([
+        BorrowedSqlValue::Text(&file.path),
+        BorrowedSqlValue::Text("indexed"),
+        BorrowedSqlValue::Text(&file.digest),
+        BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
+        BorrowedSqlValue::Text(&file.language),
+        BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+        BorrowedSqlValue::Integer(0),
+        BorrowedSqlValue::Integer(stable_hash64(&file.path)),
+    ])?;
+    Ok(owner_id)
 }
 
 fn persist_files_impl<'data>(
@@ -867,34 +799,8 @@ fn persist_files_impl<'data>(
         )?;
         let mut prepared_node_details =
             prepare_chunk_node_details(file_chunk, facts, loaded.as_deref(), graph_ranks)?;
-        let mut sink = ChunkPersistSink {
-            tx,
-            path_cache,
-            shared_key_cache: &mut shared_key_cache,
-            node_domain: &mut node_domain,
-            node_batch: MultiValueBatch::<14, BorrowedSqlValue<'_>>::new(
-                tx,
-                "INSERT INTO nodes VALUES",
-            )?,
-            file_batch: &mut file_batch,
-            source_inventory_batch: source_inventory_batch.as_mut(),
-            insert_local_facts_writer: &mut insert_local_facts_writer,
-            replace_local_facts_writer: &mut replace_local_facts_writer,
-            owned_search_batch: &mut owned_search_batch,
-            reusable_search_buffers: &mut reusable_search_buffers,
-            owned_search_batch_rows,
-            shared_owner_rows: &mut shared_owner_rows,
-            shared_owner_batch: &mut shared_owner_batch,
-            doc_sections_batch: &mut doc_sections_batch,
-            stmt_doc_search: &mut stmt_doc_search,
-            stmt_errors: &mut stmt_errors,
-            local_facts_leaves: &mut local_facts_leaves,
-            node_id,
-            docs_count,
-            fts_insert_ms,
-            node_row_insert_ms,
-            update_node_search,
-        };
+        let mut node_batch =
+            MultiValueBatch::<14, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO nodes VALUES")?;
         for (chunk_index, file) in file_chunk.iter().enumerate() {
             let f = facts.get(&file.path).context("missing extracted facts")?;
             let (search_texts, prepared_references, doc_bodies) =
@@ -914,25 +820,109 @@ fn persist_files_impl<'data>(
                 search_texts,
                 doc_bodies.as_deref(),
             )?;
-            let owner_id = sink.persist_file_record(file, f)?;
-            sink.persist_local_facts(file, &mut encoded_chunk[chunk_index])?;
-            let details = std::mem::take(&mut prepared_node_details[chunk_index]);
-            sink.persist_file_nodes(file, f, owner_id, search_texts, details)?;
-            sink.persist_file_owners_and_docs(
+            let owner_id = persist_file_record(
+                tx,
+                path_cache,
+                &mut file_batch,
+                source_inventory_batch.as_mut(),
                 file,
+            )?;
+            persist_local_facts_entry(
+                tx,
+                file,
+                &mut encoded_chunk[chunk_index],
+                &mut local_facts_leaves,
+                &mut insert_local_facts_writer,
+                &mut replace_local_facts_writer,
+            )?;
+            let node_id_start = node_id;
+            node_id = node_id
+                .checked_add(i64::try_from(f.nodes.len())?)
+                .context("node ID overflow")?;
+            for (node_index, details_bytes) in std::mem::take(&mut prepared_node_details[chunk_index])
+            {
+                let n = &f.nodes[node_index];
+                let row_node_id = node_id_start
+                    .checked_add(i64::try_from(node_index + 1)?)
+                    .context("node ID overflow")?;
+                let search_id = stable_hash64(&n.id);
+                let node_path_id = if n.path == file.path {
+                    owner_id
+                } else {
+                    path_cache.get_or_insert(tx, &n.path)?
+                };
+                node_domain.push(&file.path, n, &details_bytes)?;
+                let started = Instant::now();
+                node_batch.push([
+                    BorrowedSqlValue::Integer(row_node_id),
+                    BorrowedSqlValue::Text(n.id.as_str()),
+                    BorrowedSqlValue::Text(n.kind.as_str()),
+                    BorrowedSqlValue::Text(n.name.as_str()),
+                    BorrowedSqlValue::Text(n.qualname.as_str()),
+                    BorrowedSqlValue::Integer(node_path_id),
+                    BorrowedSqlValue::Integer(i64::try_from(n.line)?),
+                    BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
+                    BorrowedSqlValue::Integer(i64::from(n.is_test)),
+                    BorrowedSqlValue::Text(n.language.as_str()),
+                    BorrowedSqlValue::Integer(i64::from(n.generated)),
+                    BorrowedSqlValue::OwnedJsonText(details_bytes),
+                    BorrowedSqlValue::Integer(search_id),
+                    BorrowedSqlValue::Integer(owner_id),
+                ])?;
+                if let Some(total_ms) = node_row_insert_ms.as_mut() {
+                    *total_ms += started.elapsed().as_secs_f64() * 1000.;
+                }
+                if update_node_search {
+                    let mut search = reusable_search_buffers.pop().unwrap_or_default();
+                    if let Some(prepared) = search_texts {
+                        let text = prepared
+                            .get(node_index)
+                            .context("prepared search text index out of bounds")?;
+                        search.clear();
+                        search.push_str(text);
+                    } else {
+                        write_node_search_text(&mut search, n, f);
+                    }
+                    push_node_search_row(
+                        tx,
+                        &mut owned_search_batch,
+                        &mut reusable_search_buffers,
+                        owned_search_batch_rows,
+                        &mut fts_insert_ms,
+                        search_id,
+                        search,
+                    )?;
+                }
+                let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;
+                shared_owner_rows.push([
+                    commitments::SharedOwnerKind::Symbol as i64,
+                    key_hash,
+                    owner_id,
+                    row_node_id,
+                ]);
+            }
+            persist_file_owners(
                 f,
                 owner_id,
                 prepared_references,
+                &mut shared_key_cache,
+                &mut shared_owner_rows,
+                &mut shared_owner_batch,
+            )?;
+            persist_file_docs_and_errors(
+                file,
+                f,
                 doc_bodies,
+                &mut doc_sections_batch,
+                &mut stmt_doc_search,
+                &mut stmt_errors,
+                &mut docs_count,
             )?;
         }
         let started = Instant::now();
-        sink.node_batch.flush()?;
+        node_batch.flush()?;
         let insert_ms = started.elapsed().as_secs_f64() * 1000.;
-        node_id = sink.node_id;
-        docs_count = sink.docs_count;
-        fts_insert_ms = sink.fts_insert_ms;
-        node_row_insert_ms = sink.node_row_insert_ms.map(|total| total + insert_ms);
+        node_row_insert_ms = node_row_insert_ms.map(|total| total + insert_ms);
     }
 
     if let Some(writer) = insert_local_facts_writer.as_mut() {
@@ -1339,31 +1329,18 @@ pub(super) fn persist_graph(
 
 type EdgeOccurrencesOutput<'a> = (Vec<StoredEdge<'a>>, Vec<(Option<i64>, Option<i64>)>, f64);
 
-struct EdgeOccurrencesInput<'a, 'b> {
-    tx: &'b Connection,
-    facts_len: usize,
-    graph: &'a CompactGraph,
-    evidence_ids: &'b hashbrown::HashMap<&'b str, i64>,
-    materialize_edges: bool,
-    prepared: Option<&'b PreparedGraph<'a>>,
-}
-
 fn persist_edge_occurrences_phase<'a>(
-    input: EdgeOccurrencesInput<'a, '_>,
+    tx: &Connection,
+    graph: &'a CompactGraph,
+    evidence_ids: &hashbrown::HashMap<&str, i64>,
+    materialize_edges: bool,
+    prepared: Option<&PreparedGraph<'a>>,
     path_cache: &mut PathDictionaryCache,
     node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
 ) -> Result<EdgeOccurrencesOutput<'a>> {
-    let EdgeOccurrencesInput {
-        tx,
-        facts_len,
-        graph,
-        evidence_ids,
-        materialize_edges,
-        prepared,
-    } = input;
     let phase = Instant::now();
     let mut ordinals: hashbrown::HashMap<&str, usize> =
-        hashbrown::HashMap::with_capacity(facts_len);
+        hashbrown::HashMap::with_capacity(graph.edges.len().min(512));
     let mut current_path: Option<&str> = None;
     let mut current_path_id = None;
     let mut current_ordinal = 0usize;
@@ -1534,14 +1511,11 @@ pub(super) fn persist_graph_prepared(
     let evidence_ids = CoverageDictionaryCache::prefill_evidence(tx, graph)?;
     let evidence_dictionary_ms = phase.elapsed().as_secs_f64() * 1000.;
     let (unique_edges, resolved_edge_paths, occurrences) = persist_edge_occurrences_phase(
-        EdgeOccurrencesInput {
-            tx,
-            facts_len: facts.len(),
-            graph,
-            evidence_ids: &evidence_ids,
-            materialize_edges,
-            prepared,
-        },
+        tx,
+        graph,
+        &evidence_ids,
+        materialize_edges,
+        prepared,
         path_cache,
         node_paths,
     )?;

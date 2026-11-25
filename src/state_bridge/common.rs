@@ -4,7 +4,6 @@ use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::{estimate_json_bytes, sha256_hex};
 use acdd_core::git::primary_worktree_root;
-use acdd_core::ids::RunId;
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
@@ -31,19 +30,6 @@ pub struct InvocationSettings {
     pub state_db: Option<PathBuf>,
     /// Resolved `code-map.sqlite` path.
     pub code_db: PathBuf,
-}
-
-/// Active W3C Trace Context span metadata resolved for an active worktree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorktreeSpanContext {
-    /// Active run identifier.
-    pub run_id: RunId,
-    /// Active `in_progress` node ID bound to the worktree.
-    pub node_id: String,
-    /// Run root W3C 32-hex trace ID.
-    pub trace_id: String,
-    /// Active node W3C 16-hex span ID.
-    pub span_id: String,
 }
 
 /// Mandatory instruction banner emitted in `docs.instructions` to direct workers to scoped `AGENTS.md` files.
@@ -100,16 +86,6 @@ pub(super) fn truncate_single_line(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// Resolve the effective `state.sqlite` path from workspace root, optional `--state-db` override, and [`Adapter`].
-pub fn resolve_effective_state_db(
-    root: &Path,
-    state_db: Option<&Path>,
-    config: &Adapter,
-) -> Result<PathBuf, StateError> {
-    let _ = config;
-    acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)
-}
-
 /// Construct a [`CompositeDomainProvider`] applying `config.modules` enablement flags to `providers`.
 pub(super) fn build_composite_providers(
     config: &Adapter,
@@ -139,7 +115,7 @@ pub(crate) fn state_engine_config(
 ) -> Result<StateEngineConfig, StateError> {
     let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     let default_state_db = primary.join(".acdd/state.sqlite");
-    let configured = resolve_effective_state_db(root, state_db, config)?;
+    let configured = acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
     let state_db_override = (configured != default_state_db).then_some(configured);
     let linked_workspaces = config
         .linked_workspaces

@@ -480,7 +480,7 @@ struct PreparedCall {
     adapter: RequestAdapter,
     loaded_adapter: Option<std::sync::Arc<scanner::Adapter>>,
     providers: Option<std::sync::Arc<acdd_core::ports::CompositeDomainProvider>>,
-    span_ctx: Option<crate::state_bridge::WorktreeSpanContext>,
+    span_ctx: Option<acdd_core::telemetry::WorktreeSpanContext>,
     early_response: Option<CallToolResult>,
 }
 
@@ -492,14 +492,12 @@ impl PreparedCall {
         operation: OperationKind,
         tool_name: &str,
     ) -> Self {
+        let code = acdd_core::errors::AcddError::from_anyhow(&error).map(|e| e.code);
         let message = error.to_string();
         Self {
             target_root: server.root.clone(),
             target_db: server.db.clone(),
-            adapter: RequestAdapter::Failed {
-                kind: std::io::ErrorKind::Other,
-                message,
-            },
+            adapter: RequestAdapter::Failed { code, message },
             loaded_adapter: None,
             providers: None,
             span_ctx: None,
@@ -559,7 +557,7 @@ fn prepare_tool_call_blocking(
         }
         Err(error) => (
             RequestAdapter::Failed {
-                kind: error.kind(),
+                code: acdd_core::errors::AcddError::from_anyhow(&error).map(|e| e.code),
                 message: error.to_string(),
             },
             None,
@@ -808,9 +806,9 @@ pub(super) async fn call_tool(
         .map_or(acdd_core::config::DEFAULT_RETAIN_TRACES, |a| {
             a.retain_traces
         });
-    let span_state_db = prep.loaded_adapter.as_ref().and_then(|a| {
+    let span_state_db = prep.loaded_adapter.as_ref().and_then(|_| {
         let ws_root = primary_workspace_root_for(&server.root, &prep.target_root);
-        crate::state_bridge::resolve_effective_state_db(&ws_root, server.state_db(), a).ok()
+        acdd_state::usecases::deps::try_resolve_effective_state_db(&ws_root, server.state_db()).ok()
     });
     let mut span_guard = crate::telemetry::SpanGuard::from_worktree_context(
         &prep.target_root,

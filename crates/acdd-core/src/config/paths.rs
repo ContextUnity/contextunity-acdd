@@ -1,11 +1,15 @@
 //! Workspace path resolution, DB/memory budget resolution, and root scope checks.
 
-use super::constants::{error, ACDD_CONFIG_FILE, DEFAULT_CODE_DB};
+use super::constants::{ACDD_CONFIG_FILE, DEFAULT_CODE_DB};
 use super::schema::{Adapter, ScannerLimits};
 use crate::fs::checked_child;
 use crate::sys::memory_budget_bytes;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+fn invalid_input(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
+}
 
 /// Resolves the configured `state_db` path against the primary workspace root.
 pub fn resolve_state_db_path(root: &Path, adapter: &Adapter) -> PathBuf {
@@ -50,7 +54,7 @@ pub fn resolve_memory_budget_bytes(limits: &ScannerLimits) -> std::io::Result<u6
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
         Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(error("ACDD_MEMORY_BUDGET_MB must be valid UTF-8"));
+            return Err(invalid_input("ACDD_MEMORY_BUDGET_MB must be valid UTF-8"));
         }
     };
     let configured_mb = memory_budget_mb_from_sources(None, environment.as_deref())?;
@@ -71,9 +75,9 @@ fn memory_budget_mb_from_sources(
             .map(|value| {
                 let mebibytes = value
                     .parse::<u64>()
-                    .map_err(|_| error("ACDD_MEMORY_BUDGET_MB must be a positive integer"))?;
+                    .map_err(|_| invalid_input("ACDD_MEMORY_BUDGET_MB must be a positive integer"))?;
                 if mebibytes == 0 {
-                    return Err(error("ACDD_MEMORY_BUDGET_MB must be a positive integer"));
+                    return Err(invalid_input("ACDD_MEMORY_BUDGET_MB must be a positive integer"));
                 }
                 Ok(mebibytes)
             })
@@ -84,11 +88,11 @@ fn memory_budget_mb_from_sources(
 /// Converts mebibytes to bytes with overflow validation.
 fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
     if mebibytes == 0 {
-        return Err(error("memory budget must be greater than zero MiB"));
+        return Err(invalid_input("memory budget must be greater than zero MiB"));
     }
     mebibytes
         .checked_mul(1024 * 1024)
-        .ok_or_else(|| error("memory budget in MiB overflows the byte range"))
+        .ok_or_else(|| invalid_input("memory budget in MiB overflows the byte range"))
 }
 
 /// Resolves a workspace-relative file path against workspace root and linked workspaces.
@@ -169,12 +173,12 @@ fn check_system_or_home_dir(root: &Path) -> std::io::Result<()> {
     let is_macos_private_system_dir =
         parent == Path::new("/private") && matches!(name.as_ref(), "var" | "tmp" | "etc");
     if is_top_system_dir || is_macos_private_system_dir {
-        return Err(error(format!(
+        return Err(invalid_input(format!(
             "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
         )));
     }
     if parent == Path::new("/home") || parent == Path::new("/Users") {
-        return Err(error(format!(
+        return Err(invalid_input(format!(
             "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
         )));
     }
@@ -223,7 +227,7 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
     }
 
     if root == Path::new("/") {
-        return Err(error(
+        return Err(invalid_input(
             "refusing to index filesystem root '/'; specify a repository directory or set limits.allow_broad_root: true",
         ));
     }
@@ -239,7 +243,7 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
 
     if !is_git_repo && !has_manifest {
         if let Some(git_subdirs) = has_multiple_git_subdirs(root) {
-            return Err(error(format!(
+            return Err(invalid_input(format!(
                 "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
             )));
         }

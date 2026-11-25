@@ -232,16 +232,9 @@ impl AcddError {
         self.code.exit_code()
     }
 
-    /// Extract a `&AcddError` from an `anyhow::Error` chain (including `std::io::Error` payloads) if present.
+    /// Extract a `&AcddError` from an `anyhow::Error` chain if present.
     pub fn from_anyhow(err: &anyhow::Error) -> Option<&Self> {
-        err.chain().find_map(|cause| {
-            cause.downcast_ref::<AcddError>().or_else(|| {
-                cause
-                    .downcast_ref::<std::io::Error>()
-                    .and_then(|io_err| io_err.get_ref())
-                    .and_then(|inner| inner.downcast_ref::<AcddError>())
-            })
-        })
+        err.chain().find_map(|cause| cause.downcast_ref::<AcddError>())
     }
 }
 
@@ -378,9 +371,5 @@ mod tests {
 
         let wrapped = anyhow::Error::new(err.clone()).context("while validating gate");
         assert_eq!(StateError::from_anyhow(&wrapped), Some(&err));
-
-        let io_wrapped: anyhow::Error =
-            std::io::Error::new(std::io::ErrorKind::InvalidData, err.clone()).into();
-        assert_eq!(StateError::from_anyhow(&io_wrapped), Some(&err));
     }
 }

@@ -37,7 +37,7 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
             None,
             &traversal::GraphQueryOptions {
                 depth: 1,
-                direction: None,
+                direction: traversal::ImpactDirection::Inbound,
                 coverage: CoverageOptions::default(),
                 page: &page,
             },
