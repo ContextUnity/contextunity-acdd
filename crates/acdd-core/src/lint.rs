@@ -295,60 +295,14 @@ impl ArchRuleSpec {
 }
 
 /// Syntax invariant settings evaluated under `LintCategory::Syntax` (`syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct ComplexityLimits {
     /// Diagnostic severity emitted for syntax invariant violations (such as `syntax.fact_budget_exceeded`).
-    #[serde(default)]
     pub severity: LintSeverity,
     /// Optional invariant ID bound to syntax checks in `enforced_invariant_ids`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub invariant: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ComplexityLimitsWire {
-    max_cognitive_complexity: Option<usize>,
-    max_nesting_depth: Option<usize>,
-    max_fanout: Option<usize>,
-    severity: LintSeverity,
-    invariant: Option<String>,
-}
-
-impl Default for ComplexityLimitsWire {
-    fn default() -> Self {
-        Self {
-            max_cognitive_complexity: None,
-            max_nesting_depth: None,
-            max_fanout: None,
-            severity: LintSeverity::Warn,
-            invariant: None,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ComplexityLimits {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = ComplexityLimitsWire::deserialize(deserializer)?;
-        for (field, value) in [
-            ("max_cognitive_complexity", wire.max_cognitive_complexity),
-            ("max_nesting_depth", wire.max_nesting_depth),
-            ("max_fanout", wire.max_fanout),
-        ] {
-            if value == Some(0) {
-                return Err(serde::de::Error::custom(format!(
-                    "architecture.complexity.{field} must be at least 1"
-                )));
-            }
-        }
-        Ok(Self {
-            severity: wire.severity,
-            invariant: wire.invariant,
-        })
-    }
 }
 
 impl Default for ComplexityLimits {

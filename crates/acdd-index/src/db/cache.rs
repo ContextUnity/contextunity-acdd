@@ -12,6 +12,8 @@ use std::{
 /// Process-local reader eviction callback owned by the reader's lifecycle.
 pub type IdleReader = dyn Fn(&Path) -> Result<()> + Send + Sync;
 type ReaderRegistry = Vec<(PathBuf, Weak<IdleReader>)>;
+/// Guard holding the idle-reader registry lock across database maintenance or delta publication.
+pub type IdleReadersGuard = MutexGuard<'static, Vec<(PathBuf, Weak<IdleReader>)>>;
 static READERS: OnceLock<Mutex<ReaderRegistry>> = OnceLock::new();
 
 /// Resolve the registry key without following the database leaf.
@@ -35,7 +37,7 @@ pub fn register_idle_reader(path: &Path, reader: &Arc<IdleReader>) -> Result<()>
 }
 
 /// Evicts matching idle readers and fences registrations until the returned guard is dropped.
-pub fn release_idle_readers(path: &Path) -> Result<MutexGuard<'static, ReaderRegistry>> {
+pub fn release_idle_readers(path: &Path) -> Result<IdleReadersGuard> {
     let path = registry_path(path);
     let mut readers = READERS
         .get_or_init(Default::default)

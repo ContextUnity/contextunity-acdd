@@ -15,13 +15,9 @@ fn architecture_complexity_limits_contract_and_locked_rule_kinds() {
     assert_eq!(default_cfg.complexity.severity, LintSeverity::Warn);
     assert_eq!(default_cfg.complexity.invariant, None);
 
-    // Backward-compatible YAML deserialization ignores positive deprecated threshold keys.
     let custom_yaml = r#"
 unused_public_api: true
 complexity:
-  max_cognitive_complexity: 42
-  max_nesting_depth: 5
-  max_fanout: 30
   severity: error
   invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
 "#;
@@ -36,13 +32,13 @@ complexity:
     );
 
     for (label, bad_yaml) in [
-        ("zero_cognitive", "complexity:\n  max_cognitive_complexity: 0\n"),
-        ("zero_nesting", "complexity:\n  max_nesting_depth: 0\n"),
-        ("zero_fanout", "complexity:\n  max_fanout: 0\n"),
+        ("legacy_cognitive", "complexity:\n  max_cognitive_complexity: 42\n"),
+        ("legacy_nesting", "complexity:\n  max_nesting_depth: 5\n"),
+        ("legacy_fanout", "complexity:\n  max_fanout: 30\n"),
     ] {
         assert!(
             serde_yaml::from_str::<ArchitectureConfig>(bad_yaml).is_err(),
-            "{label}: expected deserialization failure for 0 deprecated threshold"
+            "{label}: expected deserialization failure for removed legacy complexity key"
         );
     }
 

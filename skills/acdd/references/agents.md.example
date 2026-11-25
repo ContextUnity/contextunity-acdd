@@ -56,7 +56,7 @@ Managed worktrees live at `.worktrees/<run_name>` for runs and `.worktrees/<run_
 
 ## Worker orchestration
 
-- **Worker self-claim (`mode: subagent`)**: Do not call `acdd_claim` / `acdd claim` on a subagent's behalf. Dispatch only `(run, node_cursor, worker_id)` (plus the owning `worktree` when locating state) and require the worker to: (1) call `acdd_claim` / `acdd claim` itself first before reading or editing code, (2) follow the full returned `ClaimResp`, and (3) run all edits, verification, and `acdd_submit` strictly inside `ClaimResp.worktree`. Call `acdd_claim` from the coordinator only for `mode: inline` gates or dead-worker recovery (`steal_remote`/`force`).
+- **Worker self-claim (`mode: subagent`)**: Do not call `acdd_claim` / `acdd claim` on a subagent's behalf. Dispatch only `(run, node_cursor, worker_id)` (plus the owning `worktree` when locating state) and require the worker to: (1) call `acdd_claim` / `acdd claim` itself first to obtain `ClaimResp.worktree`, (2) index/sync `ClaimResp.worktree` via `acdd --root <ClaimResp.worktree> build` (or MCP `worktree`) before reading/querying code and follow the full returned `ClaimResp`, and (3) run all edits, verification, and `acdd_submit` strictly inside `ClaimResp.worktree`. Call `acdd_claim` from the coordinator only for `mode: inline` gates or dead-worker recovery (`steal_remote`/`force`).
 - **Continuity & independence**: Reuse the same worker session across `defect` rejections (`reuse_on_reject`), and claim independent reviews with a distinct `worker_id` (`independent_from`).
 <!-- acdd:end -->
 ```

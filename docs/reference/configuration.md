@@ -110,7 +110,7 @@ architecture:
 - **`architecture.unused_public_api`**: defaults to `false` (library-friendly) and enables `dead_tails.unused_public_api` when set to `true` (enabled in this repository's `acdd.yaml`).
 - **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
 - **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
-- **`architecture.complexity`**: `ComplexityLimits` (`severity: warn`, optional `invariant: null`). Deprecated positive threshold keys (`max_cognitive_complexity`, `max_nesting_depth`, `max_fanout`) remain backward-compatibly parsed (while rejecting `0`); AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` use `complexity.severity` and bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
+- **`architecture.complexity`**: `ComplexityLimits` (`severity: warn`, optional `invariant: null`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` use `complexity.severity` and bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
 
 ## Cold-build memory budget
 

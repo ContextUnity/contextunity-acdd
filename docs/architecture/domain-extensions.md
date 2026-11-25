@@ -48,7 +48,7 @@ Every domain implements [`DomainProvider`](../../crates/acdd-core/src/ports.rs) 
 ### Minimal Skeleton (`crates/acdd-domain-schema/src/lib.rs`)
 
 ```rust
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ports::{
     CheckCapability, DomainActionReq, DomainActionResult, DomainCapabilities,
     DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
@@ -90,7 +90,7 @@ impl DomainProvider for SchemaDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::DomainCapabilityUnavailable,
             format!("unsupported action 'schema.{action}'"),
         )
@@ -108,7 +108,7 @@ impl DomainProvider for SchemaDomainProvider {
                 summary: format!("schema.lint verified {} changed path(s)", req.changed_paths.len()),
                 execution_digest_salt: None,
             }),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unsupported check 'schema.{check}'"),
             )
@@ -119,7 +119,7 @@ impl DomainProvider for SchemaDomainProvider {
     fn provide_context(&self, lens: &str, req: &DomainContextReq) -> Result<Value> {
         match lens {
             "contracts" => Ok(json!({ "scope": req.admitted_scope })),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unsupported context lens 'schema.{lens}'"),
             )
@@ -135,7 +135,7 @@ impl DomainProvider for SchemaDomainProvider {
     ) -> Result<DomainToolOutput> {
         match tool {
             "diff" => Ok(DomainToolOutput::Markdown("No schema breaking changes.".to_owned())),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unsupported tool 'schema_{tool}'"),
             )

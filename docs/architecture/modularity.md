@@ -87,7 +87,7 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
 - Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `crates/acdd-index/src/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
-- `DependencyRegistry` (`crates/acdd-index/src/languages/dependency_registry/`) owns workspace dependency discovery via `ManifestParser` (`MANIFEST_PARSERS`), `ModulePrefix` extraction, and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs. `LanguageProfile::linker(&self)` binds each profile to its `LanguageLinker` (defaulting to `GENERIC_LINKER`), and `FileContext.state` stores typed `LanguageFileState`.
+- `DependencyRegistry` (`crates/acdd-index/src/languages/dependency_registry/`) owns workspace dependency discovery via `ManifestParser` (`MANIFEST_PARSERS`), `ModulePrefix` extraction, and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs. `ProfileLinker::linker(&self)` binds each `LanguageProfile` to its crate-private `LanguageLinker` (defaulting to `GENERIC_LINKER`), and `FileContext.state` stores typed `LanguageFileState`.
 
 ### 4. Three-Tier Language Architecture
 Languages and extensions decompose into three explicit tiers:
@@ -204,6 +204,62 @@ include_tests: false
 ```
 
 ```acdd-rule
+id: ARCH-NO-ANY-DOWNCAST
+severity: error
+kind: forbid_dependency
+from:
+  paths: ["src/**", "crates/**"]
+to:
+  external_symbols: ["std::any"]
+message: "Do not introduce runtime std::any::Any type erasure across production modules; use typed traits or enums"
+```
+
+```acdd-rule
+id: ARCH-NO-PRIVATE-INTERFACES-ESCAPE
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#[allow(private_interfaces)]"
+include_tests: false
+message: "Do not silence private_interfaces compiler warnings with #[allow(private_interfaces)]; keep pub(crate) internal traits private or expose typed wrappers"
+```
+
+```acdd-rule
+id: ARCH-NO-PRIVATE-INTERFACES-ESCAPE-INNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#![allow(private_interfaces)]"
+include_tests: false
+```
+
+```acdd-rule
+id: ARCH-NO-PRIVATE-INTERFACES-ESCAPE-EXPECT
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#[expect(private_interfaces)]"
+include_tests: false
+```
+
+```acdd-rule
+id: ARCH-NO-PRIVATE-INTERFACES-ESCAPE-EXPECT-INNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#![expect(private_interfaces)]"
+include_tests: false
+```
+
+```acdd-rule
 id: ARCH-LANGUAGE-PROFILE-MUST-IMPLEMENT
 severity: error
 kind: must_implement
@@ -254,7 +310,7 @@ enum, class and same-object resolution is preserved in embedded Vue grammar.
 
 ## Language resolution ownership
 
-`semantic_context::LanguageMemberLookup` gives the shared resolver borrowed, read-only access to prebuilt Python, Rust, and TypeScript member indexes. Each language index retains its own lookup rules; the shared resolution input does not carry one field per language, and reference linking does not rebuild indexes or perform per-reference database reads.
+`semantic_context::LanguageMemberLookup` gives the shared resolver borrowed, read-only access to prebuilt `LanguageMemberIndex` state for Python, Rust, and TypeScript alongside shared class-member and inheritance indexing for Tier-2 object-oriented profiles. Each language index retains its own lookup rules; the shared resolution input does not carry one field per language, and reference linking does not rebuild indexes or perform per-reference database reads.
 
 Rust namespace indexing also prepares one bounded forwarding index from existing `use` references and public export facts. Import resolution, package exports, and Rust member lookup share that index. Private parent bindings remain descendant-only, while public named bindings follow the existing export contract; conflicting candidates, cycles, and exhausted alias walks do not produce guessed exact targets. Root crate imports use the root manifest's normalized package or explicit library name only when the conventional `src/lib.rs` is indexed in that same manifest scope.
 
