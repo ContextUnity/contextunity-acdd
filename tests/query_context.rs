@@ -102,8 +102,14 @@ mod linked_workspaces;
 #[path = "query_context/ranking_and_coverage.rs"]
 mod ranking_and_coverage;
 #[cfg(feature = "lang-python")]
+#[path = "query_context/rrf_hybrid_search.rs"]
+mod rrf_hybrid_search;
+#[cfg(feature = "lang-python")]
 #[path = "query_context/search_and_paging.rs"]
 mod search_and_paging;
+#[cfg(feature = "lang-python")]
+#[path = "query_context/selector_ergonomics.rs"]
+mod selector_ergonomics;
 #[cfg(feature = "lang-python")]
 #[path = "query_context/symbol_context.rs"]
 mod symbol_context;

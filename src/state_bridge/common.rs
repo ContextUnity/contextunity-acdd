@@ -6,6 +6,7 @@ use acdd_core::format::{estimate_json_bytes, sha256_hex};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
+use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use acdd_index::db::reader::open_raw_confined_readonly;
 use acdd_state::usecases::{
     StateCommand, StateCommandOutput, StateEngine, StateEngineConfig, StateQuery, StateQueryEngine,
@@ -320,20 +321,46 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
     envelope.insert("truncated".to_owned(), json!(false));
 
     let base_bytes = estimate_json_bytes(&Value::Object(envelope.clone()));
-    let mut used_bytes = base_bytes;
-    let mut kept = Vec::new();
-    for item in items {
-        let item_bytes = estimate_json_bytes(&item);
-        let sep = usize::from(!kept.is_empty());
-        if used_bytes.saturating_add(sep).saturating_add(item_bytes) > max_bytes && !kept.is_empty()
-        {
-            break;
-        }
-        used_bytes = used_bytes.saturating_add(sep).saturating_add(item_bytes);
-        kept.push(item);
-    }
+    let candidates: Vec<_> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| KnapsackItem {
+            weight: estimate_json_bytes(item).saturating_add(1),
+            score: u64::try_from(total - index).unwrap_or(u64::MAX),
+        })
+        .collect();
+    let capacity = max_bytes.saturating_sub(base_bytes).saturating_add(1);
+    let mut selected = pack_knapsack_indices(&candidates, capacity)
+        .into_iter()
+        .peekable();
+    let kept: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if selected.peek() == Some(&index) {
+                selected.next();
+                Some(item)
+            } else {
+                None
+            }
+        })
+        .collect();
     let truncated = kept.len() < total;
     envelope.insert("items".to_owned(), Value::Array(kept));
     envelope.insert("truncated".to_owned(), json!(truncated));
     Value::Object(envelope)
+}
+
+#[cfg(test)]
+#[test]
+fn budget_items_packs_ordered_candidates_within_budget() {
+    let items = vec![json!("a".repeat(100)), json!("é"), json!("b")];
+    let expected = json!({"kind":"symbols", "items":["é", "b"], "total":3, "truncated":true});
+    let budget = estimate_json_bytes(&expected) + 1;
+    let result = budget_items("symbols", items, budget);
+    assert_eq!(result, expected);
+    assert!(estimate_json_bytes(&result) <= budget);
+    let empty = budget_items("symbols", vec![json!("oversized")], 0);
+    assert_eq!(empty["items"], json!([]));
+    assert_eq!(empty["truncated"], true);
 }

@@ -8,6 +8,136 @@ pub const MAX_PAGE_SIZE: usize = 100;
 /// Lower bound (1 KiB) for configurable response byte budgets.
 const MIN_OUTPUT_BYTES: usize = 1024;
 
+/// A candidate's serialized byte cost and nonnegative relevance score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnapsackItem {
+    /// Serialized cost in bytes.
+    pub weight: usize,
+    /// Relevance contribution.
+    pub score: u64,
+}
+
+/// Selects candidates within `capacity`, preserving input order and preferring
+/// earlier candidates on equal scores. Large problems use rounded-up weights.
+pub fn pack_knapsack_indices(items: &[KnapsackItem], capacity: usize) -> Vec<usize> {
+    const MAX_CELLS: usize = 65_536;
+    fn solve(
+        items: &[(usize, &KnapsackItem)],
+        budget: usize,
+        quantum: usize,
+        selected: &mut Vec<usize>,
+    ) {
+        if items.is_empty() || budget == 0 {
+            return;
+        }
+        if items.len() == 1 {
+            if items[0].1.weight.div_ceil(quantum) <= budget {
+                selected.push(items[0].0);
+            }
+            return;
+        }
+        let width = budget + 1;
+        if (items.len() + 1).saturating_mul(width) <= MAX_CELLS {
+            let mut dp = vec![0_u128; (items.len() + 1) * width];
+            for row in (0..items.len()).rev() {
+                let (weight, score) = (items[row].1.weight.div_ceil(quantum), u128::from(items[row].1.score));
+                let (next, curr) = ((row + 1) * width, row * width);
+                for rem in 0..=budget {
+                    let best = dp[next + rem];
+                    dp[curr + rem] = if weight <= rem { best.max(score + dp[next + rem - weight]) } else { best };
+                }
+            }
+            let mut rem = budget;
+            for (row, &(index, item)) in items.iter().enumerate() {
+                let (weight, next) = (item.weight.div_ceil(quantum), (row + 1) * width);
+                if weight <= rem && u128::from(item.score) + dp[next + rem - weight] >= dp[next + rem] {
+                    selected.push(index);
+                    rem -= weight;
+                }
+            }
+            return;
+        }
+        let (left, right) = items.split_at(items.len() / 2);
+        let scores = |part: &[(usize, &KnapsackItem)]| {
+            let mut dp = vec![(0_u128, usize::MAX); width];
+            for &(index, item) in part {
+                let weight = item.weight.div_ceil(quantum);
+                if weight <= budget {
+                    for used in (weight..=budget).rev() {
+                        let (score, first) = dp[used - weight];
+                        let cand = (score + u128::from(item.score), first.min(index));
+                        if cand.0 > dp[used].0 || (cand.0 == dp[used].0 && cand.1 < dp[used].1) {
+                            dp[used] = cand;
+                        }
+                    }
+                }
+            }
+            dp
+        };
+        let (left_scores, right_scores) = (scores(left), scores(right));
+        let split = (0..=budget)
+            .max_by_key(|&n| {
+                let first = left_scores[n].1.min(right_scores[budget - n].1);
+                (
+                    left_scores[n].0 + right_scores[budget - n].0,
+                    std::cmp::Reverse(first),
+                    left_scores[n].0,
+                    n,
+                )
+            })
+            .unwrap();
+        drop((left_scores, right_scores));
+        solve(left, split, quantum, selected);
+        solve(right, budget - split, quantum, selected);
+    }
+    let mut selected = Vec::new();
+    let candidates: Vec<_> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if item.score == 0 || item.weight > capacity {
+                None
+            } else if item.weight == 0 {
+                selected.push(index);
+                None
+            } else {
+                Some((index, item))
+            }
+        })
+        .collect();
+    if candidates
+        .iter()
+        .try_fold(0_usize, |sum, (_, item)| sum.checked_add(item.weight))
+        .is_some_and(|sum| sum <= capacity)
+    {
+        selected.extend(candidates.iter().map(|(index, _)| *index));
+        selected.sort_unstable();
+        return selected;
+    }
+    if candidates.iter().all(|(_, i)| i.weight == candidates[0].1.weight) {
+        let count = (capacity / candidates[0].1.weight).min(candidates.len());
+        let mut ranked = candidates;
+        ranked.sort_unstable_by_key(|(index, item)| (std::cmp::Reverse(item.score), *index));
+        selected.extend(ranked.into_iter().take(count).map(|(index, _)| index));
+        selected.sort_unstable();
+        return selected;
+    }
+    let quantum = capacity.div_ceil(MAX_CELLS / 2 - 1).max(1);
+    solve(&candidates, capacity / quantum, quantum, &mut selected);
+    let (best_idx, best) = candidates
+        .iter()
+        .max_by_key(|(i, item)| (item.score, std::cmp::Reverse(*i)))
+        .expect("nonempty");
+    let packed: u128 = selected.iter().filter(|&&i| items[i].weight != 0).map(|&i| u128::from(items[i].score)).sum();
+    let first = selected.iter().find(|&&i| items[i].weight != 0);
+    if u128::from(best.score) > packed || (u128::from(best.score) == packed && first.is_some_and(|&i| *best_idx < i)) {
+        selected.retain(|&i| items[i].weight == 0);
+        selected.push(*best_idx);
+    }
+    selected.sort_unstable();
+    selected
+}
+
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 /// Response detail for paged collections.
@@ -333,4 +463,22 @@ fn source_preview_line_budgets_are_clamped() {
     assert!(!at_nonzero.has_valid_paging_anchor(None));
     assert!(at_nonzero.has_valid_paging_anchor(Some("gen-1")));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[cfg(test)]
+#[test]
+fn knapsack_matches_boundaries_and_rank_ties() {
+    let item = |weight, score| KnapsackItem { weight, score };
+    assert!(pack_knapsack_indices(&[], 0).is_empty());
+    assert_eq!(pack_knapsack_indices(&[item(0, 2), item(1, 9)], 0), [0]);
+    assert_eq!(pack_knapsack_indices(&[item(8, 100), item(2, 4), item(2, 4)], 2), [1]);
+    assert_eq!(pack_knapsack_indices(&[item(usize::MAX, u64::MAX), item(1, 2)], usize::MAX), [0]);
+    let ties = [(2, 2), (4, 0), (1, 1), (1, 1), (1, 1), (4, 0), (4, 0), (4, 0)].map(|(w, s)| item(w, s));
+    assert_eq!(pack_knapsack_indices(&ties, 3), [0, 2]);
+    let large = [item(70_000, 5), item(40_000, 4), item(40_000, 4)];
+    assert!(pack_knapsack_indices(&large, 80_000).iter().map(|&i| large[i].weight).sum::<usize>() <= 80_000);
+    let mut many = vec![item(1, 1); 32_768];
+    assert_eq!(pack_knapsack_indices(&many, many.len()).len(), many.len());
+    many.last_mut().unwrap().weight = 2;
+    assert_eq!(pack_knapsack_indices(&many, 2), [0, 1]);
 }

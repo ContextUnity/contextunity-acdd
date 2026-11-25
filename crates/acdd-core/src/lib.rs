@@ -19,3 +19,4 @@ pub mod sys;
 pub mod telemetry;
 
 pub use fs::is_doc_path;
+pub use response::{pack_knapsack_indices, KnapsackItem};

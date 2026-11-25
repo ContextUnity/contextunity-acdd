@@ -19,5 +19,7 @@ fn snapshot(server: &Server) -> anyhow::Result<Value> {
 
 #[path = "freshness/freshness_and_admission.rs"]
 mod freshness_and_admission;
+#[path = "freshness/output_compaction.rs"]
+mod output_compaction;
 #[path = "freshness/stdio_and_response.rs"]
 mod stdio_and_response;
