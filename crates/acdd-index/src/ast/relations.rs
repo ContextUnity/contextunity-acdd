@@ -7,6 +7,25 @@ pub(crate) struct RelationSpan<'a, 'tree> {
     pub source: &'a str,
     pub owner: &'a str,
     pub offset: usize,
+    pub parent: Option<Option<Syntax<'tree>>>,
+}
+
+impl<'a, 'tree> RelationSpan<'a, 'tree> {
+    #[inline]
+    pub(crate) fn from_ctx(ctx: &crate::languages::types::SyntaxContext<'a, 'tree>) -> Self {
+        Self {
+            node: ctx.node,
+            source: ctx.source,
+            owner: ctx.owner,
+            offset: ctx.offset,
+            parent: ctx.ancestors.map(|ancestors| ancestors.last().copied()),
+        }
+    }
+
+    #[inline]
+    fn parent(self) -> Option<Syntax<'tree>> {
+        self.parent.unwrap_or_else(|| self.node.parent())
+    }
 }
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
@@ -393,7 +412,7 @@ pub(crate) fn member_access(
     {
         return;
     }
-    if let Some(parent) = node.parent() {
+    if let Some(parent) = span.parent() {
         if matches!(
             parent.kind(),
             "assignment"

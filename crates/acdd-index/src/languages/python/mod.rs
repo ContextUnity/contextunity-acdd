@@ -151,37 +151,177 @@ pub(crate) fn collect_logging_factories(
 pub(crate) mod dependencies;
 pub(crate) mod value_flow;
 
-use common::{direct_module_assignment, module_scope, type_alias};
+use common::{direct_module_assignment, type_alias};
 pub(crate) use common::{kind, language};
 pub(crate) use lexical::lexical_binding_owner;
 
-fn class_method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
-    let mut parent = node.parent()?;
-    if parent.kind() == "decorated_definition" {
-        parent = parent.parent()?;
+fn class_method_owner_from_ancestors<'a>(ancestors: &[Syntax<'a>]) -> Option<Syntax<'a>> {
+    let mut idx = ancestors.len();
+    if idx > 0 && ancestors[idx - 1].kind() == "decorated_definition" {
+        idx -= 1;
     }
-    if parent.kind() != "block" {
+    if idx < 2 || ancestors[idx - 1].kind() != "block" {
         return None;
     }
-    parent
-        .parent()
-        .filter(|owner| owner.kind() == "class_definition")
+    let owner = ancestors[idx - 2];
+    (owner.kind() == "class_definition").then_some(owner)
 }
 
-fn conditional_class_member(mut node: Syntax<'_>) -> bool {
+fn collect_python_ancestor_info<'a>(
+    parents: impl Iterator<Item = Syntax<'a>>,
+) -> (Option<Syntax<'a>>, Option<Syntax<'a>>, bool, bool) {
+    let mut decorated_parent = None;
+    let mut class_owner = None;
     let mut conditional = false;
-    while let Some(parent) = node.parent() {
-        match parent.kind() {
-            "class_definition" => return conditional,
-            "function_definition" | "lambda" => return false,
+    let mut is_conditional_member = false;
+    let mut in_module_scope = false;
+    let mut stage = 0u8;
+    for (idx, parent) in parents.enumerate() {
+        let pkind = parent.kind();
+        if idx == 0 && pkind == "decorated_definition" {
+            decorated_parent = Some(parent);
+            continue;
+        }
+        if stage == 0 {
+            stage = if pkind == "block" { 1 } else { 2 };
+        } else if stage == 1 {
+            if pkind == "class_definition" {
+                class_owner = Some(parent);
+            }
+            stage = 2;
+        }
+        match pkind {
+            "class_definition" => {
+                is_conditional_member = conditional;
+                break;
+            }
+            "function_definition" | "lambda" => break,
+            "module" => {
+                in_module_scope = true;
+                break;
+            }
             "if_statement" | "elif_clause" | "else_clause" | "for_statement"
             | "while_statement" | "try_statement" | "except_clause" | "finally_clause"
-            | "with_statement" | "match_statement" | "case_clause" => conditional = true,
+            | "with_statement" | "match_statement" | "case_clause" => {
+                conditional = true;
+            }
             _ => {}
         }
-        node = parent;
     }
-    false
+    (decorated_parent, class_owner, is_conditional_member, in_module_scope)
+}
+
+fn metadata_from_ancestors(
+    node: Syntax<'_>,
+    node_kind: &str,
+    ancestors: Option<&[Syntax<'_>]>,
+    source: &str,
+    name: &str,
+    file: &FileContext,
+) -> SymbolMetadata {
+    let (decorated_parent, class_owner, is_conditional, in_module_scope) = match ancestors {
+        Some(ancestors) => collect_python_ancestor_info(ancestors.iter().rev().copied()),
+        None => collect_python_ancestor_info(std::iter::successors(node.parent(), |n| n.parent())),
+    };
+    let decorators = decorated_parent
+        .map(|p| {
+            let mut c = p.walk();
+            p.named_children(&mut c)
+                .filter(|n| n.kind() == "decorator")
+                .map(|n| text(n, source).to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let receiver_name = if class_owner.is_some()
+        && !decorators
+            .iter()
+            .any(|decorator| is_static_decorator(decorator))
+    {
+        node.child_by_field_name("parameters")
+            .and_then(|p| p.named_child(0))
+            .and_then(|p| {
+                if p.kind() == "identifier" {
+                    Some(text(p, source))
+                } else {
+                    p.named_child(0)
+                        .filter(|n| n.kind() == "identifier")
+                        .map(|n| text(n, source))
+                }
+            })
+            .map(str::to_owned)
+            .filter(|name| matches!(name.as_str(), "self" | "cls"))
+    } else {
+        None
+    };
+    let receiver_type = class_owner
+        .and_then(|owner| field(owner, source, "name"))
+        .map(str::to_owned);
+    let is_method = class_owner.is_some().then_some(true);
+    let is_static = class_owner.is_some().then_some(receiver_name.is_none());
+    let mut param_types = std::collections::BTreeMap::new();
+    if let Some(parameters) = node.child_by_field_name("parameters") {
+        let mut cursor = parameters.walk();
+        for parameter in parameters.named_children(&mut cursor) {
+            if !matches!(
+                parameter.kind(),
+                "typed_parameter" | "typed_default_parameter"
+            ) {
+                continue;
+            }
+            let Some(annotation) = field(parameter, source, "type") else {
+                continue;
+            };
+            let Some(pname) = parameter
+                .child_by_field_name("name")
+                .or_else(|| parameter.named_child(0))
+            else {
+                continue;
+            };
+            if pname.kind() != "identifier" {
+                continue;
+            }
+            let annotation = annotation.trim();
+            let annotation = annotation
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+                .or_else(|| {
+                    annotation
+                        .strip_prefix('"')
+                        .and_then(|value| value.strip_suffix('"'))
+                })
+                .unwrap_or(annotation);
+            param_types.insert(text(pname, source).to_owned(), annotation.to_owned());
+        }
+    }
+    let is_overload = decorators.iter().any(|decorator| {
+        let d = decorator.trim_start_matches('@').trim();
+        let name = d.split('(').next().unwrap_or(d).trim();
+        name == "overload"
+            || name == "typing.overload"
+            || name == "typing_extensions.overload"
+            || name.ends_with(".overload")
+    });
+    let is_stub = is_overload
+        || file
+            .state
+            .python()
+            .is_some_and(|state| is_inside_type_checking(node, ancestors, source, state))
+        || (node_kind == "function_definition" && is_python_stub_body(node, source));
+    SymbolMetadata {
+        receiver_name,
+        decorators,
+        bases: field(node, source, "superclasses").map(str::to_owned),
+        receiver_type,
+        is_method,
+        is_static,
+        param_types,
+        is_async: text(node, source).trim_start().starts_with("async "),
+        is_overload,
+        is_stub,
+        is_conditional,
+        is_public: Some(in_module_scope && !name.starts_with('_')),
+        ..Default::default()
+    }
 }
 
 fn is_static_decorator(decorator: &str) -> bool {
@@ -199,34 +339,54 @@ fn is_static_decorator(decorator: &str) -> bool {
         == Some("staticmethod")
 }
 
-
 fn is_inside_type_checking(
-    mut curr: Syntax<'_>,
+    node: Syntax<'_>,
+    ancestors: Option<&[Syntax<'_>]>,
     source: &str,
-    aliases: &HashMap<String, Vec<(usize, bool)>>,
+    state: &PythonFileState,
 ) -> bool {
-    while let Some(parent) = curr.parent() {
-        if parent.kind() == "function_definition" || parent.kind() == "class_definition" {
-            return false;
+    if !state.has_type_checking {
+        return false;
+    }
+    let check_parent = |parent: Syntax<'_>, curr_id: usize| -> Option<bool> {
+        let pkind = parent.kind();
+        if pkind == "function_definition" || pkind == "class_definition" {
+            return Some(false);
         }
-        if parent.kind() == "if_statement" {
-            let in_consequence = parent
+        if pkind == "if_statement"
+            && parent
                 .child_by_field_name("consequence")
-                .is_some_and(|cons| cons.id() == curr.id());
-            if in_consequence {
-                if let Some(cond) = parent.child_by_field_name("condition") {
-                    let cond_text = text(cond, source).trim();
-                    let clean = cond_text.split('(').next().unwrap_or(cond_text).trim();
-                    if clean == "TYPE_CHECKING"
-                        || clean == "typing.TYPE_CHECKING"
-                        || clean == "typing_extensions.TYPE_CHECKING"
-                        || clean.ends_with(".TYPE_CHECKING")
-                        || is_type_checking_alias(aliases, parent.start_byte(), clean)
-                    {
-                        return true;
-                    }
+                .is_some_and(|cons| cons.id() == curr_id)
+        {
+            if let Some(cond) = parent.child_by_field_name("condition") {
+                let cond_text = text(cond, source).trim();
+                let clean = cond_text.split('(').next().unwrap_or(cond_text).trim();
+                if clean == "TYPE_CHECKING"
+                    || clean == "typing.TYPE_CHECKING"
+                    || clean == "typing_extensions.TYPE_CHECKING"
+                    || clean.ends_with(".TYPE_CHECKING")
+                    || is_type_checking_alias(&state.type_checking_aliases, parent.start_byte(), clean)
+                {
+                    return Some(true);
                 }
             }
+        }
+        None
+    };
+    if let Some(ancestors) = ancestors {
+        let mut curr_id = node.id();
+        for &parent in ancestors.iter().rev() {
+            if let Some(result) = check_parent(parent, curr_id) {
+                return result;
+            }
+            curr_id = parent.id();
+        }
+        return false;
+    }
+    let mut curr = node;
+    while let Some(parent) = curr.parent() {
+        if let Some(result) = check_parent(parent, curr.id()) {
+            return result;
         }
         curr = parent;
     }
@@ -254,40 +414,37 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
         return false;
     };
     let mut cursor = body.walk();
-    let mut non_trivial = Vec::new();
+    let mut saw_non_comment = false;
     for child in body.named_children(&mut cursor) {
-        if child.kind() == "comment" {
+        let ckind = child.kind();
+        if ckind == "comment" {
             continue;
         }
-        if non_trivial.is_empty() && child.kind() == "expression_statement" {
-            if let Some(first) = child.named_child(0) {
-                if first.kind() == "string" {
-                    continue;
-                }
+        let first = !saw_non_comment;
+        saw_non_comment = true;
+        if first
+            && ckind == "expression_statement"
+            && child.named_child(0).is_some_and(|n| n.kind() == "string")
+        {
+            continue;
+        }
+        if ckind == "pass_statement" {
+            continue;
+        }
+        if ckind == "expression_statement" {
+            let t = text(child, source).trim();
+            if t == "..."
+                || t == "Ellipsis"
+                || child
+                    .named_child(0)
+                    .is_some_and(|inner| inner.kind() == "ellipsis")
+            {
+                continue;
             }
         }
-        non_trivial.push(child);
+        return false;
     }
-    if non_trivial.is_empty() {
-        return true;
-    }
-    non_trivial.iter().all(|stmt| {
-        if stmt.kind() == "pass_statement" {
-            return true;
-        }
-        if stmt.kind() == "expression_statement" {
-            let t = text(*stmt, source).trim();
-            if t == "..." || t == "Ellipsis" {
-                return true;
-            }
-            if let Some(inner) = stmt.named_child(0) {
-                if inner.kind() == "ellipsis" {
-                    return true;
-                }
-            }
-        }
-        false
-    })
+    true
 }
 
 struct Python;
@@ -309,6 +466,7 @@ static PYTHON_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     ],
     imports: &["import_from_statement", "import_statement"],
     comments: &["comment"],
+    mutations: &["assignment", "augmented_assignment", "attribute"],
     ..SyntaxGrammarSpec::DEFAULT
 };
 
@@ -369,12 +527,19 @@ impl LanguageProfile for Python {
         }
     }
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
-        if node.kind() == "assignment" {
+        let node_kind = node.kind();
+        if node_kind == "assignment" {
             None
-        } else if node.kind() == "function_definition" && class_method_owner(node).is_some() {
-            Some("method")
+        } else if node_kind == "function_definition" {
+            let mut parents = std::iter::successors(node.parent(), |n| n.parent());
+            let (_, class_owner, _, _) = collect_python_ancestor_info(&mut parents);
+            Some(if class_owner.is_some() {
+                "method"
+            } else {
+                "function"
+            })
         } else {
-            kind(node.kind())
+            kind(node_kind)
         }
     }
     fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {
@@ -386,6 +551,39 @@ impl LanguageProfile for Python {
             }
         } else {
             self.symbol(node)
+        }
+    }
+    fn symbol_with_ancestors(
+        &self,
+        node: Syntax<'_>,
+        node_kind: &str,
+        ancestors: &[Syntax<'_>],
+        source: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        match node_kind {
+            "assignment" => {
+                if type_alias(node, source) {
+                    Some("type")
+                } else {
+                    let is_direct_module = ancestors.len() >= 2
+                        && ancestors[ancestors.len() - 1].kind() == "expression_statement"
+                        && ancestors[ancestors.len() - 2].kind() == "module"
+                        && node
+                            .child_by_field_name("left")
+                            .is_some_and(|left| left.kind() == "identifier");
+                    is_direct_module.then_some("variable")
+                }
+            }
+            "type_alias_statement" => type_alias(node, source).then_some("type"),
+            "function_definition" => {
+                if class_method_owner_from_ancestors(ancestors).is_some() {
+                    Some("method")
+                } else {
+                    Some("function")
+                }
+            }
+            _ => kind(node_kind),
         }
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
@@ -405,10 +603,14 @@ impl LanguageProfile for Python {
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         projections::clear();
+        let has_type_checking = source.contains("TYPE_CHECKING");
         let mut type_checking_aliases = HashMap::new();
-        module_exports::prepare(root, source, &mut type_checking_aliases);
+        if has_type_checking {
+            module_exports::prepare(root, source, &mut type_checking_aliases);
+        }
         FileContext {
             state: LanguageFileState::Python(PythonFileState {
+                has_type_checking,
                 type_checking_aliases,
             }),
             ..FileContext::default()
@@ -426,8 +628,8 @@ impl LanguageProfile for Python {
         file
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        let (node, source) = (ctx.node, ctx.source);
-        if !matches!(node.kind(), "import_from_statement" | "import_statement") {
+        let (node, source, node_kind) = (ctx.node, ctx.source, ctx.kind());
+        if !matches!(node_kind, "import_from_statement" | "import_statement") {
             return;
         }
         projections::observe_import(ctx);
@@ -435,7 +637,7 @@ impl LanguageProfile for Python {
         let is_type_only = ctx
             .file_state
             .python()
-            .is_some_and(|state| is_inside_type_checking(node, source, &state.type_checking_aliases));
+            .is_some_and(|state| is_inside_type_checking(node, ctx.ancestors, source, state));
         let mut add = |expression, alias, module| {
             ctx.import(facts, expression, alias, module);
             if is_type_only {
@@ -445,7 +647,7 @@ impl LanguageProfile for Python {
                 }
             }
         };
-        match node.kind() {
+        match node_kind {
             "import_from_statement" => {
                 let module = field(node, source, "module_name").unwrap_or("").to_owned();
                 let mut c = node.walk();
@@ -486,7 +688,7 @@ impl LanguageProfile for Python {
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         sql::extract_literal(ctx, facts);
-        if matches!(ctx.node.kind(), "call") {
+        if ctx.kind() == "call" {
             call(ctx, facts, false);
             template_loaders::extract(ctx, facts, |alias, visit| {
                 syntax_operations::for_each_loader_rule(alias, visit)
@@ -724,114 +926,26 @@ impl LanguageProfile for Python {
     ) -> crate::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
+    fn metadata_with_ancestors(
+        &self,
+        node: Syntax<'_>,
+        node_kind: &str,
+        ancestors: &[Syntax<'_>],
+        source: &str,
+        name: &str,
+        file: &FileContext,
+    ) -> SymbolMetadata {
+        metadata_from_ancestors(node, node_kind, Some(ancestors), source, name, file)
+    }
+
     fn metadata(
         &self,
         node: Syntax<'_>,
         source: &str,
-        _name: &str,
+        name: &str,
         file: &FileContext,
     ) -> SymbolMetadata {
-        let decorators = node
-            .parent()
-            .filter(|p| p.kind() == "decorated_definition")
-            .map(|p| {
-                let mut c = p.walk();
-                p.named_children(&mut c)
-                    .filter(|n| n.kind() == "decorator")
-                    .map(|n| text(n, source).to_owned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let class_owner = class_method_owner(node);
-        let receiver_name = if class_owner.is_some()
-            && !decorators
-                .iter()
-                .any(|decorator| is_static_decorator(decorator))
-        {
-            node.child_by_field_name("parameters")
-                .and_then(|p| p.named_child(0))
-                .and_then(|p| {
-                    if p.kind() == "identifier" {
-                        Some(text(p, source))
-                    } else {
-                        p.named_child(0)
-                            .filter(|n| n.kind() == "identifier")
-                            .map(|n| text(n, source))
-                    }
-                })
-                .map(str::to_owned)
-                .filter(|name| matches!(name.as_str(), "self" | "cls"))
-        } else {
-            None
-        };
-        let receiver_type = class_owner
-            .and_then(|owner| field(owner, source, "name"))
-            .map(str::to_owned);
-        let is_method = class_owner.is_some().then_some(true);
-        let is_static = class_owner.is_some().then_some(receiver_name.is_none());
-        let mut param_types = std::collections::BTreeMap::new();
-        if let Some(parameters) = node.child_by_field_name("parameters") {
-            let mut cursor = parameters.walk();
-            for parameter in parameters.named_children(&mut cursor) {
-                if !matches!(
-                    parameter.kind(),
-                    "typed_parameter" | "typed_default_parameter"
-                ) {
-                    continue;
-                }
-                let Some(annotation) = field(parameter, source, "type") else {
-                    continue;
-                };
-                let Some(name) = parameter
-                    .child_by_field_name("name")
-                    .or_else(|| parameter.named_child(0))
-                else {
-                    continue;
-                };
-                if name.kind() != "identifier" {
-                    continue;
-                }
-                let annotation = annotation.trim();
-                let annotation = annotation
-                    .strip_prefix('\'')
-                    .and_then(|value| value.strip_suffix('\''))
-                    .or_else(|| {
-                        annotation
-                            .strip_prefix('"')
-                            .and_then(|value| value.strip_suffix('"'))
-                    })
-                    .unwrap_or(annotation);
-                param_types.insert(text(name, source).to_owned(), annotation.to_owned());
-            }
-        }
-        let is_overload = decorators.iter().any(|decorator| {
-            let d = decorator.trim_start_matches('@').trim();
-            let name = d.split('(').next().unwrap_or(d).trim();
-            name == "overload"
-                || name == "typing.overload"
-                || name == "typing_extensions.overload"
-                || name.ends_with(".overload")
-        });
-        let is_stub = is_overload
-            || file.state.python().is_some_and(|state| {
-                is_inside_type_checking(node, source, &state.type_checking_aliases)
-            })
-            || (node.kind() == "function_definition" && is_python_stub_body(node, source));
-        SymbolMetadata {
-            receiver_name,
-            decorators,
-            bases: field(node, source, "superclasses").map(str::to_owned),
-            receiver_type,
-            is_method,
-            is_static,
-            param_types,
-            is_async: text(node, source).trim_start().starts_with("async "),
-            is_overload,
-            is_stub,
-            is_conditional: conditional_class_member(node),
-            is_public: Some(module_scope(node) && !_name.starts_with('_')),
-            ..Default::default()
-        }
+        metadata_from_ancestors(node, node.kind(), None, source, name, file)
     }
     fn test_role(
         &self,
@@ -903,28 +1017,17 @@ impl LanguageProfile for Python {
                 relations::type_references_at(facts, ctx.owner, ret, ctx.source, ctx.offset);
             }
         }
-        let span = relations::RelationSpan {
-            node: ctx.node,
-            source: ctx.source,
-            owner: ctx.owner,
-            offset: ctx.offset,
-        };
-        relations::decorator_references(span, facts);
+        relations::decorator_references(relations::RelationSpan::from_ctx(ctx), facts);
         decorated_registration::decorator_candidates(ctx, facts);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if !matches!(
-            ctx.node.kind(),
+            ctx.kind(),
             "assignment" | "augmented_assignment" | "attribute"
         ) {
             return;
         }
-        let span = relations::RelationSpan {
-            node: ctx.node,
-            source: ctx.source,
-            owner: ctx.owner,
-            offset: ctx.offset,
-        };
+        let span = relations::RelationSpan::from_ctx(ctx);
         relations::mutation(
             span,
             facts,
@@ -940,15 +1043,13 @@ impl LanguageProfile for Python {
         facts: &mut Facts,
         _symbols: &HashMap<usize, String>,
     ) {
-        if ctx.node.kind() != "assignment"
+        if ctx.kind() != "assignment"
             || !ctx
                 .node
                 .child_by_field_name("left")
                 .is_some_and(|left| left.kind() == "identifier")
             || !ctx
-                .node
-                .parent()
-                .and_then(|node| node.parent())
+                .ancestor(2)
                 .is_some_and(|node| node.kind() == "module")
         {
             return;
@@ -968,11 +1069,8 @@ impl LanguageProfile for Python {
                 });
             if let Some(module_id) = module_id {
                 let module_ctx = SyntaxContext {
-                    node: ctx.node,
-                    source: ctx.source,
                     owner: &module_id,
-                    offset: ctx.offset,
-                    file_state: ctx.file_state,
+                    ..*ctx
                 };
                 decorated_registration::module_assignment(&module_ctx, facts);
             }

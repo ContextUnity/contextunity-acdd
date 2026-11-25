@@ -289,6 +289,8 @@ impl ImportPath {
 /// Typed per-file extraction state for Python profiles.
 #[derive(Default)]
 pub struct PythonFileState {
+    /// Whether the file mentions `TYPE_CHECKING` and needs `if TYPE_CHECKING:` ancestor checks.
+    pub has_type_checking: bool,
     /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
     pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
 }
@@ -323,6 +325,13 @@ pub struct TypeScriptFileState {
     pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
 }
 
+/// Typed per-file extraction state for Rust profiles.
+#[derive(Default)]
+pub struct RustFileState {
+    /// File-declared function and method names available to forward references.
+    pub declared_callables: HashSet<String>,
+}
+
 /// Typed language-owned extraction state stored on [`FileContext`].
 #[derive(Default)]
 pub enum LanguageFileState {
@@ -331,6 +340,8 @@ pub enum LanguageFileState {
     None,
     /// Python-specific per-file extraction state.
     Python(PythonFileState),
+    /// Rust-specific per-file extraction state.
+    Rust(RustFileState),
     /// TypeScript/JavaScript-specific per-file extraction state.
     TypeScript(TypeScriptFileState),
 }
@@ -340,6 +351,14 @@ impl LanguageFileState {
     pub fn python(&self) -> Option<&PythonFileState> {
         match self {
             Self::Python(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Borrows Rust state when active.
+    pub fn rust(&self) -> Option<&RustFileState> {
+        match self {
+            Self::Rust(state) => Some(state),
             _ => None,
         }
     }
@@ -540,6 +559,8 @@ pub struct SyntaxGrammarSpec {
     pub conditionals: &'static [&'static str],
     /// Visibility modifier syntax kinds paired with [`Visibility`].
     pub visibility_modifiers: &'static [(&'static str, Visibility)],
+    /// Kinds passed to the mutation relation hook.
+    pub mutations: &'static [&'static str],
 }
 
 impl SyntaxGrammarSpec {
@@ -561,6 +582,7 @@ impl SyntaxGrammarSpec {
         heritage: &[],
         conditionals: &[],
         visibility_modifiers: &[],
+        mutations: &[],
     };
 }
 
@@ -591,6 +613,7 @@ impl CompiledSyntaxKind {
     const HERITAGE: u16 = 1 << 8;
     const CONDITIONAL: u16 = 1 << 9;
     const ASSIGNMENT: u16 = 1 << 10;
+    const MUTATION: u16 = 1 << 11;
 
     fn has(self, flag: u16) -> bool {
         self.flags & flag != 0
@@ -662,6 +685,10 @@ impl CompiledSyntaxKind {
 
     pub(crate) fn is_conditional(self) -> bool {
         self.has(Self::CONDITIONAL)
+    }
+
+    pub(crate) fn is_mutation(self) -> bool {
+        self.has(Self::MUTATION)
     }
 }
 
@@ -792,6 +819,7 @@ impl SyntaxGrammarSpec {
             (self.member_calls, CompiledSyntaxKind::MEMBER_CALL),
             (self.heritage, CompiledSyntaxKind::HERITAGE),
             (self.conditionals, CompiledSyntaxKind::CONDITIONAL),
+            (self.mutations, CompiledSyntaxKind::MUTATION),
         ] {
             for name in names {
                 compiled_kinds[usize::from(kind(name)?)]
@@ -961,6 +989,7 @@ pub struct SymbolMetadata {
 }
 
 /// Borrowed syntax and source context passed to extraction hooks.
+#[derive(Clone, Copy)]
 pub struct SyntaxContext<'a, 'tree> {
     /// Current tree-sitter CST node being inspected.
     pub node: Syntax<'tree>,
@@ -972,8 +1001,80 @@ pub struct SyntaxContext<'a, 'tree> {
     pub offset: usize,
     /// Borrowed typed per-language file state.
     pub file_state: &'a LanguageFileState,
+    pub(crate) node_kind: Option<&'static str>,
+    pub(crate) ancestors: Option<&'a [Syntax<'tree>]>,
 }
-impl SyntaxContext<'_, '_> {
+impl<'a, 'tree> SyntaxContext<'a, 'tree> {
+    #[inline]
+    pub(crate) fn new(
+        node: Syntax<'tree>,
+        source: &'a str,
+        owner: &'a str,
+        offset: usize,
+        file_state: &'a LanguageFileState,
+    ) -> Self {
+        Self {
+            node,
+            source,
+            owner,
+            offset,
+            file_state,
+            node_kind: None,
+            ancestors: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn with_traversal(
+        node: Syntax<'tree>,
+        source: &'a str,
+        owner: &'a str,
+        offset: usize,
+        file_state: &'a LanguageFileState,
+        node_kind: &'static str,
+        ancestors: &'a [Syntax<'tree>],
+    ) -> Self {
+        Self {
+            node,
+            source,
+            owner,
+            offset,
+            file_state,
+            node_kind: Some(node_kind),
+            ancestors: Some(ancestors),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn kind(&self) -> &'static str {
+        self.node_kind.unwrap_or_else(|| self.node.kind())
+    }
+
+    #[inline]
+    pub(crate) fn ancestor(&self, depth: usize) -> Option<Syntax<'tree>> {
+        if depth == 0 {
+            return Some(self.node);
+        }
+        match self.ancestors {
+            Some(ancestors) => ancestors
+                .len()
+                .checked_sub(depth)
+                .and_then(|idx| ancestors.get(idx).copied()),
+            None => {
+                let mut cur = Some(self.node);
+                for _ in 0..depth {
+                    cur = cur?.parent();
+                }
+                cur
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn parent(&self) -> Option<Syntax<'tree>> {
+        self.ancestor(1)
+    }
+
     /// Returns the one-based source line after applying the file offset.
     pub fn line(&self) -> usize {
         self.node.start_position().row + self.offset + 1

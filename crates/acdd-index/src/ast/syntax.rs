@@ -100,6 +100,9 @@ pub struct ScopeBindings {
 /// Trait implemented by language-specific incremental scope visitors.
 pub trait ScopeVisitor<'source, 'tree> {
     fn enter(&mut self, node: Syntax<'tree>);
+    fn enter_with_kind(&mut self, node: Syntax<'tree>, _kind: &str) {
+        self.enter(node);
+    }
     fn exit(&mut self, node: Syntax<'tree>);
     fn observe_module_event(&mut self, _node: Syntax<'tree>, _entering: bool) {}
     fn module_exports(
@@ -157,6 +160,25 @@ pub(crate) fn walk_in_order<'tree>(
     reversed: bool,
     visitor: &mut impl FnMut(Syntax<'tree>, bool),
 ) {
+    walk_in_order_impl(root, reversed, false, &mut |node, _ancestors, entering| {
+        visitor(node, entering);
+    });
+}
+
+pub(crate) fn walk_in_order_with_ancestors<'tree>(
+    root: Syntax<'tree>,
+    reversed: bool,
+    visitor: &mut impl FnMut(Syntax<'tree>, &[Syntax<'tree>], bool),
+) {
+    walk_in_order_impl(root, reversed, true, visitor);
+}
+
+fn walk_in_order_impl<'tree>(
+    root: Syntax<'tree>,
+    reversed: bool,
+    track_ancestors: bool,
+    visitor: &mut impl FnMut(Syntax<'tree>, &[Syntax<'tree>], bool),
+) {
     fn first_named_child(cursor: &mut tree_sitter::TreeCursor<'_>, reversed: bool) -> bool {
         if !cursor.goto_first_child() {
             return false;
@@ -200,21 +222,36 @@ pub(crate) fn walk_in_order<'tree>(
         moved
     }
 
+    let mut ancestors: Vec<Syntax<'tree>> = Vec::new();
+    if track_ancestors {
+        if let Some(parent) = root.parent() {
+            ancestors.push(parent);
+        }
+    }
     let mut cursor = root.walk();
-    visitor(root, true);
+    visitor(root, &ancestors, true);
+    if track_ancestors {
+        ancestors.push(root);
+    }
     if !first_named_child(&mut cursor, reversed) {
-        visitor(root, false);
+        if track_ancestors {
+            ancestors.pop();
+        }
+        visitor(root, &ancestors, false);
         return;
     }
 
     loop {
         let node = cursor.node();
-        visitor(node, true);
+        visitor(node, &ancestors, true);
         if first_named_child(&mut cursor, reversed) {
+            if track_ancestors {
+                ancestors.push(node);
+            }
             continue;
         }
 
-        visitor(node, false);
+        visitor(node, &ancestors, false);
         loop {
             if next_named_sibling(&mut cursor, reversed) {
                 break;
@@ -222,8 +259,11 @@ pub(crate) fn walk_in_order<'tree>(
             if !cursor.goto_parent() {
                 return;
             }
+            if track_ancestors {
+                ancestors.pop();
+            }
             let parent = cursor.node();
-            visitor(parent, false);
+            visitor(parent, &ancestors, false);
             if parent.id() == root.id() {
                 return;
             }
@@ -592,18 +632,17 @@ impl<'source, 'tree> BindingCollector<'source, 'tree> {
     }
 
     pub(crate) fn finish(self) -> ScopeBindings {
-        let rebindings: std::collections::BTreeSet<_> =
-            self.names.into_iter().map(str::to_owned).collect();
-        let all: std::collections::BTreeSet<_> = self
+        let mut rebindings: Vec<String> = self.names.into_iter().map(str::to_owned).collect();
+        rebindings.sort_unstable();
+        let mut all: Vec<String> = self
             .params
             .into_iter()
             .map(str::to_owned)
             .chain(rebindings.iter().cloned())
             .collect();
-        ScopeBindings {
-            all: all.into_iter().collect(),
-            rebindings: rebindings.into_iter().collect(),
-        }
+        all.sort_unstable();
+        all.dedup();
+        ScopeBindings { all, rebindings }
     }
 }
 

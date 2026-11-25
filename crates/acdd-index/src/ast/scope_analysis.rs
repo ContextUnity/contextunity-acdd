@@ -120,8 +120,8 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
         }
     }
 
-    pub fn enter(&mut self, node: Syntax<'tree>) {
-        dispatch_visitor_mut!(self, visitor => visitor.enter(node));
+    pub fn enter_with_kind(&mut self, node: Syntax<'tree>, kind: &str) {
+        dispatch_visitor_mut!(self, visitor => visitor.enter_with_kind(node, kind));
     }
 
     pub fn observe_module_event(&mut self, node: Syntax<'tree>, entering: bool) {

@@ -605,14 +605,46 @@ fn wire_indexed_callbacks_and_unresolved_receivers(
 }
 
 fn compute_prod_live(graph: &DeadTailsGraph) -> HashSet<i64> {
+    let mut siblings_by_qualname: HashMap<(&str, &str), Vec<i64>> = HashMap::new();
+    for &nh in &graph.candidates {
+        if let Some(node) = graph.nodes.get(&nh) {
+            if !node.qualname.is_empty() {
+                siblings_by_qualname
+                    .entry((node.path.as_str(), node.qualname.as_str()))
+                    .or_default()
+                    .push(nh);
+            }
+        }
+    }
+
     let mut live: HashSet<i64> = graph.roots.iter().copied().collect();
     let mut queue: VecDeque<i64> = graph.roots.iter().copied().collect();
 
+    let enqueue_siblings =
+        |node_hash: i64, live: &mut HashSet<i64>, queue: &mut VecDeque<i64>| {
+            if let Some(node) = graph.nodes.get(&node_hash) {
+                if let Some(siblings) =
+                    siblings_by_qualname.get(&(node.path.as_str(), node.qualname.as_str()))
+                {
+                    for &sib in siblings {
+                        if live.insert(sib) {
+                            queue.push_back(sib);
+                        }
+                    }
+                }
+            }
+        };
+
     while let Some(u) = queue.pop_front() {
+        enqueue_siblings(u, &mut live, &mut queue);
         if let Some(callees) = graph.fwd.get(&u) {
             for &v in callees {
-                if graph.candidates.contains(&v) && live.insert(v) {
-                    queue.push_back(v);
+                if graph.candidates.contains(&v) {
+                    if live.insert(v) {
+                        queue.push_back(v);
+                    }
+                } else {
+                    enqueue_siblings(v, &mut live, &mut queue);
                 }
             }
         }

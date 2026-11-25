@@ -657,6 +657,85 @@ impl TypeScript {
     }
 }
 
+fn ts_symbol_with_parent(
+    javascript: bool,
+    node: Syntax<'_>,
+    node_kind: &str,
+    parent: Option<Option<Syntax<'_>>>,
+    source: &str,
+    file: Option<&FileContext>,
+) -> Option<&'static str> {
+    let parent_node = || parent.unwrap_or_else(|| node.parent());
+    let is_value_pair = || {
+        node_kind == "pair"
+            && node
+                .child_by_field_name("key")
+                .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier"))
+            && node.child_by_field_name("value").is_some_and(|value| {
+                !matches!(value.kind(), "arrow_function" | "function_expression")
+            })
+    };
+    if let Some(file) = file {
+        if configured_projection_object(
+            node,
+            source,
+            &file.rules.syntax_rules,
+            file.rules.has_object_call_definitions,
+        ) {
+            return Some("object");
+        }
+        if is_value_pair()
+            && parent_node().is_some_and(|object| {
+                if javascript {
+                    same_object_prepared(
+                        object,
+                        source,
+                        &file.rules.syntax_rules,
+                        file.rules.has_factory_members,
+                        file.rules.has_object_call_definitions,
+                    )
+                    .is_some()
+                } else {
+                    projected_object(object, source, &file.rules).is_some()
+                }
+            })
+        {
+            return Some("field");
+        }
+        if javascript && node_kind == "pair" {
+            return kind(node_kind);
+        }
+    }
+    if javascript && prototype_assignment(node, source).is_some() {
+        return Some("method");
+    }
+    if !javascript {
+        if node_kind == "property_identifier"
+            && parent_node().is_some_and(|p| p.kind() == "enum_body")
+        {
+            return Some("field");
+        }
+        if node_kind == "enum_assignment"
+            && !node
+                .child_by_field_name("name")
+                .is_some_and(|name| name.kind() == "property_identifier")
+        {
+            return None;
+        }
+    }
+    if javascript && is_value_pair() && parent_node().and_then(returned_object).is_some() {
+        return Some("field");
+    }
+    if node_kind == "field_definition"
+        && !node
+            .child_by_field_name("property")
+            .is_some_and(|property| property.kind() == "property_identifier")
+    {
+        return None;
+    }
+    kind(node_kind)
+}
+
 static TS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[
         ("function_declaration", "function"),
@@ -701,6 +780,17 @@ static TS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
         "variable_declarator",
     ],
     comments: &["comment"],
+    mutations: &[
+        "program",
+        "identifier",
+        "member_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "update_expression",
+        "unary_expression",
+        "public_field_definition",
+        "property_signature",
+    ],
     ..SyntaxGrammarSpec::DEFAULT
 };
 
@@ -743,6 +833,15 @@ static JS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
         "variable_declarator",
     ],
     comments: &["comment"],
+    mutations: &[
+        "program",
+        "member_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "update_expression",
+        "unary_expression",
+        "field_definition",
+    ],
     ..SyntaxGrammarSpec::DEFAULT
 };
 
@@ -898,45 +997,7 @@ impl LanguageProfile for TypeScript {
         kind(node.kind())
     }
     fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {
-        if self.javascript && prototype_assignment(node, source).is_some() {
-            return Some("method");
-        }
-        if !self.javascript {
-            if node.kind() == "property_identifier"
-                && node
-                    .parent()
-                    .is_some_and(|parent| parent.kind() == "enum_body")
-            {
-                return Some("field");
-            }
-            if node.kind() == "enum_assignment"
-                && !node
-                    .child_by_field_name("name")
-                    .is_some_and(|name| name.kind() == "property_identifier")
-            {
-                return None;
-            }
-        }
-        if self.javascript
-            && node.kind() == "pair"
-            && node
-                .child_by_field_name("key")
-                .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier"))
-            && node.child_by_field_name("value").is_some_and(|value| {
-                !matches!(value.kind(), "arrow_function" | "function_expression")
-            })
-            && node.parent().and_then(returned_object).is_some()
-        {
-            return Some("field");
-        }
-        if node.kind() == "field_definition"
-            && !node
-                .child_by_field_name("property")
-                .is_some_and(|property| property.kind() == "property_identifier")
-        {
-            return None;
-        }
-        self.symbol(node)
+        ts_symbol_with_parent(self.javascript, node, node.kind(), None, source, None)
     }
     fn symbol_with_context(
         &self,
@@ -944,42 +1005,24 @@ impl LanguageProfile for TypeScript {
         source: &str,
         file: &FileContext,
     ) -> Option<&'static str> {
-        if configured_projection_object(
+        ts_symbol_with_parent(self.javascript, node, node.kind(), None, source, Some(file))
+    }
+    fn symbol_with_ancestors(
+        &self,
+        node: Syntax<'_>,
+        node_kind: &str,
+        ancestors: &[Syntax<'_>],
+        source: &str,
+        file: &FileContext,
+    ) -> Option<&'static str> {
+        ts_symbol_with_parent(
+            self.javascript,
             node,
+            node_kind,
+            Some(ancestors.last().copied()),
             source,
-            &file.rules.syntax_rules,
-            file.rules.has_object_call_definitions,
-        ) {
-            return Some("object");
-        }
-        if node.kind() == "pair"
-            && node
-                .child_by_field_name("key")
-                .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier"))
-            && node.child_by_field_name("value").is_some_and(|value| {
-                !matches!(value.kind(), "arrow_function" | "function_expression")
-            })
-            && node.parent().is_some_and(|object| {
-                if self.javascript {
-                    same_object_prepared(
-                        object,
-                        source,
-                        &file.rules.syntax_rules,
-                        file.rules.has_factory_members,
-                        file.rules.has_object_call_definitions,
-                    )
-                    .is_some()
-                } else {
-                    projected_object(object, source, &file.rules).is_some()
-                }
-            })
-        {
-            return Some("field");
-        }
-        if self.javascript && node.kind() == "pair" {
-            return self.symbol(node);
-        }
-        self.symbol_with_source(node, source)
+            Some(file),
+        )
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
         if node.kind() == "object" {
@@ -1682,15 +1725,7 @@ impl LanguageProfile for TypeScript {
             }
         }
 
-        relations::decorator_references(
-            relations::RelationSpan {
-                node: ctx.node,
-                source: ctx.source,
-                owner: ctx.owner,
-                offset: ctx.offset,
-            },
-            facts,
-        );
+        relations::decorator_references(relations::RelationSpan::from_ctx(ctx), facts);
         let mut record_type = |ty| {
             relations::type_references_with_value_queries(
                 facts,
@@ -1702,7 +1737,7 @@ impl LanguageProfile for TypeScript {
             );
         };
         if matches!(
-            ctx.node.kind(),
+            ctx.kind(),
             "function_declaration"
                 | "function_signature"
                 | "method_definition"
@@ -1735,7 +1770,7 @@ impl LanguageProfile for TypeScript {
     }
 
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        let kind = ctx.node.kind();
+        let kind = ctx.kind();
         if kind == "program" {
             if let Some(owner) = facts.nodes.first() {
                 TS_SCRATCH.with(|scratch| {
@@ -1770,12 +1805,7 @@ impl LanguageProfile for TypeScript {
         if self.javascript {
             record_js_mutation_target(ctx, facts);
         }
-        let span = relations::RelationSpan {
-            node: ctx.node,
-            source: ctx.source,
-            owner: ctx.owner,
-            offset: ctx.offset,
-        };
+        let span = relations::RelationSpan::from_ctx(ctx);
         relations::mutation(
             span,
             facts,
@@ -2191,12 +2221,13 @@ fn collect_valid_prototype_aliases(
 }
 
 fn record_ts_identifier_candidate(ctx: &SyntaxContext<'_, '_>) {
-    let runtime_value = ctx.node.parent().is_some_and(|parent| {
-        (parent.kind() == "variable_declarator"
+    let runtime_value = ctx.parent().is_some_and(|parent| {
+        let pkind = parent.kind();
+        (pkind == "variable_declarator"
             && parent.child_by_field_name("value") == Some(ctx.node))
-            || (parent.kind() == "assignment_expression"
+            || (pkind == "assignment_expression"
                 && parent.child_by_field_name("right") == Some(ctx.node))
-            || (matches!(parent.kind(), "return_statement" | "arguments" | "array")
+            || (matches!(pkind, "return_statement" | "arguments" | "array")
                 && (0..parent.named_child_count())
                     .any(|index| parent.named_child(index) == Some(ctx.node)))
     });
@@ -2214,7 +2245,7 @@ fn record_ts_identifier_candidate(ctx: &SyntaxContext<'_, '_>) {
 }
 
 fn record_ts_member_candidate(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    let (called, write_only) = ctx.node.parent().map_or((false, false), |parent| {
+    let (called, write_only) = ctx.parent().map_or((false, false), |parent| {
         let parent_kind = parent.kind();
         (
             parent_kind == "call_expression"

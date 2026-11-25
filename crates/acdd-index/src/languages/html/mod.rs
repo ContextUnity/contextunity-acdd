@@ -985,13 +985,7 @@ fn try_extract_script_fragment(path: &str, parse_input: &str, facts: &mut Facts)
     let mut nodes = vec![tree.root_node()];
     while let Some(node) = nodes.pop() {
         javascript.extract_imports(
-            &SyntaxContext {
-                node,
-                source: &wrapped,
-                owner: &owner,
-                offset: 0,
-                file_state: &file.state,
-            },
+            &SyntaxContext::new(node, &wrapped, &owner, 0, &file.state),
             facts,
         );
         let mut cursor = node.walk();

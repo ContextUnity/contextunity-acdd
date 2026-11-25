@@ -434,7 +434,8 @@ impl RouteContext {
         };
         if builder.active {
             walk(root, &mut |node, entering| {
-                let _ = builder.observe(node, entering);
+                let kind = if entering { node.kind() } else { "" };
+                let _ = builder.observe_with_kind(node, kind, entering);
             });
         }
         builder.finish()
@@ -883,7 +884,7 @@ pub(crate) fn registration_with_context_filtered(
     admit: impl Fn(&manifests::RouteCallRule, &Facts) -> bool,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
-    if matches!(node.kind(), "call" | "call_expression") {
+    if matches!(ctx.kind(), "call" | "call_expression") {
         let rules = rule_ir.route_calls_for_kind(ctx.node.kind_id());
         if rules.is_empty() {
             return;
@@ -895,7 +896,7 @@ pub(crate) fn registration_with_context_filtered(
             .iter()
             .filter(|rule| callee_matches(actual_callee, &rule.callee))
             .peekable();
-        if matching.peek().is_none() || node.parent().is_some_and(|p| p.kind() == "decorator") {
+        if matching.peek().is_none() || ctx.parent().is_some_and(|p| p.kind() == "decorator") {
             return;
         }
         for rule in matching {
@@ -1377,22 +1378,32 @@ impl<'source, 'tree> PythonClassBindings<'source, 'tree> {
         }
     }
 
-    pub(crate) fn observe(&mut self, node: Syntax<'tree>, entering: bool) {
+    pub(crate) fn observe(
+        &mut self,
+        node: Syntax<'tree>,
+        node_kind: &'static str,
+        ancestors: &[Syntax<'tree>],
+        entering: bool,
+    ) {
         if entering {
-            self.module.enter(node, node.kind());
+            self.module.enter(node, node_kind);
             if let Some((_, collector)) = &mut self.class {
-                collector.enter(node, node.kind());
+                collector.enter(node, node_kind);
             } else if self.collect_classes
-                && node.kind() == "class_definition"
-                && node.parent().is_some_and(|parent| {
+                && node_kind == "class_definition"
+                && ancestors.last().copied().is_some_and(|parent| {
                     parent == self.root
                         || (parent.kind() == "decorated_definition"
-                            && parent.parent() == Some(self.root))
+                            && ancestors
+                                .len()
+                                .checked_sub(2)
+                                .and_then(|idx| ancestors.get(idx).copied())
+                                == Some(self.root))
                 })
             {
                 let mut collector =
                     super::python::lexical::BindingWriteCollector::new(node, self.source);
-                collector.enter(node, node.kind());
+                collector.enter(node, node_kind);
                 self.class = Some((node, collector));
             }
         } else {
@@ -1568,13 +1579,17 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
         builder
     }
 
-    pub(crate) fn observe(&mut self, node: Syntax<'tree>, entering: bool) -> bool {
+    pub(crate) fn observe_with_kind(
+        &mut self,
+        node: Syntax<'tree>,
+        kind: &str,
+        entering: bool,
+    ) -> bool {
         if !self.active {
             return false;
         }
 
         if entering {
-            let kind = node.kind();
             let scope = node == self.root || binding_scope_kind(kind);
             if let Some((_, collector)) = self.collectors.last_mut() {
                 collector.enter_with_kind(node, kind);

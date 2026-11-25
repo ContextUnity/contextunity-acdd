@@ -975,14 +975,16 @@ fn static_symbol(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 pub(super) fn record_model_factory(ctx: &SyntaxContext<'_, '_>) {
-    let Some(parent) = ctx
-        .node
+    if !ctx
         .parent()
-        .filter(|node| node.kind() == "expression_statement")
-    else {
+        .is_some_and(|node| node.kind() == "expression_statement")
+    {
         return;
-    };
-    if !parent.parent().is_some_and(|node| node.kind() == "module") {
+    }
+    if !ctx
+        .ancestor(2)
+        .is_some_and(|node| node.kind() == "module")
+    {
         return;
     }
     let Some(left) = ctx
@@ -1031,26 +1033,18 @@ pub(super) fn record_model_attribute(
     {
         return;
     }
-    let Some(statement) = ctx
-        .node
-        .parent()
+    let Some(class) = ctx
+        .ancestor(1)
         .filter(|node| node.kind() == "expression_statement")
+        .and_then(|_| ctx.ancestor(2).filter(|node| node.kind() == "block"))
+        .and_then(|_| ctx.ancestor(3).filter(|node| node.kind() == "class_definition"))
     else {
         return;
     };
-    let Some(class) = statement
-        .parent()
+    let parent_class = ctx
+        .ancestor(4)
         .filter(|node| node.kind() == "block")
-        .and_then(|node| node.parent())
-        .filter(|node| node.kind() == "class_definition")
-    else {
-        return;
-    };
-    let parent_class = class
-        .parent()
-        .filter(|node| node.kind() == "block")
-        .and_then(|node| node.parent())
-        .filter(|node| node.kind() == "class_definition");
+        .and_then(|_| ctx.ancestor(5).filter(|node| node.kind() == "class_definition"));
     let (owner, container) = if let Some(parent) = parent_class {
         let Some(owner) = symbols.get(&parent.id()) else {
             return;
@@ -1161,7 +1155,10 @@ pub(super) fn extract_default_table(
     let Some(bases) = ctx.node.child_by_field_name("superclasses") else {
         return;
     };
-    let mut root = ctx.node;
+    let mut root = ctx
+        .ancestors
+        .and_then(|ancestors| ancestors.first().copied())
+        .unwrap_or(ctx.node);
     while let Some(parent) = root.parent() {
         root = parent;
     }

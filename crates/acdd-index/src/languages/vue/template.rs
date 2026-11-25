@@ -497,13 +497,7 @@ impl Document<'_, '_> {
                 scope_owners.push(new_owner);
             }
             let child_owner = scope_owners[owner_idx].as_str();
-            let ctx = SyntaxContext {
-                node,
-                source,
-                owner: child_owner,
-                offset: 0,
-                file_state: &LanguageFileState::None,
-            };
+            let ctx = SyntaxContext::new(node, source, child_owner, 0, &LanguageFileState::None);
             typescript::JAVASCRIPT.extract_calls(&ctx, self.facts);
             if node.kind() == "member_expression"
                 && !node.parent().is_some_and(|p| {

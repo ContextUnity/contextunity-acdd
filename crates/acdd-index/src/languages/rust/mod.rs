@@ -5,11 +5,11 @@ use crate::languages::context::{FileContext, LanguageContext};
 use crate::languages::profile::LanguageProfile;
 use crate::languages::types::{
     call, workspace_path, AstSearchCapabilities, AstSearchProbe, CallForm, DeclarationRole,
-    ImportKind, ImportPath, LanguageFamily, SymbolMetadata, SyntaxContext, SyntaxGrammarSpec,
-    Visibility,
+    ImportKind, ImportPath, LanguageFamily, LanguageFileState, RustFileState, SymbolMetadata,
+    SyntaxContext, SyntaxGrammarSpec, Visibility,
 };
 use crate::models::{Facts, ReceiverHint, Reference};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 mod cli_registration;
@@ -682,6 +682,7 @@ static RUST_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
         "call_expression",
         "macro_invocation",
         "struct_expression",
+        "array_expression",
         "scoped_identifier",
         "string_literal",
         "raw_string_literal",
@@ -705,6 +706,11 @@ static RUST_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     import_forms: &[("use_declaration", ImportKind::Module)],
     comments: &["line_comment", "block_comment"],
     visibility_modifiers: &[("visibility_modifier", Visibility::Public)],
+    mutations: &[
+        "field_declaration",
+        "compound_assignment_expr",
+        "field_expression",
+    ],
     ..SyntaxGrammarSpec::DEFAULT
 };
 
@@ -833,6 +839,9 @@ impl LanguageProfile for Rust {
         value_flow::clear_file_macro_facts();
         FileContext {
             rules: std::sync::Arc::clone(rules),
+            state: LanguageFileState::Rust(RustFileState {
+                declared_callables: collect_declared_callables(root, source),
+            }),
             ..FileContext::default()
         }
     }
@@ -980,7 +989,7 @@ impl LanguageProfile for Rust {
                 .and_then(|function| value_flow::callee_name(function, ctx.source))
             {
                 let callee = callee.into_owned();
-                extract_combinator_callback_args(ctx.node, ctx.source, ctx.owner, &callee, facts);
+                extract_combinator_callback_args(ctx, &callee, facts);
                 let receiver_hint = if callee.contains("::") && callee.contains('.') {
                     call_result_hint(ctx.node, ctx.source).map(|(hint, _)| hint)
                 } else {
@@ -1011,10 +1020,10 @@ impl LanguageProfile for Rust {
                 }
                 if let Some(reference) = facts.references.get(previous) {
                     let callee = reference.expression.clone();
-                    extract_combinator_callback_args(ctx.node, ctx.source, ctx.owner, &callee, facts);
+                    extract_combinator_callback_args(ctx, &callee, facts);
                 }
             }
-        } else if ctx.node.kind() == "macro_invocation" {
+        } else if ctx.kind() == "macro_invocation" {
             super::sql::extract_macro_type(ctx, facts);
             macros::project_macro_invocation(ctx, facts);
             if let Some(tree) = ctx.node.named_children(&mut ctx.node.walk()).find(|c| c.kind() == "token_tree") {
@@ -1028,9 +1037,9 @@ impl LanguageProfile for Rust {
                     member: String::new(),
                 });
             }
-        } else if ctx.node.kind() == "scoped_identifier" {
+        } else if ctx.kind() == "scoped_identifier" {
             extract_scoped_identifier_reference(ctx, facts);
-        } else if ctx.node.kind() == "struct_expression" {
+        } else if ctx.kind() == "struct_expression" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 let text = relations::type_name(name, ctx.source);
                 let clean = text.split('<').next().unwrap_or(text).trim();
@@ -1041,10 +1050,15 @@ impl LanguageProfile for Rust {
                 for child in body.named_children(&mut cursor) {
                     if child.kind() == "field_initializer" {
                         if let Some(val) = child.child_by_field_name("value") {
-                            emit_callable_arg(val, ctx.source, ctx.owner, facts, false);
+                            emit_callable_arg(val, ctx, facts, false);
                         }
                     }
                 }
+            }
+        } else if ctx.kind() == "array_expression" {
+            let mut cursor = ctx.node.walk();
+            for child in ctx.node.named_children(&mut cursor) {
+                emit_callable_arg(child, ctx, facts, false);
             }
         }
     }
@@ -1284,8 +1298,9 @@ impl LanguageProfile for Rust {
         }
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        let kind = ctx.kind();
         if !matches!(
-            ctx.node.kind(),
+            kind,
             "field_declaration"
                 | "compound_assignment_expr"
                 | "assignment_expr"
@@ -1293,12 +1308,7 @@ impl LanguageProfile for Rust {
         ) {
             return;
         }
-        let span = relations::RelationSpan {
-            node: ctx.node,
-            source: ctx.source,
-            owner: ctx.owner,
-            offset: ctx.offset,
-        };
+        let span = relations::RelationSpan::from_ctx(ctx);
         relations::mutation(
             span,
             facts,
@@ -1306,7 +1316,7 @@ impl LanguageProfile for Rust {
             &["compound_assignment_expr", "assignment_expr"],
             &["field_expression"],
         );
-        if ctx.node.kind() == "field_declaration" {
+        if kind == "field_declaration" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 if let Some(owner) = facts.nodes.iter().find(|owner| owner.id == ctx.owner) {
                     let qualified = format!("{}.{}", owner.qualname, text(name, ctx.source));
@@ -1773,14 +1783,48 @@ fn is_combinator_callback_name(tail: &str) -> bool {
     )
 }
 
-fn is_file_declared_callable(facts: &Facts, name: &str) -> bool {
-    facts.nodes.iter().any(|n| {
-        n.name == name
-            && matches!(
-                n.kind,
-                crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
-            )
-    })
+fn collect_declared_callables(root: Syntax<'_>, source: &str) -> HashSet<String> {
+    let mut callables = HashSet::new();
+    let mut stack = vec![root];
+    let mut cursor = root.walk();
+    while let Some(node) = stack.pop() {
+        let kind = node.kind();
+        if matches!(kind, "function_item" | "function_signature_item") {
+            if let Some(name) = node.child_by_field_name("name") {
+                let raw = text(name, source).trim();
+                if !raw.is_empty() {
+                    callables.insert(raw.to_owned());
+                }
+            }
+        }
+        if matches!(
+            kind,
+            "source_file"
+                | "mod_item"
+                | "impl_item"
+                | "trait_item"
+                | "declaration_list"
+                | "function_item"
+                | "block"
+        ) {
+            cursor.reset(node);
+            stack.extend(node.named_children(&mut cursor));
+        }
+    }
+    callables
+}
+
+fn is_file_declared_callable(ctx: &SyntaxContext<'_, '_>, facts: &Facts, name: &str) -> bool {
+    ctx.file_state
+        .rust()
+        .is_some_and(|rust| rust.declared_callables.contains(name))
+        || facts.nodes.iter().any(|n| {
+            n.name == name
+                && matches!(
+                    n.kind,
+                    crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
+                )
+        })
 }
 
 fn is_lowercase_scoped_callable(raw: &str, allow_upper: bool) -> bool {
@@ -1801,8 +1845,7 @@ fn is_lowercase_scoped_callable(raw: &str, allow_upper: bool) -> bool {
 
 fn emit_callable_arg(
     mut arg: Syntax<'_>,
-    source: &str,
-    owner: &str,
+    ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
     combinator: bool,
 ) {
@@ -1817,24 +1860,22 @@ fn emit_callable_arg(
         };
         arg = inner;
     }
-    let raw = text(arg, source).trim();
+    let raw = text(arg, ctx.source).trim();
     let is_callable_arg = match arg.kind() {
         "identifier" => {
             !matches!(raw, "self" | "true" | "false" | "_")
-                && (combinator || is_ref || is_file_declared_callable(facts, raw))
+                && (combinator || is_ref || is_file_declared_callable(ctx, facts, raw))
         }
         "scoped_identifier" => is_lowercase_scoped_callable(raw, combinator),
         _ => false,
     };
     if is_callable_arg && !raw.is_empty() {
-        relations::reference(facts, owner, raw, "calls", arg.start_position().row + 1);
+        relations::reference(facts, ctx.owner, raw, "calls", arg.start_position().row + 1);
     }
 }
 
 fn extract_combinator_callback_args(
-    call_node: Syntax<'_>,
-    source: &str,
-    owner: &str,
+    ctx: &SyntaxContext<'_, '_>,
     callee: &str,
     facts: &mut Facts,
 ) {
@@ -1846,12 +1887,12 @@ fn extract_combinator_callback_args(
         .next()
         .unwrap_or(callee);
     let combinator = is_combinator_callback_name(tail);
-    let Some(args) = call_node.child_by_field_name("arguments") else {
+    let Some(args) = ctx.node.child_by_field_name("arguments") else {
         return;
     };
     let mut cursor = args.walk();
     for arg in args.named_children(&mut cursor) {
-        emit_callable_arg(arg, source, owner, facts, combinator);
+        emit_callable_arg(arg, ctx, facts, combinator);
     }
 }
 

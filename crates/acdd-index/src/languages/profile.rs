@@ -1332,6 +1332,17 @@ pub trait LanguageProfile: Send + Sync {
     ) -> Option<&'static str> {
         self.symbol_with_source(node, source)
     }
+    /// Classifies declarations using precomputed node kind and DFS ancestors.
+    fn symbol_with_ancestors(
+        &self,
+        node: Syntax<'_>,
+        _node_kind: &str,
+        _ancestors: &[Syntax<'_>],
+        source: &str,
+        file: &FileContext,
+    ) -> Option<&'static str> {
+        self.symbol_with_context(node, source, file)
+    }
     /// Classifies a module as an external dependency when known.
     fn external_import(&self, _module: &str) -> Option<&'static str> {
         None
@@ -1393,6 +1404,18 @@ pub trait LanguageProfile: Send + Sync {
         _file: &FileContext,
     ) -> SymbolMetadata {
         SymbolMetadata::default()
+    }
+    /// Projects declaration metadata using precomputed node kind and DFS ancestors.
+    fn metadata_with_ancestors(
+        &self,
+        node: Syntax<'_>,
+        _node_kind: &str,
+        _ancestors: &[Syntax<'_>],
+        source: &str,
+        name: &str,
+        file: &FileContext,
+    ) -> SymbolMetadata {
+        self.metadata(node, source, name, file)
     }
     /// Projects supported test declarations into stable semantic roles.
     fn test_role(

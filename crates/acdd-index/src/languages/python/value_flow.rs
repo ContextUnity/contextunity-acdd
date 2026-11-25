@@ -50,46 +50,42 @@ impl AliasWrites {
             }
         }
     }
-    pub(crate) fn enter(&mut self, node: Node<'_>, source: &str) {
+    pub(crate) fn enter_with_kind(&mut self, node: Node<'_>, kind: &str, source: &str) {
         let active = self.active.last().unwrap_or(true)
             && !matches!(
-                node.kind(),
+                kind,
                 "function_definition" | "class_definition" | "lambda"
             );
         self.active.push(active);
         if !active {
             return;
         }
-        let target = match node.kind() {
-            "assignment" | "augmented_assignment" | "for_statement" => {
-                node.child_by_field_name("left")
-            }
-            "named_expression" => node.child_by_field_name("name"),
-            "as_pattern" => node.child_by_field_name("alias"),
-            _ => None,
+        let (target, alias) = match kind {
+            "assignment" => (
+                node.child_by_field_name("left"),
+                super::common::type_alias(node, source),
+            ),
+            "augmented_assignment" | "for_statement" => (node.child_by_field_name("left"), false),
+            "named_expression" => (node.child_by_field_name("name"), false),
+            "as_pattern" => (node.child_by_field_name("alias"), false),
+            _ => (None, false),
         };
         if let Some(target) = target {
-            Self::targets(
-                target,
-                source,
-                super::common::type_alias(node, source),
-                &mut self.writes,
-            );
+            Self::targets(target, source, alias, &mut self.writes);
         }
-        if node.kind() == "delete_statement" {
+        if kind == "delete_statement" {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
                 Self::targets(child, source, false, &mut self.writes);
             }
         }
-        if matches!(node.kind(), "import_statement" | "import_from_statement") {
+        if matches!(kind, "import_statement" | "import_from_statement") {
             let mut cursor = node.walk();
             for child in node.children_by_field_name("name", &mut cursor) {
                 let name = field(child, source, "alias")
                     .or_else(|| field(child, source, "name"))
                     .unwrap_or_else(|| text(child, source));
-                let bound = if node.kind() == "import_statement" && !child.kind().contains("alias")
-                {
+                let bound = if kind == "import_statement" && !child.kind().contains("alias") {
                     name.split('.').next().unwrap_or(name)
                 } else {
                     name
@@ -832,6 +828,7 @@ pub(crate) struct PythonValueFlowCollector<'a, 'tree> {
     source: &'a str,
     class_scope: bool,
     local_scope: bool,
+    decorated: bool,
     receiver: Option<&'a str>,
     init: bool,
     uncertain_callable: bool,
@@ -1156,8 +1153,8 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         self.bind(name, bound, position(name), !in_with || conditional);
     }
 
-    fn collect_node_facts(&mut self, node: Node<'tree>, conditional: bool) {
-        match node.kind() {
+    fn collect_node_facts(&mut self, node: Node<'tree>, kind: &str, conditional: bool) {
+        match kind {
             "call" => {
                 if let Some(context) = super::syntax_operations::extract(node, self.source) {
                     self.core.facts_mut().push_template_context(context);
@@ -1213,8 +1210,12 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
     }
 
     pub(crate) fn enter(&mut self, node: Node<'tree>) {
+        self.enter_with_kind(node, node.kind());
+    }
+
+    pub(crate) fn enter_with_kind(&mut self, node: Node<'tree>, kind: &str) {
         if let Some(aliases) = &mut self.aliases {
-            aliases.enter(node, self.source);
+            aliases.enter_with_kind(node, kind, self.source);
         }
         let prev = self.core.scope_state().current_or_default();
         let is_body = self.body == Some(node);
@@ -1236,7 +1237,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         let is_direct_child = self
             .body_depth
             .is_some_and(|d| self.core.scope_state().depth() == d + 1);
-        if is_direct_child && node.kind() != "comment" {
+        if is_direct_child && kind != "comment" {
             if let Some(previous) = self.return_last {
                 self.return_prefix_valid &= valid_return_prefix(previous);
             }
@@ -1247,10 +1248,14 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         }
 
         let nested_scope = matches!(
-            node.kind(),
+            kind,
             "function_definition" | "class_definition" | "lambda"
         );
-        if !self.local_scope && !self.class_scope && super::common::type_alias(node, self.source) {
+        if !self.local_scope
+            && !self.class_scope
+            && matches!(kind, "assignment" | "type_alias_statement")
+            && super::common::type_alias(node, self.source)
+        {
             self.core.scope_state_mut().push(
                 ScopeFrameFlags::new().with_branch_conditional(conditional),
             );
@@ -1258,7 +1263,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         }
         if collect_facts
             && self.local_scope
-            && matches!(node.kind(), "function_definition" | "class_definition")
+            && matches!(kind, "function_definition" | "class_definition")
         {
             if let Some(name) = node.child_by_field_name("name") {
                 self.bind(name, ValueExpr::Unknown, position(node), conditional);
@@ -1274,7 +1279,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         }
         let conditional = conditional
             || matches!(
-                node.kind(),
+                kind,
                 "if_statement"
                     | "elif_clause"
                     | "else_clause"
@@ -1288,7 +1293,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
                     | "boolean_operator"
             );
         if collect_facts {
-            self.collect_node_facts(node, conditional);
+            self.collect_node_facts(node, kind, conditional);
         }
         self.core.scope_state_mut().push(
             ScopeFrameFlags::new()
@@ -1370,6 +1375,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
             source,
             class_scope: false,
             local_scope: false,
+            decorated: false,
             receiver: None,
             init: false,
             uncertain_callable: false,
@@ -1463,6 +1469,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
             source,
             class_scope: node.kind() == "class_definition",
             local_scope: callable || is_lambda,
+            decorated,
             receiver,
             init: field(node, source, "name") == Some("__init__"),
             uncertain_callable: initially_uncertain,
@@ -1577,9 +1584,7 @@ impl<'a, 'tree> PythonValueFlowCollector<'a, 'tree> {
         let node = self.root;
         let source = self.source;
         let callable = self.local_scope;
-        let decorated = node
-            .parent()
-            .is_some_and(|parent| parent.kind() == "decorated_definition");
+        let decorated = self.decorated;
         let return_statement = self
             .return_last
             .filter(|last| self.return_prefix_valid && last.kind() == "return_statement");
@@ -1666,6 +1671,10 @@ impl<'tree> SyntaxCollector<'tree> for PythonValueFlowCollector<'_, 'tree> {
 impl<'source, 'tree> ScopeVisitor<'source, 'tree> for PythonValueFlowCollector<'source, 'tree> {
     fn enter(&mut self, node: Node<'tree>) {
         PythonValueFlowCollector::enter(self, node);
+    }
+
+    fn enter_with_kind(&mut self, node: Node<'tree>, kind: &str) {
+        PythonValueFlowCollector::enter_with_kind(self, node, kind);
     }
 
     fn exit(&mut self, node: Node<'tree>) {

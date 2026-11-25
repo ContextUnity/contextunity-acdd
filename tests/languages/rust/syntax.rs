@@ -512,3 +512,43 @@ pub struct Record {
         );
     }
 }
+
+#[test]
+fn forward_declared_const_fn_pointers_are_extracted_and_linked() {
+    let source = r#"
+struct Step {
+    apply: fn(),
+}
+
+const MIGRATIONS: &[Step] = &[Step { apply: apply_v1 }];
+const HOOKS: &[fn()] = &[apply_v2];
+
+fn apply_v1() {}
+fn apply_v2() {}
+"#;
+    let facts = ExtractorHarness::for_lang("rust")
+        .at_path("src/migrations.rs")
+        .extract(source);
+    let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+        "src/migrations.rs".to_owned(),
+        facts.clone(),
+    )]));
+    for expr in ["apply_v1", "apply_v2"] {
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|r| r.expression == expr && r.kind == "calls"),
+            "missing forward-declared calls reference `{expr}`: {:#?}",
+            facts.references
+        );
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|c| c.expression == expr && c.status == "resolved"),
+            "expected resolved coverage for `{expr}`: {:#?}",
+            graph.coverage
+        );
+    }
+}

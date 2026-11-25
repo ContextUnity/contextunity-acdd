@@ -1,7 +1,7 @@
 use super::scope_analysis::ScopeAnalysis;
 use super::syntax::{
-    binding_scope, binding_scope_kind, qualified, text, walk_in_order, BindingCollector,
-    ScopeBindings,
+    binding_scope, binding_scope_kind, qualified, text, walk_in_order_with_ancestors,
+    BindingCollector, ScopeBindings,
 };
 use crate::languages::{
     context::{FileContext, LanguageContext, RuleIRHandle},
@@ -45,10 +45,12 @@ fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
         .collect()
 }
 
-fn declaration_signature_is_informative(node: Syntax<'_>, source: &str) -> bool {
-    if node.named_children(&mut node.walk()).any(|child| {
-        child.kind() == "visibility_modifier" && text(child, source).starts_with("pub(")
-    }) {
+fn declaration_signature_is_informative(node: Syntax<'_>, source: &str, language: &str) -> bool {
+    if language == "rust"
+        && node.named_children(&mut node.walk()).any(|child| {
+            child.kind() == "visibility_modifier" && text(child, source).starts_with("pub(")
+        })
+    {
         return true;
     }
     let parameters = node
@@ -79,8 +81,13 @@ fn declaration_signature_is_informative(node: Syntax<'_>, source: &str) -> bool 
     informative
 }
 
-fn declaration_signature_if_informative(node: Syntax<'_>, source: &str) -> Option<String> {
-    declaration_signature_is_informative(node, source).then(|| declaration_signature(node, source))
+fn declaration_signature_if_informative(
+    node: Syntax<'_>,
+    source: &str,
+    language: &str,
+) -> Option<String> {
+    declaration_signature_is_informative(node, source, language)
+        .then(|| declaration_signature(node, source))
 }
 
 pub(super) struct SinglePassExtractor<'a> {
@@ -121,6 +128,12 @@ struct VisitState<'a, 'flow> {
     prepared_root_bindings: Option<ScopeBindings>,
     prepared_scope_bindings: HashMap<usize, ScopeBindings>,
     projections: HashMap<String, crate::semantic::ValueFlowFacts>,
+}
+#[derive(Clone, Copy)]
+struct VisitedNode<'a, 'anc> {
+    node: Syntax<'a>,
+    kind: &'static str,
+    ancestors: &'anc [Syntax<'a>],
 }
 struct ScopeTraversal<'scope, 'a> {
     frames: Vec<ScopeFrame<'a>>,
@@ -209,7 +222,8 @@ impl SinglePassExtractor<'_> {
         #[cfg(feature = "lang-python")]
         let mut main_guards = (context.language == "python")
             .then(crate::languages::python::lexical::MainGuardTracker::default);
-        walk_in_order(node, false, &mut |node, entering| {
+        walk_in_order_with_ancestors(node, false, &mut |node, ancestors, entering| {
+            let node_kind = node.kind();
             #[cfg(feature = "lang-python")]
             if entering {
                 if let Some(tracker) = &mut main_guards {
@@ -217,7 +231,7 @@ impl SinglePassExtractor<'_> {
                 }
             }
             if let Some(builder) = &mut summary_builder {
-                let prepared_bindings = builder.observe(node, entering);
+                let prepared_bindings = builder.observe_with_kind(node, node_kind, entering);
                 if !entering && prepared_bindings {
                     if let Some(bindings) = builder.take_bindings(node) {
                         state.prepared_scope_bindings.insert(node.id(), bindings);
@@ -226,12 +240,16 @@ impl SinglePassExtractor<'_> {
             }
             #[cfg(feature = "lang-python")]
             if let Some(builder) = &mut class_bindings {
-                builder.observe(node, entering);
+                builder.observe(node, node_kind, ancestors, entering);
             }
             Self::visit_event(
                 &context,
                 &mut state,
-                node,
+                VisitedNode {
+                    node,
+                    kind: node_kind,
+                    ancestors,
+                },
                 &mut scope_traversal,
                 owner,
                 facts,
@@ -286,24 +304,25 @@ impl SinglePassExtractor<'_> {
     fn visit_exit_event<'a>(
         context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         traversal: &mut ScopeTraversal<'_, 'a>,
         owner: &str,
         facts: &mut Facts,
     ) {
+        let node = event.node;
         if context.language == "python"
             && traversal
                 .frames
                 .first()
                 .is_some_and(|root| root.suspended_at == Some(node.id()))
-            && module_export_exit_event(node)
+            && module_export_exit_kind(event.kind)
         {
             if let Some(root) = traversal.frames.first_mut() {
                 root.observe_module_event(node, false);
             }
         }
-        if route_candidate(context.route_extraction_enabled, context.language, node) {
-            Self::extract_exit_routes(context, state, node, traversal, owner, facts);
+        if route_candidate(context.route_extraction_enabled, context.language, event.kind) {
+            Self::extract_exit_routes(context, state, event, traversal, owner, facts);
         }
         Self::exit_traversal_frames(context.language, node, traversal);
         if let Some(frame) = traversal
@@ -325,14 +344,14 @@ impl SinglePassExtractor<'_> {
                 traversal.scopes.pop();
             }
         } else if let Some(last) = traversal.frames.last_mut() {
-            last.exit_metrics(node);
+            last.exit_metrics(node.id());
         }
     }
 
     fn extract_exit_routes<'a>(
         context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         traversal: &mut ScopeTraversal<'_, 'a>,
         owner: &str,
         facts: &mut Facts,
@@ -341,13 +360,15 @@ impl SinglePassExtractor<'_> {
             .frames
             .last()
             .map_or(owner, |frame| frame.owner.as_ref());
-        let ctx = SyntaxContext {
-            node,
-            source: context.source,
-            owner: node_owner,
-            offset: context.offset,
-            file_state: &context.file.state,
-        };
+        let ctx = SyntaxContext::with_traversal(
+            event.node,
+            context.source,
+            node_owner,
+            context.offset,
+            &context.file.state,
+            event.kind,
+            event.ancestors,
+        );
         #[cfg(feature = "lang-python")]
         if context.deferred_python {
             if let Some(event) = crate::languages::python::prepare_deferred_event(
@@ -364,11 +385,11 @@ impl SinglePassExtractor<'_> {
         #[cfg(feature = "lang-python")]
         if context.language == "python"
             && context.route_context.defer_python_orm()
-            && node.kind() == "class_definition"
-            && node.child_by_field_name("superclasses").is_some()
+            && event.kind == "class_definition"
+            && event.node.child_by_field_name("superclasses").is_some()
         {
             traversal.deferred.push(PythonAction::Orm {
-                node,
+                node: event.node,
                 owner: std::sync::Arc::from(node_owner),
                 frontiers: (
                     facts.nodes.len(),
@@ -417,12 +438,13 @@ impl SinglePassExtractor<'_> {
     fn enter_module_root_frame<'a>(
         context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         traversal: &mut ScopeTraversal<'_, 'a>,
         owner: &str,
         facts: &mut Facts,
         is_boundary: bool,
     ) {
+        let (node, node_kind) = (event.node, event.kind);
         let prepared_bindings = state
             .prepared_scope_bindings
             .remove(&node.id())
@@ -431,12 +453,12 @@ impl SinglePassExtractor<'_> {
             node,
             std::sync::Arc::from(owner),
             None,
-            state.prepared_root_bindings.is_none(),
+            state.prepared_root_bindings.is_none().then_some(node_kind),
             false,
             context,
             prepared_bindings,
         );
-        frame.enter(node, node.kind(), is_boundary);
+        frame.enter(node, node_kind, is_boundary);
         traversal.frames.push(frame);
         let Some(module_index) = facts.nodes.iter().position(|n| n.id == owner) else {
             return;
@@ -531,12 +553,13 @@ impl SinglePassExtractor<'_> {
     fn enter_declaration_node<'a>(
         context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         traversal: &mut ScopeTraversal<'_, 'a>,
         facts: &mut Facts,
         kind: &str,
-        (parent_owner, is_boundary): (&str, bool),
+        (owner, is_boundary): (&str, bool),
     ) {
+        let (node, node_kind, ancestors) = (event.node, event.kind, event.ancestors);
         let (source, path, language, module, offset) = (
             context.source,
             context.path,
@@ -571,13 +594,20 @@ impl SinglePassExtractor<'_> {
             node,
             std::sync::Arc::clone(&shared_id),
             Some(shared_name),
-            true,
+            Some(node_kind),
             is_callable,
             context,
             prepared_bindings,
         );
         let mut metadata = if frame.analysis.is_some() {
-            context.profile.metadata(node, source, &name, context.file)
+            context.profile.metadata_with_ancestors(
+                node,
+                node_kind,
+                ancestors,
+                source,
+                &name,
+                context.file,
+            )
         } else {
             let (metadata, flow) =
                 context
@@ -588,12 +618,12 @@ impl SinglePassExtractor<'_> {
         };
         let test_role = context.profile.test_role(node, source, path, context.file);
         let prototype_owner = (language == "javascript"
-            && matches!(node.kind(), "function_expression" | "arrow_function")
+            && matches!(node_kind, "function_expression" | "arrow_function")
             && metadata.is_method == Some(true))
         .then(|| metadata.receiver_type.clone())
         .flatten();
         let out_of_line_owner = (matches!(
-            (language, node.kind()),
+            (language, node_kind),
             ("cpp", "function_definition") | ("go", "method_declaration")
         ) && metadata.is_method == Some(true))
         .then(|| {
@@ -638,7 +668,7 @@ impl SinglePassExtractor<'_> {
         {
             details.insert("receiver".into(), json!(metadata.receiver));
         }
-        if let Some(signature) = declaration_signature_if_informative(node, source) {
+        if let Some(signature) = declaration_signature_if_informative(node, source, language) {
             details.insert("signature".into(), json!(signature));
         }
         if metadata.is_async {
@@ -721,6 +751,10 @@ impl SinglePassExtractor<'_> {
             generated: false,
             details,
         });
+        let parent_owner = traversal
+            .frames
+            .last()
+            .map_or(owner, |frame| frame.owner.as_ref());
         frame.node_index = Some(node_index);
         facts.edges.push(Edge {
             src: parent_owner.into(),
@@ -728,41 +762,46 @@ impl SinglePassExtractor<'_> {
             kind: "contains".into(),
             path: path.into(),
             line,
-            evidence: node.kind().into(),
+            evidence: node_kind.into(),
             confidence: "exact".into(),
         });
         context.profile.extract_relations(
-            &SyntaxContext {
+            &SyntaxContext::with_traversal(
                 node,
                 source,
-                owner: &id,
+                &id,
                 offset,
-                file_state: &context.file.state,
-            },
+                &context.file.state,
+                node_kind,
+                ancestors,
+            ),
             facts,
         );
         frame.reserved_flow_slot = true;
         frame.metadata_return = metadata.return_type;
         frame.metadata_ownership = metadata.object_ownership;
-        frame.enter(node, node.kind(), is_boundary);
+        frame.enter(node, node_kind, is_boundary);
         traversal.frames.push(frame);
         traversal.scopes.push(name);
     }
 
     fn emit_node_references<'a>(
         context: &VisitContext<'a>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         syntax_kind: Option<CompiledSyntaxKind>,
         node_owner: &str,
         facts: &mut Facts,
     ) {
-        let ctx = SyntaxContext {
+        let (node, node_kind) = (event.node, event.kind);
+        let ctx = SyntaxContext::with_traversal(
             node,
-            source: context.source,
-            owner: node_owner,
-            offset: context.offset,
-            file_state: &context.file.state,
-        };
+            context.source,
+            node_owner,
+            context.offset,
+            &context.file.state,
+            node_kind,
+            event.ancestors,
+        );
         if context
             .syntax
             .as_ref()
@@ -794,26 +833,32 @@ impl SinglePassExtractor<'_> {
                 receiver_hint: None,
             });
         }
-        if matches!(node.kind(), "call" | "call_expression") {
+        if matches!(node_kind, "call" | "call_expression") {
             routes::dependency_injection(&ctx, context.rule_ir, facts);
         }
-        context.profile.extract_mutations(&ctx, facts);
+        if context
+            .syntax
+            .as_ref()
+            .is_none_or(|_| syntax_kind.is_some_and(CompiledSyntaxKind::is_mutation))
+        {
+            context.profile.extract_mutations(&ctx, facts);
+        }
     }
 
     fn visit_event<'a>(
         context: &VisitContext<'a>,
         state: &mut VisitState<'_, '_>,
-        node: Syntax<'a>,
+        event: VisitedNode<'a, '_>,
         traversal: &mut ScopeTraversal<'_, 'a>,
         owner: &str,
         facts: &mut Facts,
         entering: bool,
     ) {
         if !entering {
-            Self::visit_exit_event(context, state, node, traversal, owner, facts);
+            Self::visit_exit_event(context, state, event, traversal, owner, facts);
             return;
         }
-        let node_kind = node.kind();
+        let (node, node_kind) = (event.node, event.kind);
         let is_boundary = scope_boundary_kind(context.language, node_kind);
         let syntax_kind = context
             .syntax
@@ -839,61 +884,65 @@ impl SinglePassExtractor<'_> {
         }
         let module_root = node.id() == context.root_id;
         if module_root {
-            Self::enter_module_root_frame(context, state, node, traversal, owner, facts, is_boundary);
+            Self::enter_module_root_frame(context, state, event, traversal, owner, facts, is_boundary);
         }
         if node.is_error() || node.is_missing() {
             Self::record_syntax_diagnostic(context, node, facts);
         }
-        let parent_owner = traversal
-            .frames
-            .last()
-            .map_or_else(|| owner.to_owned(), |frame| frame.owner.as_ref().to_owned());
         let kind = match context.syntax.as_ref() {
             Some(_) => syntax_kind
                 .and_then(CompiledSyntaxKind::declaration)
                 .and_then(|decl| {
                     if context.profile.symbol_kind(node_kind).is_some() {
-                        context
-                            .profile
-                            .symbol_with_context(node, context.source, context.file)
+                        context.profile.symbol_with_ancestors(
+                            node,
+                            node_kind,
+                            event.ancestors,
+                            context.source,
+                            context.file,
+                        )
                     } else {
                         Some(decl)
                     }
                 }),
-            None => context
-                .profile
-                .symbol_with_context(node, context.source, context.file),
+            None => context.profile.symbol_with_ancestors(
+                node,
+                node_kind,
+                event.ancestors,
+                context.source,
+                context.file,
+            ),
         };
         if let Some(kind) = kind {
             Self::enter_declaration_node(
                 context,
                 state,
-                node,
+                event,
                 traversal,
                 facts,
                 kind,
-                (&parent_owner, is_boundary),
+                (owner, is_boundary),
             );
         } else if !module_root {
             if let Some(last) = traversal.frames.last_mut() {
-                last.enter_metrics(node, context.source, context.offset);
+                last.enter_metrics(node, node_kind, context.source, context.offset);
             }
         }
         let node_owner = traversal
             .frames
             .last()
             .map_or(owner, |frame| frame.owner.as_ref());
-        Self::emit_node_references(context, node, syntax_kind, node_owner, facts);
+        Self::emit_node_references(context, event, syntax_kind, node_owner, facts);
     }
 }
 
-fn route_candidate(enabled: bool, language: &str, node: Syntax<'_>) -> bool {
+fn route_candidate(enabled: bool, language: &str, node_kind: &str) -> bool {
     if !enabled {
         return false;
     }
     match language {
         "python" => matches!(
-            node.kind(),
+            node_kind,
             "function_definition"
                 | "class_definition"
                 | "call"
@@ -902,7 +951,7 @@ fn route_candidate(enabled: bool, language: &str, node: Syntax<'_>) -> bool {
                 | "augmented_assignment"
         ),
         "javascript" | "typescript" | "vue" => matches!(
-            node.kind(),
+            node_kind,
             "method_definition"
                 | "method_declaration"
                 | "call_expression"
@@ -945,13 +994,13 @@ fn finish_python_actions(
                 frontiers,
             } => {
                 let before = (facts.nodes.len(), facts.edges.len(), facts.references.len());
-                let ctx = SyntaxContext {
+                let ctx = SyntaxContext::new(
                     node,
-                    source: context.source,
-                    owner: &owner,
-                    offset: context.offset,
-                    file_state: &context.file.state,
-                };
+                    context.source,
+                    &owner,
+                    context.offset,
+                    &context.file.state,
+                );
                 crate::languages::python::finish_default_table(
                     &ctx,
                     facts,
@@ -964,13 +1013,13 @@ fn finish_python_actions(
             }
             PythonAction::Candidate(event) => {
                 let before = (facts.nodes.len(), facts.edges.len(), facts.references.len());
-                let ctx = SyntaxContext {
-                    node: event.node,
-                    source: context.source,
-                    owner: &event.owner,
-                    offset: context.offset,
-                    file_state: &context.file.state,
-                };
+                let ctx = SyntaxContext::new(
+                    event.node,
+                    context.source,
+                    &event.owner,
+                    context.offset,
+                    &context.file.state,
+                );
                 crate::languages::python::finish_deferred_event(
                     &event,
                     &ctx,
@@ -1047,7 +1096,7 @@ impl<'a> ScopeFrame<'a> {
         root: Syntax<'a>,
         owner: std::sync::Arc<str>,
         name: Option<std::sync::Arc<str>>,
-        collect_bindings: bool,
+        collect_bindings_kind: Option<&'static str>,
         is_callable: bool,
         context: &VisitContext<'a>,
         prepared_bindings: Option<ScopeBindings>,
@@ -1059,11 +1108,13 @@ impl<'a> ScopeFrame<'a> {
             name,
             metadata_return: None,
             metadata_ownership: None,
-            bindings: (collect_bindings
-                && prepared_bindings.is_none()
-                && !(context.deferred_python
-                    && (root.id() == context.root_id || binding_scope(root))))
-            .then(|| BindingCollector::new_with_kind(root, context.source, root.kind())),
+            bindings: collect_bindings_kind
+                .filter(|_| {
+                    prepared_bindings.is_none()
+                        && !(context.deferred_python
+                            && (root.id() == context.root_id || binding_scope(root)))
+                })
+                .map(|kind| BindingCollector::new_with_kind(root, context.source, kind)),
             prepared_bindings,
             analysis: context
                 .profile
@@ -1087,14 +1138,27 @@ impl<'a> ScopeFrame<'a> {
             suspended_at: None,
         }
     }
-    fn enter_metrics(&mut self, node: Syntax<'a>, source: &str, offset: usize) {
+    fn enter_metrics(
+        &mut self,
+        node: Syntax<'a>,
+        node_kind: &str,
+        source: &str,
+        offset: usize,
+    ) {
         if let Some(metrics) = &mut self.metrics {
-            super::fingerprints::CallableMetricsTracker::enter(metrics, node, self.root.id(), source, offset);
+            super::fingerprints::CallableMetricsTracker::enter(
+                metrics,
+                node,
+                node_kind,
+                self.root.id(),
+                source,
+                offset,
+            );
         }
     }
-    fn exit_metrics(&mut self, node: Syntax<'a>) {
+    fn exit_metrics(&mut self, node_id: usize) {
         if let Some(metrics) = &mut self.metrics {
-            super::fingerprints::CallableMetricsTracker::exit(metrics, node, self.root.id());
+            super::fingerprints::CallableMetricsTracker::exit(metrics, node_id);
         }
     }
     fn enter(&mut self, node: Syntax<'a>, node_kind: &str, is_boundary: bool) {
@@ -1102,7 +1166,7 @@ impl<'a> ScopeFrame<'a> {
             bindings.enter_with_kind(node, node_kind);
         }
         if let Some(analysis) = &mut self.analysis {
-            analysis.enter(node);
+            analysis.enter_with_kind(node, node_kind);
         }
         if is_boundary && node.id() != self.root.id() {
             self.suspended_at = Some(node.id());
@@ -1594,9 +1658,9 @@ fn module_export_enter_kind(kind: &str) -> bool {
     )
 }
 
-fn module_export_exit_event(node: Syntax<'_>) -> bool {
+fn module_export_exit_kind(kind: &str) -> bool {
     matches!(
-        node.kind(),
+        kind,
         "function_definition" | "class_definition" | "lambda"
     )
 }
@@ -1652,6 +1716,7 @@ fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
 #[cfg(all(test, feature = "lang-python"))]
 mod tree_cursor_walk_tests {
     use super::*;
+    use crate::ast::syntax::walk_in_order;
 
     fn reference_walk<'tree>(
         node: Syntax<'tree>,
@@ -1703,6 +1768,17 @@ mod tree_cursor_walk_tests {
                 ));
             });
             assert_eq!(actual, expected, "reversed={reversed}");
+            let mut actual_with_ancestors = Vec::new();
+            walk_in_order_with_ancestors(root, reversed, &mut |node, ancestors, entering| {
+                assert_eq!(ancestors.last().copied(), node.parent());
+                actual_with_ancestors.push((
+                    node.kind().to_owned(),
+                    node.start_byte(),
+                    node.end_byte(),
+                    entering,
+                ));
+            });
+            assert_eq!(actual_with_ancestors, expected, "ancestors reversed={reversed}");
         }
     }
 }

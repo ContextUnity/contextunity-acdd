@@ -771,3 +771,94 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
 
     Ok(())
 }
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn dead_tails_propagates_liveness_across_cfg_siblings_and_const_fn_tables() -> Result<()> {
+    let workspace = Workspace::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    workspace.write(
+        "src/main.rs",
+        "mod imp;\nfn main() {\n    imp::hit();\n    imp::failpoint();\n}\n",
+    );
+    workspace.write(
+        "src/imp.rs",
+        r#"
+struct Step {
+    apply: fn(),
+}
+
+const MIGRATIONS: &[Step] = &[Step { apply: apply_v1 }];
+const HOOKS: &[fn()] = &[apply_v2];
+
+fn apply_v1() {}
+fn apply_v2() {}
+
+#[cfg(feature = "enabled")]
+pub fn hit() {
+    active_helper();
+}
+
+#[cfg(not(feature = "enabled"))]
+pub fn hit() {
+    fallback_helper();
+}
+
+#[cfg(any(test, feature = "failpoints"))]
+pub fn failpoint() {}
+
+#[cfg(not(any(test, feature = "failpoints")))]
+pub fn failpoint() {}
+
+fn active_helper() {}
+fn fallback_helper() {}
+
+#[cfg(feature = "x")]
+pub fn unused_cfg() {}
+
+#[cfg(not(feature = "x"))]
+pub fn unused_cfg() {}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+    let res = traversal::query_with_path_options(
+        &conn,
+        "dead_tails",
+        None,
+        None,
+        &traversal::GraphQueryOptions {
+            depth: 2,
+            direction: traversal::ImpactDirection::Inbound,
+            coverage: Default::default(),
+            page: &options(50, 0, Detail::Compact)?,
+        },
+    )?;
+    let dead: Vec<&str> = res["dead_tails"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    for live_fn in [
+        "apply_v1",
+        "apply_v2",
+        "hit",
+        "failpoint",
+        "active_helper",
+        "fallback_helper",
+    ] {
+        assert!(
+            !dead.contains(&live_fn),
+            "`{live_fn}` must not be reported dead: {dead:?}"
+        );
+    }
+    assert!(
+        dead.contains(&"unused_cfg"),
+        "unreachable cfg siblings should still be reported dead: {dead:?}"
+    );
+    Ok(())
+}
