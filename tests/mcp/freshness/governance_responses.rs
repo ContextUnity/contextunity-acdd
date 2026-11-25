@@ -183,7 +183,7 @@ fn mcp_document_governance_inspection_and_reference_identity() {
             let markdown = response_text(
                 &mut client,
                 tool,
-                json!({"selector":"src/main.rs:target","limit":100,"show_source":false,"format":"markdown"}),
+                json!({"selector":"src/main.rs:target","limit":100,"show_source":false,"file_uris":true,"format":"markdown"}),
             );
             assert!(
                 markdown.contains("> [!IMPORTANT] Governing Invariants"),
@@ -389,11 +389,12 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         .lines()
         .find(|line| line.starts_with(&format!("Continue {nested_page_key} ")))
         .expect("active nested page continuation in Markdown");
+    let short_nested_generation = &nested_generation[..nested_generation.len().min(8)];
     assert!(
         nested_continuation.contains("path=src/main.rs")
             && nested_continuation.contains("selector=documented")
             && nested_continuation.contains(&format!("offset {nested_offset}"))
-            && nested_continuation.contains(&format!("generation `{nested_generation}`")),
+            && nested_continuation.contains(&format!("generation `{short_nested_generation}`")),
         "nested continuation must retain its own scope and accepted token: {nested_continuation}"
     );
 

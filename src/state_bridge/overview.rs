@@ -20,8 +20,14 @@ pub(crate) fn overview(
     root: &Path,
     adapter: Option<&Adapter>,
     aspects: Option<&[String]>,
+    path: Option<&str>,
     page: &QueryOptions,
 ) -> Result<Value> {
+    if let Some(scoped) = path.map(str::trim).filter(|p| !p.is_empty()) {
+        let mut result = reader::overview_for_path(conn, scoped, page)?;
+        result["workspace_root"] = json!(root.display().to_string());
+        return Ok(result);
+    }
     let mut result =
         reader::overview_with_options(conn, &reader::OverviewOptions { aspects, page })?;
     if !includes_discovery(aspects) {

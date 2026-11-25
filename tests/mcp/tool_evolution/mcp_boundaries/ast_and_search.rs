@@ -312,7 +312,7 @@ fn ast_language_inference_and_actionable_diagnostics() {
             .payload("ast_grep_search", json!({"pattern":pattern,"path":path}))
             .expect("MCP tool should succeed");
         assert_eq!(result["matches"]["total"], 1, "{pattern}: {result}");
-        assert_eq!(result["matches"]["limit"], 15, "{pattern}: {result}");
+        assert_eq!(result["matches"]["limit"], 12, "{pattern}: {result}");
         if pattern.contains("$$$") {
             assert!(
                 !result["matches"]["items"][0]["captures"]
@@ -334,14 +334,9 @@ fn ast_language_inference_and_actionable_diagnostics() {
         .unwrap();
     assert_eq!(mixed_caps.get("NAME"), Some(&json!("target")));
     assert!(!mixed_caps.contains_key(""), "{mixed}");
-    let paged = m
-        .payload(
-            "ast_grep_search",
-            json!({"pattern":"many_call($$$)","path":"many.py"}),
-        )
-        .expect("MCP");
-    assert_eq!(paged["matches"]["limit"], 15);
-    assert_eq!(crate::json_array(&paged["matches"]["items"]).len(), 15);
+    let paged = m.payload("ast_grep_search", json!({"pattern":"many_call($$$)","path":"many.py"})).expect("MCP");
+    assert_eq!(paged["matches"]["limit"], 12);
+    assert_eq!(crate::json_array(&paged["matches"]["items"]).len(), 12);
     assert_eq!(paged["matches"]["has_more"], true);
     // Explicit language supports a workspace scope without a file extension.
     let explicit = m

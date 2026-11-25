@@ -24,10 +24,20 @@ fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
             test_case < helper && helper < target,
             "{caller}: {breadcrumb}"
         );
-        for token in ["test_case", "test_helper", "(target)", "file://", "#L"] {
+        for token in ["test_case", "test_helper", "(target)"] {
             assert!(breadcrumb.contains(token), "{caller} {token}: {breadcrumb}");
         }
+        assert!(
+            !breadcrumb.contains("file://") && !breadcrumb.contains("py:"),
+            "{caller} compact breadcrumb omits file:// URIs and per-hop IDs: {breadcrumb}"
+        );
     }
+    let full_mcp_text = response_text(
+        &mut client,
+        "code_map_tests",
+        json!({"selector":"main.py:target","direction":"inbound","file_uris":true,"format":"markdown"}),
+    );
+    assert!(full_mcp_text.contains("file://") && full_mcp_text.contains("#L"));
     let cli = ws
         .query(&["query", "tests", "main.py:target"])
         .expect("CLI should succeed");
@@ -119,7 +129,7 @@ fn document_search_markdown_preserves_page_metadata_excerpts_and_section_identit
         "Search results",
         "## Sections",
         "**total**: `1`",
-        "**limit**: `30`",
+        "**limit**: `12`",
         "**offset**: `0`",
         "**has_more**: `false`",
         "Match excerpt",

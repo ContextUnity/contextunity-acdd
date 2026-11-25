@@ -74,27 +74,50 @@ fn output_format_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 }
 
 #[derive(Default, Deserialize, JsonSchema)]
-/// Shared pagination, detail-level, worktree, and output-format parameters.
+/// Shared pagination, detail, worktree, and format parameters.
 pub struct PageInput {
-    /// Items per page (1..=100; default 30, 15 for ast_grep_search).
+    /// Items per page (1..=100; default 12).
     pub limit: Option<usize>,
     #[serde(default)]
-    /// Zero-based item offset for paging through results.
+    /// Zero-based item offset.
     pub offset: usize,
-    /// compact or full (subject to response byte limit).
+    /// compact or full.
     pub detail: Option<Detail>,
-    /// Page generation token required when offset > 0.
+    /// Include file:// URIs in Markdown.
+    pub file_uris: Option<bool>,
+    /// Generation token for offset > 0.
     pub generation: Option<String>,
-    /// Worktree path or unique name/prefix selector; omit or '.' for server root.
+    /// Worktree path or name.
     pub worktree: Option<String>,
-    /// Output format: markdown (default) or json.
+    /// Output format: markdown or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
 }
+#[derive(Clone, Copy, Default)]
+pub(super) struct PageUriOptions {
+    file_uris: Option<bool>,
+    detail: Option<Detail>,
+}
+
+impl PageUriOptions {
+    pub(super) fn enabled(self, policy: &ResponsePolicy) -> bool {
+        self.file_uris.unwrap_or_else(|| {
+            policy.file_uris || self.detail.unwrap_or(policy.detail) == Detail::Full
+        })
+    }
+}
+
 impl PageInput {
     pub(super) fn output_format(&self) -> OutputFormat {
         self.format.unwrap_or_default()
+    }
+
+    pub(super) fn uri_options(&self, default_detail: Option<Detail>) -> PageUriOptions {
+        PageUriOptions {
+            file_uris: self.file_uris,
+            detail: self.detail.or(default_detail),
+        }
     }
 
     pub(super) fn resolve(&self, policy: &ResponsePolicy) -> anyhow::Result<QueryOptions> {
@@ -116,13 +139,22 @@ impl PageInput {
     }
 }
 #[derive(Default, Deserialize, JsonSchema)]
-/// Workspace overview request selecting summary aspects and pagination bounds.
+/// Workspace overview request selecting summary aspects, optional path scope, and pagination bounds.
 pub struct OverviewInput {
     /// Optional database ('counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'entrypoints_with_tests', 'topology', 'compiled_profiles', 'metadata') or discovery ('discovery', 'manifest_components', 'documentation_hubs', 'milestones') aspects.
     pub aspects: Option<Vec<String>>,
+    /// Optional workspace-relative directory or file path to scope overview counts, languages, and files (alias: file_path).
+    pub path: Option<String>,
+    /// Alias for path.
+    pub file_path: Option<String>,
     #[serde(flatten)]
     /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,
+}
+impl OverviewInput {
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Target symbol selector with optional workspace-relative path scope.
@@ -156,7 +188,7 @@ pub struct SourceInput {
     pub show_source: Option<bool>,
     /// Leading context lines before the symbol declaration (`0..=20`).
     pub leading_lines: Option<usize>,
-    /// Source body line limit (1..=500; default 200).
+    /// Source body line limit (1..=500; default 100).
     pub max_body_lines: Option<usize>,
     /// Source line offset; nonzero requires previous generation.
     #[serde(default)]
@@ -426,6 +458,8 @@ pub struct SearchSymbols {
     /// Include source previews for up to 3 hits (auto-included when total <= 3).
     #[serde(default)]
     pub include_preview: bool,
+    /// Include or suppress graph_pulse on the top search hit.
+    pub include_pulse: Option<bool>,
     #[serde(flatten)]
     /// Pagination, detail, worktree, and output format options.
     pub page: PageInput,

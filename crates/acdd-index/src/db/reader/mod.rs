@@ -17,7 +17,7 @@ pub use open::{
     read_policy, validate_database_header, validate_database_integrity, validate_workspace,
     LockedConnection,
 };
-pub use search::{documentation_hubs, overview_with_options};
+pub use search::{documentation_hubs, overview_for_path, overview_with_options};
 pub use selectors::{directory_path, indexed_path_suggestions, path_bounds};
 pub(crate) use selectors::{select_detail_with_path, strip_selector_uri_prefix};
 pub use sql::rows;

@@ -127,56 +127,28 @@ fn render_ast_diagnostic(d: &Value, title: &str) -> String {
     out
 }
 
-fn render_overview_counts_and_languages(out: &mut String, value: &Value, compiled: &[String]) {
+fn render_overview_counts_and_languages(out: &mut String, value: &Value) {
     if let Some(counts) = value.get("counts").and_then(Value::as_object) {
-        out.push_str("\n## Indexed counts\n\n");
-        for k in ["files", "nodes", "edges", "doc_sections", "parse_errors"] {
-            if let Some(c) = counts.get(k) {
-                out.push_str(&format!("- {}: {}\n", k.replace('_', " "), scalar_text(c)));
-            }
-        }
-        if let Some(u) = counts.get("unresolved") {
-            out.push_str(&format!(
-                "- Unresolved or ambiguous references: {}\n",
-                scalar_text(u)
-            ));
-        }
-        if let Some(e) = counts.get("external_imports") {
-            out.push_str(&format!(
-                "- External references: {} (excluded from health)\n",
-                scalar_text(e)
-            ));
-        }
+        let parts: Vec<String> = [
+            ("files", "files"), ("nodes", "nodes"), ("edges", "edges"), ("doc_sections", "doc sections"),
+            ("parse_errors", "parse errors"), ("unresolved", "unresolved"), ("external_imports", "external"),
+        ].into_iter().filter_map(|(k, lbl)| counts.get(k).map(|c| format!("{lbl}: {}", scalar_text(c)))).collect();
+        if !parts.is_empty() { out.push_str(&format!("\n## Indexed counts\n\n- {}\n", parts.join(" | "))); }
     }
-    if let Some(languages) = value.get("languages").and_then(page_items) {
+    if let Some(languages) = value.get("languages").and_then(page_items).filter(|l| !l.is_empty()) {
         out.push_str("\n## Languages\n\n");
         for lang in languages {
             let name = text_field(lang, "language").unwrap_or("unknown");
-            out.push_str(&format!(
-                "- `{}`: {} files",
-                escape_text(name),
-                lang.get("files")
-                    .map(scalar_text)
-                    .unwrap_or_else(|| "unavailable".into())
-            ));
-            for (f, d) in [
-                ("resolved", "resolved"),
-                ("unresolved", "unresolved"),
-                ("ambiguous", "ambiguous"),
-                ("external_imports", "external references"),
-                ("parse_errors", "parse errors"),
-            ] {
-                if let Some(c) = lang.get(f) {
-                    out.push_str(&format!("; {d}: {}", scalar_text(c)));
-                }
-            }
-            if compiled.iter().any(|p| p == name) {
-                out.push_str("; compiled profile available");
+            out.push_str(&format!("- `{}`: {} files", escape_text(name), lang.get("files").map(scalar_text).unwrap_or_else(|| "unavailable".into())));
+            for (f, d) in [("resolved", "resolved"), ("unresolved", "unresolved"), ("ambiguous", "ambiguous"), ("external_imports", "external references"), ("parse_errors", "parse errors")] {
+                if let Some(c) = lang.get(f) { out.push_str(&format!("; {d}: {}", scalar_text(c))); }
             }
             out.push('\n');
         }
     }
 }
+
+const OVERVIEW_HUB_CAP: usize = 8;
 
 fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<&str>) {
     if let Some(m) = container
@@ -193,7 +165,8 @@ fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<
                 text_field(hubs, "cause").unwrap_or("indexed document inventory unavailable")
             ));
         } else {
-            for item in page_items(hubs).unwrap_or(&[]) {
+            let items = page_items(hubs).unwrap_or(&[]);
+            for item in items.iter().take(OVERVIEW_HUB_CAP) {
                 let (path, sec) = (
                     text_field(item, "path").unwrap_or("unknown document"),
                     text_field(item, "section_title").unwrap_or("document"),
@@ -213,6 +186,9 @@ fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<
                         escape_text(sec)
                     )),
                 }
+            }
+            if items.len() > OVERVIEW_HUB_CAP {
+                out.push_str(&format!("- … and {} more hubs\n", items.len() - OVERVIEW_HUB_CAP));
             }
             render_page_continuation(out, hubs, "documentation hubs", scope);
         }
@@ -255,19 +231,11 @@ fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<
 
 fn render_overview(out: &mut String, value: &Value) {
     out.push_str("## Workspace\n\n");
-    let root = text_field(value, "workspace_root")
-        .or_else(|| text_field(&value["workspace"], "root"))
-        .or_else(|| text_field(&value["metadata"], "workspace_root"));
-    if let Some(r) = root {
-        out.push_str(&format!("- Root: `{}`\n", escape_text(r)));
-    }
-    let scope = operation_scope(value, DiscoveryKind::Overview)
-        .or_else(|| root.map(|r| format!("workspace_root={r}")));
-    for (k, lbl) in [("worktree", "Worktree"), ("branch", "Branch")] {
-        if let Some(v) = text_field(&value["workspace"], k) {
-            out.push_str(&format!("- {lbl}: `{}`\n", escape_text(v)));
-        }
-    }
+    let root = text_field(value, "workspace_root").or_else(|| text_field(&value["workspace"], "root")).or_else(|| text_field(&value["metadata"], "workspace_root"));
+    if let Some(r) = root { out.push_str(&format!("- Root: `{}`\n", escape_text(r))); }
+    if let Some(p) = text_field(value, "path") { out.push_str(&format!("- Path: `{}`\n", escape_text(p))); }
+    let scope = operation_scope(value, DiscoveryKind::Overview).or_else(|| root.map(|r| format!("workspace_root={r}")));
+    for (k, lbl) in [("worktree", "Worktree"), ("branch", "Branch")] { if let Some(v) = text_field(&value["workspace"], k) { out.push_str(&format!("- {lbl}: `{}`\n", escape_text(v))); } }
     if let Some(f) = value.get("freshness") {
         let st = text_field(f, "status").unwrap_or("unavailable");
         if !matches!(st, "matched" | "source_inventory_matched") {
@@ -283,7 +251,20 @@ fn render_overview(out: &mut String, value: &Value) {
         }
     }
     let compiled = strings(&value["compiled_profiles"]);
-    render_overview_counts_and_languages(out, value, &compiled);
+    render_overview_counts_and_languages(out, value);
+    if let Some(files) = value.get("files") {
+        let items = page_items(files).unwrap_or(&[]);
+        if !items.is_empty() {
+            out.push_str("\n## Files\n\n");
+            for item in items {
+                let p = text_field(item, "path").unwrap_or("file");
+                let lang = text_field(item, "language").unwrap_or("unknown");
+                let syms = u64_field(item, "symbols").unwrap_or(0);
+                out.push_str(&format!("- `{}` ({lang}, {syms} symbols)\n", escape_text(p)));
+            }
+            render_page_continuation(out, files, "files", scope.as_deref());
+        }
+    }
     if let Some(comp) = value.get("components") {
         out.push_str("\n## Directory components\n\n");
         let items = page_items(comp).unwrap_or(&[]);
@@ -303,12 +284,11 @@ fn render_overview(out: &mut String, value: &Value) {
         render_page_continuation(out, comp, "directory components", scope.as_deref());
     }
     if value.get("compiled_profiles").is_some() {
-        out.push_str("\n## Compiled language profiles\n\n");
         if compiled.is_empty() {
-            out.push_str("No compiled language profiles are available in this build.\n");
-        }
-        for p in &compiled {
-            out.push_str(&format!("- `{}`\n", escape_text(p)));
+            out.push_str("\n- Compiled profiles: none\n");
+        } else {
+            let inline: Vec<String> = compiled.iter().map(|p| format!("`{}`", escape_text(p))).collect();
+            out.push_str(&format!("\n- **Compiled profiles:** {}\n", inline.join(", ")));
         }
     }
     if let Some(scopes) = value.get("coverage_by_workspace").and_then(page_items) {
@@ -415,28 +395,27 @@ fn render_resolution_health(out: &mut String, scope: &Value) {
         "unknown" => "Unknown reason",
         _ => "Recorded reason",
     };
-    out.push_str("\nNon-external diagnostic references:\n");
+    let mut non_ext_lines = Vec::new();
     let mut external_rows = Vec::new();
     for (reason, statuses) in counts {
-        let Some(statuses) = statuses.as_object() else {
-            continue;
-        };
-        let total: u64 = statuses
-            .iter()
-            .filter(|(s, _)| s.as_str() != "external")
-            .filter_map(|(_, c)| c.as_u64())
-            .sum();
+        let Some(statuses) = statuses.as_object() else { continue };
+        let total: u64 = statuses.iter().filter(|(s, _)| s.as_str() != "external").filter_map(|(_, c)| c.as_u64()).sum();
         if total > 0 {
-            out.push_str(&format!("- {} ({reason}): {total}\n", reason_label(reason)));
-        }
-        for (status, count) in statuses {
-            let Some(n) = count.as_u64() else { continue };
-            if status != "external" {
-                out.push_str(&format!("  - Reason ({reason}, status={status}): {n}\n"));
-            } else if n > 0 {
-                external_rows.push((reason.as_str(), n));
+            non_ext_lines.push(format!("- {} ({reason}): {total}\n", reason_label(reason)));
+            for (status, count) in statuses {
+                let Some(n) = count.as_u64().filter(|&n| n > 0) else { continue };
+                if status != "external" {
+                    non_ext_lines.push(format!("  - Reason ({reason}, status={status}): {n}\n"));
+                }
             }
         }
+        if let Some(n) = statuses.get("external").and_then(Value::as_u64).filter(|&n| n > 0) {
+            external_rows.push((reason.as_str(), n));
+        }
+    }
+    if !non_ext_lines.is_empty() {
+        out.push_str("\nNon-external diagnostic references:\n");
+        for line in non_ext_lines { out.push_str(&line); }
     }
     if !external_rows.is_empty() {
         out.push_str("External-status diagnostic references:\n");
@@ -447,7 +426,6 @@ fn render_resolution_health(out: &mut String, scope: &Value) {
             ));
         }
     }
-    out.push_str("Unindexed package/file inventory: unavailable\n");
 }
 
 fn render_manifest_components(out: &mut String, page: &Value, scope: Option<&str>) {
@@ -686,16 +664,22 @@ fn render_inspect_docs_and_source(out: &mut String, value: &Value) {
         append_fenced_block(out, "text", source, 0);
         if !preview.is_null() {
             let flags: Vec<String> = [
-                "body_offset",
-                "body_lines",
-                "total_body_lines",
-                "has_more",
-                "truncated_line",
-                "omitted_leading_lines",
-                "omitted_body_lines",
+                ("body_offset", true),
+                ("body_lines", false),
+                ("total_body_lines", false),
+                ("has_more", false),
+                ("truncated_line", true),
+                ("omitted_leading_lines", true),
+                ("omitted_body_lines", true),
             ]
             .into_iter()
-            .filter_map(|f| preview.get(f).map(|v| format!("{f}={}", scalar_text(v))))
+            .filter_map(|(f, skip_inactive)| {
+                let v = preview.get(f)?;
+                if skip_inactive && (v.as_u64() == Some(0) || v.as_bool() == Some(false)) {
+                    return None;
+                }
+                Some(format!("{f}={}", scalar_text(v)))
+            })
             .collect();
             if !flags.is_empty() {
                 out.push_str(&format!("\nSource preview state: {}.\n", flags.join(", ")));
@@ -818,13 +802,13 @@ fn render_search(out: &mut String, value: &Value) {
         render_page_continuation(out, page, "search results", scope.as_deref().or(query));
         return;
     }
-    out.push_str(&format!(
-        "## Search for `{}` — {} indexed matches\n\n",
-        escape_text(query.unwrap_or("the requested pattern")),
-        page.get("total")
-            .map(scalar_text)
-            .unwrap_or_else(|| "unavailable".into())
-    ));
+    let total_label = match u64_field(page, "total") {
+        Some(t) if t > 1000 => "1000+".to_owned(),
+        Some(t) => t.to_string(),
+        None if page.get("has_more") == Some(&Value::Bool(true)) => "1000+".to_owned(),
+        None => "unavailable".to_owned(),
+    };
+    out.push_str(&format!("## Search for `{}` — {total_label} indexed matches\n\n", escape_text(query.unwrap_or("the requested pattern"))));
     let mut index = 1;
     for item in items {
         render_search_item(out, item, text_field(item, "path").unwrap_or(""), index);
@@ -839,103 +823,66 @@ fn render_search(out: &mut String, value: &Value) {
     render_page_continuation(out, page, "search results", scope.as_deref().or(query));
 }
 
+fn compact_inline(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        normalized
+    } else {
+        let mut s: String = normalized.chars().take(max_chars).collect();
+        s.push('…');
+        s
+    }
+}
+
 fn render_search_item(out: &mut String, item: &Value, path: &str, index: usize) {
-    out.push_str(&format!(
-        "### {index}. {}\n\n",
-        escape_text(
-            text_field(item, "qualname")
-                .or_else(|| text_field(item, "name"))
-                .unwrap_or("indexed symbol")
-        )
-    ));
+    let name = text_field(item, "qualname").or_else(|| text_field(item, "name")).unwrap_or("indexed symbol");
+    out.push_str(&format!("{index}. **{}**", escape_text(name)));
+    let tags: Vec<&str> = ["kind", "classification"].into_iter().filter_map(|k| text_field(item, k)).collect();
+    if !tags.is_empty() { out.push_str(&format!(" (`{}`)", tags.join("`, `"))); }
     if !path.is_empty() || text_field(item, "uri").is_some() {
-        out.push_str(&format!(
-            "- Source: {}\n",
-            format_link(path, u64_field(item, "line"), text_field(item, "uri"))
-        ));
+        out.push_str(&format!(" — {}", format_link(path, u64_field(item, "line"), text_field(item, "uri"))));
     }
-    for (f, lbl) in [
-        ("kind", "Kind"),
-        ("visibility", "visibility"),
-        ("container", "container"),
-        ("classification", "Classification"),
-    ] {
-        if let Some(v) = text_field(item, f) {
-            out.push_str(&format!("- {lbl}: `{}`\n", escape_text(v)));
-        }
-    }
+    let full = text_field(item, "uri").is_some();
     if let Some(reason) = text_field(item, "match_reason") {
-        let lbl = match reason {
-            "exact_name" => "exact symbol name",
-            "name_prefix" => "name prefix",
-            "exact_qualified_name" => "exact qualified name",
-            "name_fragment" => "name fragment",
-            "indexed_text" => "indexed text",
-            "name_pattern" => "name pattern",
-            "qualified_pattern" => "qualified-name pattern",
-            _ => reason,
-        };
-        out.push_str(&format!("- Match reason: `{}`\n", escape_text(lbl)));
+        let lbl = match reason { "exact_name" => "exact symbol name", "name_prefix" => "name prefix", "exact_qualified_name" => "exact qualified name", "name_fragment" => "name fragment", "indexed_text" => "indexed text", "name_pattern" => "name pattern", "qualified_pattern" => "qualified-name pattern", _ => reason };
+        out.push_str(&format!("{}`{}`", if full { " · Match reason: " } else { " · " }, escape_text(lbl)));
     }
-    if let Some(s) = text_field(item, "signature") {
-        out.push_str(&format!("- Signature: `{}`\n", code_span(s)));
-    }
+    out.push('\n');
+    let mut details = Vec::new();
+    if let Some(s) = text_field(item, "signature") { details.push(format!("`{}`", code_span(&compact_inline(s, 120)))); }
     if let Some(d) = text_field(item, "docstring_first_sentence") {
-        out.push_str(&format!("- Documentation: {}\n", escape_text(d)));
+        let doc = escape_text(&compact_inline(d, 120));
+        details.push(if full { format!("Documentation: {doc}") } else { doc });
     }
-    if let Some(s) =
-        text_field(item, "match_snippet").filter(|_| text_field(item, "source").is_none())
-    {
-        out.push_str(&format!("- Match: `{}`\n", code_span(s)));
+    if let Some(s) = text_field(item, "match_snippet").filter(|_| text_field(item, "source").is_none()) {
+        details.push(format!("match: `{}`", code_span(&compact_inline(s, 120))));
     }
     let pulse = &item["graph_pulse"];
     if !pulse.is_null() {
-        let mut block = String::new();
-        for (k, desc, role) in [
-            ("callers", "callers", Some("caller")),
-            ("implementations", "implementation relations", None),
-        ] {
-            if let Some(n) = pulse.get(k).filter(|n| {
-                u64_field(n, "count").is_some_and(|c| c > 0)
-                    || text_field(n, "availability") == Some("unavailable")
-            }) {
-                block.push_str(&format!(
-                    "  - {desc}: {}\n",
-                    n.get("count")
-                        .map(scalar_text)
-                        .unwrap_or_else(|| "unavailable".into())
-                ));
-                if let Some(r) = role {
-                    render_graph_items(&mut block, n.get("preview"), r);
-                }
+        let mut p_parts = Vec::new();
+        for (k, desc) in [("callers", "callers"), ("implementations", "impls")] {
+            if let Some(n) = pulse.get(k) {
+                if let Some(c) = u64_field(n, "count").filter(|&c| c > 0) { p_parts.push(format!("{c} {desc}")); }
+                else if text_field(n, "availability") == Some("unavailable") { p_parts.push(format!("{desc}: unavailable")); }
             }
         }
         if let Some(tests) = pulse.get("covering_tests") {
             let total = u64_field(tests, "total").unwrap_or(0);
             match text_field(tests, "discovery_method") {
-                Some("graph") if total > 0 => {
-                    block.push_str(&format!("  - verified covering tests: {total}\n"));
-                    render_graph_items(&mut block, tests.get("items"), "test");
-                }
-                Some(m) if total > 0 => block.push_str(&format!(
-                    "  - test discovery: {} (not a verified call path)\n",
-                    escape_text(m)
-                )),
-                None if text_field(tests, "availability") == Some("unavailable") => {
-                    block.push_str("  - verified covering tests: unavailable\n")
-                }
+                Some("graph") if total > 0 => p_parts.push(if full { format!("verified covering tests: {total}") } else { format!("{total} tests") }),
+                Some(m) if total > 0 => p_parts.push(format!("tests: {m}")),
+                None if text_field(tests, "availability") == Some("unavailable") => p_parts.push("tests: unavailable".to_owned()),
                 _ => {}
             }
         }
-        if !block.is_empty() {
-            out.push_str(&format!("- Graph pulse:\n{block}"));
-        }
+        if !p_parts.is_empty() { details.push(format!("pulse: {}", p_parts.join(", "))); }
     }
-    if let Some(source) = text_field(item, "source") {
-        out.push('\n');
-        append_fenced_block(out, "text", source, 0);
+    if !details.is_empty() { out.push_str(&format!("   {}\n", details.join(" | "))); }
+    if full && !pulse.is_null() {
+        render_graph_items(out, pulse.pointer("/callers/preview"), "caller");
+        render_graph_items(out, pulse.pointer("/covering_tests/items"), "test");
     }
-    out.push('\n');
+    if let Some(source) = text_field(item, "source") { append_fenced_block(out, "text", source, 0); }
 }
 
 fn render_graph_items(out: &mut String, items: Option<&Value>, role: &str) {
@@ -1087,7 +1034,14 @@ fn render_page_continuation(out: &mut String, page: &Value, name: &str, scope: O
             .map(scalar_text)
             .unwrap_or_else(|| "unknown".into());
         match text_field(page, "generation") {
-            Some(gen) => out.push_str(&format!("\nContinue {name}{} at offset {next} with generation {}.\n", scope.map(|s| format!(" for {}", inline_code(s))).unwrap_or_else(|| " for the same original request scope".into()), inline_code(gen))),
+            Some(gen) => {
+                let gen = if gen.len() == 64 && gen.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    &gen[..8]
+                } else {
+                    gen
+                };
+                out.push_str(&format!("\nContinue {name}{} at offset {next} with generation {}.\n", scope.map(|s| format!(" for {}", inline_code(s))).unwrap_or_else(|| " for the same original request scope".into()), inline_code(gen)));
+            }
             None => out.push_str(&format!("\nMore {name} remain at offset {next}, but the accepted generation is unavailable; continuation cannot be safely replayed.\n")),
         }
     }
@@ -1100,28 +1054,16 @@ fn operation_scope(value: &Value, kind: DiscoveryKind) -> Option<String> {
     if let Some(scope) = value.get("request_scope").and_then(Value::as_object) {
         let entries: Vec<String> = scope
             .iter()
-            .filter(|(_, v)| !v.is_null())
-            .map(|(k, v)| {
-                format!(
-                    "{k}={}",
-                    v.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| v.to_string())
-                )
-            })
+            .filter(|(k, v)| k.as_str() != "workspace_root" && !v.is_null() && v.as_bool() != Some(false))
+            .map(|(k, v)| format!("{k}={}", v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())))
             .collect();
-        if !entries.is_empty() {
-            return Some(entries.join(", "));
-        }
+        if !entries.is_empty() { return Some(entries.join(", ")); }
     }
     match kind {
-        DiscoveryKind::Overview => {
-            text_field(value, "workspace_root").map(|r| format!("workspace_root={r}"))
-        }
-        DiscoveryKind::Inspect => match (
-            text_field(&value["node"], "id"),
-            text_field(&value["node"], "path"),
-        ) {
+        DiscoveryKind::Overview => text_field(value, "path")
+            .map(|p| format!("path={p}"))
+            .or_else(|| text_field(value, "workspace_root").map(|r| format!("workspace_root={r}"))),
+        DiscoveryKind::Inspect => match (text_field(&value["node"], "id"), text_field(&value["node"], "path")) {
             (Some(id), Some(p)) => Some(format!("selector={id}, path={p}")),
             (Some(id), None) => Some(format!("selector={id}")),
             _ => None,

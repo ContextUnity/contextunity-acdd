@@ -585,7 +585,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     let linked_uri = linked.file_uri("linked module+%#1.py", Some(1));
     let (_, linked_response) = client.call(
         "code_map_search",
-        serde_json::json!({"pattern":"linked_uri_symbol","kind":"function","limit":10,"format":"markdown"}),
+        serde_json::json!({"pattern":"linked_uri_symbol","kind":"function","limit":10,"file_uris":true,"format":"markdown"}),
     ).expect("MCP transport");
     assert_ne!(
         linked_response["result"]["isError"], true,

@@ -142,7 +142,7 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
             let (_, response) = client
                 .call(
                     "code_map_search",
-                    json!({"pattern":"coordinate", "format":"markdown"}),
+                    json!({"pattern":"coordinate", "file_uris":true, "format":"markdown"}),
                 )
                 .unwrap();
             let text = response["result"]["content"][0]["text"].as_str().unwrap();

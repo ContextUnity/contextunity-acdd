@@ -158,6 +158,28 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     })?)
 }
 
+/// Read a bounded overview scoped to one workspace-relative directory or file prefix.
+pub fn overview_for_path(conn: &Connection, raw_path: &str, options: &QueryOptions) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let norm = raw_path.trim().trim_start_matches("./").trim_end_matches('/');
+    anyhow::ensure!(!norm.is_empty() && !norm.split('/').any(|s| s == ".."), "invalid overview path '{raw_path}'; expected a workspace-relative path");
+    let (start, end) = super::selectors::path_bounds(norm);
+    let cond = "p.path=?1 OR (p.path>=?2 AND p.path<?3)";
+    let fcond = "path=?1 OR (path>=?2 AND path<?3)";
+    let counts = rows(
+        conn,
+        &format!(
+            "SELECT (SELECT count(*) FROM files WHERE {fcond}) files,(SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE {cond}) nodes,(SELECT count(*) FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE {cond}) edges,(SELECT count(*) FROM doc_sections WHERE {fcond}) doc_sections,(SELECT count(*) FROM errors WHERE {fcond}) parse_errors,(SELECT count(*) FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id WHERE ({cond}) AND rc.status IN('{}','{}')) unresolved,(SELECT count(*) FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id WHERE ({cond}) AND rc.status='{}') external_imports",
+            CoverageStatus::Unresolved.as_str(), CoverageStatus::Ambiguous.as_str(), CoverageStatus::External.as_str(),
+        ),
+        &[&norm, &start, &end],
+        1,
+    )?.remove(0);
+    let languages = paging::query(conn, "SELECT language,count(*) files FROM files WHERE path=?1 OR (path>=?2 AND path<?3) GROUP BY language ORDER BY files DESC,language", &[&norm, &start, &end], options)?;
+    let files = paging::query(conn, "SELECT f.path,f.language,(SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=f.path) symbols FROM files f WHERE f.path=?1 OR (f.path>=?2 AND f.path<?3) ORDER BY f.path", &[&norm, &start, &end], options)?;
+    Ok(json!({"path": norm, "counts": counts, "languages": languages, "files": files, "generation": generation}))
+}
+
 // Compute a module once for each path and aggregate graph statistics in SQLite.
 const TOPOLOGY_CTES: &str = r#"
 WITH RECURSIVE

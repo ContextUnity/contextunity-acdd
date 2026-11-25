@@ -48,8 +48,7 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
         .all(|reference| reference["line"] == 1));
     let target_declaration_uri = format!("{})", ws.file_uri("src/overview.py", Some(1)));
     for detail in [None, Some("compact")] {
-        let mut arguments =
-            json!({"path_or_id":"docs/reference/mcp-tools.md","limit":100,"format":"markdown"});
+        let mut arguments = json!({"path_or_id":"docs/reference/mcp-tools.md","limit":100,"file_uris":true,"format":"markdown"});
         if let Some(detail) = detail {
             arguments["detail"] = json!(detail);
         }
@@ -123,6 +122,7 @@ fn document_reference_pages_preserve_every_section_in_full_and_compact_detail() 
             ));
 
             arguments["format"] = json!("markdown");
+            arguments["file_uris"] = json!(true);
             let markdown = response_text(&mut client, "get_doc", arguments);
             assert_eq!(markdown.matches(&target_declaration_uri).count(), 1);
             assert!(markdown.contains(&format!(

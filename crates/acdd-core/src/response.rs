@@ -219,7 +219,7 @@ impl Default for SourceContextPolicy {
         Self {
             enabled_by_default: false,
             leading_lines: 5,
-            max_body_lines: 200,
+            max_body_lines: 100,
         }
     }
 }
@@ -234,6 +234,8 @@ pub struct ResponsePolicy {
     pub page_size: usize,
     /// Configured maximum response size in bytes (1024 through 98304).
     pub max_output_bytes: usize,
+    /// Include `file://` URIs in compact Markdown output (default `false`; auto-enabled for `detail: full`).
+    pub file_uris: bool,
     /// Default source preview policy for symbol read/inspect responses.
     pub source_context: SourceContextPolicy,
 }
@@ -242,8 +244,9 @@ impl Default for ResponsePolicy {
     fn default() -> Self {
         Self {
             detail: Detail::Compact,
-            page_size: 30,
+            page_size: 12,
             max_output_bytes: MAX_OUTPUT_BYTES,
+            file_uris: false,
             source_context: SourceContextPolicy::default(),
         }
     }
@@ -399,8 +402,10 @@ impl SourceOptions {
 fn source_preview_line_budgets_are_clamped() {
     let mut failures = Vec::new();
     let policy = ResponsePolicy::default();
+    assert_eq!(policy.page_size, 12);
+    assert!(!policy.file_uris);
     for (requested, expected) in [
-        (None, 200),
+        (None, 100),
         (Some(0), 1),
         (Some(1), 1),
         (Some(200), 200),

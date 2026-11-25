@@ -593,7 +593,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                     assert_eq!(preview["truncated_line"], false);
                     assert!(serde_json::to_vec(&result["source"]).unwrap().len() <= 8192);
                     if offset == 0 {
-                        let expected_lines = lines.min(requested.unwrap_or(200));
+                        let expected_lines = lines.min(requested.unwrap_or(100));
                         if preview["body_lines"] != expected_lines {
                             failures.push(format!("{name}, requested={requested:?}, explain={explain}: expected {expected_lines} body lines, got {}", preview["body_lines"]));
                         }

@@ -54,7 +54,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Workspace-wide only (has no path parameter; use code_map_search with path or code_map_analyze with target for directory scope). Uses server worktree routing; pass worktree for explicit selection."
+        description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Pass optional path to scope overview counts, languages, and files to a directory or file prefix. Uses server worktree routing; pass worktree for explicit selection."
     )]
     async fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         code_tools::code_map_overview(self, p).await

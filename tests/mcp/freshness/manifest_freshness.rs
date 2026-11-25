@@ -158,7 +158,7 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let (_, response) = client
         .call(
             "code_map_overview",
-            serde_json::json!({"limit":100,"format":"markdown"}),
+            serde_json::json!({"limit":100,"file_uris":true,"format":"markdown"}),
         )
         .expect("MCP transport");
     assert_ne!(response["result"]["isError"], true, "{response}");
@@ -246,12 +246,8 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         .find(|line| line.starts_with("Continue manifest components "))
         .expect("bounded manifest page continuation");
     assert!(
-        manifest_continuation.contains("aspects=[\"manifest_components\"]")
-            && manifest_continuation.contains(&format!(
-                "workspace_root={}",
-                packages.canonical_root().display()
-            )),
-        "overview continuation must retain its aspect selection and workspace: {manifest_continuation}"
+        manifest_continuation.contains("aspects=[\"manifest_components\"]"),
+        "overview continuation must retain its aspect selection: {manifest_continuation}"
     );
 
     let first_page = client

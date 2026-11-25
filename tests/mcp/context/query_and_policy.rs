@@ -27,8 +27,8 @@ fn mcp_budget_and_query_errors_explain_how_to_retry() {
         ),
         (
             "code_map_overview",
-            json!({"path":"README.md"}),
-            "code_map_analyze(target=...)",
+            json!({"target":"README.md"}),
+            "Unrecognized argument(s): target",
         ),
         (
             "code_map_tests",
@@ -457,12 +457,12 @@ fn mcp_default_pages_and_stale_continuation_are_explicit() {
         .expect("MCP tool should succeed");
     let generation = initial["nodes"]["generation"].as_str().unwrap();
     assert!(!generation.is_empty());
-    assert_eq!(initial["nodes"]["limit"], 30);
-    assert_eq!(crate::json_array(&initial["nodes"]["items"]).len(), 30);
+    assert_eq!(initial["nodes"]["limit"], 12);
+    assert_eq!(crate::json_array(&initial["nodes"]["items"]).len(), 12);
     assert_eq!(initial["nodes"]["total"], 125);
-    let next = client.search("symbol_*", json!({"kind":"function","limit":100,"offset":30,"generation":initial["nodes"]["generation"]})).expect("MCP tool should succeed");
-    assert_eq!(crate::json_array(&next["nodes"]["items"]).len(), 95);
-    assert_eq!(next["nodes"]["has_more"], false);
+    let next = client.search("symbol_*", json!({"kind":"function","limit":100,"offset":12,"generation":initial["nodes"]["generation"]})).expect("MCP tool should succeed");
+    assert_eq!(crate::json_array(&next["nodes"]["items"]).len(), 100);
+    assert_eq!(next["nodes"]["has_more"], true);
     let mut colliding_prefix = generation.to_owned();
     colliding_prefix.replace_range(0..1, if &generation[0..1] == "0" { "1" } else { "0" });
     let (_, stale_prefix) = client

@@ -30,12 +30,17 @@ parsing. Normalize only transport framing, trailing newline, transport-specific
 worker identity, and values that actually changed between requests.
 MCP graph operations may append a top-level server-owned `freshness` envelope
 after the callback in [`read_with_adapter`](../../src/mcp/server/admission.rs).
-Dedicated discovery Markdown may omit inactive matched freshness display metadata
-while JSON retains the actual envelope under the existing compaction policy.
-Meaningful freshness notices remain visible. Parity checks separately assert the
-exact emitted envelope or its permitted absence, then normalize only that exact
+All navigation Markdown tools suppress inactive `{status: "matched", refresh: "none"}`
+freshness display metadata while JSON retains the actual envelope under the
+existing compaction policy. Meaningful freshness notices (`refresh != "none"` or
+mismatch warnings) remain visible. Parity checks separately assert the exact
+emitted envelope or its permitted absence, then normalize only that exact
 top-level block before comparing domain Markdown or parsed JSON. Preserve nested
-and arbitrary domain freshness fields.
+and arbitrary domain freshness fields. Compact Markdown omits `file://` URIs by
+default (`response.file_uris: false`, default `page_size: 12`, default
+`max_body_lines: 100`) to hold routine navigation payloads under the `< 4 KiB`
+inline threshold; pass `file_uris: true` or `detail: "full"` to opt into
+workspace-confined `file:///` links.
 
 JSON retains structured domain values. Compaction applies only to explicitly
 recognized operation envelopes. Preserve SQL rows and arbitrary checkpoint content
@@ -133,10 +138,12 @@ Source-disabled output still includes the available signature.
 
 ### Search
 
-Render a pattern/count heading and numbered symbol entries with name links,
-actual coordinates, kind, visibility/container when supplied, signature,
-production/test classification, first docstring sentence, exact-match reason,
-and verified graph pulse (callers, covering tests, implementation relations).
+Render a pattern/count heading (using `1000+` when the bounded total horizon is
+exceeded) and compact numbered symbol cards with coordinates (or `file:///` links
+when `file_uris: true` / `detail: "full"`), kind, classification, capped
+single-line signature, first docstring sentence, exact-match reason, and a
+single-line verified graph pulse (`callers`, `impls`, `tests`; suppressible via
+`include_pulse: false` and expanded with previews in `detail: "full"`).
 Render linked invariants and ADRs only from verified metadata.
 
 Search enrichment missing from compact baseline results is produced by the
@@ -148,10 +155,13 @@ step; it does not claim the workspace contains no such symbol beyond index scope
 
 ### Overview
 
-Render selected workspace root, actual worktree/branch when supplied, graph
-counts, language counts, compiled profiles, freshness warnings, documentation
-hubs, and active milestone progress. Use `state.sqlite` (`acdd_state`) and manifest authority for
-milestone state and configured admitted documentation roots for hubs.
+Render selected workspace root, optional scoped `path` (when `OverviewInput.path`
+is provided, returning scoped counts, languages, and paged files), actual
+worktree/branch when supplied, compact graph counts, language counts, inline
+compiled profiles, freshness warnings, capped documentation hubs, and active
+milestone progress. Omit zero-count diagnostic reason rows in resolution health.
+Use `state.sqlite` (`acdd_state`) and manifest authority for milestone state and
+configured admitted documentation roots for hubs.
 
 Resolution health is `resolved / (resolved + unresolved + ambiguous) * 100`.
 Aggregate the matching coverage scope consistently; exclude external imports.

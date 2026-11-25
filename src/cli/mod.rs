@@ -487,7 +487,10 @@ impl Cli {
             return write_output(output, &text);
         }
 
-        if output_format == OutputFormat::Markdown {
+        if output_format == OutputFormat::Markdown
+            && (adapter.response.file_uris
+                || adapter.response.detail == acdd_core::response::Detail::Full)
+        {
             if let Some(kind) = discovery {
                 format::attach_presentation_uris(&root, &adapter, &mut result, kind);
             }

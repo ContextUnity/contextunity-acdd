@@ -1,7 +1,7 @@
 use super::super::{response, server::Server};
 use super::inputs::{
-    Analyze, Ast, Explain, GetDoc, Guide, Impact, Inspect, Lint, OverviewInput, Query, SearchDocs,
-    SearchSymbols, Selector, Snippet, Tests,
+    Analyze, Ast, Explain, GetDoc, Guide, Impact, Inspect, Lint, OverviewInput, PageUriOptions,
+    Query, SearchDocs, SearchSymbols, Selector, Snippet, Tests,
 };
 use crate::{
     engine::{ast, guide},
@@ -43,9 +43,11 @@ fn resolve_symbol_view_options(
     Ok((page, source, coverage))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn responding_blocking(
     server: &Server,
     output_format: OutputFormat,
+    uri_options: PageUriOptions,
     operation: OperationKind,
     title: &'static str,
     explain: Option<bool>,
@@ -59,6 +61,7 @@ async fn responding_blocking(
         responding_with_presentation(
             &server,
             output_format,
+            uri_options,
             operation,
             title,
             |adapter, policy| run(&server, adapter, policy),
@@ -80,9 +83,11 @@ async fn responding_blocking(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn responding_with_presentation(
     server: &Server,
     output_format: OutputFormat,
+    uri_options: PageUriOptions,
     operation: OperationKind,
     title: &'static str,
     run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>,
@@ -93,30 +98,50 @@ fn responding_with_presentation(
         Ok(adapter) => {
             let mut value = run(&adapter, &adapter.response);
             if output_format == OutputFormat::Markdown {
-                if let (Some(kind), Ok(value)) = (discovery, &mut value) {
-                    attach_presentation_uris(&server.root, &adapter, value, kind);
-                } else if matches!(title, "search_docs" | "get_doc") {
+                let include_uris = uri_options.enabled(&adapter.response);
+                if discovery == Some(DiscoveryKind::Overview) {
                     if let Ok(value) = &mut value {
-                        attach_document_presentation_uris(&server.root, &adapter, value, title);
-                    }
-                } else if title == "code_map_lint" {
-                    if let Ok(value) = &mut value {
-                        attach_lint_presentation_uris(&server.root, &adapter, value);
+                        if !value.get("workspace_root").is_some_and(Value::is_string) {
+                            value["workspace_root"] =
+                                serde_json::json!(server.root.display().to_string());
+                        }
                     }
                 }
-                if operation == OperationKind::Navigation
-                    && discovery.is_none()
-                    && matches!(
-                        title,
-                        "code_map_impact"
-                            | "code_map_explain"
-                            | "code_map_tests"
-                            | "code_map_analyze"
-                            | "code_map_query"
-                    )
-                {
-                    if let Ok(value) = &mut value {
-                        attach_traversal_presentation_uris(&server.root, &adapter, value);
+                if include_uris {
+                    if let (Some(kind), Ok(value)) = (discovery, &mut value) {
+                        attach_presentation_uris(&server.root, &adapter, value, kind);
+                    } else if matches!(title, "search_docs" | "get_doc") {
+                        if let Ok(value) = &mut value {
+                            attach_document_presentation_uris(
+                                &server.root,
+                                &adapter,
+                                value,
+                                title,
+                            );
+                        }
+                    } else if title == "code_map_lint" {
+                        if let Ok(value) = &mut value {
+                            attach_lint_presentation_uris(&server.root, &adapter, value);
+                        }
+                    }
+                    if operation == OperationKind::Navigation
+                        && discovery.is_none()
+                        && matches!(
+                            title,
+                            "code_map_impact"
+                                | "code_map_explain"
+                                | "code_map_tests"
+                                | "code_map_analyze"
+                                | "code_map_query"
+                        )
+                    {
+                        if let Ok(value) = &mut value {
+                            attach_traversal_presentation_uris(
+                                &server.root,
+                                &adapter,
+                                value,
+                            );
+                        }
                     }
                 }
             }
@@ -144,39 +169,22 @@ fn responding_with_presentation(
 
 pub(super) async fn code_map_overview(server: &Server, p: OverviewInput) -> CallToolResult {
     let format = p.page.output_format();
-    responding_blocking(
-        server,
-        format,
-        OperationKind::Navigation,
-        "code_map_overview",
-        None,
-        Some(DiscoveryKind::Overview),
-        move |server, adapter, policy| {
-            let page = p.page.resolve(policy)?;
-            let mut result = server.read_with_adapter(adapter, |c| {
-                state_bridge::overview(c, &server.root, Some(adapter), p.aspects.as_deref(), &page)
-            })?;
-            if format == OutputFormat::Markdown {
-                result["request_scope"] = serde_json::json!({
-                    "workspace_root": server.root.display().to_string(),
-                    "aspects": p.aspects,
-                });
-            }
-            Ok(result)
-        },
-    )
-    .await
+    responding_blocking(server, format, p.page.uri_options(None), OperationKind::Navigation, "code_map_overview", None, Some(DiscoveryKind::Overview), move |server, adapter, policy| {
+        let path = p.path()?;
+        let page = p.page.resolve(policy)?;
+        let mut result = server.read_with_adapter(adapter, |c| {
+            state_bridge::overview(c, &server.root, Some(adapter), p.aspects.as_deref(), path, &page)
+        })?;
+        if format == OutputFormat::Markdown {
+            result["request_scope"] = serde_json::json!({"workspace_root": server.root.display().to_string(), "aspects": p.aspects, "path": path});
+        }
+        Ok(result)
+    }).await
 }
 
 pub(super) async fn code_map_inspect(server: &Server, p: Inspect) -> CallToolResult {
     let format = p.page.output_format();
-    responding_blocking(
-        server,
-        format,
-        OperationKind::Navigation,
-        "code_map_inspect",
-        Some(false),
-        Some(DiscoveryKind::Inspect),
+    responding_blocking(server, format, p.page.uri_options(None), OperationKind::Navigation, "code_map_inspect", Some(false), Some(DiscoveryKind::Inspect),
         move |server, adapter, policy| {
             let selector = p.selector()?;
             let path = p.path()?;
@@ -215,9 +223,11 @@ pub(super) async fn code_map_inspect(server: &Server, p: Inspect) -> CallToolRes
 
 pub(super) async fn acdd_read(server: &Server, mut p: Snippet) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "acdd_read",
         None,
@@ -265,9 +275,11 @@ pub(super) async fn acdd_read(server: &Server, mut p: Snippet) -> CallToolResult
 
 pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_search",
         None,
@@ -297,6 +309,14 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
                     res,
                     p.include_preview,
                 )?;
+                if p.include_pulse == Some(false) {
+                    if let Some(first) = res
+                        .pointer_mut("/nodes/items/0")
+                        .and_then(Value::as_object_mut)
+                    {
+                        first.remove("graph_pulse");
+                    }
+                }
                 if p.group_by_file {
                     if let Some(items) = res
                         .get_mut("nodes")
@@ -336,9 +356,11 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
 
 pub(super) async fn code_map_tests(server: &Server, p: Tests) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_tests",
         None,
@@ -362,9 +384,11 @@ pub(super) async fn code_map_tests(server: &Server, p: Tests) -> CallToolResult 
 
 pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_impact",
         None,
@@ -398,9 +422,11 @@ pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResul
 
 pub(super) async fn code_map_explain(server: &Server, p: Explain) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_explain",
         Some(true),
@@ -445,9 +471,11 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
     };
     let is_inspect = !implicit_sql && p.operation.trim() == "inspect";
     let discovery = is_inspect.then_some(DiscoveryKind::Inspect);
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         operation,
         "code_map_query",
         None,
@@ -528,9 +556,11 @@ pub(super) async fn code_map_analyze(server: &Server, p: Analyze) -> CallToolRes
     } else {
         OperationKind::Navigation
     };
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         operation,
         "code_map_analyze",
         None,
@@ -556,9 +586,11 @@ pub(super) async fn code_map_analyze(server: &Server, p: Analyze) -> CallToolRes
 
 pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_prove_removal",
         None,
@@ -576,9 +608,11 @@ pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> Call
 
 pub(super) async fn code_map_lint(server: &Server, p: Lint) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "code_map_lint",
         None,
@@ -614,9 +648,11 @@ const DEFAULT_AST_SEARCH_LIMIT: usize = 15;
 
 pub(super) async fn ast_grep_search(server: &Server, p: Ast) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "ast_grep_search",
         None,
@@ -667,9 +703,11 @@ pub(super) async fn ast_grep_search(server: &Server, p: Ast) -> CallToolResult {
 
 pub(super) async fn search_docs(server: &Server, p: SearchDocs) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(None);
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "search_docs",
         None,
@@ -694,9 +732,11 @@ pub(super) async fn search_docs(server: &Server, p: SearchDocs) -> CallToolResul
 
 pub(super) async fn get_doc(server: &Server, p: GetDoc) -> CallToolResult {
     let format = p.page.output_format();
+    let uri_options = p.page.uri_options(Some(Detail::Full));
     responding_blocking(
         server,
         format,
+        uri_options,
         OperationKind::Navigation,
         "get_doc",
         None,
@@ -754,6 +794,7 @@ pub(super) async fn acdd_guide(server: &Server, p: Guide) -> CallToolResult {
     responding_blocking(
         server,
         format,
+        PageUriOptions::default(),
         OperationKind::Guide,
         "acdd_guide",
         None,

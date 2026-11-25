@@ -1,7 +1,7 @@
 use super::coordination;
 use super::core::{
-    append_fenced_block, escape_label, is_freshness_envelope, ordered_fields, render_field,
-    render_markdown, render_markdown_fields, shorten_hash, text_field, KNOWN_PAGE_FIELDS,
+    append_fenced_block, is_freshness_envelope, ordered_fields, render_field, render_markdown,
+    render_markdown_fields, shorten_hash, text_field, KNOWN_PAGE_FIELDS,
 };
 use super::core::{OperationKind, OutputFormat};
 use super::discovery::{self, file_uri_for_path, DiscoveryKind};
@@ -355,19 +355,16 @@ pub fn compact(value: &mut Value, operation: OperationKind, explain: Option<bool
     }
     if !source_cont && !nested_cont && !has_root_continuation(&root.fields) {
         root.generation = None;
+    } else if let Some(Value::String(gen)) = &mut root.generation {
+        if is_hex_hash(gen) {
+            *gen = shorten_hash(gen).to_owned();
+        }
     }
     compact_freshness(&mut root.freshness);
     if saw_page
         && all_empty
         && !source_cont
-        && root
-            .freshness
-            .as_ref()
-            .and_then(Value::as_object)
-            .is_some_and(|f| {
-                f.get("status") == Some(&Value::String("matched".into()))
-                    && f.get("refresh") == Some(&Value::String("none".into()))
-            })
+        && root.freshness.as_ref().is_some_and(is_noop_freshness)
     {
         root.freshness = None;
     }
@@ -376,48 +373,72 @@ pub fn compact(value: &mut Value, operation: OperationKind, explain: Option<bool
     }
 }
 
-fn render_acdd_read(value: &Value) -> String {
-    let mut out = String::from("# acdd_read\n");
-    render_read_node(&mut out, None, value, 0);
-    out
+fn is_hex_hash(v: &str) -> bool {
+    v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn render_read_node(out: &mut String, key: Option<&str>, value: &Value, depth: usize) {
-    match value {
-        Value::Object(obj) if !obj.is_empty() => {
-            let d = key.map_or(depth, |k| {
-                super::core::indent(out, depth);
-                out.push_str(&format!("- **{}**\n", escape_label(k)));
-                depth + 1
-            });
-            let (lang, mut deferred) = (infer_read_language(obj), Vec::new());
-            for (k, child) in ordered_fields(obj) {
-                if matches!(k, "content" | "source") {
-                    if let Some(code) = child.as_str() {
-                        deferred.push((k, code));
-                        continue;
-                    }
-                }
-                render_read_node(out, Some(k), child, d);
-            }
-            for (k, code) in deferred {
-                super::core::indent(out, d);
-                out.push_str(&format!("- **{}**:\n", escape_label(k)));
-                append_fenced_block(out, lang, code, 0);
-            }
-        }
-        Value::Array(items) if !items.is_empty() && key.is_some() => {
-            super::core::indent(out, depth);
-            out.push_str(&format!("- **{}**\n", escape_label(key.unwrap_or(""))));
-            for (i, item) in items.iter().enumerate() {
-                render_read_node(out, Some(&format!("[{i}]")), item, depth + 1);
-            }
-        }
-        _ => match key {
-            Some(k) => render_field(out, k, value, depth),
-            None => render_markdown_fields(out, value, depth, &[]),
-        },
+fn is_noop_freshness(v: &Value) -> bool {
+    v.as_object().is_some_and(|f| {
+        matches!(f.get("status").and_then(Value::as_str), Some("matched" | "source_inventory_matched"))
+            && f.get("refresh").and_then(Value::as_str) == Some("none")
+    })
+}
+
+fn compact_for_format(value: &mut Value, opts: PresentationOptions<'_>) {
+    compact(value, opts.operation, opts.explain);
+    if opts.output_format == OutputFormat::Markdown
+        && opts.operation == OperationKind::Navigation
+        && value.get("freshness").is_some_and(is_noop_freshness)
+    {
+        if let Some(obj) = value.as_object_mut() { obj.remove("freshness"); }
     }
+}
+
+fn render_acdd_read(value: &Value) -> String {
+    let Some(obj) = value.as_object() else {
+        let mut out = String::from("# acdd_read\n");
+        render_markdown_fields(&mut out, value, 0, &[]);
+        return out;
+    };
+    let mut out = if let Some(header) = text_field(value, "header") {
+        format!("# acdd_read — {}\n", super::core::escape_text(header))
+    } else if let Some(path) = text_field(value, "path").or_else(|| obj.get("node").and_then(|n| text_field(n, "path"))) {
+        let mode = text_field(value, "mode").map(|m| format!(" (`{m}`)")).unwrap_or_default();
+        format!("# acdd_read — `{path}`{mode}\n")
+    } else {
+        String::from("# acdd_read\n")
+    };
+    let mut meta = Vec::new();
+    if let Some(scope) = text_field(value, "in_write_scope") { meta.push(format!("scope=`{scope}`")); }
+    if let Some(digest) = text_field(value, "content_digest") { meta.push(format!("digest=`{}`", shorten_hash(digest))); }
+    if let Some(pulse) = obj.get("graph_pulse").and_then(Value::as_object) {
+        let parts: Vec<String> = ["callers", "edges", "invariants"].into_iter()
+            .filter_map(|k| pulse.get(k).and_then(Value::as_u64).filter(|&n| n > 0).map(|n| format!("{n} {k}"))).collect();
+        if !parts.is_empty() { meta.push(format!("pulse={}", parts.join(", "))); }
+    }
+    if obj.get("truncated") == Some(&Value::Bool(true)) { meta.push("truncated=true".to_owned()); }
+    if let Some(p) = obj.get("source_preview").and_then(Value::as_object) {
+        if let (Some(s), Some(e)) = (p.get("start_line").and_then(Value::as_u64), p.get("end_line").and_then(Value::as_u64)) {
+            meta.push(format!("lines={s}-{e}"));
+        }
+        if let Some(bo) = p.get("body_offset").and_then(Value::as_u64).filter(|&n| n > 0) {
+            meta.push(format!("**body_offset**: `{bo}`"));
+        }
+        if p.get("has_more") == Some(&Value::Bool(true)) {
+            let bl = p.get("body_lines").and_then(Value::as_u64).unwrap_or(0);
+            let tbl = p.get("total_body_lines").and_then(Value::as_u64).unwrap_or(0);
+            let next = p.get("next_source_offset").and_then(Value::as_u64).unwrap_or(0);
+            let gen = text_field(value, "generation").map(|g| if is_hex_hash(g) { shorten_hash(g) } else { g }).unwrap_or("unavailable");
+            meta.push(format!("**body_lines**: `{bl}` | **total_body_lines**: `{tbl}` | **next_source_offset**: `{next}` | **generation**: `\"{gen}\"`"));
+        }
+    }
+    if !meta.is_empty() { out.push_str(&format!("{}\n", meta.join(" | "))); }
+    const CONSUMED: &[&str] = &["mode", "path", "header", "in_write_scope", "content_digest", "graph_pulse", "truncated", "source_preview", "node", "generation", "content", "source", "footer"];
+    for (k, child) in ordered_fields(obj) { if !CONSUMED.contains(&k) { render_field(&mut out, k, child, 0); } }
+    let lang = infer_read_language(obj);
+    for k in ["content", "source"] { if let Some(code) = obj.get(k).and_then(Value::as_str) { append_fenced_block(&mut out, lang, code, 0); } }
+    if let Some(footer) = text_field(value, "footer") { out.push_str(&format!("{footer}\n")); }
+    out
 }
 
 fn infer_read_language(object: &Map<String, Value>) -> &str {
@@ -474,7 +495,19 @@ fn compact_navigation_page(page: &mut NavigationPageDto) {
             }
         }
     }
-    if !page.is_paging_envelope() || page.has_continuation() {
+    if !page.is_paging_envelope() {
+        return;
+    }
+    if page.has_continuation() {
+        if let Some(Value::String(gen)) = &mut page.generation {
+            if is_hex_hash(gen) {
+                let short = shorten_hash(gen).to_owned();
+                if let Some(Value::String(hint)) = &mut page.continuation_hint {
+                    *hint = hint.replace(gen.as_str(), &short);
+                }
+                *gen = short;
+            }
+        }
         return;
     }
     if page.page_limited() {
@@ -662,7 +695,7 @@ fn render_fitting_budget(
     budget: usize,
     measure_bytes: &dyn Fn(&str) -> usize,
 ) -> Option<String> {
-    compact(value, opts.operation, opts.explain);
+    compact_for_format(value, opts);
     let rendered = render_with_acdd_read_hints(value, opts);
     (measure_bytes(&rendered) <= budget).then_some(rendered)
 }
@@ -806,7 +839,7 @@ fn oversized_response_message(
         {
             let mut metadata = value.clone();
             metadata["tasks"] = json!([]);
-            compact(&mut metadata, opts.operation, opts.explain);
+            compact_for_format(&mut metadata, opts);
             let rendered = render_with_acdd_read_hints(&metadata, opts);
             if measure_bytes(&rendered) <= budget {
                 "One complete task record exceeds the configured byte limit. Request compact task details, a smaller page, or a narrower filter; no partial task or continuation was returned."
@@ -895,7 +928,7 @@ fn trim_snippet_source_to_budget(
         omitted_leading,
     };
     let fits = |candidate: &mut Value| {
-        compact(candidate, opts.operation, opts.explain);
+        compact_for_format(candidate, opts);
         let rendered = render_with_acdd_read_hints(candidate, opts);
         measure_bytes(&rendered) <= budget
     };
@@ -1162,7 +1195,12 @@ fn trim_items_page_tail(value: &mut Value) -> bool {
     page.items = items;
     if has_more {
         page.byte_limited = Some(json!(true));
-        let generation = generation.unwrap_or_default();
+        let generation = generation.as_deref().unwrap_or_default();
+        let generation = if is_hex_hash(generation) {
+            shorten_hash(generation)
+        } else {
+            generation
+        };
         let filters = page
             .filters
             .as_ref()
@@ -1172,8 +1210,8 @@ fn trim_items_page_tail(value: &mut Value) -> bool {
                     .as_ref()
                     .filter(|hint| hint.is_object())
             })
-            .cloned()
-            .unwrap_or(json!("the original request filters"));
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+            .unwrap_or_else(|| "the original request filters".to_owned());
         page.continuation_hint = Some(json!(format!("Repeat the same tool and filters ({filters}) with generation={generation} and offset={next}; whole items after this offset were omitted to respect max_output_bytes.")));
     } else {
         page.continuation_hint = None;
