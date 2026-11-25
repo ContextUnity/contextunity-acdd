@@ -312,7 +312,11 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
     sha256_hex(buf.as_bytes())
 }
 
-pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
+pub(super) fn budget_scored_items(
+    kind: &str,
+    items: Vec<(u64, Value)>,
+    max_bytes: usize,
+) -> Value {
     let total = items.len();
     let mut envelope = serde_json::Map::new();
     envelope.insert("kind".to_owned(), json!(kind));
@@ -321,22 +325,24 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
     envelope.insert("truncated".to_owned(), json!(false));
 
     let base_bytes = estimate_json_bytes(&Value::Object(envelope.clone()));
+    let capacity = max_bytes
+        .checked_sub(base_bytes)
+        .filter(|&rem| rem > 0)
+        .map_or(0, |rem| rem.saturating_add(1));
     let candidates: Vec<_> = items
         .iter()
-        .enumerate()
-        .map(|(index, item)| KnapsackItem {
+        .map(|(score, item)| KnapsackItem {
             weight: estimate_json_bytes(item).saturating_add(1),
-            score: u64::try_from(total - index).unwrap_or(u64::MAX),
+            score: *score,
         })
         .collect();
-    let capacity = max_bytes.saturating_sub(base_bytes).saturating_add(1);
     let mut selected = pack_knapsack_indices(&candidates, capacity)
         .into_iter()
         .peekable();
     let kept: Vec<_> = items
         .into_iter()
         .enumerate()
-        .filter_map(|(index, item)| {
+        .filter_map(|(index, (_, item))| {
             if selected.peek() == Some(&index) {
                 selected.next();
                 Some(item)
@@ -351,6 +357,16 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
     Value::Object(envelope)
 }
 
+pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
+    let total = items.len();
+    let scored = items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| (u64::try_from(total - index).unwrap_or(u64::MAX), item))
+        .collect();
+    budget_scored_items(kind, scored, max_bytes)
+}
+
 #[cfg(test)]
 #[test]
 fn budget_items_packs_ordered_candidates_within_budget() {
@@ -360,6 +376,17 @@ fn budget_items_packs_ordered_candidates_within_budget() {
     let result = budget_items("symbols", items, budget);
     assert_eq!(result, expected);
     assert!(estimate_json_bytes(&result) <= budget);
+    let scored = budget_scored_items(
+        "symbols",
+        vec![
+            (10, json!("low-value-wide")),
+            (500, json!("hi-1")),
+            (500, json!("hi-2")),
+        ],
+        estimate_json_bytes(&json!({"kind":"symbols","items":["hi-1","hi-2"],"total":3,"truncated":false})),
+    );
+    assert_eq!(scored["items"], json!(["hi-1", "hi-2"]));
+    assert_eq!(scored["truncated"], true);
     let empty = budget_items("symbols", vec![json!("oversized")], 0);
     assert_eq!(empty["items"], json!([]));
     assert_eq!(empty["truncated"], true);

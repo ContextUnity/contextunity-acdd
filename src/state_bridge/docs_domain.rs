@@ -1,9 +1,10 @@
 //! Host `DocsDomainProvider` (`domain_id = "docs"`) implementation.
 
 use super::common::{
-    budget_items, build_composite_providers, combine_file_hashes, open_code_db_readonly,
-    resolve_worktree_adapter, truncate_single_line, unsupported_domain_action,
-    DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INSTRUCTION_MAX_HEADINGS, DOCS_INVARIANT_FALLBACK_ITEM_LIMIT,
+    budget_items, budget_scored_items, build_composite_providers, combine_file_hashes,
+    open_code_db_readonly, resolve_worktree_adapter, truncate_single_line,
+    unsupported_domain_action, DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INSTRUCTION_MAX_HEADINGS,
+    DOCS_INVARIANT_FALLBACK_ITEM_LIMIT,
     DOCS_INVARIANT_MAX_RULE_CHARS,
 };
 use acdd_core::config::Adapter;
@@ -273,8 +274,9 @@ impl DocsDomainProvider {
         ));
         ordered_paths.sort_by_key(|(_, is_owner)| !is_owner);
 
-        let mut items = Vec::with_capacity(ordered_paths.len());
-        for (rel, _) in ordered_paths {
+        let total_paths = ordered_paths.len();
+        let mut items = Vec::with_capacity(total_paths);
+        for (idx, (rel, is_owner)) in ordered_paths.into_iter().enumerate() {
             let Ok(abs) = checked_child(&req.worktree, Path::new(&rel)) else {
                 continue;
             };
@@ -285,17 +287,24 @@ impl DocsDomainProvider {
                 continue;
             };
             let headings = extract_markdown_headings(&text, DOCS_INSTRUCTION_MAX_HEADINGS);
+            let tier = match (rel.as_str(), is_owner) {
+                ("AGENTS.md", _) => 10_000,
+                (_, true) => 5_000,
+                ("TESTS.md", _) => 2_500,
+                _ => 1_000,
+            };
+            let score = tier + u64::try_from(total_paths - idx).unwrap_or(1);
             let mut item = json!({ "path": rel });
             if !headings.is_empty() {
                 item["headings"] = json!(headings);
             }
-            items.push(item);
+            items.push((score, item));
         }
 
         let directive = DOCS_INSTRUCTIONS_DIRECTIVE;
         let directive_bytes = ",\"directive\":".len() + estimate_json_bytes(&directive);
         let item_budget = req.max_bytes.saturating_sub(directive_bytes);
-        let mut budgeted = budget_items("instructions", items, item_budget);
+        let mut budgeted = budget_scored_items("instructions", items, item_budget);
         if let Some(arr) = budgeted.get_mut("items").and_then(Value::as_array_mut) {
             arr.sort_by(|a, b| {
                 let order = |item: &Value| match item["path"].as_str() {
@@ -357,7 +366,17 @@ impl DocsDomainProvider {
             );
         }
 
-        Ok(budget_items("invariants", items, req.max_bytes))
+        let total = items.len();
+        let scored = items
+            .into_iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let scoped = u64::from(item.get("scope_match").and_then(Value::as_bool) == Some(true)) * 4_000;
+                let enforced = u64::from(item.get("enforced").and_then(Value::as_bool) == Some(true)) * 2_000;
+                (500 + scoped + enforced + u64::try_from(total - idx).unwrap_or(1), item)
+            })
+            .collect();
+        Ok(budget_scored_items("invariants", scored, req.max_bytes))
     }
 
     fn provide_workspace_config(&self, req: &DomainContextReq) -> Result<Value> {

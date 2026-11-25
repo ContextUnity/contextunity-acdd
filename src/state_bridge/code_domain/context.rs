@@ -1,8 +1,8 @@
 use super::super::common::{
-    budget_items, open_code_db_readonly, truncate_single_line, CODE_EXTERNAL_CALLERS_MAX_ITEMS,
-    CODE_SYMBOLS_MAX_ITEMS, CODE_SYMBOLS_MAX_SIG_CHARS, CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD,
-    CODE_TESTS_LENS_PAGE_SIZE, CODE_TESTS_LENS_SCOPED_FILE_LIMIT, CODE_TESTS_MAX_ITEMS,
-    CODE_TESTS_PER_FILE_GRAPH_LIMIT,
+    budget_scored_items, open_code_db_readonly, truncate_single_line,
+    CODE_EXTERNAL_CALLERS_MAX_ITEMS, CODE_SYMBOLS_MAX_ITEMS, CODE_SYMBOLS_MAX_SIG_CHARS,
+    CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD, CODE_TESTS_LENS_PAGE_SIZE,
+    CODE_TESTS_LENS_SCOPED_FILE_LIMIT, CODE_TESTS_MAX_ITEMS, CODE_TESTS_PER_FILE_GRAPH_LIMIT,
 };
 use super::common::{
     collect_deleted_scoped_files, collect_git_diff_paths, collect_scoped_worktree_files,
@@ -230,12 +230,19 @@ impl CodeDomainProvider {
             }
         }
         all_candidates.sort_by_key(|a| (a.0, a.1, a.2, a.3));
-        let mut items: Vec<Value> = all_candidates
+        all_candidates.truncate(CODE_SYMBOLS_MAX_ITEMS);
+        let total = all_candidates.len();
+        let items: Vec<(u64, Value)> = all_candidates
             .into_iter()
-            .map(|(_, _, _, _, v)| v)
+            .enumerate()
+            .map(|(idx, (not_target, _, not_exported, _, val))| {
+                let tier = if !not_target { 10_000 } else { 0 }
+                    + if !not_exported { 2_000 } else { 500 };
+                let score = tier + u64::try_from(total - idx).unwrap_or(1);
+                (score, val)
+            })
             .collect();
-        items.truncate(CODE_SYMBOLS_MAX_ITEMS);
-        Ok(budget_items("symbols", items, req.max_bytes))
+        Ok(budget_scored_items("symbols", items, req.max_bytes))
     }
 
     pub(super) fn provide_tests(&self, req: &DomainContextReq) -> Result<Value> {
@@ -250,9 +257,18 @@ impl CodeDomainProvider {
         collect_live_test_items(&snapshot, &mut seen, &mut ranked_items);
 
         ranked_items.sort_by_key(|a| (a.0, a.1, a.2));
-        let mut items: Vec<Value> = ranked_items.into_iter().map(|(_, _, _, v)| v).collect();
-        items.truncate(CODE_TESTS_MAX_ITEMS);
-        Ok(budget_items("tests", items, req.max_bytes))
+        ranked_items.truncate(CODE_TESTS_MAX_ITEMS);
+        let total = ranked_items.len();
+        let items: Vec<(u64, Value)> = ranked_items
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (source_tier, _, _, val))| {
+                let tier = if source_tier == 0 { 2_000 } else { 500 };
+                let score = tier + u64::try_from(total - idx).unwrap_or(1);
+                (score, val)
+            })
+            .collect();
+        Ok(budget_scored_items("tests", items, req.max_bytes))
     }
 
     pub(super) fn provide_external_callers(&self, req: &DomainContextReq) -> Result<Value> {
@@ -318,12 +334,17 @@ impl CodeDomainProvider {
                         baseline,
                     )?;
                     if !callers.is_empty() || signature_changed {
-                        items.push(json!({
-                            "path": node.path,
-                            "symbol": node.qualname,
-                            "signature_changed": signature_changed,
-                            "external_callers": callers.into_iter().collect::<Vec<_>>(),
-                        }));
+                        let caller_bonus = u64::try_from(callers.len().min(100)).unwrap_or(100) * 50;
+                        let score = if signature_changed { 5_000 } else { 500 } + caller_bonus;
+                        items.push((
+                            score,
+                            json!({
+                                "path": node.path,
+                                "symbol": node.qualname,
+                                "signature_changed": signature_changed,
+                                "external_callers": callers.into_iter().collect::<Vec<_>>(),
+                            }),
+                        ));
                     }
                 }
             }
@@ -343,17 +364,21 @@ impl CodeDomainProvider {
                     policy,
                     baseline,
                 )?;
-                items.push(json!({
-                    "path": head_node.path,
-                    "symbol": head_node.qualname,
-                    "signature_changed": true,
-                    "external_callers": callers.into_iter().collect::<Vec<_>>(),
-                }));
+                let caller_bonus = u64::try_from(callers.len().min(100)).unwrap_or(100) * 50;
+                items.push((
+                    5_000 + caller_bonus,
+                    json!({
+                        "path": head_node.path,
+                        "symbol": head_node.qualname,
+                        "signature_changed": true,
+                        "external_callers": callers.into_iter().collect::<Vec<_>>(),
+                    }),
+                ));
             }
         }
 
         items.truncate(CODE_EXTERNAL_CALLERS_MAX_ITEMS);
-        Ok(budget_items("external_callers", items, req.max_bytes))
+        Ok(budget_scored_items("external_callers", items, req.max_bytes))
     }
 }
 

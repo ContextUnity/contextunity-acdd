@@ -17,6 +17,7 @@ use acdd_core::format::{estimate_json_bytes, utf8_tail};
 use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor};
 use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};
+use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::fs;
@@ -399,14 +400,78 @@ fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
     combined
 }
 
+const CONTEXT_LENSES_OVERHEAD: usize = ",\"context_lenses\":{}".len();
+
 fn is_empty_items_lens(val: &Value) -> bool {
-    let Some(obj) = val.as_object() else {
-        return false;
+    val.as_object().is_some_and(|obj| {
+        obj.get("items")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+            && obj.get("total").and_then(Value::as_u64).unwrap_or(0) == 0
+            && obj.get("truncated").and_then(Value::as_bool) != Some(true)
+    })
+}
+
+fn is_exhausted_items_lens(val: &Value) -> bool {
+    val.as_object().is_some_and(|obj| {
+        obj.get("items")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+            && (obj.get("truncated").and_then(Value::as_bool) == Some(true)
+                || obj.get("total").and_then(Value::as_u64).unwrap_or(0) > 0)
+    })
+}
+
+fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<Value> {
+    let Value::Object(mut obj) = val else {
+        return None;
     };
-    obj.get("items")
-        .and_then(Value::as_array)
-        .is_some_and(Vec::is_empty)
-        && obj.get("total").and_then(Value::as_u64).unwrap_or(0) == 0
+    let Value::Array(items) = obj.remove("items")? else {
+        return None;
+    };
+    let total = items.len();
+    if total == 0 {
+        return None;
+    }
+    obj.entry("total").or_insert_with(|| json!(total));
+    obj.insert("items".to_owned(), json!([]));
+    obj.insert("truncated".to_owned(), json!(true));
+    let base_bytes = estimate_json_bytes(&Value::Object(obj.clone()));
+    let capacity = max_bytes.checked_sub(base_bytes).filter(|&r| r > 0)?.saturating_add(1);
+    let candidates: Vec<_> = items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| KnapsackItem {
+            weight: estimate_json_bytes(item).saturating_add(1),
+            score: u64::try_from(total - idx).unwrap_or(u64::MAX),
+        })
+        .collect();
+    let mut selected = pack_knapsack_indices(&candidates, capacity).into_iter().peekable();
+    let kept: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, item)| (selected.peek() == Some(&idx)).then(|| { selected.next(); item }))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    obj.insert("items".to_owned(), Value::Array(kept));
+    let packed = Value::Object(obj);
+    (estimate_json_bytes(&packed) <= max_bytes).then_some(packed)
+}
+
+fn omit_context_lens(
+    resp: &mut ClaimResp,
+    running_bytes: &mut usize,
+    qualified_lens: &str,
+    max_bytes: usize,
+) {
+    if let Some(old_val) = resp.context_lenses.shift_remove(qualified_lens) {
+        let key_bytes = estimate_json_bytes(qualified_lens) + 1;
+        let sep = if resp.context_lenses.is_empty() { CONTEXT_LENSES_OVERHEAD } else { 1 };
+        *running_bytes -= estimate_json_bytes(&old_val) + key_bytes + sep;
+    }
+    add_omitted_section(resp, running_bytes, &format!("context:{qualified_lens}"), max_bytes);
 }
 
 pub(super) fn apply_tier6_context_lenses(
@@ -430,28 +495,22 @@ pub(super) fn apply_tier6_context_lenses(
 
     for (idx, qualified_lens) in req.gate.context.iter().enumerate() {
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
-        let container_bytes = ",\"context_lenses\":{}".len();
-        let entry_overhead = if resp.context_lenses.contains_key(qualified_lens) {
-            0
-        } else {
-            key_bytes
-                + if resp.context_lenses.is_empty() {
-                    container_bytes
-                } else {
-                    1
-                }
-        };
-        let remaining = req
-            .response_max_bytes
-            .saturating_sub(*running_bytes + entry_overhead);
+        let effective_base = resp.context_lenses.get(qualified_lens).map_or_else(
+            || {
+                let sep = if resp.context_lenses.is_empty() { CONTEXT_LENSES_OVERHEAD } else { 1 };
+                *running_bytes + key_bytes + sep
+            },
+            |old_val| *running_bytes - estimate_json_bytes(old_val),
+        );
+        let remaining = req.response_max_bytes.saturating_sub(effective_base);
         if remaining == 0 {
-            let section = format!("context:{qualified_lens}");
-            add_omitted_section(resp, running_bytes, &section, req.response_max_bytes);
+            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
             continue;
         }
 
         let remaining_lenses = req.gate.context.len().saturating_sub(idx).max(1);
-        let lens_budget = (remaining / remaining_lenses).max(remaining.min(MIN_LENS_BUDGET_BYTES));
+        let lens_budget =
+            (remaining / remaining_lenses).max(remaining.min(MIN_LENS_BUDGET_BYTES / 8));
         let baseline_ref = if req.node.kind == NodeKind::RootGate
             && !is_pre_task_root_in_profile(&req.profile, &req.node)
         {
@@ -500,36 +559,25 @@ pub(super) fn apply_tier6_context_lenses(
         if is_empty_items_lens(&val) && !resp.context_lenses.contains_key(qualified_lens) {
             continue;
         }
+        if is_exhausted_items_lens(&val) {
+            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
+            continue;
+        }
 
         let new_val_bytes = estimate_json_bytes(&val);
-        if let Some(old_val) = resp.context_lenses.get(qualified_lens) {
-            let old_val_bytes = estimate_json_bytes(old_val);
-            let next_bytes = *running_bytes - old_val_bytes + new_val_bytes;
-            if next_bytes <= req.response_max_bytes {
-                resp.context_lenses.insert(qualified_lens.clone(), val);
-                *running_bytes = next_bytes;
-            } else {
-                resp.context_lenses.shift_remove(qualified_lens);
-                let removed_delta = old_val_bytes
-                    + key_bytes
-                    + if resp.context_lenses.is_empty() {
-                        container_bytes
-                    } else {
-                        1
-                    };
-                *running_bytes -= removed_delta;
-                let section = format!("context:{qualified_lens}");
-                add_omitted_section(resp, running_bytes, &section, req.response_max_bytes);
-            }
+        let accepted = if new_val_bytes <= remaining {
+            Some((val, new_val_bytes))
         } else {
-            let entry_delta = entry_overhead + new_val_bytes;
-            if *running_bytes + entry_delta <= req.response_max_bytes {
-                resp.context_lenses.insert(qualified_lens.clone(), val);
-                *running_bytes += entry_delta;
-            } else {
-                let section = format!("context:{qualified_lens}");
-                add_omitted_section(resp, running_bytes, &section, req.response_max_bytes);
-            }
+            pack_oversized_items_lens(val, remaining).map(|packed| {
+                let bytes = estimate_json_bytes(&packed);
+                (packed, bytes)
+            })
+        };
+        if let Some((accepted_val, accepted_bytes)) = accepted {
+            resp.context_lenses.insert(qualified_lens.clone(), accepted_val);
+            *running_bytes = effective_base + accepted_bytes;
+        } else {
+            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
         }
     }
 
