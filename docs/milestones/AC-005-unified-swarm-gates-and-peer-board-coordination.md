@@ -6,6 +6,7 @@ status: planned
 depends_on:
   - AR-002-modularize-db-reader-and-traversal
   - AR-003-unified-lint-engine-and-documentation-profile
+  - AC-006-universal-repository-memory-synthesis
 guidance:
   hitl: pro
 owners:
@@ -61,7 +62,7 @@ Make `GateProfile` (`version: 2`) in `crates/acdd-state` completely uniform by r
 Together, the five `AC` milestones compose into one general-purpose, local-first, durable multi-agent and automation runtime:
 
 1. **`AC-005` (Immediate Foundation — Unified `mode: linear | parallel | swarm` & Peer Board)**: Replaces `- tasks:` with `GateMode` (`linear | parallel | swarm`), binds swarm collections through existing `GateDef.with` over `spec.* | input.* | <gate_id>.* | { count: N }` and extends native `GateDef.when` across root/container/shard gates, enables lock-free `save: none` SQLite CAS vs. disjoint/worktree `save != none` parallelism, and adds `@mention` + zero-token `acdd_blackboard(action: "wait")` coordination.
-2. **[AC-006](AC-006-universal-repository-memory-synthesis.md) (Universal Memory — Cross-Run Learning)**: Git-tracked `docs/memories/*.md` projected through `doc_search` BM25 deterministically inject relevant operational rules into every `linear`, `parallel`, and `swarm` node's `ClaimResp` via `DomainProvider::context_lens`, while off-hot-path `--dream` passes distill completed runs into durable rules.
+2. **[AC-006](AC-006-universal-repository-memory-synthesis.md) (Universal Specs & Memory)**: Profile-declared spec schemas and `paths:` sets; repository memory is the `memory` schema written by a single-role `memory_synthesis` gate and delivered to every `linear`, `parallel`, and `swarm` node through `context: [paths.memories]`, while off-hot-path `memory-dream` runs consolidate completed runs.
 3. **[AC-007](AC-007-unified-observability-board-otlp-and-metrics.md) (CLI MCP Split & Read-Only Observability)**: Introduces explicit `acdd mcp` for session-scoped `stdio` MCP (`install.sh` + adapter updates) and replaces `acdd serve` stdio aliasing with strictly read-only loopback `acdd serve [--webui] [--telemetry]` (`GET /`, `GET /api/*`, `GET /events` SSE rendering `AC-005` `linear | parallel | swarm` node hierarchies and live `@mention` peer `blackboard` threads, bounded-cardinality `/metrics`, and OTLP/HTTP JSON trace export).
 4. **[AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md) (Zero-Daemon Reactive Core)**: Adds `RoleDef.mode: manual` park-and-sleep approvals (resumed via CLI/MCP), `spawner.rs` `env_allowlist` secret scrubbing, claim `lease_expires_at` TTLs (renewed while parked in `AC-005` `wait`), durable SQLite `timers` (`v2 -> v3` migration), one-shot `acdd tick`, deduplicated `inbox` (`dedup_key` + `coalesce_window` dispatching through `AC-005`'s concurrent CAS `swarm` engine), and paced `outbox` notifications.
 5. **[AC-009](AC-009-authenticated-ingress-interactive-webui-and-http-mcp.md) (Authenticated Network/IPC Ingress, Interactive Web UI & Streamable HTTP MCP)**: Adds upfront `ADR-0013` security middleware (`Host`/`Origin`, scoped Bearer tokens, HMAC-SHA256 webhooks, body caps, rate limiting), confined `.acdd/acdd.sock` (`0600`), `acdd serve --interactive`, `acdd serve --incoming` (`POST /events`), `acdd mcp --http` (`POST/GET /mcp` with `Mcp-Session-Id` & token-bound `worker_id`), and `acdd up`.
@@ -149,7 +150,7 @@ gates:
   - id: handoff
     agent: coordinator
     need: [verify]
-    scope: ["docs/memories/**"]
+    scope: [paths.memories]                 # AC-006 named path set
     save:
       handoff: { archive: true, prune: true, commit_scope: true, scope_mode: lazy, repack: last }
 ```
@@ -175,7 +176,7 @@ gates:
     mode: swarm
     with: poll.items                      # flattens sharded poll proofs in shard order
     when: "item.is_new & !item.muted"     # skip muted/seen items per shard
-    context: [docs.memory]                # AC-006 operational rules per shard
+    context: [paths.memories]             # AC-006 memory Specs per shard
     save: none
     pass: review
   - id: review

@@ -1,0 +1,16 @@
+{
+  "acdd-nav-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "read_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./read_file_guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
