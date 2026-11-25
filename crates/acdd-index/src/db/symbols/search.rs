@@ -25,6 +25,14 @@ use std::{
     path::Path,
 };
 
+const RRF_K: &str = "60.0";
+const RRF_STRUCTURAL_WEIGHT: &str = "2.0";
+const RRF_BM25_WEIGHT: &str = "1.0";
+const RRF_AND_MATCH_WEIGHT: &str = "1.0";
+const RRF_GRAPH_WEIGHT: &str = "0.75";
+const MODULE_INDEXED_TEXT_FACTOR: &str = "0.5";
+const GRAPH_DEGREE_WINDOW: usize = 50;
+
 #[derive(Deserialize, Serialize)]
 struct SearchHitDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,7 +42,7 @@ struct SearchHitDto {
     #[serde(default, skip_serializing)]
     bm25_rank: Option<Value>,
     #[serde(default, skip_serializing)]
-    graph_boost: Option<Value>,
+    rrf_score: Option<Value>,
     #[serde(flatten)]
     fields: BTreeMap<String, Value>,
 }
@@ -170,9 +178,28 @@ fn scope_filter_sql(
     )
 }
 
+fn graph_degree_ctes_sql() -> String {
+    let contains = EdgeKind::Contains.as_str();
+    let documents = EdgeKind::Documents.as_str();
+    let references_doc = EdgeKind::ReferencesDoc.as_str();
+    format!(
+        "graph_degrees AS MATERIALIZED (
+            SELECT g.node_id,
+                   (
+                       (SELECT count(*) FROM edges e WHERE e.dst_hash=g.node_hash AND e.kind NOT IN('{contains}','{documents}','{references_doc}'))
+                       + (SELECT count(*) FROM edges e WHERE e.src_hash=g.node_hash AND e.kind NOT IN('{contains}','{documents}','{references_doc}'))
+                   ) AS graph_degree
+            FROM graph_window g
+        ), graph_ranked AS MATERIALIZED (
+            SELECT node_id, RANK() OVER (ORDER BY graph_degree DESC) AS graph_rank
+            FROM graph_degrees
+            WHERE graph_degree > 0
+        )"
+    )
+}
+
 struct ExactSearchContext<'a> {
     columns: &'a str,
-    graph_boost: &'a str,
     pattern: &'a str,
     kind: &'a str,
     classification_code: Option<i64>,
@@ -190,7 +217,6 @@ fn run_exact_search_query(
 ) -> Result<Value> {
     let ExactSearchContext {
         columns,
-        graph_boost,
         pattern,
         kind,
         classification_code,
@@ -218,12 +244,34 @@ fn run_exact_search_query(
     };
     let where_clause = format!("{match_pred}{scope_filter}");
     let sql = if ranked {
+        let graph_ctes = graph_degree_ctes_sql();
         format!(
-            "WITH exact_probe AS MATERIALIZED (SELECT n.node_id,{match_rank_expr} AS match_rank,pd.path,n.line,n.id FROM {from} WHERE {where_clause} ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},{match_rank_expr} AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM {from} CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE {where_clause} ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id"
+            "WITH exact_probe AS MATERIALIZED (
+                SELECT n.node_id,n.node_hash,{match_rank_expr} AS match_rank,pd.path,n.line,n.id
+                FROM {from} WHERE {where_clause}
+                ORDER BY match_rank ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT 1001
+            ), result_total AS (
+                SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe
+            ), graph_window AS MATERIALIZED (
+                SELECT node_id,node_hash FROM exact_probe
+                ORDER BY match_rank ASC,path ASC,line ASC,id ASC LIMIT {GRAPH_DEGREE_WINDOW}
+            ), {graph_ctes}, scored AS (
+                SELECT n.node_id,{match_rank_expr} AS match_rank,
+                       ({RRF_STRUCTURAL_WEIGHT} / ({RRF_K} + CASE WHEN {match_rank_expr}=0 THEN 1 ELSE 2 END)
+                        + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END) AS rrf_score
+                FROM {from}
+                LEFT JOIN graph_ranked gr ON gr.node_id=n.node_id
+                WHERE {where_clause}
+            ) SELECT {columns},s.match_rank,s.rrf_score,r.search_total
+            FROM scored s
+            JOIN nodes n ON n.node_id=s.node_id
+            JOIN path_dictionary pd ON pd.path_id=n.path_id
+            CROSS JOIN result_total r
+            ORDER BY s.rrf_score DESC,s.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         )
     } else {
         format!(
-            "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
+            "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
         )
     };
     let mut params: Vec<&dyn ToSql> = Vec::with_capacity(8);
@@ -253,7 +301,6 @@ fn run_wildcard_search_query(
 ) -> Result<Value> {
     let ExactSearchContext {
         columns,
-        graph_boost,
         kind,
         classification_code,
         path,
@@ -274,26 +321,35 @@ fn run_wildcard_search_query(
             "FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND {scope_filter}"
         );
         let probe = format!("SELECT n.node_id {from} LIMIT 1001");
+        let graph_ctes = graph_degree_ctes_sql();
         let sql = format!(
-            "WITH fts_scored AS MATERIALIZED (
-                SELECT n.node_id,pd.path,n.line,n.id,(CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END - bm25(node_search)) AS score
+            "WITH fts_raw AS MATERIALIZED (
+                SELECT n.node_id,n.node_hash,pd.path,n.line,n.id,
+                       CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 1 ELSE 2 END AS match_rank,
+                       bm25(node_search) AS bm25_val
                 {from}
-                ORDER BY score DESC,pd.path,n.line,n.id
             ), total_probe AS MATERIALIZED ({probe}), result_total AS (
                 SELECT CASE WHEN (SELECT count(*) FROM total_probe)>=1001 THEN NULL
                     ELSE (SELECT count(*) FROM total_probe) END AS search_total
+            ), pre_scored AS MATERIALIZED (
+                SELECT node_id,node_hash,path,line,id,match_rank,
+                       ({RRF_STRUCTURAL_WEIGHT} / ({RRF_K} + RANK() OVER (ORDER BY match_rank ASC))
+                        + {RRF_BM25_WEIGHT} / ({RRF_K} + RANK() OVER (ORDER BY bm25_val ASC))) AS base_rrf
+                FROM fts_raw
             ), graph_window AS MATERIALIZED (
-                SELECT node_id,score FROM fts_scored ORDER BY score DESC,path,line,id LIMIT 50
-            ), boosted AS MATERIALIZED (
-                SELECT p.node_id,{graph_boost} AS graph_boost
-                FROM graph_window p JOIN nodes n ON n.node_id=p.node_id
-            ), ranked AS (
-                SELECT f.node_id,f.score,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END AS graph_group,
-                       COALESCE(b.graph_boost,0) AS graph_boost,t.search_total
-                FROM fts_scored f LEFT JOIN boosted b ON b.node_id=f.node_id CROSS JOIN result_total t
-            ) SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason,c.graph_boost,c.search_total
-            FROM ranked c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
-            ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,pd.path,n.line,n.id"
+                SELECT node_id,node_hash FROM pre_scored
+                ORDER BY base_rrf DESC,match_rank ASC,path ASC,line ASC,id ASC LIMIT {GRAPH_DEGREE_WINDOW}
+            ), {graph_ctes}, scored AS (
+                SELECT p.node_id,p.match_rank,
+                       (p.base_rrf
+                        + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END) AS rrf_score,
+                       t.search_total
+                FROM pre_scored p
+                LEFT JOIN graph_ranked gr ON gr.node_id=p.node_id
+                CROSS JOIN result_total t
+            ) SELECT {columns},CASE WHEN c.match_rank=1 THEN 'name_pattern' ELSE 'qualified_pattern' END AS match_reason,c.rrf_score,c.search_total
+            FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
+            ORDER BY c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         );
         return ranked_search_page(
             conn,
@@ -477,12 +533,6 @@ pub fn search_with_options(
     }
     let (path_start, path_end) = path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
-    let graph_boost = format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('{}','{}','{}')) THEN 50 ELSE 0 END",
-        EdgeKind::Contains.as_str(),
-        EdgeKind::Documents.as_str(),
-        EdgeKind::ReferencesDoc.as_str(),
-    );
     if let Some(res) = try_type_filter_search(
         conn,
         pattern,
@@ -501,7 +551,6 @@ pub fn search_with_options(
     }
     let exact_ctx = ExactSearchContext {
         columns: &columns,
-        graph_boost: &graph_boost,
         pattern,
         kind,
         classification_code,
@@ -538,55 +587,79 @@ pub fn search_with_options(
         .context("search offset exceeds SQLite integer range")?;
         let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
         let filters = scope_filter_sql(2, 3, 8, 12);
-        let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
-        let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END + CASE WHEN ?11=1 AND n.node_hash IN (SELECT node_hash FROM fts_and_matches) THEN 250 ELSE 0 END - bm25(node_search)";
+        let match_rank_expr = "CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 \
+            WHEN n.qualname=?6 COLLATE NOCASE THEN 2 \
+            WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 \
+            WHEN n.name LIKE '%' || ?7 ESCAPE '\\' THEN 3 ELSE 4 END";
+        let module_kind = NodeKind::Module.as_str();
+        let graph_ctes = graph_degree_ctes_sql();
         let sql = format!(
             "WITH
-            fts_and_matches AS MATERIALIZED (
-                SELECT n.node_hash
+            fts_and_raw AS MATERIALIZED (
+                SELECT n.node_id,bm25(node_search) AS bm25_val
                 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE ?11=1 AND node_search MATCH ?10 AND {filters}
-            ),
-            fts AS MATERIALIZED (
-                SELECT n.node_id,pd.path,n.line,n.id,({fts_score}) AS score
+                ORDER BY bm25_val ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT ?9
+            ), fts_and_ranked AS MATERIALIZED (
+                SELECT node_id,RANK() OVER (ORDER BY bm25_val ASC) AS and_rank
+                FROM fts_and_raw
+            ), fts_raw AS MATERIALIZED (
+                SELECT n.node_id,bm25(node_search) AS bm25_val
                 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE node_search MATCH ?1 AND {filters}
-                ORDER BY score DESC,pd.path,n.line,n.id LIMIT ?9
+                ORDER BY bm25_val ASC,pd.path ASC,n.line ASC,n.id ASC LIMIT ?9
+            ), fts_ranked AS MATERIALIZED (
+                SELECT node_id,RANK() OVER (ORDER BY bm25_val ASC) AS bm25_rank
+                FROM fts_raw
             ), fts_probe AS MATERIALIZED (
                 SELECT n.node_id FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE node_search MATCH ?1 AND {filters} LIMIT 1001
             ), structural_all AS MATERIALIZED (
-                SELECT n.node_id,pd.path,n.line,n.id,({structural_score}) AS score
+                SELECT n.node_id,pd.path,n.line,n.id,{match_rank_expr} AS match_rank
                 FROM ({structural_candidates}) s JOIN nodes n ON n.node_id=s.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE {filters}
             ), structural AS MATERIALIZED (
-                SELECT node_id,path,line,id,score FROM structural_all
-                ORDER BY score DESC,path,line,id LIMIT ?9
-            ), candidates AS (
-                SELECT node_id,max(score) AS score FROM (
-                    SELECT node_id,score FROM fts UNION ALL SELECT node_id,score FROM structural
-                ) GROUP BY node_id
+                SELECT node_id FROM structural_all
+                ORDER BY match_rank ASC,path ASC,line ASC,id ASC LIMIT ?9
+            ), candidate_ids AS MATERIALIZED (
+                SELECT node_id FROM fts_raw UNION SELECT node_id FROM structural
             ), result_total AS (
                 SELECT CASE WHEN (SELECT count(*) FROM fts_probe)>=1001 THEN NULL
                     ELSE (SELECT count(*) FROM (
                         SELECT node_id FROM fts_probe UNION SELECT node_id FROM structural_all
                     )) END AS search_total
+            ), base_candidates AS MATERIALIZED (
+                SELECT n.node_id,n.node_hash,n.kind,pd.path,n.line,n.id,
+                       {match_rank_expr} AS match_rank,
+                       fr.bm25_rank,
+                       fa.and_rank
+                FROM candidate_ids c
+                JOIN nodes n ON n.node_id=c.node_id
+                JOIN path_dictionary pd ON pd.path_id=n.path_id
+                LEFT JOIN fts_ranked fr ON fr.node_id=c.node_id
+                LEFT JOIN fts_and_ranked fa ON fa.node_id=c.node_id
+            ), pre_scored AS MATERIALIZED (
+                SELECT node_id,node_hash,kind,path,line,id,match_rank,
+                       (CASE WHEN match_rank < 4 THEN {RRF_STRUCTURAL_WEIGHT} / ({RRF_K} + RANK() OVER (PARTITION BY (match_rank < 4) ORDER BY match_rank ASC)) ELSE 0.0 END
+                        + CASE WHEN bm25_rank IS NOT NULL THEN {RRF_BM25_WEIGHT} / ({RRF_K} + bm25_rank) ELSE 0.0 END
+                        + CASE WHEN and_rank IS NOT NULL THEN {RRF_AND_MATCH_WEIGHT} / ({RRF_K} + and_rank) ELSE 0.0 END) AS base_rrf
+                FROM base_candidates
             ), graph_window AS MATERIALIZED (
-                SELECT c.node_id,c.score FROM candidates c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
-                ORDER BY c.score DESC,pd.path,n.line,n.id LIMIT 50
-            ), boosted AS MATERIALIZED (
-                SELECT p.node_id,{graph_boost} AS graph_boost
-                FROM graph_window p JOIN nodes n ON n.node_id=p.node_id
-            ), ranked AS (
-                SELECT c.node_id,c.score,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END AS graph_group,
-                       COALESCE(b.graph_boost,0) AS graph_boost,t.search_total
-                FROM candidates c LEFT JOIN boosted b ON b.node_id=c.node_id CROSS JOIN result_total t
-            ) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0
-                WHEN n.qualname=?6 COLLATE NOCASE THEN 2
-                WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1
-                WHEN n.name LIKE '%' || ?7 ESCAPE '\\' THEN 3 ELSE 4 END AS match_rank
-            ,c.graph_boost,c.search_total FROM ranked c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
-            ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,pd.path,n.line,n.id"
+                SELECT node_id,node_hash FROM pre_scored
+                ORDER BY (CASE WHEN match_rank=4 AND kind='{module_kind}' THEN base_rrf * {MODULE_INDEXED_TEXT_FACTOR} ELSE base_rrf END) DESC,
+                         match_rank ASC,path ASC,line ASC,id ASC
+                LIMIT {GRAPH_DEGREE_WINDOW}
+            ), {graph_ctes}, scored AS (
+                SELECT p.node_id,p.match_rank,
+                       ((p.base_rrf + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END)
+                        * CASE WHEN p.match_rank=4 AND p.kind='{module_kind}' THEN {MODULE_INDEXED_TEXT_FACTOR} ELSE 1.0 END) AS rrf_score,
+                       t.search_total
+                FROM pre_scored p
+                LEFT JOIN graph_ranked gr ON gr.node_id=p.node_id
+                CROSS JOIN result_total t
+            ) SELECT {columns},c.match_rank,c.rrf_score,c.search_total
+            FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
+            ORDER BY c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         );
         let and_query = terms.join(" AND ");
         let or_query = terms.join(" OR ");
@@ -630,9 +703,8 @@ pub fn search_with_options(
         for item in items {
             let mut hit: SearchHitDto =
                 serde_json::from_value(item.clone()).context("invalid search result")?;
-            let _ = (&hit.bm25_rank, &hit.graph_boost);
-            if options.detail == Detail::Compact
-                && hit.match_reason.as_deref() == Some("name_pattern")
+            let _ = (&hit.bm25_rank, &hit.rrf_score);
+            if options.detail == Detail::Compact && hit.match_reason.as_deref() == Some("name_pattern")
             {
                 hit.match_reason = None;
             }
@@ -809,8 +881,11 @@ pub fn search_results_with_navigation(
 
     let previews_enabled = include_preview || has_small_total;
     let markdown = LanguageId::Markdown.as_str();
-    for (index, item) in items.iter_mut().enumerate() {
+    let module_kind = NodeKind::Module.as_str();
+    let mut enriched = Vec::with_capacity(items.len());
+    for item in items.iter() {
         if !item.is_object() {
+            enriched.push((None, Some(item.clone()), None));
             continue;
         }
         let mut dto: SearchNavigationItemDto =
@@ -846,23 +921,41 @@ pub fn search_results_with_navigation(
 
         let is_indexed_text = dto.match_reason.as_deref() == Some("indexed_text");
         let is_markdown = dto.language.as_deref() == Some(markdown);
-        let item_preview_enabled = previews_enabled && index < PREVIEW_HIT_LIMIT;
         let matched_window = if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
             apply_indexed_text_match_preview(
                 &mut sources,
                 &mut dto,
                 &pattern,
-                item_preview_enabled,
+                previews_enabled,
                 PREVIEW_BYTES_PER_HIT,
             )
         } else {
             None
         };
+        enriched.push((Some(dto), None, matched_window));
+    }
 
+    enriched.sort_by_key(|(dto, _, _)| {
+        dto.as_ref().is_some_and(|d| {
+            d.kind.as_ref().and_then(Value::as_str) == Some(module_kind)
+                && d.match_reason.as_deref() == Some("indexed_text")
+                && d.match_snippet.is_none()
+        })
+    });
+
+    for (index, ((dto, raw, matched_window), slot)) in
+        enriched.into_iter().zip(items.iter_mut()).enumerate()
+    {
+        let Some(mut dto) = dto else {
+            if let Some(raw) = raw {
+                *slot = raw;
+            }
+            continue;
+        };
         if index == 0 {
             dto.graph_pulse = Some(search_graph_pulse(conn, &dto.id));
         }
-        if item_preview_enabled {
+        if previews_enabled && index < PREVIEW_HIT_LIMIT {
             if let Some((preview_src, preview_meta)) = matched_window {
                 dto.source = Some(preview_src);
                 dto.source_preview = Some(serde_json::to_value(preview_meta)?);
@@ -894,7 +987,7 @@ pub fn search_results_with_navigation(
                 }
             }
         }
-        *item = serde_json::to_value(dto)?;
+        *slot = serde_json::to_value(dto)?;
     }
     Ok(result)
 }
