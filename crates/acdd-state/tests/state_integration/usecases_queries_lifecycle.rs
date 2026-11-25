@@ -2694,6 +2694,186 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
 }
 
 #[test]
+fn seam_mechanical_verify_failure_routing_matrix() {
+    use acdd_core::ports::CompositeDomainProvider;
+    use acdd_state::types::{FindingItem, FindingSeverity, RejectionFindings, SubmitAction};
+    use acdd_state::usecases::dto::{RunReq, SubmitReq, VerifyReq};
+
+    let tmp = make_temp_dir("mechanical-verify");
+    let root = tmp.path();
+    init_git_repo(root, "main");
+    let cfg = base_config(root);
+    let provider = CompositeDomainProvider::default();
+    let profile = write_profile(
+        root,
+        "mechanical-verify.yaml",
+        r#"version: 2
+inherit: base
+roles:
+  builder: { mode: subagent }
+commands:
+  check: { command: "test -f .acdd/verify-ready" }
+gates:
+  - id: run_tests
+    proof: command
+    command: check
+    pass: handoff
+    fail: polish
+  - id: polish
+    proof: none
+    role: builder
+    pass: run_tests
+  - id: handoff
+    proof: none
+"#,
+    );
+    let seed = RunHarness::in_memory().unwrap();
+    let StateCommandOutput::Start(started) = seed
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Start(StartReq {
+                goal: Some("Verify the repository".to_owned()),
+                profile: Some(profile),
+                in_place: true,
+                ..StartReq::default()
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected Start output");
+    };
+    let run_id = &started.run.run_id;
+    let baseline = seed.load_run_graph(run_id).unwrap().unwrap();
+
+    for (case, action) in [
+        ("automated", None),
+        ("interactive reject", Some(SubmitAction::Reject)),
+        ("interactive retry", Some(SubmitAction::Pass)),
+    ] {
+        let harness = RunHarness::in_memory().unwrap();
+        harness.seed_run(&baseline).unwrap();
+        let execute = |cmd| harness.execute(&cfg, &provider, cmd);
+        let worker = WorkerId::new("operator").unwrap();
+        let run = Some(run_id.to_string());
+        let node = "run_tests".to_owned();
+        let revision = if action.is_some() {
+            let StateCommandOutput::Claim(claim) = execute(StateCommand::Claim(ClaimReq {
+                run: run.clone(),
+                node: Some(node.clone()),
+                worker_id: worker.clone(),
+                session_fingerprint: None,
+                force: false,
+                steal_remote: false,
+                worktree: None,
+            }))
+            .unwrap() else {
+                panic!("expected Claim output");
+            };
+            Some(claim.claim_revision)
+        } else {
+            None
+        };
+        let verify = VerifyReq {
+            run: run.clone(),
+            node: node.clone(),
+            worker_id: Some(worker.clone()),
+            test_target: None,
+            claim_revision: revision,
+            worktree: None,
+        };
+        let (command, expected_error) = if action.is_some() {
+            (
+                StateCommand::Verify(verify.clone()),
+                ErrorCode::GateVerificationFailed,
+            )
+        } else {
+            // The runner reaches polish, where a subagent role without a runner stops it before claiming.
+            (
+                StateCommand::Run(RunReq {
+                    run: run.clone(),
+                    ..RunReq::default()
+                }),
+                ErrorCode::WorkflowRunnerRequired,
+            )
+        };
+        assert_eq!(execute(command).unwrap_err().code, expected_error, "{case}");
+        let failed = harness.load_run_graph(run_id).unwrap().unwrap();
+        let trace = harness
+            .latest_trace(run_id, "root:run_tests", revision.unwrap_or(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (trace.status, trace.exit_code),
+            (TraceStatus::Failed, Some(1)),
+            "{case}"
+        );
+        assert_eq!(
+            trace.claim_revision, failed.nodes[0].claim_revision,
+            "{case}"
+        );
+
+        if let Some(action) = action {
+            assert_eq!(failed.nodes[0].status, NodeStatus::InProgress, "{case}");
+            assert_eq!(Some(failed.nodes[0].claim_revision), revision, "{case}");
+            assert_eq!(failed.run.root_cycle_count, 0, "{case}");
+            assert_eq!(failed.nodes[1].status, NodeStatus::Pending, "{case}");
+
+            let rejection_findings = if action == SubmitAction::Reject {
+                Some(RejectionFindings {
+                    kind: Default::default(),
+                    summary: "Repository check failed".to_owned(),
+                    blackboard_message_id: None,
+                    items: vec![FindingItem {
+                        severity: FindingSeverity::High,
+                        path: None,
+                        message: "Repository is unready".to_owned(),
+                        remediation: "Prepare the repository".to_owned(),
+                    }],
+                })
+            } else {
+                fs::write(root.join(".acdd/verify-ready"), "").unwrap();
+                let StateCommandOutput::Verify(retry) =
+                    execute(StateCommand::Verify(verify)).unwrap()
+                else {
+                    panic!("expected Verify output");
+                };
+                assert!(retry.passed);
+                assert_eq!(retry.trace_status, TraceStatus::Passed);
+                assert_eq!(Some(retry.claim_revision), revision);
+                None
+            };
+            execute(StateCommand::Submit(Box::new(SubmitReq {
+                run,
+                node,
+                action,
+                worker_id: worker,
+                claim_revision: revision,
+                test_target: None,
+                review_evidence: None,
+                rejection_findings,
+                custom_evidence: None,
+                verified_invariants: Vec::new(),
+                summary: None,
+                allow_main: false,
+                worktree: None,
+            })))
+            .unwrap();
+        }
+
+        let final_graph = harness.load_run_graph(run_id).unwrap().unwrap();
+        let (run_tests, polish, cycles) = if action == Some(SubmitAction::Pass) {
+            (NodeStatus::Completed, NodeStatus::Pending, 0)
+        } else {
+            (NodeStatus::Pending, NodeStatus::Ready, 1)
+        };
+        assert_eq!(final_graph.nodes[0].status, run_tests, "{case}");
+        assert_eq!(final_graph.nodes[1].status, polish, "{case}");
+        assert_eq!(final_graph.run.root_cycle_count, cycles, "{case}");
+    }
+}
+
+#[test]
 fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     let tmp = make_temp_dir("multi-path-whole-spec");
     let root = tmp.path();

@@ -123,7 +123,7 @@ pub(crate) fn handle_verify_with_failure_return(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: VerifyReq,
-    return_on_failure_transition: bool,
+    apply_failure_transition: bool,
 ) -> Result<VerifyResp, StateError> {
     ensure_state_enabled(config)?;
     let primary = primary_workspace_root(config);
@@ -141,7 +141,10 @@ pub(crate) fn handle_verify_with_failure_return(
                 }
             }
 
-            let has_failure_transition = eval.failure_transition.is_some();
+            let failure_transition = eval
+                .failure_transition
+                .as_ref()
+                .filter(|_| apply_failure_transition);
             exec_tx_with(backend, |tx| {
                 let trace_row_id = match existing_running_trace_id {
                     Some(id) => id,
@@ -158,7 +161,7 @@ pub(crate) fn handle_verify_with_failure_return(
                 let mut finish = eval.trace_finish.clone();
                 finish.trace_row_id = trace_row_id;
                 tx.finish_trace(&finish)?;
-                if let Some(ref failure_plan) = eval.failure_transition {
+                if let Some(failure_plan) = failure_transition {
                     tx.apply_transition_plan(&snapshot.run.run_id, failure_plan)?;
                 }
                 Ok(())
@@ -181,7 +184,7 @@ pub(crate) fn handle_verify_with_failure_return(
 
             let passed = if eval.outcome.is_ok() {
                 true
-            } else if return_on_failure_transition && has_failure_transition {
+            } else if failure_transition.is_some() {
                 false
             } else {
                 eval.outcome?;

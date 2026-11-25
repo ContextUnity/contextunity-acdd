@@ -97,6 +97,11 @@ required before `submit` whenever the gate declares `command:`, `call:`,
   2. Runs configured `command:` (expanding `{test_filter}` when `--test` is passed) or `call: <domain>.<action>`, streaming output to `.acdd/run/<run_id>/traces.jsonl`.
   3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`), then observes post-check freshness (`observe_freshness`) after all checks pass so post-mutation `index_generation` and `execution_digest_salt` values bind into `execution_digest`.
   4. Checks `ProofKind` (`command` requires exit status `0`).
+  5. On a mechanical gate (`role` omitted) with a `fail:` route, interactive
+     `acdd verify` and `acdd_verify` record the failed trace and return the error
+     with the same claim still active. Retry verification under that claim or
+     use `acdd submit --action reject` to take the failure route. `acdd run`
+     takes the failure route automatically.
 - **Submit (`submit`)**:
   - **Concurrency & independence**: verifies active claim ownership (`TASK_ALREADY_CLAIMED`), `claim_revision` (`STALE_CLAIM_REVISION`), and `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
   - **Trace & tree/LOC guards**: requires a fresh passing `verify` trace and non-mutating `observe_freshness` parity without auto-running `verify` (`TASK_PROOF_UNOBSERVED` when missing or stale), plus `save.immutable` checks against `claim_tree` (`TASK_CANDIDATE_MISMATCH`), `need:` predecessor parity, and `max_net_loc` budgets on `tasks.build`.

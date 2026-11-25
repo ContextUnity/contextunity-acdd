@@ -13,9 +13,14 @@ commands:
 
   build_check: *build_check_cmd
 
+  polish_check:
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo run -q -- docs check && cargo run -q -- validate"
+    description: "Run fast compilation, strict Clippy, commitment_integrity, and docs/spec validation on polish before run_tests runs full Linux + macOS suites."
+    timeout_seconds: 600
+
   check_full_repo: &verify_all_cmd
-    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-targets && cargo run -q -- docs check && cargo run -q -- validate && ./scripts/test-macos-ssh.sh"
-    description: "Run Linux workspace checks/tests, docs/config validation, and macOS SSH verification."
+    command: "./scripts/check-full-repo.sh"
+    description: "Run fast sequential pre-checks, then Linux workspace tests and macOS SSH verification in parallel."
     timeout_seconds: 1800
 
   verify_all: *verify_all_cmd
@@ -77,6 +82,7 @@ guidance:
   repo.tests:
     description: "REPOSITORY TEST BUDGETS"
     criteria:
+      - "NEVER run the full workspace test suite (`cargo test --workspace` or unfiltered `cargo test`) manually during `build`, `review`, or `polish`; execute only scoped seam/module tests (`cargo test {scope_target} <filter>`) and let `acdd verify` own gate verification."
       - "Keep `RunHarness::in_memory()`/unit tests `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s` (`tests/AGENTS.md`, `docs/architecture/test-harness.md`)."
       - "STOP before writing FS/`temp_dir`/`Workspace` tests inside `crates/**/src/**` `#[cfg(test)]`: add matrix rows to existing canonical integration binaries (`tests/<domain>.rs`)."
       - "Set `commit.gpgsign=false` in fixture Git setups and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
@@ -119,6 +125,9 @@ gates_patch:
             - cycles
   - id: integration_review
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+  - id: polish
+    command: polish_check
+    guidance: [milestone.polish, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: handoff
     role: coordinator
     guidance: [milestone.handoff, repo.memory_synthesis, core.execution, hitl.pro]

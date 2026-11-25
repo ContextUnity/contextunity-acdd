@@ -167,7 +167,7 @@ closure:
 
 ## Outcome and purpose
 
-Upgrade context selection, search ranking, SQL consumer awareness, DB-backed selector/`get_doc` reliability, and Markdown payload density across the `db/`, `engine/reader.rs`, and `src/format/` modules that align with `AR-005` typed DTOs (while non-conflicting `ast_grep_search` fixes, MCP JSON schema docstring compaction, cross-tool dispatch hints, and CLI defaults ship separately in [ast-inference-schema-compaction-and-cli-parity.md](../plans/ast-inference-schema-compaction-and-cli-parity.md)):
+Upgrade context selection, search ranking, SQL consumer awareness, DB-backed selector/`get_doc` reliability, and Markdown payload density across the `db/`, `engine/reader.rs`, and `src/format/` modules that align with `AR-005` typed DTOs (while non-conflicting `ast_grep_search` fixes, MCP JSON schema docstring compaction, cross-tool dispatch hints, and CLI defaults ship separately in [ast-inference-schema-compaction-and-cli-parity.md](../../plans/ast-inference-schema-compaction-and-cli-parity.md)):
 
 1. **Deterministic 0-1 Knapsack `ClaimResp` Packing (`budget_scored_items` & Tier 6 Lenses)**:
    Replace first-fit sequential break truncation in `src/state_bridge/mod.rs::budget_items` with relevance-weighted 0-1 knapsack packing backed by a pure bounded DP routine in `crates/acdd-core/src/response.rs` (`pack_knapsack_indices`). Maximize cumulative relevance inside `ResponsePolicy.max_output_bytes` instead of dropping trailing high-signal items after an oversized candidate.

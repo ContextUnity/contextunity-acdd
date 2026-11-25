@@ -356,4 +356,6 @@ subtasks:
     title: "Walk through every gate transition, proof artifact propagation (predecessor_proofs, blueprints, reviews, receipts), and budget/independence guard interactively with the human operator"
   - subtask_ref: profile-logic-and-edge-case-signoff
     title: "Verify every profile logic element (mode, with, when, save/handoff/repack, @mentions, wait, and ClaimResp context tiers) against live rendered outputs and record operator sign-off"
+  - subtask_ref: terminal-test-polish-graph-audit
+    title: "Audit all post-build-delivery gates (run_tests, polish, integration_review, handoff), failure/retry transitions, command orchestration, and escalation rules end to end with the operator"
 ```
