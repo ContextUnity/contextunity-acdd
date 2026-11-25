@@ -83,8 +83,9 @@ State operations map symmetrically across the flat CLI and five state MCP tools 
 
 ## Gates and evidence
 
-Every gate transition is mediated by `claim -> (verify) -> submit` inside
-`crates/acdd-state/src/machine/`:
+Every gate transition is mediated by `claim -> verify -> submit` (with `verify`
+required before `submit` whenever the gate declares `command:`, `call:`,
+`checks:`, or `proof: command|call`) inside `crates/acdd-state/src/machine/`:
 
 - **Claim (`claim`)**:
   - Atomically locks or resumes the gate in `gate_claims`, bumping `claim_revision` and `node_version` and recording `claim_tree`.
@@ -94,11 +95,11 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 - **Verify (`verify`)**:
   1. Validates working-tree edits against `WorkspacePathPolicy::is_agent_writable`.
   2. Runs configured `command:` (expanding `{test_filter}` when `--test` is passed) or `call: <domain>.<action>`, streaming output to `.acdd/run/<run_id>/traces.jsonl`.
-  3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`).
+  3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`), then observes post-check freshness (`observe_freshness`) after all checks pass so post-mutation `index_generation` and `execution_digest_salt` values bind into `execution_digest`.
   4. Checks `ProofKind` (`command` requires exit status `0`).
 - **Submit (`submit`)**:
-  - **Concurrency & independence**: verifies `claim_revision` (`STALE_CLAIM_REVISION`) and `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
-  - **Tree & LOC guards**: checks `save.immutable` against `claim_tree` (`TASK_CANDIDATE_MISMATCH`), `need:` predecessor parity, and `max_net_loc` budgets on `tasks.build`.
+  - **Concurrency & independence**: verifies active claim ownership (`TASK_ALREADY_CLAIMED`), `claim_revision` (`STALE_CLAIM_REVISION`), and `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
+  - **Trace & tree/LOC guards**: requires a fresh passing `verify` trace and non-mutating `observe_freshness` parity without auto-running `verify` (`TASK_PROOF_UNOBSERVED` when missing or stale), plus `save.immutable` checks against `claim_tree` (`TASK_CANDIDATE_MISMATCH`), `need:` predecessor parity, and `max_net_loc` budgets on `tasks.build`.
   - **On `--action pass`**: validates proofs (`command`, `review_evidence`, or JSON Schema `custom_evidence`), confirms all task `subtasks` have terminal evidence when `receipt: true`, runs `save.post` (`none`, `commit`, or `snapshot`), writes `save.report`, and advances along `pass:`.
   - **On `--action reject`**: requires structured `RejectionFindings` (`defect` routes to `fail:`; `architectural_drift` routes to `fail_drift:`), or marks the node `escalated` at `max_attempts`.
 

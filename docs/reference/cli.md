@@ -22,7 +22,7 @@ title: CLI reference
 - **Flag precedence**: CLI flags override matching `ACDD_*` environment variables once per invocation.
 - **Profile precedence**: `--profile` / `ACDD_PROFILE` → spec `profile:` → `specs.<collection>.profile` → `profiles_dirs` → `.acdd/profile.yaml` → built-in `code` (plus `base`, `audit`, `documentation`, `spec_planning`).
 - **State DB resolution**: `--state-db` → `state_db` in `acdd.yaml` → `<primary_worktree>/.acdd/state.sqlite` (resolved via `--git-common-dir`).
-- **Runner vs. command environments**: spawned role runners receive `ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, and `ACDD_AGENT_SESSION_ID`; project build/test commands run in a sanitized environment with internal `ACDD_*` variables scrubbed.
+- **Runner vs. command environments**: spawned role runners receive `ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, and `ACDD_AGENT_SESSION_ID`; project build/test commands run in a sanitized environment with `TRACEPARENT`, internal `ACDD_*` variables (`ACDD_CONFIG`, `ACDD_DB`, `ACDD_EXTRACTION_CACHE_DIR`, `ACDD_PROFILE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `ACDD_WORKSPACE_ROOT`, `ACDD_AGENT_SESSION_ID`, `ACDD_ROLE_*`, `ACDD_MODEL`, `ACDD_REASONING`), and `GIT_*` variables scrubbed.
 - **`serve` & `delta` config retention**: `serve` keeps its resolved config/profile across reloads; `delta` reuses the persisted index adapter unless `--config` is passed explicitly.
 
 ## Inventory and indexing
@@ -170,7 +170,7 @@ acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revis
 - `claim`: Claims `<node>` (or auto-selects the next ready cursor when `<node>` is omitted) under optimistic concurrency (`claim_revision` + `node_version`), returning the 6-tier budgeted `ClaimResp` (`contract` + `guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, `context_lenses`). Pass `--force` to take over an active claim (`--steal-remote` required across different host session fingerprints).
 - `verify`: Executes the node's `command:`, `call:`, `checks:` (`DomainProvider`), and write-scope perimeter barrier without advancing state. `--test` passes the targeted test filter to `{test_filter}` and `code.seam` (for example on `build` gates).
 - **`submit`**: submits `--action pass` or `--action reject` for `claim_revision`:
-  - Auto-triggers verification on `command` gates when cached proof is absent; requires `--evidence` on review gates and structured `--findings` (`kind`: `defect | architectural_drift`) on `reject`.
+  - Requires a fresh passing `verify` trace bound to the active `claim_revision` and working tree on gates with `command:`, `call:`, `checks:`, or `proof: command|call` (failing closed with `TASK_PROOF_UNOBSERVED` when absent or stale; `--test` checks trace digest parity without auto-running `verify`), `--evidence` on review/schema gates, and structured `--findings` (`kind`: `defect | architectural_drift`) on `reject`.
   - Creates scoped plumbing commits on `receipt: true` + `save.post: commit` (blocking `main`/`master` unless `--allow-main`) and materializes `save.report` (`report_path`).
 
 ### Scope, reopening, sync, subtasks, and blackboard

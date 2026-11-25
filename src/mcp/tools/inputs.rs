@@ -977,7 +977,7 @@ pub struct SubmitInput {
     pub worker_id: WorkerId,
     /// Optional expected `claim_revision`.
     pub claim_revision: Option<u32>,
-    /// Optional `--test` target forwarded if `submit` auto-triggers `verify`.
+    /// Optional `--test` target forwarded to scoped verification contracts (`submit` requires a prior fresh `verify` trace on `command:`/`call:`/`checks:` gates).
     pub test_target: Option<String>,
     /// Typed review evidence for `proof: review`.
     pub review_evidence: Option<ReviewEvidence>,

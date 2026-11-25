@@ -187,7 +187,10 @@ Each entry in `commands:` is one of:
   mapping changed/admitted scope globs to language commands via the canonical
   brace-aware glob matcher in `acdd_core::path_policy` (most specific glob wins).
   Top-level `scope_args_by_pattern` propagates as fallback arguments into resolved
-  commands (with `{file_stem}` and `{path}` expanded against concrete admitted paths).
+  commands (non-placeholder entries match both concrete file globs and
+  directory-style scopes such as `dir/`, `dir/**`, or extensionless directory
+  paths; `{file_stem}` and `{path}` placeholders expand against concrete
+  admitted file paths).
 
 **`test_filter` & `--test`**:
 - `test_filter: false` (default on unbound/generic commands if omitted) rejects
@@ -236,7 +239,7 @@ Built-in `ProofKind` values are:
 ### `DomainProvider` Extensions (`call`, `checks`, `context`, `tools_add`, `tools_remove`)
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
-- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`).
+- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd_verify` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`); `acdd submit` / `acdd_submit` re-validates live freshness against the recorded trace digest without re-running checks.
 - **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
 
