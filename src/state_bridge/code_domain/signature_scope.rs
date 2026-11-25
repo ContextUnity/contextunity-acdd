@@ -225,28 +225,11 @@ fn find_external_callers_in_index(
     Ok(indexed)
 }
 
-fn normalize_sql_ident(raw: &str) -> Vec<String> {
-    raw.split('.')
-        .map(|seg| {
-            let trimmed = seg.trim();
-            if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-                trimmed[1..trimmed.len() - 1].to_owned()
-            } else {
-                trimmed.trim_matches(['`', '[', ']']).to_ascii_lowercase()
-            }
-        })
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
 fn matches_sql_table_expression(expr: &str, symbol: &Node) -> bool {
-    let expr_parts = normalize_sql_ident(expr);
-    let target_parts = normalize_sql_ident(&symbol.qualname);
-    let (Some(expr_short), Some(target_short)) = (expr_parts.last(), target_parts.last()) else {
-        return false;
-    };
-    if expr_parts.len() > 1 {
-        expr_parts == target_parts
+    let (expr_full, expr_short, qualified) = languages::sql::identifier_keys(expr);
+    let (target_full, target_short, _) = languages::sql::identifier_keys(&symbol.qualname);
+    if qualified {
+        expr_full == target_full
     } else {
         expr_short == target_short
     }

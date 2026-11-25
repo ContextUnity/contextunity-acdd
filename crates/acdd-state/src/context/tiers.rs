@@ -13,11 +13,10 @@ use crate::types::{
 };
 use acdd_core::config::ACDD_DIR;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::{estimate_json_bytes, utf8_tail};
+use acdd_core::format::{estimate_json_bytes, pack_json_lens, utf8_tail};
 use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor};
 use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};
-use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::fs;
@@ -422,7 +421,7 @@ fn is_exhausted_items_lens(val: &Value) -> bool {
     })
 }
 
-fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<Value> {
+fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<(Value, usize)> {
     let Value::Object(mut obj) = val else {
         return None;
     };
@@ -430,44 +429,16 @@ fn pack_oversized_items_lens(val: Value, max_bytes: usize) -> Option<Value> {
         return None;
     };
     let total = items.len();
-    if total == 0 {
-        return None;
-    }
-    obj.entry("total").or_insert_with(|| json!(total));
-    obj.insert("items".to_owned(), json!([]));
-    obj.insert("truncated".to_owned(), json!(true));
-    let base_bytes = estimate_json_bytes(&Value::Object(obj.clone()));
-    let capacity = max_bytes
-        .checked_sub(base_bytes)
-        .filter(|&r| r > 0)?
-        .saturating_add(1);
-    let candidates: Vec<_> = items
-        .iter()
-        .enumerate()
-        .map(|(idx, item)| KnapsackItem {
-            weight: estimate_json_bytes(item).saturating_add(1),
-            score: u64::try_from(total - idx).unwrap_or(u64::MAX),
-        })
-        .collect();
-    let mut selected = pack_knapsack_indices(&candidates, capacity)
-        .into_iter()
-        .peekable();
-    let kept: Vec<_> = items
+    let scored = items
         .into_iter()
         .enumerate()
-        .filter_map(|(idx, item)| {
-            (selected.peek() == Some(&idx)).then(|| {
-                selected.next();
-                item
-            })
-        })
-        .collect();
-    if kept.is_empty() {
-        return None;
-    }
-    obj.insert("items".to_owned(), Value::Array(kept));
-    let packed = Value::Object(obj);
-    (estimate_json_bytes(&packed) <= max_bytes).then_some(packed)
+        .map(|(idx, item)| (u64::try_from(total - idx).unwrap_or(u64::MAX), item));
+    let (packed, bytes) = pack_json_lens(obj, scored, max_bytes);
+    (bytes <= max_bytes
+        && packed["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()))
+    .then_some((packed, bytes))
 }
 
 fn omit_context_lens(
@@ -591,10 +562,7 @@ pub(super) fn apply_tier6_context_lenses(
         let accepted = if new_val_bytes <= remaining {
             Some((val, new_val_bytes))
         } else {
-            pack_oversized_items_lens(val, remaining).map(|packed| {
-                let bytes = estimate_json_bytes(&packed);
-                (packed, bytes)
-            })
+            pack_oversized_items_lens(val, remaining)
         };
         if let Some((accepted_val, accepted_bytes)) = accepted {
             resp.context_lenses

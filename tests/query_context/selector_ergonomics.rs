@@ -26,7 +26,11 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
         "pkg/provider.py",
         "def helper():\n    return 42\n\ndef local_wins():\n    return 'provider'\n",
     );
-    workspace.write("pkg/barrel.py", "from pkg.provider import helper\n");
+    workspace.write(
+        "pkg/barrel.py",
+        "from pkg.provider import helper\n\ndef _private_sibling():\n    return 0\n",
+    );
+    workspace.write("pkg/barrel_consumer.py", "from pkg.barrel import helper\n");
     workspace.write(
         "pkg/consumer.py",
         "from pkg.provider import helper, local_wins\n\ndef local_wins():\n    return 'consumer'\n",
@@ -35,7 +39,7 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
     workspace.write("pkg/dup_b.py", "def clash():\n    return 'b'\n");
     workspace.write(
         "pkg/ambig.py",
-        "from pkg import dup_a, dup_b\n\ndef use_both():\n    return (dup_a.clash(), dup_b.clash())\n",
+        "from pkg.dup_a import clash as clash_a\nfrom pkg.dup_b import clash as clash_b\n",
     );
     workspace.build();
     let conn = workspace.open();
@@ -55,6 +59,12 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
         ),
         ("helper", Some("pkg/barrel.py"), "pkg/provider.py", "helper"),
         (
+            "helper",
+            Some("pkg/barrel_consumer.py"),
+            "pkg/provider.py",
+            "helper",
+        ),
+        (
             "local_wins",
             Some("pkg/consumer.py"),
             "pkg/consumer.py",
@@ -73,21 +83,22 @@ fn selector_colon_scoped_suffix_and_one_hop_imports() {
         );
     }
 
-    // Dot-boundary suffix guard: "ngine::run" must not match "Engine.run"
-    let boundary_err = reader::inspect_paged_with_path(
-        &conn,
-        "ngine::run",
-        Some("src/engine.rs"),
-        false,
-        &options(10),
-    )
-    .unwrap_err();
-    assert!(
-        boundary_err
-            .downcast_ref::<SelectorError>()
-            .is_some_and(|e| matches!(e, SelectorError::NotFound { .. })),
-        "partial suffix must not match across non-dot boundary: {boundary_err}"
-    );
+    for (selector, path) in [
+        ("ngine::run", "src/engine.rs"),
+        ("_private_sibling", "pkg/barrel_consumer.py"),
+        ("local_wins", "pkg/barrel.py"),
+    ] {
+        let error =
+            reader::inspect_paged_with_path(&conn, selector, Some(path), false, &options(10))
+                .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<SelectorError>(),
+                Some(SelectorError::NotFound { .. })
+            ),
+            "unexpected result for {selector} in {path}: {error}"
+        );
+    }
 
     // 1-hop imported/re-exported ambiguity must fail closed with SelectorError::Ambiguous
     let ambig_err =

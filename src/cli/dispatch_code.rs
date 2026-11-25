@@ -566,8 +566,9 @@ fn dispatch_query(
                 .filter(|s| !s.is_empty())
                 .map(str::parse::<acdd_core::response::SymbolClassification>)
                 .transpose()?;
-            let result = symbols::search_with_options(
+            let mut result = symbols::search_results_with_navigation(
                 conn,
+                ctx.root,
                 &pattern,
                 &symbols::SearchOptions {
                     kind: kind.as_deref(),
@@ -577,9 +578,9 @@ fn dispatch_query(
                     exact,
                     page: &page,
                 },
+                false,
+                true,
             )?;
-            let mut result =
-                symbols::search_results_with_navigation(conn, ctx.root, result, false)?;
             if ctx.output_format == OutputFormat::Markdown {
                 result["request_scope"] = json!({
                     "workspace_root": ctx.root.display().to_string(),

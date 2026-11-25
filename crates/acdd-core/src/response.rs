@@ -67,37 +67,27 @@ pub fn pack_knapsack_indices(items: &[KnapsackItem], capacity: usize) -> Vec<usi
             return;
         }
         let (left, right) = items.split_at(items.len() / 2);
-        let scores = |part: &[(usize, &KnapsackItem)]| {
-            let mut dp = vec![(0_u128, usize::MAX); width];
-            for &(index, item) in part {
+        let right_budget = {
+            let mut scores = vec![0_u128; width];
+            let mut remaining_at_split: Vec<usize> = (0..=budget).collect();
+            // Process the suffix first. While processing the left half, carry
+            // forward the right-half capacity of the winning full subset.
+            for (row, &(_, item)) in items.iter().enumerate().rev() {
                 let weight = item.weight.div_ceil(quantum);
-                if weight <= budget {
-                    for used in (weight..=budget).rev() {
-                        let (score, first) = dp[used - weight];
-                        let cand = (score + u128::from(item.score), first.min(index));
-                        if cand.0 > dp[used].0 || (cand.0 == dp[used].0 && cand.1 < dp[used].1) {
-                            dp[used] = cand;
+                for rem in (weight..=budget).rev() {
+                    let take = u128::from(item.score) + scores[rem - weight];
+                    if take >= scores[rem] {
+                        scores[rem] = take;
+                        if row < left.len() {
+                            remaining_at_split[rem] = remaining_at_split[rem - weight];
                         }
                     }
                 }
             }
-            dp
+            remaining_at_split[budget]
         };
-        let (left_scores, right_scores) = (scores(left), scores(right));
-        let split = (0..=budget)
-            .max_by_key(|&n| {
-                let first = left_scores[n].1.min(right_scores[budget - n].1);
-                (
-                    left_scores[n].0 + right_scores[budget - n].0,
-                    std::cmp::Reverse(first),
-                    left_scores[n].0,
-                    n,
-                )
-            })
-            .unwrap();
-        drop((left_scores, right_scores));
-        solve(left, split, quantum, selected);
-        solve(right, budget - split, quantum, selected);
+        solve(left, budget - right_budget, quantum, selected);
+        solve(right, right_budget, quantum, selected);
     }
     let mut selected = Vec::new();
     let candidates: Vec<_> = items
@@ -514,6 +504,18 @@ fn knapsack_matches_boundaries_and_rank_ties() {
     ]
     .map(|(w, s)| item(w, s));
     assert_eq!(pack_knapsack_indices(&ties, 3), [0, 2]);
+    let mut split_ties = vec![item(100, 1); 650];
+    for (index, weight, score) in [
+        (0, 10, 100),
+        (1, 60, 5),
+        (2, 70, 6),
+        (325, 30, 2),
+        (326, 20, 1),
+    ] {
+        split_ties[index] = item(weight, score);
+    }
+    assert_eq!(pack_knapsack_indices(&split_ties[..647], 100), [0, 1, 325]);
+    assert_eq!(pack_knapsack_indices(&split_ties, 100), [0, 1, 325]);
     let large = [item(70_000, 5), item(40_000, 4), item(40_000, 4)];
     assert!(
         pack_knapsack_indices(&large, 80_000)

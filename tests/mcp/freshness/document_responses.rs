@@ -317,15 +317,21 @@ fn get_doc_large_doc_decouples_candidates_and_read_engine_defaults() {
     assert_eq!(full_lines["truncated"], false);
     assert_eq!(full_lines["content"].as_str().unwrap().lines().count(), 125);
 
-    // 4. Concise enclosing footer + trimmed source_preview defaults
+    // 4. Preserve terminal source preview fields in JSON and omit them from Markdown.
+    let request = json!({"path":"src/a.py","selector":"helper"});
     let snippet = client
-        .payload("acdd_read", json!({"path":"src/a.py","selector":"helper"}))
+        .payload("acdd_read", request.clone())
         .expect("snippet read");
     let preview = snippet["source_preview"].as_object().unwrap();
-    assert!(
-        !preview.contains_key("next_source_offset") && !preview.contains_key("continuation_hint")
-    );
-    assert!(!preview.contains_key("omitted_leading_lines"));
+    let markdown = client.text("acdd_read", request).expect("snippet Markdown");
+    for (field, expected) in [
+        ("next_source_offset", json!(null)),
+        ("continuation_hint", json!(null)),
+        ("omitted_leading_lines", json!(0)),
+    ] {
+        assert_eq!(preview.get(field), Some(&expected));
+        assert!(!markdown.contains(field), "{markdown}");
+    }
     let _ = ws;
     client.finish().expect("server must finish successfully");
 }

@@ -164,16 +164,13 @@ pub fn overview_for_path(
     raw_path: &str,
     options: &QueryOptions,
 ) -> Result<Value> {
-    let generation = paging::generation(conn, options)?;
-    let norm = raw_path
-        .trim()
-        .trim_start_matches("./")
-        .trim_end_matches('/');
+    let norm = super::selectors::normalize_scope_path(Some(raw_path), raw_path)?;
     anyhow::ensure!(
-        !norm.is_empty() && !norm.split('/').any(|s| s == ".."),
+        !norm.is_empty(),
         "invalid overview path '{raw_path}'; expected a workspace-relative path"
     );
-    let (start, end) = super::selectors::path_bounds(norm);
+    let generation = paging::generation(conn, options)?;
+    let (start, end) = super::selectors::path_bounds(&norm);
     let cond = "p.path=?1 OR (p.path>=?2 AND p.path<?3)";
     let fcond = "path=?1 OR (path>=?2 AND path<?3)";
     let counts = rows(

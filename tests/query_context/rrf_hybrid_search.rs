@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 fn rrf_corpus() -> &'static crate::common::sqlite::PersistedSnapshot {
     static SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
@@ -203,98 +204,129 @@ fn rrf_multi_signal_ranking_paging_and_pattern_contract() {
 
 #[test]
 fn module_indexed_text_and_snippetless_hits_are_deprioritized() {
+    use crate::common::mcp_harness::McpTestHarness;
+
     let ws = Workspace::new();
-    // Module directory contains "quartztoken" so the module node matches via indexed_text
-    // (not name_prefix) without any source line containing "quartztoken" (snippetless module hit).
-    ws.write("pkg/quartztoken_dir/holder.py", "# module without token\n");
+    let pattern = "quartztoken azuretoken";
+    // The module qualifies for the AND bonus and graph degree, but its source
+    // contains neither token. The concrete hit matches only one term.
+    ws.write(
+        "pkg/quartztoken_azuretoken_dir/holder.py",
+        "# module without token\n",
+    );
+    ws.write(
+        "pkg/consumer.py",
+        "from pkg.quartztoken_azuretoken_dir import holder\n",
+    );
     ws.write(
         "pkg/concrete.py",
         "def concrete_consumer():\n    \"\"\"quartztoken processor\"\"\"\n    return 2\n",
     );
     ws.build();
-    let conn = ws.open();
-
-    let raw = symbols::search_with_options(
-        &conn,
-        "quartztoken",
-        &symbols::SearchOptions {
-            kind: None,
-            path: Some("pkg"),
-            include_docs: false,
-            exact: false,
-            classification: None,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    assert_eq!(raw["pattern"], "quartztoken");
-    let raw_items = raw["nodes"]["items"].as_array().unwrap();
-    assert!(
-        raw_items.len() >= 2,
-        "expected concrete + module hits: {raw}"
-    );
-    assert_eq!(
-        raw_items[0]["name"], "concrete_consumer",
-        "concrete symbol indexed_text hit must outrank module indexed_text hit: {raw}"
-    );
-
-    // Also verify navigation-layer deprioritization when a snippetless module indexed_text
-    // hit is forced ahead of a snippet-bearing hit.
-    let mut synthetic = raw.clone();
-    synthetic["nodes"]["items"]
-        .as_array_mut()
-        .unwrap()
-        .reverse();
-    let nav = symbols::search_results_with_navigation(&conn, ws.root(), synthetic, false).unwrap();
-    let nav_items = nav["nodes"]["items"].as_array().unwrap();
-    assert_eq!(
-        nav_items[0]["name"], "concrete_consumer",
-        "snippetless module indexed_text hit must be deprioritized behind concrete hit: {nav}"
-    );
-    assert!(
-        nav_items[0]["match_snippet"].as_str().is_some(),
-        "top hit must carry resolved match_snippet: {nav}"
-    );
-    let mod_item = nav_items
+    let mut client = McpTestHarness::new(&ws).unwrap();
+    let mut search = |limit, offset, generation| {
+        client
+            .payload(
+                "code_map_search",
+                json!({"pattern":pattern,"path":"pkg","detail":"full",
+                       "limit":limit,"offset":offset,"generation":generation,"include_pulse":false}),
+            )
+            .unwrap()
+    };
+    let full = search(10, 0, Value::Null);
+    assert_eq!(full["pattern"], pattern);
+    let nav_items = full["nodes"]["items"].as_array().unwrap();
+    let concrete = nav_items
         .iter()
-        .find(|item| item["kind"] == "module")
-        .expect("module hit retained at tail");
+        .position(|item| item["name"] == "concrete_consumer")
+        .unwrap();
     assert!(
-        mod_item.get("match_snippet").is_none(),
-        "module hit has no matching source line snippet: {mod_item}"
+        nav_items[concrete]["match_snippet"].as_str().is_some(),
+        "concrete hit must carry resolved match_snippet: {full}"
     );
+    let module = nav_items
+        .iter()
+        .position(|item| {
+            item["kind"] == "module" && item["path"] == "pkg/quartztoken_azuretoken_dir/holder.py"
+        })
+        .unwrap_or_else(|| panic!("expected the indexed-text module hit: {full}"));
+    assert!(
+        concrete < module,
+        "concrete hit must outrank the module: {full}"
+    );
+    assert!(
+        nav_items[module].get("match_snippet").is_none(),
+        "module hit has no matching source line snippet: {full}"
+    );
+    let mut offset = 0;
+    let mut generation = Value::Null;
+    for expected in nav_items {
+        let page = search(1, offset, generation);
+        assert_eq!(page["nodes"]["items"][0]["id"], expected["id"], "{page}");
+        assert_eq!(page["nodes"]["total"], full["nodes"]["total"]);
+        offset = page["nodes"]["next_offset"].as_u64().unwrap_or_default();
+        generation = page["nodes"]["generation"].clone();
+    }
+    assert_eq!(offset, 0, "last page must terminate");
+    client.finish().unwrap();
 }
 
 #[test]
 fn exact_search_retains_the_matching_symbol_without_reading_graph_tables() {
-    let conn = rrf_corpus().open();
-    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
-        AuthAction::Read {
-            table_name: "edges" | "shared_owners",
-            ..
-        } => Authorization::Deny,
-        _ => Authorization::Allow,
-    }));
-    for (pattern, exact, expected_first) in [
-        ("dispatch_hub", true, "dispatch_hub"),
-        ("*dispatch_hub*", false, "dispatch_hub"),
-        ("returns:str", false, "dispatch_hub"),
-    ] {
-        let result = symbols::search_with_options(
-            &conn,
-            pattern,
-            &symbols::SearchOptions {
-                kind: Some("function"),
-                path: Some("pkg"),
-                include_docs: false,
-                exact,
-                classification: None,
-                page: &options(10),
-            },
-        )
+    use crate::common::mcp_harness::McpTestHarness;
+    use contextunity_acdd::mcp::server::Server;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    let ws = Workspace::with_files(&[(
+        "pkg/hub.py",
+        "def dispatch_hub(item: int) -> str:\n    return str(item)\n",
+    )]);
+    ws.build();
+    let server = Server::new(ws.root().to_owned(), ws.db());
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let authorizer_attempts = Arc::clone(&attempts);
+    server
+        .read(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+                AuthAction::Read {
+                    table_name: "edges" | "shared_owners",
+                    ..
+                } => {
+                    authorizer_attempts.fetch_add(1, Ordering::Relaxed);
+                    Authorization::Deny
+                }
+                _ => Authorization::Allow,
+            }));
+            Ok(Value::Null)
+        })
         .unwrap();
+    let mut client = McpTestHarness::from_server(server);
+    for (pattern, exact, include_pulse, expect_pulse) in [
+        ("dispatch_hub", true, None, false),
+        ("dispatch_hub", true, Some(true), false),
+        ("*dispatch_hub*", false, Some(false), false),
+        ("returns:str", false, Some(false), false),
+        ("*dispatch_hub*", false, None, true),
+    ] {
+        let result = client
+            .payload(
+                "code_map_search",
+                json!({"pattern":pattern,"kind":"function",
+                "path":"pkg","exact":exact,"include_pulse":include_pulse}),
+            )
+            .unwrap();
         assert_eq!(result["pattern"], pattern);
-        assert_eq!(result["nodes"]["items"][0]["name"], expected_first);
+        let first = &result["nodes"]["items"][0];
+        assert_eq!(first["name"], "dispatch_hub");
+        assert_eq!(first.get("graph_pulse").is_some(), expect_pulse);
+        assert_eq!(
+            attempts.swap(0, Ordering::Relaxed) > 0,
+            expect_pulse,
+            "{pattern}, exact={exact}, include_pulse={include_pulse:?}"
+        );
     }
-    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    client.finish().unwrap();
 }

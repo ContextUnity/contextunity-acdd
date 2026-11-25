@@ -166,7 +166,7 @@ fn name_at(tokens: &[Token<'_>], mut i: usize) -> Option<(String, usize)> {
 }
 
 /// Canonicalize segment identity: quoting controls case, not equality.
-pub(crate) fn identifier_keys(name: &str) -> (String, String, bool) {
+pub fn identifier_keys(name: &str) -> (String, String, bool) {
     let mut parts = Vec::new();
     let mut part = String::new();
     let mut chars = name.chars().peekable();

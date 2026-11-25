@@ -30,7 +30,6 @@ const RRF_STRUCTURAL_WEIGHT: &str = "2.0";
 const RRF_BM25_WEIGHT: &str = "1.0";
 const RRF_AND_MATCH_WEIGHT: &str = "1.0";
 const RRF_GRAPH_WEIGHT: &str = "0.75";
-const MODULE_INDEXED_TEXT_FACTOR: &str = "0.5";
 const GRAPH_DEGREE_WINDOW: usize = 50;
 
 #[derive(Deserialize, Serialize)]
@@ -640,26 +639,26 @@ pub fn search_with_options(
                 LEFT JOIN fts_and_ranked fa ON fa.node_id=c.node_id
             ), pre_scored AS MATERIALIZED (
                 SELECT node_id,node_hash,kind,path,line,id,match_rank,
+                        (match_rank=4 AND kind='{module_kind}') AS module_text,
                        (CASE WHEN match_rank < 4 THEN {RRF_STRUCTURAL_WEIGHT} / ({RRF_K} + RANK() OVER (PARTITION BY (match_rank < 4) ORDER BY match_rank ASC)) ELSE 0.0 END
                         + CASE WHEN bm25_rank IS NOT NULL THEN {RRF_BM25_WEIGHT} / ({RRF_K} + bm25_rank) ELSE 0.0 END
                         + CASE WHEN and_rank IS NOT NULL THEN {RRF_AND_MATCH_WEIGHT} / ({RRF_K} + and_rank) ELSE 0.0 END) AS base_rrf
                 FROM base_candidates
             ), graph_window AS MATERIALIZED (
                 SELECT node_id,node_hash FROM pre_scored
-                ORDER BY (CASE WHEN match_rank=4 AND kind='{module_kind}' THEN base_rrf * {MODULE_INDEXED_TEXT_FACTOR} ELSE base_rrf END) DESC,
+                 ORDER BY module_text ASC,base_rrf DESC,
                          match_rank ASC,path ASC,line ASC,id ASC
                 LIMIT {GRAPH_DEGREE_WINDOW}
             ), {graph_ctes}, scored AS (
-                SELECT p.node_id,p.match_rank,
-                       ((p.base_rrf + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END)
-                        * CASE WHEN p.match_rank=4 AND p.kind='{module_kind}' THEN {MODULE_INDEXED_TEXT_FACTOR} ELSE 1.0 END) AS rrf_score,
+                 SELECT p.node_id,p.match_rank,p.module_text,
+                        (p.base_rrf + CASE WHEN gr.graph_rank IS NOT NULL THEN {RRF_GRAPH_WEIGHT} / ({RRF_K} + gr.graph_rank) ELSE 0.0 END) AS rrf_score,
                        t.search_total
                 FROM pre_scored p
                 LEFT JOIN graph_ranked gr ON gr.node_id=p.node_id
                 CROSS JOIN result_total t
             ) SELECT {columns},c.match_rank,c.rrf_score,c.search_total
             FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
-            ORDER BY c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
+             ORDER BY c.module_text ASC,c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         );
         let and_query = terms.join(" AND ");
         let or_query = terms.join(" OR ");
@@ -827,18 +826,21 @@ fn apply_indexed_text_match_preview(
     ))
 }
 
-/// Adds indexed signatures and bounded navigation previews to one search page.
+/// Searches and adds indexed signatures and bounded navigation previews in page order.
 pub fn search_results_with_navigation(
     conn: &Connection,
     root: &Path,
-    mut result: Value,
+    pattern: &str,
+    options: &SearchOptions<'_>,
     include_preview: bool,
+    include_pulse: bool,
 ) -> Result<Value> {
     const SIGNATURE_CHAR_LIMIT: usize = 512;
     const PREVIEW_HIT_LIMIT: usize = 3;
     const PREVIEW_BYTES_PER_HIT: usize = 4096;
 
-    let pattern = result["pattern"].as_str().unwrap_or("").to_owned();
+    let mut result = search_with_options(conn, pattern, options)?;
+    let pattern = pattern.trim();
     let has_small_total = result["nodes"]["total"]
         .as_u64()
         .is_some_and(|total| total <= PREVIEW_HIT_LIMIT as u64);
@@ -882,11 +884,8 @@ pub fn search_results_with_navigation(
 
     let previews_enabled = include_preview || has_small_total;
     let markdown = LanguageId::Markdown.as_str();
-    let module_kind = NodeKind::Module.as_str();
-    let mut enriched = Vec::with_capacity(items.len());
-    for item in items.iter() {
+    for (index, item) in items.iter_mut().enumerate() {
         if !item.is_object() {
-            enriched.push((None, Some(item.clone()), None));
             continue;
         }
         let mut dto: SearchNavigationItemDto =
@@ -926,34 +925,14 @@ pub fn search_results_with_navigation(
             apply_indexed_text_match_preview(
                 &mut sources,
                 &mut dto,
-                &pattern,
+                pattern,
                 previews_enabled,
                 PREVIEW_BYTES_PER_HIT,
             )
         } else {
             None
         };
-        enriched.push((Some(dto), None, matched_window));
-    }
-
-    enriched.sort_by_key(|(dto, _, _)| {
-        dto.as_ref().is_some_and(|d| {
-            d.kind.as_ref().and_then(Value::as_str) == Some(module_kind)
-                && d.match_reason.as_deref() == Some("indexed_text")
-                && d.match_snippet.is_none()
-        })
-    });
-
-    for (index, ((dto, raw, matched_window), slot)) in
-        enriched.into_iter().zip(items.iter_mut()).enumerate()
-    {
-        let Some(mut dto) = dto else {
-            if let Some(raw) = raw {
-                *slot = raw;
-            }
-            continue;
-        };
-        if index == 0 {
+        if index == 0 && !options.exact && include_pulse {
             dto.graph_pulse = Some(search_graph_pulse(conn, &dto.id));
         }
         if previews_enabled && index < PREVIEW_HIT_LIMIT {
@@ -988,7 +967,7 @@ pub fn search_results_with_navigation(
                 }
             }
         }
-        *slot = serde_json::to_value(dto)?;
+        *item = serde_json::to_value(dto)?;
     }
     Ok(result)
 }

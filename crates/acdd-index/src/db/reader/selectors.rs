@@ -113,12 +113,13 @@ fn is_known_kind_name(kind: &str) -> bool {
         )
 }
 
-fn normalize_scope_path(path: Option<&str>, selector: &str) -> Result<String> {
+pub(super) fn normalize_scope_path(path: Option<&str>, selector: &str) -> Result<String> {
     let Some(path) = path else {
         return Ok(String::new());
     };
     let raw_path = path.trim();
     let path = raw_path.replace('\\', "/");
+    let path = path.trim_start_matches("./");
     let invalid = raw_path.is_empty()
         || path.starts_with('/')
         || path.as_bytes().contains(&0)
@@ -447,29 +448,16 @@ fn query_imported_symbol_candidates(
     let (kind_filter, clean_target) = split_kind_and_dotted(normalized);
     rows(
         conn,
-        "WITH scoped_nodes(node_hash) AS (\
-             SELECT n.node_hash FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id \
-             WHERE p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/'\
-         ), imported_targets(id,kind,name,qualname,path_id) AS (\
-             SELECT DISTINCT dst.id,dst.kind,dst.name,dst.qualname,dst.path_id \
-             FROM scoped_nodes s \
-             JOIN edges e ON e.src_hash=s.node_hash AND e.kind IN ('imports','references') \
-             JOIN nodes dst ON dst.node_hash=e.dst_hash\
-         ), imported_paths(path_id) AS (\
-             SELECT DISTINCT path_id FROM imported_targets WHERE kind IN ('module','file','component')\
-         ) \
-         SELECT id,kind FROM imported_targets \
-         WHERE kind NOT IN ('module','file','component') AND (?3='' OR kind=?3) \
-           AND ((name=?2 COLLATE NOCASE AND name=?2 COLLATE BINARY) \
-             OR (qualname=?2 COLLATE NOCASE AND qualname=?2 COLLATE BINARY) \
-             OR (length(qualname)>length(?2) AND substr(qualname,-length(?2))=?2 AND substr(qualname,length(qualname)-length(?2),1)='.')) \
-         UNION \
-         SELECT n.id,n.kind FROM imported_paths ip JOIN nodes n ON n.path_id=ip.path_id \
-         WHERE n.kind NOT IN ('module','file','component') AND (?3='' OR n.kind=?3) \
-           AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) \
-             OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY) \
-             OR (length(n.qualname)>length(?2) AND substr(n.qualname,-length(?2))=?2 AND substr(n.qualname,length(n.qualname)-length(?2),1)='.')) \
-         ORDER BY id LIMIT 101",
+        "SELECT DISTINCT dst.id,dst.kind \
+         FROM path_dictionary p JOIN nodes src ON src.path_id=p.path_id \
+         JOIN edges e ON e.src_hash=src.node_hash AND e.kind='imports' \
+         JOIN nodes dst ON dst.node_hash=e.dst_hash \
+         WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/') \
+           AND dst.kind NOT IN ('module','file','component') AND (?3='' OR dst.kind=?3) \
+           AND (dst.name=?2 COLLATE BINARY OR dst.qualname=?2 COLLATE BINARY \
+             OR (length(dst.qualname)>length(?2) AND substr(dst.qualname,-length(?2))=?2 \
+                 AND substr(dst.qualname,length(dst.qualname)-length(?2),1) IN ('.','#'))) \
+         ORDER BY dst.id LIMIT 101",
         &[&scope, &clean_target, &kind_filter],
         101,
     )

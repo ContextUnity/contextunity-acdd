@@ -90,7 +90,10 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             full_source.lines().count()
         );
         assert_eq!(full["source_preview"]["has_more"], false);
-        assert_eq!(full["source_preview"]["next_source_offset"], Value::Null);
+        let preview = &full["source_preview"];
+        assert_eq!(preview.get("next_source_offset"), Some(&Value::Null));
+        assert_eq!(preview.get("continuation_hint"), Some(&Value::Null));
+        assert_eq!(preview.get("omitted_leading_lines"), Some(&json!(0)));
         assert_eq!(full["source_preview"]["truncated_line"], false);
         if label == "explicit-full" {
             assert!(
@@ -365,6 +368,9 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         } else {
             assert_eq!(preview["has_more"], false);
             assert_eq!(preview["omitted_body_lines"], 0);
+            assert_eq!(preview.get("next_source_offset"), Some(&Value::Null));
+            assert_eq!(preview.get("continuation_hint"), Some(&Value::Null));
+            assert_eq!(preview.get("omitted_leading_lines"), Some(&json!(0)));
             break;
         }
     }

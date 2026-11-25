@@ -289,8 +289,9 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
                 let default_detail =
                     (p.page.limit.unwrap_or(policy.page_size) > 10).then_some(Detail::Compact);
                 let page = p.page.resolve_with_default_detail(policy, default_detail)?;
-                let res = symbols::search_with_options(
+                let mut res = symbols::search_results_with_navigation(
                     c,
+                    &server.root,
                     pattern,
                     &symbols::SearchOptions {
                         kind: p.kind.as_deref(),
@@ -300,21 +301,9 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
                         exact: p.exact,
                         page: &page,
                     },
-                )?;
-                let mut res = symbols::search_results_with_navigation(
-                    c,
-                    &server.root,
-                    res,
                     p.include_preview,
+                    p.include_pulse.unwrap_or(true),
                 )?;
-                if p.include_pulse == Some(false) {
-                    if let Some(first) = res
-                        .pointer_mut("/nodes/items/0")
-                        .and_then(Value::as_object_mut)
-                    {
-                        first.remove("graph_pulse");
-                    }
-                }
                 if p.group_by_file {
                     if let Some(items) = res
                         .get_mut("nodes")

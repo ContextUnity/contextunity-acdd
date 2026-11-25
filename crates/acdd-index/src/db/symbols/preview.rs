@@ -393,30 +393,21 @@ pub(super) fn source_preview(
         )
     };
     let start_line = (!output.is_empty()).then_some(source_start_line);
-    let mut preview = serde_json::Map::new();
-    preview.insert("start_line".into(), json!(start_line));
-    preview.insert("end_line".into(), json!(end_line));
-    preview.insert("total_body_lines".into(), json!(body.len()));
-    preview.insert("body_offset".into(), json!(options.offset));
-    preview.insert("body_lines".into(), json!(emitted));
-    preview.insert("leading_lines".into(), json!(leading_count));
-    if has_more {
-        preview.insert("next_source_offset".into(), json!(next));
-    }
-    preview.insert("has_more".into(), json!(has_more));
-    let omitted_leading = available_leading.saturating_sub(leading_count);
-    if omitted_leading > 0 {
-        preview.insert("omitted_leading_lines".into(), json!(omitted_leading));
-    }
-    preview.insert(
-        "omitted_body_lines".into(),
-        json!(body.len().saturating_sub(next)),
-    );
-    preview.insert("truncated_line".into(), json!(false));
-    if let Some(hint) = hint {
-        preview.insert("continuation_hint".into(), json!(hint));
-    }
-    Ok((output, Value::Object(preview)))
+    let preview = json!({
+        "start_line": start_line,
+        "end_line": end_line,
+        "total_body_lines": body.len(),
+        "body_offset": options.offset,
+        "body_lines": emitted,
+        "leading_lines": leading_count,
+        "next_source_offset": has_more.then_some(next),
+        "has_more": has_more,
+        "omitted_leading_lines": available_leading.saturating_sub(leading_count),
+        "omitted_body_lines": body.len().saturating_sub(next),
+        "truncated_line": false,
+        "continuation_hint": hint,
+    });
+    Ok((output, preview))
 }
 
 fn escaped_char_cost(ch: char) -> usize {
@@ -465,7 +456,6 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
 
 #[cfg(all(test, feature = "lang-python"))]
 mod tests {
-    use super::super::search::search_results_with_navigation;
     use super::*;
 
     #[test]
@@ -524,13 +514,6 @@ mod tests {
         }
         let unresolved = json!({"id":"py:case.py:1:missing","kind":"function","name":"missing","path":"case.py","line":1,"end_line":1,"language":"python"});
         assert!(symbol_range(&unresolved, "# no declaration\n").is_err());
-        let results = json!({"nodes":{"total":1,"items":[unresolved]}});
-        let result = search_results_with_navigation(&conn, Path::new("."), results, true).unwrap();
-        let hit = &result["nodes"]["items"][0];
-        assert_eq!(hit["path"], "case.py");
-        assert_eq!(hit["line"], 1);
-        assert_eq!(hit["inspect_selector"]["selector"], hit["id"]);
-        assert!(hit.get("source_preview").is_none());
     }
 
     #[test]

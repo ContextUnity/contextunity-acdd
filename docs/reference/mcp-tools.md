@@ -195,7 +195,7 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
 - **Selector syntax**:
   - **Known symbol / file**: pass a unique symbol name directly (or an identifier returned by `code_map_search`), or pass a file path to select that module/file.
-  - **Qualified selectors**: `path:name`, `path::name`, `path:known_kind:name` (for registered node kinds), `Type::method` / `path + Type.method`, or `path:line` / `path#Lline` (narrowest symbol covering that line); when scoped by `path`, unresolved symbols also check 1-hop `imports`/`references` targets.
+  - **Qualified selectors** use `path:name`, `path::name`, `path:known_kind:name` (for registered node kinds), `Type::method` / `path + Type.method`, or `path:line` / `path#Lline` (narrowest symbol covering that line). With a `path` scope, unresolved selectors also check declarations reached by one resolved import binding, including re-exports.
   - **Prefixes & ambiguity**: relative paths accept `./`, `file:`, or `file://`. Add the path when a bare name matches both a module and a symbol. Markdown belongs in `get_doc` / `search_docs`.
 
 - **`code_map_query` operations & aliases**:
@@ -208,10 +208,13 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
 - **Traversal & scope caps**: depth is capped at `16`; deep traversals whose first frontier exceeds `1,000` links fail (retry with depth `1` or a narrower selector), and removal proofs reject scopes above `10,000` nodes.
 
+- **`code_map_overview`** accepts a workspace-relative directory or file as `path` (alias `file_path`). It normalizes separators and rejects empty, absolute, drive-prefixed, parent-traversing, and NUL-containing scopes. Omit the field for workspace totals.
+
 - **`code_map_search`**:
   - **`pattern` / `query`**: `query` is an alias for `pattern`. Use `pattern: "*"` with a non-empty `path` or `kind` to enumerate symbols in that scope (`path: ""` searches the whole workspace; bare/repeated `*` is rejected).
   - **Type & decorator filters**: searches indexed parameter types, return types, and decorators via `takes:GateProfile`, `returns:Result`, or `@pytest.fixture` (wildcards rejected in type filters; `exact: true` matches names unless a type filter is given).
-  - **Pulse & count horizon**: `include_pulse` (`true`/`false`) includes or suppresses the top-hit `graph_pulse` summary; results exceeding the 1,000-row count horizon render `1000+` in Markdown.
+  - **Top-hit graph pulse** is enabled by default for non-exact searches. Set `include_pulse: false` to skip its graph queries. `exact: true` skips graph reads across ranking and enrichment, including when `include_pulse: true` is supplied.
+  - **Paging** uses the indexed ranking, with module `indexed_text` hits ordered after concrete matches before page slicing. Results exceeding the 1,000-row count horizon render `1000+` in Markdown.
 
 - **Impact, slice, tests & removal details**:
   - **`code_map_impact` & `slice`**: mark the seed node with `is_seed=true` and annotate multi-hop nodes with `via` (shortest path predecessor + edge kind). A directory selector in `slice` lists internal nodes (`graph_depth_applied=0`) plus a `boundary_contract`; unique directory suffixes are accepted.

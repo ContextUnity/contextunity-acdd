@@ -6,7 +6,7 @@ use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
     DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
 };
-use acdd_core::{pack_knapsack_indices, KnapsackItem};
+use acdd_core::response::{pack_knapsack_indices, KnapsackItem};
 use acdd_state::context::{ClaimContextRequest, GateContextAssembler};
 use acdd_state::profile::{
     schema::{GateGuidanceRef, GuidanceEntry},
@@ -421,12 +421,10 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
     );
     assert!(!tier6.context_lenses.contains_key("custom.exhausted"));
     assert!(!tier6.context_lenses.contains_key("custom.huge_blob"));
-    assert!(tier6
-        .omitted_sections
-        .contains(&"context:custom.exhausted".to_owned()));
-    assert!(tier6
-        .omitted_sections
-        .contains(&"context:custom.huge_blob".to_owned()));
+    assert_eq!(
+        tier6.omitted_sections,
+        ["context:custom.exhausted", "context:custom.huge_blob"]
+    );
 
     // Missing lens still fails closed with DomainCapabilityUnavailable.
     let missing_req = sample_claim_request(
@@ -462,7 +460,7 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
     std::fs::create_dir_all(root.join("tests")).unwrap();
     std::fs::write(
         root.join("migrations/001_orders.sql"),
-        "CREATE TABLE orders (id INT PRIMARY KEY, total INT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\n",
+        "CREATE TABLE orders (id INT PRIMARY KEY, total INT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\nCREATE TABLE \"Camel.Dot\" (id INT PRIMARY KEY);\n",
     )
     .unwrap();
     std::fs::write(
@@ -495,6 +493,13 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
         "#[test]\nfn test_orders_sql() { let _ = \"SELECT * FROM orders\"; }\n",
     )
     .unwrap();
+    for (path, name) in [
+        ("src/case_match.sql", r#""Camel.Dot""#),
+        ("src/case_mismatch.sql", r#""camel.dot""#),
+        ("src/qualified_mismatch.sql", "camel.dot"),
+    ] {
+        std::fs::write(root.join(path), format!("SELECT id FROM {name};\n")).unwrap();
+    }
     run_git(&["add", "."]);
     run_git(&["commit", "-m", "init"]);
     let head_oid = String::from_utf8(
@@ -515,6 +520,24 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
         "src/reader.rs",
         "src/writer.rs"
     ]);
+    let expected_indexed_callers = json!([
+        "migrations/002_items.sql",
+        "src/bootstrap.py",
+        "src/index_only.sql",
+        "src/reader.rs",
+        "src/writer.rs"
+    ]);
+    let assert_quoted_callers = |items: &[Value]| {
+        let quoted = items
+            .iter()
+            .find(|item| {
+                item["symbol"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Camel.Dot"))
+            })
+            .unwrap_or_else(|| panic!("missing quoted table in {items:?}"));
+        assert_eq!(quoted["external_callers"], json!(["src/case_match.sql"]));
+    };
     let assemble_sql_callers = || {
         let mut req = sample_claim_request(
             root.to_path_buf(),
@@ -555,24 +578,33 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
 
     // 1. Unindexed baseline fallback (no code-map.sqlite).
     let unindexed = assemble_sql_callers();
-    assert_eq!(unindexed.len(), 1, "{unindexed:?}");
-    assert_eq!(unindexed[0]["symbol"], json!("orders"));
-    assert_eq!(unindexed[0]["signature_changed"], json!(false));
-    assert_eq!(unindexed[0]["external_callers"], expected_callers);
+    assert_eq!(unindexed.len(), 2, "{unindexed:?}");
+    let orders = unindexed
+        .iter()
+        .find(|item| item["symbol"] == "orders")
+        .unwrap();
+    assert_eq!(orders["signature_changed"], false);
+    assert_eq!(orders["external_callers"], expected_callers);
+    assert_quoted_callers(&unindexed);
 
     // 2. Live indexed code-map.sqlite across all 4 SQL table edge kinds, plus unchanged signature_scope.
+    std::fs::write(root.join("src/index_only.sql"), "SELECT id FROM orders;\n").unwrap();
     let db_path = root.join(".acdd/code-map.sqlite");
     contextunity_acdd::engine::pipeline::build(root, &db_path, None).unwrap();
     let indexed = assemble_sql_callers();
-    assert_eq!(indexed.len(), 1, "{indexed:?}");
-    assert_eq!(indexed[0]["symbol"], json!("orders"));
-    assert_eq!(indexed[0]["signature_changed"], json!(false));
-    assert_eq!(indexed[0]["external_callers"], expected_callers);
+    assert_eq!(indexed.len(), 2, "{indexed:?}");
+    let orders = indexed
+        .iter()
+        .find(|item| item["symbol"] == "orders")
+        .unwrap();
+    assert_eq!(orders["signature_changed"], false);
+    assert_eq!(orders["external_callers"], expected_indexed_callers);
+    assert_quoted_callers(&indexed);
 
     // Schema column edit must NOT fail code.signature_scope.
     std::fs::write(
         root.join("migrations/001_orders.sql"),
-        "CREATE TABLE orders (id INT PRIMARY KEY, total INT, currency TEXT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\n",
+        "CREATE TABLE orders (id INT PRIMARY KEY, total INT, currency TEXT);\nCREATE TABLE audit_log (id INT PRIMARY KEY);\nCREATE TABLE \"Camel.Dot\" (id INT PRIMARY KEY);\n",
     )
     .unwrap();
     assert!(matches!(
@@ -592,7 +624,13 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
             .find(|item| item["symbol"] == json!("orders"))
             .unwrap_or_else(|| panic!("{label}: missing orders in {items:?}"));
         assert_eq!(orders["signature_changed"], json!(true), "{label}");
-        assert_eq!(orders["external_callers"], expected_callers, "{label}");
+        let expected = if label == "deleted-stale-index" {
+            &expected_indexed_callers
+        } else {
+            &expected_callers
+        };
+        assert_eq!(&orders["external_callers"], expected, "{label}");
+        assert_quoted_callers(&items);
         let audit = items
             .iter()
             .find(|item| item["symbol"] == json!("audit_log"))

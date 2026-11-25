@@ -2,11 +2,11 @@
 
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::{estimate_json_bytes, sha256_hex};
+use acdd_core::format::sha256_hex;
+use acdd_core::pack_json_lens;
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
-use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use acdd_index::db::reader::open_raw_confined_readonly;
 use acdd_state::usecases::{
     StateCommand, StateCommandOutput, StateEngine, StateEngineConfig, StateQuery, StateQueryEngine,
@@ -313,44 +313,9 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
 }
 
 pub(super) fn budget_scored_items(kind: &str, items: Vec<(u64, Value)>, max_bytes: usize) -> Value {
-    let total = items.len();
     let mut envelope = serde_json::Map::new();
     envelope.insert("kind".to_owned(), json!(kind));
-    envelope.insert("items".to_owned(), json!([]));
-    envelope.insert("total".to_owned(), json!(total));
-    envelope.insert("truncated".to_owned(), json!(false));
-
-    let base_bytes = estimate_json_bytes(&Value::Object(envelope.clone()));
-    let capacity = max_bytes
-        .checked_sub(base_bytes)
-        .filter(|&rem| rem > 0)
-        .map_or(0, |rem| rem.saturating_add(1));
-    let candidates: Vec<_> = items
-        .iter()
-        .map(|(score, item)| KnapsackItem {
-            weight: estimate_json_bytes(item).saturating_add(1),
-            score: *score,
-        })
-        .collect();
-    let mut selected = pack_knapsack_indices(&candidates, capacity)
-        .into_iter()
-        .peekable();
-    let kept: Vec<_> = items
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, (_, item))| {
-            if selected.peek() == Some(&index) {
-                selected.next();
-                Some(item)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let truncated = kept.len() < total;
-    envelope.insert("items".to_owned(), Value::Array(kept));
-    envelope.insert("truncated".to_owned(), json!(truncated));
-    Value::Object(envelope)
+    pack_json_lens(envelope, items.into_iter(), max_bytes).0
 }
 
 pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
@@ -366,12 +331,28 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
 #[cfg(test)]
 #[test]
 fn budget_items_packs_ordered_candidates_within_budget() {
+    use acdd_core::format::estimate_json_bytes;
+
     let items = vec![json!("a".repeat(100)), json!("é"), json!("b")];
     let expected = json!({"kind":"symbols", "items":["é", "b"], "total":3, "truncated":true});
-    let budget = estimate_json_bytes(&expected) + 1;
+    let budget = estimate_json_bytes(&expected);
     let result = budget_items("symbols", items, budget);
     assert_eq!(result, expected);
-    assert!(estimate_json_bytes(&result) <= budget);
+    assert_eq!(estimate_json_bytes(&result), budget);
+    let complete = json!({"kind":"symbols", "items":["b", "c"], "total":2, "truncated":false});
+    let complete_size = estimate_json_bytes(&complete);
+    for (budget, expected) in [
+        (complete_size, complete),
+        (
+            complete_size - 1,
+            json!({"kind":"symbols", "items":["b"], "total":2, "truncated":true}),
+        ),
+    ] {
+        assert_eq!(
+            budget_items("symbols", vec![json!("b"), json!("c")], budget),
+            expected
+        );
+    }
     let scored = budget_scored_items(
         "symbols",
         vec![
@@ -380,7 +361,7 @@ fn budget_items_packs_ordered_candidates_within_budget() {
             (500, json!("hi-2")),
         ],
         estimate_json_bytes(
-            &json!({"kind":"symbols","items":["hi-1","hi-2"],"total":3,"truncated":false}),
+            &json!({"kind":"symbols","items":["hi-1","hi-2"],"total":3,"truncated":true}),
         ),
     );
     assert_eq!(scored["items"], json!(["hi-1", "hi-2"]));

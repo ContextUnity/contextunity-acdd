@@ -23,7 +23,7 @@ pub(crate) fn overview(
     path: Option<&str>,
     page: &QueryOptions,
 ) -> Result<Value> {
-    if let Some(scoped) = path.map(str::trim).filter(|p| !p.is_empty()) {
+    if let Some(scoped) = path {
         let mut result = reader::overview_for_path(conn, scoped, page)?;
         result["workspace_root"] = json!(root.display().to_string());
         return Ok(result);

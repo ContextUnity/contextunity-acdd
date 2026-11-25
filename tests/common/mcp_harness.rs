@@ -142,14 +142,18 @@ impl McpTestHarness {
         let server = Server::new(root.to_path_buf(), database.to_path_buf())
             .with_cache_dir(root.join(".acdd/extraction-cache"))
             .with_session_fingerprint(session.to_owned());
-        Ok(Self {
+        Ok(Self::from_server(server))
+    }
+
+    pub fn from_server(server: Server) -> Self {
+        Self {
             owned_runtime: None,
             mode: Mode::Direct { server },
             id: 0,
             _workspace_owner: None,
             server_task: None,
             server_control: None,
-        })
+        }
     }
 
     pub fn spawn(

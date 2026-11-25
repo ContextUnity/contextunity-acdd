@@ -97,6 +97,39 @@ fn compact_markdown_envelopes_stay_under_4kib_with_json_parity_and_opt_ins() {
     assert_eq!(path_overview_json["path"], "src/other");
     assert_eq!(path_overview_json["counts"]["files"], 1);
     assert_eq!(path_overview_json["freshness"]["status"], "matched");
+    for (field, path, normalized) in [
+        ("path", "./src//other/", "src/other"),
+        ("file_path", r"src\other\util.rs", "src/other/util.rs"),
+    ] {
+        let scoped = client
+            .payload("code_map_overview", json!({(field): path}))
+            .unwrap();
+        assert_eq!(scoped["path"], normalized);
+        assert_eq!(scoped["counts"]["files"], 1);
+    }
+    for path in [
+        "",
+        " ",
+        ".",
+        "/src",
+        r"C:\src",
+        r"./C:\src",
+        "C:src",
+        r"\src",
+        r"src\..\other",
+        "src/../other",
+        "src\0other",
+    ] {
+        let error = client
+            .payload("code_map_overview", json!({"path": path}))
+            .expect_err("invalid scope must fail closed");
+        assert!(
+            error
+                .tool_message()
+                .is_some_and(|message| message.contains("workspace-relative")),
+            "{path:?}: {error}"
+        );
+    }
 
     // 3. Search compaction: default limit=12, 8-char continuing generation replay, include_pulse=false, and opt-in file_uris/detail=full.
     let search_json = client

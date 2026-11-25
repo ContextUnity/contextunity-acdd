@@ -64,6 +64,9 @@ Every active collection has a usable continuation hint containing its original
 request scope, next offset, and accepted generation. Independent nested pages
 remain independently recoverable. Source previews use `source_offset` and
 `generation`, even when all graph collections are complete.
+Terminal JSON source previews retain `next_source_offset` and
+`continuation_hint` as null and report `omitted_leading_lines`, including zero.
+Markdown presents active continuation and nonzero omissions.
 Generation is an opaque accepted token, not necessarily a 64-character string.
 A Git-change generation binds the change view and must not be replaced with the
 index generation.

@@ -13,8 +13,8 @@ pub mod registries;
 pub mod routes;
 /// Semantic dependency facts and rule matching.
 pub mod semantic;
-/// SQL embedded-query profile and literal extractors.
-pub(crate) mod sql;
+/// SQL embedded-query profile and identifier identity.
+pub mod sql;
 #[doc(hidden)]
 pub mod support;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
