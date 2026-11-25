@@ -1049,7 +1049,10 @@ fn agnostic_destructuring_callback_and_polymorphic_protocol_dispatch() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(bounded_inferred, 1, "dispatch retains abstract contract call");
+    assert_eq!(
+        bounded_inferred, 1,
+        "dispatch retains abstract contract call"
+    );
 
     let overflow_possible: i64 = conn
         .query_row(
@@ -1058,7 +1061,10 @@ fn agnostic_destructuring_callback_and_polymorphic_protocol_dispatch() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(overflow_possible, 0, ">8 implementors must not emit truncated possible_calls");
+    assert_eq!(
+        overflow_possible, 0,
+        ">8 implementors must not emit truncated possible_calls"
+    );
     let (overflow_status, overflow_ev): (String, String) = conn
         .query_row(
             "SELECT c.status, v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='overflow.py' AND x.expression='m.handle'",

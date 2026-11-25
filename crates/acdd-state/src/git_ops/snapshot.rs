@@ -1,12 +1,16 @@
 //! Temporary `GIT_INDEX_FILE` scoped trees, candidate hashing, and diffing.
 
-use super::exec::{collect_included_z_paths, create_scoped_temp_dir, run_git_checked, run_git_stdout};
-use acdd_core::fs::ScopedTempDir;
+use super::exec::{
+    collect_included_z_paths, create_scoped_temp_dir, run_git_checked, run_git_stdout,
+};
 use crate::types::IsolationMode;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::fs::{atomic_replace, checked_child, open_confined};
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
-use acdd_core::path_policy::{is_under_dir_case_insensitive, normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::path_policy::{
+    is_under_dir_case_insensitive, normalize_rel_path, WorkspacePathPolicy,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -112,7 +116,10 @@ impl TemporaryGitIndex {
     }
 
     pub(super) fn remove_paths(&self, paths: &[String]) -> Result<(), StateError> {
-        self.update_paths(&["rm", "--cached", "--quiet", "--ignore-unmatch", "--"], paths)
+        self.update_paths(
+            &["rm", "--cached", "--quiet", "--ignore-unmatch", "--"],
+            paths,
+        )
     }
 }
 
@@ -129,7 +136,8 @@ pub(super) fn list_stage_entries(
     )?;
     let mut entries = BTreeMap::new();
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some((mode, oid, _stage, raw_path)) = acdd_core::git::parse_ls_tree_z_record(record) else {
+        let Some((mode, oid, _stage, raw_path)) = acdd_core::git::parse_ls_tree_z_record(record)
+        else {
             continue;
         };
         let path_raw = String::from_utf8_lossy(raw_path);
@@ -163,7 +171,12 @@ pub(super) fn guard_candidate_path(
     path_policy: &WorkspacePathPolicy,
 ) -> Result<(), StateError> {
     let relative = Path::new(rel_path);
-    let invalid = |reason: &str| StateError::new(ErrorCode::ExternalGitDrift, format!("candidate '{rel_path}': {reason}"));
+    let invalid = |reason: &str| {
+        StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!("candidate '{rel_path}': {reason}"),
+        )
+    };
     if index_mode == Some("160000") {
         return Err(invalid("submodule gitlink is not permitted"));
     }
@@ -173,10 +186,18 @@ pub(super) fn guard_candidate_path(
         Err(err) => return Err(snapshot_path_error(rel_path, err)),
     };
     let skip_leaf = !metadata.as_ref().is_some_and(fs::Metadata::is_dir);
-    for prefix in relative.ancestors().skip(usize::from(skip_leaf)).take_while(|p| !p.as_os_str().is_empty()) {
+    for prefix in relative
+        .ancestors()
+        .skip(usize::from(skip_leaf))
+        .take_while(|p| !p.as_os_str().is_empty())
+    {
         match worktree.join(prefix).join(".git").symlink_metadata() {
             Ok(_) => return Err(invalid("nested git repository/submodule is not permitted")),
-            Err(err) if matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
             Err(err) => return Err(snapshot_path_error(rel_path, err)),
         }
     }
@@ -186,14 +207,18 @@ pub(super) fn guard_candidate_path(
     checked_child(worktree, relative).map_err(|err| snapshot_path_error(rel_path, err))?;
     if let Some(limit) = path_policy.max_snapshot_file_bytes {
         if metadata.len() > limit {
-            return Err(invalid(&format!("file exceeds {limit} byte snapshot/commit limit")));
+            return Err(invalid(&format!(
+                "file exceeds {limit} byte snapshot/commit limit"
+            )));
         }
     }
     if !path_policy.is_binary_extension_allowed(rel_path) {
         let mut file = open_confined(worktree, relative, OpenOptions::new().read(true))
             .map_err(|err| snapshot_path_error(rel_path, err))?;
         let mut buf = [0; BINARY_SNIFF_BYTES];
-        let size = file.read(&mut buf).map_err(|err| snapshot_path_error(rel_path, err))?;
+        let size = file
+            .read(&mut buf)
+            .map_err(|err| snapshot_path_error(rel_path, err))?;
         if buf[..size].contains(&0) {
             return Err(invalid("binary file contains NUL bytes"));
         }
@@ -290,17 +315,70 @@ pub(crate) fn snapshot_prefix(run: &RunId, task: Option<&TaskRef>) -> String {
 }
 
 pub(crate) fn validate_snapshot_label(raw: &str) -> Result<(), StateError> {
-    ((1..=64).contains(&raw.len()) && raw != "_adhoc" && !raw.starts_with('.') && !raw.ends_with('.') && !raw.ends_with(".lock") && !raw.contains("..") && raw.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))).then_some(()).ok_or_else(|| StateError::new(ErrorCode::ProfileSchemaInvalid, format!("invalid snapshot name '{raw}'")))
+    ((1..=64).contains(&raw.len())
+        && raw != "_adhoc"
+        && !raw.starts_with('.')
+        && !raw.ends_with('.')
+        && !raw.ends_with(".lock")
+        && !raw.contains("..")
+        && raw
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-')))
+    .then_some(())
+    .ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid snapshot name '{raw}'"),
+        )
+    })
 }
 
 pub(crate) fn parse_older_than(raw: &str) -> Result<u64, StateError> {
-    let bad = || StateError::new(ErrorCode::ProfileSchemaInvalid, format!("invalid duration '{raw}'")); let (n, unit) = (!raw.is_empty() && raw.is_ascii()).then(|| raw.split_at(raw.len() - 1)).ok_or_else(bad)?;
-    let mult = match unit { "s" => 1, "m" => 60, "h" => 3600, "d" => 86400, "w" => 604800, _ => return Err(bad()) };
-    n.parse::<u64>().ok().filter(|v| *v > 0).and_then(|v| v.checked_mul(mult)).ok_or_else(bad)
+    let bad = || {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid duration '{raw}'"),
+        )
+    };
+    let (n, unit) = (!raw.is_empty() && raw.is_ascii())
+        .then(|| raw.split_at(raw.len() - 1))
+        .ok_or_else(bad)?;
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        "w" => 604800,
+        _ => return Err(bad()),
+    };
+    n.parse::<u64>()
+        .ok()
+        .filter(|v| *v > 0)
+        .and_then(|v| v.checked_mul(mult))
+        .ok_or_else(bad)
 }
 
-pub(crate) fn list_snapshot_refs(worktree: &Path, prefix: &str) -> Result<Vec<(String, i64)>, StateError> {
-    Ok(run_git_stdout(worktree, &["for-each-ref", "--format=%(refname)%09%(committerdate:unix)", prefix], None, ErrorCode::ExternalGitDrift)?.lines().filter(|line| !line.is_empty()).map(|line| { let (name, ts) = line.split_once('\t').unwrap_or((line, "0")); (name.to_owned(), ts.parse().unwrap_or(0)) }).collect())
+pub(crate) fn list_snapshot_refs(
+    worktree: &Path,
+    prefix: &str,
+) -> Result<Vec<(String, i64)>, StateError> {
+    Ok(run_git_stdout(
+        worktree,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%09%(committerdate:unix)",
+            prefix,
+        ],
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?
+    .lines()
+    .filter(|line| !line.is_empty())
+    .map(|line| {
+        let (name, ts) = line.split_once('\t').unwrap_or((line, "0"));
+        (name.to_owned(), ts.parse().unwrap_or(0))
+    })
+    .collect())
 }
 
 pub(crate) fn parse_canonical_revision(name: &str, prefix: &str) -> Option<u32> {
@@ -309,28 +387,78 @@ pub(crate) fn parse_canonical_revision(name: &str, prefix: &str) -> Option<u32> 
     num.parse::<u32>().ok().filter(|v| v.to_string() == num)
 }
 
-pub(crate) fn save_task_snapshot(worktree: &Path, reference: &str, tree: &TreeOid, create_only: bool) -> Result<(), StateError> {
+pub(crate) fn save_task_snapshot(
+    worktree: &Path,
+    reference: &str,
+    tree: &TreeOid,
+    create_only: bool,
+) -> Result<(), StateError> {
     let code = ErrorCode::ExternalGitDrift;
-    let commit = run_git_stdout(worktree, &["-c", "user.name=acdd-agent", "-c", "user.email=acdd@contextunity.local", "commit-tree", tree.as_str(), "--no-gpg-sign", "-m", reference], None, code)?;
+    let commit = run_git_stdout(
+        worktree,
+        &[
+            "-c",
+            "user.name=acdd-agent",
+            "-c",
+            "user.email=acdd@contextunity.local",
+            "commit-tree",
+            tree.as_str(),
+            "--no-gpg-sign",
+            "-m",
+            reference,
+        ],
+        None,
+        code,
+    )?;
     let zero = "0".repeat(commit.trim().len());
-    let args = if create_only { vec!["update-ref", "--no-deref", reference, &commit, &zero] } else { vec!["update-ref", "--no-deref", reference, &commit] };
+    let args = if create_only {
+        vec!["update-ref", "--no-deref", reference, &commit, &zero]
+    } else {
+        vec!["update-ref", "--no-deref", reference, &commit]
+    };
     run_git_checked(worktree, &args, None, None, code).map(|_| ())
 }
 
 pub(crate) fn restore_task_snapshot(
-    worktree: &Path, prefix: &str, revision: Option<u32>, scope: Option<&[String]>, policy: &WorkspacePathPolicy,
+    worktree: &Path,
+    prefix: &str,
+    revision: Option<u32>,
+    scope: Option<&[String]>,
+    policy: &WorkspacePathPolicy,
 ) -> Result<String, StateError> {
     let code = ErrorCode::ExternalGitDrift;
     let reference = if let Some(rev) = revision {
         format!("{prefix}r{rev}")
     } else {
-        list_snapshot_refs(worktree, prefix)?.into_iter().filter_map(|(name, _)| parse_canonical_revision(&name, prefix).map(|r| (r, name)))
-            .max_by_key(|(rev, _)| *rev).map(|(_, name)| name).unwrap_or_default()
+        list_snapshot_refs(worktree, prefix)?
+            .into_iter()
+            .filter_map(|(name, _)| parse_canonical_revision(&name, prefix).map(|r| (r, name)))
+            .max_by_key(|(rev, _)| *rev)
+            .map(|(_, name)| name)
+            .unwrap_or_default()
     };
-    if reference.is_empty() { return Err(StateError::new(code, format!("no snapshot ref found under {prefix}"))); }
-    let tree = run_git_stdout(worktree, &["rev-parse", "--verify", &format!("{reference}^{{tree}}")], None, code)?;
+    if reference.is_empty() {
+        return Err(StateError::new(
+            code,
+            format!("no snapshot ref found under {prefix}"),
+        ));
+    }
+    let tree = run_git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &format!("{reference}^{{tree}}")],
+        None,
+        code,
+    )?;
     let current = current_scope_tree(worktree, scope, policy)?;
-    let args = ["diff-tree", "-r", "--no-renames", "--raw", "-z", current.as_str(), &tree];
+    let args = [
+        "diff-tree",
+        "-r",
+        "--no-renames",
+        "--raw",
+        "-z",
+        current.as_str(),
+        &tree,
+    ];
     let diff = run_git_checked(worktree, &args, None, None, code)?;
     let (index, backup_dir) = TemporaryGitIndex::create_temp(worktree)?;
     index.read_tree(&tree)?;
@@ -338,17 +466,29 @@ pub(crate) fn restore_task_snapshot(
     let mut removals = Vec::new();
     let mut originals = Vec::new();
     let mut absent_dirs = BTreeSet::new();
-    let mut records = diff.stdout.split(|b| *b == 0).filter(|record| !record.is_empty());
+    let mut records = diff
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|record| !record.is_empty());
     while let Some(header) = records.next() {
-        let raw = records.next().and_then(|p| std::str::from_utf8(p).ok())
+        let raw = records
+            .next()
+            .and_then(|p| std::str::from_utf8(p).ok())
             .ok_or_else(|| StateError::new(code, "snapshot path must be UTF-8"))?;
         if normalize_rel_path(raw).as_deref() != Some(raw) {
-            return Err(StateError::new(code, format!("snapshot path '{raw}' is not normalized")));
+            return Err(StateError::new(
+                code,
+                format!("snapshot path '{raw}' is not normalized"),
+            ));
         }
-        if !policy.is_candidate_included(raw) || is_under_dir_case_insensitive(raw, ".acdd") || scope.is_some_and(|scope| !policy.is_scope_admitted(raw, scope)) {
+        if !policy.is_candidate_included(raw)
+            || is_under_dir_case_insensitive(raw, ".acdd")
+            || scope.is_some_and(|scope| !policy.is_scope_admitted(raw, scope))
+        {
             continue;
         }
-        let path = checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;
+        let path =
+            checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;
         guard_candidate_path(worktree, raw, None, policy)?;
         let dest_meta = match fs::symlink_metadata(&path) {
             Ok(meta) => Some(meta),
@@ -356,7 +496,10 @@ pub(crate) fn restore_task_snapshot(
             Err(err) => return Err(snapshot_path_error(raw, err)),
         };
         if dest_meta.as_ref().is_some_and(|m| !m.is_file()) {
-            return Err(StateError::new(code, format!("snapshot destination '{raw}' is not a regular file")));
+            return Err(StateError::new(
+                code,
+                format!("snapshot destination '{raw}' is not a regular file"),
+            ));
         }
         match header.split(|b| *b == b' ').nth(1) {
             Some(b"000000") if dest_meta.is_some() => removals.push(raw.to_owned()),
@@ -365,14 +508,24 @@ pub(crate) fn restore_task_snapshot(
                 writes.extend_from_slice(raw.as_bytes());
                 writes.push(0);
             }
-            _ => return Err(StateError::new(code, format!("snapshot entry '{raw}' is not a regular file"))),
+            _ => {
+                return Err(StateError::new(
+                    code,
+                    format!("snapshot entry '{raw}' is not a regular file"),
+                ))
+            }
         }
         let backup = if dest_meta.is_some() {
             let backup = backup_dir.path().join(originals.len().to_string());
             fs::copy(&path, &backup).map_err(|err| snapshot_path_error(raw, err))?;
             Some(backup)
         } else {
-            absent_dirs.extend(path.ancestors().skip(1).take_while(|p| !p.exists()).map(Path::to_path_buf));
+            absent_dirs.extend(
+                path.ancestors()
+                    .skip(1)
+                    .take_while(|p| !p.exists())
+                    .map(Path::to_path_buf),
+            );
             None
         };
         originals.push((raw, backup));
@@ -381,7 +534,14 @@ pub(crate) fn restore_task_snapshot(
         Ok(())
     } else {
         let args = ["checkout-index", "--force", "-z", "--stdin"];
-        run_git_checked(worktree, &args, Some(&index.index_path), Some(&writes), code).map(|_| ())
+        run_git_checked(
+            worktree,
+            &args,
+            Some(&index.index_path),
+            Some(&writes),
+            code,
+        )
+        .map(|_| ())
     }
     .and_then(|()| {
         removals
@@ -391,12 +551,16 @@ pub(crate) fn restore_task_snapshot(
     if let Err(mut error) = result {
         for (raw, backup) in originals {
             if let Err(err) = rollback_snapshot_path(worktree, raw, backup.as_deref()) {
-                error.message.push_str(&format!(". Rollback of '{raw}' failed: {err}"));
+                error
+                    .message
+                    .push_str(&format!(". Rollback of '{raw}' failed: {err}"));
             }
         }
         for dir in absent_dirs.iter().rev().filter(|dir| dir.exists()) {
             if let Err(err) = fs::remove_dir(dir) {
-                error.message.push_str(&format!(". Rollback of '{}' failed: {err}", dir.display()));
+                error
+                    .message
+                    .push_str(&format!(". Rollback of '{}' failed: {err}", dir.display()));
             }
         }
         return Err(error);
@@ -425,16 +589,24 @@ fn rollback_snapshot_path(worktree: &Path, raw: &str, backup: Option<&Path>) -> 
 }
 
 fn snapshot_path_error(path: impl std::fmt::Display, err: std::io::Error) -> StateError {
-    StateError::new(ErrorCode::ExternalGitDrift, format!("cannot update '{path}': {err}"))
+    StateError::new(
+        ErrorCode::ExternalGitDrift,
+        format!("cannot update '{path}': {err}"),
+    )
 }
 
 pub(crate) fn remove_confined_file(worktree: &Path, rel_path: &str) -> Result<(), StateError> {
-    let target = checked_child(worktree, Path::new(rel_path)).map_err(|err| snapshot_path_error(rel_path, err))?;
+    let target = checked_child(worktree, Path::new(rel_path))
+        .map_err(|err| snapshot_path_error(rel_path, err))?;
     match fs::remove_file(&target) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         result => result.map_err(|err| snapshot_path_error(rel_path, err))?,
     }
-    for dir in target.ancestors().skip(1).take_while(|dir| *dir != worktree && dir.starts_with(worktree)) {
+    for dir in target
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != worktree && dir.starts_with(worktree))
+    {
         if fs::remove_dir(dir).is_err() {
             break;
         }

@@ -117,8 +117,9 @@ fn linker_borrows_arena_keys_and_reuses_qualified_lookup_storage() {
             ),
         ]);
         let baseline = pool.install(|| crate::common::link_facts(&facts));
-        let (graph, allocations) =
-            pool.install(|| measured_lookup_allocations(allocation_size, || crate::common::link_facts(&facts)));
+        let (graph, allocations) = pool.install(|| {
+            measured_lookup_allocations(allocation_size, || crate::common::link_facts(&facts))
+        });
         assert_eq!(
             serde_json::to_value((&graph.edges, &graph.coverage)).unwrap(),
             serde_json::to_value((&baseline.edges, &baseline.coverage)).unwrap(),
@@ -225,11 +226,17 @@ fn fixture() -> BTreeMap<String, Facts> {
     facts.insert(
         "docs/api.md".into(),
         Facts {
-            docs: docs::extract_with_details_with_zones("docs/api.md", "# API\n`Foo.method`\n", 0., &[], None)
-                .unwrap()
-                .into_iter()
-                .map(|(doc, _)| doc)
-                .collect(),
+            docs: docs::extract_with_details_with_zones(
+                "docs/api.md",
+                "# API\n`Foo.method`\n",
+                0.,
+                &[],
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|(doc, _)| doc)
+            .collect(),
             ..Facts::default()
         },
     );
@@ -282,17 +289,26 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
             .count(),
         2
     );
-    let graph = crate::common::link_facts_with_root(&facts, Some(&BTreeSet::from(["docs/api.md".to_owned()])), None);
+    let graph = crate::common::link_facts_with_root(
+        &facts,
+        Some(&BTreeSet::from(["docs/api.md".to_owned()])),
+        None,
+    );
     assert!(!graph
         .edges
         .iter()
         .any(|e| matches!(e.kind.as_str(), "documents" | "references_doc")));
-    facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract_with_details_with_zones("docs/api.md", "# API\n`a.Foo.method`\n", 0., &[], None)
-            .unwrap()
-            .into_iter()
-            .map(|(doc, _)| doc)
-            .collect();
+    facts.get_mut("docs/api.md").unwrap().docs = docs::extract_with_details_with_zones(
+        "docs/api.md",
+        "# API\n`a.Foo.method`\n",
+        0.,
+        &[],
+        None,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|(doc, _)| doc)
+    .collect();
     let graph = crate::common::link_facts(&facts);
     let targets: Vec<_> = graph
         .edges
@@ -310,12 +326,17 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
             .id]
     );
     facts.remove("b.py");
-    facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract_with_details_with_zones("docs/api.md", "# API\n`Foo.method`\n", 0., &[], None)
-            .unwrap()
-            .into_iter()
-            .map(|(doc, _)| doc)
-            .collect();
+    facts.get_mut("docs/api.md").unwrap().docs = docs::extract_with_details_with_zones(
+        "docs/api.md",
+        "# API\n`Foo.method`\n",
+        0.,
+        &[],
+        None,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|(doc, _)| doc)
+    .collect();
     let graph = crate::common::link_facts(&facts);
     let targets: Vec<_> = graph
         .edges

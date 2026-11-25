@@ -48,7 +48,13 @@ impl LoadedRunGraph {
         reader: &dyn StateReader,
         target_worktree: Option<&Path>,
     ) -> Result<WorkspacePathPolicy, StateError> {
-        build_path_policy(config, reader, &[], Some(&self.snapshot.run), target_worktree)
+        build_path_policy(
+            config,
+            reader,
+            &[],
+            Some(&self.snapshot.run),
+            target_worktree,
+        )
     }
 }
 
@@ -104,7 +110,14 @@ pub fn resolve_run_optional(
                 "run selector cannot be empty",
             ));
         }
-        let all = list_all_runs(reader, if active_only { Some(RunStatus::Active) } else { None })?;
+        let all = list_all_runs(
+            reader,
+            if active_only {
+                Some(RunStatus::Active)
+            } else {
+                None
+            },
+        )?;
         let matches: Vec<RunRecord> = all
             .into_iter()
             .filter(|r| r.run_id.as_str() == trimmed || r.run_name.as_str() == trimmed)
@@ -161,7 +174,9 @@ pub fn resolve_run_optional(
 }
 
 /// Paginate all tombstones from `reader`.
-pub fn list_all_tombstones(reader: &dyn StateReader) -> Result<Vec<RunTombstoneRecord>, StateError> {
+pub fn list_all_tombstones(
+    reader: &dyn StateReader,
+) -> Result<Vec<RunTombstoneRecord>, StateError> {
     let mut out = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -222,7 +237,10 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
     layout: Option<&RepoWorktreeLayout>,
 ) -> Result<Vec<String>, StateError> {
     let mut cleaned = Vec::new();
-    for tomb in list_all_tombstones(backend)?.iter().filter(|t| t.cleanup_pending) {
+    for tomb in list_all_tombstones(backend)?
+        .iter()
+        .filter(|t| t.cleanup_pending)
+    {
         cleaned.extend(cleanup_tombstone(config, backend, tomb, layout)?);
     }
     Ok(cleaned)
@@ -259,7 +277,9 @@ pub(in crate::usecases) fn cleanup_tombstone(
                 Ok(target) => fs::remove_file(target).is_ok(),
                 Err(_) => false,
             },
-            "worktree" => remove_worktree_and_branch(&primary, Some(path), None, entry.force).is_ok(),
+            "worktree" => {
+                remove_worktree_and_branch(&primary, Some(path), None, entry.force).is_ok()
+            }
             "branch" => {
                 let force = entry.force
                     || (tomb.terminal_status == TerminalStatus::Completed

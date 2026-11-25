@@ -1,5 +1,5 @@
-use crate::languages::profile::ProfileLinker;
 use super::context::*;
+use crate::languages::profile::ProfileLinker;
 
 fn scope_nodes_shadow_value<'a>(
     owner: &'a Node,
@@ -105,9 +105,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         _at: SourcePosition,
     ) -> Option<TypeTarget<'a>> {
         use super::super::value_flow::ConfiguredReceiverAuthority as Authority;
-        if let Some(result) = languages::by_id(owner.language.as_str())
-            .and_then(|profile| profile.linker().special_member_result(self, receiver, member, owner))
-        {
+        if let Some(result) = languages::by_id(owner.language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .special_member_result(self, receiver, member, owner)
+        }) {
             return result;
         }
         if let Some(next) = languages::by_id(owner.language.as_str())
@@ -118,20 +120,22 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         match receiver {
             TypeTarget::Builtin(name) => {
                 let lookup_name = crate::languages::by_id(owner.language.as_str())
-                    .map_or(name.as_str(), |profile| profile.linker().normalize_builtin_receiver(name));
+                    .map_or(name.as_str(), |profile| {
+                        profile.linker().normalize_builtin_receiver(name)
+                    });
                 let (pack, _rule_id, rule) =
                     self.receiver_rule_with_meta(&owner.path, lookup_name)?;
                 self.resolve_receiver_rule_member(owner, receiver, receiver, pack, rule, member)
             }
             TypeTarget::Collection { base, .. } => {
-                if let Some((pack, authority)) = self.hierarchy_authority_for_base(&owner.path, base)
+                if let Some((pack, authority)) =
+                    self.hierarchy_authority_for_base(&owner.path, base)
                 {
                     if let Authority::Hierarchy { rule, .. } = authority.as_ref() {
                         if rule.members.iter().any(|allowed| allowed == member) {
                             if let Some(policy) = rule.returns.get(member) {
-                                return self.project_hierarchy_policy(
-                                    owner, receiver, &pack, policy, 0,
-                                );
+                                return self
+                                    .project_hierarchy_policy(owner, receiver, &pack, policy, 0);
                             }
                         }
                     }
@@ -150,9 +154,13 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             ),
             TypeTarget::Local(class) => {
                 let language = class.language.as_str();
-                let (pack, _row, policy) = self.member_state(language)?.return_policy(class, member)?;
-                let crate::languages::profile::LanguageMemberResult::External { module, import_line: line, .. } =
-                    self.lookup_language_member(language, class, member, false, owner)
+                let (pack, _row, policy) =
+                    self.member_state(language)?.return_policy(class, member)?;
+                let crate::languages::profile::LanguageMemberResult::External {
+                    module,
+                    import_line: line,
+                    ..
+                } = self.lookup_language_member(language, class, member, false, owner)
                 else {
                     return None;
                 };
@@ -283,8 +291,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         if let Some(result) = self.resolve_factory_result(owner, callee, at) {
             return Some(result);
         }
-        languages::by_id(owner.language.as_str()).and_then(|profile|
-            profile.linker().external_factory_result(self, owner, callee, at))
+        languages::by_id(owner.language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .external_factory_result(self, owner, callee, at)
+        })
     }
     fn resolve_factory_result(
         &self,
@@ -292,7 +303,8 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         callee: &str,
         at: SourcePosition,
     ) -> Option<TypeTarget<'a>> {
-        if !languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().tracks_factory_results())
+        if !languages::by_id(owner.language.as_str())
+            .is_some_and(|profile| profile.linker().tracks_factory_results())
             || callee.contains('.')
         {
             return None;
@@ -404,8 +416,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
         let nominal = self.resolve_symbol(owner, base, at, SymbolRole::Type);
-        if let Some(target) = languages::by_id(owner.language.as_str()).and_then(|profile|
-            profile.linker().resolve_applied_type(self, owner, (base, args), &nominal, at)) {
+        if let Some(target) = languages::by_id(owner.language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .resolve_applied_type(self, owner, (base, args), &nominal, at)
+        }) {
             return target;
         }
         match nominal {
@@ -428,8 +443,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 TypeTarget::Builtin(name)
             }
             Symbol::Type(TypeTarget::External { module, .. })
-                if languages::by_id(owner.language.as_str()).is_some_and(|profile|
-                    profile.linker().external_generic_base(&module, clean_base, profile)) =>
+                if languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                    profile
+                        .linker()
+                        .external_generic_base(&module, clean_base, profile)
+                }) =>
             {
                 TypeTarget::Builtin(clean_base.to_string())
             }
@@ -454,8 +472,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         {
             return payload;
         }
-        let admitted = languages::by_id(owner.language.as_str()).is_some_and(|profile|
-            profile.linker().admits_type_payload(owner, &wrapper, args.len()));
+        let admitted = languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+            profile
+                .linker()
+                .admits_type_payload(owner, &wrapper, args.len())
+        });
         if !admitted {
             return TypeTarget::Unknown;
         }
@@ -523,7 +544,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                     .and_then(|aliases| self.symbol_id(head).and_then(|head| aliases.get(&head)))
                 {
                     if *position <= at
-                        || languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().import_visible_before_position(owner))
+                        || languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                            profile.linker().import_visible_before_position(owner)
+                        })
                     {
                         if let [target] = targets.as_slice() {
                             if target.kind == crate::models::tags::NodeKind::Module {
@@ -579,16 +602,17 @@ impl<'a> Context<'a> {
                 } = authority.as_ref()
                 {
                     if let Some(name) = nominal.rule.properties.get(member) {
-                        return Symbol::Type(self.resolve_nominal_target(
-                            owner,
-                            name,
-                            receiver,
-                            false,
-                        ));
+                        return Symbol::Type(
+                            self.resolve_nominal_target(owner, name, receiver, false),
+                        );
                     }
                 }
-                if let Some(target) = languages::by_id(owner.language.as_str())
-                    .and_then(|profile| profile.linker().synthetic_property_result(owner, receiver, member))
+                if let Some(target) =
+                    languages::by_id(owner.language.as_str()).and_then(|profile| {
+                        profile
+                            .linker()
+                            .synthetic_property_result(owner, receiver, member)
+                    })
                 {
                     return Symbol::Type(target);
                 }
@@ -606,12 +630,20 @@ impl<'a> Context<'a> {
                 Some(node) => Symbol::Callable(node),
                 None => Symbol::Unknown,
             },
-            TypeTarget::ClassType(inner) if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().class_type_uses_associated_lookup()) => {
+            TypeTarget::ClassType(inner)
+                if languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                    profile.linker().class_type_uses_associated_lookup()
+                }) =>
+            {
                 self.resolve_member_with_mode(inner, member, owner, _at, associated)
             }
-            TypeTarget::External { .. } if languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().external_field_projection()) => self
-                .resolve_member_result(receiver, member, owner, _at)
-                .map_or(Symbol::Unknown, Symbol::Type),
+            TypeTarget::External { .. }
+                if languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().external_field_projection()) =>
+            {
+                self.resolve_member_result(receiver, member, owner, _at)
+                    .map_or(Symbol::Unknown, Symbol::Type)
+            }
             _ => Symbol::Unknown,
         }
     }
@@ -726,7 +758,8 @@ impl<'a> Context<'a> {
         is_dom_pack: bool,
     ) -> TypeTarget<'a> {
         if !is_dom_pack {
-            if let Some((pack, rule_id, nominal)) = self.receiver_rule_with_meta(&owner.path, name) {
+            if let Some((pack, rule_id, nominal)) = self.receiver_rule_with_meta(&owner.path, name)
+            {
                 if pack != "web" {
                     return TypeTarget::ConfiguredReceiver {
                         authority: std::sync::Arc::new(
@@ -843,9 +876,7 @@ impl<'a> Context<'a> {
             ReturnTypeNode::Named(name) => {
                 if name == "Item" {
                     return match ctx.receiver {
-                        Some(
-                            TypeTarget::Collection { item, .. },
-                        ) => (**item).clone(),
+                        Some(TypeTarget::Collection { item, .. }) => (**item).clone(),
                         Some(TypeTarget::ConfiguredReceiver {
                             fallback: Some(fallback),
                             ..
@@ -854,11 +885,13 @@ impl<'a> Context<'a> {
                             _ => TypeTarget::Unknown,
                         },
                         Some(target) => languages::by_id(ctx.owner.language.as_str())
-                            .and_then(|profile| profile.linker().collection_item(target)).unwrap_or(TypeTarget::Unknown),
+                            .and_then(|profile| profile.linker().collection_item(target))
+                            .unwrap_or(TypeTarget::Unknown),
                         _ => TypeTarget::Unknown,
                     };
                 }
-                self.project_named_return(name, ctx).unwrap_or(TypeTarget::Unknown)
+                self.project_named_return(name, ctx)
+                    .unwrap_or(TypeTarget::Unknown)
             }
         }
     }
@@ -879,14 +912,21 @@ impl<'a> Context<'a> {
             .map(|arg| self.project_return_node(arg, ctx, depth + 1))
             .unwrap_or(TypeTarget::Unknown);
         let linker = languages::by_id(ctx.owner.language.as_str()).map(|profile| profile.linker());
-        if let Some(target) = linker.and_then(|linker| linker.project_applied_return(short, &first, &mut ||
-            args.get(1).map(|arg| self.project_return_node(arg, ctx, depth + 1)))) {
+        if let Some(target) = linker.and_then(|linker| {
+            linker.project_applied_return(short, &first, &mut || {
+                args.get(1)
+                    .map(|arg| self.project_return_node(arg, ctx, depth + 1))
+            })
+        }) {
             return target;
         }
         match short {
             "Promise" => TypeTarget::Promise(Box::new(first)),
             "Option" | "Result" => first,
-            "Iterator" => TypeTarget::Collection { base: constructor.to_owned(), item: Box::new(first) },
+            "Iterator" => TypeTarget::Collection {
+                base: constructor.to_owned(),
+                item: Box::new(first),
+            },
             "QuerySet" => {
                 if let Some(TypeTarget::ConfiguredReceiver {
                     authority,
@@ -914,13 +954,13 @@ impl<'a> Context<'a> {
                     }
                 }
             }
-            "NodeList" | "HTMLCollection" | "Array" | "List" | "list" => {
-                TypeTarget::Collection {
-                    base: constructor.to_owned(),
-                    item: Box::new(first),
-                }
-            }
-            "Set" | "ReadonlyArray" | "Sequence" | "Iterable" if linker.is_none_or(|linker| linker.generic_sequence_return()) => {
+            "NodeList" | "HTMLCollection" | "Array" | "List" | "list" => TypeTarget::Collection {
+                base: constructor.to_owned(),
+                item: Box::new(first),
+            },
+            "Set" | "ReadonlyArray" | "Sequence" | "Iterable"
+                if linker.is_none_or(|linker| linker.generic_sequence_return()) =>
+            {
                 TypeTarget::Collection {
                     base: constructor.to_owned(),
                     item: Box::new(first),
@@ -940,8 +980,7 @@ impl<'a> Context<'a> {
         if ctx.is_dom_pack {
             return Some(TypeTarget::Builtin(name.to_owned()));
         }
-        if let Some((pack, rule_id, nominal)) =
-            self.receiver_rule_with_meta(&ctx.owner.path, name)
+        if let Some((pack, rule_id, nominal)) = self.receiver_rule_with_meta(&ctx.owner.path, name)
         {
             if pack == "web" {
                 return Some(TypeTarget::Builtin(name.to_owned()));
@@ -964,16 +1003,29 @@ impl<'a> Context<'a> {
             });
         }
         if let Some(result) = languages::by_id(ctx.owner.language.as_str()).and_then(|profile| {
-            profile.linker().special_named_return(name, ctx.import_line, &|| {
-                ctx.pack.is_some_and(|pack| {
-                    self.path_id(&ctx.owner.path)
-                        .zip(self.symbol_id(pack))
-                        .zip(self.symbol_id(name))
-                        .and_then(|((path_id, pack_id), base_id)| self.hierarchy_results.get(&path_id)?.get(&(pack_id, base_id)))
-                        .is_some()
-                        || self.dependencies.class_hierarchy_authority_for_path(&ctx.owner.path, name, Some(pack)).is_some()
+            profile
+                .linker()
+                .special_named_return(name, ctx.import_line, &|| {
+                    ctx.pack.is_some_and(|pack| {
+                        self.path_id(&ctx.owner.path)
+                            .zip(self.symbol_id(pack))
+                            .zip(self.symbol_id(name))
+                            .and_then(|((path_id, pack_id), base_id)| {
+                                self.hierarchy_results
+                                    .get(&path_id)?
+                                    .get(&(pack_id, base_id))
+                            })
+                            .is_some()
+                            || self
+                                .dependencies
+                                .class_hierarchy_authority_for_path(
+                                    &ctx.owner.path,
+                                    name,
+                                    Some(pack),
+                                )
+                                .is_some()
+                    })
                 })
-            })
         }) {
             return result;
         }
@@ -1033,13 +1085,14 @@ impl<'a> Context<'a> {
     ) -> Option<Symbol<'a>> {
         let receiver_access = languages::by_id(owner.language.as_str())
             .and_then(|profile| profile.linker().receiver_access(owner, head));
-        let (associated, include_interface) = receiver_access.filter(|_| !name_rebound(owner, head))?;
+        let (associated, include_interface) =
+            receiver_access.filter(|_| !name_rebound(owner, head))?;
         let mut scope = owner.qualname.as_str();
         while let Some((parent, _)) = scope.rsplit_once('.') {
-            if let Some(class) = self
-                .nodes_in_path(parent, &owner.path)
-                .find(|n| n.kind == crate::models::tags::NodeKind::Class || (include_interface && n.kind == crate::models::tags::NodeKind::Interface))
-            {
+            if let Some(class) = self.nodes_in_path(parent, &owner.path).find(|n| {
+                n.kind == crate::models::tags::NodeKind::Class
+                    || (include_interface && n.kind == crate::models::tags::NodeKind::Interface)
+            }) {
                 return Some(if member.is_empty() {
                     Symbol::Type(TypeTarget::Local(class))
                 } else {
@@ -1062,9 +1115,11 @@ impl<'a> Context<'a> {
         if member.is_empty() {
             return self.classify(targets.iter().copied(), role);
         }
-        if let Some(result) = languages::by_id(owner.language.as_str())
-            .and_then(|profile| profile.linker().imported_member_path(self, owner, targets, member, role))
-        {
+        if let Some(result) = languages::by_id(owner.language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .imported_member_path(self, owner, targets, member, role)
+        }) {
             return result;
         }
         if matches!(role, SymbolRole::Callable) {
@@ -1080,7 +1135,8 @@ impl<'a> Context<'a> {
         let mut nodes = Vec::new();
         for target in targets {
             if target.kind == crate::models::tags::NodeKind::Module
-                && languages::by_id(target.language.as_str()).is_some_and(|profile| profile.linker().uses_module_exports())
+                && languages::by_id(target.language.as_str())
+                    .is_some_and(|profile| profile.linker().uses_module_exports())
             {
                 let (export, rest) = member.split_once('.').unwrap_or((member, ""));
                 let Some(exported) = self
@@ -1114,7 +1170,11 @@ impl<'a> Context<'a> {
             }
             nodes.extend(
                 self.by_qual
-                    .get(super::super::qualified(lookup_key, &target.qualname, member))
+                    .get(super::super::qualified(
+                        lookup_key,
+                        &target.qualname,
+                        member,
+                    ))
                     .into_iter()
                     .flatten()
                     .copied()
@@ -1154,7 +1214,10 @@ impl<'a> Context<'a> {
                     candidate.path == owner.path
                         && SourcePosition {
                             line: candidate.line,
-                            column: candidate.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
+                            column: candidate
+                                .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                                .as_u64()
+                                .unwrap_or(0) as usize,
                         } > imported_at
                         && Self::visible(owner, candidate, at, role)
                 });
@@ -1176,13 +1239,25 @@ impl<'a> Context<'a> {
         match import {
             Imported::Nodes(targets, position, _)
                 if *position <= at
-                    || languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().import_visible_before_position(owner)) =>
+                    || languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+                        profile.linker().import_visible_before_position(owner)
+                    }) =>
             {
                 self.resolve_imported_node_targets(owner, targets, member, role, lookup_key)
             }
             Imported::External(module, position, reference, _) if *position <= at => {
-                if let Some(symbol) = languages::by_id(owner.language.as_str()).and_then(|profile|
-                    profile.linker().external_import_type(owner, module, reference, (head, member), role, position.line)) {
+                if let Some(symbol) =
+                    languages::by_id(owner.language.as_str()).and_then(|profile| {
+                        profile.linker().external_import_type(
+                            owner,
+                            module,
+                            reference,
+                            (head, member),
+                            role,
+                            position.line,
+                        )
+                    })
+                {
                     return symbol;
                 }
                 let matched = self
@@ -1235,15 +1310,7 @@ impl<'a> Context<'a> {
             .and_then(|node_id| self.imports.get(&node_id))
             .and_then(|aliases| self.symbol_id(head).and_then(|head| aliases.get(&head)))?;
         Some(self.resolve_imported_symbol_in_scope(
-            owner,
-            scope,
-            name,
-            head,
-            member,
-            at,
-            role,
-            import,
-            lookup_key,
+            owner, scope, name, head, member, at, role, import, lookup_key,
         ))
     }
 
@@ -1262,9 +1329,11 @@ impl<'a> Context<'a> {
         };
         let lookup = LanguageMemberLookup::new(self);
         if let Some(symbol) = languages::by_id(owner.language.as_str()).and_then(|profile| {
-            profile.linker().receiver_symbol(&lookup, owner, &name, &mut |receiver| {
-                self.resolve_symbol(owner, receiver, at, SymbolRole::Type)
-            })
+            profile
+                .linker()
+                .receiver_symbol(&lookup, owner, &name, &mut |receiver| {
+                    self.resolve_symbol(owner, receiver, at, SymbolRole::Type)
+                })
         }) {
             return symbol;
         }
@@ -1320,9 +1389,9 @@ impl<'a> Context<'a> {
             }
             if !member.is_empty() {
                 let owner_ws = languages::workspace_path(&owner.path).0;
-                if let Some(submodules) = self
-                    .by_qual
-                    .get(super::super::qualified(&mut lookup_key, scope, head))
+                if let Some(submodules) =
+                    self.by_qual
+                        .get(super::super::qualified(&mut lookup_key, scope, head))
                 {
                     let eof = SourcePosition {
                         line: usize::MAX,
@@ -1368,7 +1437,9 @@ impl<'a> Context<'a> {
         }
         let builtin = languages::by_id(owner.language.as_str()).is_some_and(|profile| {
             profile.builtin_type(&name)
-                || profile.linker().builtin_type_symbol(owner, profile, &name, role)
+                || profile
+                    .linker()
+                    .builtin_type_symbol(owner, profile, &name, role)
         });
         if builtin
             || self
@@ -1380,5 +1451,4 @@ impl<'a> Context<'a> {
             Symbol::Unknown
         }
     }
-
 }

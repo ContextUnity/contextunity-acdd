@@ -356,7 +356,8 @@ fn extraction_rejects_a_file_entry_digest_mismatch() {
         .unwrap();
     let actual_digest = super::shared::hash_source_bytes(source);
     entry.digest = "deliberately-stale-digest".to_owned();
-    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(None);
+    let dependencies =
+        acdd_index::languages::dependency_registry::DependencyRegistry::collect(None);
     let error = super::shared::extract_typed_source_with_digest(
         &entry,
         source,
@@ -367,7 +368,9 @@ fn extraction_rejects_a_file_entry_digest_mismatch() {
     )
     .expect_err("stale extraction must fail closed");
     assert!(
-        error.to_string().contains("source changed during extraction"),
+        error
+            .to_string()
+            .contains("source changed during extraction"),
         "unexpected error: {error:#}"
     );
 }
@@ -663,7 +666,8 @@ fn delta_rollback_receipt_verification_matrix() {
                 "before"
             );
         }
-        conn.execute_batch("DROP TRIGGER reject_file_delete;").unwrap();
+        conn.execute_batch("DROP TRIGGER reject_file_delete;")
+            .unwrap();
         drop(conn);
         if case.retry {
             assert!(

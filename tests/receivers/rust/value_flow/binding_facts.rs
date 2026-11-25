@@ -79,7 +79,10 @@ fn binding_position_and_pattern_matrix() {
                 let method = facts["src/service.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "len")
+                    .find(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Method
+                            && node.name == "len"
+                    })
                     .unwrap();
                 assert_eq!(
                     graph

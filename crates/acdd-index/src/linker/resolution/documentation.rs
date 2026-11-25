@@ -1,6 +1,6 @@
 use super::context::*;
-use crate::models::Node;
 use crate::models::tags::{EdgeConfidence, EdgeKind};
+use crate::models::Node;
 use hashbrown::HashMap;
 use std::borrow::Cow;
 
@@ -77,9 +77,15 @@ fn emit_doc_invariant_claims(
             continue;
         }
         let normalized = name.replace("::", ".");
-        let Some(candidates) =
-            document_symbol_candidates(&normalized, name, path, path_filter, by_qual, by_name, by_suffix)
-        else {
+        let Some(candidates) = document_symbol_candidates(
+            &normalized,
+            name,
+            path,
+            path_filter,
+            by_qual,
+            by_name,
+            by_suffix,
+        ) else {
             continue;
         };
         let [target_node] = candidates.as_slice() else {
@@ -131,7 +137,14 @@ where
     for doc in &facts.docs {
         let document_node = doc_nodes_by_id.get(doc.doc_id.as_str()).copied();
         let document_details = document_node.map(|node| &node.details);
-        emit_doc_citations(all, path, &doc.doc_id, document_node, document_details, graph);
+        emit_doc_citations(
+            all,
+            path,
+            &doc.doc_id,
+            document_node,
+            document_details,
+            graph,
+        );
         if path.starts_with("archive/") || path.contains("/archive/") {
             continue;
         }
@@ -199,7 +212,15 @@ where
                 }
             }
         }
-        emit_doc_invariant_claims(path, facts, document_details, by_qual, by_name, by_suffix, graph);
+        emit_doc_invariant_claims(
+            path,
+            facts,
+            document_details,
+            by_qual,
+            by_name,
+            by_suffix,
+            graph,
+        );
     }
 }
 

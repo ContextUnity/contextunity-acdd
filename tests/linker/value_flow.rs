@@ -1,11 +1,11 @@
+use acdd_index::linker::value_flow::types::ValueFlowLookup;
+use acdd_index::linker::value_flow::{
+    SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
+};
 use acdd_index::{
     models::{Facts, Node},
     semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
-use acdd_index::linker::value_flow::{
-    SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
-};
-use acdd_index::linker::value_flow::types::ValueFlowLookup;
 use std::collections::BTreeMap;
 
 struct BuiltinResolver;
@@ -295,10 +295,16 @@ fn inferred_factory_returns_relink_bindings_and_leave_cycles_unknown() {
                 return Symbol::Unknown;
             };
             match role {
-                SymbolRole::Type | SymbolRole::Constructor if node.kind == acdd_index::models::tags::NodeKind::Class => {
+                SymbolRole::Type | SymbolRole::Constructor
+                    if node.kind == acdd_index::models::tags::NodeKind::Class =>
+                {
                     Symbol::Type(TypeTarget::Local(node))
                 }
-                SymbolRole::Callable if node.kind == acdd_index::models::tags::NodeKind::Function => Symbol::Callable(node),
+                SymbolRole::Callable
+                    if node.kind == acdd_index::models::tags::NodeKind::Function =>
+                {
+                    Symbol::Callable(node)
+                }
                 _ => Symbol::Unknown,
             }
         }

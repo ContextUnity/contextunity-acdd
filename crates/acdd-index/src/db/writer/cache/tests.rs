@@ -320,7 +320,10 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         ..Default::default()
     };
     let mut flow_node = facts.nodes[0].clone();
-    flow_node.set_detail(crate::models::details::NodeDetailKey::VALUE_FLOW, serde_json::to_value(valid_flow).unwrap());
+    flow_node.set_detail(
+        crate::models::details::NodeDetailKey::VALUE_FLOW,
+        serde_json::to_value(valid_flow).unwrap(),
+    );
     let flow_input = TypedFacts::from_public(crate::models::Facts {
         nodes: vec![flow_node],
         ..Default::default()
@@ -439,7 +442,10 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     for bad in bad_markers {
         let mut public: crate::models::Facts =
             serde_json::from_value(serde_json::to_value(&decoded).unwrap()).unwrap();
-        public.nodes[0].set_detail(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES, bad);
+        public.nodes[0].set_detail(
+            crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES,
+            bad,
+        );
         assert!(crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0]).is_err());
         let invalid = TypedFacts::from_public(public);
         assert!(invalid.flows.has_invalid_named_uncertainty_carriers());
@@ -542,7 +548,10 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     let mut malformed: crate::models::Facts =
         serde_json::from_value(serde_json::to_value(&native_reopened).unwrap()).unwrap();
     let raw = json!([{"future_semantic_field":true}]);
-    malformed.nodes[0].set_detail(crate::models::details::NodeDetailKey::SEMANTIC_FACTS, raw.clone());
+    malformed.nodes[0].set_detail(
+        crate::models::details::NodeDetailKey::SEMANTIC_FACTS,
+        raw.clone(),
+    );
     let malformed = TypedFacts::from_public(malformed);
     let malformed =
         decode_entry(&encode_entry(&key, &malformed).unwrap(), &key, 1024 * 1024).unwrap();
@@ -684,8 +693,12 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
     }
 
     let mut search_texts = PackedStrings::default();
-    search_texts.append_with(|buf| buf.push_str("hello")).unwrap();
-    search_texts.append_with(|buf| buf.push_str("world")).unwrap();
+    search_texts
+        .append_with(|buf| buf.push_str("hello"))
+        .unwrap();
+    search_texts
+        .append_with(|buf| buf.push_str("world"))
+        .unwrap();
     let prepared = super::super::PreparedCatalogStorage {
         node_docs: vec![super::NodeDocumentation {
             index: 0,
@@ -728,5 +741,7 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         reference_keys: Vec::new(),
         leaves: Default::default(),
     };
-    assert!(super::decode_prepared_catalog_storage_payload(&invalid_packed.encode_spill()).is_err());
+    assert!(
+        super::decode_prepared_catalog_storage_payload(&invalid_packed.encode_spill()).is_err()
+    );
 }

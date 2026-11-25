@@ -44,7 +44,10 @@ fn branch_join_transfer_matrix() {
                 let expected_targets: std::collections::BTreeSet<_> = facts
                     .nodes
                     .iter()
-                    .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
+                    .filter(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Method
+                            && node.name == "execute"
+                    })
                     .map(|node| node.id.clone())
                     .collect();
                 let graph = linker::link(&BTreeMap::from([(
@@ -151,7 +154,10 @@ fn branch_join_transfer_matrix() {
                     let mut expected_targets: Vec<_> = facts
                         .nodes
                         .iter()
-                        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
+                        .filter(|node| {
+                            node.kind == acdd_index::models::tags::NodeKind::Method
+                                && node.name == "execute"
+                        })
                         .map(|node| node.id.clone())
                         .collect();
                     expected_targets.sort();
@@ -213,7 +219,9 @@ fn complete_python_branch_join_emits_possible_targets_without_exact_calls() {
     let mut expected_targets: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute")
+        .filter(|node| {
+            node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "execute"
+        })
         .map(|node| node.id.clone())
         .collect();
     expected_targets.sort();
@@ -275,7 +283,10 @@ fn union_parameter_types_emit_possible_calls_and_widen_beyond_bound() {
     let too_many_classes: String = (1..=9)
         .map(|i| format!("class C{i}:\n    def execute(self): pass\n"))
         .collect();
-    let too_many_union = (1..=9).map(|i| format!("C{i}")).collect::<Vec<_>>().join(" | ");
+    let too_many_union = (1..=9)
+        .map(|i| format!("C{i}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
     let source = format!(
         "from typing import Union\n\
          class Alpha:\n    def execute(self): pass\n\
@@ -288,8 +299,16 @@ fn union_parameter_types_emit_possible_calls_and_widen_beyond_bound() {
     let facts = ast::extract("unions.py", "python", &source).unwrap();
     let graph = linker::link(&BTreeMap::from([("unions.py".to_owned(), facts)]));
     for (expr, expected_status, expected_possible) in [
-        ("x.execute", "ambiguous", vec!["unions.Alpha.execute", "unions.Beta.execute"]),
-        ("y.execute", "ambiguous", vec!["unions.Alpha.execute", "unions.Beta.execute"]),
+        (
+            "x.execute",
+            "ambiguous",
+            vec!["unions.Alpha.execute", "unions.Beta.execute"],
+        ),
+        (
+            "y.execute",
+            "ambiguous",
+            vec!["unions.Alpha.execute", "unions.Beta.execute"],
+        ),
         ("z.execute", "unresolved", vec![]),
     ] {
         let cov = graph
@@ -314,9 +333,7 @@ fn union_parameter_types_emit_possible_calls_and_widen_beyond_bound() {
         actual_possible.sort();
         let mut expected_ids: Vec<String> = expected_possible
             .iter()
-            .map(|q| {
-                facts_nodes_id(&source, q)
-            })
+            .map(|q| facts_nodes_id(&source, q))
             .collect();
         expected_ids.sort();
         assert_eq!(actual_possible, expected_ids, "{expr}");

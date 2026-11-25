@@ -225,10 +225,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         assert_eq!(stored.0, source.path);
         assert_eq!(stored.1, source.digest);
         assert_eq!(stored.2, source.language);
-        assert_eq!(
-            stored.3,
-            acdd_index::models::is_test(&source.path)
-        );
+        assert_eq!(stored.3, acdd_index::models::is_test(&source.path));
         assert!(!stored.4);
         assert_eq!(stored.6, "blob");
         assert!(stored.5.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));

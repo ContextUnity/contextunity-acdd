@@ -26,8 +26,8 @@ fn persisted_graph(w: &PersistedWorkspaceHarness) -> Vec<Vec<String>> {
     }).collect()
 }
 
-mod workspaces;
 mod tier2_parity;
+mod workspaces;
 
 #[cfg(feature = "lang-rust")]
 mod forwarding;
@@ -149,7 +149,6 @@ fn declarative_grammar_types_and_profile_linker_matrix() {
     assert_eq!(spec.call_forms[0].1, CallForm::Direct);
     assert_eq!(spec.import_forms[0].1, ImportKind::Static);
     assert_eq!(spec.visibility_modifiers[0].1, Visibility::Public);
-
 }
 
 #[cfg(feature = "lang-go")]
@@ -203,11 +202,15 @@ fn generic_linker_resolves_multi_file_module_prefix_and_external_alias() {
         .collect::<Result<_, _>>()
         .unwrap();
     assert!(
-        calls.iter().any(|dst| dst.contains("pkg/a.go") && dst.contains("Alpha")),
+        calls
+            .iter()
+            .any(|dst| dst.contains("pkg/a.go") && dst.contains("Alpha")),
         "expected call to Alpha in pkg/a.go: {calls:?}"
     );
     assert!(
-        calls.iter().any(|dst| dst.contains("pkg/b.go") && dst.contains("Beta")),
+        calls
+            .iter()
+            .any(|dst| dst.contains("pkg/b.go") && dst.contains("Beta")),
         "expected call to Beta in pkg/b.go: {calls:?}"
     );
 
@@ -231,10 +234,7 @@ fn generic_linker_resolves_multi_file_module_prefix_and_external_alias() {
             "{\"autoload\":{\"psr-4\":{\"App\\\\\":\"src/\"}}}\n",
         );
         php_ws.write("src/Service/User.php", "<?php\nclass User {}\n");
-        php_ws.write(
-            "public/index.php",
-            "<?php\nuse App\\Service\\User;\n",
-        );
+        php_ws.write("public/index.php", "<?php\nuse App\\Service\\User;\n");
         php_ws.build();
         let php_conn = php_ws.open();
         let resolved: i64 = count(
@@ -244,7 +244,10 @@ fn generic_linker_resolves_multi_file_module_prefix_and_external_alias() {
                AND kind='imports'
                AND (SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash) LIKE '%src/Service/User.php%'",
         );
-        assert!(resolved >= 1, "PSR-4 composer.json prefix must resolve src/Service/User.php");
+        assert!(
+            resolved >= 1,
+            "PSR-4 composer.json prefix must resolve src/Service/User.php"
+        );
     }
 
     #[cfg(feature = "lang-csharp")]
@@ -254,7 +257,10 @@ fn generic_linker_resolves_multi_file_module_prefix_and_external_alias() {
             "App.csproj",
             "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><RootNamespace>Acme.Core</RootNamespace></PropertyGroup></Project>\n",
         );
-        cs_ws.write("Billing.cs", "namespace Acme.Core.Billing { public class Invoice {} }\n");
+        cs_ws.write(
+            "Billing.cs",
+            "namespace Acme.Core.Billing { public class Invoice {} }\n",
+        );
         cs_ws.write("Program.cs", "using Acme.Core.Billing;\nclass Program {}\n");
         cs_ws.build();
         let cs_conn = cs_ws.open();
@@ -265,7 +271,10 @@ fn generic_linker_resolves_multi_file_module_prefix_and_external_alias() {
                AND kind='imports'
                AND (SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash) LIKE '%Billing.cs%'",
         );
-        assert!(resolved >= 1, ".csproj RootNamespace prefix must resolve Billing.cs");
+        assert!(
+            resolved >= 1,
+            ".csproj RootNamespace prefix must resolve Billing.cs"
+        );
     }
 }
 

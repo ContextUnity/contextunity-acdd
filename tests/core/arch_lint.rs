@@ -92,7 +92,9 @@ kind: doc_integrity
     assert_eq!(rule_errors.len(), 3, "{rule_errors:?}");
 
     // Untouched docs omit arch_rules completely.
-    let plain = docs::extract_with_details_with_zones("docs/plain.md", "# Plain\nText.\n", 0.0, &[], None).unwrap();
+    let plain =
+        docs::extract_with_details_with_zones("docs/plain.md", "# Plain\nText.\n", 0.0, &[], None)
+            .unwrap();
     assert!(plain[0].1.get(NodeDetailKey::ARCH_RULES).is_none());
 
     // Cold, warm-cached, and delta builds preserve identical output_root across Nodes and Errors.
@@ -237,7 +239,10 @@ architecture:
         "ts/domain/handler.ts",
         "import axios from 'axios/core';\nimport { fetchData } from '../infra/client';\nexport function handle() { return fetchData(); }\n",
     );
-    ws.write("ts/infra/client.ts", "export function fetchData() { return 1; }\n");
+    ws.write(
+        "ts/infra/client.ts",
+        "export function fetchData() { return 1; }\n",
+    );
     ws.write(
         "ts/providers/all.ts",
         "export interface ProviderContract { run(): void; }\nexport class GoodTs implements ProviderContract { run() {} }\nexport class BadTs {}\n",
@@ -394,23 +399,53 @@ doc_type: architecture
     };
 
     // Assert every primitive and language fired where expected (and stayed silent on clean cases)
-    assert!(has_rule_at("INV-CORE-LEAF", "src/core/leaf.rs"), "{items:?}");
+    assert!(
+        has_rule_at("INV-CORE-LEAF", "src/core/leaf.rs"),
+        "{items:?}"
+    );
     assert!(
         !has_rule_at("INV-CORE-LEAF", "src/core/clean_with_test.rs"),
         "#[cfg(test)] span must be excluded by default: {items:?}"
     );
-    assert!(has_rule_at("INV-ALLOW-APP", "src/app/entry.rs"), "{items:?}");
-    assert!(has_rule_at("INV-SINGLE-GIT", "src/app/entry.rs"), "{items:?}");
+    assert!(
+        has_rule_at("INV-ALLOW-APP", "src/app/entry.rs"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-SINGLE-GIT", "src/app/entry.rs"),
+        "{items:?}"
+    );
     assert!(!has_rule_at("INV-SINGLE-GIT", "src/core/git_owner.rs"));
-    assert!(has_rule_at("INV-BOUNDARY-CORE", "src/app/entry.rs"), "{items:?}");
-    assert!(has_rule_at("INV-MUST-IMPL-RS", "src/providers/impls.rs"), "{items:?}");
-    assert!(has_rule_at("INV-MUST-IMPL-PY", "py/providers/all.py"), "{items:?}");
-    assert!(has_rule_at("INV-MUST-IMPL-TS", "ts/providers/all.ts"), "{items:?}");
-    assert!(has_rule_at("INV-PY-EXT", "py/domain/service.py"), "{items:?}");
-    assert!(has_rule_at("INV-TS-EXT", "ts/domain/handler.ts"), "{items:?}");
+    assert!(
+        has_rule_at("INV-BOUNDARY-CORE", "src/app/entry.rs"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-MUST-IMPL-RS", "src/providers/impls.rs"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-MUST-IMPL-PY", "py/providers/all.py"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-MUST-IMPL-TS", "ts/providers/all.ts"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-PY-EXT", "py/domain/service.py"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("INV-TS-EXT", "ts/domain/handler.ts"),
+        "{items:?}"
+    );
     assert!(has_rule_at("INV-AST-GIT", "src/app/entry.rs"), "{items:?}");
     assert!(!has_rule_at("INV-AST-GIT", "src/core/git_owner.rs"));
-    assert!(has_rule_at("INV-DOC-CHECK", "docs/broken_claim.md"), "{items:?}");
+    assert!(
+        has_rule_at("INV-DOC-CHECK", "docs/broken_claim.md"),
+        "{items:?}"
+    );
     assert!(
         items.iter().any(|it| {
             it["rule_id"] == "INV-DOC-CHECK"
@@ -420,24 +455,48 @@ doc_type: architecture
         }),
         "doc_integrity custom message must retain diagnostic details: {items:?}"
     );
-    assert!(has_rule_at("docs.duplicate_invariant", "docs/dup_a.md"), "{items:?}");
-    assert!(has_rule_at("docs.duplicate_invariant", "docs/dup_b.md"), "{items:?}");
-    assert!(!has_rule_at("docs.duplicate_invariant", "docs/milestones/M-1.md"));
-    assert!(!has_rule_at("docs.duplicate_invariant", "docs/archive/old.md"));
-    assert!(has_rule_at("docs.orphan_invariant", "docs/arch.md"), "{items:?}");
+    assert!(
+        has_rule_at("docs.duplicate_invariant", "docs/dup_a.md"),
+        "{items:?}"
+    );
+    assert!(
+        has_rule_at("docs.duplicate_invariant", "docs/dup_b.md"),
+        "{items:?}"
+    );
+    assert!(!has_rule_at(
+        "docs.duplicate_invariant",
+        "docs/milestones/M-1.md"
+    ));
+    assert!(!has_rule_at(
+        "docs.duplicate_invariant",
+        "docs/archive/old.md"
+    ));
+    assert!(
+        has_rule_at("docs.orphan_invariant", "docs/arch.md"),
+        "{items:?}"
+    );
     // INV-CORE-LEAF is backed by an acdd-rule -> NOT flagged as orphan.
     assert!(!items.iter().any(|it| {
         it["rule_id"] == "docs.orphan_invariant" && it["invariant"] == "INV-CORE-LEAF"
     }));
     // INV-IMPL-FILTER links [GoodProvider](src/providers/impls.rs) without line range; impl exclusion resolves uniquely to struct GoodProvider.
-    assert!(!items.iter().any(|it| {
-        it["invariant"].as_str() == Some("INV-IMPL-FILTER")
-            || it["symbol"].as_str().is_some_and(|s| s.contains("GoodProvider"))
-                && matches!(
-                    it["rule_id"].as_str(),
-                    Some("docs.orphan_invariant" | "docs.ambiguous_symbol_link" | "docs.broken_symbol_link")
-                )
-    }), "INV-IMPL-FILTER should resolve cleanly without impl ambiguity: {items:?}");
+    assert!(
+        !items.iter().any(|it| {
+            it["invariant"].as_str() == Some("INV-IMPL-FILTER")
+                || it["symbol"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("GoodProvider"))
+                    && matches!(
+                        it["rule_id"].as_str(),
+                        Some(
+                            "docs.orphan_invariant"
+                                | "docs.ambiguous_symbol_link"
+                                | "docs.broken_symbol_link"
+                        )
+                    )
+        }),
+        "INV-IMPL-FILTER should resolve cleanly without impl ambiguity: {items:?}"
+    );
     let governs_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM edges e JOIN coverage_evidence v ON v.evidence_id = e.evidence_id WHERE e.kind = 'governs' AND v.evidence = 'GoodProvider'",
@@ -445,7 +504,10 @@ doc_type: architecture
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(governs_count, 1, "expected unique governs edge for GoodProvider");
+    assert_eq!(
+        governs_count, 1,
+        "expected unique governs edge for GoodProvider"
+    );
     // Every arch violation carries invariant + rule_source { path, line }.
     for item in items.iter().filter(|it| it["category"] == "arch") {
         assert!(item["rule_source"]["path"].as_str().is_some(), "{item}");
@@ -454,8 +516,17 @@ doc_type: architecture
 
     // 3. enforced_invariant_ids returns both config and doc rule invariants
     let enforced = enforced_invariant_ids(&conn, &adapter.architecture.rules).unwrap();
-    for expected in ["INV-ALLOW-APP", "INV-CORE-LEAF", "INV-AST-GIT", "INV-PY-EXT", "INV-TS-EXT"] {
-        assert!(enforced.contains(expected), "missing {expected} in {enforced:?}");
+    for expected in [
+        "INV-ALLOW-APP",
+        "INV-CORE-LEAF",
+        "INV-AST-GIT",
+        "INV-PY-EXT",
+        "INV-TS-EXT",
+    ] {
+        assert!(
+            enforced.contains(expected),
+            "missing {expected} in {enforced:?}"
+        );
     }
 
     // 4. Scope filtering, category non-leak, --rule doc_integrity filtering, [linked] validation & pagination
@@ -473,9 +544,11 @@ doc_type: architecture
         },
     )
     .unwrap();
-    assert!(scoped["items"].as_array().unwrap().iter().all(|it| {
-        it["path"].as_str().unwrap().starts_with("py/") && it["category"] == "arch"
-    }));
+    assert!(scoped["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|it| { it["path"].as_str().unwrap().starts_with("py/") && it["category"] == "arch" }));
     assert!(
         scoped["summary"]["by_category"].get("docs").is_none(),
         "categories=[Arch] must not leak docs summary key: {scoped}"
@@ -506,7 +579,9 @@ doc_type: architecture
         }),
         "filtered doc_integrity must not false-positive enforced invariants as orphans: {doc_rule_only}"
     );
-    assert!(doc_rule_only["summary"]["by_category"].get("docs").is_none());
+    assert!(doc_rule_only["summary"]["by_category"]
+        .get("docs")
+        .is_none());
 
     // [linked]/... paths are non-glob targets and enforce PATH_NOT_INDEXED fail-closed.
     let linked_missing = run_lint(
@@ -524,7 +599,10 @@ doc_type: architecture
     )
     .unwrap_err()
     .to_string();
-    assert!(linked_missing.contains("PATH_NOT_INDEXED"), "{linked_missing}");
+    assert!(
+        linked_missing.contains("PATH_NOT_INDEXED"),
+        "{linked_missing}"
+    );
 
     // must_implement must still enforce `to.zones` even when `to.symbols` matches in another zone.
     let mut strict_zone_arch = adapter.architecture.clone();
@@ -571,7 +649,9 @@ doc_type: architecture
             .as_array()
             .unwrap()
             .iter()
-            .any(|it| it["symbol"].as_str().is_some_and(|s| s.ends_with("GoodProvider"))),
+            .any(|it| it["symbol"]
+                .as_str()
+                .is_some_and(|s| s.ends_with("GoodProvider"))),
         "to.zones must not be bypassed by to.symbols match: {zone_res}"
     );
 
@@ -678,12 +758,24 @@ fn dead_helper() -> i32 {
     )
     .unwrap();
     let items: &[Value] = all["items"].as_array().unwrap();
-    assert!(items.iter().any(|v| v["category"] == "syntax" && v["path"] == "src/broken.rs"));
-    assert!(items.iter().any(|v| v["category"] == "duplicates" && v["severity"] == "warn"));
-    assert!(items.iter().any(|v| v["category"] == "dead_tails" && v["rule_id"] == "dead_tails.unreachable"));
-    assert!(items.iter().any(|v| v["category"] == "dead_tails" && v["rule_id"] == "dead_tails.dangling_call" && v["severity"] == "error"));
-    assert!(items.iter().any(|v| v["category"] == "cycles" && v["severity"] == "warn"));
-    assert!(items.iter().any(|v| v["category"] == "docs" && v["rule_id"] == "docs.broken_symbol_claim"));
+    assert!(items
+        .iter()
+        .any(|v| v["category"] == "syntax" && v["path"] == "src/broken.rs"));
+    assert!(items
+        .iter()
+        .any(|v| v["category"] == "duplicates" && v["severity"] == "warn"));
+    assert!(items
+        .iter()
+        .any(|v| v["category"] == "dead_tails" && v["rule_id"] == "dead_tails.unreachable"));
+    assert!(items.iter().any(|v| v["category"] == "dead_tails"
+        && v["rule_id"] == "dead_tails.dangling_call"
+        && v["severity"] == "error"));
+    assert!(items
+        .iter()
+        .any(|v| v["category"] == "cycles" && v["severity"] == "warn"));
+    assert!(items
+        .iter()
+        .any(|v| v["category"] == "docs" && v["rule_id"] == "docs.broken_symbol_claim"));
 
     // Backward-compatible delegated entrypoints remain consistent.
     let syn = syntax_paged(&conn, "", &opts).unwrap();
@@ -807,8 +899,14 @@ pub fn mutual_pong(n: u32) -> u32 {
 }
 "#,
     );
-    ws.write("src/imp_a.rs", "use crate::imp_b;\npub fn fa() { imp_b::fb(); }\n");
-    ws.write("src/imp_b.rs", "use crate::imp_a;\npub fn fb() { imp_a::fa(); }\n");
+    ws.write(
+        "src/imp_a.rs",
+        "use crate::imp_b;\npub fn fa() { imp_b::fb(); }\n",
+    );
+    ws.write(
+        "src/imp_b.rs",
+        "use crate::imp_a;\npub fn fb() { imp_a::fa(); }\n",
+    );
 
     ws.build();
     let conn = ws.open();
@@ -1050,9 +1148,7 @@ doc_type: architecture
         items.iter().any(|v| {
             v["rule_id"] == rule_id
                 && (sym_substr.is_empty()
-                    || v["symbol"]
-                        .as_str()
-                        .is_some_and(|s| s.contains(sym_substr)))
+                    || v["symbol"].as_str().is_some_and(|s| s.contains(sym_substr)))
         })
     };
 
@@ -1091,13 +1187,19 @@ doc_type: architecture
     assert!(!has("syntax.cognitive_complexity", ""), "{items:?}");
     assert!(!has("syntax.max_nesting_depth", ""), "{items:?}");
     assert!(!has("syntax.high_fanout", ""), "{items:?}");
-    assert!(has("syntax.intra_crate_type_homonym", "SharedType"), "{items:?}");
+    assert!(
+        has("syntax.intra_crate_type_homonym", "SharedType"),
+        "{items:?}"
+    );
 
     let matching: Vec<&Value> = items
         .iter()
         .filter(|v| v["rule_id"] == "syntax.intra_crate_type_homonym")
         .collect();
-    assert!(!matching.is_empty(), "missing syntax.intra_crate_type_homonym");
+    assert!(
+        !matching.is_empty(),
+        "missing syntax.intra_crate_type_homonym"
+    );
     assert!(
         matching
             .iter()
@@ -1484,10 +1586,7 @@ fn main() {
     )
     .unwrap();
     let items = res["items"].as_array().unwrap();
-    let symbols: Vec<&str> = items
-        .iter()
-        .filter_map(|v| v["symbol"].as_str())
-        .collect();
+    let symbols: Vec<&str> = items.iter().filter_map(|v| v["symbol"].as_str()).collect();
 
     let expect_flagged = [
         ("unused_reexport", Some("src/lib.rs")),
@@ -1519,10 +1618,7 @@ fn main() {
     for (name, expected_path) in expect_flagged {
         assert!(
             items.iter().any(|v| {
-                v["symbol"]
-                    .as_str()
-                    .and_then(|s| s.rsplit('.').next())
-                    == Some(name)
+                v["symbol"].as_str().and_then(|s| s.rsplit('.').next()) == Some(name)
                     && expected_path.is_none_or(|p| v["path"] == p)
             }),
             "expected dead_tails.unused_public_api for '{name}' at {expected_path:?}: {items:?}"
@@ -1780,7 +1876,10 @@ mod tests {
         "src/other/b.rs",
         "use crate::nested::a;\npub fn fb() { a::fa(); }\n",
     );
-    ws.write("src/api/mod.rs", "pub mod types;\npub mod impls;\npub mod branch;\n");
+    ws.write(
+        "src/api/mod.rs",
+        "pub mod types;\npub mod impls;\npub mod branch;\n",
+    );
     ws.write(
         "src/api/types.rs",
         r#"pub trait Handler {}
@@ -1866,11 +1965,15 @@ pub fn maybe_call(flag: bool) {
         "AST-EXPECT-INNER",
     ] {
         assert!(
-            items.iter().any(|v| v["rule_id"] == rule_id && v["path"] == "src/ast_hits.rs"),
+            items
+                .iter()
+                .any(|v| v["rule_id"] == rule_id && v["path"] == "src/ast_hits.rs"),
             "expected batched ast_pattern rule {rule_id} hit in src/ast_hits.rs: {items:?}"
         );
         assert!(
-            !items.iter().any(|v| v["rule_id"] == rule_id && v["path"] == "src/clean_with_test.rs"),
+            !items
+                .iter()
+                .any(|v| v["rule_id"] == rule_id && v["path"] == "src/clean_with_test.rs"),
             "test-only code in clean_with_test.rs must not trigger {rule_id}: {items:?}"
         );
     }
@@ -2202,7 +2305,9 @@ doc_type: architecture
         "docs.broken_doc_link must be retired from run_lint: {items:?}"
     );
     assert!(
-        items.iter().any(|v| v["rule_id"] == "docs.stale_symbol_range" && v["symbol"] == "SharedCfg"),
+        items
+            .iter()
+            .any(|v| v["rule_id"] == "docs.stale_symbol_range" && v["symbol"] == "SharedCfg"),
         "out-of-range #L1-L99 must emit docs.stale_symbol_range in lint mode: {items:?}"
     );
     assert!(

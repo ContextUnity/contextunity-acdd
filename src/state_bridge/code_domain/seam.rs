@@ -89,7 +89,8 @@ impl CodeDomainProvider {
         let mut live_facts: BTreeMap<String, Facts> = BTreeMap::new();
         let mut file_hashes: BTreeMap<String, String> = BTreeMap::new();
 
-        let scoped_files = collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, policy);
+        let scoped_files =
+            collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, policy);
         for rel in &scoped_files {
             load_live_facts(&req.worktree, rel, &mut live_facts, &mut file_hashes);
         }
@@ -290,9 +291,12 @@ impl CodeDomainProvider {
         }
 
         let has_callable_prod_symbol = scoped_code_files.iter().any(|path| {
-            live_facts
-                .get(path)
-                .is_some_and(|facts| facts.nodes.iter().any(|n| !n.is_test && is_callable_kind(n.kind.as_str())))
+            live_facts.get(path).is_some_and(|facts| {
+                facts
+                    .nodes
+                    .iter()
+                    .any(|n| !n.is_test && is_callable_kind(n.kind.as_str()))
+            })
         });
         if !has_callable_prod_symbol {
             let test_overlaps_scope = test_starts
@@ -302,8 +306,9 @@ impl CodeDomainProvider {
                 test_starts_reference_scoped_files(&test_starts, &scoped_code_files, &live_facts);
             if test_overlaps_scope || test_references_scoped_module {
                 return Ok(DomainCheckOutcome::Passed {
-                    summary: "code.seam: pure test/type/const scope covered by matching test target"
-                        .to_owned(),
+                    summary:
+                        "code.seam: pure test/type/const scope covered by matching test target"
+                            .to_owned(),
                     execution_digest_salt: Some(salt),
                 });
             }
@@ -393,8 +398,13 @@ fn expand_db_seam_edges(
     let Some(conn) = conn else {
         return Ok(None);
     };
-    if !path_matches_code_db(&req.worktree, conn, &cur_key.path, file_hashes, db_matches_cache)
-        || !checked_child(&req.worktree, Path::new(&cur_key.path)).is_ok_and(|p| p.is_file())
+    if !path_matches_code_db(
+        &req.worktree,
+        conn,
+        &cur_key.path,
+        file_hashes,
+        db_matches_cache,
+    ) || !checked_child(&req.worktree, Path::new(&cur_key.path)).is_ok_and(|p| p.is_file())
     {
         return Ok(None);
     }
@@ -407,8 +417,15 @@ fn expand_db_seam_edges(
                 let Some(n) = dst_live
                     .nodes
                     .iter()
-                    .find(|n| n.qualname == db_edge.dst_qualname && n.kind.as_str() == db_edge.dst_kind)
-                    .or_else(|| dst_live.nodes.iter().find(|n| n.qualname == db_edge.dst_qualname))
+                    .find(|n| {
+                        n.qualname == db_edge.dst_qualname && n.kind.as_str() == db_edge.dst_kind
+                    })
+                    .or_else(|| {
+                        dst_live
+                            .nodes
+                            .iter()
+                            .find(|n| n.qualname == db_edge.dst_qualname)
+                    })
                 else {
                     continue;
                 };
@@ -425,7 +442,9 @@ fn expand_db_seam_edges(
             && target_symbol.is_none();
         if !db_edge.dst_is_test
             && !bare_module_import
-            && req.path_policy.is_scope_admitted(&db_edge.dst_path, &req.admitted_scope)
+            && req
+                .path_policy
+                .is_scope_admitted(&db_edge.dst_path, &req.admitted_scope)
             && target_symbol.is_none_or(|sym| {
                 let normalized = sym.replace("::", ".");
                 db_edge.dst_name == sym
@@ -515,10 +534,18 @@ fn bfs_seam_reachability(
                 && target_symbol.is_none();
             if !dst.is_test
                 && !bare_module_import
-                && req.path_policy.is_scope_admitted(&dst.path, &req.admitted_scope)
+                && req
+                    .path_policy
+                    .is_scope_admitted(&dst.path, &req.admitted_scope)
                 && target_symbol.is_none_or(|sym| node_matches_symbol(dst, sym))
             {
-                return Ok(passed_seam_hop(&dst.path, &dst.qualname, depth, &trace, salt));
+                return Ok(passed_seam_hop(
+                    &dst.path,
+                    &dst.qualname,
+                    depth,
+                    &trace,
+                    salt,
+                ));
             }
             enqueue_seam_node(
                 &dst.path,
@@ -780,15 +807,15 @@ fn hydrate_seam_context_files(
             let import_refs: Vec<String> = facts
                 .references
                 .iter()
-                .filter(|r| {
-                    r.kind == EdgeKind::Imports.as_str() || r.expression.contains("::")
-                })
+                .filter(|r| r.kind == EdgeKind::Imports.as_str() || r.expression.contains("::"))
                 .map(|r| r.module.as_deref().unwrap_or(&r.expression).to_owned())
                 .collect();
             for raw_mod in import_refs {
-                for cand in
-                    dependency_registry.import_file_candidates(Some(worktree), &owner_path, &raw_mod)
-                {
+                for cand in dependency_registry.import_file_candidates(
+                    Some(worktree),
+                    &owner_path,
+                    &raw_mod,
+                ) {
                     if try_load(&cand, live_facts, file_hashes, &mut next_frontier) {
                         for anc in ancestor_module_candidates(&cand) {
                             try_load(&anc, live_facts, file_hashes, &mut next_frontier);
@@ -810,7 +837,11 @@ fn resolve_test_start_nodes(
 ) -> Result<Vec<Node>> {
     let (without_line, line) = match raw_target.split_once('#') {
         Some((prefix, suffix)) => {
-            let line = suffix.strip_prefix('L').unwrap_or(suffix).parse::<usize>().ok();
+            let line = suffix
+                .strip_prefix('L')
+                .unwrap_or(suffix)
+                .parse::<usize>()
+                .ok();
             (prefix, line)
         }
         None => (raw_target, None),
@@ -850,7 +881,8 @@ fn resolve_test_start_nodes(
     let mut matched = Vec::new();
     for facts in live_facts.values() {
         for n in &facts.nodes {
-            if n.is_test && is_callable_kind(n.kind.as_str()) && node_matches_symbol(n, target_sym) {
+            if n.is_test && is_callable_kind(n.kind.as_str()) && node_matches_symbol(n, target_sym)
+            {
                 matched.push(n.clone());
             }
         }
@@ -876,7 +908,10 @@ fn resolve_test_start_nodes(
             load_live_facts(worktree, &p, live_facts, file_hashes);
             if let Some(facts) = live_facts.get(&p) {
                 for n in &facts.nodes {
-                    if n.is_test && is_callable_kind(n.kind.as_str()) && node_matches_symbol(n, target_sym) {
+                    if n.is_test
+                        && is_callable_kind(n.kind.as_str())
+                        && node_matches_symbol(n, target_sym)
+                    {
                         matched.push(n.clone());
                     }
                 }
@@ -983,8 +1018,7 @@ fn test_starts_reference_scoped_files(
         }
         if let Some(facts) = live_facts.get(rel) {
             for node in &facts.nodes {
-                if !node.is_test && node.kind != NodeKind::Module && !node.name.is_empty()
-                {
+                if !node.is_test && node.kind != NodeKind::Module && !node.name.is_empty() {
                     scoped_tokens.insert(node.name.clone());
                 }
             }

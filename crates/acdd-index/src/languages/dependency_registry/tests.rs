@@ -1,7 +1,7 @@
 use super::parser::filename_matches;
 use super::*;
-use anyhow::Result;
 use crate::languages::LanguageFamily;
+use anyhow::Result;
 use std::fs;
 
 fn source_registry(files: &[(&str, &str)]) -> Result<DependencyRegistry> {
@@ -58,12 +58,19 @@ fn source_inventory_rejects_noncanonical_and_unsupported_paths() {
 #[test]
 fn source_inventory_rejects_duplicate_paths_and_pack_identities() {
     let registry = DependencyRegistry::collect(None);
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/languages/manifests");
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/languages/manifests");
     for entry in fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
-        if matches!(path.extension().and_then(|ext| ext.to_str()), Some("toml" | "yaml" | "yml")) {
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("toml" | "yaml" | "yml")
+        ) {
             let name = path.file_stem().unwrap().to_str().unwrap();
-            assert!(registry.standard_framework_manifests.contains_key(name), "missing bundled manifest {name}");
+            assert!(
+                registry.standard_framework_manifests.contains_key(name),
+                "missing bundled manifest {name}"
+            );
         }
     }
     for files in [
@@ -109,7 +116,9 @@ fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
     let bundled = source_registry(&[dependency, ("nested/requirements.txt", "")]).unwrap();
     let admits = |registry: &DependencyRegistry, path| {
         registry.declares_for_path(LanguageFamily("python"), path, "django")
-            && registry.effective_framework_manifest(path, "django").is_some()
+            && registry
+                .effective_framework_manifest(path, "django")
+                .is_some()
     };
     assert!(admits(&bundled, "app.py"));
     assert!(!admits(&bundled, "nested/app.py"));
@@ -130,7 +139,9 @@ fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
     let empty = source_registry(&[]).unwrap();
     assert!(!admits(&empty, "app.py"));
     let local = source_registry(&[(".acdd/frameworks/django.toml", "")]).unwrap();
-    assert!(local.effective_framework_manifest("app.py", "django").is_some());
+    assert!(local
+        .effective_framework_manifest("app.py", "django")
+        .is_some());
     let deleted = source_registry(&[dependency]).unwrap();
     assert!(admits(&deleted, "app.py"));
 }
@@ -138,7 +149,8 @@ fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
 #[cfg(feature = "lang-python")]
 #[test]
 fn source_local_rules_merge_and_replace_bundled_rules() {
-    let local_rule = "[[route_calls]]\ncallee='LocalRoute'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n";
+    let local_rule =
+        "[[route_calls]]\ncallee='LocalRoute'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n";
     let registry = |mode: &str| {
         source_registry(&[
             ("requirements.txt", "django"),
@@ -327,7 +339,8 @@ fn dependency_registry_digest_is_stable_across_worktrees() {
     )
     .unwrap();
     let adapter = crate::scanner::load_adapter(&first_root, None).unwrap();
-    let cold = DependencyRegistry::try_collect_with_paths(&first_root, Some(&adapter), &[]).unwrap();
+    let cold =
+        DependencyRegistry::try_collect_with_paths(&first_root, Some(&adapter), &[]).unwrap();
     let admission =
         DependencyRegistry::try_collect_with_scan_config(&first_root, Some(&adapter)).unwrap();
     assert_eq!(
@@ -418,14 +431,9 @@ semantic_rules:
 "#;
 
     let mut documented_examples = Vec::new();
-    for (extension, source) in [
-        ("toml", INLINE_RULES_TOML),
-        ("yaml", INLINE_RULES_YAML),
-    ] {
+    for (extension, source) in [("toml", INLINE_RULES_TOML), ("yaml", INLINE_RULES_YAML)] {
         let parsed = FrameworkManifest::parse("django".to_owned(), extension, source)
-            .unwrap_or_else(|error| {
-                panic!("invalid documented {extension} example: {error:#}")
-            });
+            .unwrap_or_else(|error| panic!("invalid documented {extension} example: {error:#}"));
         assert_eq!(parsed.class_hierarchy_receivers.len(), 1, "{extension}");
         assert_eq!(parsed.route_decorators.len(), 1, "{extension}");
         assert_eq!(parsed.route_calls.len(), 1, "{extension}");
@@ -449,15 +457,13 @@ semantic_rules:
     let semantic_root = temporary.path().join("semantic-replacement");
     fs::create_dir_all(semantic_root.join(".acdd/frameworks")).unwrap();
     let mut documented = Vec::new();
-    for block in include_str!("../../../../../docs/reference/framework-manifests.md").split("```")
-    {
+    for block in include_str!("../../../../../docs/reference/framework-manifests.md").split("```") {
         let Some((extension @ ("toml" | "yaml"), source)) = block.split_once('\n') else {
             continue;
         };
         if source.contains("call_to_file") {
-            documented.push(
-                FrameworkManifest::parse("documented".into(), extension, source).unwrap(),
-            );
+            documented
+                .push(FrameworkManifest::parse("documented".into(), extension, source).unwrap());
         }
     }
     assert_eq!(
@@ -558,7 +564,9 @@ semantic_rules:
     for extension in ["toml", "yaml", "yml"] {
         for (mode, replace) in [("default", false), ("extend", false), ("replace", true)] {
             for declared in [false, true] {
-                let workspace = temporary.path().join(format!("{extension}-{mode}-{declared}"));
+                let workspace = temporary
+                    .path()
+                    .join(format!("{extension}-{mode}-{declared}"));
                 let root = workspace.as_path();
                 let directory = root.join(".acdd/frameworks");
                 fs::create_dir_all(&directory).unwrap();
@@ -652,7 +660,9 @@ di_calls:
                         continue;
                     }
                 };
-                let Some(manifest) = registry.effective_framework_manifest("src/views.py", "django") else {
+                let Some(manifest) =
+                    registry.effective_framework_manifest("src/views.py", "django")
+                else {
                     failures.push(format!("{label}: explicit project pack did not activate"));
                     continue;
                 };
@@ -775,7 +785,8 @@ di_calls:
                 }
                 let again = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
                 if registry.digest() != again.digest()
-                    || again.effective_framework_manifest("src/views.py", "django") != Some(manifest)
+                    || again.effective_framework_manifest("src/views.py", "django")
+                        != Some(manifest)
                 {
                     failures.push(format!("{label}: re-collection is not deterministic"));
                 }
@@ -831,16 +842,11 @@ di_calls:
     fs::create_dir(&workspace).unwrap();
     let root = workspace.as_path();
     let undeclared = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
-    if undeclared
-        .declares_for_path(family, "src/app.py", "django")
-    {
+    if undeclared.declares_for_path(family, "src/app.py", "django") {
         failures.push("undeclared bundled framework activated without a project pack".to_owned());
     }
-    if undeclared
-        .declares_for_path(family, "src/app.py", "grid_view_spec")
-    {
-        failures
-            .push("undeclared GridViewSpec bundle activated without a project pack".to_owned());
+    if undeclared.declares_for_path(family, "src/app.py", "grid_view_spec") {
+        failures.push("undeclared GridViewSpec bundle activated without a project pack".to_owned());
     }
     fs::write(
         root.join("pyproject.toml"),
@@ -851,10 +857,11 @@ di_calls:
     assert!(registry.declares_for_path(family, "src/app.py", "grid_view_spec"));
     match registry.effective_framework_manifest("src/app.py", "gridviewspec") {
         Some(manifest)
-            if manifest
-                .class_hierarchy_receivers
-                .iter()
-                .any(|rule| rule.bases.iter().any(|base| base == "grid_view_spec.types.spec.GridViewSpec")) => {}
+            if manifest.class_hierarchy_receivers.iter().any(|rule| {
+                rule.bases
+                    .iter()
+                    .any(|base| base == "grid_view_spec.types.spec.GridViewSpec")
+            }) => {}
         _ => failures.push(
             "declared grid-view-spec did not activate its verified GridViewSpec bundle receiver"
                 .to_owned(),
@@ -865,8 +872,14 @@ di_calls:
 
 #[test]
 fn requirement_patterns_are_filename_scoped() {
-    assert!(filename_matches("requirements*.txt", "requirements-dev.txt"));
-    assert!(!filename_matches("requirements*.txt", "requirements-dev.yaml"));
+    assert!(filename_matches(
+        "requirements*.txt",
+        "requirements-dev.txt"
+    ));
+    assert!(!filename_matches(
+        "requirements*.txt",
+        "requirements-dev.yaml"
+    ));
     assert!(filename_matches("Cargo.toml", "Cargo.toml"));
 }
 
@@ -1016,14 +1029,15 @@ fn manifest_parsers_and_module_prefixes_matrix() {
 
     #[cfg(feature = "lang-rust")]
     {
-        let autolib_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
-            name: "",
-            manifests: &[ManifestSource {
-                path: "Cargo.toml",
-                source: "[package]\nname = \"demo-lib\"\nautolib = false\n[lib]\n",
-            }],
-        }])
-        .unwrap();
+        let autolib_registry =
+            DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+                name: "",
+                manifests: &[ManifestSource {
+                    path: "Cargo.toml",
+                    source: "[package]\nname = \"demo-lib\"\nautolib = false\n[lib]\n",
+                }],
+            }])
+            .unwrap();
         assert_eq!(
             autolib_registry.rust_package_for_path("src/lib.rs"),
             Some(("", "demo_lib"))
@@ -1118,17 +1132,39 @@ fn manifest_parsers_and_module_prefixes_matrix() {
 
     for (lang_id, module, path, expected_origin) in [
         ("go", "github.com/pkg/errors", "main.go", "go.mod"),
-        ("php", "monolog/monolog", "backend/src/User.php", "backend/composer.json"),
-        ("csharp", "Dapper", "dotnet/Invoice.cs", "dotnet/Billing.csproj"),
-        ("java", "com.squareup.okhttp3", "jvm/App.java", "jvm/pom.xml"),
-        ("kotlin", "com.squareup.okhttp3", "jvm/App.kt", "jvm/pom.xml"),
+        (
+            "php",
+            "monolog/monolog",
+            "backend/src/User.php",
+            "backend/composer.json",
+        ),
+        (
+            "csharp",
+            "Dapper",
+            "dotnet/Invoice.cs",
+            "dotnet/Billing.csproj",
+        ),
+        (
+            "java",
+            "com.squareup.okhttp3",
+            "jvm/App.java",
+            "jvm/pom.xml",
+        ),
+        (
+            "kotlin",
+            "com.squareup.okhttp3",
+            "jvm/App.kt",
+            "jvm/pom.xml",
+        ),
         ("ruby", "puma", "ruby/app.rb", "ruby/Gemfile"),
         ("c", "ZLIB", "native/main.c", "native/CMakeLists.txt"),
         ("cpp", "ZLIB", "native/main.cpp", "native/CMakeLists.txt"),
     ] {
         if let Some(profile) = languages::by_id(lang_id) {
             assert_eq!(
-                registry.classification_for_path(profile, module, path).as_deref(),
+                registry
+                    .classification_for_path(profile, module, path)
+                    .as_deref(),
                 Some(format!("external dependency (manifest: {expected_origin})").as_str()),
                 "{lang_id}: {module}"
             );
@@ -1239,7 +1275,10 @@ fn source_registry_scope_parity_matrix() {
                 .effective_framework_manifest(path, pack)
                 .map(|m| serde_json::to_value(m).unwrap());
             assert_eq!(source_m, disk_m);
-            assert_eq!(source.declares_for_path(LanguageFamily("python"), path, pack), disk.declares_for_path(LanguageFamily("python"), path, pack));
+            assert_eq!(
+                source.declares_for_path(LanguageFamily("python"), path, pack),
+                disk.declares_for_path(LanguageFamily("python"), path, pack)
+            );
         }
         let source_facts = extract_with_registry(&source, SOURCES).unwrap();
         let disk_facts = extract_with_registry(&disk, SOURCES).unwrap();

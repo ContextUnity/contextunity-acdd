@@ -193,8 +193,19 @@ impl ValueFlowCollectorCore {
     }
 
     /// Appends a lexical binding fact.
-    pub fn push_binding(&mut self, name: String, position: SourcePosition, value: ValueExpr, conditional: bool) {
-        self.facts.bindings.push(BindingFact { name, position, value, conditional });
+    pub fn push_binding(
+        &mut self,
+        name: String,
+        position: SourcePosition,
+        value: ValueExpr,
+        conditional: bool,
+    ) {
+        self.facts.bindings.push(BindingFact {
+            name,
+            position,
+            value,
+            conditional,
+        });
     }
 
     /// Appends an inferred callback-parameter binding when `name` is non-empty.
@@ -222,8 +233,19 @@ impl ValueFlowCollectorCore {
     }
 
     /// Appends a field assignment fact.
-    pub fn push_field(&mut self, name: String, position: SourcePosition, value: ValueExpr, conditional: bool) {
-        self.facts.fields.push(FieldFact { name, position, value, conditional });
+    pub fn push_field(
+        &mut self,
+        name: String,
+        position: SourcePosition,
+        value: ValueExpr,
+        conditional: bool,
+    ) {
+        self.facts.fields.push(FieldFact {
+            name,
+            position,
+            value,
+            conditional,
+        });
     }
 
     /// Collects identifier, tuple/array index, and object/struct field bindings from a destructuring pattern.
@@ -349,8 +371,12 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
             if let Some((name_node, value_node)) = self.binding_pair(node) {
                 if let Some(value) = self.value_expr(value_node) {
                     if let Some(name) = identifier_name(name_node, self.source) {
-                        self.core
-                            .push_binding(name.to_owned(), position(name_node), value, conditional);
+                        self.core.push_binding(
+                            name.to_owned(),
+                            position(name_node),
+                            value,
+                            conditional,
+                        );
                     } else if let Some(field_node) = self.receiver_field_target(name_node) {
                         self.core.push_field(
                             text(field_node, self.source).trim().to_owned(),
@@ -387,7 +413,8 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
             {
                 self.core.set_return_type_if_none(Some(return_type));
             }
-            if classified.is_some_and(|kind| kind.declaration_role() == Some(DeclarationRole::Type)) {
+            if classified.is_some_and(|kind| kind.declaration_role() == Some(DeclarationRole::Type))
+            {
                 let alias_type = node
                     .child_by_field_name("type")
                     .or_else(|| node.child_by_field_name("value"))
@@ -418,7 +445,10 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
             for child in node.named_children(&mut cursor) {
                 match child.kind() {
                     "variable_declaration" => var_decl = Some(child),
-                    "modifiers" | "binding_pattern_kind" | "type_constraints" | "getter"
+                    "modifiers"
+                    | "binding_pattern_kind"
+                    | "type_constraints"
+                    | "getter"
                     | "setter" => {}
                     _ => initializer = Some(child),
                 }
@@ -459,7 +489,9 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
                     .then(|| node.parent().and_then(|p| p.child_by_field_name("type")))
                     .flatten()
             })
-            .filter(|ty| !matches!(ty.kind(), "implicit_type") && text(*ty, self.source).trim() != "var")
+            .filter(|ty| {
+                !matches!(ty.kind(), "implicit_type") && text(*ty, self.source).trim() != "var"
+            })
             .and_then(|ty| parse_type_expr(ty, self.source, 0));
         let inferred_value = node
             .child_by_field_name("value")
@@ -991,19 +1023,25 @@ mod tests {
         core.push_binding(
             "earlier".into(),
             SourcePosition { line: 2, column: 2 },
-            ValueExpr::Construct { callee: "Svc".into() },
+            ValueExpr::Construct {
+                callee: "Svc".into(),
+            },
             false,
         );
         core.push_field(
             "client".into(),
             SourcePosition { line: 3, column: 2 },
-            ValueExpr::Construct { callee: "Client".into() },
+            ValueExpr::Construct {
+                callee: "Client".into(),
+            },
             false,
         );
         assert_eq!(core.facts().bindings.len(), 2);
         core.facts_mut().bindings.reserve(1);
         core.set_return_type_if_none(Some(TypeExpr::Named { name: "Svc".into() }));
-        core.set_alias_type_if_none(Some(TypeExpr::Named { name: "Alias".into() }));
+        core.set_alias_type_if_none(Some(TypeExpr::Named {
+            name: "Alias".into(),
+        }));
         core.set_return_position(SourcePosition { line: 5, column: 2 });
         core.scope_state_mut().pop();
         assert!(!core.scope_state().is_conditional());
@@ -1019,9 +1057,14 @@ mod tests {
         );
         assert_eq!(
             facts.alias_type,
-            Some(TypeExpr::Named { name: "Alias".into() })
+            Some(TypeExpr::Named {
+                name: "Alias".into()
+            })
         );
-        assert_eq!(facts.return_position, Some(SourcePosition { line: 5, column: 2 }));
+        assert_eq!(
+            facts.return_position,
+            Some(SourcePosition { line: 5, column: 2 })
+        );
 
         let mut stack = ScopeState::with_capacity(2);
         stack.push(branch_flags);
@@ -1101,18 +1144,29 @@ function build(svc: Service, other: Service, flag: boolean): Service {
             "non-assignment comparisons/arithmetic (svc == other, a + b) must emit zero bindings"
         );
         assert_eq!(
-            facts.bindings.iter().find(|b| b.name == "opened").map(|b| &b.value),
+            facts
+                .bindings
+                .iter()
+                .find(|b| b.name == "opened")
+                .map(|b| &b.value),
             Some(&ValueExpr::Call {
                 callee: "open".into(),
                 site: Some(CallSiteEvidence {
-                    position: SourcePosition { line: 3, column: 15 },
+                    position: SourcePosition {
+                        line: 3,
+                        column: 15
+                    },
                     receiver: Some(Box::new(ValueExpr::Alias { name: "svc".into() })),
                     arguments: Vec::new(),
                 }),
             })
         );
         assert_eq!(
-            facts.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            facts
+                .fields
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
             ["client"]
         );
         assert!(facts.return_type.is_some());

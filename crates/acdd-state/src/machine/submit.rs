@@ -2,8 +2,8 @@
 //! `immutable` / `need:` drift detection, `receipt: true` container closure, and DAG advancement.
 
 use crate::machine::graph::{
-    active_claim_for_node, build_preconditions, container_scope, find_node,
-    is_post_task_root_node, is_pre_task_root_node, resolve_gate_def,
+    active_claim_for_node, build_preconditions, container_scope, find_node, is_post_task_root_node,
+    is_pre_task_root_node, resolve_gate_def,
 };
 use crate::machine::inputs::{
     MachineGateDef, MachineProfileInput, MachineProofKind, SubmitEvaluation, SubmitInput,
@@ -70,7 +70,14 @@ pub fn evaluate_submit(
     enforce_independent_from(snapshot, node, gate, &input.worker_id)?;
 
     match input.action {
-        SubmitAction::Reject => evaluate_reject(snapshot, node, gate, active_claim.claim_revision, obs, input),
+        SubmitAction::Reject => evaluate_reject(
+            snapshot,
+            node,
+            gate,
+            active_claim.claim_revision,
+            obs,
+            input,
+        ),
         SubmitAction::Pass => evaluate_pass(
             snapshot,
             profile,
@@ -112,8 +119,7 @@ fn enforce_independent_from(
                     .collect::<Vec<_>>()
                     .join(".");
                 for task_node in &snapshot.nodes {
-                    if task_node.kind != NodeKind::Task
-                        || task_node.status == NodeStatus::Cancelled
+                    if task_node.kind != NodeKind::Task || task_node.status == NodeStatus::Cancelled
                     {
                         continue;
                     }
@@ -335,36 +341,36 @@ fn evaluate_reject(
 
         if target.seq_order > node.seq_order {
             if let Some(ref fallback_fail_id) = gate.fail {
-            // `fail_drift` targets placed after `node` (e.g. `rearchitect`): also reset
-            // `gate.fail` (`build`) and intermediate gates (`< node.seq_order`) to `Pending`.
-            let fb_node = snapshot
-                .nodes
-                .iter()
-                .find(|n| n.parent_id == node.parent_id && n.gate_id == *fallback_fail_id)
-                .ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "fail target '{fallback_fail_id}' not found in container of '{}'",
-                            node.node_id
-                        ),
-                    )
-                })?;
-            for prev in &snapshot.nodes {
-                if prev.parent_id == node.parent_id
-                    && prev.seq_order >= fb_node.seq_order
-                    && prev.seq_order < node.seq_order
-                    && prev.node_id != target.node_id
-                    && prev.node_id != node.node_id
-                {
-                    watch_ids.push(prev.node_id.as_str());
-                    node_patches.push(crate::machine::clear_claim_patch(
-                        &prev.node_id,
-                        NodeStatus::Pending,
-                        true,
-                    ));
+                // `fail_drift` targets placed after `node` (e.g. `rearchitect`): also reset
+                // `gate.fail` (`build`) and intermediate gates (`< node.seq_order`) to `Pending`.
+                let fb_node = snapshot
+                    .nodes
+                    .iter()
+                    .find(|n| n.parent_id == node.parent_id && n.gate_id == *fallback_fail_id)
+                    .ok_or_else(|| {
+                        StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "fail target '{fallback_fail_id}' not found in container of '{}'",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                for prev in &snapshot.nodes {
+                    if prev.parent_id == node.parent_id
+                        && prev.seq_order >= fb_node.seq_order
+                        && prev.seq_order < node.seq_order
+                        && prev.node_id != target.node_id
+                        && prev.node_id != node.node_id
+                    {
+                        watch_ids.push(prev.node_id.as_str());
+                        node_patches.push(crate::machine::clear_claim_patch(
+                            &prev.node_id,
+                            NodeStatus::Pending,
+                            true,
+                        ));
+                    }
                 }
-            }
             }
         }
 
@@ -422,7 +428,10 @@ fn evaluate_pass(
     let current_tree = obs.current_tree.as_ref().ok_or_else(|| {
         StateError::new(
             ErrorCode::TaskCandidateMismatch,
-            format!("submit --action pass on '{}' requires current_tree observation", node.node_id),
+            format!(
+                "submit --action pass on '{}' requires current_tree observation",
+                node.node_id
+            ),
         )
     })?;
 
@@ -509,15 +518,8 @@ fn evaluate_pass(
     )?;
 
     // 5. Proof evidence validation (`review` / `CustomSchema`) + `accepted_snapshot`.
-    let new_artifacts = collect_pass_proof_artifacts(
-        snapshot,
-        profile,
-        node,
-        gate,
-        current_tree,
-        input,
-        obs,
-    )?;
+    let new_artifacts =
+        collect_pass_proof_artifacts(snapshot, profile, node, gate, current_tree, input, obs)?;
 
     // 6. Compute node, dependency, blackboard, and run transitions.
     let mut watch_ids = vec![node.node_id.as_str()];
@@ -560,9 +562,10 @@ fn evaluate_pass(
                 )
             })?;
         watch_ids.push(next_node.node_id.as_str());
-        transition
-            .node_patches
-            .push(NodeStatusPatch::status_only(&next_node.node_id, NodeStatus::Ready));
+        transition.node_patches.push(NodeStatusPatch::status_only(
+            &next_node.node_id,
+            NodeStatus::Ready,
+        ));
     }
 
     // Handle `receipt: true` container completion & readiness fan-out.
@@ -604,11 +607,11 @@ fn evaluate_pass(
     transition.preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
     transition.preconditions.required_predecessor_trees = required_predecessor_trees;
     transition.claim_patches = vec![ClaimOutcomePatch {
-            node_id: node.node_id.clone(),
-            claim_revision,
-            outcome: ClaimOutcome::Passed,
-            ended_at: obs.now_utc.clone(),
-        }];
+        node_id: node.node_id.clone(),
+        claim_revision,
+        outcome: ClaimOutcome::Passed,
+        ended_at: obs.now_utc.clone(),
+    }];
     Ok(SubmitEvaluation::Apply(transition))
 }
 
@@ -812,8 +815,15 @@ fn handle_task_receipt_completion<'a>(
     })?;
     watch_ids.push(parent_task.node_id.as_str());
 
-    for sub in snapshot.subtasks.iter().filter(|s| s.node_id == parent_task.node_id) {
-        if !matches!(sub.status, SubtaskStatus::Completed | SubtaskStatus::Cancelled) {
+    for sub in snapshot
+        .subtasks
+        .iter()
+        .filter(|s| s.node_id == parent_task.node_id)
+    {
+        if !matches!(
+            sub.status,
+            SubtaskStatus::Completed | SubtaskStatus::Cancelled
+        ) {
             return Err(StateError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
@@ -822,7 +832,11 @@ fn handle_task_receipt_completion<'a>(
                 ),
             ));
         }
-        if !sub.evidence.as_deref().is_some_and(|e| !e.trim().is_empty()) {
+        if !sub
+            .evidence
+            .as_deref()
+            .is_some_and(|e| !e.trim().is_empty())
+        {
             return Err(StateError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
@@ -858,11 +872,13 @@ fn handle_task_receipt_completion<'a>(
         }
     }
 
-    transition.dependency_patches.push(DependencySatisfiedPatch {
-        depends_on_ref: task_ref.clone(),
-        dependent_task_ref: None,
-        satisfied: true,
-    });
+    transition
+        .dependency_patches
+        .push(DependencySatisfiedPatch {
+            depends_on_ref: task_ref.clone(),
+            dependent_task_ref: None,
+            satisfied: true,
+        });
 
     let receipt_payload = json!({
         "run_id": snapshot.run.run_id.as_str(),
@@ -889,7 +905,13 @@ fn handle_task_receipt_completion<'a>(
         "task receipt",
     )?);
 
-    unblock_newly_ready_tasks(snapshot, task_ref, obs, watch_ids, &mut transition.node_patches);
+    unblock_newly_ready_tasks(
+        snapshot,
+        task_ref,
+        obs,
+        watch_ids,
+        &mut transition.node_patches,
+    );
 
     let others_done = snapshot.nodes.iter().all(|n| {
         n.kind != NodeKind::Task

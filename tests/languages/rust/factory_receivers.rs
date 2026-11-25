@@ -390,7 +390,8 @@ fn field_read_prefers_declared_field_over_same_name_method() {
             .values()
             .flat_map(|facts| &facts.nodes)
             .filter(|node| {
-                node.kind.as_str() == target_kind && target_name.is_none_or(|name| node.name == name)
+                node.kind.as_str() == target_kind
+                    && target_name.is_none_or(|name| node.name == name)
             })
             .map(|node| node.id.as_str())
             .collect();

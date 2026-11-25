@@ -1,6 +1,6 @@
 use acdd_index::ast;
-use acdd_index::models::Facts;
 use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+use acdd_index::models::Facts;
 
 static FUNCTION_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[("function_definition", "function")],
@@ -61,10 +61,9 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
         &mut function_facts,
     )
     .unwrap();
-    assert!(function_facts
-        .nodes
-        .iter()
-        .any(|node| node.name == "run" && node.kind == acdd_index::models::tags::NodeKind::Function));
+    assert!(function_facts.nodes.iter().any(
+        |node| node.name == "run" && node.kind == acdd_index::models::tags::NodeKind::Function
+    ));
 
     let mut class_facts = Facts::default();
     ast::parse::parse_file(
@@ -75,10 +74,13 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
         &mut class_facts,
     )
     .unwrap();
-    assert!(class_facts
-        .nodes
-        .iter()
-        .any(|node| node.name == "Thing" && node.kind == acdd_index::models::tags::NodeKind::Class));
+    assert!(
+        class_facts
+            .nodes
+            .iter()
+            .any(|node| node.name == "Thing"
+                && node.kind == acdd_index::models::tags::NodeKind::Class)
+    );
 
     let wrong_grammar = ast::parse::parse_file(
         &Probe(&FUNCTION_SPEC, "rust"),
@@ -90,6 +92,10 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     assert!(wrong_grammar.is_err());
     assert!(ast::parse::parse_file(
         &Probe(&FUNCTION_SPEC, "unknown-profile"),
-        "probe.py", source, "probe", &mut Facts::default(),
-    ).is_err());
+        "probe.py",
+        source,
+        "probe",
+        &mut Facts::default(),
+    )
+    .is_err());
 }

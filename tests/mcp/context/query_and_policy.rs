@@ -174,7 +174,11 @@ fn mcp_analyze_preserves_sql_columns_named_like_metadata() {
         ),
         ("durable", durable.clone()),
     ] {
-        contextunity_acdd::format::compact(&mut semantic, contextunity_acdd::format::OperationKind::Navigation, None);
+        contextunity_acdd::format::compact(
+            &mut semantic,
+            contextunity_acdd::format::OperationKind::Navigation,
+            None,
+        );
         match case {
             "inactive" => {
                 assert!(semantic.get("generation").is_none(), "{semantic}");
@@ -491,7 +495,9 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
         .request_value("tools/list", json!({}))
         .expect("MCP transport");
     let tools = crate::json_array(&listed["result"]["tools"]);
-    let catalog_bytes = serde_json::to_vec(&listed["result"]["tools"]).unwrap().len();
+    let catalog_bytes = serde_json::to_vec(&listed["result"]["tools"])
+        .unwrap()
+        .len();
     assert!(
         catalog_bytes <= 60_000,
         "compacted tools/list schema catalog should stay under 60,000 bytes, got {catalog_bytes} bytes"
@@ -505,7 +511,9 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
             "tool {} has an unexpected format selector: {format}",
             tool["name"]
         );
-        if let Some(worktree_desc) = tool["inputSchema"]["properties"]["worktree"]["description"].as_str() {
+        if let Some(worktree_desc) =
+            tool["inputSchema"]["properties"]["worktree"]["description"].as_str()
+        {
             assert!(
                 worktree_desc.len() <= 100,
                 "tool {} has bloated worktree description ({} chars): {worktree_desc}",
@@ -560,13 +568,7 @@ fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
             assert_eq!(parsed.custom_evidence, evidence);
         }
     }
-    for invalid in [
-        json!("yaml"),
-        json!(""),
-        json!("JSON"),
-        json!(7),
-        json!({}),
-    ] {
+    for invalid in [json!("yaml"), json!(""), json!("JSON"), json!(7), json!({})] {
         let input = json!({"node":"t1.build", "action":"pass", "worker_id":"format-contract", "format":invalid});
         assert!(serde_json::from_value::<SubmitInput>(input).is_err());
     }

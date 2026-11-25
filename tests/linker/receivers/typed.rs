@@ -115,16 +115,31 @@ fn tier_two_inheritance_resolves_base_in_another_file() {
 
     let (facts, graph) = linked(&[
         ("[one]/Base.java", "java", "class Base { void run() {} }"),
-        ("[one]/Child.java", "java", "class Child extends Base { void call(Child c) { c.run(); } }"),
+        (
+            "[one]/Child.java",
+            "java",
+            "class Child extends Base { void call(Child c) { c.run(); } }",
+        ),
         ("[two]/Base.java", "java", "class Base { void run() {} }"),
     ]);
-    let target = facts["[one]/Base.java"].nodes.iter().find(|node| node.name == "run").unwrap();
-    assert!(graph.edges.iter().any(|edge| edge.dst == target.id && edge.evidence == "c.run"));
+    let target = facts["[one]/Base.java"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "run")
+        .unwrap();
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.dst == target.id && edge.evidence == "c.run"));
 
     let (_, graph) = linked(&[
         ("Base.java", "java", "class Base { void run() {} }"),
         ("Other.java", "java", "class Base { void run() {} }"),
-        ("Child.java", "java", "class Child extends Base { void call(Child c) { c.run(); } }"),
+        (
+            "Child.java",
+            "java",
+            "class Child extends Base { void call(Child c) { c.run(); } }",
+        ),
     ]);
     assert_ne!(call(&graph, "c.run").status, "resolved");
 }

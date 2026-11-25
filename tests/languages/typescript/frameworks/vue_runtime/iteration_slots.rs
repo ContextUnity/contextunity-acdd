@@ -210,21 +210,13 @@ fn typed_iteration_and_slot_members() {
 #[test]
 fn vue_v_for_destructured_aliases_scope_cleanly() {
     for (expr, expected_bindings, probes) in [
-        (
-            "{ a, b } in items",
-            &["a", "b"][..],
-            &["a", "b"][..],
-        ),
+        ("{ a, b } in items", &["a", "b"][..], &["a", "b"][..]),
         (
             "({ a: aliasA, b }, idx) in items",
             &["aliasA", "b", "idx"][..],
             &["aliasA", "b", "idx"][..],
         ),
-        (
-            "[k, v] in pairs",
-            &["k", "v"][..],
-            &["k", "v"][..],
-        ),
+        ("[k, v] in pairs", &["k", "v"][..], &["k", "v"][..]),
     ] {
         let interp: Vec<String> = probes.iter().map(|p| format!("{{{{ {p} }}}}")).collect();
         let source = format!(
@@ -242,9 +234,7 @@ fn vue_v_for_destructured_aliases_scope_cleanly() {
                 node.kind == acdd_index::models::tags::NodeKind::TemplateScope
                     && crate::common::assertions::projected_node_details(&facts, node)["bindings"]
                         .as_array()
-                        .is_some_and(|names| {
-                            names.iter().any(|name| name == expected_bindings[0])
-                        })
+                        .is_some_and(|names| names.iter().any(|name| name == expected_bindings[0]))
             })
             .unwrap_or_else(|| panic!("missing template_scope for {expr}"));
         let details = crate::common::assertions::projected_node_details(&facts, scope);

@@ -31,10 +31,8 @@ impl FrameworkHarness {
     pub(super) fn from_manifests(files: &[(&str, &str)]) -> anyhow::Result<Self> {
         let workspace = Self::persisted(files);
         let adapter = acdd_index::scanner::load_adapter(workspace.root(), None)?;
-        let registry = DependencyRegistry::try_collect_with_scan_config(
-            workspace.root(),
-            Some(&adapter),
-        )?;
+        let registry =
+            DependencyRegistry::try_collect_with_scan_config(workspace.root(), Some(&adapter))?;
         Ok(Self { registry })
     }
 
@@ -64,8 +62,7 @@ impl FrameworkHarness {
     pub(super) fn extract_with_registry(
         registry: &DependencyRegistry,
         files: &[(&str, &str, &str)],
-    ) -> anyhow::Result<BTreeMap<String, acdd_index::typed_facts::TypedFacts>>
-    {
+    ) -> anyhow::Result<BTreeMap<String, acdd_index::typed_facts::TypedFacts>> {
         files
             .iter()
             .map(|&(path, language, source)| {

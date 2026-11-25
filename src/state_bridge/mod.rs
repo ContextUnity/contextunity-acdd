@@ -6,10 +6,10 @@ pub(crate) mod docs_domain;
 mod overview;
 
 pub(crate) use code_domain::CodeDomainProvider;
-pub use common::{execute_state_command, execute_state_query, InvocationSettings};
 pub(crate) use common::execute_state_command_with_config;
 #[cfg(test)]
 pub(crate) use common::state_engine_config;
+pub use common::{execute_state_command, execute_state_query, InvocationSettings};
 pub(crate) use docs_domain::DocsDomainProvider;
 pub(crate) use overview::overview;
 
@@ -87,8 +87,7 @@ fn resolve_worktree_active_run_node(
     let Some(run) = run else {
         return Ok(None);
     };
-    let Some(graph) =
-        acdd_state::store::traits::StateReader::load_run_graph(&reader, &run.run_id)?
+    let Some(graph) = acdd_state::store::traits::StateReader::load_run_graph(&reader, &run.run_id)?
     else {
         return Ok(None);
     };
@@ -247,11 +246,9 @@ pub fn resolve_worktree_span_context(
     }
     let resolved_state_db =
         acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
-    let resolved = resolve_worktree_active_run_node(
-        &resolved_state_db,
-        worktree,
-        &|n| n.status == NodeStatus::InProgress && n.active_span_id.is_some(),
-    )?;
+    let resolved = resolve_worktree_active_run_node(&resolved_state_db, worktree, &|n| {
+        n.status == NodeStatus::InProgress && n.active_span_id.is_some()
+    })?;
     Ok(resolved.and_then(|(run, _, node)| {
         node.active_span_id
             .as_ref()
@@ -287,7 +284,11 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         let run_git = |args: &[&str]| {
             let out = acdd_core::git::git_command(&root, args).unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_owned()
         };
         run_git(&["init"]);
@@ -300,7 +301,11 @@ mod tests {
             "version: 2\nprotected_paths:\n  - Cargo.toml\nroles:\n  builder:\n    mode: subagent\ncommands:\n  build_check: \"cargo check --lib\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n",
         )
         .unwrap();
-        fs::write(root.join("Cargo.toml"), "[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
         fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
         fs::write(root.join("src/other.rs"), "pub fn b() -> i32 { 2 }\n").unwrap();
         run_git(&["add", "."]);
@@ -308,7 +313,11 @@ mod tests {
         let base_commit = run_git(&["rev-parse", "HEAD"]);
         // Pre-claim in-place edit and pre-claim untracked file captured in `claim_tree`.
         fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 10 }\n").unwrap();
-        fs::write(root.join("src/pre_claim_untracked.rs"), "pub fn pre_claim() {}\n").unwrap();
+        fs::write(
+            root.join("src/pre_claim_untracked.rs"),
+            "pub fn pre_claim() {}\n",
+        )
+        .unwrap();
 
         let adapter = Adapter::default();
         let engine = StateEngine::open(
@@ -378,8 +387,19 @@ mod tests {
         let page = QueryOptions::resolve(&adapter.response, None, 0, None, None).unwrap();
         let source = SourceOptions::resolve(&adapter.response, None, None, None, 0).unwrap();
         let read = |req: &ReadRequest| {
-            let node_ctx = active_node_context(&root, &adapter, None, None).ok().flatten();
-            acdd_read_tool(&root, &adapter, req, &page, &source, None, node_ctx.as_ref()).unwrap()
+            let node_ctx = active_node_context(&root, &adapter, None, None)
+                .ok()
+                .flatten();
+            acdd_read_tool(
+                &root,
+                &adapter,
+                req,
+                &page,
+                &source,
+                None,
+                node_ctx.as_ref(),
+            )
+            .unwrap()
         };
         let req_allowed = ReadRequest {
             path: Some("src/scoped.rs".into()),
@@ -392,8 +412,14 @@ mod tests {
         assert_eq!(allowed["baseline_commit"], base_commit);
         assert_eq!(allowed["claim_tree"], claim_tree);
         let delta_text = allowed["content"].as_str().unwrap_or_default();
-        assert!(delta_text.contains("-pub fn a() -> i32 { 10 }"), "{delta_text}");
-        assert!(delta_text.contains("+pub fn a() -> i32 { 42 }"), "{delta_text}");
+        assert!(
+            delta_text.contains("-pub fn a() -> i32 { 10 }"),
+            "{delta_text}"
+        );
+        assert!(
+            delta_text.contains("+pub fn a() -> i32 { 42 }"),
+            "{delta_text}"
+        );
         let hints = allowed["Hints"].as_str().unwrap_or_default();
         assert!(hints.contains("acdd_blackboard"), "{hints}");
 
@@ -404,7 +430,10 @@ mod tests {
         });
         let untracked_diff = untracked_delta["content"].as_str().unwrap_or_default();
         assert!(untracked_diff.contains("--- /dev/null"), "{untracked_diff}");
-        assert!(untracked_diff.contains("+pub fn newly_added() {}"), "{untracked_diff}");
+        assert!(
+            untracked_diff.contains("+pub fn newly_added() {}"),
+            "{untracked_diff}"
+        );
         for (rel, expected_fn, forbidden_fn) in [
             ("src/ leading.rs", "pub fn spaced()", "plain_name()"),
             ("src/leading.rs", "pub fn plain_name()", "spaced()"),
@@ -444,8 +473,16 @@ mod tests {
                 ..Default::default()
             });
             let mode_diff = mode_delta["content"].as_str().unwrap_or_default();
-            assert_eq!(mode_diff.matches("old mode 100644").count(), 1, "{mode_diff}");
-            assert_eq!(mode_diff.matches("new mode 100755").count(), 1, "{mode_diff}");
+            assert_eq!(
+                mode_diff.matches("old mode 100644").count(),
+                1,
+                "{mode_diff}"
+            );
+            assert_eq!(
+                mode_diff.matches("new mode 100755").count(),
+                1,
+                "{mode_diff}"
+            );
 
             fs::write(&pre_abs, "pub fn pre_claim_untracked_v2() {}\n").unwrap();
             let mut perms2 = fs::metadata(&pre_abs).unwrap().permissions();
@@ -467,7 +504,10 @@ mod tests {
                 1,
                 "{mode_content_diff}"
             );
-            assert!(mode_content_diff.contains("+pub fn pre_claim_untracked_v2()"), "{mode_content_diff}");
+            assert!(
+                mode_content_diff.contains("+pub fn pre_claim_untracked_v2()"),
+                "{mode_content_diff}"
+            );
         }
 
         let protected_read = read(&ReadRequest {
@@ -475,7 +515,10 @@ mod tests {
             mode: ReadMode::Lines,
             ..Default::default()
         });
-        assert_eq!(protected_read["in_write_scope"], "OUT_OF_SCOPE", "{protected_read}");
+        assert_eq!(
+            protected_read["in_write_scope"], "OUT_OF_SCOPE",
+            "{protected_read}"
+        );
 
         let req_outside = ReadRequest {
             path: Some("src/other.rs".into()),
@@ -535,7 +578,10 @@ mod tests {
             mode: ReadMode::Lines,
             ..Default::default()
         });
-        assert_eq!(root_protected["in_write_scope"], "OUT_OF_SCOPE", "{root_protected}");
+        assert_eq!(
+            root_protected["in_write_scope"], "OUT_OF_SCOPE",
+            "{root_protected}"
+        );
         let root_allowed = read(&ReadRequest {
             path: Some("src/other.rs".into()),
             mode: ReadMode::Lines,

@@ -159,16 +159,13 @@ fn parser_slot(profile_id: &'static str, path: &str) -> &'static str {
 fn validate_profile(profile: &dyn LanguageProfile) -> Result<()> {
     anyhow::ensure!(
         crate::models::tags::LanguageId::parse(profile.id()).is_some(),
-        "unsupported language profile: {}", profile.id()
+        "unsupported language profile: {}",
+        profile.id()
     );
     Ok(())
 }
 
-pub(super) fn parse_tree(
-    profile: &dyn LanguageProfile,
-    path: &str,
-    source: &str,
-) -> Result<Tree> {
+pub(super) fn parse_tree(profile: &dyn LanguageProfile, path: &str, source: &str) -> Result<Tree> {
     validate_profile(profile)?;
     let grammar = profile.grammar(path);
     if let Some(spec) = profile.syntax_grammar_spec() {
@@ -216,14 +213,8 @@ pub fn parse_file(
 }
 
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
-type EmbeddedExtractor = fn(
-    &str,
-    &str,
-    &str,
-    &mut TypedFacts,
-    &Arc<LanguageContext>,
-    TreeExtractor,
-) -> Result<()>;
+type EmbeddedExtractor =
+    fn(&str, &str, &str, &mut TypedFacts, &Arc<LanguageContext>, TreeExtractor) -> Result<()>;
 
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
 fn parse_embedded_file(

@@ -1,7 +1,7 @@
+use super::activation::parse_language;
 pub use super::activation::{
     ActivationCondition, ActivationMatch, FileActivationSignals, SyntaxActivationKeys,
 };
-use super::activation::parse_language;
 use super::projections::{Api, AttachmentSource, EndpointAttachment, Slot};
 use crate::models::tags::LanguageId;
 use anyhow::{ensure, Context, Result};
@@ -662,7 +662,9 @@ pub(crate) fn execute_semantic_rule<'rules, 'tree>(
             };
             let calls = match source {
                 AttachmentSource::DecoratedCallable if !input.is_call => input.decorated_calls,
-                AttachmentSource::Argument { .. } if input.is_call => std::slice::from_ref(&ctx.node),
+                AttachmentSource::Argument { .. } if input.is_call => {
+                    std::slice::from_ref(&ctx.node)
+                }
                 _ => return,
             };
             for &call in calls {
@@ -702,7 +704,8 @@ pub(crate) fn execute_semantic_rule<'rules, 'tree>(
             if !(resolvers.api)(ctx.node, callee) || !(resolvers.attached)(ctx.node, attachment) {
                 return;
             }
-            let url = (resolvers.literal)((resolvers.keyword)(ctx.node, url_keyword).ok().flatten());
+            let url =
+                (resolvers.literal)((resolvers.keyword)(ctx.node, url_keyword).ok().flatten());
             let method = (resolvers.keyword)(ctx.node, method_keyword)
                 .map(|node| node.map(|node| (resolvers.literal)(Some(node))));
             let url = match url {
@@ -819,22 +822,30 @@ fn emit_named_binding(
     req: NamedBindingRequest<'_>,
     facts: &crate::models::Facts,
 ) -> NamedBindingFact {
-    let role =
-        if let super::projections::NamedBindingForm::CallDefinition { target_kind, .. } = req.binding
-        {
-            let kind = match target_kind {
-                super::projections::DefinitionKind::Object => NamedTargetKind::Object,
-                super::projections::DefinitionKind::Callable => NamedTargetKind::Callable,
-            };
-            let operand = req.target.map_or(SymbolOperand::Unknown, |(position, name)| {
+    let role = if let super::projections::NamedBindingForm::CallDefinition { target_kind, .. } =
+        req.binding
+    {
+        let kind = match target_kind {
+            super::projections::DefinitionKind::Object => NamedTargetKind::Object,
+            super::projections::DefinitionKind::Callable => NamedTargetKind::Callable,
+        };
+        let operand = req
+            .target
+            .map_or(SymbolOperand::Unknown, |(position, name)| {
                 if let Some(expression) = name {
                     return SymbolOperand::Name { expression };
                 }
                 let mut nodes = facts.nodes.iter().filter(|node| {
                     node.line == position.line
-                        && node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) == position.column as u64
+                        && node
+                            .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                            .as_u64()
+                            .unwrap_or(0)
+                            == position.column as u64
                         && match kind {
-                            NamedTargetKind::Object => node.kind == crate::models::tags::NodeKind::Object,
+                            NamedTargetKind::Object => {
+                                node.kind == crate::models::tags::NodeKind::Object
+                            }
                             NamedTargetKind::Callable => {
                                 matches!(node.kind.as_str(), "function" | "method")
                             }
@@ -852,13 +863,13 @@ fn emit_named_binding(
                     }
                 }
             });
-            NamedBindingRole::Definition {
-                target: operand,
-                target_kind: kind,
-            }
-        } else {
-            NamedBindingRole::Reference
-        };
+        NamedBindingRole::Definition {
+            target: operand,
+            target_kind: kind,
+        }
+    } else {
+        NamedBindingRole::Reference
+    };
     NamedBindingFact {
         origin: ExtractionRuleOrigin::new(&req.rule.pack, &req.rule.id),
         position: req.position,
@@ -1119,11 +1130,11 @@ pub(crate) fn execute_class_attribute_rule(
             return;
         };
         let target_owner = if let Some(container) = container {
-            if !facts
-                .nodes
-                .iter()
-                .any(|node| node.id == req.owner && node.kind == crate::models::tags::NodeKind::Class && node.name == *container)
-            {
+            if !facts.nodes.iter().any(|node| {
+                node.id == req.owner
+                    && node.kind == crate::models::tags::NodeKind::Class
+                    && node.name == *container
+            }) {
                 return;
             }
             let Some(parent) = facts
@@ -1417,7 +1428,8 @@ fn has_name(node: &Node, field: &str, name: &str) -> bool {
     match field {
         "bindings" => node.binding_names().any(|binding| binding == name),
         "rebindings" => node.rebinding_names().any(|binding| binding == name),
-        _ => node.detail_entry(field)
+        _ => node
+            .detail_entry(field)
             .as_array()
             .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name))),
     }

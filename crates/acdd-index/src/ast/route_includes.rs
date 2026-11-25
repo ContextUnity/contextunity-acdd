@@ -1,8 +1,8 @@
 use crate::languages::{routes::prefixed_path, types::workspace_path};
+use crate::models::details::NodeDetailKey;
 use crate::models::{Edge, Node};
 use crate::typed_facts::TypedFacts;
 use serde_json::json;
-use crate::models::details::NodeDetailKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 fn materialize_composed_route(
@@ -17,13 +17,15 @@ fn materialize_composed_route(
     let method = child.detail_str(NodeDetailKey::METHOD).unwrap_or("ANY");
     let name = format!("{method} {route_path}");
     let mut route = child.clone();
-    let source_path = child.detail_str(NodeDetailKey::SOURCE_PATH)
+    let source_path = child
+        .detail_str(NodeDetailKey::SOURCE_PATH)
         .unwrap_or(child.path.as_str())
         .to_owned();
     let source_line = child
         .detail_u64(NodeDetailKey::SOURCE_LINE)
         .unwrap_or(child.line as u64);
-    let source_id = child.detail_str(NodeDetailKey::SOURCE_ID)
+    let source_id = child
+        .detail_str(NodeDetailKey::SOURCE_ID)
         .unwrap_or(child.id.as_str())
         .to_owned();
     let origin = all
@@ -31,7 +33,9 @@ fn materialize_composed_route(
         .filter(|_| workspace_path(&source_path).0 == workspace_path(owner_path).0)
         .and_then(|source_facts| {
             source_facts.facts.nodes.iter().find(|node| {
-                node.id == source_id && node.kind == crate::models::tags::NodeKind::Route && node.path == source_path
+                node.id == source_id
+                    && node.kind == crate::models::tags::NodeKind::Route
+                    && node.path == source_path
             })
         });
     let source_qualname = origin.map(|node| node.qualname.clone());
@@ -42,7 +46,13 @@ fn materialize_composed_route(
     route.end_line = include.end_line;
     let parent_module = all
         .get(owner_path)
-        .and_then(|typed| typed.facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module))
+        .and_then(|typed| {
+            typed
+                .facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+        })
         .map_or(owner_path, |module| module.qualname.as_str());
     route.qualname = format!("{parent_module}.{name}");
     route.set_detail(NodeDetailKey::ROUTE_PATH, json!(route_path));
@@ -57,9 +67,13 @@ fn materialize_composed_route(
     route.set_detail(NodeDetailKey::INCLUDED_FROM, json!(include.id));
     route.set_detail(
         NodeDetailKey::INCLUDE_DEPTH,
-        json!(include.detail_u64(NodeDetailKey::INCLUDE_DEPTH).unwrap_or(0)
-            .max(child.detail_u64(NodeDetailKey::INCLUDE_DEPTH).unwrap_or(0))
-            + 1),
+        json!(
+            include
+                .detail_u64(NodeDetailKey::INCLUDE_DEPTH)
+                .unwrap_or(0)
+                .max(child.detail_u64(NodeDetailKey::INCLUDE_DEPTH).unwrap_or(0))
+                + 1
+        ),
     );
     let mut namespaces = Vec::new();
     for candidate in [
@@ -92,10 +106,12 @@ fn apply_composed_route_addition(
     include: Node,
     child: Node,
 ) {
-    let source_path = route.detail_str(NodeDetailKey::SOURCE_PATH)
+    let source_path = route
+        .detail_str(NodeDetailKey::SOURCE_PATH)
         .unwrap_or(child.path.as_str())
         .to_owned();
-    let source_id = route.detail_str(NodeDetailKey::SOURCE_ID)
+    let source_id = route
+        .detail_str(NodeDetailKey::SOURCE_ID)
         .unwrap_or(child.id.as_str())
         .to_owned();
     let child_edges = all
@@ -115,7 +131,9 @@ fn apply_composed_route_addition(
         .filter(|_| workspace_path(&source_path).0 == workspace_path(&owner_path).0)
         .filter(|source_facts| {
             source_facts.facts.nodes.iter().any(|node| {
-                node.id == source_id && node.kind == crate::models::tags::NodeKind::Route && node.path == source_path
+                node.id == source_id
+                    && node.kind == crate::models::tags::NodeKind::Route
+                    && node.path == source_path
             })
         })
         .map(|source_facts| {
@@ -215,7 +233,10 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 .facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
+                .filter(|node| {
+                    node.kind == crate::models::tags::NodeKind::Module
+                        && node.language == crate::models::tags::LanguageId::Python
+                })
                 .map(move |node| ((workspace.clone(), node.qualname.clone()), path.clone()))
         })
         .collect();
@@ -257,7 +278,8 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
                 .into_iter()
                 .flat_map(|typed| typed.facts.nodes.iter())
                 .filter(|node| {
-                    node.kind == crate::models::tags::NodeKind::Route && node.detail_str(NodeDetailKey::INCLUDE_MODULE).is_none()
+                    node.kind == crate::models::tags::NodeKind::Route
+                        && node.detail_str(NodeDetailKey::INCLUDE_MODULE).is_none()
                 })
                 .cloned()
                 .collect();
@@ -305,7 +327,14 @@ pub fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSe
             break;
         }
         for (owner_path, route, include, child) in additions {
-            apply_composed_route_addition(all, &mut changed_paths, owner_path, route, include, child);
+            apply_composed_route_addition(
+                all,
+                &mut changed_paths,
+                owner_path,
+                route,
+                include,
+                child,
+            );
         }
     }
     changed_paths

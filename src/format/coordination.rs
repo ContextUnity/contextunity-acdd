@@ -1,6 +1,6 @@
 use super::core::{
-    append_fenced_block, escape_label, escape_text, inline_code, is_freshness_envelope,
-    page_items, render_field, render_markdown, render_markdown_fields, text_field, u64_field,
+    append_fenced_block, escape_label, escape_text, inline_code, is_freshness_envelope, page_items,
+    render_field, render_markdown, render_markdown_fields, text_field, u64_field,
 };
 use acdd_core::ports::DomainToolOutput;
 use serde_json::Value;
@@ -29,18 +29,28 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
         render_section_page(&mut output, "Document sections", &value["sections"], false);
         for (field, heading, line_is_coord) in [
             ("cites_doc", "Verified document citations", false),
-            ("cited_by_doc", "Verified incoming document citations", false),
+            (
+                "cited_by_doc",
+                "Verified incoming document citations",
+                false,
+            ),
             ("referenced_symbols", "Verified referenced symbols", true),
         ] {
             if let Some(page) = value.get(field) {
-                if u64_field(page, "total") == Some(0) && page.get("omitted") != Some(&Value::Bool(true)) {
+                if u64_field(page, "total") == Some(0)
+                    && page.get("omitted") != Some(&Value::Bool(true))
+                {
                     continue;
                 }
                 render_page_metadata(&mut output, heading, page);
                 for (i, item) in page_items(page).unwrap_or(&[]).iter().enumerate() {
                     output.push_str(&format!("### Entry {}\n\n", i + 1));
                     render_entity_link(&mut output, item, line_is_coord);
-                    let excl: &[&str] = if line_is_coord { &["uri", "path", "line", "end_line"] } else { &["uri", "path"] };
+                    let excl: &[&str] = if line_is_coord {
+                        &["uri", "path", "line", "end_line"]
+                    } else {
+                        &["uri", "path"]
+                    };
                     render_markdown_fields(&mut output, item, 0, excl);
                 }
             }
@@ -54,7 +64,12 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
                     if let Some(entity) = cand.get(field) {
                         output.push_str(&format!("**{label}**\n\n"));
                         render_entity_link(&mut output, entity, true);
-                        render_markdown_fields(&mut output, entity, 0, &["uri", "path", "line", "end_line"]);
+                        render_markdown_fields(
+                            &mut output,
+                            entity,
+                            0,
+                            &["uri", "path", "line", "end_line"],
+                        );
                     }
                 }
                 render_markdown_fields(&mut output, cand, 0, &["source", "target"]);
@@ -62,7 +77,10 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
         }
     }
     if let Some(freshness) = value.get("freshness") {
-        if freshness.as_object().is_some_and(|o| is_freshness_envelope(o, true)) {
+        if freshness
+            .as_object()
+            .is_some_and(|o| is_freshness_envelope(o, true))
+        {
             render_field(&mut output, "freshness", freshness, 0);
         }
     }
@@ -74,7 +92,10 @@ fn render_search_section_page(output: &mut String, page: &Value) {
     let total = u64_field(page, "total").unwrap_or(0);
     let limit = u64_field(page, "limit").unwrap_or(0);
     let offset = u64_field(page, "offset").unwrap_or(0);
-    let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+    let has_more = page
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     output.push_str(&format!(
         "- **total**: `{total}` | **limit**: `{limit}` | **offset**: `{offset}` | **has_more**: `{has_more}`"
     ));
@@ -127,14 +148,23 @@ fn render_search_section_page(output: &mut String, page: &Value) {
 fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpts: bool) {
     render_page_metadata(output, heading, page);
     for section in page_items(page).unwrap_or(&[]) {
-        let title = text_field(section, "section_title").or_else(|| text_field(section, "path")).unwrap_or("Document section");
+        let title = text_field(section, "section_title")
+            .or_else(|| text_field(section, "path"))
+            .unwrap_or("Document section");
         output.push_str(&format!("### {}\n\n", escape_text(title)));
         render_entity_link(output, section, true);
-        render_markdown_fields(output, section, 0, &["content", "excerpt", "uri", "path", "line", "end_line"]);
+        render_markdown_fields(
+            output,
+            section,
+            0,
+            &["content", "excerpt", "uri", "path", "line", "end_line"],
+        );
         if let Some(content) = text_field(section, "content") {
             output.push_str("\n#### Source Markdown\n\n");
             output.push_str(content);
-            if !content.ends_with('\n') { output.push('\n'); }
+            if !content.ends_with('\n') {
+                output.push('\n');
+            }
             output.push('\n');
         }
         if excerpts {
@@ -150,21 +180,35 @@ fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpt
 fn render_page_metadata(output: &mut String, heading: &str, page: &Value) {
     output.push_str(&format!("## {}\n\n", escape_text(heading)));
     render_markdown_fields(output, page, 0, &["items"]);
-    if page.get("items").is_some() { output.push('\n'); }
+    if page.get("items").is_some() {
+        output.push('\n');
+    }
 }
 
 fn render_entity_link(output: &mut String, entity: &Value, include_lines: bool) {
-    let Some(path) = text_field(entity, "path") else { return };
-    output.push_str(if include_lines { "**Location**: " } else { "**Document**: " });
+    let Some(path) = text_field(entity, "path") else {
+        return;
+    };
+    output.push_str(if include_lines {
+        "**Location**: "
+    } else {
+        "**Document**: "
+    });
     match text_field(entity, "uri") {
         Some(uri) => output.push_str(&format!("[{}]({uri})", escape_label(path))),
         None => output.push_str(&inline_code(path)),
     }
     if include_lines {
         let line = u64_field(entity, "line");
-        if let Some(l) = line { output.push_str(&format!(" line {l}")); }
+        if let Some(l) = line {
+            output.push_str(&format!(" line {l}"));
+        }
         if let Some(end) = u64_field(entity, "end_line") {
-            output.push_str(&if line.is_some() { format!("–{end}") } else { format!(" through line {end}") });
+            output.push_str(&if line.is_some() {
+                format!("–{end}")
+            } else {
+                format!(" through line {end}")
+            });
         }
     }
     output.push_str("\n\n");

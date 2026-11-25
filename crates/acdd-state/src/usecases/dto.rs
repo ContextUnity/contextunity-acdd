@@ -540,7 +540,6 @@ pub struct ShowResp {
     pub context_preview: Option<Value>,
 }
 
-
 /// Read-only query request for `StateQuery::Context`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

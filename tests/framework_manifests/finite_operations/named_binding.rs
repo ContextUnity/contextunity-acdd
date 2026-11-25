@@ -106,7 +106,9 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                             let mut module = public
                                 .nodes
                                 .iter()
-                                .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
+                                .find(|node| {
+                                    node.kind == acdd_index::models::tags::NodeKind::Module
+                                })
                                 .unwrap()
                                 .clone();
                             module.details = json!({});

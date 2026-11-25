@@ -9,10 +9,7 @@ use crate::languages::{
     routes,
     types::{CompiledSyntaxGrammar, CompiledSyntaxKind, SyntaxContext},
 };
-use crate::models::{
-    details::NodeDetailKey,
-    *,
-};
+use crate::models::{details::NodeDetailKey, *};
 use crate::typed_facts::FlowStore;
 use serde::Deserialize;
 use serde_json::json;
@@ -156,7 +153,8 @@ impl SinglePassExtractor<'_> {
         #[cfg(feature = "lang-python")]
         let mut class_bindings = {
             let has_class = self.profile.id() == "python" && self.source.contains("class");
-            let registration = has_class && crate::languages::python::has_class_registration_import();
+            let registration =
+                has_class && crate::languages::python::has_class_registration_import();
             let orm = has_class && self.language_context.semantic_rules.iter().any(|rule| rule.active && matches!(&rule.rule.operation, crate::languages::manifests::SemanticOperation::ClassDefaultTable { language, .. } if language == "python"));
             if has_class
                 && node.kind() == "module"
@@ -321,7 +319,11 @@ impl SinglePassExtractor<'_> {
                 root.observe_module_event(node, false);
             }
         }
-        if route_candidate(context.route_extraction_enabled, context.language, event.kind) {
+        if route_candidate(
+            context.route_extraction_enabled,
+            context.language,
+            event.kind,
+        ) {
             Self::extract_exit_routes(context, state, event, traversal, owner, facts);
         }
         Self::exit_traversal_frames(context.language, node, traversal);
@@ -391,11 +393,7 @@ impl SinglePassExtractor<'_> {
             traversal.deferred.push(PythonAction::Orm {
                 node: event.node,
                 owner: std::sync::Arc::from(node_owner),
-                frontiers: (
-                    facts.nodes.len(),
-                    facts.edges.len(),
-                    facts.references.len(),
-                ),
+                frontiers: (facts.nodes.len(), facts.edges.len(), facts.references.len()),
             });
         }
         context.profile.extract_routes_with_typed_projections(
@@ -575,9 +573,7 @@ impl SinglePassExtractor<'_> {
             .profile
             .symbol_name(node, source)
             .map(str::to_owned)
-            .unwrap_or_else(|| {
-                format!("anonymous@{}:{}", line, node.start_position().column + 1)
-            });
+            .unwrap_or_else(|| format!("anonymous@{}:{}", line, node.start_position().column + 1));
         let prefix = context.profile.node_prefix(kind);
         let mut id = format!("{prefix}:{path}:{line}:{name}");
         if !state.ids.insert(id.clone()) {
@@ -609,10 +605,9 @@ impl SinglePassExtractor<'_> {
                 context.file,
             )
         } else {
-            let (metadata, flow) =
-                context
-                    .profile
-                    .declaration(node, source, &name, context.file);
+            let (metadata, flow) = context
+                .profile
+                .declaration(node, source, &name, context.file);
             frame.legacy_flow = Some(flow);
             metadata
         };
@@ -633,9 +628,7 @@ impl SinglePassExtractor<'_> {
                 .filter(|owner| traversal.scopes.last().map(String::as_str) != Some(*owner))
         })
         .flatten();
-        let qualname = if let Some(receiver) =
-            prototype_owner.as_deref().or(out_of_line_owner)
-        {
+        let qualname = if let Some(receiver) = prototype_owner.as_deref().or(out_of_line_owner) {
             qualified(module, traversal.scopes, &format!("{receiver}.{name}"))
         } else {
             qualified(module, traversal.scopes, &name)
@@ -747,7 +740,8 @@ impl SinglePassExtractor<'_> {
             is_test: is_test(path)
                 || test_role.is_some()
                 || context.profile.test_attribute(node, source),
-            language: crate::models::tags::LanguageId::parse(language).expect("recognized language profile"),
+            language: crate::models::tags::LanguageId::parse(language)
+                .expect("recognized language profile"),
             generated: false,
             details,
         });
@@ -884,7 +878,15 @@ impl SinglePassExtractor<'_> {
         }
         let module_root = node.id() == context.root_id;
         if module_root {
-            Self::enter_module_root_frame(context, state, event, traversal, owner, facts, is_boundary);
+            Self::enter_module_root_frame(
+                context,
+                state,
+                event,
+                traversal,
+                owner,
+                facts,
+                is_boundary,
+            );
         }
         if node.is_error() || node.is_missing() {
             Self::record_syntax_diagnostic(context, node, facts);
@@ -1138,13 +1140,7 @@ impl<'a> ScopeFrame<'a> {
             suspended_at: None,
         }
     }
-    fn enter_metrics(
-        &mut self,
-        node: Syntax<'a>,
-        node_kind: &str,
-        source: &str,
-        offset: usize,
-    ) {
+    fn enter_metrics(&mut self, node: Syntax<'a>, node_kind: &str, source: &str, offset: usize) {
         if let Some(metrics) = &mut self.metrics {
             super::fingerprints::CallableMetricsTracker::enter(
                 metrics,
@@ -1483,11 +1479,7 @@ fn merge_previous_scope_flow(
     preserve_invalid
 }
 
-fn write_scope_bindings(
-    node: &mut Node,
-    state: &VisitState<'_, '_>,
-    bindings: ScopeBindings,
-) {
+fn write_scope_bindings(node: &mut Node, state: &VisitState<'_, '_>, bindings: ScopeBindings) {
     if state.flows.is_some() {
         crate::typed_facts::NodeSemanticEntry::set_bindings(
             node,
@@ -1575,12 +1567,18 @@ impl ScopePublication<'_> {
                     let has_lazy = lazy_exports
                         .as_array()
                         .is_some_and(|entries| !entries.is_empty());
-                    set_optional_json_detail(node, NodeDetailKey::LAZY_EXPORTS, has_lazy.then_some(lazy_exports));
+                    set_optional_json_detail(
+                        node,
+                        NodeDetailKey::LAZY_EXPORTS,
+                        has_lazy.then_some(lazy_exports),
+                    );
                     Some(exports)
                 }
-                None => context
-                    .profile
-                    .module_exports_with_bindings(root, context.source, &bindings),
+                None => {
+                    context
+                        .profile
+                        .module_exports_with_bindings(root, context.source, &bindings)
+                }
             };
             visibility_exports = exports.clone();
             set_optional_json_detail(
@@ -1618,7 +1616,10 @@ impl ScopePublication<'_> {
         }
         if let Some((cognitive_complexity, max_nesting_depth, statements)) = metrics {
             if cognitive_complexity > 0 {
-                node.set_detail(NodeDetailKey::COGNITIVE_COMPLEXITY, json!(cognitive_complexity));
+                node.set_detail(
+                    NodeDetailKey::COGNITIVE_COMPLEXITY,
+                    json!(cognitive_complexity),
+                );
             }
             if max_nesting_depth > 0 {
                 node.set_detail(NodeDetailKey::MAX_NESTING_DEPTH, json!(max_nesting_depth));
@@ -1659,10 +1660,7 @@ fn module_export_enter_kind(kind: &str) -> bool {
 }
 
 fn module_export_exit_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "function_definition" | "class_definition" | "lambda"
-    )
+    matches!(kind, "function_definition" | "class_definition" | "lambda")
 }
 
 fn scope_boundary_kind(language: &str, kind: &str) -> bool {
@@ -1778,7 +1776,10 @@ mod tree_cursor_walk_tests {
                     entering,
                 ));
             });
-            assert_eq!(actual_with_ancestors, expected, "ancestors reversed={reversed}");
+            assert_eq!(
+                actual_with_ancestors, expected,
+                "ancestors reversed={reversed}"
+            );
         }
     }
 }

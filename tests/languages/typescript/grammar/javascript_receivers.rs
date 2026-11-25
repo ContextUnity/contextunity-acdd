@@ -95,9 +95,9 @@ function use() { const receiver = new Legacy(); receiver.run(); }
             }
             if !kind.is_empty() {
                 assert!(
-                    targets
-                        .iter()
-                        .any(|node| node.kind.as_str() == kind && node.name == name && node.path == path),
+                    targets.iter().any(|node| node.kind.as_str() == kind
+                        && node.name == name
+                        && node.path == path),
                     "{path}:{expression}: {graph:#?}"
                 );
             }
@@ -296,7 +296,10 @@ function branch(flag) { if (flag) return { count: 0 }; return { count: 1, inc() 
         let translate = facts
             .nodes
             .iter()
-            .find(|node| node.name == "translate" && node.kind == acdd_index::models::tags::NodeKind::Function)
+            .find(|node| {
+                node.name == "translate"
+                    && node.kind == acdd_index::models::tags::NodeKind::Function
+            })
             .unwrap()
             .id
             .clone();

@@ -51,12 +51,7 @@ pub(in crate::linker) fn evaluate_call<'a>(
                 .lookup_tracked(owner, base_receiver, at, trace)
                 .cloned()
                 .or_else(|| {
-                    match resolver.resolve_symbol(
-                        owner,
-                        base_receiver,
-                        at,
-                        SymbolRole::Type,
-                    ) {
+                    match resolver.resolve_symbol(owner, base_receiver, at, SymbolRole::Type) {
                         Symbol::Type(target) => Some(target),
                         _ => None,
                     }
@@ -115,11 +110,9 @@ pub(in crate::linker) fn platform_member_return<'a>(
         {
             "Element"
         }
-        (
-            name,
-            "getBoundingClientRect",
-        ) if matches!(name, "Element" | "HTMLElement")
-            || typed_dom_receiver(name) == Some("Element") =>
+        (name, "getBoundingClientRect")
+            if matches!(name, "Element" | "HTMLElement")
+                || typed_dom_receiver(name) == Some("Element") =>
         {
             "DOMRect"
         }

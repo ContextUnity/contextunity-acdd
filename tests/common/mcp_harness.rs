@@ -168,13 +168,14 @@ impl McpTestHarness {
             .with_session_fingerprint(session.to_owned());
         let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
         let server_task = runtime.spawn(async move {
-            let service = server
-                .serve((reader, writer))
-                .await
-                .map_err(|error| HarnessError::Server {
-                    phase: "serve",
-                    cause: error.to_string(),
-                })?;
+            let service =
+                server
+                    .serve((reader, writer))
+                    .await
+                    .map_err(|error| HarnessError::Server {
+                        phase: "serve",
+                        cause: error.to_string(),
+                    })?;
             let _receiver_closed = control_sender.send(service.cancellation_token());
             match service.waiting().await {
                 Ok(rmcp::service::QuitReason::Closed) => Ok(()),

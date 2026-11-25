@@ -79,10 +79,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                 }
                 let ws = Workspace::new();
                 ws.write("acdd.yaml", "debug: true\nroots:\n  - '.'\n");
-                ws.write(
-                    "secret-request-content",
-                    "debug: true\nroots:\n  - '.'\n",
-                );
+                ws.write("secret-request-content", "debug: true\nroots:\n  - '.'\n");
                 let directory = ws.path(".acdd");
                 let destination = if obstruction == "directory" {
                     fs::write(&directory, "obstruction").unwrap();

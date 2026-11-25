@@ -242,15 +242,9 @@ See `ServiceClient`.
         file.seek(SeekFrom::Start(100)).unwrap();
         file.write_all(&[0xff]).unwrap();
     }));
-    let error = writer::build_with_selection_and_guard(
-        ws.root(),
-        &rejected,
-        None,
-        None,
-        Some(hook),
-        None,
-    )
-    .unwrap_err();
+    let error =
+        writer::build_with_selection_and_guard(ws.root(), &rejected, None, None, Some(hook), None)
+            .unwrap_err();
     assert!(
         error
             .to_string()

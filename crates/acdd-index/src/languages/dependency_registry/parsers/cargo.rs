@@ -59,8 +59,10 @@ impl ManifestParser for CargoParser {
         });
         let lib_path = lib_table.and_then(|lib| lib.get("path").and_then(toml::Value::as_str));
         let invalid_lib_path = lib_table.is_some_and(|lib| {
-            lib.get("path")
-                .is_some_and(|val| val.as_str().is_none_or(|path| !matches!(path, "src/lib.rs" | "./src/lib.rs")))
+            lib.get("path").is_some_and(|val| {
+                val.as_str()
+                    .is_none_or(|path| !matches!(path, "src/lib.rs" | "./src/lib.rs"))
+            })
         });
 
         let autolib_allows = match autolib.and_then(toml::Value::as_bool) {

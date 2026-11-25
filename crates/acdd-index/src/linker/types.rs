@@ -9,22 +9,35 @@ use std::borrow::Cow;
 /// Per-node symbol IDs collected for declaration and rebinding lookups.
 pub type NodeBindingIndex = HashMap<SymbolId, Vec<SymbolId>>;
 
-pub(crate) fn has_node_binding(interner: &LinkerInterner<'_>, bindings: &NodeBindingIndex, owner: &str, name: &str) -> bool {
-    let (Some(owner), Some(name)) = (interner.lookup_symbol(owner), interner.lookup_symbol(name)) else {
+pub(crate) fn has_node_binding(
+    interner: &LinkerInterner<'_>,
+    bindings: &NodeBindingIndex,
+    owner: &str,
+    name: &str,
+) -> bool {
+    let (Some(owner), Some(name)) = (interner.lookup_symbol(owner), interner.lookup_symbol(name))
+    else {
         return false;
     };
-    bindings.get(&owner).is_some_and(|bindings| bindings.binary_search(&name).is_ok())
+    bindings
+        .get(&owner)
+        .is_some_and(|bindings| bindings.binary_search(&name).is_ok())
 }
 
 pub(crate) fn shadowed_by_late_import(
     alias_import_positions: &HashMap<(&str, &str), crate::semantic::SourcePosition>,
-    scope: &str, head: &str, line: usize, candidates: &mut Vec<&Node>,
+    scope: &str,
+    head: &str,
+    line: usize,
+    candidates: &mut Vec<&Node>,
 ) -> bool {
     let shadowed = !candidates.is_empty()
-        && alias_import_positions.get(&(scope, head)).is_some_and(|p| {
-            p.line <= line && candidates.iter().any(|c| c.line < p.line)
-        });
-    if shadowed { candidates.clear(); }
+        && alias_import_positions
+            .get(&(scope, head))
+            .is_some_and(|p| p.line <= line && candidates.iter().any(|c| c.line < p.line));
+    if shadowed {
+        candidates.clear();
+    }
     shadowed
 }
 
@@ -158,7 +171,10 @@ fn strip_trailing_generics(name: &str) -> &str {
     }
 }
 
-pub(in crate::linker) fn strip_rust_references(raw: &str, require_lifetime_space: bool) -> Option<&str> {
+pub(in crate::linker) fn strip_rust_references(
+    raw: &str,
+    require_lifetime_space: bool,
+) -> Option<&str> {
     let mut name = raw.trim().trim_matches(['\'', '"']);
     while let Some(rest) = name.strip_prefix('&') {
         name = rest.trim_start();

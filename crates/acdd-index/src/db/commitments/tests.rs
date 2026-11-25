@@ -614,8 +614,7 @@ fn coverage_partial_owner_update_matches_full_seal() {
     )
     .unwrap();
     let selected = BTreeSet::from(["src/owner_a.rs".to_owned()]);
-    let partial_root =
-        seal_owners(&conn, Some(&selected)).expect("partial owner sealing succeeds");
+    let partial_root = seal_owners(&conn, Some(&selected)).expect("partial owner sealing succeeds");
     let selected_leaf_after = coverage_leaf(&conn, "src/owner_a.rs");
     let other_leaf_after = coverage_leaf(&conn, "src/owner_b.rs");
     assert_ne!(partial_root, initial_root);

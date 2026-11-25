@@ -1,14 +1,11 @@
 const PARALLEL_LINKER_PREP_MIN_NODES: usize = 2048;
 
-use crate::languages::profile::ProfileLinker;
 use crate::interner;
+use crate::languages::profile::ProfileLinker;
 
 use crate::languages::{self};
 use crate::models::*;
-use crate::models::{
-    compact_graph::CompactGraph as Graph,
-    Graph as PublicGraph,
-};
+use crate::models::{compact_graph::CompactGraph as Graph, Graph as PublicGraph};
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -36,8 +33,8 @@ pub(crate) mod typescript;
 pub mod value_flow;
 mod vue;
 use crate::models::tags::NodeKind;
-pub use types::NodeBindingIndex;
 pub(crate) use types::qualified;
+pub use types::NodeBindingIndex;
 
 /// Reports whether reference identities in `facts` must be diffed for incremental relinking.
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
@@ -47,9 +44,10 @@ pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
         .find(|node| node.kind == NodeKind::Module)
         .map_or("", |node| node.language.as_str());
     languages::by_id(language)
-        .map_or(&traits::GENERIC_LINKER as &dyn traits::LanguageLinker, |profile| {
-            profile.linker()
-        })
+        .map_or(
+            &traits::GENERIC_LINKER as &dyn traits::LanguageLinker,
+            |profile| profile.linker(),
+        )
         .needs_reference_identity(path, facts)
 }
 /// Reports whether stored reference identities differ between `old` and `new` facts.
@@ -60,9 +58,10 @@ pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool 
         .find(|node| node.kind == NodeKind::Module)
         .map_or("", |node| node.language.as_str());
     languages::by_id(language)
-        .map_or(&traits::GENERIC_LINKER as &dyn traits::LanguageLinker, |profile| {
-            profile.linker()
-        })
+        .map_or(
+            &traits::GENERIC_LINKER as &dyn traits::LanguageLinker,
+            |profile| profile.linker(),
+        )
         .reference_identity_changed(path, old, new)
 }
 
@@ -164,9 +163,14 @@ pub fn required_full_typed_facts(
                     );
                 }
             }
-            if node.detail_entry(crate::models::details::NodeDetailKey::URL_STATUS).as_str() == Some("local_unverified")
+            if node
+                .detail_entry(crate::models::details::NodeDetailKey::URL_STATUS)
+                .as_str()
+                == Some("local_unverified")
                 && languages::by_id(node.language.as_str()).is_some_and(|profile| {
-                    profile.linker().is_local_unverified_request(node, flow, path, dependencies)
+                    profile
+                        .linker()
+                        .is_local_unverified_request(node, flow, path, dependencies)
                 })
             {
                 let (method, url) = node.name.split_once(' ').unwrap_or(("GET", &node.name));
@@ -183,16 +187,8 @@ pub fn required_full_typed_facts(
     for profile in languages::profiles() {
         if seen.insert(profile.id()) {
             let linker = profile.linker();
-            required.extend(linker.required_full_facts(
-                facts,
-                &projection_owners,
-                catalog,
-            ));
-            required.extend(linker.required_configuration_facts(
-                facts,
-                catalog,
-                dependencies,
-            ));
+            required.extend(linker.required_full_facts(facts, &projection_owners, catalog));
+            required.extend(linker.required_configuration_facts(facts, catalog, dependencies));
         }
     }
     required
@@ -281,7 +277,12 @@ pub fn configured_result_names(
 ) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
     for node in &facts.facts.nodes {
-        for export in node.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
+        for export in node
+            .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             for key in ["name", "local"] {
                 if let Some(name) = export[key].as_str() {
                     names.insert(name.to_owned());
@@ -523,7 +524,10 @@ fn intern_call_site_symbols<'a>(
                 intern_call_site_symbols(interner, alternative);
             }
         }
-        ValueExpr::Project { value, .. } | ValueExpr::RustField { value, .. } | ValueExpr::RustProject { value, .. } | ValueExpr::CallbackParam { callee: value, .. } => {
+        ValueExpr::Project { value, .. }
+        | ValueExpr::RustField { value, .. }
+        | ValueExpr::RustProject { value, .. }
+        | ValueExpr::CallbackParam { callee: value, .. } => {
             intern_call_site_symbols(interner, value)
         }
         ValueExpr::RustClosure
@@ -1031,9 +1035,10 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                 if e.kind != "contains" {
                     continue;
                 }
-                if let (Some(source), Some(target)) =
-                    (interner.lookup_symbol(&e.src), interner.lookup_symbol(&e.dst))
-                {
+                if let (Some(source), Some(target)) = (
+                    interner.lookup_symbol(&e.src),
+                    interner.lookup_symbol(&e.dst),
+                ) {
                     if let Some(&child) = by_id.get(&target) {
                         children_by_parent.entry(source).or_default().push(child);
                     }
@@ -1087,15 +1092,23 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         #[cfg(feature = "lang-rust")]
         let rust_members = inheritance_indexes.rust_members;
         mark("inheritance indexes");
-        let commonjs_bindings =
-            javascript::commonjs_bindings::ResolvedCommonJsBindings::build(all);
+        let commonjs_bindings = javascript::commonjs_bindings::ResolvedCommonJsBindings::build(all);
         let mut import_states: HashMap<
             &'static str,
             &'_ (dyn languages::profile::LanguageImportState + '_),
         > = HashMap::from([
-            ("javascript", &commonjs_bindings as &dyn languages::profile::LanguageImportState),
-            ("typescript", &commonjs_bindings as &dyn languages::profile::LanguageImportState),
-            ("vue", &commonjs_bindings as &dyn languages::profile::LanguageImportState),
+            (
+                "javascript",
+                &commonjs_bindings as &dyn languages::profile::LanguageImportState,
+            ),
+            (
+                "typescript",
+                &commonjs_bindings as &dyn languages::profile::LanguageImportState,
+            ),
+            (
+                "vue",
+                &commonjs_bindings as &dyn languages::profile::LanguageImportState,
+            ),
         ]);
         #[cfg(feature = "lang-rust")]
         import_states.insert("rust", &rust_forwarding);
@@ -1139,8 +1152,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         );
         acdd_core::sys::trim_allocator();
         mark("value flow");
-        let prepared_semantic_facts =
-            semantic_facts::PreparedSemanticFacts::build(all, interner);
+        let prepared_semantic_facts = semantic_facts::PreparedSemanticFacts::build(all, interner);
         let mut parts = resolution::resolve(resolution::ResolutionInput {
             all,
             interner,
@@ -1206,10 +1218,16 @@ fn manifest_entrypoint_edges(
         if node.kind != crate::models::tags::NodeKind::MainRegistration {
             continue;
         }
-        let Some(origin) = node.detail_entry(crate::models::details::NodeDetailKey::MANIFEST_ORIGIN).as_str() else {
+        let Some(origin) = node
+            .detail_entry(crate::models::details::NodeDetailKey::MANIFEST_ORIGIN)
+            .as_str()
+        else {
             continue;
         };
-        let Some(name) = node.detail_entry(crate::models::details::NodeDetailKey::MANIFEST_NAME).as_str() else {
+        let Some(name) = node
+            .detail_entry(crate::models::details::NodeDetailKey::MANIFEST_NAME)
+            .as_str()
+        else {
             continue;
         };
         candidates
@@ -1235,20 +1253,28 @@ fn manifest_entrypoint_edges(
         let Some(file) = all.get_facts(&registration.path) else {
             continue;
         };
-        let Some(module) = file.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
+        let Some(module) = file
+            .nodes
+            .iter()
+            .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+        else {
             continue;
         };
-        let targets: Vec<&Node> = if let Some(callable) = registration.detail_entry(crate::models::details::NodeDetailKey::CALLABLE).as_str()
+        let targets: Vec<&Node> = if let Some(callable) = registration
+            .detail_entry(crate::models::details::NodeDetailKey::CALLABLE)
+            .as_str()
         {
-            if registration.detail_entry(crate::models::details::NodeDetailKey::DIRECT_MODULE) != true {
+            if registration.detail_entry(crate::models::details::NodeDetailKey::DIRECT_MODULE)
+                != true
+            {
                 continue;
             }
             let qualified = format!("{}.{}", module.qualname, callable);
             if module.rebinding_names().any(|name| name == callable)
-                || file
-                    .nodes
-                    .iter()
-                    .any(|node| node.kind != crate::models::tags::NodeKind::Function && node.qualname == qualified)
+                || file.nodes.iter().any(|node| {
+                    node.kind != crate::models::tags::NodeKind::Function
+                        && node.qualname == qualified
+                })
                 || file.references.iter().any(|reference| {
                     reference.source == module.id
                         && reference.kind == "imports"
@@ -1259,7 +1285,10 @@ fn manifest_entrypoint_edges(
             }
             file.nodes
                 .iter()
-                .filter(|node| node.kind == crate::models::tags::NodeKind::Function && node.qualname == qualified)
+                .filter(|node| {
+                    node.kind == crate::models::tags::NodeKind::Function
+                        && node.qualname == qualified
+                })
                 .collect()
         } else {
             file.nodes

@@ -97,11 +97,7 @@ fn collect_json_map<'a>(
     );
 }
 
-fn collect_json_sections(
-    value: &serde_json::Value,
-    sections: &[&str],
-    out: &mut Vec<String>,
-) {
+fn collect_json_sections(value: &serde_json::Value, sections: &[&str], out: &mut Vec<String>) {
     for section in sections {
         if let Some(entries) = value.get(*section).and_then(serde_json::Value::as_object) {
             collect_json_map(entries, out);

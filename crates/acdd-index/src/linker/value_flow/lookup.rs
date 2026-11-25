@@ -1,10 +1,10 @@
 //! Read-only lookup and call-resolution helpers on [`ValueFlowIndex`].
 
-use crate::languages::profile::ProfileLinker;
 use super::types::{
-    normalize_dotted_expression, reaching, ComputedKey, ReadTrace,
-    SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex, ValueFlowLookup,
+    normalize_dotted_expression, reaching, ComputedKey, ReadTrace, SemanticResolver, Symbol,
+    SymbolRole, TypeTarget, ValueFlowIndex, ValueFlowLookup,
 };
+use crate::languages::profile::ProfileLinker;
 use crate::models::{Node, Reference};
 use crate::semantic::SourcePosition;
 
@@ -37,14 +37,14 @@ impl<'a> ValueFlowIndex<'a> {
                 let linker = crate::languages::by_id(owner.language.as_str()).map(|p| p.linker());
                 let setup_complete = is_parent
                     && linker.is_some_and(|l| l.setup_scope_complete(owner, scope.module));
-                let immutable_capture = is_parent
-                    && linker.is_some_and(|l| l.stable_immutable_capture(writes));
+                let immutable_capture =
+                    is_parent && linker.is_some_and(|l| l.stable_immutable_capture(writes));
                 let uniform_capture = is_parent
                     && writes.first().is_some_and(|first| {
                         !matches!(first.target, TypeTarget::Unknown | TypeTarget::Ambiguous)
-                            && writes
-                                .iter()
-                                .all(|write| super::types::same_target(&first.target, &write.target))
+                            && writes.iter().all(|write| {
+                                super::types::same_target(&first.target, &write.target)
+                            })
                     });
                 if is_parent
                     && writes.len() > 1
@@ -240,9 +240,9 @@ impl<'a> ValueFlowIndex<'a> {
                 return Some(returned);
             }
         }
-        if let Some(constructor) = linker.and_then(|l| {
-            l.constructor_symbol(owner, expression, at, resolver)
-        }) {
+        if let Some(constructor) =
+            linker.and_then(|l| l.constructor_symbol(owner, expression, at, resolver))
+        {
             if let Some(target) = self.borrow_symbol(constructor, trace) {
                 return Some(target);
             }
@@ -319,7 +319,8 @@ impl<'a> ValueFlowIndex<'a> {
             return Some(target);
         }
         if let Some((receiver, member)) = expression.rsplit_once('.') {
-            let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+            let linker =
+                crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
             if let Some(class) = self
                 .value_expression(owner, receiver, at, resolver, trace)
                 .and_then(|target| linker.and_then(|l| l.local_receiver_class(target)))
@@ -379,9 +380,9 @@ pub(in crate::linker) fn resolve_type<'a>(
     for _ in 0..limits.alias_depth {
         let linker = crate::languages::by_id(scope.language.as_str()).map(|p| p.linker());
         if valid_type(&expression, limits, 0) {
-            if let Some(resolved) = linker.and_then(|l| {
-                l.resolve_special_type_expr(scope, &expression, at, resolver, limits)
-            }) {
+            if let Some(resolved) = linker
+                .and_then(|l| l.resolve_special_type_expr(scope, &expression, at, resolver, limits))
+            {
                 return resolved;
             }
         }
@@ -416,7 +417,8 @@ pub(in crate::linker) fn resolve_type<'a>(
             let encoded = match resolver.raw_value_flow(node) {
                 Some(raw) => &raw["alias_type"],
                 None if resolver.has_typed_flows() => return target,
-                None => &node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["alias_type"],
+                None => &node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)
+                    ["alias_type"],
             };
             if encoded.is_null() {
                 return target;

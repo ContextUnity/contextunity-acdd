@@ -54,7 +54,9 @@ fn classic_require_rebindings_do_not_change_independent_module_imports() {
         let loader = facts
             .nodes
             .iter()
-            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "require")
+            .find(|node| {
+                node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "require"
+            })
             .map(|node| node.id.clone());
         let imports: Vec<_> = facts
             .references
@@ -530,7 +532,9 @@ fn embedded_script_identity_and_delta() {
             let functions: std::collections::BTreeSet<_> = facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == name)
+                .filter(|node| {
+                    node.kind == acdd_index::models::tags::NodeKind::Function && node.name == name
+                })
                 .map(|node| node.id.clone())
                 .collect();
             assert_eq!(functions.len(), count, "{}", case.case_id);
@@ -666,10 +670,10 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
         assert!(
             facts.references.iter().any(|reference| {
                 reference.expression == expression
-                    && facts
-                        .nodes
-                        .iter()
-                        .any(|owner| owner.id == reference.source && owner.language == acdd_index::models::tags::LanguageId::Javascript)
+                    && facts.nodes.iter().any(|owner| {
+                        owner.id == reference.source
+                            && owner.language == acdd_index::models::tags::LanguageId::Javascript
+                    })
             }),
             "{expression} does not belong to a JavaScript island owner"
         );

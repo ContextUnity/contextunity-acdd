@@ -1,7 +1,7 @@
-use crate::models::Node;
-use crate::semantic::ExtractionRuleOrigin;
 use crate::languages::dependency_registry::DependencyRegistry;
 use crate::languages::manifests::syntax::SyntaxOperation;
+use crate::models::Node;
+use crate::semantic::ExtractionRuleOrigin;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
@@ -120,9 +120,19 @@ impl<'a> RouteIndex<'a> {
         let mut entries = Vec::new();
         let mut entries_by_len = HashMap::<usize, Vec<usize>>::new();
         let mut names = HashMap::<&'a str, Vec<&'a Node>>::new();
-        for node in nodes.iter().copied().filter(|node| node.kind == crate::models::tags::NodeKind::Route) {
-            let method = node.detail_entry(crate::models::details::NodeDetailKey::METHOD).as_str().unwrap_or("ANY");
-            let path = node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH).as_str().unwrap_or("");
+        for node in nodes
+            .iter()
+            .copied()
+            .filter(|node| node.kind == crate::models::tags::NodeKind::Route)
+        {
+            let method = node
+                .detail_entry(crate::models::details::NodeDetailKey::METHOD)
+                .as_str()
+                .unwrap_or("ANY");
+            let path = node
+                .detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH)
+                .as_str()
+                .unwrap_or("");
             let segments = normalize_route_segments(path);
             let idx = entries.len();
             entries_by_len.entry(segments.len()).or_default().push(idx);
@@ -131,7 +141,8 @@ impl<'a> RouteIndex<'a> {
                 method,
                 segments,
             });
-            if let Some(name) = node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_NAME)
+            if let Some(name) = node
+                .detail_entry(crate::models::details::NodeDetailKey::ROUTE_NAME)
                 .as_str()
                 .filter(|name| !name.is_empty())
             {
@@ -145,10 +156,7 @@ impl<'a> RouteIndex<'a> {
         }
     }
 
-    pub fn match_route_name(
-        &self,
-        name: &str,
-    ) -> Result<Option<&'a Node>, RouteMatchError> {
+    pub fn match_route_name(&self, name: &str) -> Result<Option<&'a Node>, RouteMatchError> {
         single_candidate(self.names.get(name).map(Vec::as_slice).unwrap_or_default())
     }
 

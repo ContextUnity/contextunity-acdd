@@ -175,9 +175,7 @@ pub(super) fn dispatch(
             title: spec_title,
             profile: explicit_profile_ref,
         })),
-        Command::Status { run } => {
-            state_ctx.query(root, StateQuery::Status(StatusReq { run }))
-        }
+        Command::Status { run } => state_ctx.query(root, StateQuery::Status(StatusReq { run })),
         Command::List {
             workspace,
             status,
@@ -305,8 +303,9 @@ pub(super) fn dispatch(
                 .as_deref()
                 .map(|raw| {
                     let parsed = parse_json_or_at_file(root, raw)?;
-                    serde_json::from_value::<RejectionFindings>(parsed)
-                        .map_err(|err| state_err_invalid(format!("invalid rejection findings: {err}")))
+                    serde_json::from_value::<RejectionFindings>(parsed).map_err(|err| {
+                        state_err_invalid(format!("invalid rejection findings: {err}"))
+                    })
                 })
                 .transpose()?;
             state_ctx.command(StateCommand::Submit(Box::new(SubmitReq {
@@ -393,7 +392,10 @@ pub(super) fn dispatch(
             generation,
         } => match action.as_str() {
             "read" => {
-                let topic = topic.as_deref().map(BlackboardTopic::from_str).transpose()?;
+                let topic = topic
+                    .as_deref()
+                    .map(BlackboardTopic::from_str)
+                    .transpose()?;
                 let status = status
                     .as_deref()
                     .map(BlackboardStatus::from_str)
@@ -537,10 +539,8 @@ pub(super) fn dispatch(
                             ))
                         }
                     })?;
-                let wrapped = StateCommandOutput::CallPluginTool(CallPluginToolResp {
-                    tool_name,
-                    output,
-                });
+                let wrapped =
+                    StateCommandOutput::CallPluginTool(CallPluginToolResp { tool_name, output });
                 render_cli_state_output(
                     &wrapped,
                     state_ctx.output_format,

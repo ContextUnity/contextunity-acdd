@@ -482,7 +482,10 @@ pub struct Record {
         "custom_codec",
     ] {
         assert!(
-            facts.references.iter().any(|r| r.expression == expected_ref),
+            facts
+                .references
+                .iter()
+                .any(|r| r.expression == expected_ref),
             "missing expected reference `{expected_ref}`: {:#?}",
             facts.references
         );

@@ -8,8 +8,8 @@ pub mod reload;
 /// Fail-fast ACDD profile and spec validation.
 mod validate;
 
-pub(crate) use args::{Command, DocsCommand, QueryCommand};
 use args::Cli;
+pub(crate) use args::{Command, DocsCommand, QueryCommand};
 
 use crate::{
     engine::{guide, pipeline as writer},
@@ -186,15 +186,10 @@ impl Cli {
         self.run_inner(output, None).await
     }
 
-    async fn run_inner(
-        self,
-        output: &mut dyn io::Write,
-        cache_dir: Option<&Path>,
-    ) -> Result<()> {
+    async fn run_inner(self, output: &mut dyn io::Write, cache_dir: Option<&Path>) -> Result<()> {
         if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) {
             if let Some(root) = self.root.as_deref() {
-                acdd_core::fs::check_git_entry_no_symlinks(root)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                acdd_core::fs::check_git_entry_no_symlinks(root).map_err(|e| anyhow::anyhow!(e))?;
             }
         }
         let positional_root = match self.command.as_ref() {
@@ -348,7 +343,11 @@ impl Cli {
                 command: DocsCommand::Check
             }
         ) {
-            if !settings.adapter.modules.is_subsystem_enabled(SubsystemId::Docs) {
+            if !settings
+                .adapter
+                .modules
+                .is_subsystem_enabled(SubsystemId::Docs)
+            {
                 return Err(StateError::new(
                     ErrorCode::FeatureDisabled,
                     "FEATURE_DISABLED: 'docs' module is disabled in modules:",
@@ -443,9 +442,10 @@ impl Cli {
                     Ok((Value::Null, Some(String::new())))
                 }
                 Command::Reload => Ok((reload::run()?, None)),
-                Command::Guide { topic, force } => {
-                    Ok((guide::run_with_adapter(&root, &topic, force, &adapter)?, None))
-                }
+                Command::Guide { topic, force } => Ok((
+                    guide::run_with_adapter(&root, &topic, force, &adapter)?,
+                    None,
+                )),
                 cmd @ (Command::Read { .. }
                 | Command::Build { .. }
                 | Command::Scan { .. }
@@ -617,7 +617,9 @@ mod tests {
             vec!["acdd", "roadmap", "--format", "json"],
             vec!["acdd", "claim", "t1.build", "--run", "m1", "--worker", "w1"],
             vec!["acdd", "verify", "t1.build", "--run", "m1"],
-            vec!["acdd", "submit", "t1.build", "--run", "m1", "--action", "pass"],
+            vec![
+                "acdd", "submit", "t1.build", "--run", "m1", "--action", "pass",
+            ],
             vec![
                 "acdd",
                 "extend-scope",
@@ -650,7 +652,10 @@ mod tests {
             vec!["acdd", "tool", "code_extra"],
             vec!["acdd", "validate"],
         ] {
-            assert!(Cli::try_parse_from(&args).is_ok(), "failed to parse {args:?}");
+            assert!(
+                Cli::try_parse_from(&args).is_ok(),
+                "failed to parse {args:?}"
+            );
         }
         for legacy in [
             vec!["acdd", "milestone", "list"],
@@ -693,8 +698,8 @@ mod tests {
             fs::write(root.join("acdd.yaml"), acdd_yaml).unwrap();
 
             let mut out = Vec::new();
-            let cli = Cli::try_parse_from(["acdd", "--root", root.to_str().unwrap(), "init"])
-                .unwrap();
+            let cli =
+                Cli::try_parse_from(["acdd", "--root", root.to_str().unwrap(), "init"]).unwrap();
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(cli.run_with_writer(&mut out))
@@ -704,12 +709,13 @@ mod tests {
             assert!(profile.contains(expected_inherit), "{profile}");
             let gi = fs::read_to_string(root.join(".gitignore")).unwrap();
             assert!(gi.contains(".acdd/*.sqlite*"), "{gi}");
-            assert!(
-                acdd_core::git::git_command(root, &["check-ignore", "-q", ".acdd/state.sqlite"])
-                    .unwrap()
-                    .status
-                    .success()
-            );
+            assert!(acdd_core::git::git_command(
+                root,
+                &["check-ignore", "-q", ".acdd/state.sqlite"]
+            )
+            .unwrap()
+            .status
+            .success());
 
             if expected_inherit == "inherit: base" {
                 let cli_force = Cli::try_parse_from([
@@ -747,12 +753,20 @@ mod tests {
         let val = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(val["valid"], serde_json::json!(true), "{val}");
 
-        fs::write(vroot.join(".acdd/profile.yaml"), "version: 2\ninherit: code\n").unwrap();
+        fs::write(
+            vroot.join(".acdd/profile.yaml"),
+            "version: 2\ninherit: code\n",
+        )
+        .unwrap();
         let unbound = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(unbound["valid"], serde_json::json!(false), "{unbound}");
         assert_eq!(unbound["diagnostics"][1]["code"], "COMMAND_UNBOUND");
 
-        fs::write(vroot.join(".acdd/profile.yaml"), "version: 1\nbogus: true\n").unwrap();
+        fs::write(
+            vroot.join(".acdd/profile.yaml"),
+            "version: 1\nbogus: true\n",
+        )
+        .unwrap();
         let bad = super::validate::run_with_options(vroot, None, None, None).unwrap();
         assert_eq!(bad["valid"], serde_json::json!(false), "{bad}");
 
@@ -822,7 +836,14 @@ mod tests {
         fs::write(&cfg_a, "modules:\n  code: true\n").unwrap();
         fs::write(&cfg_b, "modules:\n  code: true\n").unwrap();
         assert_eq!(
-            super::dispatch_code::resolve_cli_adapter_path(&aroot, Some(&cfg_a), true, Some(&cfg_a), true).unwrap(),
+            super::dispatch_code::resolve_cli_adapter_path(
+                &aroot,
+                Some(&cfg_a),
+                true,
+                Some(&cfg_a),
+                true
+            )
+            .unwrap(),
             Some(cfg_a.clone())
         );
         let conflict = super::dispatch_code::resolve_cli_adapter_path(
@@ -833,13 +854,24 @@ mod tests {
             true,
         )
         .unwrap_err();
-        assert!(conflict.to_string().contains("CLI_CONFIG_CONFLICT"), "{conflict:#}");
+        assert!(
+            conflict.to_string().contains("CLI_CONFIG_CONFLICT"),
+            "{conflict:#}"
+        );
         assert_eq!(
-            super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), false).unwrap(),
+            super::dispatch_code::resolve_cli_adapter_path(
+                &aroot,
+                None,
+                false,
+                Some(&cfg_a),
+                false
+            )
+            .unwrap(),
             None
         );
         assert_eq!(
-            super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), true).unwrap(),
+            super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), true)
+                .unwrap(),
             Some(cfg_a)
         );
     }
@@ -882,7 +914,11 @@ mod tests {
                 assert!(result.is_ok());
             } else {
                 assert_eq!(
-                    result.unwrap_err().downcast_ref::<io::Error>().unwrap().kind(),
+                    result
+                        .unwrap_err()
+                        .downcast_ref::<io::Error>()
+                        .unwrap()
+                        .kind(),
                     kind
                 );
             }
@@ -933,7 +969,11 @@ mod tests {
                     .run_with_writer(&mut FailingWriter(io::ErrorKind::Other)),
             );
             assert_eq!(
-                non_pipe.unwrap_err().downcast_ref::<io::Error>().unwrap().kind(),
+                non_pipe
+                    .unwrap_err()
+                    .downcast_ref::<io::Error>()
+                    .unwrap()
+                    .kind(),
                 io::ErrorKind::Other,
                 "{case}"
             );

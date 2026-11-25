@@ -2,7 +2,9 @@ use super::flow_store::FlowStore;
 use crate::models::facts::{Facts, PublicNodesView};
 use crate::models::semantic::NodeSemanticEntry;
 use crate::models::types::{Node, ReceiverHint, Reference};
-use crate::semantic::types::{NamedBindingRole, SourcePosition, StaticString, ValueExpr, ValueFlowFacts};
+use crate::semantic::types::{
+    NamedBindingRole, SourcePosition, StaticString, ValueExpr, ValueFlowFacts,
+};
 use rayon::prelude::*;
 use serde_json::Value;
 
@@ -171,7 +173,9 @@ impl TypedFacts {
                 self.facts
                     .nodes
                     .iter()
-                    .filter(|n| include_components && n.kind == crate::models::tags::NodeKind::Component)
+                    .filter(|n| {
+                        include_components && n.kind == crate::models::tags::NodeKind::Component
+                    })
                     .map(|n| n.name.as_str()),
             )
             .chain(
@@ -214,7 +218,10 @@ impl TypedFacts {
             } else {
                 ValueFlowFacts::reference_keys_from_details(&node.details, &mut insert);
             }
-            if let Some(exports) = node.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array() {
+            if let Some(exports) = node
+                .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+                .as_array()
+            {
                 for export in exports {
                     for key in ["local", "module"] {
                         if let Some(name) = export.get(key).and_then(Value::as_str) {

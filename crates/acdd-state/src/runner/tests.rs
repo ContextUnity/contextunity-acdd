@@ -20,7 +20,6 @@ fn test_cursor() -> NodeCursor {
     )
 }
 
-
 #[test]
 fn command_and_spawner_timeout_kills_process_group_without_sleep() {
     let dir = TempDir::new().unwrap();
@@ -78,7 +77,9 @@ fn command_and_spawner_timeout_kills_process_group_without_sleep() {
     assert!(spawn_out.timed_out);
     assert_eq!(spawn_out.exit_code, None);
     assert_eq!(
-        verify_runner_submitted(&spawn_out, Some(ClaimOutcome::Passed)).unwrap_err().code,
+        verify_runner_submitted(&spawn_out, Some(ClaimOutcome::Passed))
+            .unwrap_err()
+            .code,
         ErrorCode::RunnerNoSubmission
     );
 

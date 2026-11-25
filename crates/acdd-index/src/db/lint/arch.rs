@@ -177,7 +177,15 @@ fn push_ext_violation(
     msg: String,
     display: String,
 ) {
-    push_arch_violation(violations, loaded, ext.path.clone(), ext.line, msg, Some(display), None);
+    push_arch_violation(
+        violations,
+        loaded,
+        ext.path.clone(),
+        ext.line,
+        msg,
+        Some(display),
+        None,
+    );
 }
 
 struct InterfaceDispatchIndex<'a> {
@@ -210,9 +218,15 @@ impl<'a> InterfaceDispatchIndex<'a> {
         let mut impls_by_path: HashMap<&'a str, Vec<&'a IndexedNode>> = HashMap::new();
         for node in nodes.values() {
             if matches!(node.kind.as_str(), "trait" | "interface") {
-                trait_by_name.entry(node.name.as_str()).or_default().push(node);
+                trait_by_name
+                    .entry(node.name.as_str())
+                    .or_default()
+                    .push(node);
             } else if node.kind == "impl" {
-                impls_by_path.entry(node.path.as_str()).or_default().push(node);
+                impls_by_path
+                    .entry(node.path.as_str())
+                    .or_default()
+                    .push(node);
             }
         }
         Self {
@@ -253,7 +267,10 @@ impl<'a> InterfaceDispatchIndex<'a> {
             }
         }
         let clean_tr = clean_type_head(tr);
-        self.trait_by_name.get(clean_tr).cloned().unwrap_or_default()
+        self.trait_by_name
+            .get(clean_tr)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -482,8 +499,12 @@ fn eval_single_owner(
                 continue;
             }
             if let Some(from_sel) = &spec.from {
-                if !selector_matches_node(from_sel, src, &arch.zones, index.file_language(&src.path))
-                {
+                if !selector_matches_node(
+                    from_sel,
+                    src,
+                    &arch.zones,
+                    index.file_language(&src.path),
+                ) {
                     continue;
                 }
             }
@@ -661,8 +682,12 @@ fn eval_forbid_cycles(
         if !any_in_scope {
             continue;
         }
-        let (path, line) = best_loc.unwrap_or_else(|| (loaded.source.path.clone(), loaded.source.line));
-        let msg = format!("dependency cycle across modules/zones: {}", names.join(" <-> "));
+        let (path, line) =
+            best_loc.unwrap_or_else(|| (loaded.source.path.clone(), loaded.source.line));
+        let msg = format!(
+            "dependency cycle across modules/zones: {}",
+            names.join(" <-> ")
+        );
         push_arch_violation(violations, loaded, path, Some(line), msg, None, None);
     }
 }
@@ -780,9 +805,9 @@ fn eval_must_implement(
             return false;
         };
         out_edges.iter().any(|edge| {
-            nodes
-                .get(&edge.dst_hash)
-                .is_some_and(|dst| selector_matches_node(to_sel, dst, &arch.zones, index.file_language(&dst.path)))
+            nodes.get(&edge.dst_hash).is_some_and(|dst| {
+                selector_matches_node(to_sel, dst, &arch.zones, index.file_language(&dst.path))
+            })
         })
     };
 
@@ -996,7 +1021,8 @@ fn eval_ast_patterns_batched(
                 active_set[slot] = true;
             }
             let mut slot_by_matcher_idx: Vec<usize> = Vec::with_capacity(rule_slots.len());
-            let mut active_matchers: Vec<&mut PreparedAstMatcher> = Vec::with_capacity(rule_slots.len());
+            let mut active_matchers: Vec<&mut PreparedAstMatcher> =
+                Vec::with_capacity(rule_slots.len());
             for (slot, rule) in rules_for_lang.iter_mut().enumerate() {
                 if active_set[slot] {
                     slot_by_matcher_idx.push(slot);
@@ -1033,10 +1059,7 @@ fn eval_ast_patterns_batched(
                     if !spec.include_tests && index.is_test_location(path, line) {
                         continue;
                     }
-                    let matched_text = item["text"]
-                        .as_str()
-                        .unwrap_or(rule_entry.pattern)
-                        .trim();
+                    let matched_text = item["text"].as_str().unwrap_or(rule_entry.pattern).trim();
                     let msg = format!("forbidden AST pattern match `{matched_text}`");
                     push_arch_violation(
                         violations,

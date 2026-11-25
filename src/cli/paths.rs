@@ -98,8 +98,7 @@ mod tests {
         use std::fs;
         use std::os::unix::fs::symlink;
 
-        let base_dir =
-            acdd_core::fs::ScopedTempDir::create("contextunity-test-cli-paths").unwrap();
+        let base_dir = acdd_core::fs::ScopedTempDir::create("contextunity-test-cli-paths").unwrap();
         let base = base_dir.path();
         let real_repo = base.join("private_var/repo");
         fs::create_dir_all(real_repo.join(".acdd")).unwrap();

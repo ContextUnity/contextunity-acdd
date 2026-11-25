@@ -1084,17 +1084,18 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
                 "git {args:?} failed"
             );
         }
-        let start = crate::cli::run_cli_json(&w, &["start", "docs/milestones/010-reader.md", "--in-place"]);
+        let start = crate::cli::run_cli_json(
+            &w,
+            &["start", "docs/milestones/010-reader.md", "--in-place"],
+        );
         assert!(
             start.status.success(),
             "start failed: {}\n{}",
             String::from_utf8_lossy(&start.stdout),
             String::from_utf8_lossy(&start.stderr)
         );
-        let claim = crate::cli::run_cli_json(
-            &w,
-            &["claim", "read.build", "--worker-id", "reader-build"],
-        );
+        let claim =
+            crate::cli::run_cli_json(&w, &["claim", "read.build", "--worker-id", "reader-build"]);
         assert!(
             claim.status.success(),
             "claim failed: {}\n{}",
@@ -1120,11 +1121,7 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
             !hints.contains("code_map_") && !hints.contains("get_doc"),
             "{outside}"
         );
-        assert_eq!(
-            hints.contains("acdd_verify("),
-            with_command,
-            "{outside}"
-        );
+        assert_eq!(hints.contains("acdd_verify("), with_command, "{outside}");
         client.finish().expect("server must finish successfully");
     }
 }

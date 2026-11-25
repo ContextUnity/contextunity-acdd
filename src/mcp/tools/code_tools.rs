@@ -6,9 +6,8 @@ use super::inputs::{
 use crate::{
     engine::{ast, guide},
     format::{
-        attach_document_presentation_uris, attach_lint_presentation_uris,
-        attach_presentation_uris, attach_traversal_presentation_uris, DiscoveryKind, OperationKind,
-        OutputFormat,
+        attach_document_presentation_uris, attach_lint_presentation_uris, attach_presentation_uris,
+        attach_traversal_presentation_uris, DiscoveryKind, OperationKind, OutputFormat,
     },
     state_bridge,
 };
@@ -38,7 +37,8 @@ fn resolve_symbol_view_options(
     CoverageOptions,
 )> {
     let page = page_input.resolve(policy)?;
-    let source = source_input.resolve_with(policy, page_input.generation.as_deref(), Some(false))?;
+    let source =
+        source_input.resolve_with(policy, page_input.generation.as_deref(), Some(false))?;
     let coverage = CoverageOptions { include_coverage };
     Ok((page, source, coverage))
 }
@@ -97,12 +97,7 @@ fn responding_with_presentation(
                     attach_presentation_uris(&server.root, &adapter, value, kind);
                 } else if matches!(title, "search_docs" | "get_doc") {
                     if let Ok(value) = &mut value {
-                        attach_document_presentation_uris(
-                            &server.root,
-                            &adapter,
-                            value,
-                            title,
-                        );
+                        attach_document_presentation_uris(&server.root, &adapter, value, title);
                     }
                 } else if title == "code_map_lint" {
                     if let Ok(value) = &mut value {
@@ -121,11 +116,7 @@ fn responding_with_presentation(
                     )
                 {
                     if let Ok(value) = &mut value {
-                        attach_traversal_presentation_uris(
-                            &server.root,
-                            &adapter,
-                            value,
-                        );
+                        attach_traversal_presentation_uris(&server.root, &adapter, value);
                     }
                 }
             }
@@ -464,7 +455,8 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
         move |server, adapter, policy| {
             let selector = p.selector()?;
             let path = p.path()?;
-            let (effective_op, effective_selector) = if implicit_sql || p.operation.trim() == "sql" {
+            let (effective_op, effective_selector) = if implicit_sql || p.operation.trim() == "sql"
+            {
                 (
                     "sql",
                     p.sql_statement()?
@@ -575,12 +567,7 @@ pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> Call
             let selector = p.selector()?;
             let path = p.path()?;
             server.read_with_adapter(adapter, |c| {
-                traversal::removal_paged_with_path(
-                    c,
-                    selector,
-                    path,
-                    &p.page.resolve(policy)?,
-                )
+                traversal::removal_paged_with_path(c, selector, path, &p.page.resolve(policy)?)
             })
         },
     )
@@ -739,8 +726,7 @@ pub(super) async fn acdd_guide(server: &Server, p: Guide) -> CallToolResult {
     if topic == "init" {
         let root = server.root.clone();
         let force = p.force;
-        return match tokio::task::spawn_blocking(move || guide::run(&root, &topic, force)).await
-        {
+        return match tokio::task::spawn_blocking(move || guide::run(&root, &topic, force)).await {
             Ok(result) => response::result_for(
                 result,
                 &ResponsePolicy::default(),
@@ -766,9 +752,7 @@ pub(super) async fn acdd_guide(server: &Server, p: Guide) -> CallToolResult {
         "acdd_guide",
         None,
         None,
-        move |server, adapter, _| {
-            guide::run_with_adapter(&server.root, &topic, p.force, adapter)
-        },
+        move |server, adapter, _| guide::run_with_adapter(&server.root, &topic, p.force, adapter),
     )
     .await
 }

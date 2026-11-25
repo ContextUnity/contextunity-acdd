@@ -45,11 +45,10 @@ impl<'a> ScriptRegistry<'a> {
         let mut by_owner: HashMap<&str, HashMap<&str, Vec<Provider<'a>>>> = HashMap::new();
         let mut incoming: HashMap<&str, Vec<Include<'a>>> = HashMap::new();
         for (path, facts) in all.iter_facts() {
-            if !facts
-                .nodes
-                .iter()
-                .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
-            {
+            if !facts.nodes.iter().any(|node| {
+                node.kind == crate::models::tags::NodeKind::Module
+                    && node.language == crate::models::tags::LanguageId::Html
+            }) {
                 continue;
             }
             let workspace = languages::workspace_path(path).0;
@@ -69,24 +68,20 @@ impl<'a> ScriptRegistry<'a> {
                 let Some((target_path, target_facts)) = all.get_entry(&target) else {
                     continue;
                 };
-                if !target_facts
-                    .nodes
-                    .iter()
-                    .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
-                    || languages::workspace_path(target_path).0 != workspace
+                if !target_facts.nodes.iter().any(|node| {
+                    node.kind == crate::models::tags::NodeKind::Module
+                        && node.language == crate::models::tags::LanguageId::Html
+                }) || languages::workspace_path(target_path).0 != workspace
                     || dependencies
                         .nearest_manifest_scope_for_path(LanguageFamily("javascript"), target_path)
                         != scope
                 {
                     continue;
                 }
-                incoming
-                    .entry(target_path)
-                    .or_default()
-                    .push(Include {
-                        parent: path,
-                        line: reference.line,
-                    });
+                incoming.entry(target_path).or_default().push(Include {
+                    parent: path,
+                    line: reference.line,
+                });
             }
             for reference in facts.references.iter().filter(|reference| {
                 reference.kind == "imports"

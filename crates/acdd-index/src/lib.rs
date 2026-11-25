@@ -12,5 +12,5 @@ pub mod scanner;
 pub mod semantic;
 pub mod typed_facts;
 
-pub use models::INDEX_SEMANTICS_VERSION;
 pub(crate) use models::FactsLookup;
+pub use models::INDEX_SEMANTICS_VERSION;

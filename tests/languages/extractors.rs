@@ -141,10 +141,9 @@ class ServiceClient:
         format!("{scope}/pyproject.toml"),
         "[project]\nname = 'scope-probe'\nversion = '0.1.0'\n",
     );
-    let dependencies =
-        acdd_index::languages::dependency_registry::DependencyRegistry::collect(
-            Some(workspace.root()),
-        );
+    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(
+        Some(workspace.root()),
+    );
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)
         .build()
@@ -224,16 +223,35 @@ fn extractors_collect_activation_signals_and_deterministic_facts_table() {
 
     for (lang, path, source, injected_signal) in [
         #[cfg(feature = "lang-html")]
-        ("html", "active.html", "<div x-data=\"{}\"></div>", Some("x-data")),
+        (
+            "html",
+            "active.html",
+            "<div x-data=\"{}\"></div>",
+            Some("x-data"),
+        ),
         #[cfg(feature = "lang-html")]
         ("html", "plain.html", "<div>plain</div>", None),
         #[cfg(feature = "lang-python")]
-        ("python", "app.py", "def build(x: int) -> int:\n    return x\n", None),
+        (
+            "python",
+            "app.py",
+            "def build(x: int) -> int:\n    return x\n",
+            None,
+        ),
         #[cfg(feature = "lang-go")]
-        ("go", "pkg/util.go", "package pkg\nfunc Alpha() int { return 1 }\n", None),
+        (
+            "go",
+            "pkg/util.go",
+            "package pkg\nfunc Alpha() int { return 1 }\n",
+            None,
+        ),
     ] {
-        let first = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
-        let second = ExtractorHarness::for_lang(lang).at_path(path).extract(source);
+        let first = ExtractorHarness::for_lang(lang)
+            .at_path(path)
+            .extract(source);
+        let second = ExtractorHarness::for_lang(lang)
+            .at_path(path)
+            .extract(source);
         let first_keys: Vec<_> = first
             .nodes
             .iter()

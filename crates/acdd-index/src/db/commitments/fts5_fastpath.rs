@@ -1,8 +1,8 @@
 //! Pure Rust decoder for SQLite FTS5 segment postings.
 
 use super::base::{
-    finalize_fts_postings_digest, fts_commitment_spec, fts_digest_vocab,
-    load_fts_documents, FtsDocumentMap, FtsPosting,
+    finalize_fts_postings_digest, fts_commitment_spec, fts_digest_vocab, load_fts_documents,
+    FtsDocumentMap, FtsPosting,
 };
 use crate::commitments::FtsDomain;
 use anyhow::Result;

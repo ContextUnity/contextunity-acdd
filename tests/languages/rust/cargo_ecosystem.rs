@@ -231,9 +231,9 @@ fn check_string_trait_isolation() {
 
 #[test]
 fn git2_walkdir_and_chrono_packs_resolve_external_receivers() {
-    assert!(
-        acdd_index::languages::rust::is_registered_rust_type("walkdir::WalkDir")
-    );
+    assert!(acdd_index::languages::rust::is_registered_rust_type(
+        "walkdir::WalkDir"
+    ));
     let eco_source = r#"
 use git2::Repository;
 use walkdir::WalkDir;

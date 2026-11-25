@@ -37,7 +37,9 @@ fn operand<'a>(
     }?;
     Ok(target.filter(|node| match role {
         SymbolRole::Callable => matches!(node.kind.as_str(), "function" | "method"),
-        SymbolRole::Type | SymbolRole::Constructor => node.kind == crate::models::tags::NodeKind::Class,
+        SymbolRole::Type | SymbolRole::Constructor => {
+            node.kind == crate::models::tags::NodeKind::Class
+        }
     }))
 }
 
@@ -110,8 +112,12 @@ pub(super) fn compose<'a>(
             _ => "configured attachment".into(),
         };
         let kind = match fact.relation {
-            crate::semantic::AttachmentRelation::UsesModel => crate::models::tags::EdgeKind::UsesModel,
-            crate::semantic::AttachmentRelation::References => crate::models::tags::EdgeKind::References,
+            crate::semantic::AttachmentRelation::UsesModel => {
+                crate::models::tags::EdgeKind::UsesModel
+            }
+            crate::semantic::AttachmentRelation::References => {
+                crate::models::tags::EdgeKind::References
+            }
         };
         match (source, target) {
             (Ok(Some(source)), target) => {

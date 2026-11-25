@@ -20,6 +20,12 @@ pub(in crate::linker) fn external_factory_result<'a>(
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
     (matches!(owner.language.as_str(), "javascript" | "typescript")
         && head == "this"
-        && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some(head))
-    .then_some((owner.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true, true))
+        && owner
+            .detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+            .as_str()
+            == Some(head))
+    .then_some((
+        owner.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true,
+        true,
+    ))
 }

@@ -1,11 +1,11 @@
 use super::framework_packs;
 use super::parsers::MANIFEST_PARSERS;
+#[cfg(test)]
+use super::registry::WorkspaceManifestSources;
 use super::registry::{
     finish_registry, join_workspace_root, read_confined_manifest_string,
     record_family_dependencies, DependencyRegistry, ManifestEntrypoint, ManifestSnapshots,
 };
-#[cfg(test)]
-use super::registry::WorkspaceManifestSources;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -301,8 +301,7 @@ fn record_dependency_manifest(
         }
         if !parsed.module_prefixes.is_empty() {
             for mut prefix_entry in parsed.module_prefixes {
-                prefix_entry.source_root =
-                    join_workspace_root(&scope, &prefix_entry.source_root);
+                prefix_entry.source_root = join_workspace_root(&scope, &prefix_entry.source_root);
                 prefix_entry.origin = origin.clone();
                 for &family in parsed.ecosystem.families() {
                     registry
@@ -323,13 +322,7 @@ fn record_dependency_manifest(
                 continue;
             }
             parsed_families.push(family);
-            record_family_dependencies(
-                registry,
-                family,
-                &scope,
-                &origin,
-                &parsed.dependencies,
-            );
+            record_family_dependencies(registry, family, &scope, &origin, &parsed.dependencies);
         }
     }
 }

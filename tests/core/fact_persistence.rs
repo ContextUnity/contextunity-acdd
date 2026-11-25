@@ -49,7 +49,14 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
     assert_eq!(method["receiver_name"], "self");
     drop(conn);
     ws.write("service.py", "class Service:\n    def execute(self):\n        \"\"\"Execute the updated request.\"\"\"\n        return 43\n");
-    writer::delta_with_selection(ws.root(), &db_path, &[PathBuf::from("service.py")], None, None).unwrap();
+    writer::delta_with_selection(
+        ws.root(),
+        &db_path,
+        &[PathBuf::from("service.py")],
+        None,
+        None,
+    )
+    .unwrap();
     let conn = reader::open(&db_path, ws.root()).unwrap();
     let calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
     assert_eq!(
@@ -91,7 +98,14 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         "class Service:\n    def execute(self):\n        return 44\n",
     );
     assert!(
-        writer::delta_with_selection(ws.root(), &db_path, &[PathBuf::from("service.py")], None, None).is_err(),
+        writer::delta_with_selection(
+            ws.root(),
+            &db_path,
+            &[PathBuf::from("service.py")],
+            None,
+            None
+        )
+        .is_err(),
         "truncated durable facts fail closed before graph publication"
     );
     let conn = Connection::open(&db_path).unwrap();

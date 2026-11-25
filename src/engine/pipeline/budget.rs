@@ -25,7 +25,11 @@ impl ByteBudget {
         })
     }
 
-    pub(super) fn acquire(self: &Arc<Self>, bytes: u64, cancelled: &AtomicBool) -> Result<MemoryPermit> {
+    pub(super) fn acquire(
+        self: &Arc<Self>,
+        bytes: u64,
+        cancelled: &AtomicBool,
+    ) -> Result<MemoryPermit> {
         let bytes = bytes.max(1);
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
@@ -96,4 +100,3 @@ impl Drop for MemoryPermit {
         self.budget.release(self.bytes);
     }
 }
-

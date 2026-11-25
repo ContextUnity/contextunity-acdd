@@ -458,8 +458,7 @@ fn cold_rebuild_waits_for_active_mcp_reader_before_rename() {
             let hooks = PipelineTestHooks::before_generation_lock(move |_| {
                 let _ = boundary_tx.send(());
             });
-            let result =
-                build_with_selection_and_guard(&root, &db, None, None, Some(hooks), None);
+            let result = build_with_selection_and_guard(&root, &db, None, None, Some(hooks), None);
             let _ = done_tx.send(result);
         });
         let reached = boundary_rx.recv_timeout(Duration::from_secs(10));

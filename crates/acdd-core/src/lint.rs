@@ -172,7 +172,9 @@ impl ZoneSelector {
         let Some(norm) = normalize_rel_path(rel_path) else {
             return true;
         };
-        self.exclude_paths.iter().any(|pat| glob_matches(pat, &norm))
+        self.exclude_paths
+            .iter()
+            .any(|pat| glob_matches(pat, &norm))
     }
 
     /// Return `true` when `rel_path` matches a `paths` or referenced `zones` glob and is not excluded.
@@ -180,7 +182,11 @@ impl ZoneSelector {
         let Some(norm) = normalize_rel_path(rel_path) else {
             return false;
         };
-        if self.exclude_paths.iter().any(|pat| glob_matches(pat, &norm)) {
+        if self
+            .exclude_paths
+            .iter()
+            .any(|pat| glob_matches(pat, &norm))
+        {
             return false;
         }
         if self.paths.iter().any(|pat| glob_matches(pat, &norm)) {
@@ -194,7 +200,11 @@ impl ZoneSelector {
     }
 
     /// Validate all selector fields, glob syntax, and optional zone references against `known_zones`.
-    pub fn validate(&self, known_zones: Option<&BTreeSet<String>>, ctx: &str) -> Result<(), StateError> {
+    pub fn validate(
+        &self,
+        known_zones: Option<&BTreeSet<String>>,
+        ctx: &str,
+    ) -> Result<(), StateError> {
         if self.is_empty() {
             return Err(schema_invalid(format!("{ctx} selector must not be empty")));
         }
@@ -252,7 +262,9 @@ impl ArchRuleSpec {
         let rule_ctx = format!("rule '{}'", self.id);
         for (field, opt) in [("invariant", &self.invariant), ("message", &self.message)] {
             if opt.as_deref().is_some_and(|v| v.trim().is_empty()) {
-                return Err(schema_invalid(format!("{rule_ctx}.{field} must not be empty when specified")));
+                return Err(schema_invalid(format!(
+                    "{rule_ctx}.{field} must not be empty when specified"
+                )));
             }
         }
         if let Some(from) = &self.from {
@@ -265,12 +277,19 @@ impl ArchRuleSpec {
         validate_scope_globs(&self.entrypoints, &format!("{rule_ctx}.entrypoints"))?;
         validate_zone_refs(&self.zones, known_zones, &format!("{rule_ctx}.zones"))?;
         if self.depth == Some(0) {
-            return Err(schema_invalid(format!("{rule_ctx}.depth must be at least 1")));
+            return Err(schema_invalid(format!(
+                "{rule_ctx}.depth must be at least 1"
+            )));
         }
         match self.kind {
-            ArchRuleKind::ForbidDependency | ArchRuleKind::AllowOnlyDependencies | ArchRuleKind::MustImplement => {
+            ArchRuleKind::ForbidDependency
+            | ArchRuleKind::AllowOnlyDependencies
+            | ArchRuleKind::MustImplement => {
                 if self.from.is_none() || self.to.is_none() {
-                    return Err(schema_invalid(format!("{rule_ctx} ({}) requires both 'from' and 'to' selectors", self.kind)));
+                    return Err(schema_invalid(format!(
+                        "{rule_ctx} ({}) requires both 'from' and 'to' selectors",
+                        self.kind
+                    )));
                 }
             }
             ArchRuleKind::SingleOwner => {
@@ -284,7 +303,12 @@ impl ArchRuleSpec {
                 }
             }
             ArchRuleKind::AstPattern => {
-                if self.from.is_none() || self.ast_pattern.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                if self.from.is_none()
+                    || self
+                        .ast_pattern
+                        .as_deref()
+                        .is_none_or(|p| p.trim().is_empty())
+                {
                     return Err(schema_invalid(format!("{rule_ctx} (ast_pattern) requires 'from' selector and non-empty 'ast_pattern'")));
                 }
             }
@@ -307,7 +331,10 @@ pub struct ComplexityLimits {
 
 impl Default for ComplexityLimits {
     fn default() -> Self {
-        Self { severity: LintSeverity::Warn, invariant: None }
+        Self {
+            severity: LintSeverity::Warn,
+            invariant: None,
+        }
     }
 }
 
@@ -319,8 +346,14 @@ impl ComplexityLimits {
 
     /// Validate that any complexity invariant binding is non-empty.
     pub fn validate(&self) -> Result<(), StateError> {
-        if self.invariant.as_deref().is_some_and(|v| v.trim().is_empty()) {
-            return Err(schema_invalid("architecture.complexity.invariant must not be empty when specified"));
+        if self
+            .invariant
+            .as_deref()
+            .is_some_and(|v| v.trim().is_empty())
+        {
+            return Err(schema_invalid(
+                "architecture.complexity.invariant must not be empty when specified",
+            ));
         }
         Ok(())
     }
@@ -366,7 +399,9 @@ impl ArchitectureConfig {
                 return Err(schema_invalid("architecture.zones name must not be empty"));
             }
             if globs.is_empty() {
-                return Err(schema_invalid(format!("architecture.zones.{zone_name} must contain at least one glob pattern")));
+                return Err(schema_invalid(format!(
+                    "architecture.zones.{zone_name} must contain at least one glob pattern"
+                )));
             }
             validate_scope_globs(globs, &format!("architecture.zones.{zone_name}"))?;
         }
@@ -374,7 +409,10 @@ impl ArchitectureConfig {
         let mut seen_ids = BTreeSet::new();
         for rule in &self.rules {
             if !seen_ids.insert(rule.id.as_str()) {
-                return Err(schema_invalid(format!("duplicate architecture.rules id '{}'", rule.id)));
+                return Err(schema_invalid(format!(
+                    "duplicate architecture.rules id '{}'",
+                    rule.id
+                )));
             }
             rule.validate(Some(&known_zones))?;
         }
@@ -383,7 +421,11 @@ impl ArchitectureConfig {
 }
 
 fn normalize_external_symbol_segments(symbol: &str) -> Vec<&str> {
-    symbol.trim().split([':', '.', '/']).filter(|seg| !seg.is_empty()).collect()
+    symbol
+        .trim()
+        .split([':', '.', '/'])
+        .filter(|seg| !seg.is_empty())
+        .collect()
 }
 
 /// Return `true` when `symbol` matches `prefix` on normalized `::`, `.`, `/`, and `:` segment boundaries.
@@ -399,16 +441,29 @@ pub fn external_symbol_matches_prefix(symbol: &str, prefix: &str) -> bool {
 /// Canonical `SchemaDef` for the `code.lint` gate check input parameters.
 pub fn lint_check_input_schema() -> SchemaDef {
     let mut category_item = SchemaDef::string();
-    category_item.enum_values = Some(LintCategory::ALL.iter().map(|c| Value::String(c.as_str().to_owned())).collect());
+    category_item.enum_values = Some(
+        LintCategory::ALL
+            .iter()
+            .map(|c| Value::String(c.as_str().to_owned()))
+            .collect(),
+    );
     let mut severity_schema = SchemaDef::string();
-    severity_schema.enum_values = Some(LintSeverity::ALL.iter().map(|s| Value::String(s.as_str().to_owned())).collect());
+    severity_schema.enum_values = Some(
+        LintSeverity::ALL
+            .iter()
+            .map(|s| Value::String(s.as_str().to_owned()))
+            .collect(),
+    );
     let mut non_empty_str = SchemaDef::string();
     non_empty_str.min_length = Some(1);
 
     let mut root = SchemaDef::object();
-    root.properties.insert("categories".to_owned(), SchemaDef::array(category_item));
-    root.properties.insert("severity".to_owned(), severity_schema);
-    root.properties.insert("rules".to_owned(), SchemaDef::array(non_empty_str.clone()));
+    root.properties
+        .insert("categories".to_owned(), SchemaDef::array(category_item));
+    root.properties
+        .insert("severity".to_owned(), severity_schema);
+    root.properties
+        .insert("rules".to_owned(), SchemaDef::array(non_empty_str.clone()));
     root.properties.insert("target".to_owned(), non_empty_str);
     root.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
     root
@@ -426,19 +481,27 @@ fn validate_non_empty_strings(items: &[String], ctx: &str) -> Result<(), StateEr
 fn validate_scope_globs(globs: &[String], ctx: &str) -> Result<(), StateError> {
     for glob in globs {
         if !is_valid_scope_glob(glob) {
-            return Err(schema_invalid(format!("{ctx} contains invalid workspace-relative glob '{glob}'")));
+            return Err(schema_invalid(format!(
+                "{ctx} contains invalid workspace-relative glob '{glob}'"
+            )));
         }
     }
     Ok(())
 }
 
-fn validate_zone_refs(zones: &[String], known_zones: Option<&BTreeSet<String>>, ctx: &str) -> Result<(), StateError> {
+fn validate_zone_refs(
+    zones: &[String],
+    known_zones: Option<&BTreeSet<String>>,
+    ctx: &str,
+) -> Result<(), StateError> {
     for zone in zones {
         if zone.trim().is_empty() {
             return Err(schema_invalid(format!("{ctx} entries must not be empty")));
         }
         if known_zones.is_some_and(|known| !known.contains(zone)) {
-            return Err(schema_invalid(format!("{ctx} references unknown zone '{zone}'")));
+            return Err(schema_invalid(format!(
+                "{ctx} references unknown zone '{zone}'"
+            )));
         }
     }
     Ok(())
@@ -452,13 +515,22 @@ mod tests {
     #[test]
     fn lint_enums_roundtrip_and_reject_unknown_values() {
         assert_eq!(LintCategory::ALL.len(), 6);
-        assert_eq!(LintCategory::DEFAULT_VERIFY, [LintCategory::Arch, LintCategory::Syntax, LintCategory::Docs]);
+        assert_eq!(
+            LintCategory::DEFAULT_VERIFY,
+            [LintCategory::Arch, LintCategory::Syntax, LintCategory::Docs]
+        );
         for &cat in LintCategory::ALL {
             assert_eq!(cat.to_string(), cat.as_str());
             assert_eq!(cat.as_str().parse::<LintCategory>().unwrap(), cat);
-            assert_eq!(serde_json::from_value::<LintCategory>(json!(cat.as_str())).unwrap(), cat);
+            assert_eq!(
+                serde_json::from_value::<LintCategory>(json!(cat.as_str())).unwrap(),
+                cat
+            );
         }
-        assert_eq!("bogus".parse::<LintCategory>().unwrap_err().code, ErrorCode::ProfileSchemaInvalid);
+        assert_eq!(
+            "bogus".parse::<LintCategory>().unwrap_err().code,
+            ErrorCode::ProfileSchemaInvalid
+        );
 
         assert_eq!(LintSeverity::default(), LintSeverity::Error);
         assert!(LintSeverity::Error.meets_threshold(LintSeverity::Warn));
@@ -526,7 +598,10 @@ rules:
 "#;
         let cfg: ArchitectureConfig = serde_yaml::from_str(valid_yaml).unwrap();
         assert!(!cfg.is_empty());
-        assert_eq!(cfg.zone_names(), BTreeSet::from(["core".to_owned(), "index".to_owned()]));
+        assert_eq!(
+            cfg.zone_names(),
+            BTreeSet::from(["core".to_owned(), "index".to_owned()])
+        );
         cfg.validate().unwrap();
 
         let bad_configs: &[(&str, &str)] = &[
@@ -546,7 +621,9 @@ rules:
         ];
         for &(label, yaml) in bad_configs {
             if let Ok(cfg) = serde_yaml::from_str::<ArchitectureConfig>(yaml) {
-                let err = cfg.validate().expect_err(&format!("{label}: expected validation failure"));
+                let err = cfg
+                    .validate()
+                    .expect_err(&format!("{label}: expected validation failure"));
                 assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
             }
         }
@@ -554,7 +631,10 @@ rules:
 
     #[test]
     fn zone_selector_matches_paths_and_external_symbol_prefixes() {
-        let zones = BTreeMap::from([("core".to_owned(), vec!["crates/{acdd-core,acdd-leaf}/src/**".to_owned()])]);
+        let zones = BTreeMap::from([(
+            "core".to_owned(),
+            vec!["crates/{acdd-core,acdd-leaf}/src/**".to_owned()],
+        )]);
         let sel = ZoneSelector {
             zones: vec!["core".to_owned()],
             paths: vec!["src/shared/*.rs".to_owned()],
@@ -569,7 +649,10 @@ rules:
         assert!(!sel.matches_path("crates/acdd-index/src/lib.rs", &zones));
         assert!(!sel.matches_path("../outside.rs", &zones));
 
-        let ext_only = ZoneSelector { external_symbols: vec!["rusqlite".to_owned()], ..ZoneSelector::default() };
+        let ext_only = ZoneSelector {
+            external_symbols: vec!["rusqlite".to_owned()],
+            ..ZoneSelector::default()
+        };
         assert!(!ext_only.has_path_scope());
         assert!(!ext_only.matches_path("crates/acdd-core/src/lib.rs", &zones));
 
@@ -586,7 +669,11 @@ rules:
             ("std::process::CommandArgs", "std::process::Command", false),
             ("anything", "", false),
         ] {
-            assert_eq!(external_symbol_matches_prefix(sym, pre), expected, "{sym:?} vs {pre:?}");
+            assert_eq!(
+                external_symbol_matches_prefix(sym, pre),
+                expected,
+                "{sym:?} vs {pre:?}"
+            );
         }
     }
 
@@ -598,14 +685,22 @@ rules:
 
         for (label, val, expect_ok) in [
             ("empty", json!({}), true),
-            ("valid", json!({"categories": ["arch", "docs"], "severity": "warn", "rules": ["INV-CORE-LEAF"], "target": "crates/acdd-core/src"}), true),
+            (
+                "valid",
+                json!({"categories": ["arch", "docs"], "severity": "warn", "rules": ["INV-CORE-LEAF"], "target": "crates/acdd-core/src"}),
+                true,
+            ),
             ("bad_cat", json!({"categories": ["bogus"]}), false),
             ("bad_sev", json!({"severity": "fatal"}), false),
             ("empty_rule", json!({"rules": [""]}), false),
             ("empty_target", json!({"target": ""}), false),
             ("extra_prop", json!({"extra": true}), false),
         ] {
-            assert_eq!(schema.validate_value(&val, "$").is_ok(), expect_ok, "{label}");
+            assert_eq!(
+                schema.validate_value(&val, "$").is_ok(),
+                expect_ok,
+                "{label}"
+            );
         }
     }
 }

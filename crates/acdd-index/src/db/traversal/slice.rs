@@ -3,10 +3,7 @@ use super::{
     types::{ImpactDirection, TraversalMode, TraversalOptions},
 };
 use crate::db::{paging, reader};
-use crate::models::{
-    details::NodeDetailKey,
-    tags::NodeKind,
-};
+use crate::models::{details::NodeDetailKey, tags::NodeKind};
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
@@ -185,7 +182,14 @@ fn directory_boundary(
         &[&lower, &upper],
         options,
     )?;
-    let inbound = boundary_modules(conn, &incoming, ImpactDirection::Inbound, lower, upper, options)?;
+    let inbound = boundary_modules(
+        conn,
+        &incoming,
+        ImpactDirection::Inbound,
+        lower,
+        upper,
+        options,
+    )?;
     let outbound = boundary_modules(
         conn,
         &outgoing,

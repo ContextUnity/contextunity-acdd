@@ -230,7 +230,10 @@ impl CodeDomainProvider {
             }
         }
         all_candidates.sort_by_key(|a| (a.0, a.1, a.2, a.3));
-        let mut items: Vec<Value> = all_candidates.into_iter().map(|(_, _, _, _, v)| v).collect();
+        let mut items: Vec<Value> = all_candidates
+            .into_iter()
+            .map(|(_, _, _, _, v)| v)
+            .collect();
         items.truncate(CODE_SYMBOLS_MAX_ITEMS);
         Ok(budget_items("symbols", items, req.max_bytes))
     }
@@ -326,7 +329,10 @@ impl CodeDomainProvider {
             }
 
             for head_node in head_nodes {
-                if cur_keys.contains(&(head_node.kind.as_str().to_owned(), head_node.qualname.clone())) {
+                if cur_keys.contains(&(
+                    head_node.kind.as_str().to_owned(),
+                    head_node.qualname.clone(),
+                )) {
                     continue;
                 }
                 let callers = super::signature_scope::find_external_callers(

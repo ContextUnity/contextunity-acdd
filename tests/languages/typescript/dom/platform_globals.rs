@@ -148,9 +148,9 @@ fn platform_global_contract_matrix() {
                     [target_path]
                 );
                 if expression == "URL" {
-                    assert!(targets
-                        .iter()
-                        .any(|node| node.kind == acdd_index::models::tags::NodeKind::Class && node.name == "URL"));
+                    assert!(targets.iter().any(|node| node.kind
+                        == acdd_index::models::tags::NodeKind::Class
+                        && node.name == "URL"));
                 }
             }
         }
@@ -306,7 +306,9 @@ fn conversion_globals_are_external_with_local_precedence() {
         let local_string = facts[&local_path]
             .nodes
             .iter()
-            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String")
+            .find(|node| {
+                node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String"
+            })
             .unwrap()
             .id
             .clone();
@@ -599,11 +601,17 @@ fn javascript_iife_scopes_avoid_truncated_calls() {
     ] {
         let graph = linked(path, "javascript", source);
         assert!(
-            graph.coverage.iter().any(|row| row.expression == "helper" && row.status == "resolved"),
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.expression == "helper" && row.status == "resolved"),
             "{path}: helper() inside IIFE must resolve: {graph:#?}"
         );
         assert!(
-            !graph.coverage.iter().any(|row| row.expression.starts_with('(') || row.expression.starts_with('!')),
+            !graph
+                .coverage
+                .iter()
+                .any(|row| row.expression.starts_with('(') || row.expression.starts_with('!')),
             "{path}: IIFE callee must not emit truncated call coverage: {:#?}",
             graph.coverage
         );

@@ -167,7 +167,8 @@ fn load_rust_local_facts(
         .iter()
         .map(|&p| (p.to_owned(), HashSet::new()))
         .collect();
-    let mut stmt = conn.prepare("SELECT path, facts_blob FROM local_facts WHERE language = 'rust'")?;
+    let mut stmt =
+        conn.prepare("SELECT path, facts_blob FROM local_facts WHERE language = 'rust'")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let path: String = row.get(0)?;
@@ -211,7 +212,8 @@ fn load_rust_local_facts(
     }
     for exp in exports {
         let alias = Some(if exp.star { "*" } else { exp.name.as_str() }.to_owned());
-        if let Some(&line) = ref_lines.get(&(exp.mod_path.clone(), exp.target_expr.clone(), alias)) {
+        if let Some(&line) = ref_lines.get(&(exp.mod_path.clone(), exp.target_expr.clone(), alias))
+        {
             exp.line = line.max(1);
         }
     }
@@ -299,16 +301,18 @@ fn collect_build_script_files(
     ))?;
     let mut erows = estmt.query([])?;
     while let Some(row) = erows.next()? {
-        if let (Some(src), Some(dst)) = (nodes.get(&row.get::<_, i64>(0)?), nodes.get(&row.get::<_, i64>(1)?)) {
+        if let (Some(src), Some(dst)) = (
+            nodes.get(&row.get::<_, i64>(0)?),
+            nodes.get(&row.get::<_, i64>(1)?),
+        ) {
             if src.path != dst.path {
                 import_edges.push((src.path.clone(), dst.path.clone()));
             }
         }
     }
-    while import_edges
-        .iter()
-        .fold(false, |changed, (s, d)| changed | (build_files.contains(s) && build_files.insert(d.clone())))
-    {}
+    while import_edges.iter().fold(false, |changed, (s, d)| {
+        changed | (build_files.contains(s) && build_files.insert(d.clone()))
+    }) {}
     Ok(build_files)
 }
 
@@ -343,7 +347,10 @@ fn collect_edge_evidence(
         }
         if src.path == dst.path {
             if kind_str != EdgeKind::Imports.as_str() {
-                ev.same_file_refs.entry(src_hash).or_default().push(dst_hash);
+                ev.same_file_refs
+                    .entry(src_hash)
+                    .or_default()
+                    .push(dst_hash);
             }
             continue;
         }
@@ -385,7 +392,9 @@ fn collect_edge_evidence(
                     .entry((src.path.clone(), dst_hash))
                     .or_default()
                     .insert(tail.to_owned());
-                if let Some(aliases) = module_import_aliases.get(&(src.path.clone(), evidence.clone())) {
+                if let Some(aliases) =
+                    module_import_aliases.get(&(src.path.clone(), evidence.clone()))
+                {
                     ev.consumer_module_aliases
                         .entry((src.path.clone(), dst_hash))
                         .or_default()
@@ -407,13 +416,15 @@ fn collect_edge_evidence(
                         }
                     }
                 }
-                ev.consumer_module_imports.push((dst_hash, src.path.clone(), evidence));
+                ev.consumer_module_imports
+                    .push((dst_hash, src.path.clone(), evidence));
                 continue;
             }
         }
         ev.live_nodes.insert(dst_hash);
         if dst.kind != NodeKind::Module.as_str() {
-            ev.consumer_direct_refs.push((src.path.clone(), dst_hash, evidence.clone()));
+            ev.consumer_direct_refs
+                .push((src.path.clone(), dst_hash, evidence.clone()));
         }
         ev.consumer_imported_paths
             .entry((src.path.clone(), evidence))
@@ -432,10 +443,15 @@ fn expand_reexport_targets(
 ) {
     let mut star_modules: HashMap<usize, Vec<i64>> = HashMap::new();
     for edge in reexport_edges {
-        exports[edge.export_idx].target_paths.insert(edge.dst_path.clone());
+        exports[edge.export_idx]
+            .target_paths
+            .insert(edge.dst_path.clone());
         if edge.dst_is_module {
             if exports[edge.export_idx].star {
-                star_modules.entry(edge.export_idx).or_default().push(edge.dst_hash);
+                star_modules
+                    .entry(edge.export_idx)
+                    .or_default()
+                    .push(edge.dst_hash);
             }
         } else {
             exports[edge.export_idx].target_hashes.insert(edge.dst_hash);
@@ -452,7 +468,9 @@ fn expand_reexport_targets(
             let parent_tail = evidence_tail(&exports[parent_idx].target_expr).to_owned();
             if !parent_star {
                 if let Some(m) = nodes.get(&edge.dst_hash) {
-                    if let Some(ths) = qual_to_hashes.get(format!("{}.{parent_tail}", m.qualname).as_str()) {
+                    if let Some(ths) =
+                        qual_to_hashes.get(format!("{}.{parent_tail}", m.qualname).as_str())
+                    {
                         for &th in ths {
                             changed |= exports[parent_idx].target_hashes.insert(th);
                             if let Some(tn) = nodes.get(&th) {
@@ -474,15 +492,19 @@ fn expand_reexport_targets(
                     qual_to_hashes.contains_key(format!("{}.{parent_tail}", m.qualname).as_str())
                 });
             for &child_idx in child_exps {
-                if parent_star || (!exports[child_idx].star && exports[child_idx].name == parent_tail) {
-                    let paths: Vec<String> = exports[child_idx].target_paths.iter().cloned().collect();
-                    let hashes: Vec<i64> = exports[child_idx].target_hashes.iter().copied().collect();
+                if parent_star
+                    || (!exports[child_idx].star && exports[child_idx].name == parent_tail)
+                {
+                    let paths: Vec<String> =
+                        exports[child_idx].target_paths.iter().cloned().collect();
+                    let hashes: Vec<i64> =
+                        exports[child_idx].target_hashes.iter().copied().collect();
                     changed |= paths
                         .into_iter()
                         .fold(false, |c, p| c | exports[parent_idx].target_paths.insert(p));
-                    changed |= hashes
-                        .into_iter()
-                        .fold(false, |c, h| c | exports[parent_idx].target_hashes.insert(h));
+                    changed |= hashes.into_iter().fold(false, |c, h| {
+                        c | exports[parent_idx].target_hashes.insert(h)
+                    });
                 } else if exports[child_idx].star && !has_named_child && !has_direct_in_mod {
                     let matching_hashes: Vec<i64> = exports[child_idx]
                         .target_hashes
@@ -503,7 +525,8 @@ fn expand_reexport_targets(
                             {
                                 for &th in ths {
                                     changed |= exports[parent_idx].target_hashes.insert(th);
-                                    changed |= exports[parent_idx].target_paths.insert(m.path.clone());
+                                    changed |=
+                                        exports[parent_idx].target_paths.insert(m.path.clone());
                                 }
                             }
                         }
@@ -666,7 +689,10 @@ fn mark_live_exports(
         for &th in &exp.target_hashes {
             by_target_hash.entry(th).or_default().push(idx);
             if let Some(tn) = ctx.nodes.get(&th) {
-                by_target_qual.entry(tn.qualname.as_str()).or_default().push(idx);
+                by_target_qual
+                    .entry(tn.qualname.as_str())
+                    .or_default()
+                    .push(idx);
             }
         }
         if exp.star {
@@ -751,7 +777,9 @@ fn mark_live_exports(
         if matched_named {
             continue;
         }
-        let target_paths = ev.consumer_imported_paths.get(&(caller_path.clone(), evidence.clone()));
+        let target_paths = ev
+            .consumer_imported_paths
+            .get(&(caller_path.clone(), evidence.clone()));
         for &exp_idx in mod_exp_idxs {
             if !ctx.exports[exp_idx].star {
                 continue;
@@ -854,7 +882,9 @@ fn apply_unresolved_dependencies(
             if let Some(crate_ident) = meta.crate_ident.as_deref() {
                 let pkg_pair = format!("{crate_ident}::{}", exp.name);
                 if let Some(callers) = unresolved_by_pair.get(&pkg_pair) {
-                    matched = callers.iter().any(|caller_path| caller_path != &exp.mod_path);
+                    matched = callers
+                        .iter()
+                        .any(|caller_path| caller_path != &exp.mod_path);
                 }
             }
             if !matched {
@@ -971,7 +1001,8 @@ fn propagate_live_reexports(
                             }
                             if !matched_any {
                                 for child_edge in reexport_edges {
-                                    if child_edge.export_idx == child_idx && child_edge.dst_is_module
+                                    if child_edge.export_idx == child_idx
+                                        && child_edge.dst_is_module
                                     {
                                         if let Some(m) = ctx.nodes.get(&child_edge.dst_hash) {
                                             if let Some(ths) = ctx
@@ -1061,7 +1092,10 @@ fn mark_signature_reachable_types(
     let sigs_by_hash = load_node_signatures(conn)?;
     let mut type_nodes_by_path: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
     for node in nodes.values().filter(|n| is_type_decl(n)) {
-        type_nodes_by_path.entry(node.path.as_str()).or_default().push(node);
+        type_nodes_by_path
+            .entry(node.path.as_str())
+            .or_default()
+            .push(node);
     }
     let mut live_by_path: HashMap<&str, Vec<i64>> = HashMap::new();
     for &h in live_nodes.iter() {
@@ -1124,9 +1158,15 @@ fn emit_export_violations(
             continue;
         }
         let msg = if exp.star {
-            format!("unused or test-only glob `pub use {}` in '{}'", exp.target_expr, exp.module_qualname)
+            format!(
+                "unused or test-only glob `pub use {}` in '{}'",
+                exp.target_expr, exp.module_qualname
+            )
         } else {
-            format!("unused or test-only `pub use` re-export '{}' in '{}'", exp.name, exp.module_qualname)
+            format!(
+                "unused or test-only `pub use` re-export '{}' in '{}'",
+                exp.name, exp.module_qualname
+            )
         };
         push_violation(
             violations,
@@ -1152,7 +1192,10 @@ fn emit_item_violations(
         .filter_map(|h| nodes.get(h).map(|n| n.qualname.as_str()))
         .collect();
     for h in live_nodes {
-        if let Some(node) = nodes.get(h).filter(|n| n.kind == NodeKind::Constant.as_str()) {
+        if let Some(node) = nodes
+            .get(h)
+            .filter(|n| n.kind == NodeKind::Constant.as_str())
+        {
             if let Some((parent_qn, _)) = node.qualname.rsplit_once('.') {
                 if enum_qualnames.contains(parent_qn) {
                     live_qualnames.insert(parent_qn);
@@ -1172,7 +1215,10 @@ fn emit_item_violations(
             violations,
             node.path.clone(),
             node.line.max(1) as usize,
-            format!("public {} '{}' lacks non-test cross-module production callers", node.kind, node.qualname),
+            format!(
+                "public {} '{}' lacks non-test cross-module production callers",
+                node.kind, node.qualname
+            ),
             node.qualname.clone(),
             "Narrow to private/`pub(crate)`/`#[cfg(test)]` or delete unused compatibility item.",
         );
@@ -1194,10 +1240,7 @@ pub(super) fn collect_unused_public_api_violations(
         if node.kind == NodeKind::Enum.as_str() {
             enum_qualnames.insert(node.qualname.as_str());
         }
-        if matches!(
-            node.kind.as_str(),
-            "struct" | "enum" | "trait" | "type"
-        ) {
+        if matches!(node.kind.as_str(), "struct" | "enum" | "trait" | "type") {
             type_qualnames.insert(node.qualname.as_str());
         }
         if node.is_test_ctx {
@@ -1236,8 +1279,14 @@ pub(super) fn collect_unused_public_api_violations(
     let mut export_lookup: HashMap<(i64, &str), Vec<usize>> = HashMap::new();
     let mut exports_by_module: HashMap<i64, Vec<usize>> = HashMap::new();
     for (idx, exp) in exports.iter().enumerate() {
-        export_lookup.entry((exp.module_hash, exp.target_expr.as_str())).or_default().push(idx);
-        exports_by_module.entry(exp.module_hash).or_default().push(idx);
+        export_lookup
+            .entry((exp.module_hash, exp.target_expr.as_str()))
+            .or_default()
+            .push(idx);
+        exports_by_module
+            .entry(exp.module_hash)
+            .or_default()
+            .push(idx);
     }
 
     let mut ev = collect_edge_evidence(
@@ -1297,6 +1346,13 @@ pub(super) fn collect_unused_public_api_violations(
     propagate_live_reexports(&ctx, &ev.reexport_edges, &mut state, &mut ev.live_nodes);
     mark_signature_reachable_types(conn, nodes, &ev.same_file_refs, &mut ev.live_nodes)?;
     emit_export_violations(scope, &exports, &state.live_exports, violations);
-    emit_item_violations(scope, nodes, &enum_qualnames, &build_script_files, &ev.live_nodes, violations);
+    emit_item_violations(
+        scope,
+        nodes,
+        &enum_qualnames,
+        &build_script_files,
+        &ev.live_nodes,
+        violations,
+    );
     Ok(())
 }

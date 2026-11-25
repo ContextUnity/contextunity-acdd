@@ -1,6 +1,4 @@
-use super::tags::{
-    CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
-};
+use super::tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind};
 use super::types::{
     Coverage as PublicCoverage, Edge as PublicEdge, Graph as PublicGraph, Reference,
 };
@@ -473,8 +471,14 @@ mod tests {
         assert_eq!(compact.kind, EdgeKind::Calls);
         assert_eq!(compact.confidence, EdgeConfidence::Exact);
         for custom in [
-            PublicEdge { kind: "custom-kind-雪".into(), ..edge.clone() },
-            PublicEdge { confidence: "confidence-🧭".into(), ..edge.clone() },
+            PublicEdge {
+                kind: "custom-kind-雪".into(),
+                ..edge.clone()
+            },
+            PublicEdge {
+                confidence: "confidence-🧭".into(),
+                ..edge.clone()
+            },
         ] {
             assert!(CompactEdge::try_from(&custom).is_err());
             let mut graph = CompactGraph::default();
@@ -497,10 +501,17 @@ mod tests {
         );
         typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
         let mut wire_graph = CompactGraph::default();
-        wire_graph.try_push_public_edge(&PublicEdge {
-            src: "a".into(), dst: "b".into(), kind: "calls".into(),
-            path: "a.rs".into(), line: 1, evidence: "call".into(), confidence: "exact".into(),
-        }).unwrap();
+        wire_graph
+            .try_push_public_edge(&PublicEdge {
+                src: "a".into(),
+                dst: "b".into(),
+                kind: "calls".into(),
+                path: "a.rs".into(),
+                line: 1,
+                evidence: "call".into(),
+                confidence: "exact".into(),
+            })
+            .unwrap();
         wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
         assert_eq!(typed_graph.edges.len(), 1);
         assert_eq!(typed_graph.edges[0].dst.as_ref(), "b");

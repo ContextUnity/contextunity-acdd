@@ -1,6 +1,4 @@
-use super::base::{
-    aggregate, batch_insert_commitments, root, write_metadata, MetadataKey, FTS,
-};
+use super::base::{aggregate, batch_insert_commitments, root, write_metadata, MetadataKey, FTS};
 use super::fts5_fastpath::fts_digest;
 use crate::commitments::{ALGORITHM, DOMAINS};
 use anyhow::{Context, Result};

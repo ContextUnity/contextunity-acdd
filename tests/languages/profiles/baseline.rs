@@ -1,6 +1,6 @@
 use super::*;
-use acdd_index::semantic::ValueFlowFacts;
 use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+use acdd_index::semantic::ValueFlowFacts;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -552,7 +552,8 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
     for (category, observed) in [
         (
             "declaration",
-            declaration.is_some_and(|node| node.kind == acdd_index::models::tags::NodeKind::Function),
+            declaration
+                .is_some_and(|node| node.kind == acdd_index::models::tags::NodeKind::Function),
         ),
         (
             "scope",

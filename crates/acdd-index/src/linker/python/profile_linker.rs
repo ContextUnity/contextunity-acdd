@@ -61,63 +61,161 @@ impl LanguageLinker for PythonLinker {
         member: &str,
     ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::{Symbol, TypeTarget};
-        if !matches!(receiver, crate::semantic::ValueExpr::Call { callee, site: None } if callee == "super") {
+        if !matches!(receiver, crate::semantic::ValueExpr::Call { callee, site: None } if callee == "super")
+        {
             return None;
         }
-        Some(match eval.resolver.resolve_super_member(eval.owner, member) {
-            Symbol::Callable(callable) => eval.index.return_type_tracked(callable, eval.trace).cloned().unwrap_or(TypeTarget::Unknown),
-            _ => TypeTarget::Unknown,
-        })
+        Some(
+            match eval.resolver.resolve_super_member(eval.owner, member) {
+                Symbol::Callable(callable) => eval
+                    .index
+                    .return_type_tracked(callable, eval.trace)
+                    .cloned()
+                    .unwrap_or(TypeTarget::Unknown),
+                _ => TypeTarget::Unknown,
+            },
+        )
     }
-    fn accept_member_return(&self, member: &str, result: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
-        !(member == "__aenter__" && matches!(result, crate::linker::value_flow::TypeTarget::Unknown))
+    fn accept_member_return(
+        &self,
+        member: &str,
+        result: &crate::linker::value_flow::TypeTarget<'_>,
+    ) -> bool {
+        !(member == "__aenter__"
+            && matches!(result, crate::linker::value_flow::TypeTarget::Unknown))
     }
-    fn indirect_call_result<'a>(&self, eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>, callee: &str) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn indirect_call_result<'a>(
+        &self,
+        eval: &crate::languages::profile::CallEvalContext<'_, 'a, '_>,
+        callee: &str,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         let inner = callee.strip_suffix("()")?;
-        Some(eval.index.type_of_expression_tracked(eval.owner, inner, eval.at, eval.resolver, eval.trace)
-            .and_then(|target| super::value_flow::callable_target_return(eval.index, target, eval.owner, eval.at, eval.resolver, eval.trace))
-            .cloned().unwrap_or(crate::linker::value_flow::TypeTarget::Unknown))
+        Some(
+            eval.index
+                .type_of_expression_tracked(eval.owner, inner, eval.at, eval.resolver, eval.trace)
+                .and_then(|target| {
+                    super::value_flow::callable_target_return(
+                        eval.index,
+                        target,
+                        eval.owner,
+                        eval.at,
+                        eval.resolver,
+                        eval.trace,
+                    )
+                })
+                .cloned()
+                .unwrap_or(crate::linker::value_flow::TypeTarget::Unknown),
+        )
     }
     fn inherits_scope(&self, node: &Node, parent: &Node) -> bool {
-        !(matches!(node.kind.as_str(), "function" | "method") && parent.kind == crate::models::tags::NodeKind::Class)
+        !(matches!(node.kind.as_str(), "function" | "method")
+            && parent.kind == crate::models::tags::NodeKind::Class)
     }
-    fn scoped_binding_restores(&self) -> bool { false }
+    fn scoped_binding_restores(&self) -> bool {
+        false
+    }
     fn collection_return(&self, target: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
         matches!(target, crate::linker::value_flow::TypeTarget::Builtin(name) if matches!(name.as_str(), "list" | "List" | "Sequence" | "Iterable"))
     }
-    fn framework_magic_diagnostic(&self, profile: &dyn crate::languages::LanguageProfile, module: &str) -> bool { !profile.is_stdlib(module) }
-    fn chained_member_fallback(&self) -> bool { true }
-    fn computed_receiver<'a, 'b>(&self, query: &mut crate::linker::traits::DynamicReceiver<'a, 'b, '_>) -> (crate::languages::profile::LanguageMemberResult<'b>, bool) where 'a: 'b {
-        let members = crate::linker::semantic_context::LanguageMemberLookup::new(query.visibility.input.semantic_context);
+    fn framework_magic_diagnostic(
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        module: &str,
+    ) -> bool {
+        !profile.is_stdlib(module)
+    }
+    fn chained_member_fallback(&self) -> bool {
+        true
+    }
+    fn computed_receiver<'a, 'b>(
+        &self,
+        query: &mut crate::linker::traits::DynamicReceiver<'a, 'b, '_>,
+    ) -> (crate::languages::profile::LanguageMemberResult<'b>, bool)
+    where
+        'a: 'b,
+    {
+        let members = crate::linker::semantic_context::LanguageMemberLookup::new(
+            query.visibility.input.semantic_context,
+        );
         let view = super::resolution::PythonResolutionView {
-            input: query.visibility.input, path: query.visibility.path, file_module: query.file_module,
-            aliases: query.visibility.aliases, alias_import_positions: query.visibility.alias_import_positions,
+            input: query.visibility.input,
+            path: query.visibility.path,
+            file_module: query.file_module,
+            aliases: query.visibility.aliases,
+            alias_import_positions: query.visibility.alias_import_positions,
             member_lookup: &members,
         };
-        let (result, builtin) = super::resolution::dynamic_receiver_member(&view, query.reference, query.constructor_aliases, query.candidates, query.lookup,
+        let (result, builtin) = super::resolution::dynamic_receiver_member(
+            &view,
+            query.reference,
+            query.constructor_aliases,
+            query.candidates,
+            query.lookup,
             |name, owner, definition| query.resolver.alias_for(name, owner, definition),
-            |name, owner, definition| query.resolver.external_for(name, owner, definition));
+            |name, owner, definition| query.resolver.external_for(name, owner, definition),
+        );
         (result.into(), builtin)
     }
-    fn implicit_receiver_member<'a>(&self, query: &mut crate::linker::traits::ImplicitReceiver<'a, '_, '_>) -> Option<crate::languages::profile::LanguageMemberResult<'a>> {
-        let members = crate::linker::semantic_context::LanguageMemberLookup::new(query.phase.input.semantic_context);
+    fn implicit_receiver_member<'a>(
+        &self,
+        query: &mut crate::linker::traits::ImplicitReceiver<'a, '_, '_>,
+    ) -> Option<crate::languages::profile::LanguageMemberResult<'a>> {
+        let members = crate::linker::semantic_context::LanguageMemberLookup::new(
+            query.phase.input.semantic_context,
+        );
         let view = super::resolution::PythonResolutionView {
-            input: query.phase.input, path: query.phase.path, file_module: query.phase.file_module,
-            aliases: query.visibility.aliases, alias_import_positions: query.visibility.alias_import_positions,
+            input: query.phase.input,
+            path: query.phase.path,
+            file_module: query.phase.file_module,
+            aliases: query.visibility.aliases,
+            alias_import_positions: query.visibility.alias_import_positions,
             member_lookup: &members,
         };
-        super::resolution::implicit_receiver_member(&view, query.phase.reference,
-            query.typed_receiver.map(crate::linker::types::ReceiverType::Local), query.known_receiver,
-            query.shadowed, query.imported, query.lookup).map(Into::into)
+        super::resolution::implicit_receiver_member(
+            &view,
+            query.phase.reference,
+            query
+                .typed_receiver
+                .map(crate::linker::types::ReceiverType::Local),
+            query.known_receiver,
+            query.shadowed,
+            query.imported,
+            query.lookup,
+        )
+        .map(Into::into)
     }
-    fn imported_external_member<'a>(&self, phase: &crate::linker::traits::ReferencePhase<'a, '_>, module: &'a Node, member: &str, lookup: &mut String) -> Option<crate::linker::traits::ExternalMember<'a>> {
-        let members = crate::linker::semantic_context::LanguageMemberLookup::new(phase.input.semantic_context);
-        match super::resolution::imported_module_member(phase.profile, module, member, phase.input.node_rebindings, phase.input.interner, phase.input.by_qual, lookup, &members) {
-            Some(super::receivers::PythonReceiverMember::External(origin, line, provider, _)) => Some((origin, line, provider)),
+    fn imported_external_member<'a>(
+        &self,
+        phase: &crate::linker::traits::ReferencePhase<'a, '_>,
+        module: &'a Node,
+        member: &str,
+        lookup: &mut String,
+    ) -> Option<crate::linker::traits::ExternalMember<'a>> {
+        let members = crate::linker::semantic_context::LanguageMemberLookup::new(
+            phase.input.semantic_context,
+        );
+        match super::resolution::imported_module_member(
+            phase.profile,
+            module,
+            member,
+            phase.input.node_rebindings,
+            phase.input.interner,
+            phase.input.by_qual,
+            lookup,
+            &members,
+        ) {
+            Some(super::receivers::PythonReceiverMember::External(origin, line, provider, _)) => {
+                Some((origin, line, provider))
+            }
             _ => None,
         }
     }
-    fn import_visible_at(&self, context: &crate::linker::traits::ImportVisibility<'_, '_, '_>, reference: &crate::models::Reference, definition_scope: bool) -> bool {
+    fn import_visible_at(
+        &self,
+        context: &crate::linker::traits::ImportVisibility<'_, '_, '_>,
+        reference: &crate::models::Reference,
+        definition_scope: bool,
+    ) -> bool {
         super::resolution::import_visible_at(context, reference, definition_scope)
     }
     fn callable_members(&self) -> Option<(&'static str, &'static str)> {
@@ -131,58 +229,159 @@ impl LanguageLinker for PythonLinker {
         crate::linker::python::receivers::has_protocol_or_abc_base(candidate)
     }
 
-    fn class_type_uses_associated_lookup(&self) -> bool { true }
-
-    fn supports_collection_facts(&self) -> bool { true }
-    fn builtin_type_members(&self) -> bool { true }
-    fn nullable_parameter_wrapper(&self, profile: &dyn crate::languages::LanguageProfile, annotation: &str, node: &Node, references: &[crate::models::Reference], external_line: &dyn Fn(&str, &Node) -> Option<usize>) -> bool {
-        super::resolution::nullable_parameter_wrapper(Some(profile), annotation, node, references, external_line)
+    fn class_type_uses_associated_lookup(&self) -> bool {
+        true
     }
-    fn external_factory_result<'a>(&self, context: &crate::linker::semantic_context::context::Context<'a>, owner: &'a Node, callee: &str, at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> {
+
+    fn supports_collection_facts(&self) -> bool {
+        true
+    }
+    fn builtin_type_members(&self) -> bool {
+        true
+    }
+    fn nullable_parameter_wrapper(
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        annotation: &str,
+        node: &Node,
+        references: &[crate::models::Reference],
+        external_line: &dyn Fn(&str, &Node) -> Option<usize>,
+    ) -> bool {
+        super::resolution::nullable_parameter_wrapper(
+            Some(profile),
+            annotation,
+            node,
+            references,
+            external_line,
+        )
+    }
+    fn external_factory_result<'a>(
+        &self,
+        context: &crate::linker::semantic_context::context::Context<'a>,
+        owner: &'a Node,
+        callee: &str,
+        at: crate::semantic::SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
         super::semantic_context::external_factory_result(context, owner, callee, at)
     }
     fn receiver_access(&self, owner: &Node, head: &str) -> Option<(bool, bool)> {
         super::semantic_context::receiver_access(owner, head)
     }
-    fn external_import_type<'a>(&self, owner: &Node, module: &str, reference: &crate::models::Reference, (head, member): (&str, &str), role: crate::linker::value_flow::SymbolRole, line: usize) -> Option<crate::linker::value_flow::Symbol<'a>> {
+    fn external_import_type<'a>(
+        &self,
+        owner: &Node,
+        module: &str,
+        reference: &crate::models::Reference,
+        (head, member): (&str, &str),
+        role: crate::linker::value_flow::SymbolRole,
+        line: usize,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
         if matches!(module, "typing" | "typing_extensions") && (member == "Any" || head == "Any") {
             return Some(crate::linker::value_flow::Symbol::Unknown);
         }
-        super::semantic_context::external_import_type(owner, module, reference, head, member, role, line)
+        super::semantic_context::external_import_type(
+            owner, module, reference, head, member, role, line,
+        )
     }
-    fn external_generic_base(&self, module: &str, base: &str, profile: &dyn crate::languages::LanguageProfile) -> bool {
+    fn external_generic_base(
+        &self,
+        module: &str,
+        base: &str,
+        profile: &dyn crate::languages::LanguageProfile,
+    ) -> bool {
         super::semantic_context::is_external_generic_base(module, base, Some(profile))
     }
 
-    fn resolve_applied_type<'a>(&self, context: &crate::linker::semantic_context::context::Context<'a>, owner: &'a Node, (base, args): (&str, &[crate::semantic::TypeExpr]), nominal: &crate::linker::value_flow::Symbol<'a>, at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> {
+    fn resolve_applied_type<'a>(
+        &self,
+        context: &crate::linker::semantic_context::context::Context<'a>,
+        owner: &'a Node,
+        (base, args): (&str, &[crate::semantic::TypeExpr]),
+        nominal: &crate::linker::value_flow::Symbol<'a>,
+        at: crate::semantic::SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
-        if matches!(clean_base, "tuple" | "Tuple") && !args.is_empty()
-            && !args.iter().any(|arg| matches!(arg, crate::semantic::TypeExpr::Named { name } if name == "...")) {
-            return Some(TypeTarget::Tuple(args.iter().map(|arg| crate::linker::value_flow::resolve_type(owner, arg, at, context, crate::linker::value_flow::SemanticLimits::default())).collect()));
+        if matches!(clean_base, "tuple" | "Tuple")
+            && !args.is_empty()
+            && !args.iter().any(
+                |arg| matches!(arg, crate::semantic::TypeExpr::Named { name } if name == "..."),
+            )
+        {
+            return Some(TypeTarget::Tuple(
+                args.iter()
+                    .map(|arg| {
+                        crate::linker::value_flow::resolve_type(
+                            owner,
+                            arg,
+                            at,
+                            context,
+                            crate::linker::value_flow::SemanticLimits::default(),
+                        )
+                    })
+                    .collect(),
+            ));
         }
         super::semantic_context::resolve_applied(context, owner, base, args, nominal, at)
     }
 
-    fn framework_member_label(&self) -> &'static str { "finite Python framework member" }
+    fn framework_member_label(&self) -> &'static str {
+        "finite Python framework member"
+    }
 
-    fn external_member_policy<'a>(&self, owner: &Node, module: &'a str, line: usize, member: &str) -> Option<crate::languages::profile::LanguageMemberResult<'a>> {
+    fn external_member_policy<'a>(
+        &self,
+        owner: &Node,
+        module: &'a str,
+        line: usize,
+        member: &str,
+    ) -> Option<crate::languages::profile::LanguageMemberResult<'a>> {
         use super::semantic_context::ExternalMemberOutcome;
         use crate::languages::profile::LanguageMemberResult;
-        Some(match super::semantic_context::external_member(owner, module, member)? {
-            ExternalMemberOutcome::Supported(origin) => LanguageMemberResult::External { module, import_line: line, provider: Some(origin), hierarchy: None },
-            ExternalMemberOutcome::Unsupported => LanguageMemberResult::Unknown,
-        })
+        Some(
+            match super::semantic_context::external_member(owner, module, member)? {
+                ExternalMemberOutcome::Supported(origin) => LanguageMemberResult::External {
+                    module,
+                    import_line: line,
+                    provider: Some(origin),
+                    hierarchy: None,
+                },
+                ExternalMemberOutcome::Unsupported => LanguageMemberResult::Unknown,
+            },
+        )
     }
 
-    fn path_constructor_aliases<'a>(&self, profile: &dyn crate::languages::LanguageProfile, references: &'a [crate::models::Reference], by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a Node>, interner: &crate::interner::LinkerInterner<'_>, module: &'a str) -> hashbrown::HashMap<(&'a str, &'a str), &'a crate::models::Reference> {
-        super::resolution::path_constructor_aliases(Some(profile), references, by_id, interner, module)
+    fn path_constructor_aliases<'a>(
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        references: &'a [crate::models::Reference],
+        by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a Node>,
+        interner: &crate::interner::LinkerInterner<'_>,
+        module: &'a str,
+    ) -> hashbrown::HashMap<(&'a str, &'a str), &'a crate::models::Reference> {
+        super::resolution::path_constructor_aliases(
+            Some(profile),
+            references,
+            by_id,
+            interner,
+            module,
+        )
     }
-    fn dynamic_type_aliases<'a>(&self, profile: &dyn crate::languages::LanguageProfile, references: &'a [crate::models::Reference], by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a Node>, interner: &crate::interner::LinkerInterner<'_>, module: &'a str) -> hashbrown::HashMap<&'a str, hashbrown::HashSet<&'a str>> {
+    fn dynamic_type_aliases<'a>(
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        references: &'a [crate::models::Reference],
+        by_id: &hashbrown::HashMap<crate::interner::SymbolId, &'a Node>,
+        interner: &crate::interner::LinkerInterner<'_>,
+        module: &'a str,
+    ) -> hashbrown::HashMap<&'a str, hashbrown::HashSet<&'a str>> {
         super::resolution::dynamic_type_aliases(Some(profile), references, by_id, interner, module)
     }
 
     fn supports_async_return(&self, owner: &Node) -> bool {
-        matches!(owner.kind, crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method)
+        matches!(
+            owner.kind,
+            crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
+        )
     }
 
     fn collection_return_element<'a>(
@@ -192,7 +391,9 @@ impl LanguageLinker for PythonLinker {
         resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
         limits: crate::linker::value_flow::SemanticLimits,
     ) -> Option<TypeTarget<'a>> {
-        crate::linker::python::value_flow::collection_return_element(owner, expression, resolver, limits)
+        crate::linker::python::value_flow::collection_return_element(
+            owner, expression, resolver, limits,
+        )
     }
 
     fn builtin_evidence(&self, _first: &str, expression: &str) -> Option<(&'static str, String)> {
@@ -413,7 +614,10 @@ impl LanguageLinker for PythonLinker {
                         .into_iter()
                         .flatten()
                         .copied()
-                        .filter(|node| node.kind != crate::models::tags::NodeKind::Component && node.qualname == target),
+                        .filter(|node| {
+                            node.kind != crate::models::tags::NodeKind::Component
+                                && node.qualname == target
+                        }),
                 );
                 result.stub_symbol = !context.candidates.is_empty();
             }
@@ -492,7 +696,10 @@ impl LanguageLinker for PythonLinker {
             .get(stub_path.as_str())
             .into_iter()
             .flatten()
-            .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.qualname == module.qualname)
+            .find(|node| {
+                node.kind == crate::models::tags::NodeKind::Module
+                    && node.qualname == module.qualname
+            })
         else {
             return resolve_export(exports, interner, module, member)
                 .into_iter()
@@ -516,39 +723,107 @@ impl LanguageLinker for PythonLinker {
         candidates
     }
 
-    fn emits_single_imported_target_edge(&self) -> bool { true }
-    fn type_only_import_is_unproven(&self, profile: &dyn crate::languages::LanguageProfile, path: &str, facts: &Facts, modules: &crate::linker::traits::ModulesByNamespace<'_>, dependencies: &DependencyRegistry, interner: &LinkerInterner<'_>, node_rebindings: &NodeBindingIndex) -> bool {
-        super::semantic_context::type_only_import_is_unproven(profile, path, facts, modules, dependencies, interner, node_rebindings)
+    fn emits_single_imported_target_edge(&self) -> bool {
+        true
     }
-    fn is_dynamic_typing_annotation(&self, head: &str, member: &str, owner: &Node, aliases: &HashMap<&str, HashMap<&str, Vec<&Node>>>, dynamic_aliases: &HashMap<&str, hashbrown::HashSet<&str>>) -> bool {
-        super::resolution::is_dynamic_typing_annotation(head, member, owner, aliases, dynamic_aliases)
+    fn type_only_import_is_unproven(
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        path: &str,
+        facts: &Facts,
+        modules: &crate::linker::traits::ModulesByNamespace<'_>,
+        dependencies: &DependencyRegistry,
+        interner: &LinkerInterner<'_>,
+        node_rebindings: &NodeBindingIndex,
+    ) -> bool {
+        super::semantic_context::type_only_import_is_unproven(
+            profile,
+            path,
+            facts,
+            modules,
+            dependencies,
+            interner,
+            node_rebindings,
+        )
+    }
+    fn is_dynamic_typing_annotation(
+        &self,
+        head: &str,
+        member: &str,
+        owner: &Node,
+        aliases: &HashMap<&str, HashMap<&str, Vec<&Node>>>,
+        dynamic_aliases: &HashMap<&str, hashbrown::HashSet<&str>>,
+    ) -> bool {
+        super::resolution::is_dynamic_typing_annotation(
+            head,
+            member,
+            owner,
+            aliases,
+            dynamic_aliases,
+        )
     }
     fn is_dynamic_type_alias(&self, module: &str, expression: &str) -> bool {
         super::semantic_context::dynamic_type_alias("python", module, expression)
     }
-    fn external_factory_import_is_safe(&self, module: &Node, alias: &str, position: crate::semantic::SourcePosition) -> bool {
+    fn external_factory_import_is_safe(
+        &self,
+        module: &Node,
+        alias: &str,
+        position: crate::semantic::SourcePosition,
+    ) -> bool {
         super::semantic_context::logging_factory_import_is_safe(module, alias, position)
     }
-    fn special_type_alias_target<'a>(&self, node: &'a Node, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<TypeTarget<'a>> {
-        (node.kind == crate::models::tags::NodeKind::Class && typed_dict_class(node, resolver)).then(|| TypeTarget::Builtin("Mapping".to_owned()))
+    fn special_type_alias_target<'a>(
+        &self,
+        node: &'a Node,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        (node.kind == crate::models::tags::NodeKind::Class && typed_dict_class(node, resolver))
+            .then(|| TypeTarget::Builtin("Mapping".to_owned()))
     }
     fn stored_type_expr(&self, annotation: &str) -> Option<crate::semantic::TypeExpr> {
         stored_python_type_expr(annotation)
     }
-    fn callable_target_return<'s, 'a>(&self, index: &'s (dyn crate::linker::value_flow::types::ValueFlowLookup<'a> + 'a), target: &'s TypeTarget<'a>, owner: &'a Node, at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>, trace: Option<&crate::linker::value_flow::types::ReadTrace<'a, '_>>) -> Option<&'s TypeTarget<'a>> {
-        let TypeTarget::Local(class) = target else { return None; };
-        if class.kind != crate::models::tags::NodeKind::Class { return None; }
+    fn callable_target_return<'s, 'a>(
+        &self,
+        index: &'s (dyn crate::linker::value_flow::types::ValueFlowLookup<'a> + 'a),
+        target: &'s TypeTarget<'a>,
+        owner: &'a Node,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+        trace: Option<&crate::linker::value_flow::types::ReadTrace<'a, '_>>,
+    ) -> Option<&'s TypeTarget<'a>> {
+        let TypeTarget::Local(class) = target else {
+            return None;
+        };
+        if class.kind != crate::models::tags::NodeKind::Class {
+            return None;
+        }
         match resolver.resolve_member(target, "__call__", owner, at) {
-            crate::linker::value_flow::Symbol::Callable(call_fn) => index.return_type_tracked(call_fn, trace),
+            crate::linker::value_flow::Symbol::Callable(call_fn) => {
+                index.return_type_tracked(call_fn, trace)
+            }
             _ => None,
         }
     }
-    fn constructor_symbol<'a>(&self, owner: &'a Node, expression: &str, at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<crate::linker::value_flow::Symbol<'a>> {
+    fn constructor_symbol<'a>(
+        &self,
+        owner: &'a Node,
+        expression: &str,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
         super::value_flow::constructor_symbol(owner, expression, at, resolver)
     }
-    fn collects_module_flow_rebindings(&self, node: &Node) -> bool { node.kind == crate::models::tags::NodeKind::Module }
-    fn prefers_construct_contract(&self) -> bool { true }
-    fn enforces_local_contract_position(&self) -> bool { true }
+    fn collects_module_flow_rebindings(&self, node: &Node) -> bool {
+        node.kind == crate::models::tags::NodeKind::Module
+    }
+    fn prefers_construct_contract(&self) -> bool {
+        true
+    }
+    fn enforces_local_contract_position(&self) -> bool {
+        true
+    }
 }
 
 fn typed_dict_class<'a>(
@@ -652,10 +927,10 @@ fn stored_python_type_expr(annotation: &str) -> Option<crate::semantic::TypeExpr
 }
 
 pub(super) fn needs_reference_identity(_path: &str, facts: &Facts) -> bool {
-    facts
-        .nodes
-        .iter()
-        .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
+    facts.nodes.iter().any(|node| {
+        node.kind == crate::models::tags::NodeKind::Module
+            && node.language == crate::models::tags::LanguageId::Python
+    })
 }
 
 pub(super) fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
@@ -690,11 +965,10 @@ pub(super) fn required_full_facts(
     let mut requested = HashMap::<&str, HashSet<String>>::new();
     let mut cross_workspace = HashSet::<String>::new();
     for (path, file) in facts.iter_facts() {
-        let Some(module) = file
-            .nodes
-            .iter()
-            .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
-        else {
+        let Some(module) = file.nodes.iter().find(|node| {
+            node.kind == crate::models::tags::NodeKind::Module
+                && node.language == crate::models::tags::LanguageId::Python
+        }) else {
             continue;
         };
         let workspace = languages::workspace_path(path).0;
@@ -725,7 +999,8 @@ pub(super) fn required_full_facts(
                 names.insert(import.namespace);
             }
         }
-        for export in module.detail_entry(crate::models::details::NodeDetailKey::LAZY_EXPORTS)
+        for export in module
+            .detail_entry(crate::models::details::NodeDetailKey::LAZY_EXPORTS)
             .as_array()
             .into_iter()
             .flatten()
@@ -831,9 +1106,11 @@ fn collect_python_inheritance_imports<'a>(
 ) -> HashMap<(&'a str, &'a str, &'a str), Vec<&'a Reference>> {
     let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
     for (path, facts) in all.iter_facts() {
-        if !facts.nodes.iter().any(|node| {
-            node.language == LanguageId::Python && node.kind == NodeKind::Class
-        }) {
+        if !facts
+            .nodes
+            .iter()
+            .any(|node| node.language == LanguageId::Python && node.kind == NodeKind::Class)
+        {
             continue;
         }
         for import in facts
@@ -1181,17 +1458,22 @@ fn register_export<'a>(
         .into_iter()
         .flatten()
         .copied()
-        .filter(|node| node.kind != crate::models::tags::NodeKind::Component && node.qualname == qualified)
+        .filter(|node| {
+            node.kind != crate::models::tags::NodeKind::Component && node.qualname == qualified
+        })
         .collect();
     let _ = prefer_live_declaration(&mut candidates);
     crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
     if candidates.len() == 1
         && candidates[0].kind == crate::models::tags::NodeKind::Variable
-        && provider.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|items| {
-            items.iter().any(|export| {
-                export["name"].as_str() == Some(member) && export["local"].as_str().is_some()
+        && provider
+            .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+            .as_array()
+            .is_some_and(|items| {
+                items.iter().any(|export| {
+                    export["name"].as_str() == Some(member) && export["local"].as_str().is_some()
+                })
             })
-        })
     {
         pending.push((owner, name, provider, member));
         return;
@@ -1215,11 +1497,10 @@ pub(super) fn package_exports<'a>(
     let mut pending = Vec::new();
     let mut seen = HashSet::new();
     for facts in all {
-        let Some(module) = facts
-            .nodes
-            .iter()
-            .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Python)
-        else {
+        let Some(module) = facts.nodes.iter().find(|node| {
+            node.kind == crate::models::tags::NodeKind::Module
+                && node.language == crate::models::tags::LanguageId::Python
+        }) else {
             continue;
         };
         let path = module.path.as_str();
@@ -1252,7 +1533,10 @@ pub(super) fn package_exports<'a>(
                     .get(parent.path.as_str())
                     .into_iter()
                     .flatten()
-                    .any(|node| node.qualname == qualified && node.kind != crate::models::tags::NodeKind::Component);
+                    .any(|node| {
+                        node.qualname == qualified
+                            && node.kind != crate::models::tags::NodeKind::Component
+                    });
                 if !declared {
                     let child_path = format!(
                         "{import_path}{}{name}",
@@ -1280,7 +1564,12 @@ pub(super) fn package_exports<'a>(
                 by_module,
             );
         }
-        for export in module.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
+        for export in module
+            .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             let Some(name) = export["name"].as_str() else {
                 continue;
             };
@@ -1308,7 +1597,8 @@ pub(super) fn package_exports<'a>(
                 by_module,
             );
         }
-        for export in module.detail_entry(crate::models::details::NodeDetailKey::LAZY_EXPORTS)
+        for export in module
+            .detail_entry(crate::models::details::NodeDetailKey::LAZY_EXPORTS)
             .as_array()
             .into_iter()
             .flatten()

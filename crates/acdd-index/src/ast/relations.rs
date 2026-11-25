@@ -245,7 +245,8 @@ fn add_field(
 ) -> String {
     let qualname = format!("{}.{name}", owner.qualname);
     if let Some(n) = facts.nodes.iter().find(|n| {
-        (n.kind == crate::models::tags::NodeKind::Field || matches!(n.kind.as_str(), "method" | "function"))
+        (n.kind == crate::models::tags::NodeKind::Field
+            || matches!(n.kind.as_str(), "method" | "function"))
             && n.qualname == qualname
     }) {
         return n.id.clone();
@@ -261,7 +262,8 @@ fn add_field(
         line,
         end_line,
         is_test: owner.is_test,
-        language: crate::models::tags::LanguageId::parse(owner.language).expect("recognized language profile"),
+        language: crate::models::tags::LanguageId::parse(owner.language)
+            .expect("recognized language profile"),
         generated: false,
         details: serde_json::Value::Null,
     });
@@ -388,11 +390,7 @@ pub(crate) fn mutation(
     }
 }
 
-pub(crate) fn member_access(
-    span: RelationSpan<'_, '_>,
-    facts: &mut Facts,
-    member_kinds: &[&str],
-) {
+pub(crate) fn member_access(span: RelationSpan<'_, '_>, facts: &mut Facts, member_kinds: &[&str]) {
     let node = span.node;
     if !member_kinds.contains(&node.kind()) {
         return;

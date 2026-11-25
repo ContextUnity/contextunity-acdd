@@ -17,7 +17,11 @@ def __getattr__(name):
             .at_path("package/__init__.py")
             .extract(&source);
         assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-        let init = facts.nodes.iter().find(|n| n.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
+        let init = facts
+            .nodes
+            .iter()
+            .find(|n| n.kind == acdd_index::models::tags::NodeKind::Module)
+            .unwrap();
         if supported {
             let exports = init
                 .details

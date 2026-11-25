@@ -5,8 +5,8 @@ use crate::linker::html::templates as html_templates;
 use crate::linker::{
     routes, semantic_context,
     semantic_facts::{
-        emit_route_match, CompositionInput, PreparedSemanticFacts,
-        ENDPOINT_ROUTE_PRIMITIVE, NAMED_ROUTE_PRIMITIVE,
+        emit_route_match, CompositionInput, PreparedSemanticFacts, ENDPOINT_ROUTE_PRIMITIVE,
+        NAMED_ROUTE_PRIMITIVE,
     },
 };
 use crate::models::{
@@ -88,7 +88,11 @@ fn compose_file_framework_relations<'a>(
                 .filter(|reference| reference.kind == "imports")
                 .filter_map(|reference| reference.alias.as_deref()),
         );
-        for node in facts.nodes.iter().filter(|node| node.kind == crate::models::tags::NodeKind::Struct) {
+        for node in facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == crate::models::tags::NodeKind::Struct)
+        {
             local_types
                 .entry(node.name.as_str())
                 .and_modify(|entry| *entry = None)
@@ -104,7 +108,9 @@ fn compose_file_framework_relations<'a>(
             "defines_table" | "queries_table" | "mutates_table" | "references_table"
         )
     }) {
-        if let Some(target) = resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables) {
+        if let Some(target) =
+            resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables)
+        {
             graph.push_edge(
                 path,
                 &reference.source,
@@ -121,9 +127,15 @@ fn compose_file_framework_relations<'a>(
         .iter()
         .filter(|reference| reference.kind == "sql_type_queries_table")
     {
-        let Some(type_name) = reference.alias.as_deref() else { continue };
-        let Some(model) = local_types.get(type_name).and_then(|node| *node) else { continue };
-        let Some(macro_path) = reference.module.as_deref() else { continue };
+        let Some(type_name) = reference.alias.as_deref() else {
+            continue;
+        };
+        let Some(model) = local_types.get(type_name).and_then(|node| *node) else {
+            continue;
+        };
+        let Some(macro_path) = reference.module.as_deref() else {
+            continue;
+        };
         if !macro_rules
             .as_ref()
             .and_then(|rules| rules.prepared_projections("rust"))
@@ -131,7 +143,9 @@ fn compose_file_framework_relations<'a>(
         {
             continue;
         }
-        let Some(macro_head) = macro_path.split("::").next() else { continue };
+        let Some(macro_head) = macro_path.split("::").next() else {
+            continue;
+        };
         if parents.get(reference.source.as_str()) != parents.get(model.id.as_str())
             || !parents.contains_key(reference.source.as_str())
             || shadows.contains(macro_head)
@@ -140,7 +154,9 @@ fn compose_file_framework_relations<'a>(
         {
             continue;
         }
-        if let Some(target) = resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables) {
+        if let Some(target) =
+            resolve_unique_sql_table(&reference.expression, sql_qualified, sql_tables)
+        {
             graph.push_edge(
                 path,
                 &model.id,
@@ -157,7 +173,14 @@ fn compose_file_framework_relations<'a>(
             .lookup_symbol(&owner.id)
             .and_then(|id| flows.and_then(|flows| flows.get(&id).copied()))
         {
-            super::projections::compose(&mut graph, owner, flow.as_ref(), semantic_context, by_id, dependencies);
+            super::projections::compose(
+                &mut graph,
+                owner,
+                flow.as_ref(),
+                semantic_context,
+                by_id,
+                dependencies,
+            );
         }
     }
     for (line, expression, error) in interner

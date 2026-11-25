@@ -4,7 +4,7 @@ use super::selectors::path_bounds;
 use super::sql::rows;
 use super::types::DocSearchOptions;
 use crate::models::tags::EdgeKind;
-use acdd_core::response::{Detail, MAX_PAGE_SIZE, QueryOptions};
+use acdd_core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
@@ -506,5 +506,7 @@ pub fn get_doc_paged(
     } else {
         json!({"omitted":true,"hint":"Request detail=full for documentary reference candidates"})
     };
-    Ok(json!({"sections":sections,"cites_doc":cites_doc,"cited_by_doc":cited_by_doc,"referenced_symbols":referenced_symbols,"referenced_symbol_candidates":referenced_symbol_candidates}))
+    Ok(
+        json!({"sections":sections,"cites_doc":cites_doc,"cited_by_doc":cited_by_doc,"referenced_symbols":referenced_symbols,"referenced_symbol_candidates":referenced_symbol_candidates}),
+    )
 }

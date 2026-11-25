@@ -8,10 +8,10 @@ use acdd_core::response::ResponsePolicy;
 use acdd_index::scanner;
 use acdd_state::types::{BlackboardStatus, BlackboardTopic, RunStatus, SubtaskStatus};
 use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, ContextReq, DraftReq,
-    ExtendScopeReq, ListReq, NextReq, ObservabilityReq, ReopenReq, RoadmapReq, RunReq, ShowReq,
-    SnapshotReq, StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput,
-    StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
+    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, ContextReq, DraftReq, ExtendScopeReq,
+    ListReq, NextReq, ObservabilityReq, ReopenReq, RoadmapReq, RunReq, ShowReq, SnapshotReq,
+    StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq,
+    SubtaskReq, SyncReq, VerifyReq,
 };
 use rmcp::model::CallToolResult;
 use serde_json::Value;
@@ -196,11 +196,7 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
     match p.action {
         McpStateAction::Status => Ok(StateQuery::Status(StatusReq { run })),
         McpStateAction::List => {
-            let status = p
-                .status
-                .as_deref()
-                .map(RunStatus::from_str)
-                .transpose()?;
+            let status = p.status.as_deref().map(RunStatus::from_str).transpose()?;
             Ok(StateQuery::List(ListReq {
                 workspace: p.workspace,
                 status,
@@ -254,9 +250,7 @@ async fn run_state_blocking(
                 );
             }
         };
-        if let Some(message) =
-            acdd_core::subsystems::disabled_tool_error(title, &adapter.modules)
-        {
+        if let Some(message) = acdd_core::subsystems::disabled_tool_error(title, &adapter.modules) {
             return response::state_result(
                 Err(StateError::new(ErrorCode::FeatureDisabled, message).into()),
                 &adapter.response,
@@ -414,58 +408,60 @@ pub(super) async fn acdd_submit(server: &Server, p: SubmitInput) -> CallToolResu
 
 pub(super) async fn acdd_blackboard(server: &Server, p: BlackboardInput) -> CallToolResult {
     let format = p.format.unwrap_or_default();
-    run_state_blocking(server, format, "acdd_blackboard", move |ctx| match p.action {
-        McpBlackboardAction::Read => {
-            let topic = p
-                .topic
-                .as_deref()
-                .map(BlackboardTopic::from_str)
-                .transpose()?;
-            let status = p
-                .status
-                .as_deref()
-                .map(BlackboardStatus::from_str)
-                .transpose()?;
-            let req = BlackboardReadReq {
-                run: p.run,
-                node: p.node,
-                recipient_node: p.recipient_node,
-                topic,
-                status,
-                limit: p.limit,
-                offset: p.offset.unwrap_or(0),
-                generation: p.generation,
-            };
-            let out = ctx.execute_query(StateQuery::BlackboardRead(req))?;
-            let StateQueryOutput::BlackboardRead(resp) = out else {
-                unreachable!("BlackboardRead query always returns BlackboardRead output");
-            };
-            let val = serde_json::to_value(&resp)?;
-            let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
-            Ok((md, val))
-        }
-        McpBlackboardAction::Post => {
-            let topic_str = require_field(p.topic, "topic", "post")?;
-            let topic = BlackboardTopic::from_str(&topic_str)?;
-            let payload = require_field(p.payload, "payload", "post")?;
-            let author = p.author.unwrap_or_else(|| "mcp".to_owned());
-            let req = BlackboardPostReq {
-                run: p.run,
-                node: p.node,
-                recipient_node: p.recipient_node,
-                subtask_ref: p.subtask_ref,
-                gate: p.gate,
-                author,
-                topic,
-                payload,
-            };
-            let out = ctx.execute_command(StateCommand::BlackboardPost(req))?;
-            let StateCommandOutput::BlackboardPost(resp) = out else {
-                unreachable!("BlackboardPost command always returns BlackboardPost output");
-            };
-            let val = serde_json::to_value(&resp)?;
-            let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
-            Ok((md, val))
+    run_state_blocking(server, format, "acdd_blackboard", move |ctx| {
+        match p.action {
+            McpBlackboardAction::Read => {
+                let topic = p
+                    .topic
+                    .as_deref()
+                    .map(BlackboardTopic::from_str)
+                    .transpose()?;
+                let status = p
+                    .status
+                    .as_deref()
+                    .map(BlackboardStatus::from_str)
+                    .transpose()?;
+                let req = BlackboardReadReq {
+                    run: p.run,
+                    node: p.node,
+                    recipient_node: p.recipient_node,
+                    topic,
+                    status,
+                    limit: p.limit,
+                    offset: p.offset.unwrap_or(0),
+                    generation: p.generation,
+                };
+                let out = ctx.execute_query(StateQuery::BlackboardRead(req))?;
+                let StateQueryOutput::BlackboardRead(resp) = out else {
+                    unreachable!("BlackboardRead query always returns BlackboardRead output");
+                };
+                let val = serde_json::to_value(&resp)?;
+                let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
+                Ok((md, val))
+            }
+            McpBlackboardAction::Post => {
+                let topic_str = require_field(p.topic, "topic", "post")?;
+                let topic = BlackboardTopic::from_str(&topic_str)?;
+                let payload = require_field(p.payload, "payload", "post")?;
+                let author = p.author.unwrap_or_else(|| "mcp".to_owned());
+                let req = BlackboardPostReq {
+                    run: p.run,
+                    node: p.node,
+                    recipient_node: p.recipient_node,
+                    subtask_ref: p.subtask_ref,
+                    gate: p.gate,
+                    author,
+                    topic,
+                    payload,
+                };
+                let out = ctx.execute_command(StateCommand::BlackboardPost(req))?;
+                let StateCommandOutput::BlackboardPost(resp) = out else {
+                    unreachable!("BlackboardPost command always returns BlackboardPost output");
+                };
+                let val = serde_json::to_value(&resp)?;
+                let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
+                Ok((md, val))
+            }
         }
     })
     .await

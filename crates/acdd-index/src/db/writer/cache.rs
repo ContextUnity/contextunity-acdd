@@ -69,9 +69,11 @@ impl PackedStrings {
     }
 
     pub(super) fn memory_bytes(&self) -> usize {
-        self.data
-            .capacity()
-            .saturating_add(self.ends.capacity().saturating_mul(std::mem::size_of::<u32>()))
+        self.data.capacity().saturating_add(
+            self.ends
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        )
     }
 }
 
@@ -523,8 +525,13 @@ fn decode_entry_for_build(
             true
         }
     });
-    let has_component_node = facts.nodes.iter().any(|node| node.kind == crate::models::tags::NodeKind::Component);
-    facts.facts.retain_nodes(|node| node.kind != crate::models::tags::NodeKind::Component);
+    let has_component_node = facts
+        .nodes
+        .iter()
+        .any(|node| node.kind == crate::models::tags::NodeKind::Component);
+    facts
+        .facts
+        .retain_nodes(|node| node.kind != crate::models::tags::NodeKind::Component);
     Some((
         facts,
         v5.then(|| payload.to_vec()),

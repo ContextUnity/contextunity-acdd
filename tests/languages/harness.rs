@@ -1,5 +1,5 @@
-use acdd_index::models::{types::Coverage, Facts, Graph, Node};
 use acdd_index::ast;
+use acdd_index::models::{types::Coverage, Facts, Graph, Node};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::ops::Deref;

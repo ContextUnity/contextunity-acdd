@@ -200,9 +200,7 @@ impl SubsystemRegistry {
             "acdd_read" | "acdd_guide" => None,
             "acdd_blackboard" => Some(SubsystemId::Blackboard),
             "get_doc" | "search_docs" => Some(SubsystemId::Docs),
-            "acdd_state" | "acdd_claim" | "acdd_verify" | "acdd_submit" => {
-                Some(SubsystemId::State)
-            }
+            "acdd_state" | "acdd_claim" | "acdd_verify" | "acdd_submit" => Some(SubsystemId::State),
             name if name.starts_with("code_map_") || name == "ast_grep_search" => {
                 Some(SubsystemId::Code)
             }
@@ -312,7 +310,11 @@ mod tests {
         let tool_cases: &[(&str, Option<SubsystemId>, Option<&str>)] = &[
             ("acdd_read", None, None),
             ("acdd_guide", None, None),
-            ("acdd_blackboard", Some(SubsystemId::Blackboard), Some("blackboard")),
+            (
+                "acdd_blackboard",
+                Some(SubsystemId::Blackboard),
+                Some("blackboard"),
+            ),
             ("get_doc", Some(SubsystemId::Docs), Some("docs")),
             ("search_docs", Some(SubsystemId::Docs), Some("docs")),
             ("acdd_state", Some(SubsystemId::State), Some("state")),

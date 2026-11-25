@@ -261,15 +261,7 @@ pub fn acdd_read_tool(
                 single_req.path = Some(p.clone());
                 single_req.paths = None;
                 single_req.output_file = None;
-                match acdd_read_single(
-                    root,
-                    adapter,
-                    &single_req,
-                    page,
-                    source,
-                    conn,
-                    node_ctx,
-                ) {
+                match acdd_read_single(root, adapter, &single_req, page, source, conn, node_ctx) {
                     Ok(mut val) => {
                         let content = exportable_content(&val).unwrap_or("");
                         markdown_sections.push(format!("### {p}\n\n{content}"));
@@ -482,7 +474,8 @@ fn read_outline_content(
                 n.line,
                 n.end_line,
                 n.kind,
-                n.detail_str(acdd_index::models::NodeDetailKey::SIGNATURE).unwrap_or(&n.qualname)
+                n.detail_str(acdd_index::models::NodeDetailKey::SIGNATURE)
+                    .unwrap_or(&n.qualname)
             )
         })
         .collect::<Vec<_>>()
@@ -586,7 +579,8 @@ fn acdd_read_single(
     let mut value = if mode == ReadMode::Snippet {
         read_snippet_value(root, adapter, request, page, source, conn)?
     } else {
-        let (val, returned) = read_non_snippet_value(root, adapter, request, mode, markdown, node_ctx)?;
+        let (val, returned) =
+            read_non_snippet_value(root, adapter, request, mode, markdown, node_ctx)?;
         if returned {
             return Ok(val);
         }
@@ -990,10 +984,7 @@ fn flush_prior_context(
     output: &mut String,
 ) {
     for (n, text) in prior {
-        if *n > *last
-            && *kept < count
-            && output.len() + prefix_len + text.len() + 32 <= max_bytes
-        {
+        if *n > *last && *kept < count && output.len() + prefix_len + text.len() + 32 <= max_bytes {
             push_formatted_match_line(output, path_prefix, *n, text);
             *kept += 1;
             *last = *n;

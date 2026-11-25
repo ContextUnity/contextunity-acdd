@@ -1,12 +1,12 @@
 //! Bounded gate command execution, process-group isolation, and env sanitization.
 
-use crate::profile::{
-    render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
-    CommandDef, ResolvedCommandInvocation, ResourceLimits,
-};
 use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, utf8_tail, BoundedLogWriter,
     StreamKind,
+};
+use crate::profile::{
+    render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
+    CommandDef, ResolvedCommandInvocation, ResourceLimits,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId};

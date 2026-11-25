@@ -362,22 +362,36 @@ fn worktree_name_contract() {
 
     let server = Server::new(root.clone(), root.join(".acdd/code-map.sqlite"));
     assert_eq!(
-        server.resolve_target_root_and_db_with_adapter(None, None).unwrap().0,
+        server
+            .resolve_target_root_and_db_with_adapter(None, None)
+            .unwrap()
+            .0,
         canon_root
     );
     assert_eq!(
-        server.resolve_target_root_and_db_with_adapter(Some(""), None).unwrap().0,
+        server
+            .resolve_target_root_and_db_with_adapter(Some(""), None)
+            .unwrap()
+            .0,
         canon_root
     );
     assert_eq!(
-        server.resolve_target_root_and_db_with_adapter(Some("   "), None).unwrap().0,
+        server
+            .resolve_target_root_and_db_with_adapter(Some("   "), None)
+            .unwrap()
+            .0,
         canon_root
     );
 
     let result = resolve_explicit_worktree_with_linked(&root, &root, &[], "selected");
     let aliases: Vec<_> = ["049", "49", "049-sel", "9-selec"]
         .into_iter()
-        .map(|alias| (alias, resolve_explicit_worktree_with_linked(&root, &root, &[], alias)))
+        .map(|alias| {
+            (
+                alias,
+                resolve_explicit_worktree_with_linked(&root, &root, &[], alias),
+            )
+        })
         .collect();
 
     let outside_err = resolve_explicit_worktree_with_linked(
@@ -433,19 +447,31 @@ fn worktree_name_contract() {
         std::os::unix::fs::symlink(&external, &escaped_link).unwrap();
         for probe in ["999-escaped", "999", ".worktrees/999-escaped"] {
             let err = resolve_explicit_worktree_with_linked(&root, &root, &[], probe).unwrap_err();
-            assert!(err.to_string().contains("WORKTREE_NOT_FOUND"), "{probe}: {err}");
+            assert!(
+                err.to_string().contains("WORKTREE_NOT_FOUND"),
+                "{probe}: {err}"
+            );
         }
         // Symlinked `.worktrees` directory itself must also be skipped.
         let sym_repo = base.join("sym-repo");
         std::fs::create_dir_all(&sym_repo).unwrap();
-        assert!(acdd_core::git::git_command(&sym_repo, &["init"]).unwrap().status.success());
+        assert!(acdd_core::git::git_command(&sym_repo, &["init"])
+            .unwrap()
+            .status
+            .success());
         std::os::unix::fs::symlink(&external, sym_repo.join(".worktrees")).unwrap();
         let sym_err =
             resolve_explicit_worktree_with_linked(&sym_repo, &sym_repo, &[], "unrelated-external")
                 .unwrap_err();
-        assert!(sym_err.to_string().contains("WORKTREE_NOT_FOUND"), "{sym_err}");
+        assert!(
+            sym_err.to_string().contains("WORKTREE_NOT_FOUND"),
+            "{sym_err}"
+        );
         let dotgit_err =
             resolve_explicit_worktree_with_linked(&sym_repo, &sym_repo, &[], ".git").unwrap_err();
-        assert!(dotgit_err.to_string().contains("WORKTREE_NOT_FOUND"), "{dotgit_err}");
+        assert!(
+            dotgit_err.to_string().contains("WORKTREE_NOT_FOUND"),
+            "{dotgit_err}"
+        );
     }
 }

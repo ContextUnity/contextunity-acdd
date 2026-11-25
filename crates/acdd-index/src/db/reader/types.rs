@@ -24,51 +24,90 @@ pub enum OverviewAspect {
 impl OverviewAspect {
     /// All supported overview aspects in canonical wire order.
     pub const ALL: [Self; 15] = [
-        Self::Counts, Self::Components, Self::Languages, Self::CoverageByWorkspace, Self::Cycles,
-        Self::Entrypoints, Self::EntrypointsWithTests, Self::Topology, Self::CompiledProfiles,
-        Self::Metadata, Self::Discovery, Self::ManifestComponents, Self::DocumentationHubs,
-        Self::Runs, Self::Milestones,
+        Self::Counts,
+        Self::Components,
+        Self::Languages,
+        Self::CoverageByWorkspace,
+        Self::Cycles,
+        Self::Entrypoints,
+        Self::EntrypointsWithTests,
+        Self::Topology,
+        Self::CompiledProfiles,
+        Self::Metadata,
+        Self::Discovery,
+        Self::ManifestComponents,
+        Self::DocumentationHubs,
+        Self::Runs,
+        Self::Milestones,
     ];
 
     /// Returns the wire string for this overview aspect.
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::Counts => "counts", Self::Components => "components", Self::Languages => "languages",
-            Self::CoverageByWorkspace => "coverage_by_workspace", Self::Cycles => "cycles",
-            Self::Entrypoints => "entrypoints", Self::EntrypointsWithTests => "entrypoints_with_tests",
-            Self::Topology => "topology", Self::CompiledProfiles => "compiled_profiles",
-            Self::Metadata => "metadata", Self::Discovery => "discovery",
-            Self::ManifestComponents => "manifest_components", Self::DocumentationHubs => "documentation_hubs",
-            Self::Runs => "runs", Self::Milestones => "milestones",
+            Self::Counts => "counts",
+            Self::Components => "components",
+            Self::Languages => "languages",
+            Self::CoverageByWorkspace => "coverage_by_workspace",
+            Self::Cycles => "cycles",
+            Self::Entrypoints => "entrypoints",
+            Self::EntrypointsWithTests => "entrypoints_with_tests",
+            Self::Topology => "topology",
+            Self::CompiledProfiles => "compiled_profiles",
+            Self::Metadata => "metadata",
+            Self::Discovery => "discovery",
+            Self::ManifestComponents => "manifest_components",
+            Self::DocumentationHubs => "documentation_hubs",
+            Self::Runs => "runs",
+            Self::Milestones => "milestones",
         }
     }
 
     /// Returns `true` when this aspect is materialized by host discovery rather than SQLite.
     pub const fn is_discovery(&self) -> bool {
-        matches!(self, Self::Discovery | Self::ManifestComponents | Self::DocumentationHubs | Self::Runs | Self::Milestones)
+        matches!(
+            self,
+            Self::Discovery
+                | Self::ManifestComponents
+                | Self::DocumentationHubs
+                | Self::Runs
+                | Self::Milestones
+        )
     }
 
     /// Returns `true` when this aspect is included in the default overview projection.
     pub const fn is_default_selected(&self) -> bool {
-        !matches!(self, Self::Cycles | Self::Entrypoints | Self::EntrypointsWithTests | Self::Topology)
+        !matches!(
+            self,
+            Self::Cycles | Self::Entrypoints | Self::EntrypointsWithTests | Self::Topology
+        )
     }
 }
 
 impl FromStr for OverviewAspect {
     type Err = anyhow::Error;
     fn from_str(value: &str) -> Result<Self> {
-        Self::ALL.iter().copied().find(|a| a.as_str().eq_ignore_ascii_case(value)).ok_or_else(|| {
-            let allowed = Self::ALL.iter().map(Self::as_str).collect::<Vec<_>>().join(", ");
-            anyhow::anyhow!("unsupported overview aspect '{value}'; allowed aspects: {allowed}")
-        })
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|a| a.as_str().eq_ignore_ascii_case(value))
+            .ok_or_else(|| {
+                let allowed = Self::ALL
+                    .iter()
+                    .map(Self::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::anyhow!("unsupported overview aspect '{value}'; allowed aspects: {allowed}")
+            })
     }
 }
 
 /// Host discovery aspects accepted by [`crate::db::reader::overview_with_options`] and composed by the discovery adapter.
 #[cfg(test)]
 pub(crate) const DISCOVERY_OVERVIEW_ASPECTS: [&str; 5] = [
-    OverviewAspect::Discovery.as_str(), OverviewAspect::ManifestComponents.as_str(),
-    OverviewAspect::DocumentationHubs.as_str(), OverviewAspect::Runs.as_str(),
+    OverviewAspect::Discovery.as_str(),
+    OverviewAspect::ManifestComponents.as_str(),
+    OverviewAspect::DocumentationHubs.as_str(),
+    OverviewAspect::Runs.as_str(),
     OverviewAspect::Milestones.as_str(),
 ];
 

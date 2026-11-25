@@ -153,7 +153,10 @@ struct StmtSpan {
 fn non_overlapping_window_occs(occs: &[(usize, usize)], window_size: usize) -> Vec<(usize, usize)> {
     let mut by_candidate: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(candidate_idx, stmt_start) in occs {
-        by_candidate.entry(candidate_idx).or_default().push(stmt_start);
+        by_candidate
+            .entry(candidate_idx)
+            .or_default()
+            .push(stmt_start);
     }
     let mut selected = Vec::new();
     for (candidate_idx, mut starts) in by_candidate {
@@ -267,7 +270,12 @@ pub(crate) fn collect_file_duplicates(
          ORDER BY f.size DESC, f.digest, f.path",
     )?;
     let mut groups: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
-    let mut rows = stmt.query(rusqlite::params![scope, lower, upper, i64::from(include_tests)])?;
+    let mut rows = stmt.query(rusqlite::params![
+        scope,
+        lower,
+        upper,
+        i64::from(include_tests)
+    ])?;
     while let Some(row) = rows.next()? {
         let digest: String = row.get(0)?;
         let size: u64 = row.get(1)?;
@@ -477,7 +485,12 @@ pub(crate) fn collect_symbol_duplicates(
     let mut node_ids: Vec<String> = Vec::new();
     let mut raw_candidates = Vec::new();
 
-    let mut rows = stmt.query(rusqlite::params![scope, lower, upper, i64::from(include_tests)])?;
+    let mut rows = stmt.query(rusqlite::params![
+        scope,
+        lower,
+        upper,
+        i64::from(include_tests)
+    ])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let name: String = row.get(1)?;
@@ -600,9 +613,7 @@ pub(crate) fn collect_symbol_duplicates(
             }
         }
         let rep_hash = prepared[rep_idx].body_hash;
-        if group.len() >= 2
-            && group.iter().any(|&m| prepared[m].body_hash != rep_hash)
-        {
+        if group.len() >= 2 && group.iter().any(|&m| prepared[m].body_hash != rep_hash) {
             for &m in &group {
                 clustered.insert(m);
             }
@@ -630,7 +641,11 @@ pub(crate) fn collect_symbol_duplicates(
         b.duplicated_lines
             .cmp(&a.duplicated_lines)
             .then_with(|| b.locations.len().cmp(&a.locations.len()))
-            .then_with(|| raw_candidates[a.rep_idx].name.cmp(&raw_candidates[b.rep_idx].name))
+            .then_with(|| {
+                raw_candidates[a.rep_idx]
+                    .name
+                    .cmp(&raw_candidates[b.rep_idx].name)
+            })
             .then_with(|| a.match_type.cmp(b.match_type))
             .then_with(|| {
                 let path_a = a

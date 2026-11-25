@@ -1,9 +1,9 @@
-use crate::languages::profile::ProfileLinker;
 use super::lookup::resolve_type;
 use super::types::{
     collect_candidate_join, node_position, same_target, symbol_type, Definitions, ReadTrace,
     SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
+use crate::languages::profile::ProfileLinker;
 use crate::models::Node;
 use crate::semantic::{SourcePosition, ValueExpr, ValueFlowFacts};
 use hashbrown::HashMap;
@@ -39,14 +39,25 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
-        let eval = crate::languages::profile::CallEvalContext { index: self, owner, at, resolver, trace };
-        if let Some(result) = linker.and_then(|linker| linker.evaluate_language_value(
-            &eval, value, self.limits,
-            &|value| self.evaluate_tracked(owner, value, at, resolver, definitions, trace),
-            &|value| self.explicit_payload(owner, value, at, resolver, trace, 0),
-            &|targets| join_branch_targets(targets, true, Some(linker)),
-        )) {
+        let linker =
+            crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let eval = crate::languages::profile::CallEvalContext {
+            index: self,
+            owner,
+            at,
+            resolver,
+            trace,
+        };
+        if let Some(result) = linker.and_then(|linker| {
+            linker.evaluate_language_value(
+                &eval,
+                value,
+                self.limits,
+                &|value| self.evaluate_tracked(owner, value, at, resolver, definitions, trace),
+                &|value| self.explicit_payload(owner, value, at, resolver, trace, 0),
+                &|targets| join_branch_targets(targets, true, Some(linker)),
+            )
+        }) {
             return result;
         }
         match value {
@@ -66,11 +77,14 @@ impl<'a> ValueFlowIndex<'a> {
                 .cloned()
                 .unwrap_or_else(|| {
                     match resolver.resolve_symbol(owner, name, at, SymbolRole::Callable) {
-                        Symbol::Callable(node) if node.kind == crate::models::tags::NodeKind::Constant => self
-                            .returns
-                            .get(node.id.as_str())
-                            .cloned()
-                            .unwrap_or(TypeTarget::Unknown),
+                        Symbol::Callable(node)
+                            if node.kind == crate::models::tags::NodeKind::Constant =>
+                        {
+                            self.returns
+                                .get(node.id.as_str())
+                                .cloned()
+                                .unwrap_or(TypeTarget::Unknown)
+                        }
                         Symbol::Callable(node) => TypeTarget::Callable(node),
                         _ => TypeTarget::Unknown,
                     }
@@ -143,7 +157,9 @@ impl<'a> ValueFlowIndex<'a> {
             return *inner;
         }
         let ValueExpr::Call { callee, .. } = value else {
-            if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
+            if crate::languages::by_id(owner.language.as_str())
+                .is_some_and(|profile| profile.linker().payload_uses_async_return())
+            {
                 return self.explicit_payload(owner, value, at, resolver, trace, 0);
             }
             return TypeTarget::Unknown;
@@ -196,8 +212,10 @@ impl<'a> ValueFlowIndex<'a> {
         if let Some(target) = resolver.resolve_factory_result(owner, callee, at) {
             return target;
         }
-        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
-        if let Some(target) = linker.and_then(|l| l.constructor_result(owner, callee, at, resolver)) {
+        let linker =
+            crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        if let Some(target) = linker.and_then(|l| l.constructor_result(owner, callee, at, resolver))
+        {
             return target;
         }
         if linker.is_some_and(|linker| linker.payload_uses_async_return()) {
@@ -258,11 +276,18 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let linker =
+            crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
         let eval = crate::languages::profile::CallEvalContext {
-            index: self, owner, at, resolver, trace,
+            index: self,
+            owner,
+            at,
+            resolver,
+            trace,
         };
-        if let Some(result) = linker.and_then(|linker| linker.special_member_call(&eval, receiver_expr, callee)) {
+        if let Some(result) =
+            linker.and_then(|linker| linker.special_member_call(&eval, receiver_expr, callee))
+        {
             return result;
         }
         let receiver =
@@ -278,7 +303,8 @@ impl<'a> ValueFlowIndex<'a> {
         if let Some(target) = member_result {
             return target;
         }
-        if let Some(target) = linker.and_then(|linker| linker.evaluate_member_call_fallback(&eval, &receiver, callee))
+        if let Some(target) =
+            linker.and_then(|linker| linker.evaluate_member_call_fallback(&eval, &receiver, callee))
         {
             return target;
         }
@@ -294,7 +320,8 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        let linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let linker =
+            crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
         if linker.is_some_and(|linker| linker.lexical_receiver_field(owner, receiver)) {
             let target = symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type));
             return linker
@@ -355,7 +382,8 @@ impl<'a> ValueFlowIndex<'a> {
         definitions: Option<&Definitions<'a>>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        let language_linker = crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
+        let language_linker =
+            crate::languages::by_id(owner.language.as_str()).map(|profile| profile.linker());
         let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
         if let Some(index_str) = member.strip_prefix("__index:") {
             return self.project_index(owner, &source, index_str);
@@ -382,7 +410,12 @@ impl<'a> ValueFlowIndex<'a> {
         self.project_field(owner, &source, member, at, resolver, trace)
     }
 
-    fn project_index(&self, owner: &Node, source: &TypeTarget<'a>, index_str: &str) -> TypeTarget<'a> {
+    fn project_index(
+        &self,
+        owner: &Node,
+        source: &TypeTarget<'a>,
+        index_str: &str,
+    ) -> TypeTarget<'a> {
         let base = crate::languages::by_id(owner.language.as_str())
             .map_or(source, |profile| profile.linker().unwrap_reference(source));
         if let Some(target) = crate::languages::by_id(owner.language.as_str())
@@ -411,9 +444,11 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> TypeTarget<'a> {
-        if let Some(target) = crate::languages::by_id(owner.language.as_str())
-            .and_then(|profile| profile.linker().special_field_projection(source, member, owner, at, resolver))
-        {
+        if let Some(target) = crate::languages::by_id(owner.language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .special_field_projection(source, member, owner, at, resolver)
+        }) {
             return target;
         }
         match source {
@@ -424,7 +459,8 @@ impl<'a> ValueFlowIndex<'a> {
                 .cloned()
                 .unwrap_or(TypeTarget::Unknown),
             TypeTarget::Builtin(name)
-                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().builtin_field_projection(owner)) =>
+                if crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().builtin_field_projection(owner)) =>
             {
                 resolver
                     .property_type(owner, name, member)
@@ -436,13 +472,18 @@ impl<'a> ValueFlowIndex<'a> {
                     _ => TypeTarget::Unknown,
                 }
             }
-            TypeTarget::External { .. } if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().external_field_projection()) => {
+            TypeTarget::External { .. }
+                if crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().external_field_projection()) =>
+            {
                 match resolver.resolve_member(source, member, owner, at) {
                     Symbol::Type(target) => target,
                     _ => TypeTarget::Unknown,
                 }
             }
-            TypeTarget::ResultObject(result) if resolver.configured_result_member(result, member) => {
+            TypeTarget::ResultObject(result)
+                if resolver.configured_result_member(result, member) =>
+            {
                 TypeTarget::ExternalCallable {
                     result: result.clone(),
                     owner: owner.id.clone(),
@@ -450,21 +491,25 @@ impl<'a> ValueFlowIndex<'a> {
                     member: member.to_owned(),
                 }
             }
-            TypeTarget::Object(members) => members.get(member).map_or(TypeTarget::Unknown, |node| {
-                if matches!(node.kind.as_str(), "function" | "method") {
-                    TypeTarget::Callable(node)
-                } else {
-                    TypeTarget::Unknown
-                }
-            }),
+            TypeTarget::Object(members) => {
+                members.get(member).map_or(TypeTarget::Unknown, |node| {
+                    if matches!(node.kind.as_str(), "function" | "method") {
+                        TypeTarget::Callable(node)
+                    } else {
+                        TypeTarget::Unknown
+                    }
+                })
+            }
             TypeTarget::Local(class) => self
                 .field_type_tracked(class, member, trace)
                 .cloned()
-                .unwrap_or_else(|| match resolver.resolve_member(source, member, owner, at) {
-                    Symbol::Callable(node) => TypeTarget::Callable(node),
-                    Symbol::Ambiguous => TypeTarget::Ambiguous,
-                    _ => TypeTarget::Unknown,
-                }),
+                .unwrap_or_else(
+                    || match resolver.resolve_member(source, member, owner, at) {
+                        Symbol::Callable(node) => TypeTarget::Callable(node),
+                        Symbol::Ambiguous => TypeTarget::Ambiguous,
+                        _ => TypeTarget::Unknown,
+                    },
+                ),
             TypeTarget::Ambiguous => TypeTarget::Ambiguous,
             _ => TypeTarget::Unknown,
         }
@@ -480,7 +525,11 @@ impl<'a> ValueFlowIndex<'a> {
     ) -> Option<TypeTarget<'a>> {
         crate::languages::by_id(owner.language.as_str()).map_or_else(
             || resolver.resolve_member_result(receiver, member, owner, at),
-            |profile| profile.linker().member_call_result(receiver, member, owner, at, resolver),
+            |profile| {
+                profile
+                    .linker()
+                    .member_call_result(receiver, member, owner, at, resolver)
+            },
         )
     }
 
@@ -539,23 +588,14 @@ impl<'a> ValueFlowIndex<'a> {
         };
         let call_at = site.as_ref().map_or(at, |site| site.position);
         if let Some(receiver_expr) = site.as_ref().and_then(|site| site.receiver.as_deref()) {
-            let receiver = self.evaluate_tracked(
-                owner,
-                receiver_expr,
-                call_at,
-                resolver,
-                definitions,
-                trace,
-            );
+            let receiver =
+                self.evaluate_tracked(owner, receiver_expr, call_at, resolver, definitions, trace);
             if let Symbol::Callable(callable) =
                 resolver.resolve_member(&receiver, callee, owner, call_at)
             {
-                if let Some(target) = self.callback_param_from_signature(
-                    callable,
-                    arg_index,
-                    param_index,
-                    resolver,
-                ) {
+                if let Some(target) =
+                    self.callback_param_from_signature(callable, arg_index, param_index, resolver)
+                {
                     return target;
                 }
             }
@@ -604,8 +644,8 @@ impl<'a> ValueFlowIndex<'a> {
         arg_index: usize,
         param_index: usize,
     ) -> TypeTarget<'a> {
-        let valid_arg = arg_index == 0
-            || (arg_index == 1 && matches!(method, "map_or" | "map_or_else"));
+        let valid_arg =
+            arg_index == 0 || (arg_index == 1 && matches!(method, "map_or" | "map_or_else"));
         if param_index != 0 || !valid_arg {
             return TypeTarget::Unknown;
         }
@@ -622,10 +662,7 @@ impl<'a> ValueFlowIndex<'a> {
                     TypeTarget::Unknown
                 }
             }
-            TypeTarget::Collection { item, .. } if collection_callback(method) =>
-            {
-                (**item).clone()
-            }
+            TypeTarget::Collection { item, .. } if collection_callback(method) => (**item).clone(),
             _ => TypeTarget::Unknown,
         }
     }
@@ -653,9 +690,12 @@ impl<'a> ValueFlowIndex<'a> {
             if let Some(facts) = resolver.value_flow(node) {
                 Some(Cow::Borrowed(facts))
             } else if !resolver.has_typed_flows() {
-                ValueFlowFacts::deserialize_for_scope(node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW), false)
-                    .ok()
-                    .map(Cow::Owned)
+                ValueFlowFacts::deserialize_for_scope(
+                    node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW),
+                    false,
+                )
+                .ok()
+                .map(Cow::Owned)
             } else {
                 None
             }
@@ -663,7 +703,9 @@ impl<'a> ValueFlowIndex<'a> {
         match value {
             ValueExpr::Annotated { type_expr } => resolver.resolve_payload(owner, type_expr, at),
             ValueExpr::Call { callee, .. } => {
-                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
+                if crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().payload_uses_async_return())
+                {
                     if let TypeTarget::Promise(inner) =
                         self.evaluate_tracked(owner, value, at, resolver, None, trace)
                     {
@@ -678,7 +720,9 @@ impl<'a> ValueFlowIndex<'a> {
                 if let Some(trace) = trace {
                     trace.returned(callable.id.as_str());
                 }
-                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().payload_uses_async_return()) {
+                if crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().payload_uses_async_return())
+                {
                     return self
                         .async_returns
                         .get(callable.id.as_str())
@@ -695,12 +739,14 @@ impl<'a> ValueFlowIndex<'a> {
             }
             ValueExpr::Alias { name } => {
                 // Reaching-value uncertainty still fences projection; a write cannot revive an old annotation.
-                let reaching_wrapper = self.lookup_tracked(owner, name, at, trace).is_some_and(|target| {
-                    crate::languages::by_id(owner.language.as_str()).map_or(
-                        matches!(target, TypeTarget::Promise(_)),
-                        |profile| profile.linker().reaching_payload_wrapper(target),
-                    )
-                });
+                let reaching_wrapper =
+                    self.lookup_tracked(owner, name, at, trace)
+                        .is_some_and(|target| {
+                            crate::languages::by_id(owner.language.as_str())
+                                .map_or(matches!(target, TypeTarget::Promise(_)), |profile| {
+                                    profile.linker().reaching_payload_wrapper(target)
+                                })
+                        });
                 if !reaching_wrapper {
                     return TypeTarget::Unknown;
                 }
@@ -739,16 +785,16 @@ impl<'a> ValueFlowIndex<'a> {
                 TypeTarget::Unknown
             }
             ValueExpr::Project { value, member }
-                if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().is_value_adapter(member)) =>
+                if crate::languages::by_id(owner.language.as_str())
+                    .is_some_and(|profile| profile.linker().is_value_adapter(member)) =>
             {
                 let receiver = self.evaluate_tracked(owner, value, at, resolver, None, trace);
-                let linker = crate::languages::by_id(owner.language.as_str()).unwrap().linker();
-                let projected = linker.adapter_value(&receiver, member, resolver)
-                    .or_else(|| {
-                        self.resolve_member_call(
-                            &receiver, member, owner, at, resolver,
-                        )
-                    })
+                let linker = crate::languages::by_id(owner.language.as_str())
+                    .unwrap()
+                    .linker();
+                let projected = linker
+                    .adapter_value(&receiver, member, resolver)
+                    .or_else(|| self.resolve_member_call(&receiver, member, owner, at, resolver))
                     .unwrap_or(TypeTarget::Unknown);
                 linker.value_payload(&projected).unwrap_or(projected)
             }
@@ -761,14 +807,40 @@ impl<'a> ValueFlowIndex<'a> {
 }
 
 pub(in crate::linker) fn collection_callback(method: &str) -> bool {
-    matches!(method, "map" | "filter" | "forEach" | "find" | "some" | "every" | "flatMap"
-        | "inspect" | "filter_map" | "flat_map" | "for_each" | "try_for_each" | "position"
-        | "rposition" | "take_while" | "skip_while" | "map_while" | "partition" | "find_map"
-        | "any" | "all" | "retain")
+    matches!(
+        method,
+        "map"
+            | "filter"
+            | "forEach"
+            | "find"
+            | "some"
+            | "every"
+            | "flatMap"
+            | "inspect"
+            | "filter_map"
+            | "flat_map"
+            | "for_each"
+            | "try_for_each"
+            | "position"
+            | "rposition"
+            | "take_while"
+            | "skip_while"
+            | "map_while"
+            | "partition"
+            | "find_map"
+            | "any"
+            | "all"
+            | "retain"
+    )
 }
 
-fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], linker: Option<&dyn crate::languages::profile::LanguageLinker>) -> Option<TypeTarget<'a>> {
-    let TypeTarget::Tuple(first) = targets.first()? else { return None; };
+fn join_tuple_elements<'a>(
+    targets: &[TypeTarget<'a>],
+    linker: Option<&dyn crate::languages::profile::LanguageLinker>,
+) -> Option<TypeTarget<'a>> {
+    let TypeTarget::Tuple(first) = targets.first()? else {
+        return None;
+    };
     let arity = first.len();
     if !targets
         .iter()
@@ -781,7 +853,10 @@ fn join_tuple_elements<'a>(targets: &[TypeTarget<'a>], linker: Option<&dyn crate
             join_branch_targets(
                 targets
                     .iter()
-                    .filter_map(|t| match t { TypeTarget::Tuple(items) => Some(items[i].clone()), _ => None })
+                    .filter_map(|t| match t {
+                        TypeTarget::Tuple(items) => Some(items[i].clone()),
+                        _ => None,
+                    })
                     .collect(),
                 true,
                 linker,
@@ -802,7 +877,11 @@ fn join_branch_targets<'a>(
     if targets.len() == 1 {
         return targets.into_iter().next().unwrap();
     }
-    if let Some(special) = linker.and_then(|linker| linker.join_language_targets(&targets, &|targets| join_branch_targets(targets, true, Some(linker)))) {
+    if let Some(special) = linker.and_then(|linker| {
+        linker.join_language_targets(&targets, &|targets| {
+            join_branch_targets(targets, true, Some(linker))
+        })
+    }) {
         return special;
     }
     if let Some(tuple) = join_tuple_elements(&targets, linker) {

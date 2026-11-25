@@ -6,14 +6,14 @@ pub(crate) mod node_view;
 mod presentation;
 pub(crate) mod semantic_store;
 
+#[doc(hidden)]
+pub use crate::models::semantic::NodeSemanticEntry;
 pub use crate::semantic::types::{encoded_scope_fact_count, scope_fact_count};
 pub use bundle::TypedFacts;
 pub use catalog::SymbolCatalog;
 pub(crate) use catalog::{decode_catalog_references, CatalogStoragePayload};
 pub use flow_store::{FlowState, FlowStore};
 pub use semantic_store::SemanticState;
-#[doc(hidden)]
-pub use crate::models::semantic::NodeSemanticEntry;
 
 pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x06";
 

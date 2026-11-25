@@ -75,7 +75,10 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         );
     }
     let branch_manifest_content = "---\nid: m-branch-only\ntitle: Branch only\ndoc_type: milestone\nstatus: active\n---\n# Branch only\n\n### task: branch-task\n\n```yaml\ntask_ref: branch-task\ntarget: branch task\nscope: [src/lib.rs]\n```\n";
-    primary.write("docs/milestones/060-branch-only.md", branch_manifest_content);
+    primary.write(
+        "docs/milestones/060-branch-only.md",
+        branch_manifest_content,
+    );
     let branch_manifest = sibling.join("docs/milestones/060-branch-only.md");
     fs::create_dir_all(branch_manifest.parent().unwrap()).unwrap();
     fs::write(&branch_manifest, branch_manifest_content).unwrap();
@@ -108,7 +111,10 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             json!({"action":"list", "status":"active", "worktree":"51", "format":"json"}),
         )
         .expect("MCP list should succeed");
-    assert!(!list["page"]["runs"].as_array().unwrap().is_empty(), "{list}");
+    assert!(
+        !list["page"]["runs"].as_array().unwrap().is_empty(),
+        "{list}"
+    );
     let posted = client.payload(
         "acdd_blackboard",
         json!({"action":"post", "run":&run_id, "topic":"notes", "author":"routing-author", "payload":"branch-only message", "worktree":"51"}),
@@ -137,10 +143,16 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     fs::create_dir_all(&sentinel).unwrap();
     fs::write(sentinel.join("traces.jsonl"), "sentinel\n").unwrap();
     primary.write("acdd.yaml", "state_db: [invalid\n");
-    let _ = client.payload("acdd_state", json!({"action":"status", "run":&run_id, "worktree":"51"}));
+    let _ = client.payload(
+        "acdd_state",
+        json!({"action":"status", "run":&run_id, "worktree":"51"}),
+    );
     assert_eq!(fs::read(&traces).unwrap(), before);
     assert!(sentinel.exists());
-    primary.write("acdd.yaml", "roots: [src]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\n");
+    primary.write(
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\n",
+    );
     let canonical_sibling = sibling.canonicalize().unwrap();
     assert_eq!(
         claim["worktree"],

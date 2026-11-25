@@ -1,14 +1,14 @@
-use crate::models::{compact_graph::CompactGraph, Facts, Node, ReceiverHint, Reference};
-use crate::semantic::SourcePosition;
-use crate::languages::{self, dependency_registry::DependencyRegistry};
 use crate::interner::{LinkerInterner, SymbolId};
+use crate::languages::{self, dependency_registry::DependencyRegistry};
 use crate::linker::{
+    semantic_context,
     semantic_facts::{
         project_scope, DeclarativeRulePrimitive, OccurrenceTable, PreparedSemanticFacts,
     },
-    semantic_context,
     value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget},
 };
+use crate::models::{compact_graph::CompactGraph, Facts, Node, ReceiverHint, Reference};
+use crate::semantic::SourcePosition;
 use hashbrown::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,7 +22,10 @@ fn record_python_class_attribute<'a, 'b>(
     attribute: &str,
     path: &str,
     interner: &LinkerInterner<'_>,
-) -> Option<(&'a Node, &'b mut crate::linker::semantic_facts::OccurrenceValue)> {
+) -> Option<(
+    &'a Node,
+    &'b mut crate::linker::semantic_facts::OccurrenceValue,
+)> {
     let owner = interner
         .lookup_symbol(&fact.occurrence.owner_id)
         .expect("semantic owner");
@@ -194,8 +197,7 @@ struct ExternalImportCall<'a> {
 struct SymbolRelationRules<'a> {
     semantic: &'a [languages::semantic::EffectiveSemanticRule],
     di_calls: &'a [languages::manifests::DiCallRule],
-    di_rule_origins:
-        &'a std::collections::HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
+    di_rule_origins: &'a std::collections::HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
 }
 
 fn import_scope_distance(caller: &Node, importer: &Node) -> Option<usize> {
@@ -690,7 +692,9 @@ pub(crate) fn compose_symbol_relations<'a>(
             },
             SymbolRole::Type,
         ) {
-            Symbol::Type(TypeTarget::Local(target)) if target.language == crate::models::tags::LanguageId::Python => {
+            Symbol::Type(TypeTarget::Local(target))
+                if target.language == crate::models::tags::LanguageId::Python =>
+            {
                 entry
                     .1
                     .insert(interner.lookup_symbol(&target.id).expect("catalog target"));
@@ -700,7 +704,10 @@ pub(crate) fn compose_symbol_relations<'a>(
                 complete,
                 exhausted,
             }) => {
-                if targets.iter().all(|target| target.language == crate::models::tags::LanguageId::Python) {
+                if targets
+                    .iter()
+                    .all(|target| target.language == crate::models::tags::LanguageId::Python)
+                {
                     if targets.len() > 1 {
                         entry.2 = true;
                     } else if complete && !exhausted {

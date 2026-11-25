@@ -48,7 +48,9 @@ pub(crate) fn collect_dependency_receipts(
             .artifacts
             .iter()
             .enumerate()
-            .filter(|(_, art)| art.kind == ArtifactKind::Receipt && art.node_id.starts_with(&prefix))
+            .filter(|(_, art)| {
+                art.kind == ArtifactKind::Receipt && art.node_id.starts_with(&prefix)
+            })
             .max_by(|(idx_a, a), (idx_b, b)| {
                 a.claim_revision
                     .cmp(&b.claim_revision)
@@ -118,7 +120,10 @@ pub(crate) fn extract_pre_task_slice(
     if let serde_json::Value::Object(ref mut map) = slice {
         for shared_key in ["global_negative_boundaries", "cited_invariants"] {
             if !map.contains_key(shared_key) {
-                if let Some(shared) = val.get(shared_key).filter(|v| !matches!(v, serde_json::Value::Array(a) if a.is_empty())) {
+                if let Some(shared) = val
+                    .get(shared_key)
+                    .filter(|v| !matches!(v, serde_json::Value::Array(a) if a.is_empty()))
+                {
                     map.insert(shared_key.to_owned(), shared.clone());
                 }
             }
@@ -128,7 +133,9 @@ pub(crate) fn extract_pre_task_slice(
 }
 
 /// Extract global architectural boundaries from the accepted pre-task blueprint artifact for root closure/polish gates.
-pub(crate) fn extract_global_blueprint_slice(graph: &RunGraphSnapshot) -> Option<serde_json::Value> {
+pub(crate) fn extract_global_blueprint_slice(
+    graph: &RunGraphSnapshot,
+) -> Option<serde_json::Value> {
     let val = latest_pre_task_proof_value(graph)?;
     let mut out = serde_json::Map::new();
     for key in [

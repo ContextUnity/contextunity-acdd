@@ -95,7 +95,11 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     let providers = full_providers();
 
     // 1. Removed legacy keys fail schema validation via deny_unknown_fields -> ACDD_PROFILE_SCHEMA_INVALID.
-    fs::write(root.join("acdd.yaml"), "milestones:\n  path: docs/milestones\n").unwrap();
+    fs::write(
+        root.join("acdd.yaml"),
+        "milestones:\n  path: docs/milestones\n",
+    )
+    .unwrap();
     let res_legacy = validate_workspace(root, None, None, &providers).unwrap();
     assert!(!res_legacy.valid);
     assert_eq!(
@@ -119,7 +123,11 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     )
     .unwrap();
     fs::create_dir_all(root.join(".acdd")).unwrap();
-    fs::write(root.join(".acdd/profile.yaml"), "version: 2\ninherit: code\n").unwrap();
+    fs::write(
+        root.join(".acdd/profile.yaml"),
+        "version: 2\ninherit: code\n",
+    )
+    .unwrap();
     let res_unbound = validate_workspace(root, None, None, &providers).unwrap();
     assert!(!res_unbound.valid);
     assert_eq!(res_unbound.diagnostics[0].code, "CONFIG_VALID");
@@ -213,7 +221,10 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     .unwrap();
     let ok_res = validate_workspace(root, None, None, &providers).unwrap();
     assert!(ok_res.valid, "{ok_res:?}");
-    assert!(!ok_res.warnings.is_empty(), "expected case advisory warning");
+    assert!(
+        !ok_res.warnings.is_empty(),
+        "expected case advisory warning"
+    );
 
     // 6b. `Adapter.limits.max_metadata_bytes` validates `1..=2048` in `validate_workspace` while valid large specs (> 2048 bytes) pass.
     for bad_limit in [0usize, 2049usize] {
@@ -225,7 +236,10 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         )
         .unwrap();
         let bad_lim_res = validate_workspace(root, None, None, &providers).unwrap();
-        assert!(!bad_lim_res.valid, "limits.max_metadata_bytes={bad_limit} must fail: {bad_lim_res:?}");
+        assert!(
+            !bad_lim_res.valid,
+            "limits.max_metadata_bytes={bad_limit} must fail: {bad_lim_res:?}"
+        );
         assert_eq!(
             bad_lim_res.diagnostics[0].code,
             ErrorCode::ProfileSchemaInvalid.as_str()
@@ -242,8 +256,12 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         "---\nid: AC-011-large-metadata\ntitle: \"Large milestone {large_padding}\"\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: \"Task {large_padding}\"\nscope: [src/lib.rs]\n```\n"
     );
     fs::write(root.join(large_spec_rel), large_spec_doc).unwrap();
-    let large_res = validate_document(root, Path::new(large_spec_rel), None, None, &providers).unwrap();
-    assert!(large_res.valid, "spec frontmatter/task metadata > 2048 bytes must remain valid: {large_res:?}");
+    let large_res =
+        validate_document(root, Path::new(large_spec_rel), None, None, &providers).unwrap();
+    assert!(
+        large_res.valid,
+        "spec frontmatter/task metadata > 2048 bytes must remain valid: {large_res:?}"
+    );
     fs::remove_file(root.join(large_spec_rel)).unwrap();
     fs::write(
         root.join("acdd.yaml"),
@@ -279,8 +297,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         allowed_binary_extensions: None,
     };
     let resolved_p =
-        resolve_optional_profile_ref_with_dirs(None, Some(root), Some(&cfg.modules), None)
-            .unwrap();
+        resolve_optional_profile_ref_with_dirs(None, Some(root), Some(&cfg.modules), None).unwrap();
     let harness = RunHarness::in_memory().unwrap();
     validate_spec_for_run(&cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap();
 
@@ -401,8 +418,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     )
     .unwrap();
     let err_cleared =
-        validate_spec_for_run(&cfg, &harness, &providers, &dep_cleared, &resolved_p)
-            .unwrap_err();
+        validate_spec_for_run(&cfg, &harness, &providers, &dep_cleared, &resolved_p).unwrap_err();
     assert_eq!(err_cleared.code, ErrorCode::GateVerificationFailed);
 
     // Git HEAD verification for uncommitted 0.5 archive inside a Git repo.
@@ -424,15 +440,11 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     g_cfg.workspace_root = groot.to_path_buf();
     g_cfg.worktree = groot.to_path_buf();
     let uncommitted_err =
-        validate_spec_for_run(&g_cfg, &harness, &providers, &dep_05_doc, &resolved_p)
-            .unwrap_err();
+        validate_spec_for_run(&g_cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap_err();
     assert_eq!(uncommitted_err.code, ErrorCode::ProfileSchemaInvalid);
-    let direct_dep_err =
-        verify_run_level_depends_on(&g_cfg, &harness, &dep_05_doc)
-            .unwrap_err();
+    let direct_dep_err = verify_run_level_depends_on(&g_cfg, &harness, &dep_05_doc).unwrap_err();
     assert_eq!(direct_dep_err.code, ErrorCode::GateVerificationFailed);
-    git_command(groot, &["add", "docs/milestones/archive/AC-090-legacy.md"])
-        .unwrap();
+    git_command(groot, &["add", "docs/milestones/archive/AC-090-legacy.md"]).unwrap();
     git_command(groot, &["commit", "-m", "archive"]).unwrap();
     validate_spec_for_run(&g_cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap();
 
@@ -450,8 +462,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         "---\nid: AC-091\ntitle: Planned In Head\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: p\nscope: [src/]\nstatus: planned\n```\n",
     )
     .unwrap();
-    git_command(groot, &["add", "docs/milestones/archive/AC-091-planned.md"])
-        .unwrap();
+    git_command(groot, &["add", "docs/milestones/archive/AC-091-planned.md"]).unwrap();
     git_command(groot, &["commit", "-m", "planned archive"]).unwrap();
     fs::write(
         groot.join("docs/milestones/archive/AC-091-planned.md"),
@@ -462,9 +473,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         "---\nid: AC-094\ntitle: Spoofed Dep\nstatus: planned\ndepends_on: [\"AC-091:t1\"]\n---\n### task: t1\n```yaml\ntarget: x\nscope: [src/]\n```\n",
     )
     .unwrap();
-    let spoof_err =
-        verify_run_level_depends_on(&g_cfg, &harness, &dep_spoofed_doc)
-            .unwrap_err();
+    let spoof_err = verify_run_level_depends_on(&g_cfg, &harness, &dep_spoofed_doc).unwrap_err();
     assert_eq!(spoof_err.code, ErrorCode::GateVerificationFailed);
 
     // Reconciled planned spec with completed task in disk state.sqlite passes validate_workspace.
@@ -490,7 +499,10 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     g_rec.nodes[0].run_id = g_rec.run.run_id.clone();
     exec_tx_with(&disk_harness, |tx| tx.insert_run_graph(&g_rec)).unwrap();
     let rec_res = validate_workspace(disk_root, None, None, &providers).unwrap();
-    assert!(rec_res.valid, "reconciled planned spec should pass: {rec_res:?}");
+    assert!(
+        rec_res.valid,
+        "reconciled planned spec should pass: {rec_res:?}"
+    );
 
     // Linked workspace custom specs + custom state_db resolution in validate_spec_for_run.
     let lw_dir = tempfile::tempdir().unwrap();
@@ -523,8 +535,8 @@ fn validate_workspace_config_profile_and_spec_matrix() {
             "---\nid: AC-095\ntitle: Bad scope\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: x\nscope: [\"{bad_scope}\"]\n```\n"
         ))
         .unwrap();
-        let err = validate_spec_for_run(&cfg, &harness, &providers, &bad_doc, &resolved_p)
-            .unwrap_err();
+        let err =
+            validate_spec_for_run(&cfg, &harness, &providers, &bad_doc, &resolved_p).unwrap_err();
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{bad_scope}");
     }
 
@@ -537,10 +549,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         &machine_prof,
         &acdd_state::types::ValidatedObservations::default(),
         &TransitionInput::ExtendScope(ExtendScopeInput {
-            node_cursor: NodeCursor::task(
-                TaskRef::new("t1").unwrap(),
-                Vec::new(),
-            ),
+            node_cursor: NodeCursor::task(TaskRef::new("t1").unwrap(), Vec::new()),
             paths: vec!["src/{a".to_owned()],
             reason: "need malformed".to_owned(),
             worker_id: None,
@@ -620,7 +629,10 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         &noncyc_a,
         &[noncyc_a.clone(), noncyc_b],
     );
-    assert!(noncyc_issues.is_empty(), "non-cyclic cross-spec task edges should pass: {noncyc_issues:?}");
+    assert!(
+        noncyc_issues.is_empty(),
+        "non-cyclic cross-spec task edges should pass: {noncyc_issues:?}"
+    );
 
     // Self-alias pointing back to primary root MUST participate in cycle & self-dep detection.
     let mut self_alias_adapter = Adapter::default();
@@ -668,14 +680,16 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     assert!(
         self_dep_issues
             .iter()
-            .any(|i| i.code == ErrorCode::ProfileSchemaInvalid && i.message.contains("cannot depend on itself")),
+            .any(|i| i.code == ErrorCode::ProfileSchemaInvalid
+                && i.message.contains("cannot depend on itself")),
         "self-alias self-dependency must fail closed: {self_dep_issues:?}"
     );
 
     // (e) Corrupt state DB in linked workspace propagates reader error instead of swallowing.
     fs::create_dir_all(lw_root.join(".acdd")).unwrap();
     fs::write(lw_root.join(".acdd/custom-lw.sqlite"), b"not a sqlite db").unwrap();
-    let corrupt_db_err = validate_spec_for_run(&lw_cfg, &harness, &providers, &lw_consumer, &resolved_p)
-        .unwrap_err();
+    let corrupt_db_err =
+        validate_spec_for_run(&lw_cfg, &harness, &providers, &lw_consumer, &resolved_p)
+            .unwrap_err();
     assert_ne!(corrupt_db_err.code, ErrorCode::GateVerificationFailed);
 }

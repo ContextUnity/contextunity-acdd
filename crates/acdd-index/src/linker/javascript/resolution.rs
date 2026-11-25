@@ -1,18 +1,18 @@
+use super::super::semantic_context::Context;
+use super::super::traits::{LanguageLinker, PackageExports};
 use crate::interner::LinkerInterner;
 #[cfg(feature = "lang-typescript")]
 use crate::interner::SymbolId;
-use super::super::semantic_context::Context;
-use super::super::traits::{LanguageLinker, PackageExports};
-#[cfg(feature = "lang-typescript")]
-use crate::models::compact_graph::CompactGraph;
-use crate::models::{Facts, Node, Reference};
-#[cfg(feature = "lang-typescript")]
-use crate::semantic::ObjectOwnershipFact;
 use crate::languages::LanguageProfile;
 #[cfg(feature = "lang-typescript")]
 use crate::linker::resolution::input::ResolutionInput;
 #[cfg(feature = "lang-typescript")]
 use crate::linker::value_flow;
+#[cfg(feature = "lang-typescript")]
+use crate::models::compact_graph::CompactGraph;
+use crate::models::{Facts, Node, Reference};
+#[cfg(feature = "lang-typescript")]
+use crate::semantic::ObjectOwnershipFact;
 use hashbrown::HashMap;
 #[cfg(feature = "lang-typescript")]
 use hashbrown::HashSet;
@@ -40,7 +40,11 @@ pub(in crate::linker) fn returned_object_field_writes<'node, 'reference>(
             let marker = owner
                 .language
                 .eq(&crate::models::tags::LanguageId::Javascript)
-                .then(|| owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str())
+                .then(|| {
+                    owner
+                        .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+                        .as_str()
+                })
                 .flatten()?
                 .strip_prefix("object_return:")?;
             Some((marker, field))
@@ -73,7 +77,11 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
         .interner
         .lookup_node(input.by_id, reference.source.as_str())
         .filter(|owner| owner.language == crate::models::tags::LanguageId::Javascript)
-        .and_then(|owner| owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str())
+        .and_then(|owner| {
+            owner
+                .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+                .as_str()
+        })
         .filter(|marker| marker.starts_with("object_return:"))
     else {
         return false;
@@ -91,7 +99,10 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member(
         .filter(|node| {
             node.path == *path
                 && node.kind == crate::models::tags::NodeKind::Field
-                && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
+                && node
+                    .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+                    .as_str()
+                    == Some(marker)
         });
     let (Some(field), None) = (fields.next(), fields.next()) else {
         return false;
@@ -117,7 +128,11 @@ fn object_factory_binding_shadowed<'a>(
     while !scope.is_empty() {
         let registration_child_scope = input.by_qual.get(scope).is_some_and(|nodes| {
             nodes.iter().any(|node| {
-                node.path == *path && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
+                node.path == *path
+                    && node
+                        .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+                        .as_str()
+                        == Some(marker)
             })
         });
         if !registration_child_scope
@@ -191,10 +206,12 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
         .interner
         .lookup_node(input.by_id, reference.source.as_str())
         .filter(|owner| {
-            owner.language == crate::models::tags::LanguageId::Javascript && matches!(owner.kind.as_str(), "method" | "function")
+            owner.language == crate::models::tags::LanguageId::Javascript
+                && matches!(owner.kind.as_str(), "method" | "function")
         })
         .and_then(|owner| {
-            owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+            owner
+                .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
                 .as_str()
                 .filter(|marker| {
                     marker.starts_with("object_return:") || object_ownership(owner).is_some()
@@ -221,15 +238,24 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
             .filter(|node| {
                 node.path == *path
                     && matches!(node.kind.as_str(), "field" | "method")
-                    && node.detail_entry(crate::models::details::NodeDetailKey::RECEIVER).as_str() == Some(marker)
+                    && node
+                        .detail_entry(crate::models::details::NodeDetailKey::RECEIVER)
+                        .as_str()
+                        == Some(marker)
                     && object_ownership(node) == ownership
             });
         let member = members.next();
         let unique = member.is_some() && members.next().is_none();
         if unique {
             if let Some(member) = member
-                .filter(|member| reference.kind != "calls" || member.kind == crate::models::tags::NodeKind::Method)
-                .filter(|member| reference.kind != "mutates" || member.kind == crate::models::tags::NodeKind::Field)
+                .filter(|member| {
+                    reference.kind != "calls"
+                        || member.kind == crate::models::tags::NodeKind::Method
+                })
+                .filter(|member| {
+                    reference.kind != "mutates"
+                        || member.kind == crate::models::tags::NodeKind::Field
+                })
             {
                 if reference.kind != "references"
                     || member.kind != crate::models::tags::NodeKind::Method
@@ -287,17 +313,61 @@ pub(crate) fn builtin_origin<'a>(
         profile.filter(|profile| matches!(profile.family().0, "typescript" | "javascript"))?;
     Some(configured.unwrap_or_else(|| match first {
         "Buffer" | "process" => "builtin:node",
-        "document" | "window" | "localStorage" | "sessionStorage" | "fetch" | "Headers"
-        | "Request" | "Response" | "FormData" | "HTMLElement" | "HTMLTableElement" | "Element"
-        | "URL" | "URLSearchParams" | "Blob" | "File" | "FileReader" | "DragEvent"
-        | "ClipboardEvent" | "FocusEvent" | "MouseEvent" | "KeyboardEvent" | "Event"
-        | "ParentNode" | "ChildNode" | "DocumentFragment" | "Storage" | "navigator"
-        | "location" | "history" | "performance" | "crypto" | "Location" | "History"
-        | "Navigator" | "Clipboard" | "DOMRect" | "CSSStyleDeclaration" | "AbortController"
-        | "AbortSignal" | "WebSocket" | "EventSource" | "XMLHttpRequest"
-        | "IntersectionObserver" | "MutationObserver" | "ResizeObserver" | "Performance"
-        | "Crypto" | "SubtleCrypto" | "TextEncoder" | "TextDecoder" | "NodeList"
-        | "HTMLCollection" | "ReadableStream" | "ReadableStreamDefaultReader" => "builtin:web_api",
+        "document"
+        | "window"
+        | "localStorage"
+        | "sessionStorage"
+        | "fetch"
+        | "Headers"
+        | "Request"
+        | "Response"
+        | "FormData"
+        | "HTMLElement"
+        | "HTMLTableElement"
+        | "Element"
+        | "URL"
+        | "URLSearchParams"
+        | "Blob"
+        | "File"
+        | "FileReader"
+        | "DragEvent"
+        | "ClipboardEvent"
+        | "FocusEvent"
+        | "MouseEvent"
+        | "KeyboardEvent"
+        | "Event"
+        | "ParentNode"
+        | "ChildNode"
+        | "DocumentFragment"
+        | "Storage"
+        | "navigator"
+        | "location"
+        | "history"
+        | "performance"
+        | "crypto"
+        | "Location"
+        | "History"
+        | "Navigator"
+        | "Clipboard"
+        | "DOMRect"
+        | "CSSStyleDeclaration"
+        | "AbortController"
+        | "AbortSignal"
+        | "WebSocket"
+        | "EventSource"
+        | "XMLHttpRequest"
+        | "IntersectionObserver"
+        | "MutationObserver"
+        | "ResizeObserver"
+        | "Performance"
+        | "Crypto"
+        | "SubtleCrypto"
+        | "TextEncoder"
+        | "TextDecoder"
+        | "NodeList"
+        | "HTMLCollection"
+        | "ReadableStream"
+        | "ReadableStreamDefaultReader" => "builtin:web_api",
         "console" | "CSS" if profile.id() == "javascript" => "builtin:web_api",
         "Object" | "Array" | "Math" | "JSON" | "Promise" | "Date"
             if profile.id() == "javascript" =>
@@ -351,7 +421,9 @@ pub(in crate::linker) fn commonjs_default_callable<'a>(
         [callable]
             if callable.path == module.path
                 && callable.kind == crate::models::tags::NodeKind::Function
-                && callable.detail_entry(crate::models::details::NodeDetailKey::COMMONJS_DEFAULT_CALLABLE) == true =>
+                && callable.detail_entry(
+                    crate::models::details::NodeDetailKey::COMMONJS_DEFAULT_CALLABLE,
+                ) == true =>
         {
             Some(*callable)
         }

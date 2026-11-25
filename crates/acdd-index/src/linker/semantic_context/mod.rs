@@ -82,9 +82,11 @@ impl<'a> Context<'a> {
             TypeTarget::Local(class) => class.language,
             _ => caller.language,
         };
-        if let Some(result) = crate::languages::by_id(language.as_str())
-            .and_then(|profile| profile.linker().special_property_lookup(self, receiver, member, caller))
-        {
+        if let Some(result) = crate::languages::by_id(language.as_str()).and_then(|profile| {
+            profile
+                .linker()
+                .special_property_lookup(self, receiver, member, caller)
+        }) {
             return result;
         }
         match receiver {
@@ -129,8 +131,9 @@ impl<'a> Context<'a> {
         receiver: &str,
         member: &str,
     ) -> bool {
-        let normalized = crate::languages::by_id(language)
-            .map_or(receiver, |profile| profile.linker().normalize_builtin_receiver(receiver));
+        let normalized = crate::languages::by_id(language).map_or(receiver, |profile| {
+            profile.linker().normalize_builtin_receiver(receiver)
+        });
         if self
             .receiver_type(path, normalized)
             .is_some_and(|rule| rule.members.iter().any(|allowed| allowed == member))
@@ -160,7 +163,11 @@ impl<'a> Context<'a> {
             }
             crate::linker::value_flow::ConfiguredReceiverAuthority::Nominal {
                 receiver, ..
-            } => receiver.rule.members.iter().any(|allowed| allowed == member),
+            } => receiver
+                .rule
+                .members
+                .iter()
+                .any(|allowed| allowed == member),
         };
         if admitted {
             Member::ConfiguredExternal {
@@ -209,27 +216,31 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
-        if let Some(state) = self.member_state(receiver.language.as_str()).filter(|state| state.handles_receiver(receiver)) {
-                return match state.lookup_local_member(receiver, member, associated, caller) {
-                    crate::languages::profile::LanguageMemberResult::Local(node) => {
-                        Member::Local(node)
-                    }
-                    crate::languages::profile::LanguageMemberResult::Candidates(nodes)
-                        if nodes.len() > 1 =>
-                    {
-                        Member::Ambiguous
-                    }
-                    crate::languages::profile::LanguageMemberResult::Candidates(nodes) => {
-                        nodes.first().copied().map_or(Member::Unknown, Member::Local)
-                    }
-                    crate::languages::profile::LanguageMemberResult::External { module, import_line, provider, .. } => Member::External(module, import_line, provider),
-                    crate::languages::profile::LanguageMemberResult::Ambiguous => Member::Ambiguous,
-                    _ if state.builtin_local_member(receiver, member, associated) =>
-                    {
-                        Member::Builtin
-                    }
-                    _ => Member::Unknown,
-                };
+        if let Some(state) = self
+            .member_state(receiver.language.as_str())
+            .filter(|state| state.handles_receiver(receiver))
+        {
+            return match state.lookup_local_member(receiver, member, associated, caller) {
+                crate::languages::profile::LanguageMemberResult::Local(node) => Member::Local(node),
+                crate::languages::profile::LanguageMemberResult::Candidates(nodes)
+                    if nodes.len() > 1 =>
+                {
+                    Member::Ambiguous
+                }
+                crate::languages::profile::LanguageMemberResult::Candidates(nodes) => nodes
+                    .first()
+                    .copied()
+                    .map_or(Member::Unknown, Member::Local),
+                crate::languages::profile::LanguageMemberResult::External {
+                    module,
+                    import_line,
+                    provider,
+                    ..
+                } => Member::External(module, import_line, provider),
+                crate::languages::profile::LanguageMemberResult::Ambiguous => Member::Ambiguous,
+                _ if state.builtin_local_member(receiver, member, associated) => Member::Builtin,
+                _ => Member::Unknown,
+            };
         }
         let candidates = self
             .interner
@@ -279,10 +290,17 @@ impl<'a> Context<'a> {
             } else {
                 Member::Unknown
             }
-        } else if let Some(outcome) = crate::languages::by_id(caller.language.as_str())
-            .and_then(|profile| profile.linker().external_member_policy(caller, module, import_line, member)) {
+        } else if let Some(outcome) =
+            crate::languages::by_id(caller.language.as_str()).and_then(|profile| {
+                profile
+                    .linker()
+                    .external_member_policy(caller, module, import_line, member)
+            })
+        {
             match outcome {
-                crate::languages::profile::LanguageMemberResult::External { provider, .. } => Member::External(module, import_line, provider),
+                crate::languages::profile::LanguageMemberResult::External { provider, .. } => {
+                    Member::External(module, import_line, provider)
+                }
                 _ => Member::Unknown,
             }
         } else {
@@ -290,7 +308,12 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn lookup_collection_member<'s>(&'s self, base: &str, member: &str, caller: &Node) -> Member<'s> {
+    fn lookup_collection_member<'s>(
+        &'s self,
+        base: &str,
+        member: &str,
+        caller: &Node,
+    ) -> Member<'s> {
         if let Some((_, authority)) = self.hierarchy_authority_for_base(&caller.path, base) {
             if let crate::linker::value_flow::ConfiguredReceiverAuthority::Hierarchy {
                 rule, ..
@@ -320,7 +343,10 @@ impl<'a> Context<'a> {
             if !std::ptr::eq(target, receiver) {
                 return self.lookup_member_mode(target, member, caller, associated);
             }
-            if let Some(result) = profile.linker().special_member_lookup(self, receiver, member, caller, associated) {
+            if let Some(result) = profile
+                .linker()
+                .special_member_lookup(self, receiver, member, caller, associated)
+            {
                 return result;
             }
         }
@@ -336,7 +362,11 @@ impl<'a> Context<'a> {
                 caller,
                 associated,
             ),
-            TypeTarget::ClassType(inner) if crate::languages::by_id(caller.language.as_str()).is_some_and(|profile| profile.linker().class_type_uses_associated_lookup()) => {
+            TypeTarget::ClassType(inner)
+                if crate::languages::by_id(caller.language.as_str()).is_some_and(|profile| {
+                    profile.linker().class_type_uses_associated_lookup()
+                }) =>
+            {
                 self.lookup_member_mode(inner, member, caller, true)
             }
             TypeTarget::Local(receiver) => {
@@ -350,7 +380,12 @@ impl<'a> Context<'a> {
                 import_line,
             } => self.lookup_external_member_mode(module, *import_line, member, caller),
             TypeTarget::Promise(_) => {
-                if self.lookup_builtin_member(&caller.path, caller.language.as_str(), "Promise", member) {
+                if self.lookup_builtin_member(
+                    &caller.path,
+                    caller.language.as_str(),
+                    "Promise",
+                    member,
+                ) {
                     Member::Builtin
                 } else {
                     Member::Unknown
@@ -360,7 +395,12 @@ impl<'a> Context<'a> {
                 self.lookup_collection_member(base, member, caller)
             }
             TypeTarget::Builtin(name) => {
-                let standard = self.lookup_builtin_member(&caller.path, caller.language.as_str(), name, member);
+                let standard = self.lookup_builtin_member(
+                    &caller.path,
+                    caller.language.as_str(),
+                    name,
+                    member,
+                );
                 if standard {
                     Member::Builtin
                 } else {
@@ -371,5 +411,4 @@ impl<'a> Context<'a> {
             _ => Member::Unknown,
         }
     }
-
 }

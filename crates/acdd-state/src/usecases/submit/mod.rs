@@ -405,14 +405,7 @@ pub(crate) fn submit_holding_repo_lock(
         &submit_input,
     )?;
 
-    attach_container_blackboard_cleanup(
-        config,
-        backend,
-        &snapshot,
-        node,
-        machine_gate,
-        &mut plan,
-    )?;
+    attach_container_blackboard_cleanup(config, backend, &snapshot, node, machine_gate, &mut plan)?;
     let emitted_receipt = extract_receipt_from_plan(&plan);
 
     let final_run_status = if machine_gate.save.prune {

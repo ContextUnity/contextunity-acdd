@@ -5,13 +5,12 @@ use crate::machine::graph::{
     active_claim_for_node, build_preconditions, container_scope, resolve_gate_def,
 };
 use crate::machine::inputs::{
-    ActionExecutionOutcome, MachineGateDef, MachineProfileInput, MachineProofKind, VerifyEvaluation,
-    VerifyInput,
+    ActionExecutionOutcome, MachineGateDef, MachineProfileInput, MachineProofKind,
+    VerifyEvaluation, VerifyInput,
 };
 use crate::types::{
-    ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus, NodeStatusPatch,
-    RunGraphSnapshot, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
-    ValidatedObservations,
+    ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus, NodeStatusPatch, RunGraphSnapshot,
+    TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::canonical_json_sha256;
@@ -118,15 +117,8 @@ pub fn evaluate_verify(
         started_at: input.started_at.clone(),
     };
 
-    let (trace_status, outcome) = classify_verify_outcome(
-        snapshot,
-        profile,
-        obs,
-        node,
-        gate,
-        &admitted_scope,
-        input,
-    );
+    let (trace_status, outcome) =
+        classify_verify_outcome(snapshot, profile, obs, node, gate, &admitted_scope, input);
 
     let trace_finish = TraceFinishInput {
         trace_row_id: 0,
@@ -346,7 +338,10 @@ fn verify_required_checks(
         else {
             return Err(StateError::new(
                 ErrorCode::GateVerificationFailed,
-                format!("required domain check '{}' was not executed", req.qualified_name),
+                format!(
+                    "required domain check '{}' was not executed",
+                    req.qualified_name
+                ),
             ));
         };
         used[pos] = true;
@@ -644,21 +639,67 @@ mod tests {
             domain: "code".to_owned(),
             check: "seam".to_owned(),
             passed,
-            summary: if passed { "ok".to_owned() } else { "fail".to_owned() },
+            summary: if passed {
+                "ok".to_owned()
+            } else {
+                "fail".to_owned()
+            },
             diagnostics: Vec::new(),
             execution_digest_salt: None,
         };
         let call_cases = [
             // (has_command, exit_code, action_outcome, checks_count, observed_checks, exp_pass, exp_trace)
-            (true, Some(1), Some(ActionExecutionOutcome::Succeeded), 0, vec![], false, TraceStatus::Failed),
-            (true, Some(0), Some(ActionExecutionOutcome::Succeeded), 0, vec![], true, TraceStatus::Passed),
-            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true), chk(false)], false, TraceStatus::CheckFailed),
-            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true)], false, TraceStatus::CheckFailed),
-            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true), chk(true)], true, TraceStatus::Passed),
+            (
+                true,
+                Some(1),
+                Some(ActionExecutionOutcome::Succeeded),
+                0,
+                vec![],
+                false,
+                TraceStatus::Failed,
+            ),
+            (
+                true,
+                Some(0),
+                Some(ActionExecutionOutcome::Succeeded),
+                0,
+                vec![],
+                true,
+                TraceStatus::Passed,
+            ),
+            (
+                false,
+                None,
+                Some(ActionExecutionOutcome::Succeeded),
+                2,
+                vec![chk(true), chk(false)],
+                false,
+                TraceStatus::CheckFailed,
+            ),
+            (
+                false,
+                None,
+                Some(ActionExecutionOutcome::Succeeded),
+                2,
+                vec![chk(true)],
+                false,
+                TraceStatus::CheckFailed,
+            ),
+            (
+                false,
+                None,
+                Some(ActionExecutionOutcome::Succeeded),
+                2,
+                vec![chk(true), chk(true)],
+                true,
+                TraceStatus::Passed,
+            ),
         ];
 
-        for (idx, (has_cmd, exit_code, action_outcome, checks_count, check_results, exp_pass, exp_trace)) in
-            call_cases.into_iter().enumerate()
+        for (
+            idx,
+            (has_cmd, exit_code, action_outcome, checks_count, check_results, exp_pass, exp_trace),
+        ) in call_cases.into_iter().enumerate()
         {
             let mut gate = MachineGateDef::minimal(build_gate.clone());
             gate.proof = MachineProofKind::Call;
@@ -709,7 +750,12 @@ mod tests {
             };
             let eval = evaluate_verify(&snapshot, &profile, &obs, &input)
                 .expect("evaluate_verify returns structured VerifyEvaluation");
-            assert_eq!(eval.outcome.is_ok(), exp_pass, "call_case[{idx}]: {:?}", eval.outcome);
+            assert_eq!(
+                eval.outcome.is_ok(),
+                exp_pass,
+                "call_case[{idx}]: {:?}",
+                eval.outcome
+            );
             assert_eq!(eval.trace_finish.status, exp_trace, "call_case[{idx}]");
         }
 

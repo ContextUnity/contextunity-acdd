@@ -14,16 +14,26 @@ fn public_linker_preserves_edge_data_and_orders_edges_stably() {
     };
     use acdd_index::models::compact_graph::{CompactEdge, CompactGraph};
     for invalid in [
-        Edge { kind: "custom-kind-雪".into(), ..unusual.clone() },
-        Edge { confidence: "confidence-🧭".into(), ..unusual.clone() },
+        Edge {
+            kind: "custom-kind-雪".into(),
+            ..unusual.clone()
+        },
+        Edge {
+            confidence: "confidence-🧭".into(),
+            ..unusual.clone()
+        },
     ] {
         assert!(CompactEdge::try_from(&invalid).is_err());
         let mut graph = CompactGraph::default();
         assert!(graph.try_push_public_edge(&invalid).is_err());
         assert!(graph.edges.is_empty());
-        let invalid_facts = BTreeMap::from([("input.rs".to_owned(), Facts {
-            edges: vec![invalid], ..Facts::default()
-        })]);
+        let invalid_facts = BTreeMap::from([(
+            "input.rs".to_owned(),
+            Facts {
+                edges: vec![invalid],
+                ..Facts::default()
+            },
+        )]);
         assert!(std::panic::catch_unwind(|| crate::common::link_facts(&invalid_facts)).is_err());
     }
     let earlier = Edge {

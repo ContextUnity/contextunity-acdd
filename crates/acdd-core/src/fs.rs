@@ -158,8 +158,10 @@ pub fn write_new_confined(root: &Path, relative: &Path, bytes: &[u8]) -> std::io
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     ));
-    commit_atomic_temp(&target, &temporary, bytes, Some(false), true, false)
-        .map_err(|err| err.downcast::<std::io::Error>().unwrap_or_else(std::io::Error::other))
+    commit_atomic_temp(&target, &temporary, bytes, Some(false), true, false).map_err(|err| {
+        err.downcast::<std::io::Error>()
+            .unwrap_or_else(std::io::Error::other)
+    })
 }
 
 /// Validates that `path` and its existing ancestor directories do not traverse a
@@ -308,7 +310,11 @@ fn commit_atomic_temp(
         {
             use std::os::unix::fs::OpenOptionsExt;
             options
-                .mode(if executable == Some(true) { 0o755 } else { 0o600 })
+                .mode(if executable == Some(true) {
+                    0o755
+                } else {
+                    0o600
+                })
                 .custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = options.open(temporary)?;
@@ -749,7 +755,9 @@ impl ScopedTempDir {
     pub fn write_private_file(&self, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
         let rel = Path::new(name);
         if !is_normalized_relative(rel) || rel.components().count() != 1 {
-            return Err(path_error("temporary filename must be a single path component"));
+            return Err(path_error(
+                "temporary filename must be a single path component",
+            ));
         }
         let file_path = self.path.join(rel);
         let mut opts = OpenOptions::new();
@@ -966,13 +974,19 @@ fn resolve_bound_installed_path(
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("launch executable '{}' not found in PATH", arg0_path.display()),
+                format!(
+                    "launch executable '{}' not found in PATH",
+                    arg0_path.display()
+                ),
             ));
         }
     } else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("launch executable '{}' cannot resolve without PATH", arg0_path.display()),
+            format!(
+                "launch executable '{}' cannot resolve without PATH",
+                arg0_path.display()
+            ),
         ));
     };
 
@@ -996,7 +1010,10 @@ fn resolve_bound_installed_path(
 
 impl ExecutableIdentity {
     /// Captures running image bytes from `running_path` while recording `installed_path` for drift checks and re-exec.
-    fn capture_running_and_live(running_path: &Path, installed_path: &Path) -> std::io::Result<Self> {
+    fn capture_running_and_live(
+        running_path: &Path,
+        installed_path: &Path,
+    ) -> std::io::Result<Self> {
         let live = live_executable_path(installed_path.to_path_buf());
         let (len, digest) = hash_file_identity(running_path)?;
         Ok(Self {
@@ -1176,7 +1193,9 @@ mod tests {
             std::io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            check_git_entry_no_symlinks(&symlink_dir).unwrap_err().kind(),
+            check_git_entry_no_symlinks(&symlink_dir)
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::InvalidInput
         );
         let created_dir = ensure_confined_dir_all(base, Path::new("real/nested/logs")).unwrap();
@@ -1300,7 +1319,9 @@ mod tests {
         )
         .is_err());
 
-        let same_dir_sibling = dir.write_private_file("unrelated-sibling", b"sibling").unwrap();
+        let same_dir_sibling = dir
+            .write_private_file("unrelated-sibling", b"sibling")
+            .unwrap();
         assert!(resolve_bound_installed_path(
             &bin,
             &bin,
@@ -1310,7 +1331,9 @@ mod tests {
         )
         .is_err());
 
-        let replaced_distinct = dir.write_private_file("acdd-bin-v2", b"version-2-distinct").unwrap();
+        let replaced_distinct = dir
+            .write_private_file("acdd-bin-v2", b"version-2-distinct")
+            .unwrap();
         assert!(resolve_bound_installed_path(
             &backup,
             &bin,

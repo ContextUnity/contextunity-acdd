@@ -16,9 +16,7 @@ pub mod verify;
 mod tests;
 
 use claim::admit_claim;
-pub use graph::{
-    build_initial_run_graph, container_scope, effective_task_tags, matches_when,
-};
+pub use graph::{build_initial_run_graph, container_scope, effective_task_tags, matches_when};
 pub use inputs::{
     ActionExecutionOutcome, BuildGraphInput, ClaimDecision, ClaimInput, ExtendScopeInput,
     MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem, MachineProfileInput,
@@ -32,7 +30,10 @@ pub use submit::{evaluate_submit, plan_container_blackboard_cleanup};
 pub(crate) use sync::plan_sync;
 pub use verify::{compute_execution_digest, evaluate_verify, ExecutionDigestInput};
 
-use crate::types::{GateNodeRecord, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, ValidatedObservations};
+use crate::types::{
+    GateNodeRecord, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus,
+    ValidatedObservations,
+};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, WorkerId};
 

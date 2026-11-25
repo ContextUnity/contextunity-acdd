@@ -1,14 +1,14 @@
 //! Task branch integration (`rebase-ff` landing) and completeness checks.
 
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
-use super::snapshot::tree_entry_at;
 use super::exec::{
     create_scoped_temp_dir, ensure_non_empty_git_identity, failpoint_hit,
     first_commit_with_exact_trailer, format_message_with_trailer, git_dir_path, run_git_checked,
     run_git_raw, run_git_stdout,
 };
-use acdd_core::fs::ScopedTempDir;
+use super::snapshot::tree_entry_at;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
 use std::collections::BTreeMap;
@@ -319,11 +319,8 @@ pub fn verify_tasks_integrated(
                 {
                     continue;
                 }
-                let downstream_initial = tree_entry_at(
-                    run_worktree,
-                    downstream.initial_claim_tree.as_str(),
-                    path,
-                )?;
+                let downstream_initial =
+                    tree_entry_at(run_worktree, downstream.initial_claim_tree.as_str(), path)?;
                 let downstream_accepted =
                     tree_entry_at(run_worktree, downstream.accepted_tree.as_str(), path)?;
                 if downstream_initial != downstream_accepted && downstream_accepted == head_entry {
@@ -366,13 +363,17 @@ pub fn verify_tasks_integrated(
     Ok(missing)
 }
 
-fn find_integrated_commit(
-    worktree: &Path,
-    trailer: &str,
-) -> Result<Option<CommitOid>, StateError> {
+fn find_integrated_commit(worktree: &Path, trailer: &str) -> Result<Option<CommitOid>, StateError> {
     let out = run_git_checked(
         worktree,
-        &["log", "--fixed-strings", "--grep", trailer, "--format=%H", "HEAD"],
+        &[
+            "log",
+            "--fixed-strings",
+            "--grep",
+            trailer,
+            "--format=%H",
+            "HEAD",
+        ],
         None,
         None,
         ErrorCode::ExternalGitDrift,
@@ -483,6 +484,12 @@ impl Drop for TempRebaseWorktree {
             &[],
             None,
         );
-        let _ = run_git_raw(&self.primary_worktree, &["worktree", "prune"], None, &[], None);
+        let _ = run_git_raw(
+            &self.primary_worktree,
+            &["worktree", "prune"],
+            None,
+            &[],
+            None,
+        );
     }
 }

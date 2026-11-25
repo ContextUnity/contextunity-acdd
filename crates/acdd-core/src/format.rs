@@ -193,8 +193,14 @@ mod tests {
             canonical_json_string(&sample),
             r#"{"a":{"x":"ok","y":true},"b":[2,1]}"#
         );
-        assert_eq!(canonical_json_string(&sample), canonical_json_string(&reordered));
-        assert_eq!(canonical_json_sha256(&sample), canonical_json_sha256(&reordered));
+        assert_eq!(
+            canonical_json_string(&sample),
+            canonical_json_string(&reordered)
+        );
+        assert_eq!(
+            canonical_json_sha256(&sample),
+            canonical_json_sha256(&reordered)
+        );
         assert_eq!(
             canonical_json_sha256(&sample),
             sha256_hex(canonical_json_string(&sample).as_bytes())
@@ -210,8 +216,16 @@ mod tests {
             (6, 6, "a🦀b"),
             (16, 6, "a🦀b"),
         ] {
-            assert_eq!(utf8_floor_boundary(utf8, max_bytes), expected_floor, "floor {max_bytes}");
-            assert_eq!(utf8_tail(utf8, max_bytes), expected_tail, "tail {max_bytes}");
+            assert_eq!(
+                utf8_floor_boundary(utf8, max_bytes),
+                expected_floor,
+                "floor {max_bytes}"
+            );
+            assert_eq!(
+                utf8_tail(utf8, max_bytes),
+                expected_tail,
+                "tail {max_bytes}"
+            );
         }
     }
 }

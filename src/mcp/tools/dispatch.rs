@@ -351,10 +351,9 @@ fn invalid_format_policy(
         .as_ref()
         .and_then(|arguments| arguments.get("worktree"))
         .and_then(Value::as_str);
-    let Ok((target_root, _)) = server.resolve_target_root_and_db_with_adapter(
-        requested_worktree,
-        primary_adapter.as_ref().ok(),
-    ) else {
+    let Ok((target_root, _)) = server
+        .resolve_target_root_and_db_with_adapter(requested_worktree, primary_adapter.as_ref().ok())
+    else {
         return fallback_policy;
     };
     if target_root == server.root {
@@ -456,10 +455,7 @@ pub(super) async fn list_tools(
     })
     .await
     .map_err(|error| {
-        rmcp::ErrorData::internal_error(
-            format!("list_tools blocking task failed: {error}"),
-            None,
-        )
+        rmcp::ErrorData::internal_error(format!("list_tools blocking task failed: {error}"), None)
     })??;
     let supports_cache_hints = context
         .protocol_version()
@@ -541,12 +537,11 @@ fn prepare_tool_call_blocking(
             );
         }
     };
-    let adapter_result =
-        if requested_worktree.is_none() || target_root == server_prep.root {
-            primary_adapter
-        } else {
-            server_prep.load_adapter(&target_root)
-        };
+    let adapter_result = if requested_worktree.is_none() || target_root == server_prep.root {
+        primary_adapter
+    } else {
+        server_prep.load_adapter(&target_root)
+    };
     let (adapter, loaded_adapter) = match adapter_result {
         Ok(adapter) => {
             let arc = std::sync::Arc::new(adapter);
@@ -714,15 +709,12 @@ async fn execute_plugin_tool_route(
             };
             Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
         }
-        Ok(Err(err)) => Ok(response::result_for(
-            Err(err),
-            policy,
-            output_format,
-            operation,
-            tool_name,
-            None,
-        )
-        .into()),
+        Ok(Err(err)) => {
+            Ok(
+                response::result_for(Err(err), policy, output_format, operation, tool_name, None)
+                    .into(),
+            )
+        }
         Err(join_err) => Err(rmcp::ErrorData::internal_error(
             format!("plugin tool blocking task failed: {join_err}"),
             None,
@@ -790,10 +782,7 @@ pub(super) async fn call_tool(
     })
     .await
     .map_err(|error| {
-        rmcp::ErrorData::internal_error(
-            format!("call_tool preparation failed: {error}"),
-            None,
-        )
+        rmcp::ErrorData::internal_error(format!("call_tool preparation failed: {error}"), None)
     })?;
 
     if let Some(early) = prep.early_response {
@@ -825,16 +814,12 @@ pub(super) async fn call_tool(
         serde_json::json!(prep.target_root.display().to_string()),
     );
 
-    let debug_request = prep
-        .loaded_adapter
-        .as_ref()
-        .filter(|a| a.debug)
-        .map(|_| {
-            (
-                request.name.clone(),
-                serde_json::to_string_pretty(&request.arguments).unwrap_or_default(),
-            )
-        });
+    let debug_request = prep.loaded_adapter.as_ref().filter(|a| a.debug).map(|_| {
+        (
+            request.name.clone(),
+            serde_json::to_string_pretty(&request.arguments).unwrap_or_default(),
+        )
+    });
 
     let default_policy = ResponsePolicy::default();
     let loaded_adapter = prep.loaded_adapter.clone();
@@ -867,11 +852,8 @@ pub(super) async fn call_tool(
     } else {
         let request_server =
             server.with_root_and_db(prep.target_root, prep.target_db, prep.adapter);
-        let call = rmcp::handler::server::tool::ToolCallContext::new(
-            &request_server,
-            request,
-            context,
-        );
+        let call =
+            rmcp::handler::server::tool::ToolCallContext::new(&request_server, request, context);
         Server::tool_router().call(call).await
     };
 

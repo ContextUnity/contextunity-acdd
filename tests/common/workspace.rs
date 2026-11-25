@@ -44,7 +44,10 @@ pub fn canonical_file_uri(root: &Path, relative: impl AsRef<Path>, line: Option<
     });
     let path = canonical_root.join(relative);
     let raw = path.to_str().unwrap_or_else(|| {
-        panic!("could not encode fixture path as a file URI: {}", path.display())
+        panic!(
+            "could not encode fixture path as a file URI: {}",
+            path.display()
+        )
     });
     let normalized = raw.replace('\\', "/");
     assert!(

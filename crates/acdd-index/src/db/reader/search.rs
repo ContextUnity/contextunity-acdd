@@ -97,16 +97,29 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
         .transpose()?;
     let languages = if has_aspect(OverviewAspect::Languages) {
         let (island, resolved, ambiguous, unresolved, external) = (
-            NodeKind::IslandScope.as_str(), CoverageStatus::Resolved.as_str(),
-            CoverageStatus::Ambiguous.as_str(), CoverageStatus::Unresolved.as_str(), CoverageStatus::External.as_str(),
+            NodeKind::IslandScope.as_str(),
+            CoverageStatus::Resolved.as_str(),
+            CoverageStatus::Ambiguous.as_str(),
+            CoverageStatus::Unresolved.as_str(),
+            CoverageStatus::External.as_str(),
         );
         let lang_sql = format!(
             "SELECT l.language,coalesce(fc.files,0) files,coalesce(r.resolved,0) resolved,coalesce(r.ambiguous,0) ambiguous,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language FROM files UNION SELECT language FROM nodes WHERE kind='{island}' UNION SELECT language FROM coverage_owner_language) l LEFT JOIN (SELECT language,count(*) files FROM files GROUP BY language) fc ON fc.language=l.language LEFT JOIN (SELECT language,sum(CASE WHEN status='{resolved}' THEN records ELSE 0 END) resolved,sum(CASE WHEN status='{ambiguous}' THEN records ELSE 0 END) ambiguous,sum(CASE WHEN status='{unresolved}' THEN records ELSE 0 END) unresolved,sum(CASE WHEN status='{external}' THEN records ELSE 0 END) external_imports FROM coverage_language_counts GROUP BY language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language"
         );
         let language_total = paging::count(conn, &format!("SELECT count(*) FROM (SELECT language FROM files UNION SELECT language FROM nodes WHERE kind='{island}' UNION SELECT language FROM coverage_owner_language)"), &[])?;
         let (limit, offset) = (options.limit as i64, options.offset as i64);
-        let languages = rows(conn, &format!("{lang_sql} LIMIT ?1 OFFSET ?2"), &[&limit, &offset], options.limit)?;
-        Some(paging::value(languages, language_total, options, &generation))
+        let languages = rows(
+            conn,
+            &format!("{lang_sql} LIMIT ?1 OFFSET ?2"),
+            &[&limit, &offset],
+            options.limit,
+        )?;
+        Some(paging::value(
+            languages,
+            language_total,
+            options,
+            &generation,
+        ))
     } else {
         None
     };
@@ -119,7 +132,17 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
         .then(|| cycles::summary(conn, None))
         .transpose()?;
     let metadata = has_aspect(OverviewAspect::Metadata)
-        .then(|| rows(conn, "SELECT key,value FROM metadata WHERE key IN(?1,?2) ORDER BY key", &[&MetadataKey::SchemaVersion.as_str(), &MetadataKey::WorkspaceRoot.as_str()], 2))
+        .then(|| {
+            rows(
+                conn,
+                "SELECT key,value FROM metadata WHERE key IN(?1,?2) ORDER BY key",
+                &[
+                    &MetadataKey::SchemaVersion.as_str(),
+                    &MetadataKey::WorkspaceRoot.as_str(),
+                ],
+                2,
+            )
+        })
         .transpose()?;
     Ok(serde_json::to_value(OverviewPayload {
         topology,
@@ -415,9 +438,11 @@ fn workspace_diagnostic_reason_counts(
                 .or_default()
                 .entry(status.to_owned())
                 .or_default();
-            *count = count
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("diagnostic reason reference count exceeds the supported integer range"))?;
+            *count = count.checked_add(1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "diagnostic reason reference count exceeds the supported integer range"
+                )
+            })?;
         }
     }
     budget.check()?;

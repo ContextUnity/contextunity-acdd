@@ -121,9 +121,16 @@ mod binary_identity_guard {
                 json!({ "name": "code_map_overview", "arguments": {} }),
             )
             .unwrap();
-        assert_eq!(warm_reply["result"]["isError"], json!(false), "{warm_reply}");
+        assert_eq!(
+            warm_reply["result"]["isError"],
+            json!(false),
+            "{warm_reply}"
+        );
 
-        workspace.write("src/lib.rs", "pub fn before_drift() {}\npub fn after_drift() {}\n");
+        workspace.write(
+            "src/lib.rs",
+            "pub fn before_drift() {}\npub fn after_drift() {}\n",
+        );
         std::thread::sleep(Duration::from_millis(5100));
         std::fs::rename(&binary, &backup).unwrap();
 
@@ -149,7 +156,10 @@ mod binary_identity_guard {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "stale server must not publish delta after binary drift");
+        assert_eq!(
+            count, 0,
+            "stale server must not publish delta after binary drift"
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -172,9 +182,16 @@ mod binary_identity_guard {
                 json!({ "name": "code_map_overview", "arguments": {} }),
             )
             .unwrap();
-        assert_eq!(warm_reply["result"]["isError"], json!(false), "{warm_reply}");
+        assert_eq!(
+            warm_reply["result"]["isError"],
+            json!(false),
+            "{warm_reply}"
+        );
 
-        workspace.write("src/lib.rs", "pub fn before_drift() {}\npub fn after_drift() {}\n");
+        workspace.write(
+            "src/lib.rs",
+            "pub fn before_drift() {}\npub fn after_drift() {}\n",
+        );
         std::thread::sleep(Duration::from_millis(5100));
 
         // Move running image to `.bak` and place a distinct valid binary at `.acdd/server`.
@@ -256,9 +273,8 @@ mod binary_identity_guard {
         use std::process::{Command, Stdio};
 
         if std::env::var_os("ACDD_STARTUP_RACE_CHILD").is_some() {
-            let workspace_root = std::path::PathBuf::from(
-                std::env::var_os("ACDD_STARTUP_RACE_WORKSPACE").unwrap(),
-            );
+            let workspace_root =
+                std::path::PathBuf::from(std::env::var_os("ACDD_STARTUP_RACE_WORKSPACE").unwrap());
             let db_path =
                 std::path::PathBuf::from(std::env::var_os("ACDD_STARTUP_RACE_DB").unwrap());
             let expected_bin =
@@ -281,11 +297,8 @@ mod binary_identity_guard {
             } else {
                 let identity =
                     ExecutableIdentity::current().expect("pinned /proc/self/exe capture");
-                let actual_digest: String = identity
-                    .digest
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
+                let actual_digest: String =
+                    identity.digest.iter().map(|b| format!("{b:02x}")).collect();
                 assert_eq!(
                     actual_digest, expected_digest,
                     "ExecutableIdentity::current must hash pinned running image, not replaced file"
@@ -434,15 +447,17 @@ mod binary_identity_guard {
         use std::process::Command;
 
         if std::env::var_os("ACDD_COLD_TOCTOU_CHILD").is_some() {
-            let workspace_root = std::path::PathBuf::from(
-                std::env::var_os("ACDD_COLD_TOCTOU_WORKSPACE").unwrap(),
-            );
+            let workspace_root =
+                std::path::PathBuf::from(std::env::var_os("ACDD_COLD_TOCTOU_WORKSPACE").unwrap());
             let db_path =
                 std::path::PathBuf::from(std::env::var_os("ACDD_COLD_TOCTOU_DB").unwrap());
             let runner_bin =
                 std::path::PathBuf::from(std::env::var_os("ACDD_COLD_TOCTOU_BIN").unwrap());
             let identity = ExecutableIdentity::current().unwrap();
-            assert_eq!(identity.check_current(None).unwrap(), ExecutableDrift::Current);
+            assert_eq!(
+                identity.check_current(None).unwrap(),
+                ExecutableDrift::Current
+            );
 
             let bin_for_hook = runner_bin.clone();
             let hooks = PipelineTestHooks::before_generation_lock(move |_| {
@@ -462,7 +477,10 @@ mod binary_identity_guard {
                         anyhow::bail!("BINARY_DRIFT_RELOAD: changed at {}", live_path.display())
                     }
                     ExecutableDrift::Missing { live_path } => {
-                        anyhow::bail!("BINARY_DRIFT_UNAVAILABLE: missing at {}", live_path.display())
+                        anyhow::bail!(
+                            "BINARY_DRIFT_UNAVAILABLE: missing at {}",
+                            live_path.display()
+                        )
                     }
                 }
             };
@@ -488,7 +506,10 @@ mod binary_identity_guard {
         let receipt_path = workspace.db().with_extension("sqlite.verified.json");
         let db_before = std::fs::read(workspace.db()).unwrap();
         let receipt_before = std::fs::read(&receipt_path).unwrap();
-        workspace.write("src/lib.rs", "pub fn before_stage() {}\npub fn after_stage() {}\n");
+        workspace.write(
+            "src/lib.rs",
+            "pub fn before_stage() {}\npub fn after_stage() {}\n",
+        );
 
         let runner_bin = workspace.path(".acdd/cold-toctou-runner");
         std::fs::create_dir_all(runner_bin.parent().unwrap()).unwrap();

@@ -292,7 +292,10 @@ fn commonjs_callable_export_forms() {
                 .filter_map(|e| facts[provider_path].nodes.iter().find(|n| n.id == e.dst))
                 .collect();
             assert_eq!(targets.len(), 1, "{id}:{path}: {graph:#?}");
-    assert_eq!(targets[0].kind, acdd_index::models::tags::NodeKind::Function);
+            assert_eq!(
+                targets[0].kind,
+                acdd_index::models::tags::NodeKind::Function
+            );
             if !target_name.is_empty() {
                 assert_eq!(targets[0].name, target_name);
             }
@@ -392,21 +395,27 @@ fn callable_globals_respect_lexical_scope_and_imported_targets() {
         let local_string = facts[&scope_path]
             .nodes
             .iter()
-            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String")
+            .find(|node| {
+                node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String"
+            })
             .unwrap()
             .id
             .clone();
         let static_keys = facts[&static_keys_path]
             .nodes
             .iter()
-            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "keys")
+            .find(|node| {
+                node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "keys"
+            })
             .unwrap()
             .id
             .clone();
         let imported_string = facts[&provider_path]
             .nodes
             .iter()
-            .find(|node| node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String")
+            .find(|node| {
+                node.kind == acdd_index::models::tags::NodeKind::Function && node.name == "String"
+            })
             .unwrap()
             .id
             .clone();

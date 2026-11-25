@@ -1,15 +1,10 @@
 #![cfg(feature = "lang-python")]
 
-use acdd_index::models::Graph;
 use acdd_index::ast;
+use acdd_index::models::Graph;
 use std::collections::BTreeMap;
 
-fn linked(
-    files: &[(&str, &str)],
-) -> (
-    BTreeMap<String, acdd_index::models::Facts>,
-    Graph,
-) {
+fn linked(files: &[(&str, &str)]) -> (BTreeMap<String, acdd_index::models::Facts>, Graph) {
     let facts = files
         .iter()
         .map(|(path, source)| {

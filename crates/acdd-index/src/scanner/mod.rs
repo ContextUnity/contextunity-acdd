@@ -11,8 +11,8 @@ use serde::Serialize;
 
 pub mod discovery;
 mod walk;
-pub use crate::models::INDEX_SEMANTICS_VERSION;
 use crate::models::FileEntry;
+pub use crate::models::INDEX_SEMANTICS_VERSION;
 pub use acdd_core::config::ENGINE_SCHEMA_VERSION;
 pub use acdd_core::config::*;
 pub use walk::dependency_manifests_for_build;
@@ -182,7 +182,11 @@ pub fn exact_paths_exist<'a>(
 /// Determine whether every component has the exact spelling reported by its directory.
 /// Errors inspecting a boundary are propagated rather than interpreted as absence.
 #[cfg(test)]
-pub(crate) fn exact_path_exists(root: &Path, adapter: &Adapter, path: &str) -> std::io::Result<bool> {
+pub(crate) fn exact_path_exists(
+    root: &Path,
+    adapter: &Adapter,
+    path: &str,
+) -> std::io::Result<bool> {
     Ok(exact_paths_exist(root, adapter, [path])?.contains(path))
 }
 
@@ -673,7 +677,10 @@ mod tests {
                 digits: 3,
             },
         );
-        assert!(super::walk::is_spec_collection_path("docs/rfcs/helper.py", &adapter));
+        assert!(super::walk::is_spec_collection_path(
+            "docs/rfcs/helper.py",
+            &adapter
+        ));
         assert!(!super::walk::is_spec_collection_path(
             "docs/rfcs_extra/helper.py",
             &adapter

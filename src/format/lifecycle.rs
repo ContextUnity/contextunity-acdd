@@ -17,7 +17,10 @@ pub fn render_claim_markdown(claim: &ClaimResp) -> String {
 
 /// Render a [`VerifyResp`] as readable Markdown (`ADR-0006`).
 pub fn render_verify_markdown(verify: &VerifyResp) -> String {
-    super::core::render_serializable(verify, &format!("Gate Verification: {}", verify.node_cursor))
+    super::core::render_serializable(
+        verify,
+        &format!("Gate Verification: {}", verify.node_cursor),
+    )
 }
 
 /// Render a [`SubmitResp`] as readable Markdown (`ADR-0006`).
@@ -33,7 +36,10 @@ pub fn render_state_command_markdown(output: &StateCommandOutput, title: &str) -
         StateCommandOutput::Verify(verify) => render_verify_markdown(verify),
         StateCommandOutput::Submit(submit) => render_submit_markdown(submit),
         StateCommandOutput::BlackboardPost(resp) => {
-            super::coordination::render_blackboard_markdown(&serde_json::json!({ "message": resp.entry }), title)
+            super::coordination::render_blackboard_markdown(
+                &serde_json::json!({ "message": resp.entry }),
+                title,
+            )
         }
         StateCommandOutput::CallPluginTool(resp) => {
             super::coordination::render_plugin_tool_markdown(&resp.tool_name, &resp.output)
@@ -72,13 +78,18 @@ pub fn render_state_query_markdown(
             None => super::core::render_serializable(&resp.snapshot, "Observability"),
         },
         StateQueryOutput::Context(claim) => render_claim_markdown(claim),
-        StateQueryOutput::Roadmap(resp) => super::roadmap::render_roadmap_markdown(resp, roadmap_detail),
+        StateQueryOutput::Roadmap(resp) => {
+            super::roadmap::render_roadmap_markdown(resp, roadmap_detail)
+        }
         other => render_tagged_enum_markdown(other, title),
     }
 }
 
 fn push_run_summary(out: &mut String, run: &RunRecord) {
-    out.push_str(&format!("- **Run**: `{}` (`{}`)\n", run.run_id, run.run_name));
+    out.push_str(&format!(
+        "- **Run**: `{}` (`{}`)\n",
+        run.run_id, run.run_name
+    ));
     out.push_str(&format!(
         "- **Status**: `{:?}` | **Profile**: `{}` | **Isolation**: `{:?}` | **Generation**: `{}`\n",
         run.status, run.profile_id, run.isolation, run.generation
@@ -112,7 +123,11 @@ fn push_run_summary(out: &mut String, run: &RunRecord) {
 
 fn push_backtick_list(out: &mut String, label: &str, items: &[String]) {
     if !items.is_empty() {
-        let joined = items.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ");
+        let joined = items
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!("- **{label}**: {joined}\n"));
     }
 }
@@ -146,7 +161,11 @@ fn push_gate_dispatch_markdown(out: &mut String, entry: &GateDispatchInfo) {
         out.push_str("run directly");
     }
     if let Some(ref cmd) = entry.command {
-        let suffix = if entry.role.is_some() { "" } else { " via `verify` + `submit`" };
+        let suffix = if entry.role.is_some() {
+            ""
+        } else {
+            " via `verify` + `submit`"
+        };
         details.push(format!("cmd: `{cmd}`{suffix}"));
     }
     if let Some(ref call) = entry.call {
@@ -199,7 +218,11 @@ fn render_next_markdown(resp: &NextResp) -> String {
             .iter()
             .enumerate()
             .map(|(idx, wave)| {
-                let items = wave.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join(", ");
+                let items = wave
+                    .iter()
+                    .map(|t| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("W{idx}: [{items}]")
             })
             .collect();
@@ -231,7 +254,14 @@ fn render_status_markdown(resp: &StatusResp) -> String {
                 .unwrap_or_else(|| "-".to_owned());
             let row = format!(
                 "| `{}` | `{:?}` | `{:?}` | `{}` | {}/{} | {} | {} |\n",
-                node.node_id, node.kind, node.status, worker, node.attempt, node.max_attempts, node.claim_revision, tree
+                node.node_id,
+                node.kind,
+                node.status,
+                worker,
+                node.attempt,
+                node.max_attempts,
+                node.claim_revision,
+                tree
             );
             out.push_str(&row);
         }
@@ -248,17 +278,31 @@ fn render_list_markdown(resp: &ListResp) -> String {
     if !page.runs.is_empty() {
         out.push_str("\n## Active / Persisted Runs\n\n| Run ID | Name | Status | Spec | Profile | Isolation | Gen |\n|---|---|---|---|---|---|---:|\n");
         for run in &page.runs {
-            let spec = run.spec_id.as_deref().or(run.spec_path.as_deref()).unwrap_or("-");
+            let spec = run
+                .spec_id
+                .as_deref()
+                .or(run.spec_path.as_deref())
+                .unwrap_or("-");
             out.push_str(&format!(
                 "| `{}` | `{}` | `{:?}` | `{}` | `{}` | `{:?}` | {} |\n",
-                run.run_id, run.run_name, run.status, spec, run.profile_id, run.isolation, run.generation
+                run.run_id,
+                run.run_name,
+                run.status,
+                spec,
+                run.profile_id,
+                run.isolation,
+                run.generation
             ));
         }
     }
     if !page.tombstones.is_empty() {
         out.push_str("\n## Tombstones\n\n| Run ID | Name | Disposition | Spec / Archive | Closed |\n|---|---|---|---|---|\n");
         for tomb in &page.tombstones {
-            let spec = tomb.spec_id.as_deref().or(tomb.archive_path.as_deref()).unwrap_or("-");
+            let spec = tomb
+                .spec_id
+                .as_deref()
+                .or(tomb.archive_path.as_deref())
+                .unwrap_or("-");
             out.push_str(&format!(
                 "| `{}` | `{}` | `{:?}` | `{}` | {} |\n",
                 tomb.run_id, tomb.run_name, tomb.terminal_status, spec, tomb.closed_at
@@ -279,7 +323,11 @@ fn push_node_details(out: &mut String, node: &GateNodeRecord) {
     }
     out.push_str(&format!(
         "- **Attempt**: {}/{} | **Claim Rev**: {} | **Contract Rev**: {} | **Version**: {}\n",
-        node.attempt, node.max_attempts, node.claim_revision, node.contract_revision, node.node_version
+        node.attempt,
+        node.max_attempts,
+        node.claim_revision,
+        node.contract_revision,
+        node.node_version
     ));
     if let Some(ref worker) = node.worker_id {
         out.push_str(&format!("- **Worker**: `{worker}`\n"));
@@ -300,7 +348,12 @@ fn push_node_details(out: &mut String, node: &GateNodeRecord) {
         out.push_str(&format!("- **Accepted Tree**: `{tree}`\n"));
     }
     if !node.scope.is_empty() {
-        let scope = node.scope.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ");
+        let scope = node
+            .scope
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!("- **Scope**: {scope}\n"));
     }
     if !node.extended_scope.is_empty() {
@@ -320,7 +373,10 @@ fn render_show_markdown(resp: &ShowResp) -> String {
     if !resp.subtasks.is_empty() {
         out.push_str("\n## Subtasks\n\n");
         for sub in &resp.subtasks {
-            out.push_str(&format!("- [{:?}] `{}`: {}", sub.status, sub.subtask_ref, sub.title));
+            out.push_str(&format!(
+                "- [{:?}] `{}`: {}",
+                sub.status, sub.subtask_ref, sub.title
+            ));
             if let Some(ref ev) = sub.evidence {
                 out.push_str(&format!(" — {ev}"));
             }
@@ -333,7 +389,10 @@ fn render_show_markdown(resp: &ShowResp) -> String {
             out.push_str(&render_claim_markdown(&claim));
         } else {
             out.push('\n');
-            out.push_str(&super::core::render_markdown(preview_val, "Context Preview"));
+            out.push_str(&super::core::render_markdown(
+                preview_val,
+                "Context Preview",
+            ));
         }
     }
     out
@@ -341,7 +400,10 @@ fn render_show_markdown(resp: &ShowResp) -> String {
 
 fn render_tagged_enum_markdown<T: Serialize>(value: &T, title: &str) -> String {
     let val = serde_json::to_value(value).unwrap_or(Value::Null);
-    let inner = val.as_object().and_then(|map| map.values().next()).unwrap_or(&val);
+    let inner = val
+        .as_object()
+        .and_then(|map| map.values().next())
+        .unwrap_or(&val);
     super::core::render_markdown(inner, title)
 }
 
@@ -427,8 +489,16 @@ mod tests {
         assert!(!start_md.contains("|---"), "{start_md}");
         assert!(start_md.contains("## Gate Dispatch Plan"), "{start_md}");
         assert!(start_md.contains("- `tasks.build`: spawn `builder` (`subagent`) (reuse on reject; models: `model-build`; cmd: `build_check`)"), "{start_md}");
-        assert!(start_md.contains("- `run_tests`: run directly (cmd: `verify_all` via `verify` + `submit`)"), "{start_md}");
-        assert!(start_md.contains("- `handoff`: run `coordinator` `inline` (models: `model-orch`)"), "{start_md}");
+        assert!(
+            start_md.contains(
+                "- `run_tests`: run directly (cmd: `verify_all` via `verify` + `submit`)"
+            ),
+            "{start_md}"
+        );
+        assert!(
+            start_md.contains("- `handoff`: run `coordinator` `inline` (models: `model-orch`)"),
+            "{start_md}"
+        );
 
         let next_md = render_state_query_markdown(
             &StateQueryOutput::Next(NextResp {

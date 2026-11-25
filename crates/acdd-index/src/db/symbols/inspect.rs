@@ -31,8 +31,22 @@ pub fn inspect_with_path_options(
     path: Option<&str>,
     options: &InspectOptions<'_>,
 ) -> Result<Value> {
-    let result = inspect_paged_response(conn, selector, path, options.show_doc, options.page, options.coverage)?;
-    with_source(conn, root, result, options.source, options.page, SourcePreviewMode::Configured)
+    let result = inspect_paged_response(
+        conn,
+        selector,
+        path,
+        options.show_doc,
+        options.page,
+        options.coverage,
+    )?;
+    with_source(
+        conn,
+        root,
+        result,
+        options.source,
+        options.page,
+        SourcePreviewMode::Configured,
+    )
 }
 
 /// Reads a bounded source snippet around `selector` with line offsets and generation checks.
@@ -44,7 +58,15 @@ pub(crate) fn snippet_paged(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
-    snippet_paged_with_mode(conn, root, selector, None, source, options, SourcePreviewMode::Configured)
+    snippet_paged_with_mode(
+        conn,
+        root,
+        selector,
+        None,
+        source,
+        options,
+        SourcePreviewMode::Configured,
+    )
 }
 
 /// Pages symbol snippet matches bounded by response byte budget.
@@ -114,7 +136,10 @@ pub(crate) fn inspect_paged_response(
     } else {
         inspect_without_coverage(conn, selector, path, show_doc, options)?
     };
-    let id = result["node"]["id"].as_str().context("invalid selected node id")?.to_owned();
+    let id = result["node"]["id"]
+        .as_str()
+        .context("invalid selected node id")?
+        .to_owned();
     result["documented_in"] = paging::query(
         conn,
         &format!(
@@ -238,12 +263,7 @@ pub(crate) fn explain_paged_response(
         explain_without_coverage(conn, selector, path, explain)?
     };
     let result = with_analysis_gaps(conn, result, explain.page)?;
-    summarize_symbol(
-        conn,
-        result,
-        coverage.include_coverage,
-        explain.page.detail,
-    )
+    summarize_symbol(conn, result, coverage.include_coverage, explain.page.detail)
 }
 
 fn with_analysis_gaps(
@@ -316,9 +336,18 @@ fn explain_without_coverage(
 ) -> Result<Value> {
     let mut result =
         inspect_without_coverage(conn, selector, path, explain.show_doc, explain.page)?;
-    let id = result["node"]["id"].as_str().context("invalid node id")?.to_owned();
+    let id = result["node"]["id"]
+        .as_str()
+        .context("invalid node id")?
+        .to_owned();
     let node_hash = stable_hash64(&id);
-    reader_inspect::populate_edge_relations(conn, &mut result, node_hash, explain.direction, explain.page)?;
+    reader_inspect::populate_edge_relations(
+        conn,
+        &mut result,
+        node_hash,
+        explain.direction,
+        explain.page,
+    )?;
     Ok(result)
 }
 

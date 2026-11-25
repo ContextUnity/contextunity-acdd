@@ -1,7 +1,5 @@
 use super::ingest::{PreparedCoverage, PreparedDependency, PreparedGraph};
-use super::node_domain::{
-    finish_hashers, row_hasher, Leaves, OwnerHashers,
-};
+use super::node_domain::{finish_hashers, row_hasher, Leaves, OwnerHashers};
 use crate::models::{compact_graph::CompactGraph, FileEntry};
 use crate::typed_facts::TypedFacts;
 use crate::{
@@ -444,12 +442,7 @@ fn project_shared_owner_entries<'a>(
         if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
                 let key_hash = register_shared_key(&mut key_by_hash, &projected.node.qualname)?;
-                owner_rows.push((
-                    owner,
-                    SharedOwnerKind::Symbol,
-                    key_hash,
-                    projected.node_id,
-                ));
+                owner_rows.push((owner, SharedOwnerKind::Symbol, key_hash, projected.node_id));
             }
         }
         let keys = prepared_references.map_or_else(

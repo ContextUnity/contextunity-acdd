@@ -37,6 +37,10 @@ fn clean_delta_preserves_node_fts_data_and_commitment() {
     )
     .unwrap();
     let conn = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(fts_data(&conn), before, "clean delta must not mutate node FTS");
+    assert_eq!(
+        fts_data(&conn),
+        before,
+        "clean delta must not mutate node FTS"
+    );
     commitments::verify(&conn).unwrap();
 }

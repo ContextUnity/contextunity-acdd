@@ -104,7 +104,9 @@ impl DocsDomainProvider {
                     execution_digest_salt: Some(format!("docs_live={live_digest}")),
                 });
             }
-            LinksScope::FullRepo => crate::engine::docs_check::collect_link_errors(&req.worktree, None)?,
+            LinksScope::FullRepo => {
+                crate::engine::docs_check::collect_link_errors(&req.worktree, None)?
+            }
             LinksScope::Scoped(patterns) => crate::engine::docs_check::collect_link_errors(
                 &req.worktree,
                 Some(patterns.as_slice()),
@@ -144,8 +146,7 @@ impl DocsDomainProvider {
                 )),
             ],
         )?;
-        let resp =
-            acdd_state::validate::validate_workspace(&req.worktree, None, None, &providers)?;
+        let resp = acdd_state::validate::validate_workspace(&req.worktree, None, None, &providers)?;
         if resp.valid {
             Ok(DomainCheckOutcome::Passed {
                 summary: format!(
@@ -186,8 +187,7 @@ impl DocsDomainProvider {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            let doc_type = frontmatter_field(&text, "doc_type")
-                .unwrap_or_else(|| "adr".to_owned());
+            let doc_type = frontmatter_field(&text, "doc_type").unwrap_or_else(|| "adr".to_owned());
             if doc_type == "contract" {
                 continue;
             }
@@ -197,7 +197,9 @@ impl DocsDomainProvider {
             items.push((rel, title, doc_type));
         }
 
-        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
+        if let Some(conn) =
+            open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref())
+        {
             let mut stmt = conn.prepare(
                 "SELECT path, MIN(section_title) AS title, doc_type
                  FROM doc_sections
@@ -261,9 +263,7 @@ impl DocsDomainProvider {
         let mut ordered_paths = vec![("AGENTS.md".to_owned(), true)];
 
         let tests_patterns = ["tests/**".to_owned(), "TESTS.md".to_owned()];
-        if !req.admitted_scope.is_empty()
-            && scopes_overlap(&req.admitted_scope, &tests_patterns)
-        {
+        if !req.admitted_scope.is_empty() && scopes_overlap(&req.admitted_scope, &tests_patterns) {
             ordered_paths.push(("TESTS.md".to_owned(), false));
         }
         ordered_paths.extend(collect_scoped_agents_md(
@@ -316,7 +316,9 @@ impl DocsDomainProvider {
         let worktree_adapter = resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
         let mut enforced_ids: BTreeSet<String> = BTreeSet::new();
 
-        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
+        if let Some(conn) =
+            open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref())
+        {
             enforced_ids = acdd_index::db::lint::enforced_invariant_ids(
                 &conn,
                 &worktree_adapter.architecture.rules,
@@ -629,7 +631,10 @@ fn collect_fallback_db_invariants(
     Ok(())
 }
 
-fn collect_configured_enforced_ids(worktree_adapter: &Adapter, enforced_ids: &mut BTreeSet<String>) {
+fn collect_configured_enforced_ids(
+    worktree_adapter: &Adapter,
+    enforced_ids: &mut BTreeSet<String>,
+) {
     for spec in &worktree_adapter.architecture.rules {
         if let Some(inv) = spec
             .invariant
@@ -896,7 +901,10 @@ fn filter_adr_records_by_scope(
         };
         if !code_path.starts_with("docs/") {
             workspace_has_adr_links = true;
-            if req.path_policy.is_scope_admitted(&code_path, &req.admitted_scope) {
+            if req
+                .path_policy
+                .is_scope_admitted(&code_path, &req.admitted_scope)
+            {
                 relevant_adrs.insert(adr_path);
             }
         }
@@ -1268,7 +1276,11 @@ mod tests {
         assert_check_matches_freshness(&provider, "links", "docs_live=", &check_req);
 
         // Non-empty non-markdown scope must pass without scanning unrelated broken docs in the repo.
-        fs::write(root.join("docs/unrelated_broken.md"), "[missing](./missing.md)\n").unwrap();
+        fs::write(
+            root.join("docs/unrelated_broken.md"),
+            "[missing](./missing.md)\n",
+        )
+        .unwrap();
         let code_only_req = DomainCheckReq {
             admitted_scope: vec!["src/lib.rs".into()],
             ..check_req.clone()
@@ -1320,7 +1332,10 @@ mod tests {
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
         };
-        assert!(provider.capabilities().context_lenses.contains("instructions"));
+        assert!(provider
+            .capabilities()
+            .context_lenses
+            .contains("instructions"));
         fs::create_dir_all(root.join("src/sub")).unwrap();
         fs::create_dir_all(root.join("tests/acdd")).unwrap();
         fs::create_dir_all(root.join("other")).unwrap();
@@ -1335,21 +1350,23 @@ mod tests {
             admitted_scope: vec!["src/sub/lib.rs".into()],
             ..ctx_req.clone()
         };
-        let src_inst = provider.provide_context("instructions", &src_only_ctx).unwrap();
+        let src_inst = provider
+            .provide_context("instructions", &src_only_ctx)
+            .unwrap();
         let src_paths: Vec<&str> = src_inst["items"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|v| v["path"].as_str())
             .collect();
-        assert_eq!(
-            src_paths,
-            vec!["AGENTS.md", "src/AGENTS.md"]
-        );
+        assert_eq!(src_paths, vec!["AGENTS.md", "src/AGENTS.md"]);
         assert!(src_inst["items"][0].get("uri").is_none());
         assert!(src_inst["items"][0].get("title").is_none());
         assert!(src_inst["items"][0].get("content").is_none());
-        assert_eq!(src_inst["items"][0]["headings"], serde_json::json!(["Root Agent Rules", "Routes"]));
+        assert_eq!(
+            src_inst["items"][0]["headings"],
+            serde_json::json!(["Root Agent Rules", "Routes"])
+        );
         assert_eq!(
             src_inst["directive"],
             "MANDATORY: read repository rules for respective scope."
@@ -1360,7 +1377,9 @@ mod tests {
             admitted_scope: vec!["tests/**".into()],
             ..ctx_req.clone()
         };
-        let tests_inst = provider.provide_context("instructions", &tests_ctx).unwrap();
+        let tests_inst = provider
+            .provide_context("instructions", &tests_ctx)
+            .unwrap();
         let tests_paths: Vec<&str> = tests_inst["items"]
             .as_array()
             .unwrap()
@@ -1446,17 +1465,29 @@ mod tests {
                 .filter_map(|v| v["path"].as_str())
                 .collect();
             for expected in expected_paths {
-                assert!(paths.contains(&expected), "{lens} missing {expected}: {paths:?}");
+                assert!(
+                    paths.contains(&expected),
+                    "{lens} missing {expected}: {paths:?}"
+                );
             }
             for excluded in excluded_paths {
-                assert!(!paths.contains(&excluded), "{lens} leaked {excluded}: {paths:?}");
+                assert!(
+                    !paths.contains(&excluded),
+                    "{lens} leaked {excluded}: {paths:?}"
+                );
             }
         }
-        let indexed_invs = provider.provide_context("invariants", &src_only_ctx).unwrap();
+        let indexed_invs = provider
+            .provide_context("invariants", &src_only_ctx)
+            .unwrap();
         let indexed_inv_text = serde_json::to_string(&indexed_invs).unwrap();
-        assert!(indexed_inv_text.contains("INV-TEST-1"), "{indexed_inv_text}");
         assert!(
-            !indexed_inv_text.contains("\"id\":\"[]\"") && !indexed_inv_text.contains("0000-old.md"),
+            indexed_inv_text.contains("INV-TEST-1"),
+            "{indexed_inv_text}"
+        );
+        assert!(
+            !indexed_inv_text.contains("\"id\":\"[]\"")
+                && !indexed_inv_text.contains("0000-old.md"),
             "indexed fallback must skip empty JSON arrays and archived docs: {indexed_inv_text}"
         );
 
@@ -1489,7 +1520,10 @@ mod tests {
         let ws_cfg_lens = cfg_provider
             .provide_context("workspace_config", &ctx_req)
             .unwrap();
-        assert_eq!(ws_cfg_lens["specs"]["milestones"]["next_ids"]["AC"], "AC-001");
+        assert_eq!(
+            ws_cfg_lens["specs"]["milestones"]["next_ids"]["AC"],
+            "AC-001"
+        );
         assert_eq!(ws_cfg_lens["docs_roots"], serde_json::json!(["docs"]));
         assert_eq!(
             ws_cfg_lens["profiles_dirs"],

@@ -22,7 +22,11 @@ fn dir_pattern_matches(rel_path: &str, dir_pattern: &str) -> bool {
 }
 
 /// Checks if a relative path belongs to any configured milestone or plan directories.
-pub(super) fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
+pub(super) fn is_milestone_or_plan_path(
+    rel_str: &str,
+    milestones: &[String],
+    plans: &[String],
+) -> bool {
     let check = |dirs: &[String]| dirs.iter().any(|d| dir_pattern_matches(rel_str, d));
     check(milestones) || check(plans)
 }
@@ -145,7 +149,9 @@ where
             if !source_root.exists() {
                 continue;
             }
-            for result in walk_non_symlinked(source_root, ignored_names, self.watch, base, rel_prefix) {
+            for result in
+                walk_non_symlinked(source_root, ignored_names, self.watch, base, rel_prefix)
+            {
                 let item = result.map_err(|e| error(e.to_string()))?;
                 if item.path_is_symlink()
                     || ignored_names.contains(&item.file_name().to_string_lossy().to_string())
@@ -272,7 +278,11 @@ pub(super) fn walk_candidate_paths(
             )?;
         }
         if docs_enabled && include_sources {
-            walker.collect_documentation_paths(&workspace.path, &prefix, &workspace.ignored_names)?;
+            walker.collect_documentation_paths(
+                &workspace.path,
+                &prefix,
+                &workspace.ignored_names,
+            )?;
         }
     }
     if code_enabled {

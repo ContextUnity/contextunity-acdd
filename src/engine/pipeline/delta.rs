@@ -80,16 +80,8 @@ fn rebuild_with_cache_dir(
     cache_dir: Option<&Path>,
     before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
-    super::cold::build_with_selection_and_guard(
-        root,
-        db,
-        adapter,
-        cache_dir,
-        None,
-        before_publish,
-    )
+    super::cold::build_with_selection_and_guard(root, db, adapter, cache_dir, None, before_publish)
 }
-
 
 struct DeltaAdmission {
     root: PathBuf,
@@ -127,10 +119,9 @@ fn admit_delta_generation(
     let selected_adapter = selected_adapter
         .map(|path| load_adapter(&root, Some(path)))
         .transpose()?;
-    if selected_adapter
-        .as_ref()
-        .is_some_and(|adapter| !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs"))
-    {
+    if selected_adapter.as_ref().is_some_and(|adapter| {
+        !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs")
+    }) {
         return Err(StateError::new(
             ErrorCode::FeatureDisabled,
             "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
@@ -201,9 +192,9 @@ fn admit_delta_generation(
     }
     let manifests_changed = current_adapter.modules.is_enabled("code")
         && modified.iter().any(|path| {
-            path.file_name().and_then(|name| name.to_str()).is_some_and(
-                languages::dependency_registry::is_dependency_manifest_filename,
-            )
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(languages::dependency_registry::is_dependency_manifest_filename)
         });
     if current_adapter.digest != adapter.digest
         || current_adapter.adapter_path != adapter.adapter_path
@@ -213,9 +204,7 @@ fn admit_delta_generation(
         drop(admitted);
         drop(_idle_readers_guard);
         drop(generation_lock);
-        return Ok(AdmissionResult::RebuildCold(
-            current_adapter.adapter_path,
-        ));
+        return Ok(AdmissionResult::RebuildCold(current_adapter.adapter_path));
     }
     let previous = db_reader::inventory_snapshot(&admitted)?;
     let watched: BTreeSet<String> = previous
@@ -255,13 +244,20 @@ fn admit_delta_generation(
             Ok(p.to_string_lossy().replace('\\', "/"))
         })
         .collect::<Result<_>>()?;
-    let inventory_owned: BTreeMap<String, FileEntry> =
-        scan.entries.iter().map(|f| (f.path.clone(), f.clone())).collect();
+    let inventory_owned: BTreeMap<String, FileEntry> = scan
+        .entries
+        .iter()
+        .map(|f| (f.path.clone(), f.clone()))
+        .collect();
     let previous_owned = previous;
-    let inventory: BTreeMap<&str, &FileEntry> =
-        inventory_owned.iter().map(|(k, v)| (k.as_str(), v)).collect();
-    let previous: BTreeMap<&str, &FileEntry> =
-        previous_owned.iter().map(|f| (f.path.as_str(), f)).collect();
+    let inventory: BTreeMap<&str, &FileEntry> = inventory_owned
+        .iter()
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
+    let previous: BTreeMap<&str, &FileEntry> = previous_owned
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
     for (path, old) in &previous {
         if !modified.contains(*path) && inventory.get(path).is_none_or(|f| f.digest != old.digest) {
             return Err(SourceSnapshotMismatch(format!("unlisted source change: {path}")).into());
@@ -310,7 +306,6 @@ fn admit_delta_generation(
     })))
 }
 
-
 struct DeltaFrontiers<'a> {
     frontier_tables: TempFrontierTables<'a>,
     facts: BTreeMap<String, TypedFacts>,
@@ -346,8 +341,9 @@ fn compute_delta_frontiers<'a>(
     )?;
 
     let extracting = Instant::now();
-    let extracted =
-        extract_modified_and_detect_resolution_changes(admission, cache_dir, &inventory, &previous)?;
+    let extracted = extract_modified_and_detect_resolution_changes(
+        admission, cache_dir, &inventory, &previous,
+    )?;
     let mut facts = extracted.facts;
     let changed_resolution = extracted.changed_resolution;
     let old_modified_facts = extracted.old_modified_facts;
@@ -488,7 +484,9 @@ fn extract_modified_and_detect_resolution_changes(
     let facts: BTreeMap<String, TypedFacts> = extracted_pairs.into_iter().collect();
     let mut changed_resolution: BTreeSet<String> = modified
         .iter()
-        .filter(|path| !inventory.contains_key(path.as_str()) || !previous.contains_key(path.as_str()))
+        .filter(|path| {
+            !inventory.contains_key(path.as_str()) || !previous.contains_key(path.as_str())
+        })
         .cloned()
         .collect();
     let existing_modified: Vec<&str> = facts
@@ -648,11 +646,7 @@ fn collect_changed_resolution_names(
             }
         }
         if !missing_old_resolution.is_empty() {
-            populate_temp_text_frontier(
-                admitted,
-                "delta_frontier_text",
-                missing_old_resolution,
-            )?;
+            populate_temp_text_frontier(admitted, "delta_frontier_text", missing_old_resolution)?;
             let mut st = admitted.prepare(
                 "SELECT facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
             )?;
@@ -822,7 +816,10 @@ fn seed_initial_affected_owners(
         .collect();
     let changed_impl_methods =
         changed_rust_impl_methods(admitted, &changed_rust_paths, facts, old_modified_facts)?;
-    affected.extend(persisted_possible_call_owners(admitted, &changed_rust_paths)?);
+    affected.extend(persisted_possible_call_owners(
+        admitted,
+        &changed_rust_paths,
+    )?);
     affected.extend(unchanged_trait_dispatch_owners(
         admitted,
         &changed_impl_methods,
@@ -867,7 +864,9 @@ fn expand_import_frontier(
             "SELECT DISTINCT owner.path,target.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files target ON target.path_hash=d.target_hash WHERE d.kind='imports' AND target.path IN(SELECT key FROM temp.delta_frontier_text)",
         )?;
         let importers: Vec<(String, String)> = importing_owners
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         drop(importing_owners);
         let mut next = BTreeSet::new();
@@ -1009,7 +1008,9 @@ fn expand_html_include_targets(
             "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
         )?;
         let rows: Vec<(String, String)> = old_includes
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         drop(old_includes);
         let mut next = BTreeSet::new();
@@ -1076,7 +1077,9 @@ fn expand_html_include_dependents(
             "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
         )?;
         let rows: Vec<(i64, String)> = incoming
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         drop(incoming);
         let mut next = BTreeSet::new();
@@ -1225,8 +1228,6 @@ fn expand_template_and_named_frontiers(
     })
 }
 
-
-
 struct DeltaHydrationAndLink {
     facts: BTreeMap<String, TypedFacts>,
     graph: acdd_index::models::compact_graph::CompactGraph,
@@ -1258,14 +1259,19 @@ fn hydrate_and_link_delta(
     let root = &admission.root;
     let dependencies = &admission.dependencies;
     let scan = &admission.scan;
-    let inventory: BTreeMap<&str, &FileEntry> =
-        admission.inventory.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let inventory: BTreeMap<&str, &FileEntry> = admission
+        .inventory
+        .iter()
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
     let modified = &admission.modified;
     let admitted = &admission.admitted;
     let hydrating = Instant::now();
 
     if !load_owners.is_empty() {
-        for (path, f) in load_frontier_local_facts(admitted, load_owners.iter().map(String::as_str))? {
+        for (path, f) in
+            load_frontier_local_facts(admitted, load_owners.iter().map(String::as_str))?
+        {
             facts.insert(path, f);
             loaded_fact_files += 1;
         }
@@ -1293,7 +1299,10 @@ fn hydrate_and_link_delta(
                         line: row.get(4)?,
                         end_line: row.get(5)?,
                         is_test: row.get(6)?,
-                        language: acdd_index::models::tags::LanguageId::parse(&row.get::<_, String>(7)?).ok_or(rusqlite::Error::InvalidQuery)?,
+                        language: acdd_index::models::tags::LanguageId::parse(
+                            &row.get::<_, String>(7)?,
+                        )
+                        .ok_or(rusqlite::Error::InvalidQuery)?,
                         generated: row.get(8)?,
                         details: serde_json::from_str(&details).map_err(|error| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -1450,14 +1459,16 @@ fn hydrate_and_link_delta(
             Ok(Node {
                 native_semantic: None,
                 id: r.get(0)?,
-                kind: acdd_index::models::tags::NodeKind::parse(&r.get::<_, String>(1)?).ok_or(rusqlite::Error::InvalidQuery)?,
+                kind: acdd_index::models::tags::NodeKind::parse(&r.get::<_, String>(1)?)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
                 name: r.get(2)?,
                 qualname: r.get(3)?,
                 path: r.get(4)?,
                 line: r.get(5)?,
                 end_line: r.get(6)?,
                 is_test: r.get(7)?,
-                language: acdd_index::models::tags::LanguageId::parse(&r.get::<_, String>(8)?).ok_or(rusqlite::Error::InvalidQuery)?,
+                language: acdd_index::models::tags::LanguageId::parse(&r.get::<_, String>(8)?)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
                 generated: r.get(9)?,
                 details: serde_json::from_str(&r.get::<_, String>(10)?).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
@@ -1474,20 +1485,13 @@ fn hydrate_and_link_delta(
             if complete.contains(&node.path) || modified.contains(&node.path) {
                 continue;
             }
-            facts
-                .entry(node.path.clone())
-                .or_default()
-                .push_node(node);
+            facts.entry(node.path.clone()).or_default().push_node(node);
         }
     }
     let hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.;
     let linking = Instant::now();
-    let graph = linker::link_compact_with_typed_registry(
-        &facts,
-        Some(&affected),
-        Some(root),
-        dependencies,
-    );
+    let graph =
+        linker::link_compact_with_typed_registry(&facts, Some(&affected), Some(root), dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     drop(frontier_tables);
     Ok(DeltaHydrationAndLink {
@@ -1501,8 +1505,6 @@ fn hydrate_and_link_delta(
         link_ms,
     })
 }
-
-
 
 fn persist_and_report_delta(
     admission: DeltaAdmission,
@@ -1538,7 +1540,6 @@ fn persist_and_report_delta(
         link_ms,
     } = hydration;
 
-
     drop(admitted);
 
     if let Some(hook) = test_hooks.and_then(|hooks| hooks.before_delta_persist.as_ref()) {
@@ -1547,17 +1548,17 @@ fn persist_and_report_delta(
 
     // Only a receipt matching the admitted generation may be recovered after
     // SQLite has rolled back and closed its writer.
-    let trusted_receipt =
-        match cache::matches_with_reason(db, &root, &expected, &admitted_identity) {
-            Ok(()) => true,
-            Err(reason) => {
-                eprintln!(
-                    "delta receipt is not trusted for {}: {reason:#}",
-                    db.display()
-                );
-                false
-            }
-        };
+    let trusted_receipt = match cache::matches_with_reason(db, &root, &expected, &admitted_identity)
+    {
+        Ok(()) => true,
+        Err(reason) => {
+            eprintln!(
+                "delta receipt is not trusted for {}: {reason:#}",
+                db.display()
+            );
+            false
+        }
+    };
 
     let persist_result = delta_persist::persist_delta(
         delta_persist::DeltaPersistenceInputs {
@@ -1595,12 +1596,7 @@ fn persist_and_report_delta(
                     if after == admitted_identity {
                         return cache::matches_with_reason(db, &root, &expected, &after);
                     }
-                    cache::matches_with_reason(
-                        db,
-                        &root,
-                        &expected,
-                        &admitted_identity,
-                    )?;
+                    cache::matches_with_reason(db, &root, &expected, &admitted_identity)?;
                     let conn = db_reader::open_raw_confined_readonly(db)?;
                     let seal: String = conn.query_row(
                         "SELECT value FROM metadata WHERE key='output_root'",
@@ -1684,7 +1680,6 @@ fn persist_and_report_delta(
     report["output"] = json!(db);
     Ok(report)
 }
-
 
 pub(super) fn delta_inner(
     root: &Path,

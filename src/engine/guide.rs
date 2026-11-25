@@ -197,9 +197,7 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
             );
         }
         if ignored_profile {
-            bail!(
-                "GITIGNORE_VERIFICATION_FAILED: .gitignore must not ignore .acdd/profile.yaml"
-            );
+            bail!("GITIGNORE_VERIFICATION_FAILED: .gitignore must not ignore .acdd/profile.yaml");
         }
         git_check_ignore_verified = true;
     }

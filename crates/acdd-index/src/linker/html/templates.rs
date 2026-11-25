@@ -1,8 +1,5 @@
 use crate::languages::{self, LanguageFamily};
-use crate::linker::{
-    resolution::input::ResolutionInput,
-    semantic_context, value_flow,
-};
+use crate::linker::{resolution::input::ResolutionInput, semantic_context, value_flow};
 use crate::models::{compact_graph::CompactGraph as Graph, Facts, Node, Reference};
 use crate::semantic::{TemplateContextFact, ValueExpr, ValueFlowFacts};
 use crate::typed_facts::FlowState;
@@ -26,7 +23,10 @@ impl<'a> TemplateRootRegistry<'a> {
             let mut roots = source
                 .nodes
                 .iter()
-                .filter(|node| node.kind == crate::models::tags::NodeKind::TemplateLoaderRoot && node.language == crate::models::tags::LanguageId::Python)
+                .filter(|node| {
+                    node.kind == crate::models::tags::NodeKind::TemplateLoaderRoot
+                        && node.language == crate::models::tags::LanguageId::Python
+                })
                 .peekable();
             if roots.peek().is_none() {
                 continue;
@@ -114,7 +114,11 @@ fn python_module_scope<'a, 'd>(
     path: &str,
     facts: &'a crate::models::Facts,
     dependencies: &'d languages::dependency_registry::DependencyRegistry,
-) -> Option<(&'a Node, &'d str, std::sync::Arc<languages::context::LanguageContext>)> {
+) -> Option<(
+    &'a Node,
+    &'d str,
+    std::sync::Arc<languages::context::LanguageContext>,
+)> {
     let module = facts.nodes.iter().find(|node| {
         node.kind == crate::models::tags::NodeKind::Module
             && node.language == crate::models::tags::LanguageId::Python
@@ -136,7 +140,8 @@ fn source_imports_are_external(
     else {
         return false;
     };
-    let Some(imports) = node.detail_entry(crate::models::details::NodeDetailKey::IMPORT_MODULES)
+    let Some(imports) = node
+        .detail_entry(crate::models::details::NodeDetailKey::IMPORT_MODULES)
         .as_array()
         .filter(|imports| !imports.is_empty())
     else {
@@ -327,9 +332,12 @@ fn node_value_flow<'a>(
     {
         return Some(std::borrow::Cow::Borrowed(facts.as_ref()));
     }
-    ValueFlowFacts::deserialize_for_scope(node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW), false)
-        .ok()
-        .map(std::borrow::Cow::Owned)
+    ValueFlowFacts::deserialize_for_scope(
+        node.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW),
+        false,
+    )
+    .ok()
+    .map(std::borrow::Cow::Owned)
 }
 
 pub(in crate::linker) struct TemplateRegistry<'a> {
@@ -345,7 +353,10 @@ impl<'a> TemplateRegistry<'a> {
     ) -> Self {
         let mut by_scope: HashMap<String, HashMap<&'a str, Vec<Library<'a>>>> = HashMap::new();
         for (path, facts) in all.iter_facts() {
-            let Some((module, scope, rules)) = python_module_scope(path, facts, dependencies) else { continue; };
+            let Some((module, scope, rules)) = python_module_scope(path, facts, dependencies)
+            else {
+                continue;
+            };
             let mut cached_flow = None;
             let mut cached_functions: Option<Vec<&'a Node>> = None;
             for rule in &rules.syntax_rules {
@@ -381,13 +392,18 @@ impl<'a> TemplateRegistry<'a> {
                                 && node.qualname.rsplit_once('.').is_some_and(|(owner, name)| {
                                     owner == module.qualname && name == node.name
                                 })
-                                && node.detail_entry(crate::models::details::NodeDetailKey::DECORATORS).is_array()
+                                && node
+                                    .detail_entry(crate::models::details::NodeDetailKey::DECORATORS)
+                                    .is_array()
                         })
                         .collect()
                 });
                 let mut symbols: HashMap<String, HashMap<&'a str, Vec<&Node>>> = HashMap::new();
                 for &function in functions.iter() {
-                    let Some(decorators) = function.detail_entry(crate::models::details::NodeDetailKey::DECORATORS).as_array() else {
+                    let Some(decorators) = function
+                        .detail_entry(crate::models::details::NodeDetailKey::DECORATORS)
+                        .as_array()
+                    else {
                         continue;
                     };
                     for decorator in decorators.iter().filter_map(|value| value.as_str()) {
@@ -530,11 +546,10 @@ impl<'a> ExpressionRegistry<'a> {
     pub(in crate::linker) fn build(all: &'a dyn crate::FactsLookup) -> Self {
         let mut files = HashMap::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts
-                .nodes
-                .iter()
-                .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
-            else {
+            let Some(module) = facts.nodes.iter().find(|node| {
+                node.kind == crate::models::tags::NodeKind::Module
+                    && node.language == crate::models::tags::LanguageId::Html
+            }) else {
                 continue;
             };
             let mut variables: HashMap<&str, Vec<&Node>> = HashMap::new();
@@ -542,7 +557,8 @@ impl<'a> ExpressionRegistry<'a> {
             for node in &facts.nodes {
                 match (
                     node.kind.as_str(),
-                    node.detail_entry(crate::models::details::NodeDetailKey::TEMPLATE_BINDING).as_str(),
+                    node.detail_entry(crate::models::details::NodeDetailKey::TEMPLATE_BINDING)
+                        .as_str(),
                 ) {
                     ("variable", Some("variable")) => {
                         variables.entry(&node.name).or_default().push(node)
@@ -751,7 +767,10 @@ impl<'a> RenderContextRegistry<'a> {
                 source
                     .nodes
                     .iter()
-                    .find(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
+                    .find(|node| {
+                        node.kind == crate::models::tags::NodeKind::Module
+                            && node.language == crate::models::tags::LanguageId::Html
+                    })
                     .map(|node| (path, node))
             })
             .collect();
@@ -760,7 +779,11 @@ impl<'a> RenderContextRegistry<'a> {
         let mut by_template: HashMap<&'a str, Vec<usize>> = HashMap::new();
         let mut by_provider: HashMap<&'a str, Vec<(usize, &'a Node)>> = HashMap::new();
         for (path, source) in all.iter_facts() {
-            let Some((import_owner, scope, rules)) = python_module_scope(path, source, dependencies) else { continue; };
+            let Some((import_owner, scope, rules)) =
+                python_module_scope(path, source, dependencies)
+            else {
+                continue;
+            };
             let workspace = languages::workspace_path(path).0;
             for node in source.nodes.iter().filter(|node| {
                 node.language == crate::models::tags::LanguageId::Python
@@ -1008,7 +1031,6 @@ pub(crate) fn builtin_evidence(
     }
     "builtin:shared_template".to_owned()
 }
-
 
 pub(in crate::linker) fn resolve_reference(
     input: &ResolutionInput<'_>,

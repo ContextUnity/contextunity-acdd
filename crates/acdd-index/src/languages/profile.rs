@@ -214,7 +214,11 @@ pub trait LanguageMemberIndex: Send + Sync {
 
     /// Looks up an ordinary local receiver without changing explicit super semantics.
     fn lookup_local_member<'a>(
-        &'a self, receiver: &Node, member: &str, associated: bool, caller: &Node,
+        &'a self,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        caller: &Node,
     ) -> LanguageMemberResult<'a> {
         self.lookup_member(receiver, member, associated, caller)
     }
@@ -341,62 +345,164 @@ pub(crate) trait LanguageLinker: Send + Sync {
         None
     }
     /// Normalizes a method's lexical owner scope for member lookup.
-    fn member_owner_scope<'a>(&self, scope: &'a str) -> &'a str { scope }
+    fn member_owner_scope<'a>(&self, scope: &'a str) -> &'a str {
+        scope
+    }
     /// Whether a declaration may own language-specific associated members.
-    fn associated_member_owner(&self, _node: &Node) -> bool { false }
+    fn associated_member_owner(&self, _node: &Node) -> bool {
+        false
+    }
     /// Resolves a member reached through an explicit constant address.
-    fn explicit_constant_member<'a>(&self, _constant: &'a Node, _member: &str, _owner: &'a Node,
-        _resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<&'a Node> { None }
-    /// Finds declarations reachable through an explicit module reexport.
-    fn explicit_reexport_targets<'a>(&self, _query: crate::linker::traits::ExplicitReexport<'a, '_>) -> Vec<&'a Node> { Vec::new() }
-    /// Whether the node owns module-level field facts.
-    fn owns_module_fields(&self, _node: &Node) -> bool { false }
-    /// Resolves a language-specific implementation source when applicable.
-    fn implementation_source(&self, _input: crate::linker::traits::ImplementationSource<'_, '_>) -> Option<(Option<String>, bool)> { None }
-    /// Whether a macro reference may point to this candidate.
-    fn macro_reference_candidate(&self, _owner: Option<&Node>, _candidate: &Node) -> bool { false }
-    /// Records language-specific gaps after candidate selection.
-    fn record_candidate_gaps(
-        &self, _profile: &dyn LanguageProfile, _reference: &Reference, _candidates: &[&Node],
-        _path: &str, _graph: &mut crate::models::compact_graph::CompactGraph,
-    ) {}
-    /// Whether a static receiver expression can target this declaration.
-    fn admits_static_receiver_candidate(&self, _candidate: &Node, _expression: &str) -> bool { true }
-    /// Whether a class is a language-specific protocol or abstract base.
-    fn has_protocol_or_abc_base(&self, _candidate: &Node) -> bool { false }
-    /// Whether references first resolve through property lookup.
-    fn property_before_member(&self) -> bool { false }
-    /// Whether an unresolved reference falls back to property lookup.
-    fn property_after_unknown(&self, _profile: &dyn LanguageProfile) -> bool { false }
-    /// Whether a reference is a component template member.
-    fn is_component_template_member(&self, _reference: &Reference, _owner: Option<&Node>, _tail: &str) -> bool { false }
-    /// Language-specific names for invoking class objects and instances.
-    fn callable_members(&self) -> Option<(&'static str, &'static str)> { None }
-    /// Coverage evidence for a typed callable binding.
-    fn typed_callable_evidence(&self) -> &'static str { "invocation of a typed Callable binding" }
-
-    /// Whether class objects use associated local-member lookup.
-    fn class_type_uses_associated_lookup(&self) -> bool { false }
-
-    /// Whether collection flow facts are admitted for this language.
-    fn supports_collection_facts(&self) -> bool { false }
-
-    /// Whether an owner's async return participates in value flow.
-    fn supports_async_return(&self, _owner: &Node) -> bool { false }
-
-    fn normalize_builtin_receiver<'a>(&self, receiver: &'a str) -> &'a str { receiver }
-
-    fn external_member_policy<'a>(&self, _owner: &Node, _module: &'a str, _line: usize, _member: &str) -> Option<LanguageMemberResult<'a>> {
+    fn explicit_constant_member<'a>(
+        &self,
+        _constant: &'a Node,
+        _member: &str,
+        _owner: &'a Node,
+        _resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<&'a Node> {
         None
     }
-    fn framework_member_label(&self) -> &'static str { "finite framework member" }
-    fn wrapper_value_member(&self, _wrapper: &str, _member: &str) -> bool { false }
-    fn standard_external_member(&self, _module: &str, _member: &str) -> bool { false }
-    fn resolve_applied_type<'a>(&self, _context: &crate::linker::semantic_context::context::Context<'a>, _owner: &'a Node, _application: (&str, &[crate::semantic::TypeExpr]), _nominal: &crate::linker::value_flow::Symbol<'a>, _at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> { None }
-    fn admits_type_payload<'a>(&self, _owner: &Node, _wrapper: &TypeTarget<'a>, _count: usize) -> bool { false }
-    fn external_generic_base(&self, _module: &str, _base: &str, _profile: &dyn LanguageProfile) -> bool { false }
-    fn external_factory_result<'a>(&self, _context: &crate::linker::semantic_context::context::Context<'a>, _owner: &'a Node, _callee: &str, _at: crate::semantic::SourcePosition) -> Option<TypeTarget<'a>> { None }
-    fn receiver_access(&self, _owner: &Node, _head: &str) -> Option<(bool, bool)> { None }
+    /// Finds declarations reachable through an explicit module reexport.
+    fn explicit_reexport_targets<'a>(
+        &self,
+        _query: crate::linker::traits::ExplicitReexport<'a, '_>,
+    ) -> Vec<&'a Node> {
+        Vec::new()
+    }
+    /// Whether the node owns module-level field facts.
+    fn owns_module_fields(&self, _node: &Node) -> bool {
+        false
+    }
+    /// Resolves a language-specific implementation source when applicable.
+    fn implementation_source(
+        &self,
+        _input: crate::linker::traits::ImplementationSource<'_, '_>,
+    ) -> Option<(Option<String>, bool)> {
+        None
+    }
+    /// Whether a macro reference may point to this candidate.
+    fn macro_reference_candidate(&self, _owner: Option<&Node>, _candidate: &Node) -> bool {
+        false
+    }
+    /// Records language-specific gaps after candidate selection.
+    fn record_candidate_gaps(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _reference: &Reference,
+        _candidates: &[&Node],
+        _path: &str,
+        _graph: &mut crate::models::compact_graph::CompactGraph,
+    ) {
+    }
+    /// Whether a static receiver expression can target this declaration.
+    fn admits_static_receiver_candidate(&self, _candidate: &Node, _expression: &str) -> bool {
+        true
+    }
+    /// Whether a class is a language-specific protocol or abstract base.
+    fn has_protocol_or_abc_base(&self, _candidate: &Node) -> bool {
+        false
+    }
+    /// Whether references first resolve through property lookup.
+    fn property_before_member(&self) -> bool {
+        false
+    }
+    /// Whether an unresolved reference falls back to property lookup.
+    fn property_after_unknown(&self, _profile: &dyn LanguageProfile) -> bool {
+        false
+    }
+    /// Whether a reference is a component template member.
+    fn is_component_template_member(
+        &self,
+        _reference: &Reference,
+        _owner: Option<&Node>,
+        _tail: &str,
+    ) -> bool {
+        false
+    }
+    /// Language-specific names for invoking class objects and instances.
+    fn callable_members(&self) -> Option<(&'static str, &'static str)> {
+        None
+    }
+    /// Coverage evidence for a typed callable binding.
+    fn typed_callable_evidence(&self) -> &'static str {
+        "invocation of a typed Callable binding"
+    }
+
+    /// Whether class objects use associated local-member lookup.
+    fn class_type_uses_associated_lookup(&self) -> bool {
+        false
+    }
+
+    /// Whether collection flow facts are admitted for this language.
+    fn supports_collection_facts(&self) -> bool {
+        false
+    }
+
+    /// Whether an owner's async return participates in value flow.
+    fn supports_async_return(&self, _owner: &Node) -> bool {
+        false
+    }
+
+    fn normalize_builtin_receiver<'a>(&self, receiver: &'a str) -> &'a str {
+        receiver
+    }
+
+    fn external_member_policy<'a>(
+        &self,
+        _owner: &Node,
+        _module: &'a str,
+        _line: usize,
+        _member: &str,
+    ) -> Option<LanguageMemberResult<'a>> {
+        None
+    }
+    fn framework_member_label(&self) -> &'static str {
+        "finite framework member"
+    }
+    fn wrapper_value_member(&self, _wrapper: &str, _member: &str) -> bool {
+        false
+    }
+    fn standard_external_member(&self, _module: &str, _member: &str) -> bool {
+        false
+    }
+    fn resolve_applied_type<'a>(
+        &self,
+        _context: &crate::linker::semantic_context::context::Context<'a>,
+        _owner: &'a Node,
+        _application: (&str, &[crate::semantic::TypeExpr]),
+        _nominal: &crate::linker::value_flow::Symbol<'a>,
+        _at: crate::semantic::SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn admits_type_payload<'a>(
+        &self,
+        _owner: &Node,
+        _wrapper: &TypeTarget<'a>,
+        _count: usize,
+    ) -> bool {
+        false
+    }
+    fn external_generic_base(
+        &self,
+        _module: &str,
+        _base: &str,
+        _profile: &dyn LanguageProfile,
+    ) -> bool {
+        false
+    }
+    fn external_factory_result<'a>(
+        &self,
+        _context: &crate::linker::semantic_context::context::Context<'a>,
+        _owner: &'a Node,
+        _callee: &str,
+        _at: crate::semantic::SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn receiver_access(&self, _owner: &Node, _head: &str) -> Option<(bool, bool)> {
+        None
+    }
     fn special_property_lookup<'s, 'a>(
         &self,
         _context: &'s crate::linker::semantic_context::context::Context<'a>,
@@ -416,8 +522,12 @@ pub(crate) trait LanguageLinker: Send + Sync {
         None
     }
     fn member_receiver<'b, 'a>(
-        &self, _receiver: &'b TypeTarget<'a>, _member: &str,
-    ) -> Option<Option<&'b TypeTarget<'a>>> { None }
+        &self,
+        _receiver: &'b TypeTarget<'a>,
+        _member: &str,
+    ) -> Option<Option<&'b TypeTarget<'a>>> {
+        None
+    }
     fn imported_member_path<'a>(
         &self,
         _context: &crate::linker::semantic_context::context::Context<'a>,
@@ -434,7 +544,9 @@ pub(crate) trait LanguageLinker: Send + Sync {
         _owner: &'a Node,
         _name: &str,
         _role: crate::linker::value_flow::SymbolRole,
-    ) -> Option<crate::linker::value_flow::Symbol<'a>> { None }
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
+        None
+    }
     fn special_symbol<'a>(
         &self,
         _context: &crate::linker::semantic_context::context::Context<'a>,
@@ -442,13 +554,17 @@ pub(crate) trait LanguageLinker: Send + Sync {
         _name: &str,
         _at: crate::semantic::SourcePosition,
         _role: crate::linker::value_flow::SymbolRole,
-    ) -> Option<crate::linker::value_flow::Symbol<'a>> { None }
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
+        None
+    }
     fn special_named_return<'a>(
         &self,
         _name: &str,
         _import_line: usize,
         _in_hierarchy: &dyn Fn() -> bool,
-    ) -> Option<Option<TypeTarget<'a>>> { None }
+    ) -> Option<Option<TypeTarget<'a>>> {
+        None
+    }
     fn special_member_lookup<'s, 'a>(
         &self,
         _context: &'s crate::linker::semantic_context::context::Context<'a>,
@@ -459,18 +575,34 @@ pub(crate) trait LanguageLinker: Send + Sync {
     ) -> Option<crate::linker::semantic_context::context::Member<'s>> {
         None
     }
-    fn classic_global_scope(&self, _node: &Node) -> bool { false }
-    fn tracks_factory_results(&self) -> bool { false }
-    fn uses_module_exports(&self) -> bool { false }
+    fn classic_global_scope(&self, _node: &Node) -> bool {
+        false
+    }
+    fn tracks_factory_results(&self) -> bool {
+        false
+    }
+    fn uses_module_exports(&self) -> bool {
+        false
+    }
     fn structural_operation_admitted<'a>(
         &self,
         _owner: &'a Node,
         _operation: crate::semantic::types::RustProjection,
         _at: crate::semantic::SourcePosition,
         _resolver: &dyn SemanticResolver<'a>,
-    ) -> bool { false }
-    fn lexical_receiver_field(&self, _owner: &Node, _receiver: &str) -> bool { false }
-    fn value_shadows_role(&self, _name: &str, _role: crate::linker::value_flow::SymbolRole) -> bool { true }
+    ) -> bool {
+        false
+    }
+    fn lexical_receiver_field(&self, _owner: &Node, _receiver: &str) -> bool {
+        false
+    }
+    fn value_shadows_role(
+        &self,
+        _name: &str,
+        _role: crate::linker::value_flow::SymbolRole,
+    ) -> bool {
+        true
+    }
     fn lexical_binding_active(
         &self,
         _reference: &Reference,
@@ -480,15 +612,25 @@ pub(crate) trait LanguageLinker: Send + Sync {
     ) -> bool {
         true
     }
-    fn external_field_projection(&self) -> bool { false }
-    fn builtin_field_projection(&self, _owner: &Node) -> bool { false }
-    fn payload_uses_async_return(&self) -> bool { false }
-    fn reaching_payload_wrapper(&self, target: &TypeTarget<'_>) -> bool { matches!(target, TypeTarget::Promise(_)) }
+    fn external_field_projection(&self) -> bool {
+        false
+    }
+    fn builtin_field_projection(&self, _owner: &Node) -> bool {
+        false
+    }
+    fn payload_uses_async_return(&self) -> bool {
+        false
+    }
+    fn reaching_payload_wrapper(&self, target: &TypeTarget<'_>) -> bool {
+        matches!(target, TypeTarget::Promise(_))
+    }
     fn join_language_targets<'a>(
         &self,
         _targets: &[TypeTarget<'a>],
         _join: &dyn Fn(Vec<TypeTarget<'a>>) -> TypeTarget<'a>,
-    ) -> Option<TypeTarget<'a>> { None }
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
     fn evaluate_language_value<'a>(
         &self,
         _eval: &CallEvalContext<'_, 'a, '_>,
@@ -497,22 +639,55 @@ pub(crate) trait LanguageLinker: Send + Sync {
         _evaluate: &dyn Fn(&crate::semantic::ValueExpr) -> TypeTarget<'a>,
         _payload: &dyn Fn(&crate::semantic::ValueExpr) -> TypeTarget<'a>,
         _join: &dyn Fn(Vec<TypeTarget<'a>>) -> TypeTarget<'a>,
-    ) -> Option<TypeTarget<'a>> { None }
-    fn special_index_projection<'a>(&self, _target: &TypeTarget<'a>, _index: &str) -> Option<TypeTarget<'a>> { None }
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn special_index_projection<'a>(
+        &self,
+        _target: &TypeTarget<'a>,
+        _index: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
     fn special_field_projection<'a>(
-        &self, _target: &TypeTarget<'a>, _member: &str, _owner: &'a Node,
-        _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>,
-    ) -> Option<TypeTarget<'a>> { None }
-    fn callback_receiver<'a>(&self, _receiver: &TypeTarget<'a>, _method: &str) -> Option<TypeTarget<'a>> { None }
+        &self,
+        _target: &TypeTarget<'a>,
+        _member: &str,
+        _owner: &'a Node,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn callback_receiver<'a>(
+        &self,
+        _receiver: &TypeTarget<'a>,
+        _method: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
     fn resolve_super_member<'a>(
         &self,
         _context: &crate::linker::semantic_context::context::Context<'a>,
         _owner: &Node,
         _member: &str,
-    ) -> crate::linker::value_flow::Symbol<'a> { crate::linker::value_flow::Symbol::Unknown }
-    fn incomplete_receiver(&self, _receiver: &TypeTarget<'_>) -> bool { false }
-    fn special_member_call<'a>(&self, _eval: &CallEvalContext<'_, 'a, '_>, _receiver: &crate::semantic::ValueExpr, _member: &str) -> Option<TypeTarget<'a>> { None }
-    fn accept_member_return(&self, _member: &str, _result: &TypeTarget<'_>) -> bool { true }
+    ) -> crate::linker::value_flow::Symbol<'a> {
+        crate::linker::value_flow::Symbol::Unknown
+    }
+    fn incomplete_receiver(&self, _receiver: &TypeTarget<'_>) -> bool {
+        false
+    }
+    fn special_member_call<'a>(
+        &self,
+        _eval: &CallEvalContext<'_, 'a, '_>,
+        _receiver: &crate::semantic::ValueExpr,
+        _member: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn accept_member_return(&self, _member: &str, _result: &TypeTarget<'_>) -> bool {
+        true
+    }
     fn member_call_result<'a>(
         &self,
         receiver: &TypeTarget<'a>,
@@ -523,36 +698,178 @@ pub(crate) trait LanguageLinker: Send + Sync {
     ) -> Option<TypeTarget<'a>> {
         resolver.resolve_member_result(receiver, member, owner, at)
     }
-    fn indirect_call_result<'a>(&self, _eval: &CallEvalContext<'_, 'a, '_>, _callee: &str) -> Option<TypeTarget<'a>> { None }
-    fn inherits_scope(&self, _node: &Node, _parent: &Node) -> bool { true }
-    fn scoped_binding_restores(&self) -> bool { true }
-    fn collection_return(&self, _target: &crate::linker::value_flow::TypeTarget<'_>) -> bool { false }
-    fn commonjs_module(&self, _node: &Node) -> bool { false }
-    fn component_default_export(&self, _node: &Node) -> bool { false }
-    fn project_fields<'a>(&self, _fields: &mut HashMap<&'a str, HashMap<String, crate::linker::value_flow::TypeTarget<'a>>>, _owners: &[&'a Node], _resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) {}
-    fn receiver_symbol<'a>(&self, _lookup: &crate::linker::semantic_context::context::LanguageMemberLookup<'_, 'a>, _owner: &'a Node, _name: &str, _resolve_type: &mut dyn FnMut(&str) -> crate::linker::value_flow::Symbol<'a>) -> Option<crate::linker::value_flow::Symbol<'a>> { None }
-    fn builtin_type_symbol(&self, _owner: &Node, _profile: &dyn LanguageProfile, _name: &str, _role: crate::linker::value_flow::SymbolRole) -> bool { false }
-    fn external_import_type<'a>(&self, _owner: &Node, _module: &str, _reference: &Reference, _names: (&str, &str), _role: crate::linker::value_flow::SymbolRole, _line: usize) -> Option<crate::linker::value_flow::Symbol<'a>> { None }
-    fn project_reference<'a>(&self, target: TypeTarget<'a>, _mutable: bool) -> TypeTarget<'a> { target }
-    fn project_tuple<'a>(&self, items: Vec<TypeTarget<'a>>) -> TypeTarget<'a> { TypeTarget::Tuple(items) }
-    fn project_applied_return<'a>(&self, _name: &str, _first: &TypeTarget<'a>, _second: &mut dyn FnMut() -> Option<TypeTarget<'a>>) -> Option<TypeTarget<'a>> { None }
-    fn collection_item<'a>(&self, _target: &TypeTarget<'a>) -> Option<TypeTarget<'a>> { None }
-    fn generic_sequence_return(&self) -> bool { true }
-    fn import_visible_before_position(&self, _owner: &Node) -> bool { false }
-    fn builtin_type_members(&self) -> bool { false }
-    fn implicit_receiver_evidence<'a>(&self, _first: &'a str, _tail: &'a str, _context: &LanguageContext, _path: &str, _signals: &crate::languages::manifests::semantic::FileActivationSignals) -> Option<(&'a str, String)> { None }
-    fn is_implicit_self(&self, _first: &str) -> bool { false }
-    fn builtin_property_chain(&self, _expression: &str, _profile: &dyn LanguageProfile, _path: &str, _context: &crate::linker::semantic_context::context::Context<'_>) -> bool { false }
-    fn nullable_parameter_wrapper(&self, _profile: &dyn LanguageProfile, _annotation: &str, _node: &Node, _references: &[Reference], _external_line: &dyn Fn(&str, &Node) -> Option<usize>) -> bool { false }
-    fn object_ownership<'a>(&self, _node: &Node, _flows: Option<&HashMap<SymbolId, &'a crate::typed_facts::FlowState>>, _interner: &LinkerInterner<'_>, _rules: &[crate::languages::manifests::syntax::SyntaxRule]) -> Option<&'a crate::semantic::ObjectOwnershipFact> { None }
-    fn lexical_this_calls<'a, 'b>(&self, _facts: &'a Facts, _references: &'b [Reference], _flows: Option<&HashMap<SymbolId, &'a crate::typed_facts::FlowState>>, _interner: &LinkerInterner<'_>, _rules: &[crate::languages::manifests::syntax::SyntaxRule]) -> hashbrown::HashSet<(&'b str, usize, usize, &'b str)> { hashbrown::HashSet::new() }
-    fn returned_object_field_writes<'a, 'b>(&self, _profile: &dyn LanguageProfile, _references: &'b [Reference], _by_id: &HashMap<SymbolId, &'a Node>, _interner: &LinkerInterner<'_>) -> hashbrown::HashSet<(&'a str, &'b str)> { hashbrown::HashSet::new() }
-    fn reference_profile<'a>(&self, profile: &'a dyn LanguageProfile, _reference: &Reference, _by_id: &HashMap<SymbolId, &Node>, _interner: &LinkerInterner<'_>) -> &'a dyn LanguageProfile { profile }
+    fn indirect_call_result<'a>(
+        &self,
+        _eval: &CallEvalContext<'_, 'a, '_>,
+        _callee: &str,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn inherits_scope(&self, _node: &Node, _parent: &Node) -> bool {
+        true
+    }
+    fn scoped_binding_restores(&self) -> bool {
+        true
+    }
+    fn collection_return(&self, _target: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
+        false
+    }
+    fn commonjs_module(&self, _node: &Node) -> bool {
+        false
+    }
+    fn component_default_export(&self, _node: &Node) -> bool {
+        false
+    }
+    fn project_fields<'a>(
+        &self,
+        _fields: &mut HashMap<&'a str, HashMap<String, crate::linker::value_flow::TypeTarget<'a>>>,
+        _owners: &[&'a Node],
+        _resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) {
+    }
+    fn receiver_symbol<'a>(
+        &self,
+        _lookup: &crate::linker::semantic_context::context::LanguageMemberLookup<'_, 'a>,
+        _owner: &'a Node,
+        _name: &str,
+        _resolve_type: &mut dyn FnMut(&str) -> crate::linker::value_flow::Symbol<'a>,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
+        None
+    }
+    fn builtin_type_symbol(
+        &self,
+        _owner: &Node,
+        _profile: &dyn LanguageProfile,
+        _name: &str,
+        _role: crate::linker::value_flow::SymbolRole,
+    ) -> bool {
+        false
+    }
+    fn external_import_type<'a>(
+        &self,
+        _owner: &Node,
+        _module: &str,
+        _reference: &Reference,
+        _names: (&str, &str),
+        _role: crate::linker::value_flow::SymbolRole,
+        _line: usize,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
+        None
+    }
+    fn project_reference<'a>(&self, target: TypeTarget<'a>, _mutable: bool) -> TypeTarget<'a> {
+        target
+    }
+    fn project_tuple<'a>(&self, items: Vec<TypeTarget<'a>>) -> TypeTarget<'a> {
+        TypeTarget::Tuple(items)
+    }
+    fn project_applied_return<'a>(
+        &self,
+        _name: &str,
+        _first: &TypeTarget<'a>,
+        _second: &mut dyn FnMut() -> Option<TypeTarget<'a>>,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn collection_item<'a>(&self, _target: &TypeTarget<'a>) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn generic_sequence_return(&self) -> bool {
+        true
+    }
+    fn import_visible_before_position(&self, _owner: &Node) -> bool {
+        false
+    }
+    fn builtin_type_members(&self) -> bool {
+        false
+    }
+    fn implicit_receiver_evidence<'a>(
+        &self,
+        _first: &'a str,
+        _tail: &'a str,
+        _context: &LanguageContext,
+        _path: &str,
+        _signals: &crate::languages::manifests::semantic::FileActivationSignals,
+    ) -> Option<(&'a str, String)> {
+        None
+    }
+    fn is_implicit_self(&self, _first: &str) -> bool {
+        false
+    }
+    fn builtin_property_chain(
+        &self,
+        _expression: &str,
+        _profile: &dyn LanguageProfile,
+        _path: &str,
+        _context: &crate::linker::semantic_context::context::Context<'_>,
+    ) -> bool {
+        false
+    }
+    fn nullable_parameter_wrapper(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _annotation: &str,
+        _node: &Node,
+        _references: &[Reference],
+        _external_line: &dyn Fn(&str, &Node) -> Option<usize>,
+    ) -> bool {
+        false
+    }
+    fn object_ownership<'a>(
+        &self,
+        _node: &Node,
+        _flows: Option<&HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,
+        _interner: &LinkerInterner<'_>,
+        _rules: &[crate::languages::manifests::syntax::SyntaxRule],
+    ) -> Option<&'a crate::semantic::ObjectOwnershipFact> {
+        None
+    }
+    fn lexical_this_calls<'a, 'b>(
+        &self,
+        _facts: &'a Facts,
+        _references: &'b [Reference],
+        _flows: Option<&HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,
+        _interner: &LinkerInterner<'_>,
+        _rules: &[crate::languages::manifests::syntax::SyntaxRule],
+    ) -> hashbrown::HashSet<(&'b str, usize, usize, &'b str)> {
+        hashbrown::HashSet::new()
+    }
+    fn returned_object_field_writes<'a, 'b>(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _references: &'b [Reference],
+        _by_id: &HashMap<SymbolId, &'a Node>,
+        _interner: &LinkerInterner<'_>,
+    ) -> hashbrown::HashSet<(&'a str, &'b str)> {
+        hashbrown::HashSet::new()
+    }
+    fn reference_profile<'a>(
+        &self,
+        profile: &'a dyn LanguageProfile,
+        _reference: &Reference,
+        _by_id: &HashMap<SymbolId, &Node>,
+        _interner: &LinkerInterner<'_>,
+    ) -> &'a dyn LanguageProfile {
+        profile
+    }
 
-    fn path_constructor_aliases<'a>(&self, _profile: &dyn LanguageProfile, _references: &'a [Reference], _by_id: &HashMap<SymbolId, &'a Node>, _interner: &LinkerInterner<'_>, _module: &'a str) -> HashMap<(&'a str, &'a str), &'a Reference> {
+    fn path_constructor_aliases<'a>(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _references: &'a [Reference],
+        _by_id: &HashMap<SymbolId, &'a Node>,
+        _interner: &LinkerInterner<'_>,
+        _module: &'a str,
+    ) -> HashMap<(&'a str, &'a str), &'a Reference> {
         HashMap::new()
     }
-    fn dynamic_type_aliases<'a>(&self, _profile: &dyn LanguageProfile, _references: &'a [Reference], _by_id: &HashMap<SymbolId, &'a Node>, _interner: &LinkerInterner<'_>, _module: &'a str) -> HashMap<&'a str, hashbrown::HashSet<&'a str>> {
+    fn dynamic_type_aliases<'a>(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _references: &'a [Reference],
+        _by_id: &HashMap<SymbolId, &'a Node>,
+        _interner: &LinkerInterner<'_>,
+        _module: &'a str,
+    ) -> HashMap<&'a str, hashbrown::HashSet<&'a str>> {
         HashMap::new()
     }
 
@@ -567,21 +884,34 @@ pub(crate) trait LanguageLinker: Send + Sync {
         None
     }
     /// Resolves an explicitly rooted module reference.
-    fn explicit_module_target(&self, _profile: &dyn LanguageProfile, _phase: &crate::linker::traits::ReferencePhase<'_, '_>) -> Option<crate::linker::traits::ExplicitModuleTarget> {
+    fn explicit_module_target(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _phase: &crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> Option<crate::linker::traits::ExplicitModuleTarget> {
         None
     }
 
     /// Resolves language-specific property references before generic admission.
-    fn property_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+    fn property_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> bool {
         false
     }
 
     /// Resolves language-specific references after generic admission.
-    fn special_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+    fn special_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> bool {
         false
     }
 
-    fn dynamic_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
+    fn dynamic_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> bool {
         false
     }
 
@@ -589,34 +919,163 @@ pub(crate) trait LanguageLinker: Send + Sync {
         false
     }
 
-    fn template_tag_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool { false }
-    fn configured_template_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, _context: &crate::languages::LanguageContext, _signals: &crate::languages::manifests::semantic::FileActivationSignals) -> bool { false }
-    fn macro_callable_origin(&self, _reference: &crate::models::Reference, _context: &crate::languages::LanguageContext) -> Option<String> { None }
-    fn builtin_this_member(&self, _phase: &crate::linker::traits::ReferencePhase<'_, '_>, _expression: &str, _writes: &hashbrown::HashSet<(&str, &str)>) -> bool { false }
-    fn lexical_this_member(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, _expression: &str, _calls: &hashbrown::HashSet<(&str, usize, usize, &str)>) -> bool { false }
-    fn object_reference(&self, _context: &mut crate::linker::traits::ObjectReference<'_, '_, '_>) -> bool { false }
-    fn component_slot_reference(&self, _context: &mut crate::linker::traits::ComponentSlotReference<'_, '_>) -> bool { false }
-    fn template_setup_binding<'a>(&self, _reference: &crate::models::Reference, _component: Option<&'a Node>) -> Option<&'a Node> { None }
-    fn template_lexical_reference(&self, _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>, _first: &str, _component: Option<&Node>) -> bool { false }
+    fn template_tag_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+    ) -> bool {
+        false
+    }
+    fn configured_template_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+        _context: &crate::languages::LanguageContext,
+        _signals: &crate::languages::manifests::semantic::FileActivationSignals,
+    ) -> bool {
+        false
+    }
+    fn macro_callable_origin(
+        &self,
+        _reference: &crate::models::Reference,
+        _context: &crate::languages::LanguageContext,
+    ) -> Option<String> {
+        None
+    }
+    fn builtin_this_member(
+        &self,
+        _phase: &crate::linker::traits::ReferencePhase<'_, '_>,
+        _expression: &str,
+        _writes: &hashbrown::HashSet<(&str, &str)>,
+    ) -> bool {
+        false
+    }
+    fn lexical_this_member(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+        _expression: &str,
+        _calls: &hashbrown::HashSet<(&str, usize, usize, &str)>,
+    ) -> bool {
+        false
+    }
+    fn object_reference(
+        &self,
+        _context: &mut crate::linker::traits::ObjectReference<'_, '_, '_>,
+    ) -> bool {
+        false
+    }
+    fn component_slot_reference(
+        &self,
+        _context: &mut crate::linker::traits::ComponentSlotReference<'_, '_>,
+    ) -> bool {
+        false
+    }
+    fn template_setup_binding<'a>(
+        &self,
+        _reference: &crate::models::Reference,
+        _component: Option<&'a Node>,
+    ) -> Option<&'a Node> {
+        None
+    }
+    fn template_lexical_reference(
+        &self,
+        _phase: &mut crate::linker::traits::ReferencePhase<'_, '_>,
+        _first: &str,
+        _component: Option<&Node>,
+    ) -> bool {
+        false
+    }
 
-    fn allows_typed_member_read(&self, _known_receiver: bool) -> bool { false }
-    fn supports_constant_receiver(&self) -> bool { false }
-    fn chained_member_fallback(&self) -> bool { false }
-    fn supports_static_import_receiver(&self) -> bool { false }
-    fn imported_module_first(&self) -> bool { false }
-    fn explicit_module_visible(&self, _query: &crate::linker::traits::ExplicitModuleVisibility<'_, '_>) -> bool { true }
-    fn framework_magic_diagnostic(&self, _profile: &dyn LanguageProfile, _module: &str) -> bool { false }
-    fn external_builtin_evidence(&self, _profile: &dyn LanguageProfile, _module: &str, _expression: &str) -> Option<String> { None }
-    fn preserves_external_import_line(&self) -> bool { false }
-    fn associated_module_owner(&self, _node: &crate::models::Node) -> bool { false }
-    fn admits_lexical_candidate(&self, _node: &Node) -> bool { true }
-    fn import_visible_at(&self, _context: &crate::linker::traits::ImportVisibility<'_, '_, '_>, _reference: &crate::models::Reference, _definition_scope: bool) -> bool { true }
-    fn implicit_receiver_member<'a>(&self, _query: &mut crate::linker::traits::ImplicitReceiver<'a, '_, '_>) -> Option<LanguageMemberResult<'a>> { None }
-    fn computed_receiver<'a, 'b>(&self, _query: &mut crate::linker::traits::DynamicReceiver<'a, 'b, '_>) -> (LanguageMemberResult<'b>, bool) where 'a: 'b { (LanguageMemberResult::Unknown, false) }
-    fn imported_callable<'a>(&self, _phase: &crate::linker::traits::ReferencePhase<'a, '_>, _targets: &[&'a Node], _member: &str) -> Vec<&'a Node> { Vec::new() }
-    fn imported_external_member<'a>(&self, _phase: &crate::linker::traits::ReferencePhase<'a, '_>, _module: &'a Node, _member: &str, _lookup: &mut String) -> Option<crate::linker::traits::ExternalMember<'a>> { None }
-    fn imported_default_callable<'a>(&self, _phase: &crate::linker::traits::ReferencePhase<'a, '_>, _first: &str, _facts: &crate::models::Facts, _imported: &[&'a Node], _exports: &crate::linker::traits::PackageExports<'a>, _lookup: &mut String) -> Option<&'a Node> { None }
-
+    fn allows_typed_member_read(&self, _known_receiver: bool) -> bool {
+        false
+    }
+    fn supports_constant_receiver(&self) -> bool {
+        false
+    }
+    fn chained_member_fallback(&self) -> bool {
+        false
+    }
+    fn supports_static_import_receiver(&self) -> bool {
+        false
+    }
+    fn imported_module_first(&self) -> bool {
+        false
+    }
+    fn explicit_module_visible(
+        &self,
+        _query: &crate::linker::traits::ExplicitModuleVisibility<'_, '_>,
+    ) -> bool {
+        true
+    }
+    fn framework_magic_diagnostic(&self, _profile: &dyn LanguageProfile, _module: &str) -> bool {
+        false
+    }
+    fn external_builtin_evidence(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _module: &str,
+        _expression: &str,
+    ) -> Option<String> {
+        None
+    }
+    fn preserves_external_import_line(&self) -> bool {
+        false
+    }
+    fn associated_module_owner(&self, _node: &crate::models::Node) -> bool {
+        false
+    }
+    fn admits_lexical_candidate(&self, _node: &Node) -> bool {
+        true
+    }
+    fn import_visible_at(
+        &self,
+        _context: &crate::linker::traits::ImportVisibility<'_, '_, '_>,
+        _reference: &crate::models::Reference,
+        _definition_scope: bool,
+    ) -> bool {
+        true
+    }
+    fn implicit_receiver_member<'a>(
+        &self,
+        _query: &mut crate::linker::traits::ImplicitReceiver<'a, '_, '_>,
+    ) -> Option<LanguageMemberResult<'a>> {
+        None
+    }
+    fn computed_receiver<'a, 'b>(
+        &self,
+        _query: &mut crate::linker::traits::DynamicReceiver<'a, 'b, '_>,
+    ) -> (LanguageMemberResult<'b>, bool)
+    where
+        'a: 'b,
+    {
+        (LanguageMemberResult::Unknown, false)
+    }
+    fn imported_callable<'a>(
+        &self,
+        _phase: &crate::linker::traits::ReferencePhase<'a, '_>,
+        _targets: &[&'a Node],
+        _member: &str,
+    ) -> Vec<&'a Node> {
+        Vec::new()
+    }
+    fn imported_external_member<'a>(
+        &self,
+        _phase: &crate::linker::traits::ReferencePhase<'a, '_>,
+        _module: &'a Node,
+        _member: &str,
+        _lookup: &mut String,
+    ) -> Option<crate::linker::traits::ExternalMember<'a>> {
+        None
+    }
+    fn imported_default_callable<'a>(
+        &self,
+        _phase: &crate::linker::traits::ReferencePhase<'a, '_>,
+        _first: &str,
+        _facts: &crate::models::Facts,
+        _imported: &[&'a Node],
+        _exports: &crate::linker::traits::PackageExports<'a>,
+        _lookup: &mut String,
+    ) -> Option<&'a Node> {
+        None
+    }
 
     /// Whether an expression starts with an explicitly rooted module prefix.
     fn explicit_module_prefix(&self, _expression: &str) -> bool {
@@ -624,12 +1083,21 @@ pub(crate) trait LanguageLinker: Send + Sync {
     }
 
     /// Resolves template builtin evidence when this profile owns template syntax.
-    fn template_builtin(&self, _expression: &str, _rules: &[&crate::languages::manifests::syntax::SyntaxRule]) -> Option<String> {
+    fn template_builtin(
+        &self,
+        _expression: &str,
+        _rules: &[&crate::languages::manifests::syntax::SyntaxRule],
+    ) -> Option<String> {
         None
     }
 
     /// Resolves a platform builtin origin after configured rules are considered.
-    fn platform_builtin_origin<'a>(&self, _profile: &dyn LanguageProfile, _first: &str, _configured: Option<&'a str>) -> Option<&'a str> {
+    fn platform_builtin_origin<'a>(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _first: &str,
+        _configured: Option<&'a str>,
+    ) -> Option<&'a str> {
         None
     }
 
@@ -639,7 +1107,13 @@ pub(crate) trait LanguageLinker: Send + Sync {
     }
 
     /// Reports an external annotation admitted by the language.
-    fn external_annotation(&self, _profile: &dyn LanguageProfile, _head: &str, _path: &str, _dependencies: &DependencyRegistry) -> bool {
+    fn external_annotation(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _head: &str,
+        _path: &str,
+        _dependencies: &DependencyRegistry,
+    ) -> bool {
         false
     }
 
@@ -789,7 +1263,6 @@ pub(crate) trait LanguageLinker: Send + Sync {
         None
     }
 
-
     /// Disambiguates candidate call/handler targets before language-specific gap diagnostics.
     fn filter_call_candidates(
         &self,
@@ -813,16 +1286,41 @@ pub(crate) trait LanguageLinker: Send + Sync {
     fn value_projection(&self, _member: &str) -> Option<LanguageValueProjection> {
         None
     }
-    fn structural_value<'a>(&self, _target: &TypeTarget<'a>, _operation: crate::semantic::types::RustProjection, _resolver: &dyn SemanticResolver<'a>) -> Option<TypeTarget<'a>> {
+    fn structural_value<'a>(
+        &self,
+        _target: &TypeTarget<'a>,
+        _operation: crate::semantic::types::RustProjection,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
         None
     }
-    fn adapter_value<'a>(&self, _target: &TypeTarget<'a>, _member: &str, _resolver: &dyn SemanticResolver<'a>) -> Option<TypeTarget<'a>> {
+    fn adapter_value<'a>(
+        &self,
+        _target: &TypeTarget<'a>,
+        _member: &str,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
         None
     }
-    fn declared_adapter_value<'a>(&self, _target: &TypeTarget<'a>, _member: &str, _owner: &'a Node, _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>) -> Option<TypeTarget<'a>> {
+    fn declared_adapter_value<'a>(
+        &self,
+        _target: &TypeTarget<'a>,
+        _member: &str,
+        _owner: &'a Node,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
         None
     }
-    fn deserialize_value<'a>(&self, _owner: &'a Node, _callee: &str, _payload: &crate::semantic::TypeExpr, _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>, _limits: crate::linker::value_flow::SemanticLimits) -> Option<TypeTarget<'a>> {
+    fn deserialize_value<'a>(
+        &self,
+        _owner: &'a Node,
+        _callee: &str,
+        _payload: &crate::semantic::TypeExpr,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+        _limits: crate::linker::value_flow::SemanticLimits,
+    ) -> Option<TypeTarget<'a>> {
         None
     }
     fn is_value_adapter(&self, _member: &str) -> bool {
@@ -959,47 +1457,225 @@ pub(crate) trait LanguageLinker: Send + Sync {
     }
 
     /// Reports whether an indexed path is a declaration-only companion file.
-    fn is_declaration_only(&self, _path: &str) -> bool { false }
+    fn is_declaration_only(&self, _path: &str) -> bool {
+        false
+    }
 
-    fn apply_wildcard_import<'a, 'file>(&self, _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>, _reference: &'a Reference, _profile: Option<&dyn LanguageProfile>, _scope: &'file str, _modules: &[&'a Node]) -> bool where 'a: 'file { false }
-    fn apply_aliased_external_fallback<'a, 'file>(&self, _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>, _reference: &'a Reference, _normalized: Option<&ImportPath>, _scope: &'file str, _alias: &'a str) where 'a: 'file {}
-    fn apply_module_star_reexports<'a, 'file>(&self, _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>) where 'a: 'file {}
-    fn import_edge_owner<'a>(&self, _owner: &'a Node, _by_id: &HashMap<SymbolId, &'a Node>, _interner: &LinkerInterner<'a>, _path: &str) -> Option<&'a str> { None }
-    fn admits_imported_declaration_edge(&self, _declaration: &Node, _target_module: &Node) -> bool { false }
-    fn emits_single_imported_target_edge(&self) -> bool { false }
+    fn apply_wildcard_import<'a, 'file>(
+        &self,
+        _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+        _reference: &'a Reference,
+        _profile: Option<&dyn LanguageProfile>,
+        _scope: &'file str,
+        _modules: &[&'a Node],
+    ) -> bool
+    where
+        'a: 'file,
+    {
+        false
+    }
+    fn apply_aliased_external_fallback<'a, 'file>(
+        &self,
+        _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+        _reference: &'a Reference,
+        _normalized: Option<&ImportPath>,
+        _scope: &'file str,
+        _alias: &'a str,
+    ) where
+        'a: 'file,
+    {
+    }
+    fn apply_module_star_reexports<'a, 'file>(
+        &self,
+        _state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+    ) where
+        'a: 'file,
+    {
+    }
+    fn import_edge_owner<'a>(
+        &self,
+        _owner: &'a Node,
+        _by_id: &HashMap<SymbolId, &'a Node>,
+        _interner: &LinkerInterner<'a>,
+        _path: &str,
+    ) -> Option<&'a str> {
+        None
+    }
+    fn admits_imported_declaration_edge(&self, _declaration: &Node, _target_module: &Node) -> bool {
+        false
+    }
+    fn emits_single_imported_target_edge(&self) -> bool {
+        false
+    }
     #[allow(clippy::too_many_arguments)]
-    fn type_only_import_is_unproven(&self, _profile: &dyn LanguageProfile, _path: &str, _facts: &Facts, _modules: &ModulesByNamespace<'_>, _dependencies: &DependencyRegistry, _interner: &LinkerInterner<'_>, _node_rebindings: &NodeBindingIndex) -> bool { false }
-    fn checks_annotation_binding_shadowing(&self) -> bool { true }
-    fn module_shadows_annotation(&self) -> bool { false }
-    fn is_dynamic_typing_annotation(&self, _head: &str, _member: &str, _owner: &Node, _aliases: &HashMap<&str, HashMap<&str, Vec<&Node>>>, _dynamic_aliases: &HashMap<&str, hashbrown::HashSet<&str>>) -> bool { false }
-    fn admits_external_generic_annotation(&self, _profile: Option<&dyn LanguageProfile>, _raw_annotation: &str, _head: &str, _module: &str) -> bool { true }
+    fn type_only_import_is_unproven(
+        &self,
+        _profile: &dyn LanguageProfile,
+        _path: &str,
+        _facts: &Facts,
+        _modules: &ModulesByNamespace<'_>,
+        _dependencies: &DependencyRegistry,
+        _interner: &LinkerInterner<'_>,
+        _node_rebindings: &NodeBindingIndex,
+    ) -> bool {
+        false
+    }
+    fn checks_annotation_binding_shadowing(&self) -> bool {
+        true
+    }
+    fn module_shadows_annotation(&self) -> bool {
+        false
+    }
+    fn is_dynamic_typing_annotation(
+        &self,
+        _head: &str,
+        _member: &str,
+        _owner: &Node,
+        _aliases: &HashMap<&str, HashMap<&str, Vec<&Node>>>,
+        _dynamic_aliases: &HashMap<&str, hashbrown::HashSet<&str>>,
+    ) -> bool {
+        false
+    }
+    fn admits_external_generic_annotation(
+        &self,
+        _profile: Option<&dyn LanguageProfile>,
+        _raw_annotation: &str,
+        _head: &str,
+        _module: &str,
+    ) -> bool {
+        true
+    }
     #[allow(clippy::too_many_arguments)]
-    fn external_parameter_annotation<'a>(&self, _profile: Option<&dyn LanguageProfile>, _raw_annotation: &'a str, _raw_head: &'a str, _head: &str, _member: &str, _path: &str, _dependencies: &DependencyRegistry, _try_qualified: bool) -> Option<crate::linker::types::ReceiverType<'a>> { None }
-    fn normalize_dom_receiver<'a>(&self, receiver: &'a str) -> &'a str { receiver }
-    fn dom_property_type(&self, _receiver: &str, _member: &str) -> Option<&'static str> { None }
-    fn symbol_visible(&self, _owner: &Node, _candidate: &Node) -> Option<bool> { None }
-    fn admits_classified_node(&self, _node: &Node) -> bool { true }
-    fn is_constructor_symbol(&self, _node: &Node) -> bool { false }
-    fn admits_component_template_field(&self, _receiver: &Node) -> bool { false }
-    fn is_dynamic_type_alias(&self, _module: &str, _expression: &str) -> bool { false }
-    fn external_factory_import_is_safe(&self, _module: &Node, _alias: &str, _position: crate::semantic::SourcePosition) -> bool { false }
-    fn prepare_semantic_context<'a>(&self, _context: &mut crate::linker::semantic_context::context::Context<'a>, _prep: &crate::linker::traits::SemanticContextPrep<'a>) {}
-    fn collects_argument_factory_rules(&self, _language_id: &str) -> bool { false }
-    fn resolve_special_type_expr<'a>(&self, _owner: &'a Node, _expression: &crate::semantic::TypeExpr, _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>, _limits: crate::linker::value_flow::SemanticLimits) -> Option<TypeTarget<'a>> { None }
-    fn special_type_alias_target<'a>(&self, _node: &'a Node, _resolver: &dyn SemanticResolver<'a>) -> Option<TypeTarget<'a>> { None }
-    fn stored_type_expr(&self, _annotation: &str) -> Option<crate::semantic::TypeExpr> { None }
-    fn setup_scope_complete(&self, _owner: &Node, _parent_is_module: bool) -> bool { false }
-    fn stable_immutable_capture(&self, _writes: &[crate::linker::value_flow::Binding<'_>]) -> bool { false }
-    fn callable_target_return<'s, 'a>(&self, _index: &'s (dyn ValueFlowLookup<'a> + 'a), _target: &'s TypeTarget<'a>, _owner: &'a Node, _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>, _trace: Option<&ReadTrace<'a, '_>>) -> Option<&'s TypeTarget<'a>> { None }
-    fn constructor_symbol<'a>(&self, _owner: &'a Node, _expression: &str, _at: crate::semantic::SourcePosition, _resolver: &dyn SemanticResolver<'a>) -> Option<crate::linker::value_flow::Symbol<'a>> { None }
+    fn external_parameter_annotation<'a>(
+        &self,
+        _profile: Option<&dyn LanguageProfile>,
+        _raw_annotation: &'a str,
+        _raw_head: &'a str,
+        _head: &str,
+        _member: &str,
+        _path: &str,
+        _dependencies: &DependencyRegistry,
+        _try_qualified: bool,
+    ) -> Option<crate::linker::types::ReceiverType<'a>> {
+        None
+    }
+    fn normalize_dom_receiver<'a>(&self, receiver: &'a str) -> &'a str {
+        receiver
+    }
+    fn dom_property_type(&self, _receiver: &str, _member: &str) -> Option<&'static str> {
+        None
+    }
+    fn symbol_visible(&self, _owner: &Node, _candidate: &Node) -> Option<bool> {
+        None
+    }
+    fn admits_classified_node(&self, _node: &Node) -> bool {
+        true
+    }
+    fn is_constructor_symbol(&self, _node: &Node) -> bool {
+        false
+    }
+    fn admits_component_template_field(&self, _receiver: &Node) -> bool {
+        false
+    }
+    fn is_dynamic_type_alias(&self, _module: &str, _expression: &str) -> bool {
+        false
+    }
+    fn external_factory_import_is_safe(
+        &self,
+        _module: &Node,
+        _alias: &str,
+        _position: crate::semantic::SourcePosition,
+    ) -> bool {
+        false
+    }
+    fn prepare_semantic_context<'a>(
+        &self,
+        _context: &mut crate::linker::semantic_context::context::Context<'a>,
+        _prep: &crate::linker::traits::SemanticContextPrep<'a>,
+    ) {
+    }
+    fn collects_argument_factory_rules(&self, _language_id: &str) -> bool {
+        false
+    }
+    fn resolve_special_type_expr<'a>(
+        &self,
+        _owner: &'a Node,
+        _expression: &crate::semantic::TypeExpr,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+        _limits: crate::linker::value_flow::SemanticLimits,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn special_type_alias_target<'a>(
+        &self,
+        _node: &'a Node,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    fn stored_type_expr(&self, _annotation: &str) -> Option<crate::semantic::TypeExpr> {
+        None
+    }
+    fn setup_scope_complete(&self, _owner: &Node, _parent_is_module: bool) -> bool {
+        false
+    }
+    fn stable_immutable_capture(&self, _writes: &[crate::linker::value_flow::Binding<'_>]) -> bool {
+        false
+    }
+    fn callable_target_return<'s, 'a>(
+        &self,
+        _index: &'s (dyn ValueFlowLookup<'a> + 'a),
+        _target: &'s TypeTarget<'a>,
+        _owner: &'a Node,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+        _trace: Option<&ReadTrace<'a, '_>>,
+    ) -> Option<&'s TypeTarget<'a>> {
+        None
+    }
+    fn constructor_symbol<'a>(
+        &self,
+        _owner: &'a Node,
+        _expression: &str,
+        _at: crate::semantic::SourcePosition,
+        _resolver: &dyn SemanticResolver<'a>,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
+        None
+    }
     fn disambiguate_candidates(&self, _candidates: &mut Vec<&Node>) {}
-    fn receiver_requires_static(&self) -> bool { false }
-    fn is_local_unverified_request(&self, _node: &Node, _flow: &crate::semantic::ValueFlowFacts, _path: &str, _dependencies: &DependencyRegistry) -> bool { false }
-    fn required_configuration_facts(&self, _facts: &std::collections::BTreeMap<String, crate::typed_facts::TypedFacts>, _catalog: &[(&str, &str)], _dependencies: &DependencyRegistry) -> BTreeSet<String> { BTreeSet::new() }
-    fn collects_module_flow_rebindings(&self, _node: &Node) -> bool { false }
-    fn strips_component_macro_raw_details(&self, _node: &Node) -> bool { false }
-    fn prefers_construct_contract(&self) -> bool { false }
-    fn enforces_local_contract_position(&self) -> bool { false }
+    fn receiver_requires_static(&self) -> bool {
+        false
+    }
+    fn is_local_unverified_request(
+        &self,
+        _node: &Node,
+        _flow: &crate::semantic::ValueFlowFacts,
+        _path: &str,
+        _dependencies: &DependencyRegistry,
+    ) -> bool {
+        false
+    }
+    fn required_configuration_facts(
+        &self,
+        _facts: &std::collections::BTreeMap<String, crate::typed_facts::TypedFacts>,
+        _catalog: &[(&str, &str)],
+        _dependencies: &DependencyRegistry,
+    ) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+    fn collects_module_flow_rebindings(&self, _node: &Node) -> bool {
+        false
+    }
+    fn strips_component_macro_raw_details(&self, _node: &Node) -> bool {
+        false
+    }
+    fn prefers_construct_contract(&self) -> bool {
+        false
+    }
+    fn enforces_local_contract_position(&self) -> bool {
+        false
+    }
 }
 
 /// Generic linker used by profiles without language-specific resolution rules.
@@ -1023,7 +1699,9 @@ impl<T: LanguageProfile + ?Sized> ProfileLinker for T {
             #[cfg(feature = "lang-rust")]
             "rust" => &crate::linker::rust::linker_impl::RUST_LINKER,
             #[cfg(feature = "lang-typescript")]
-            "typescript" | "javascript" | "vue" => &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER,
+            "typescript" | "javascript" | "vue" => {
+                &crate::linker::typescript::profile_linker::TYPESCRIPT_LINKER
+            }
             _ => &GENERIC_LINKER,
         }
     }

@@ -120,12 +120,16 @@ pub(super) fn leaves_nodes(
     owners: Option<&BTreeSet<String>>,
     path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let (mut statement, encoded) =
-        prepare_owner_filtered_statement(conn, owners, "owner_path_id", |filter| {
+    let (mut statement, encoded) = prepare_owner_filtered_statement(
+        conn,
+        owners,
+        "owner_path_id",
+        |filter| {
             format!(
                 "SELECT id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id FROM nodes {filter} ORDER BY owner_path_id,id"
             )
-        })?;
+        },
+    )?;
     let mut rows = query_with_encoded(&mut statement, encoded.as_deref())?;
     let mut hashers: HashMap<i64, Sha256> = HashMap::new();
     while let Some(row) = rows.next()? {
@@ -186,8 +190,15 @@ fn graph_evidence<'a>(
     }
 }
 
-fn dict_entry<'a>(map: &'a HashMap<i64, String>, id: i64, label: &str, role: &str) -> Result<&'a str> {
-    map.get(&id).with_context(|| format!("{label} commitment references missing {role} {id}")).map(String::as_str)
+fn dict_entry<'a>(
+    map: &'a HashMap<i64, String>,
+    id: i64,
+    label: &str,
+    role: &str,
+) -> Result<&'a str> {
+    map.get(&id)
+        .with_context(|| format!("{label} commitment references missing {role} {id}"))
+        .map(String::as_str)
 }
 
 fn row_i64_quad(row: &rusqlite::Row<'_>) -> rusqlite::Result<[i64; 4]> {
@@ -206,12 +217,16 @@ pub(super) fn leaves_edge_occurrences(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let (mut stmt, encoded) =
-        prepare_owner_filtered_statement(conn, owners, "owner_id", |filter| {
+    let (mut stmt, encoded) = prepare_owner_filtered_statement(
+        conn,
+        owners,
+        "owner_id",
+        |filter| {
             format!(
                 "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence_id, confidence_id FROM edge_occurrences {filter} ORDER BY owner_id, ordinal"
             )
-        })?;
+        },
+    )?;
     let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     let mut result = BTreeMap::new();
@@ -275,12 +290,16 @@ pub(super) fn leaves_edges(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let (mut stmt, encoded) =
-        prepare_owner_filtered_statement(conn, owners, "path_id", |filter| {
+    let (mut stmt, encoded) = prepare_owner_filtered_statement(
+        conn,
+        owners,
+        "path_id",
+        |filter| {
             format!(
                 "SELECT src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count FROM edges {filter}"
             )
-        })?;
+        },
+    )?;
     let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     struct EdgeRow<'a> {
@@ -431,12 +450,16 @@ pub(super) fn leaves_dependencies(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let (mut stmt, encoded) =
-        prepare_owner_filtered_statement(conn, owners, "owner_id", |filter| {
+    let (mut stmt, encoded) = prepare_owner_filtered_statement(
+        conn,
+        owners,
+        "owner_id",
+        |filter| {
             format!(
                 "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies {filter}"
             )
-        })?;
+        },
+    )?;
     let mut rows = query_with_encoded(&mut stmt, encoded.as_deref())?;
 
     struct DepRow<'a> {
@@ -549,11 +572,11 @@ pub(super) fn leaves_generic(
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
     use super::super::base::{
         encode_int, encode_text, key, new_leaf_hasher, read_metadata, read_metadata_optional,
         write_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES, MAX_SQLITE_VALUE_BYTES,
     };
+    use super::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
     use rusqlite::Connection;
     use sha2::Digest;
 
@@ -561,9 +584,24 @@ mod tests {
     fn shared_owner_leaves_sort_by_wire_kind_not_numeric_discriminant() {
         let owner = "src/lib.rs";
         let rows = vec![
-            SharedOwnerRow { kind: SharedOwnerKind::Symbol, key: "crate::entry", ordinal: 1, node_id: Some("fn:src/lib.rs:entry") },
-            SharedOwnerRow { kind: SharedOwnerKind::Reference, key: "dep::call", ordinal: 0, node_id: None },
-            SharedOwnerRow { kind: SharedOwnerKind::DefaultExport, key: "fn:src/lib.rs:entry", ordinal: 0, node_id: None },
+            SharedOwnerRow {
+                kind: SharedOwnerKind::Symbol,
+                key: "crate::entry",
+                ordinal: 1,
+                node_id: Some("fn:src/lib.rs:entry"),
+            },
+            SharedOwnerRow {
+                kind: SharedOwnerKind::Reference,
+                key: "dep::call",
+                ordinal: 0,
+                node_id: None,
+            },
+            SharedOwnerRow {
+                kind: SharedOwnerKind::DefaultExport,
+                key: "fn:src/lib.rs:entry",
+                ordinal: 0,
+                node_id: None,
+            },
         ];
         let actual = hash_shared_owner_leaves([(owner, rows)]);
         let expected_hash = |order: [(&str, &str, Option<&str>, i64); 3]| {
@@ -573,7 +611,11 @@ mod tests {
                 encode_text(&mut h, kind);
                 encode_text(&mut h, k);
                 encode_text(&mut h, owner);
-                if let Some(id) = node_id { encode_text(&mut h, id); } else { encode_int(&mut h, ord); }
+                if let Some(id) = node_id {
+                    encode_text(&mut h, id);
+                } else {
+                    encode_int(&mut h, ord);
+                }
             }
             hex::encode(h.finalize())
         };
@@ -594,13 +636,31 @@ mod tests {
 
     #[test]
     fn metadata_helpers_roundtrip_and_byte_budget_match_8_mib() {
-        assert_eq!((MAX_SQLITE_VALUE_BYTES, MAX_QUERY_RESULT_BYTES), (8 * 1024 * 1024, 8 * 1024 * 1024));
+        assert_eq!(
+            (MAX_SQLITE_VALUE_BYTES, MAX_QUERY_RESULT_BYTES),
+            (8 * 1024 * 1024, 8 * 1024 * 1024)
+        );
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
-        assert_eq!(read_metadata_optional(&conn, MetadataKey::OutputRoot).unwrap(), None);
+        conn.execute(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            read_metadata_optional(&conn, MetadataKey::OutputRoot).unwrap(),
+            None
+        );
         assert!(read_metadata(&conn, MetadataKey::OutputRoot).is_err());
         write_metadata(&conn, MetadataKey::OutputRoot, "abc123").unwrap();
-        assert_eq!(read_metadata_optional(&conn, MetadataKey::OutputRoot).unwrap().as_deref(), Some("abc123"));
-        assert_eq!(read_metadata(&conn, MetadataKey::OutputRoot).unwrap(), "abc123");
+        assert_eq!(
+            read_metadata_optional(&conn, MetadataKey::OutputRoot)
+                .unwrap()
+                .as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            read_metadata(&conn, MetadataKey::OutputRoot).unwrap(),
+            "abc123"
+        );
     }
 }

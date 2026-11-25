@@ -1,7 +1,10 @@
 #![cfg(feature = "lang-html")]
 
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
-use acdd_index::{ast, db::{commitments, reader, symbols}};
+use acdd_index::{
+    ast,
+    db::{commitments, reader, symbols},
+};
 use contextunity_acdd::engine::pipeline as writer;
 use std::{collections::BTreeMap, fs};
 

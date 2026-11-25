@@ -480,9 +480,7 @@ impl ReturnTypeSpec {
         let raw = raw.into();
         let trimmed = raw.trim();
         ensure!(
-            !trimmed.is_empty()
-                && trimmed.len() <= 4096
-                && !trimmed.chars().any(char::is_control),
+            !trimmed.is_empty() && trimmed.len() <= 4096 && !trimmed.chars().any(char::is_control),
             "invalid return type specification"
         );
         let compiled = parse_return_type_node(trimmed, 0)?;
@@ -499,13 +497,18 @@ impl ReturnTypeSpec {
 }
 
 impl Serialize for ReturnTypeSpec {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.raw)
     }
 }
 
 impl<'de> Deserialize<'de> for ReturnTypeSpec {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
         Self::parse(raw).map_err(serde::de::Error::custom)
     }
@@ -1034,7 +1037,10 @@ impl SyntaxRule {
                 export,
                 components_key,
             } => (|| {
-                ensure!(lang == LanguageId::Vue, "invalid component options language");
+                ensure!(
+                    lang == LanguageId::Vue,
+                    "invalid component options language"
+                );
                 Ok(vec![module.as_str(), export, components_key])
             })(),
             _ => return None,
@@ -1184,7 +1190,13 @@ impl SyntaxRule {
                     lang == LanguageId::Python,
                     "invalid template loader language"
                 );
-                Ok(vec![package.as_str(), module, environment, loader, loader_keyword])
+                Ok(vec![
+                    package.as_str(),
+                    module,
+                    environment,
+                    loader,
+                    loader_keyword,
+                ])
             })(),
             SyntaxOperation::TemplateLibrary {
                 directory,
@@ -1306,7 +1318,10 @@ impl SyntaxRule {
                 Ok(vec![tag.as_str(), expression_prefix])
             })(),
             SyntaxOperation::TemplateDialect { dialect } => (|| {
-                ensure!(lang == LanguageId::Html, "invalid template dialect language");
+                ensure!(
+                    lang == LanguageId::Html,
+                    "invalid template dialect language"
+                );
                 ensure!(
                     normal_relative_dir(&dialect.directory),
                     "invalid template root directory"
@@ -1335,7 +1350,10 @@ impl SyntaxRule {
                 library_routes,
                 ..
             } => (|| {
-                ensure!(lang == LanguageId::Html, "invalid template symbols language");
+                ensure!(
+                    lang == LanguageId::Html,
+                    "invalid template symbols language"
+                );
                 let valid_names = tags
                     .iter()
                     .chain(filters)

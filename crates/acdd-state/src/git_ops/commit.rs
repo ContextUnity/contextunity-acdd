@@ -1,17 +1,17 @@
 //! Scoped plumbing Git commits and crash-safe archive commits.
 
-use super::snapshot::{
-    blob_oid_at, collect_literal_scope_paths, guard_candidate_path, list_stage_entries,
-    list_untracked_entries, remove_confined_file, TemporaryGitIndex,
-};
 use super::exec::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, failpoint_hit,
     first_commit_with_exact_trailer, format_message_with_trailer, run_git_checked, run_git_raw,
     run_git_stdout, sync_default_index_paths,
 };
-use acdd_core::fs::ScopedTempDir;
+use super::snapshot::{
+    blob_oid_at, collect_literal_scope_paths, guard_candidate_path, list_stage_entries,
+    list_untracked_entries, remove_confined_file, TemporaryGitIndex,
+};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::fs::{atomic_write, checked_child, open_confined};
 use acdd_core::ids::{CommitOid, RunId, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -187,7 +187,9 @@ pub fn create_scoped_commit_with_expected(
         };
         if is_dir_entry && req.worktree.join(&norm).join(".git").exists() {
             let admitted = req.path_policy.is_candidate_included(&norm)
-                && req.path_policy.is_scope_admitted(&norm, &req.admitted_scope);
+                && req
+                    .path_policy
+                    .is_scope_admitted(&norm, &req.admitted_scope);
             if admitted {
                 return Err(StateError::new(
                     ErrorCode::ExternalGitDrift,
@@ -206,11 +208,18 @@ pub fn create_scoped_commit_with_expected(
     let mut to_remove = Vec::new();
     for (norm, index_mode) in candidates {
         if !req.path_policy.is_candidate_included(&norm)
-            || !req.path_policy.is_scope_admitted(&norm, &req.admitted_scope)
+            || !req
+                .path_policy
+                .is_scope_admitted(&norm, &req.admitted_scope)
         {
             continue;
         }
-        guard_candidate_path(&req.worktree, &norm, index_mode.as_deref(), &req.path_policy)?;
+        guard_candidate_path(
+            &req.worktree,
+            &norm,
+            index_mode.as_deref(),
+            &req.path_policy,
+        )?;
         match fs::symlink_metadata(req.worktree.join(&norm)) {
             Ok(meta) => {
                 if !meta.is_dir() {
@@ -240,7 +249,9 @@ pub fn create_scoped_commit_with_expected(
         let mut index_info = String::new();
         for (path, (mode, oid)) in staged_entries {
             if !req.path_policy.is_candidate_included(&path)
-                || !req.path_policy.is_scope_admitted(&path, &req.admitted_scope)
+                || !req
+                    .path_policy
+                    .is_scope_admitted(&path, &req.admitted_scope)
             {
                 continue;
             }
@@ -368,23 +379,25 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
 
     let will_commit = req.should_commit;
     if will_commit {
-        if let Some(existing_oid) = find_claim_commit_in_range(
-            &req.worktree,
-            req.run_base_head.as_ref(),
-            &claim_trailer,
-        )? {
+        if let Some(existing_oid) =
+            find_claim_commit_in_range(&req.worktree, req.run_base_head.as_ref(), &claim_trailer)?
+        {
             let archive_on_disk = archive_abs.is_file();
             let archive_in_commit =
                 blob_oid_at(&req.worktree, existing_oid.as_str(), &norm_archive)?.is_some();
             if archive_on_disk || archive_in_commit {
                 if !archive_on_disk {
-                    atomic_write(&archive_abs, req.rendered_archive_markdown.as_bytes(), false)
-                        .map_err(|err| {
-                            StateError::new(
-                                ErrorCode::ExternalGitDrift,
-                                format!("failed re-materializing '{norm_archive}' on retry: {err}"),
-                            )
-                        })?;
+                    atomic_write(
+                        &archive_abs,
+                        req.rendered_archive_markdown.as_bytes(),
+                        false,
+                    )
+                    .map_err(|err| {
+                        StateError::new(
+                            ErrorCode::ExternalGitDrift,
+                            format!("failed re-materializing '{norm_archive}' on retry: {err}"),
+                        )
+                    })?;
                 }
                 remove_confined_file(&req.worktree, &norm_spec)?;
                 if existing_oid == current_head_commit(&req.worktree)? {
@@ -394,7 +407,8 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
                         existing_oid.as_str(),
                     )
                     .unwrap_or_default();
-                    let _ = sync_default_index_paths(&req.worktree, existing_oid.as_str(), &changed);
+                    let _ =
+                        sync_default_index_paths(&req.worktree, existing_oid.as_str(), &changed);
                 }
                 return Ok(ArchiveCommitResp {
                     archive_path: norm_archive,
@@ -433,7 +447,12 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
         false
     };
 
-    atomic_write(&archive_abs, req.rendered_archive_markdown.as_bytes(), false).map_err(|err| {
+    atomic_write(
+        &archive_abs,
+        req.rendered_archive_markdown.as_bytes(),
+        false,
+    )
+    .map_err(|err| {
         StateError::new(
             ErrorCode::ExternalGitDrift,
             format!("failed writing archive '{norm_archive}': {err}"),

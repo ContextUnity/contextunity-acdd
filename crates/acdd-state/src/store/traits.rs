@@ -27,7 +27,10 @@ pub trait StateReader: Send + Sync {
     fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, StateError>;
 
     /// Resolve the single active `Run` bound to `worktree`, if any.
-    fn resolve_active_run_by_worktree(&self, worktree: &str) -> Result<Option<RunRecord>, StateError>;
+    fn resolve_active_run_by_worktree(
+        &self,
+        worktree: &str,
+    ) -> Result<Option<RunRecord>, StateError>;
 
     /// Load a single `gate_nodes` row by `(run_id, node_id)`.
     fn load_node(
@@ -136,7 +139,10 @@ pub trait StateTx {
     ) -> Result<(), StateError>;
 
     /// Insert a new blackboard entry and return the stored record with assigned `id`.
-    fn insert_blackboard(&mut self, item: &BlackboardRecord) -> Result<BlackboardRecord, StateError>;
+    fn insert_blackboard(
+        &mut self,
+        item: &BlackboardRecord,
+    ) -> Result<BlackboardRecord, StateError>;
 
     /// Update the status of an existing blackboard entry scoped to `run_id`.
     fn update_blackboard_status(

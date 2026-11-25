@@ -7,8 +7,8 @@ use super::runtime::{
 };
 use super::shared::{
     assign_file_component, components, extract_typed_source_with_digest, hash_source_bytes,
-    manage_publication_sidecars, open_and_read_verified_source,
-    BuildMode, SidecarDisposition, SourceSnapshotMismatch, EXTRACTION_MEMORY_MULTIPLIER, NONCE,
+    manage_publication_sidecars, open_and_read_verified_source, BuildMode, SidecarDisposition,
+    SourceSnapshotMismatch, EXTRACTION_MEMORY_MULTIPLIER, NONCE,
 };
 use super::staging::consume_pipeline_results;
 use acdd_core::{
@@ -755,7 +755,14 @@ pub fn build_with_selection_and_guard(
     test_hooks: Option<Arc<PipelineTestHooks>>,
     before_publish: Option<&(dyn Fn() -> Result<()> + Sync)>,
 ) -> Result<Value> {
-    build_inner(root, output, adapter_path, cache_dir, test_hooks, before_publish)
+    build_inner(
+        root,
+        output,
+        adapter_path,
+        cache_dir,
+        test_hooks,
+        before_publish,
+    )
 }
 
 pub(super) fn build_inner(
@@ -943,7 +950,10 @@ fn check_existing_code_map_target(output: &Path, output_abs: &Path) -> Result<()
     let meta = match fs::symlink_metadata(output_abs) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => bail!("cannot access code map target '{}': {err}", output.display()),
+        Err(err) => bail!(
+            "cannot access code map target '{}': {err}",
+            output.display()
+        ),
     };
     if !meta.is_file() {
         bail!(

@@ -3,9 +3,7 @@ use crate::common::Workspace;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
 use acdd_core::ports::{DomainCheckReq, FreshnessObservation};
-use acdd_state::types::{
-    NodeStatus, ReviewContourResult, ReviewEvidence, RunStatus, SubmitAction,
-};
+use acdd_state::types::{NodeStatus, ReviewContourResult, ReviewEvidence, RunStatus, SubmitAction};
 use acdd_state::usecases::dto::{ClaimReq, StartReq, SubmitReq, VerifyReq};
 use acdd_state::usecases::{StateCommand, StateCommandOutput, StateEngine};
 use contextunity_acdd::format::render_claim_markdown;
@@ -38,12 +36,20 @@ fn open_real_engine(ws: &Workspace) -> StateEngine {
         response_policy: adapter.response.clone(),
         retain_traces: adapter.retain_traces,
         max_snapshot_file_bytes: adapter.limits.max_snapshot_file_bytes,
-        allowed_binary_extensions: adapter.limits.normalized_allowed_binary_extensions().unwrap(),
+        allowed_binary_extensions: adapter
+            .limits
+            .normalized_allowed_binary_extensions()
+            .unwrap(),
     };
     StateEngine::open(cfg, providers).unwrap()
 }
 
-fn claim_node(engine: &StateEngine, rid: &str, node: &str, worker: &WorkerId) -> acdd_state::context::ClaimResp {
+fn claim_node(
+    engine: &StateEngine,
+    rid: &str,
+    node: &str,
+    worker: &WorkerId,
+) -> acdd_state::context::ClaimResp {
     let StateCommandOutput::Claim(resp) = engine
         .execute(StateCommand::Claim(ClaimReq {
             run: Some(rid.to_owned()),
@@ -219,8 +225,7 @@ scope: [src/core/scoped.rs]
     ws.build();
 
     let adapter = acdd_core::config::load_adapter(ws.root(), None).unwrap();
-    let real_providers =
-        build_domain_providers(ws.root(), &adapter, None, Vec::new()).unwrap();
+    let real_providers = build_domain_providers(ws.root(), &adapter, None, Vec::new()).unwrap();
     real_providers
         .validate_check_ref("code.lint", &json!({"categories": ["arch", "docs"]}))
         .expect("real CodeDomainProvider registers code.lint");
@@ -324,7 +329,11 @@ scope: [src/core/scoped.rs]
     // Linked-worktree freshness isolation (never falls back to primary ws.db()) + gitignored docs excluded from digest.
     let child_wt = ws.root().join(".worktrees/isolated-child");
     fs::create_dir_all(child_wt.join("src/core")).unwrap();
-    fs::write(child_wt.join("src/core/scoped.rs"), "pub fn good() -> i32 { 1 }\n").unwrap();
+    fs::write(
+        child_wt.join("src/core/scoped.rs"),
+        "pub fn good() -> i32 { 1 }\n",
+    )
+    .unwrap();
     let FreshnessObservation::Passed {
         index_generation: Some(child_gen),
         ..
@@ -344,7 +353,10 @@ scope: [src/core/scoped.rs]
     assert_eq!(child_gen, "no-index");
 
     let orig_gitignore = fs::read_to_string(ws.path(".gitignore")).unwrap();
-    ws.write(".gitignore", ".acdd/code-map.sqlite*\n.acdd/state.sqlite*\n.acdd/extraction-cache/\nignored_docs/\n");
+    ws.write(
+        ".gitignore",
+        ".acdd/code-map.sqlite*\n.acdd/state.sqlite*\n.acdd/extraction-cache/\nignored_docs/\n",
+    );
     ws.write("ignored_docs/scratch.md", "# Ignored\n");
     let FreshnessObservation::Passed {
         execution_digest_salt: Some(with_ignored_salt),
@@ -547,7 +559,10 @@ scope: [src/core/scoped.rs]
             &root_req,
         );
         if expect_obs_err {
-            assert!(obs.is_err(), "broken {label} must fail closed, not fall back");
+            assert!(
+                obs.is_err(),
+                "broken {label} must fail closed, not fall back"
+            );
         } else {
             let FreshnessObservation::Passed {
                 execution_digest_salt: Some(drifted),
@@ -668,7 +683,12 @@ scope: [docs/architecture/guide.md]
     let doc_b = WorkerId::new("doc-builder").unwrap();
     let doc_r = WorkerId::new("doc-reviewer").unwrap();
 
-    let c_syn = claim_node(&doc_engine, &doc_rid, "blueprint_synthesis.synthesize", &arch);
+    let c_syn = claim_node(
+        &doc_engine,
+        &doc_rid,
+        "blueprint_synthesis.synthesize",
+        &arch,
+    );
     let blueprint_proof: Value = json!({
         "cited_invariants": ["INV-DOC-CLEAN"],
         "cited_symbols": ["src/lib.rs::base"],

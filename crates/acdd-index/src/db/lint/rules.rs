@@ -41,9 +41,7 @@ pub(super) fn resolve_architecture<'a>(
     Ok(Cow::Owned(ArchitectureConfig::default()))
 }
 
-pub(super) fn load_indexed_doc_rules(
-    conn: &Connection,
-) -> Result<Vec<(RuleSource, Value)>> {
+pub(super) fn load_indexed_doc_rules(conn: &Connection) -> Result<Vec<(RuleSource, Value)>> {
     let like_pattern = format!("%{}%", NodeDetailKey::ARCH_RULES);
     let mut stmt = conn.prepare(
         "SELECT p.path, n.details
@@ -75,7 +73,13 @@ pub(super) fn load_indexed_doc_rules(
         for item in rules_arr {
             let line = item.get("line").and_then(Value::as_u64).unwrap_or(1) as usize;
             let rule_val = item.get("rule").unwrap_or(item).clone();
-            entries.push((RuleSource { path: path.clone(), line }, rule_val));
+            entries.push((
+                RuleSource {
+                    path: path.clone(),
+                    line,
+                },
+                rule_val,
+            ));
         }
     }
     Ok(entries)
@@ -235,11 +239,9 @@ pub fn enforced_invariant_ids(
 }
 
 pub(super) fn rule_invariant_id(spec: &ArchRuleSpec) -> Option<String> {
-    spec.invariant.clone().or_else(|| {
-        spec.id
-            .starts_with("INV-")
-            .then(|| spec.id.clone())
-    })
+    spec.invariant
+        .clone()
+        .or_else(|| spec.id.starts_with("INV-").then(|| spec.id.clone()))
 }
 
 pub(super) fn selector_matches_file(
@@ -332,7 +334,10 @@ pub(super) fn edge_matches_rule(edge: &IndexedEdge, rule: &ArchRuleSpec) -> bool
         match rule.kind {
             ArchRuleKind::ForbidCycles => matches!(edge.kind.as_str(), "calls" | "imports"),
             ArchRuleKind::MustImplement => {
-                matches!(edge.kind.as_str(), "implements" | "inherits" | "bases" | "extends")
+                matches!(
+                    edge.kind.as_str(),
+                    "implements" | "inherits" | "bases" | "extends"
+                )
             }
             _ => matches!(
                 edge.kind.as_str(),
@@ -348,9 +353,7 @@ pub(super) fn edge_matches_rule(edge: &IndexedEdge, rule: &ArchRuleSpec) -> bool
             ),
         }
     } else {
-        rule.edge_kinds
-            .iter()
-            .any(|k| k.as_str() == edge.kind)
+        rule.edge_kinds.iter().any(|k| k.as_str() == edge.kind)
     };
     if !kind_ok {
         return false;

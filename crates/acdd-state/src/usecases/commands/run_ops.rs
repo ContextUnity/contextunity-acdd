@@ -1,10 +1,8 @@
 //! Run-level mutation handlers (`draft`, `sync`, `clear`).
 
+use crate::context::slices::read_spec_readonly;
 use crate::git_ops::worktree::remove_worktree_and_branch;
-use crate::machine::{
-    evaluate_transition, SyncInput, TransitionInput,
-    TransitionOutcome,
-};
+use crate::machine::{evaluate_transition, SyncInput, TransitionInput, TransitionOutcome};
 use crate::observability::build_completed_run_digest;
 use crate::profile::inherit::resolve_profile_for_rebind;
 use crate::spec::parse_spec;
@@ -13,22 +11,19 @@ use crate::types::{
     ArchiveCleanupEntry, RunTombstoneRecord, StoragePreconditions, TerminalStatus,
     ValidatedObservations,
 };
-use crate::usecases::dto::{
-    ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, SyncResp,
-};
+use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
+use crate::usecases::dto::{ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, SyncResp};
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
-    cleanup_tombstone, effective_spec_collections,
-    ensure_state_enabled, is_managed_run_branch, load_active_run_graph, next_spec_id_for_prefix,
-    primary_workspace_root, read_confined_utf8, resolve_active_run, resolve_source_checkout,
-    to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
+    cleanup_tombstone, effective_spec_collections, ensure_state_enabled, is_managed_run_branch,
+    load_active_run_graph, next_spec_id_for_prefix, primary_workspace_root, read_confined_utf8,
+    resolve_active_run, resolve_source_checkout, to_machine_profile, validate_profile_fail_closed,
+    with_repo_lock_and_maintenance,
 };
-use crate::context::slices::read_spec_readonly;
-use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{Adapter, ACDD_DIR};
-use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
 use std::path::Path;
@@ -85,8 +80,7 @@ pub(crate) fn handle_draft_dyn(
         };
 
         let db_max = backend.max_spec_number(&req.collection, &prefix)?;
-        let spec_id =
-            next_spec_id_for_prefix(&primary, &req.collection, col, &prefix, db_max)?;
+        let spec_id = next_spec_id_for_prefix(&primary, &req.collection, col, &prefix, db_max)?;
         let spec_rel = format!("{draft_dir}/{spec_id}-{slug}.md");
         (spec_id, spec_rel)
     };
@@ -164,7 +158,8 @@ pub(crate) fn handle_sync_dyn(
         let doc = parse_spec(&raw_spec)?;
         let checkout = checkout_config(config, primary, &source, source_override)?;
 
-        let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_profile {
+        let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_profile
+        {
             let mut refreshed = resolve_profile_for_rebind(
                 &snapshot.run.profile_id,
                 Some(&source),
@@ -186,7 +181,13 @@ pub(crate) fn handle_sync_dyn(
         };
 
         let effective_profile = rebound_resolved.as_ref().unwrap_or(&current_resolved);
-        crate::validate::validate_spec_for_run(&checkout, backend, provider, &doc, effective_profile)?;
+        crate::validate::validate_spec_for_run(
+            &checkout,
+            backend,
+            provider,
+            &doc,
+            effective_profile,
+        )?;
 
         let primary_str = primary.to_string_lossy().into_owned();
         let machine_spec =
@@ -228,7 +229,10 @@ pub(crate) fn handle_sync_dyn(
 
         if let Some(ref rebound) = rebound_resolved {
             if let Ok(resolved_yaml) = serde_yaml::to_string(rebound) {
-                let rel = format!("{ACDD_DIR}/run/{}/profile.resolved.yaml", snapshot.run.run_id);
+                let rel = format!(
+                    "{ACDD_DIR}/run/{}/profile.resolved.yaml",
+                    snapshot.run.run_id
+                );
                 if let Ok(dest) = checked_child(primary, Path::new(&rel)) {
                     let _ = atomic_write(&dest, resolved_yaml.as_bytes(), false);
                 }
@@ -257,7 +261,8 @@ pub(crate) fn handle_clear_dyn(
             .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
 
         // Never delete the user's non-ephemeral spec file on `clear`; only clean worktrees, branches (including `run.branch`), refs, and ephemeral spec.
-        let mut cleanup_manifest = build_tombstone_cleanup_manifest_from_snapshot(config, &snapshot, primary);
+        let mut cleanup_manifest =
+            build_tombstone_cleanup_manifest_from_snapshot(config, &snapshot, primary);
         cleanup_manifest.retain(|entry| entry.kind != "spec_file");
         if let Some(ref run_br) = snapshot.run.branch {
             if is_managed_run_branch(&snapshot.run, run_br)
@@ -357,10 +362,14 @@ pub(crate) fn handle_clear_dyn(
             required_predecessor_trees: Vec::new(),
         };
 
-        exec_tx_with(backend, |tx| tx.archive_and_prune_run(&preconditions, &tombstone))?;
+        exec_tx_with(backend, |tx| {
+            tx.archive_and_prune_run(&preconditions, &tombstone)
+        })?;
 
         cleaned_items.extend(cleanup_tombstone(config, backend, &tombstone, layout)?);
-        let final_tombstone = backend.load_tombstone(&tombstone.run_id)?.unwrap_or(tombstone);
+        let final_tombstone = backend
+            .load_tombstone(&tombstone.run_id)?
+            .unwrap_or(tombstone);
         Ok(ClearResp {
             tombstone: final_tombstone,
             cleaned_items,

@@ -1,6 +1,4 @@
-use crate::commitments::{
-    aggregate_domain_digest, compute_merkle_root, FtsDomain, ALGORITHM,
-};
+use crate::commitments::{aggregate_domain_digest, compute_merkle_root, FtsDomain, ALGORITHM};
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
 use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
@@ -633,13 +631,19 @@ pub(super) fn root(conn: &Connection) -> Result<String> {
         "SELECT key,value FROM metadata WHERE key IN(?1,?2,?3,?4,?5,?6,?7,?8,?9)ORDER BY key",
     )?;
     let merkle_keys = [
-        MetadataKey::SchemaVersion.as_str(), MetadataKey::IndexSemanticsVersion.as_str(),
-        MetadataKey::IndexerEngine.as_str(), MetadataKey::WorkspaceRoot.as_str(),
-        MetadataKey::Adapter.as_str(), MetadataKey::CorpusHash.as_str(),
-        MetadataKey::CommitmentAlgorithm.as_str(), MetadataKey::InventorySnapshot.as_str(),
+        MetadataKey::SchemaVersion.as_str(),
+        MetadataKey::IndexSemanticsVersion.as_str(),
+        MetadataKey::IndexerEngine.as_str(),
+        MetadataKey::WorkspaceRoot.as_str(),
+        MetadataKey::Adapter.as_str(),
+        MetadataKey::CorpusHash.as_str(),
+        MetadataKey::CommitmentAlgorithm.as_str(),
+        MetadataKey::InventorySnapshot.as_str(),
         MetadataKey::ManifestDigest.as_str(),
     ];
-    for row in stmt.query_map(merkle_keys, |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+    for row in stmt.query_map(merkle_keys, |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
         metadata.push(row?);
     }
     Ok(compute_merkle_root(&domains, &metadata))

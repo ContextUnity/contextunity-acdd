@@ -1,6 +1,6 @@
-use crate::languages::profile::ProfileLinker;
 use super::super::context::*;
 use super::super::input::ResolutionInput;
+use crate::languages::profile::ProfileLinker;
 use crate::languages::{self, LanguageProfile};
 use crate::linker::{
     traits::{LanguageLinker, GENERIC_LINKER},
@@ -42,12 +42,26 @@ pub(super) struct PhaseContext<'a, 'file, 'res> {
     pub(super) ordinary_member_receivers: HashSet<&'file str>,
 }
 
-impl<'a, 'file, 'res> crate::linker::traits::DynamicAliasResolver<'a> for PhaseContext<'a, 'file, 'res>
-where 'a: 'file, 'file: 'res {
-    fn alias_for(&self, name: &str, owner: Option<&Node>, definition_scope: bool) -> Option<&Vec<&'a Node>> {
+impl<'a, 'file, 'res> crate::linker::traits::DynamicAliasResolver<'a>
+    for PhaseContext<'a, 'file, 'res>
+where
+    'a: 'file,
+    'file: 'res,
+{
+    fn alias_for(
+        &self,
+        name: &str,
+        owner: Option<&Node>,
+        definition_scope: bool,
+    ) -> Option<&Vec<&'a Node>> {
         PhaseContext::alias_for(self, name, owner, definition_scope)
     }
-    fn external_for(&self, name: &str, owner: Option<&Node>, definition_scope: bool) -> Option<&(String, usize)> {
+    fn external_for(
+        &self,
+        name: &str,
+        owner: Option<&Node>,
+        definition_scope: bool,
+    ) -> Option<&(String, usize)> {
         PhaseContext::external_for(self, name, owner, definition_scope)
     }
 }
@@ -57,10 +71,22 @@ where
     'a: 'file,
     'file: 'res,
 {
-    pub(super) fn reference_phase<'b>(&'b self, graph: &'b mut Graph, reference: &'b Reference, owner: Option<&'a Node>, profile: Option<&'a dyn LanguageProfile>) -> crate::linker::traits::ReferencePhase<'a, 'b> {
+    pub(super) fn reference_phase<'b>(
+        &'b self,
+        graph: &'b mut Graph,
+        reference: &'b Reference,
+        owner: Option<&'a Node>,
+        profile: Option<&'a dyn LanguageProfile>,
+    ) -> crate::linker::traits::ReferencePhase<'a, 'b> {
         crate::linker::traits::ReferencePhase {
-            input: self.input, reference, profile, owner, path: self.path,
-            file_module: self.file_module, ordinary_receivers: &self.ordinary_member_receivers, graph,
+            input: self.input,
+            reference,
+            profile,
+            owner,
+            path: self.path,
+            file_module: self.file_module,
+            ordinary_receivers: &self.ordinary_member_receivers,
+            graph,
             extension: self.reference_extension,
         }
     }
@@ -82,11 +108,13 @@ where
         let flows = input.flows;
         let by_id = input.by_id;
         let profile = input.profiles.get(path).copied();
-        let language_linker =
-            profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| profile.linker());
+        let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| {
+            profile.linker()
+        });
         let value_queries = collect_value_queries(facts, flows, interner);
-        let returned_object_field_writes = profile.map_or_else(HashSet::new, |profile|
-            language_linker.returned_object_field_writes(profile, references, by_id, interner));
+        let returned_object_field_writes = profile.map_or_else(HashSet::new, |profile| {
+            language_linker.returned_object_field_writes(profile, references, by_id, interner)
+        });
         let component_module = facts
             .nodes
             .iter()
@@ -115,13 +143,23 @@ where
             }
         }
         let path_constructor_aliases = profile.map_or_else(HashMap::new, |profile| {
-            language_linker.path_constructor_aliases(profile, references, by_id, interner, file_module)
+            language_linker.path_constructor_aliases(
+                profile,
+                references,
+                by_id,
+                interner,
+                file_module,
+            )
         });
         let dynamic_type_aliases = profile.map_or_else(HashMap::new, |profile| {
             language_linker.dynamic_type_aliases(profile, references, by_id, interner, file_module)
         });
         let lexical_this_calls = language_linker.lexical_this_calls(
-            facts, references, flows, interner, &language_context.syntax_rules,
+            facts,
+            references,
+            flows,
+            interner,
+            &language_context.syntax_rules,
         );
         let ordinary_member_receivers: HashSet<&'file str> = facts
             .nodes
@@ -173,7 +211,9 @@ where
             .unwrap_or_default()
     }
 
-    pub(super) fn reference_extension(&self) -> Option<&dyn crate::linker::traits::ReferenceExtension> {
+    pub(super) fn reference_extension(
+        &self,
+    ) -> Option<&dyn crate::linker::traits::ReferenceExtension> {
         self.reference_extension
     }
 
@@ -184,8 +224,18 @@ where
             .expect("package export index exists for every linked language")
     }
 
-    pub(super) fn reference_profile(&self, reference: &Reference) -> Option<&'a dyn LanguageProfile> {
-        self.profile.map(|profile| profile.linker().reference_profile(profile, reference, self.input.by_id, self.input.interner))
+    pub(super) fn reference_profile(
+        &self,
+        reference: &Reference,
+    ) -> Option<&'a dyn LanguageProfile> {
+        self.profile.map(|profile| {
+            profile.linker().reference_profile(
+                profile,
+                reference,
+                self.input.by_id,
+                self.input.interner,
+            )
+        })
     }
 
     pub(super) fn configured_autoimport(&self, name: &str) -> bool {
@@ -247,8 +297,10 @@ where
             return true;
         }
         let active_profile = self.reference_profile(reference);
-        if let Some(is_builtin) = self.reference_extension()
-            .and_then(|extension| extension.builtin_in_scope(expression, reference, active_profile)) {
+        if let Some(is_builtin) = self
+            .reference_extension()
+            .and_then(|extension| extension.builtin_in_scope(expression, reference, active_profile))
+        {
             return is_builtin;
         }
         active_profile.is_some_and(|profile| {
@@ -377,15 +429,19 @@ where
             .flatten()
     }
 
-    pub(super) fn nullable_parameter_wrapper(
-        &self,
-        raw_annotation: &str,
-        node: &Node,
-    ) -> bool {
-        self.profile.is_some_and(|profile| profile.linker().nullable_parameter_wrapper(
-            profile, raw_annotation, node, self.references, &|head, node| {
-                self.external_for(head, Some(node), true).map(|(_, line)| *line)
-            }))
+    pub(super) fn nullable_parameter_wrapper(&self, raw_annotation: &str, node: &Node) -> bool {
+        self.profile.is_some_and(|profile| {
+            profile.linker().nullable_parameter_wrapper(
+                profile,
+                raw_annotation,
+                node,
+                self.references,
+                &|head, node| {
+                    self.external_for(head, Some(node), true)
+                        .map(|(_, line)| *line)
+                },
+            )
+        })
     }
 
     pub(super) fn is_type_only(
@@ -421,7 +477,6 @@ where
                 classes.next().is_none().then_some(class)
             })
     }
-
 }
 
 fn collect_value_queries<'a>(

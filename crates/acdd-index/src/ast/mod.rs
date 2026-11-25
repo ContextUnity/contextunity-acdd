@@ -7,14 +7,17 @@ pub mod scope_analysis;
 pub mod search;
 pub mod syntax;
 pub mod visitor;
+use crate::languages;
+use crate::models::{
+    tags::{LanguageId, NodeKind},
+    *,
+};
+use crate::typed_facts::{FlowStore, TypedFacts};
+use anyhow::Result;
 pub(crate) use parse::{
     clear_direct_module_markers, compact_node_details, extract_tree_with_language_context,
     parse_file, parse_file_typed,
 };
-use crate::languages;
-use crate::models::{tags::{LanguageId, NodeKind}, *};
-use crate::typed_facts::{FlowStore, TypedFacts};
-use anyhow::Result;
 pub use search::{pattern_symbol_name, PatternSearchDiagnostic, SEARCH_MATCH_HORIZON};
 
 /// Extracts language facts for a source file and returns their public projection.
@@ -103,9 +106,10 @@ fn manifest_entrypoint_candidates(
                 return false;
             };
             let qualified = format!("{}.{}", module.qualname, callable);
-            let mut targets = facts.nodes.iter().filter(|node| {
-                node.kind == NodeKind::Function && node.qualname == qualified
-            });
+            let mut targets = facts
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::Function && node.qualname == qualified);
             let Some(target) = targets.next() else {
                 return false;
             };
@@ -282,8 +286,12 @@ mod tests {
     #[cfg(feature = "lang-html")]
     #[test]
     fn django_url_tag_emits_named_route_reference() {
-        let facts = super::extract("templates/products.html", "html", "{% url 'product-list' %}")
-            .unwrap();
+        let facts = super::extract(
+            "templates/products.html",
+            "html",
+            "{% url 'product-list' %}",
+        )
+        .unwrap();
 
         assert!(facts.references.iter().any(|reference| {
             reference.kind == "references_route"
@@ -374,7 +382,13 @@ mod legacy_hook_tests {
                 },
             )
         }
-        fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
+        fn extract_file(
+            &self,
+            path: &str,
+            source: &str,
+            module: &str,
+            facts: &mut Facts,
+        ) -> Result<()> {
             super::parse_file(self, path, source, module, facts)
         }
     }
@@ -433,7 +447,13 @@ mod legacy_hook_tests {
                 ));
             }
         }
-        fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
+        fn extract_file(
+            &self,
+            path: &str,
+            source: &str,
+            module: &str,
+            facts: &mut Facts,
+        ) -> Result<()> {
             super::parse_file(self, path, source, module, facts)
         }
     }
@@ -469,8 +489,7 @@ mod legacy_hook_tests {
         let source = "def sample(argument):\n    local = argument\n    return local\n";
         let mut failures = Vec::new();
         for offset in [0, 7] {
-            let mut typed =
-                TypedFacts::from_public(super::extract(path, "python", "").unwrap());
+            let mut typed = TypedFacts::from_public(super::extract(path, "python", "").unwrap());
             if offset == 0 {
                 super::parse_file_typed(
                     &Legacy,

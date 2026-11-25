@@ -1,6 +1,9 @@
 use crate::common::Workspace;
 use acdd_index::models::Facts;
-use acdd_index::{db::{commitments, reader}, scanner};
+use acdd_index::{
+    db::{commitments, reader},
+    scanner,
+};
 use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -344,10 +347,11 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
 fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() -> anyhow::Result<()> {
     let workspace = Workspace::new();
     let adapter = scanner::load_adapter(workspace.root(), None)?;
-    let registry = acdd_index::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
-        workspace.root(),
-        Some(&adapter),
-    );
+    let registry =
+        acdd_index::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+            workspace.root(),
+            Some(&adapter),
+        );
     let registry_digest = registry.digest().to_owned();
     let manifests_digest = acdd_index::languages::dependency_registry::DependencyRegistry::standard_manifests_digest_static().to_owned();
 
@@ -494,8 +498,7 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
     }
     let ro = reader::open_raw_confined_readonly(&wal_db);
     let read_result = ro.and_then(|conn| {
-        let val: String =
-            conn.query_row("SELECT v FROM kv WHERE k = 'alpha'", [], |r| r.get(0))?;
+        let val: String = conn.query_row("SELECT v FROM kv WHERE k = 'alpha'", [], |r| r.get(0))?;
         let query_only: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0))?;
         Ok((val, query_only))
     });
@@ -507,7 +510,10 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
     let (val, query_only) = read_result?;
     assert_eq!(val, "from-wal");
     assert_eq!(query_only, 1);
-    assert!(!shm_path.exists(), "read-only WAL open must not create -shm");
+    assert!(
+        !shm_path.exists(),
+        "read-only WAL open must not create -shm"
+    );
 
     Ok(())
 }

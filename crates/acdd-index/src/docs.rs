@@ -274,7 +274,9 @@ fn build_doc_section_entry(
         mtime,
     } = entry;
     let base_offset = state.body_offset + start;
-    let section_line = state.line_starts.partition_point(|&start_pos| start_pos <= base_offset);
+    let section_line = state
+        .line_starts
+        .partition_point(|&start_pos| start_pos <= base_offset);
     let section_end_line = section_line + content.lines().count().saturating_sub(1);
     let ScannedSectionEvents {
         symbols,
@@ -666,7 +668,8 @@ mod tests {
 
         // Malformed frontmatter surfaces frontmatter_error and declared INV- aligns is_invariant.
         let bad_fm = "---\ntitle: [unterminated\n---\n# Rules\n- INV-ONLY-DECLARED: must align.\n";
-        let extracted = extract_with_details_with_zones("docs/rules.md", bad_fm, 0.0, &specs, None).unwrap();
+        let extracted =
+            extract_with_details_with_zones("docs/rules.md", bad_fm, 0.0, &specs, None).unwrap();
         assert_eq!(extracted.len(), 1);
         let (doc, details) = &extracted[0];
         assert!(doc.is_invariant);

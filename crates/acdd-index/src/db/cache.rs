@@ -150,7 +150,9 @@ fn generation_lock(path: &Path, exclusive: bool) -> Result<FileLockGuard> {
         };
         result.map_err(|error| {
             if error.to_string().starts_with("timed out acquiring ") {
-                anyhow::anyhow!("database generation lock is busy; retry after active readers finish")
+                anyhow::anyhow!(
+                    "database generation lock is busy; retry after active readers finish"
+                )
             } else {
                 error
             }

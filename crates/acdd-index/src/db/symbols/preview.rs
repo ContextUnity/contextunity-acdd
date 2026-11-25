@@ -410,10 +410,7 @@ fn escaped_cost(text: &str) -> usize {
 
 fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize>>> {
     let kind = node["kind"].as_str().unwrap_or("");
-    if kind == "file"
-        || kind == NodeKind::Module.as_str()
-        || kind == NodeKind::Component.as_str()
-    {
+    if kind == "file" || kind == NodeKind::Module.as_str() || kind == NodeKind::Component.as_str() {
         return Ok(None);
     }
     let path = node["path"].as_str().context("invalid node path")?;
@@ -421,7 +418,8 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
     let profile = crate::languages::require(language)?;
     let start = node["line"].as_u64().context("invalid start line")? as usize;
     let name = node["name"].as_str().context("invalid node name")?;
-    let matches = crate::languages::find_symbol_byte_ranges(profile, path, text, kind, start, name)?;
+    let matches =
+        crate::languages::find_symbol_byte_ranges(profile, path, text, kind, start, name)?;
     let qualname = node["qualname"].as_str().unwrap_or(name);
     let base = format!("{}:{path}:{start}:{name}", profile.node_prefix(kind));
     let field_base = format!("field:{path}:{start}:{qualname}");

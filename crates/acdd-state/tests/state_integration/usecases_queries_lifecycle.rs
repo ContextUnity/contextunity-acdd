@@ -15,8 +15,8 @@ use acdd_state::usecases::dto::{
     StatusReq, SubtaskReq, SyncReq,
 };
 use acdd_state::usecases::{
-    StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryEngine, StateQueryOutput,
-    queries,
+    queries, StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryEngine,
+    StateQueryOutput,
 };
 use serde_json::json;
 use std::fs;
@@ -25,7 +25,7 @@ use std::fs;
 #[test]
 fn seam_snapshot_lifecycle_and_confinement_matrix() {
     use acdd_state::usecases::{SnapshotAction::*, SnapshotReq};
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     let tmp = make_temp_dir("snapshots");
     let repo = tmp.path();
@@ -475,7 +475,22 @@ scope: [src/lib.rs]
     git_ok(&foreign, &["update-ref", &linked_ref, &checkpoint]);
     let linked_lock = foreign.join(".git/acdd/repo.lock");
     let held = acdd_core::lock::acquire_exclusive(&linked_lock).unwrap();
-    assert_eq!(linked.execute(StateCommand::Snapshot(SnapshotReq { run: Some(rid.to_string()), action: List, task_ref: Some(TaskRef::new("t1").unwrap()), all: false, revision: None, name: None, worktree: None, older_than: None })).unwrap_err().code, ErrorCode::BackendConflict);
+    assert_eq!(
+        linked
+            .execute(StateCommand::Snapshot(SnapshotReq {
+                run: Some(rid.to_string()),
+                action: List,
+                task_ref: Some(TaskRef::new("t1").unwrap()),
+                all: false,
+                revision: None,
+                name: None,
+                worktree: None,
+                older_than: None
+            }))
+            .unwrap_err()
+            .code,
+        ErrorCode::BackendConflict
+    );
     let all = linked
         .execute(StateCommand::Snapshot(SnapshotReq {
             run: Some(rid.to_string()),
@@ -635,16 +650,14 @@ scope: [src/lib.rs]
     assert!(cleared.tombstone.cleanup_pending);
     assert_eq!(git_ok(repo, &["rev-parse", &reference]), head.as_str());
     fs::remove_file(lock).unwrap();
-    assert!(
-        start_run(
+    assert!(start_run(
         &linked,
         StartReq {
             spec_path: Some("docs/milestones/missing.md".to_owned()),
             ..StartReq::default()
         }
     )
-        .is_err()
-    );
+    .is_err());
     assert!(
         reader_for(&linked_config)
             .load_tombstone(&rid)
@@ -857,13 +870,11 @@ scope: [src/lib.rs]
     let extra = "refs/acdd/snapshots/_adhoc/note/r1_extra";
     git_ok(bare_repo, &["update-ref", extra, &checkpoint]);
     snap(Clear, Some("note"), Some(1), false, None).unwrap();
-    assert!(
-        git_ok(
+    assert!(git_ok(
         bare_repo,
         &["for-each-ref", "refs/acdd/snapshots/_adhoc/note/r1"]
     )
-        .is_empty()
-    );
+    .is_empty());
     assert!(!git_ok(bare_repo, &["for-each-ref", extra]).is_empty());
     let child = "refs/acdd/snapshots/_adhoc/note/r1/child";
     git_ok(bare_repo, &["update-ref", child, &checkpoint]);
@@ -879,12 +890,18 @@ scope: [src/lib.rs]
     snap(Clear, None, None, true, None).unwrap();
     let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
     assert!(refs.contains(extra) && refs.contains(child), "{refs}");
-    for malformed in ["refs/acdd/snapshots/_adhoc/note/pre", "refs/acdd/snapshots/_adhoc/note+other/r1"] {
+    for malformed in [
+        "refs/acdd/snapshots/_adhoc/note/pre",
+        "refs/acdd/snapshots/_adhoc/note+other/r1",
+    ] {
         git_ok(bare_repo, &["update-ref", malformed, &checkpoint]);
     }
     snap(Clear, None, None, true, None).unwrap();
     let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
-    assert!(refs.contains("/note/pre") && refs.contains("/note+other/r1"), "{refs}");
+    assert!(
+        refs.contains("/note/pre") && refs.contains("/note+other/r1"),
+        "{refs}"
+    );
     assert!(snap(Save, Some("_adhoc"), Some(1), false, None).is_err());
     assert!(snap(Clear, Some(""), Some(1), false, None).is_err());
     assert_eq!(
@@ -906,8 +923,23 @@ scope: [src/lib.rs]
     let target_dir = make_temp_dir("adhoc-snap-target-lock");
     let target_repo = target_dir.path();
     init_git_repo(target_repo, "main");
-    let held_primary = acdd_core::lock::acquire_exclusive(&bare_repo.join(".git/acdd/repo.lock")).unwrap();
-    let target_snap = |action| acdd_state::usecases::execute_snapshot_readonly(&bare_cfg, SnapshotReq { run: None, action, task_ref: None, all: false, revision: None, name: Some("target".into()), worktree: Some(target_repo.to_path_buf()), older_than: None });
+    let held_primary =
+        acdd_core::lock::acquire_exclusive(&bare_repo.join(".git/acdd/repo.lock")).unwrap();
+    let target_snap = |action| {
+        acdd_state::usecases::execute_snapshot_readonly(
+            &bare_cfg,
+            SnapshotReq {
+                run: None,
+                action,
+                task_ref: None,
+                all: false,
+                revision: None,
+                name: Some("target".into()),
+                worktree: Some(target_repo.to_path_buf()),
+                older_than: None,
+            },
+        )
+    };
     target_snap(Save).unwrap();
     target_snap(List).unwrap();
     target_snap(Restore).unwrap();
@@ -962,13 +994,11 @@ scope: [src/lib.rs]
         pruned.refs.iter().any(|r| r.ends_with("/auto/r1"))
             && pruned.refs.iter().any(|r| r.ends_with("/other/r1"))
     );
-    assert!(
-        git_ok(
+    assert!(git_ok(
         bare_repo,
         &["for-each-ref", "refs/acdd/snapshots/_adhoc/auto/r2"]
     )
-        .contains("/r2")
-    );
+    .contains("/r2"));
     let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
     assert!(
         !refs.contains("/auto/r1") && !refs.contains("/other/r1"),
@@ -1085,11 +1115,10 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
     {
         StateQueryOutput::Observability(o) => {
             assert_eq!(o.snapshot.active_runs, 1);
-            assert!(
-                o.prometheus_text
+            assert!(o
+                .prometheus_text
                 .as_deref()
-                    .is_some_and(|t| t.contains("acdd_runs_active 1"))
-            );
+                .is_some_and(|t| t.contains("acdd_runs_active 1")));
         }
         other => panic!("unexpected Observability output: {other:?}"),
     }
@@ -1160,19 +1189,20 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
 
     let harness = RunHarness::in_memory().unwrap();
     assert_eq!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Draft(DraftReq {
-                collection: "milestones".to_owned(),
-                slug: "blocked".to_owned(),
-                prefix: None,
-                title: None,
-                profile: None,
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Draft(DraftReq {
+                    collection: "milestones".to_owned(),
+                    slug: "blocked".to_owned(),
+                    prefix: None,
+                    title: None,
+                    profile: None,
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::FeatureDisabled
     );
 
@@ -1210,32 +1240,31 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
         .code,
         ErrorCode::FeatureDisabled
     );
-    assert!(
-        queries::execute_query(
+    assert!(queries::execute_query(
         &bb_cfg,
         &harness,
         &bb_prov,
         StateQuery::Status(StatusReq::default())
     )
-        .is_ok()
-    );
+    .is_ok());
     assert_eq!(
-        harness.execute(
-            &bb_cfg,
-            &bb_prov,
-            StateCommand::BlackboardPost(BlackboardPostReq {
-                run: None,
-                node: None,
-                recipient_node: None,
-                subtask_ref: None,
-                gate: None,
-                author: "builder".to_owned(),
-                topic: BlackboardTopic::Notes,
-                payload: "note".to_owned(),
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &bb_cfg,
+                &bb_prov,
+                StateCommand::BlackboardPost(BlackboardPostReq {
+                    run: None,
+                    node: None,
+                    recipient_node: None,
+                    subtask_ref: None,
+                    gate: None,
+                    author: "builder".to_owned(),
+                    topic: BlackboardTopic::Notes,
+                    payload: "note".to_owned(),
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::FeatureDisabled
     );
 
@@ -1260,19 +1289,20 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
     no_http_cfg.modules.domains.insert("http".to_owned(), false);
     let (_, no_http_prov) = build_provider_with_mock(&no_http_cfg.modules);
     assert_eq!(
-        harness.execute(
-            &no_http_cfg,
-            &no_http_prov,
-            StateCommand::CallPluginTool(CallPluginToolReq {
-                tool_name: "http_probe".to_owned(),
-                args: json!({ "url": "https://example.invalid" }),
-                run: None,
-                node: None,
-                worktree: None,
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &no_http_cfg,
+                &no_http_prov,
+                StateCommand::CallPluginTool(CallPluginToolReq {
+                    tool_name: "http_probe".to_owned(),
+                    args: json!({ "url": "https://example.invalid" }),
+                    run: None,
+                    node: None,
+                    worktree: None,
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::DomainCapabilityUnavailable
     );
 }
@@ -1427,10 +1457,7 @@ gates:
     )
     .unwrap();
     let mut_backend = backend_for(&mut_cfg);
-    let before_snap = mut_backend
-        .load_run_graph(&mut_rid)
-        .unwrap()
-        .unwrap();
+    let before_snap = mut_backend.load_run_graph(&mut_rid).unwrap().unwrap();
     let deploy_node = before_snap
         .nodes
         .iter()
@@ -1562,18 +1589,19 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let harness = RunHarness::in_memory().unwrap();
 
-    match harness.execute(
-        &cfg,
-        &provider,
-        StateCommand::Draft(DraftReq {
-            collection: "milestones".to_owned(),
-            slug: "new-feature".to_owned(),
-            prefix: None,
-            title: Some("New Feature".to_owned()),
-            profile: None,
-        }),
-    )
-    .unwrap()
+    match harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Draft(DraftReq {
+                collection: "milestones".to_owned(),
+                slug: "new-feature".to_owned(),
+                prefix: None,
+                title: Some("New Feature".to_owned()),
+                profile: None,
+            }),
+        )
+        .unwrap()
     {
         StateCommandOutput::Draft(d) => {
             assert_eq!(d.spec_id, "AC-008");
@@ -1583,19 +1611,20 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
         other => panic!("unexpected draft output: {other:?}"),
     }
     assert_eq!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Draft(DraftReq {
-                collection: "milestones".to_owned(),
-                slug: "---".to_owned(),
-                prefix: None,
-                title: None,
-                profile: None,
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Draft(DraftReq {
+                    collection: "milestones".to_owned(),
+                    slug: "---".to_owned(),
+                    prefix: None,
+                    title: None,
+                    profile: None,
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::ProfileSchemaInvalid
     );
 }
@@ -1640,21 +1669,17 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     )
     .unwrap();
     assert!(eph.run.is_ephemeral);
-    assert!(
-        root_tmp
+    assert!(root_tmp
         .path()
         .join(eph.materialized_spec_path.unwrap())
-            .is_file()
-    );
-    assert!(
-        root_tmp
+        .is_file());
+    assert!(root_tmp
         .path()
         .join(format!(
             ".acdd/run/{}/profile.resolved.yaml",
             eph.run.run_id
         ))
-            .is_file()
-    );
+        .is_file());
     clear_run(&engine, eph.run.run_id.as_str());
 
     fs::create_dir_all(root_tmp.path().join("docs/milestones")).unwrap();
@@ -1735,8 +1760,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
         .code,
         ErrorCode::GateVerificationFailed
     );
-    assert!(
-        start_run(
+    assert!(start_run(
         &engine,
         StartReq {
             spec_path: Some("docs/milestones/AC-010-dep.md".to_owned()),
@@ -1745,8 +1769,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
             ..StartReq::default()
         }
     )
-        .is_ok()
-    );
+    .is_ok());
 }
 
 #[test]
@@ -1816,18 +1839,19 @@ fn seam_claim_context_hydrates_blueprint_slice_and_live_subtasks() {
     let long_evidence = "🦀\\\"".repeat(440);
     assert_eq!(long_evidence.len(), 2640);
     let set_subtask = |subtask_ref: &str, status, evidence: Option<&str>| {
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Subtask(SubtaskReq {
-                run: Some(run.to_owned()),
-                task_ref: TaskRef::new("t1").unwrap(),
-                subtask_ref: SubtaskRef::new(subtask_ref).unwrap(),
-                status,
-                evidence: evidence.map(str::to_owned),
-            }),
-        )
-        .unwrap();
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Subtask(SubtaskReq {
+                    run: Some(run.to_owned()),
+                    task_ref: TaskRef::new("t1").unwrap(),
+                    subtask_ref: SubtaskRef::new(subtask_ref).unwrap(),
+                    status,
+                    evidence: evidence.map(str::to_owned),
+                }),
+            )
+            .unwrap();
     };
     set_subtask("s1", SubtaskStatus::InProgress, None);
     let baseline_bytes = serde_json::to_vec(&show(&cfg, "t1.build").context_preview.unwrap())
@@ -2237,10 +2261,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                 started_run = Some(run.run_id);
             } else if expected == &linked {
                 if name == "relative" || name == "relative-cwd" {
-                    let graph = shared_backend
-                        .load_run_graph(&run.run_id)
-                        .unwrap()
-                        .unwrap();
+                    let graph = shared_backend.load_run_graph(&run.run_id).unwrap().unwrap();
                     assert_eq!(
                         graph.dependencies[0].depends_on_run_id.as_str(),
                         "producer-id"
@@ -2253,10 +2274,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     .unwrap();
                 }
                 if name == "configured" {
-                    let graph = shared_backend
-                        .load_run_graph(&run.run_id)
-                        .unwrap()
-                        .unwrap();
+                    let graph = shared_backend.load_run_graph(&run.run_id).unwrap().unwrap();
                     assert_eq!(graph.dependencies[0].depends_on_ref.as_str(), "build");
                     assert!(graph.dependencies[0].satisfied, "{name}");
                 }
@@ -2292,10 +2310,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     )
                     .unwrap();
                 } else if name == "alias-case" {
-                    let graph = shared_backend
-                        .load_run_graph(&run.run_id)
-                        .unwrap()
-                        .unwrap();
+                    let graph = shared_backend.load_run_graph(&run.run_id).unwrap().unwrap();
                     assert_eq!(
                         graph.dependencies[0].depends_on_run_id.as_str(),
                         "producer-id"
@@ -2418,52 +2433,55 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     harness.seed_run(&graph).unwrap();
 
     assert_eq!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Subtask(SubtaskReq {
-                run: Some("run-life-001".to_owned()),
-                task_ref: TaskRef::new("t1").unwrap(),
-                subtask_ref: SubtaskRef::new("s1").unwrap(),
-                status: SubtaskStatus::Completed,
-                evidence: Some("   ".to_owned()),
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Subtask(SubtaskReq {
+                    run: Some("run-life-001".to_owned()),
+                    task_ref: TaskRef::new("t1").unwrap(),
+                    subtask_ref: SubtaskRef::new("s1").unwrap(),
+                    status: SubtaskStatus::Completed,
+                    evidence: Some("   ".to_owned()),
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::ProfileSchemaInvalid
     );
     assert!(matches!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Subtask(SubtaskReq {
-                run: Some("run-life-001".to_owned()),
-                task_ref: TaskRef::new("t1").unwrap(),
-                subtask_ref: SubtaskRef::new("s1").unwrap(),
-                status: SubtaskStatus::Completed,
-                evidence: Some("implemented in crates/a/src/lib.rs".to_owned()),
-            })
-        )
-        .unwrap(),
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Subtask(SubtaskReq {
+                    run: Some("run-life-001".to_owned()),
+                    task_ref: TaskRef::new("t1").unwrap(),
+                    subtask_ref: SubtaskRef::new("s1").unwrap(),
+                    status: SubtaskStatus::Completed,
+                    evidence: Some("implemented in crates/a/src/lib.rs".to_owned()),
+                })
+            )
+            .unwrap(),
         StateCommandOutput::Subtask(_)
     ));
 
-    let bb_post_out = harness.execute(
-        &cfg,
-        &provider,
-        StateCommand::BlackboardPost(BlackboardPostReq {
-            run: Some("run-life-001".to_owned()),
-            node: Some("t1.build".to_owned()),
-            recipient_node: None,
-            subtask_ref: None,
-            gate: Some("build".to_owned()),
-            author: "worker-a".to_owned(),
-            topic: BlackboardTopic::Notes,
-            payload: "shared note context".to_owned(),
-        }),
-    )
-    .unwrap();
+    let bb_post_out = harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::BlackboardPost(BlackboardPostReq {
+                run: Some("run-life-001".to_owned()),
+                node: Some("t1.build".to_owned()),
+                recipient_node: None,
+                subtask_ref: None,
+                gate: Some("build".to_owned()),
+                author: "worker-a".to_owned(),
+                topic: BlackboardTopic::Notes,
+                payload: "shared note context".to_owned(),
+            }),
+        )
+        .unwrap();
     assert_eq!(
         bb_post_out.into_untagged_json().unwrap()["entry"]["payload"],
         "shared note context"
@@ -2472,21 +2490,22 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     for (author, payload, expected_field) in
         [(" ", "non-empty", "author"), ("worker-a", " ", "payload")]
     {
-        let err = harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::BlackboardPost(BlackboardPostReq {
-                run: Some("run-life-001".to_owned()),
-                node: None,
-                recipient_node: None,
-                subtask_ref: None,
-                gate: None,
-                author: author.to_owned(),
-                topic: BlackboardTopic::Notes,
-                payload: payload.to_owned(),
-            }),
-        )
-        .unwrap_err();
+        let err = harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::BlackboardPost(BlackboardPostReq {
+                    run: Some("run-life-001".to_owned()),
+                    node: None,
+                    recipient_node: None,
+                    subtask_ref: None,
+                    gate: None,
+                    author: author.to_owned(),
+                    topic: BlackboardTopic::Notes,
+                    payload: payload.to_owned(),
+                }),
+            )
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
         assert!(err.message.contains(expected_field));
     }
@@ -2513,33 +2532,35 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     }
 
     assert_eq!(
-        harness.execute(
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::ExtendScope(ExtendScopeReq {
+                    run: Some("run-life-001".to_owned()),
+                    node: "t1".to_owned(),
+                    paths: vec!["crates/b/src/main.rs".to_owned()],
+                    reason: "needs sibling crate".to_owned(),
+                    worker_id: None,
+                })
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskScopeConflict
+    );
+    match harness
+        .execute(
             &cfg,
             &provider,
             StateCommand::ExtendScope(ExtendScopeReq {
                 run: Some("run-life-001".to_owned()),
                 node: "t1".to_owned(),
-                paths: vec!["crates/b/src/main.rs".to_owned()],
-                reason: "needs sibling crate".to_owned(),
+                paths: vec!["crates/c/**".to_owned()],
+                reason: "shared test helper".to_owned(),
                 worker_id: None,
-            })
+            }),
         )
-        .unwrap_err()
-        .code,
-        ErrorCode::TaskScopeConflict
-    );
-    match harness.execute(
-        &cfg,
-        &provider,
-        StateCommand::ExtendScope(ExtendScopeReq {
-            run: Some("run-life-001".to_owned()),
-            node: "t1".to_owned(),
-            paths: vec!["crates/c/**".to_owned()],
-            reason: "shared test helper".to_owned(),
-            worker_id: None,
-        }),
-    )
-    .unwrap()
+        .unwrap()
     {
         StateCommandOutput::ExtendScope(e) => {
             assert_eq!(e.contract_revision, 2);
@@ -2603,68 +2624,70 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         .unwrap();
 
     assert_eq!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Reopen(ReopenReq {
-                run: Some("run-life-001".to_owned()),
-                node: "t1.build".to_owned(),
-                cascade: false,
-                reason: Some("fix".to_owned()),
-            })
-        )
-        .unwrap_err()
-        .code,
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Reopen(ReopenReq {
+                    run: Some("run-life-001".to_owned()),
+                    node: "t1.build".to_owned(),
+                    cascade: false,
+                    reason: Some("fix".to_owned()),
+                })
+            )
+            .unwrap_err()
+            .code,
         ErrorCode::DependentTaskCompleted
     );
     assert!(matches!(
-        harness.execute(
-            &cfg,
-            &provider,
-            StateCommand::Reopen(ReopenReq {
-                run: Some("run-life-001".to_owned()),
-                node: "t1.build".to_owned(),
-                cascade: true,
-                reason: Some("cascade".to_owned()),
-            })
-        )
-        .unwrap(),
+        harness
+            .execute(
+                &cfg,
+                &provider,
+                StateCommand::Reopen(ReopenReq {
+                    run: Some("run-life-001".to_owned()),
+                    node: "t1.build".to_owned(),
+                    cascade: true,
+                    reason: Some("cascade".to_owned()),
+                })
+            )
+            .unwrap(),
         StateCommandOutput::Reopen(_)
     ));
 
     fs::write(tmp.path().join("docs/milestones/AC-001-sample.md"), "---\nid: AC-001\ntitle: Sample Updated\nstatus: active\n---\n### task: t1\n```yaml\ntask_ref: t1\nscope: [crates/a/**]\nacceptance_criteria:\n  - One\n```\n### task: t2\n```yaml\ntask_ref: t2\nscope: [crates/b/**]\ndepends_on: [t1]\nacceptance_criteria:\n  - Two\n```\n### task: t3\n```yaml\ntask_ref: t3\nscope: [crates/d/**]\nacceptance_criteria:\n  - Three\n```\n").unwrap();
-    match harness.execute(
-        &cfg,
-        &provider,
-        StateCommand::Sync(SyncReq {
-            run: Some("run-life-001".to_owned()),
-            rebind_profile: false,
-        }),
-    )
-    .unwrap()
+    match harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Sync(SyncReq {
+                run: Some("run-life-001".to_owned()),
+                rebind_profile: false,
+            }),
+        )
+        .unwrap()
     {
         StateCommandOutput::Sync(s) => assert!(s.added_nodes >= 2),
         other => panic!("unexpected Sync output: {other:?}"),
     }
-    match harness.execute(
-        &cfg,
-        &provider,
-        StateCommand::Clear(ClearReq {
-            run: Some("run-life-001".to_owned()),
-            reason: Some("cancelled".to_owned()),
-            force: true,
-        }),
-    )
-    .unwrap()
+    match harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Clear(ClearReq {
+                run: Some("run-life-001".to_owned()),
+                reason: Some("cancelled".to_owned()),
+                force: true,
+            }),
+        )
+        .unwrap()
     {
         StateCommandOutput::Clear(c) => {
             assert_eq!(c.tombstone.terminal_status, TerminalStatus::Cleared);
-            assert!(
-                harness
+            assert!(harness
                 .load_run_graph(&RunId::new("run-life-001").unwrap())
                 .unwrap()
-                    .is_none()
-            );
+                .is_none());
         }
         other => panic!("unexpected Clear output: {other:?}"),
     }
@@ -2689,14 +2712,15 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
 
     // 1. Prefixless draft creates docs/plans/my-slug.md with id: my-slug and rejects collision.
-    let draft_plan = match engine.execute(StateCommand::Draft(DraftReq {
-        collection: "plans".to_owned(),
-        slug: "my-slug".to_owned(),
-        title: Some("My Plan".to_owned()),
-        prefix: None,
-        profile: None,
-    }))
-    .unwrap()
+    let draft_plan = match engine
+        .execute(StateCommand::Draft(DraftReq {
+            collection: "plans".to_owned(),
+            slug: "my-slug".to_owned(),
+            title: Some("My Plan".to_owned()),
+            prefix: None,
+            profile: None,
+        }))
+        .unwrap()
     {
         StateCommandOutput::Draft(d) => d,
         other => panic!("unexpected Draft output: {other:?}"),
@@ -2719,14 +2743,15 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-004\ntitle: Ext\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let draft_ms = match engine.execute(StateCommand::Draft(DraftReq {
-        collection: "milestones".to_owned(),
-        slug: "next".to_owned(),
-        title: None,
-        prefix: None,
-        profile: None,
-    }))
-    .unwrap()
+    let draft_ms = match engine
+        .execute(StateCommand::Draft(DraftReq {
+            collection: "milestones".to_owned(),
+            slug: "next".to_owned(),
+            title: None,
+            prefix: None,
+            profile: None,
+        }))
+        .unwrap()
     {
         StateCommandOutput::Draft(d) => d,
         other => panic!("unexpected Draft output: {other:?}"),
@@ -2769,14 +2794,15 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "p.yaml",
         "version: 2\ninherit: base\nroles:\n  builder:\n    mode: subagent\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          proof: none\n",
     );
-    let ac5_run = match engine.execute(StateCommand::Start(StartReq {
-        spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
-        run_name: Some(RunName::new("ac5").unwrap()),
-        profile: Some(p),
-        in_place: true,
-        ..Default::default()
-    }))
-    .unwrap()
+    let ac5_run = match engine
+        .execute(StateCommand::Start(StartReq {
+            spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
+            run_name: Some(RunName::new("ac5").unwrap()),
+            profile: Some(p),
+            in_place: true,
+            ..Default::default()
+        }))
+        .unwrap()
     {
         StateCommandOutput::Start(s) => s.run.run_id,
         other => panic!("unexpected Start output: {other:?}"),

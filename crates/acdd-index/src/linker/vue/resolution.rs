@@ -1,8 +1,8 @@
 use super::super::resolution::input::ResolutionInput;
 use super::super::semantic_context::Member;
+use crate::languages::LanguageContext;
 use crate::models::{compact_graph::CompactGraph, Node, ReceiverHint, Reference};
 use crate::semantic::ComponentMacroRole;
-use crate::languages::LanguageContext;
 
 pub(in crate::linker) fn component_macro_callable_origin(
     reference: &Reference,
@@ -39,7 +39,10 @@ pub(in crate::linker) fn is_component_template_member(
     reference.kind == "references"
         && !tail.is_empty()
         && owner.is_some_and(|owner| {
-            owner.kind == crate::models::tags::NodeKind::TemplateScope && owner.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT).is_object()
+            owner.kind == crate::models::tags::NodeKind::TemplateScope
+                && owner
+                    .detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)
+                    .is_object()
         })
 }
 
@@ -54,8 +57,11 @@ where
     'a: 'aliases,
     A: Fn(&str, Option<&'a Node>, bool) -> Option<&'aliases Vec<&'a Node>>,
 {
-    let component = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)["component"].as_str()?;
-    let slot = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)["slot"].as_str()?;
+    let component = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)
+        ["component"]
+        .as_str()?;
+    let slot = binding_scope.detail_entry(crate::models::details::NodeDetailKey::VUE_SLOT)["slot"]
+        .as_str()?;
     let [module] = alias_for(component, Some(binding_scope), false)
         .map(Vec::as_slice)
         .filter(|targets| targets.len() == 1)?
@@ -92,7 +98,9 @@ where
             .into_iter()
             .flatten()
             .copied()
-            .filter(|node| node.path == path && node.kind == crate::models::tags::NodeKind::TemplateScope);
+            .filter(|node| {
+                node.path == path && node.kind == crate::models::tags::NodeKind::TemplateScope
+            });
         if let (Some(binding_scope), None) = (scopes.next(), scopes.next()) {
             if binding_scope.binding_names().any(|name| name == first) {
                 return lookup_slot_template_member(input, binding_scope, first, tail, &alias_for);
@@ -126,7 +134,13 @@ pub(in crate::linker) fn resolve_component_tag<'a>(
         .as_slice()
     {
         [component] => {
-            graph.reference_edge(path, reference, component.id.clone(), crate::models::tags::EdgeKind::References, crate::models::tags::EdgeConfidence::Exact);
+            graph.reference_edge(
+                path,
+                reference,
+                component.id.clone(),
+                crate::models::tags::EdgeKind::References,
+                crate::models::tags::EdgeConfidence::Exact,
+            );
             graph.reference_coverage(
                 path,
                 reference,

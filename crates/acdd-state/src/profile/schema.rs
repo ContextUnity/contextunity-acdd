@@ -1,11 +1,11 @@
 //! Version-2 `GateProfile` schema definitions, patch types, and strict `deny_unknown_fields` deserialization.
 
 use crate::types::{IsolationMode, SaveAction, WorktreeLifecycle};
-use acdd_core::format::{canonical_json_sha256, canonical_json_string};
-use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::format::{canonical_json_sha256, canonical_json_string};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::schema::SchemaDef;
+use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use schemars::JsonSchema;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -409,8 +409,7 @@ impl<'de> Deserialize<'de> for CommandDef {
                 let has_by_pattern =
                     map.contains_key(serde_yaml::Value::String("by_pattern".into()));
                 if has_unbound {
-                    let u: UnboundRepr =
-                        serde_yaml::from_value(val).map_err(de::Error::custom)?;
+                    let u: UnboundRepr = serde_yaml::from_value(val).map_err(de::Error::custom)?;
                     if !u.unbound {
                         return Err(de::Error::custom(
                             "unbound command slot must set 'unbound: true' or provide a command",
@@ -481,8 +480,12 @@ impl ProofKind {
             "command" => Ok(Some(Self::Command)),
             "call" => Ok(Some(Self::Call)),
             "review" => Ok(Some(Self::Review)),
-            "contract" => Err("legacy proof kind 'contract' is removed in v0.6.2 (author seam tests in build)"),
-            "seam_test" | "delivery" => Err("legacy proof kinds 'seam_test' and 'delivery' are removed in v2 profiles"),
+            "contract" => Err(
+                "legacy proof kind 'contract' is removed in v0.6.2 (author seam tests in build)",
+            ),
+            "seam_test" | "delivery" => {
+                Err("legacy proof kinds 'seam_test' and 'delivery' are removed in v2 profiles")
+            }
             _ => Ok(None),
         }
     }
@@ -1153,7 +1156,8 @@ impl<'de> Deserialize<'de> for RawGateItem {
             return Err(de::Error::custom("each gates entry must be a YAML mapping"));
         };
         if map.len() == 1 {
-            if let Some((serde_yaml::Value::String(key), serde_yaml::Value::Null)) = map.iter().next()
+            if let Some((serde_yaml::Value::String(key), serde_yaml::Value::Null)) =
+                map.iter().next()
             {
                 if key == "tasks" || key.is_empty() {
                     return Err(de::Error::custom(format!(

@@ -99,7 +99,10 @@ fn is_document_link_target(target: &str) -> bool {
 fn match_symbol_claim<'a>(
     candidates: &'a [TargetCandidateNode],
     name: &str,
-) -> (Vec<&'a TargetCandidateNode>, Option<&'a TargetCandidateNode>) {
+) -> (
+    Vec<&'a TargetCandidateNode>,
+    Option<&'a TargetCandidateNode>,
+) {
     let normalized = name.replace("::", ".");
     let suffix_dot = format!(".{normalized}");
     let mut best_priority = u8::MAX;
@@ -129,10 +132,7 @@ fn match_symbol_claim<'a>(
     (matched, suggestion)
 }
 
-fn collect_broken_doc_links(
-    conn: &Connection,
-    single_doc_path: &str,
-) -> Result<Vec<Value>> {
+fn collect_broken_doc_links(conn: &Connection, single_doc_path: &str) -> Result<Vec<Value>> {
     let doc_kind = NodeKind::Document.as_str();
     let mut stmt = conn.prepare(&format!(
         "SELECT p.path,
@@ -166,7 +166,8 @@ fn collect_broken_doc_links(
         if !is_document_link_target(&target) {
             continue;
         }
-        diagnostics.push(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
+        diagnostics
+            .push(json!({"kind": "broken_doc_link", "path": path, "line": line, "target": target}));
     }
     Ok(diagnostics)
 }
@@ -445,9 +446,7 @@ fn check_symbol_claims(
 ) {
     let mut source_loader = source::VerifiedSourceCache::new();
     let mut line_count_cache: HashMap<String, Option<usize>> = HashMap::new();
-    let claim_json = |c: &SymbolClaimRef| {
-        json!({"name": c.name, "target_path": c.target_path, "start_line": c.start_line, "end_line": c.end_line})
-    };
+    let claim_json = |c: &SymbolClaimRef| json!({"name": c.name, "target_path": c.target_path, "start_line": c.start_line, "end_line": c.end_line});
     let push_claim = |findings: &mut Vec<DocIntegrityFinding>,
                       kind: &'static str,
                       rule_id: &'static str,
@@ -753,7 +752,10 @@ fn push_finding_violation(
         path: f.path.clone(),
         line: Some(f.line),
         message,
-        invariant: f.invariant.clone().or_else(|| rule.and_then(|r| rule_invariant_id(&r.spec))),
+        invariant: f
+            .invariant
+            .clone()
+            .or_else(|| rule.and_then(|r| rule_invariant_id(&r.spec))),
         rule_source: rule.map(|r| r.source.clone()),
         symbol: f.symbol.clone(),
         target: f.target.clone(),
@@ -780,7 +782,14 @@ pub(super) fn evaluate_doc_integrity_rule(
             _ => f.default_severity.max(rule.spec.severity),
         };
         covered.insert((f.path.clone(), f.line, f.kind.to_owned()));
-        push_finding_violation(violations, f, LintCategory::Arch, rule.spec.id.clone(), severity, Some(rule));
+        push_finding_violation(
+            violations,
+            f,
+            LintCategory::Arch,
+            rule.spec.id.clone(),
+            severity,
+            Some(rule),
+        );
     }
     let _ = ArchRuleKind::DocIntegrity;
 }
@@ -792,7 +801,14 @@ pub(super) fn evaluate_docs_lint(
 ) {
     for f in findings {
         if !doc_integrity_covered.contains(&(f.path.clone(), f.line, f.kind.to_owned())) {
-            push_finding_violation(violations, f, LintCategory::Docs, f.rule_id.to_owned(), f.default_severity, None);
+            push_finding_violation(
+                violations,
+                f,
+                LintCategory::Docs,
+                f.rule_id.to_owned(),
+                f.default_severity,
+                None,
+            );
         }
     }
 }

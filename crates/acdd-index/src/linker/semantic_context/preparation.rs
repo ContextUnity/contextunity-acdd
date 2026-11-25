@@ -1,5 +1,5 @@
-use crate::languages::profile::ProfileLinker;
 use super::context::*;
+use crate::languages::profile::ProfileLinker;
 use crate::linker::traits::ImportContext;
 
 pub(super) struct PendingExternalImport<'a> {
@@ -101,7 +101,11 @@ impl<'a> Context<'a> {
         > = HashMap::new();
         let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
+            let Some(module) = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+            else {
                 continue;
             };
             let rules = dependencies.language_context_for_path(path);
@@ -259,7 +263,11 @@ impl<'a> Context<'a> {
     ) -> Vec<PendingExternalImport<'a>> {
         let mut pending_cross_module = Vec::new();
         for (path, facts) in all.iter_facts() {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
+            let Some(module) = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+            else {
                 continue;
             };
             let Some(profile) = languages::by_id(module.language.as_str()) else {
@@ -392,7 +400,10 @@ impl<'a> Context<'a> {
             Imported::Nodes(candidates, position, is_type_only)
         } else if providers.is_empty() && !normalized.relative {
             let module_name = reference.module.as_deref().unwrap_or(&reference.expression);
-            if profile.linker().is_dynamic_type_alias(module_name, &reference.expression) {
+            if profile
+                .linker()
+                .is_dynamic_type_alias(module_name, &reference.expression)
+            {
                 Imported::Unknown
             } else {
                 let factory_safe = profile
@@ -543,7 +554,8 @@ impl<'a> Context<'a> {
                         self.interner
                             .lookup_symbol(&node.name)
                             .expect("catalog member"),
-                        *node.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true,
+                        *node.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC)
+                            == true,
                     ))
                     .or_default()
                     .push(node);
@@ -576,16 +588,20 @@ impl<'a> Context<'a> {
                 } else {
                     classes_by_name.get(reference.expression.as_str())
                 };
-                let mut candidates = candidates
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|candidate| {
-                        languages::workspace_path(&candidate.path).0
-                            == languages::workspace_path(&owner.path).0
-                            && candidate.language == owner.language
-                            && matches!(candidate.kind.as_str(), "class" | "struct" | "interface")
-                    });
+                let mut candidates =
+                    candidates
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|candidate| {
+                            languages::workspace_path(&candidate.path).0
+                                == languages::workspace_path(&owner.path).0
+                                && candidate.language == owner.language
+                                && matches!(
+                                    candidate.kind.as_str(),
+                                    "class" | "struct" | "interface"
+                                )
+                        });
                 let Some(base) = candidates.next() else {
                     continue;
                 };
@@ -673,7 +689,9 @@ impl<'a> Context<'a> {
         let mut seen = std::collections::BTreeSet::new();
         for profile in languages::profiles() {
             if seen.insert(profile.id()) {
-                profile.linker().prepare_semantic_context(&mut context, &prep);
+                profile
+                    .linker()
+                    .prepare_semantic_context(&mut context, &prep);
             }
         }
         context.propagate_cross_module_external_imports(&pending_cross_module);
@@ -703,7 +721,9 @@ fn collect_receiver_type_and_factory_rules(
             continue;
         }
         indices.push(index);
-        if !profile.linker().collects_argument_factory_rules(module_language)
+        if !profile
+            .linker()
+            .collects_argument_factory_rules(module_language)
             || rule.language != module_language
         {
             continue;

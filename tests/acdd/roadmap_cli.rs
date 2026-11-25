@@ -67,7 +67,11 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
     assert!(!state_db.exists());
 
     let md = run_cli(&ws, &["roadmap"]);
-    assert!(md.status.success(), "{}", str::from_utf8(&md.stderr).unwrap_or(""));
+    assert!(
+        md.status.success(),
+        "{}",
+        str::from_utf8(&md.stderr).unwrap_or("")
+    );
     let md_text = String::from_utf8_lossy(&md.stdout);
     assert!(md_text.contains("# Roadmap"));
     assert!(md_text.contains("## Wave 0 — Ready Now"));
@@ -78,7 +82,9 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
     let json_out = run_cli_json(&ws, &["roadmap"]);
     assert!(json_out.status.success());
     let payload: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
-    let roadmap = payload.get("Roadmap").expect("externally tagged Roadmap variant");
+    let roadmap = payload
+        .get("Roadmap")
+        .expect("externally tagged Roadmap variant");
     assert_eq!(roadmap["archived_count"], 1);
     assert_eq!(roadmap["waves"][0]["specs"][0]["spec_id"], "AC-001");
 
@@ -90,7 +96,11 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
         "---\nid: AC-001\ntitle: Only Ready\nstatus: planned\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     );
     let single_md = run_cli(&single_ws, &["roadmap"]);
-    assert!(single_md.status.success(), "{}", str::from_utf8(&single_md.stderr).unwrap_or(""));
+    assert!(
+        single_md.status.success(),
+        "{}",
+        str::from_utf8(&single_md.stderr).unwrap_or("")
+    );
     let single_text = String::from_utf8_lossy(&single_md.stdout);
     assert!(single_text.contains("# Roadmap"));
     assert!(single_text.contains("## Wave 0 — Ready Now"));
@@ -142,17 +152,22 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
 
     for case in cases {
         let out = run_cli_json(&ws, case.args);
-        assert!(out.status.success(), "{:?}: {}", case.args, String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{:?}: {}",
+            case.args,
+            String::from_utf8_lossy(&out.stderr)
+        );
         let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         let roadmap = &body["Roadmap"];
         if case.wave0_only {
-            assert!(
-                roadmap["waves"]
-                    .as_array()
-                    .map(|waves| waves.iter().all(|w| w["wave"] == 0))
-                    .unwrap_or(true)
-            );
-            assert!(roadmap["in_progress"].as_array().is_some_and(|v| v.is_empty()));
+            assert!(roadmap["waves"]
+                .as_array()
+                .map(|waves| waves.iter().all(|w| w["wave"] == 0))
+                .unwrap_or(true));
+            assert!(roadmap["in_progress"]
+                .as_array()
+                .is_some_and(|v| v.is_empty()));
         }
         if let Some(id) = case.expect_id {
             let found = roadmap["in_progress"]

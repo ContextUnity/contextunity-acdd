@@ -1,9 +1,12 @@
-use crate::languages::profile::ProfileLinker;
 use super::context::*;
+use crate::languages::profile::ProfileLinker;
 use crate::languages::{LanguageFamily, LanguageProfile};
 use crate::linker::{
     semantic_context,
-    traits::{import_provider_modules, ImportContext, ImportResolution, ImportScopeState, LanguageLinker, GENERIC_LINKER},
+    traits::{
+        import_provider_modules, ImportContext, ImportResolution, ImportScopeState, LanguageLinker,
+        GENERIC_LINKER,
+    },
     types::qualified,
 };
 use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, NodeKind};
@@ -81,9 +84,10 @@ fn apply_wildcard_import<'a, 'file>(
                     .by_qual
                     .get(qualified(&mut resolver.lookup_key, item.scope, name))
                     .is_some_and(|nodes| {
-                        nodes
-                            .iter()
-                            .any(|n| n.path == *resolver.path && n.kind != crate::models::tags::NodeKind::ModuleDeclaration)
+                        nodes.iter().any(|n| {
+                            n.path == *resolver.path
+                                && n.kind != crate::models::tags::NodeKind::ModuleDeclaration
+                        })
                     });
                 let already_bound = locally_declared
                     || resolver
@@ -98,14 +102,9 @@ fn apply_wildcard_import<'a, 'file>(
                 if already_bound {
                     continue;
                 }
-                if let Some(target_ext) = external_origin_at(
-                    input,
-                    target_module,
-                    name,
-                    item.scope,
-                    item.r.line,
-                    true,
-                ) {
+                if let Some(target_ext) =
+                    external_origin_at(input, target_module, name, item.scope, item.r.line, true)
+                {
                     resolver
                         .aliases
                         .entry(item.scope)
@@ -134,14 +133,17 @@ fn external_origin_at<'a>(
     match input.semantic_context.imported_alias(module, name) {
         Some(semantic_context::Imported::External(origin, _, reference, _)) => {
             if enforce_visibility
-                && input.semantic_context.import_state(module.language.as_str()).is_some_and(|state| {
-                    !state.external_binding_visible(
-                        module,
-                        name,
-                        requester_qual,
-                        reference.source == module.id,
-                    )
-                })
+                && input
+                    .semantic_context
+                    .import_state(module.language.as_str())
+                    .is_some_and(|state| {
+                        !state.external_binding_visible(
+                            module,
+                            name,
+                            requester_qual,
+                            reference.source == module.id,
+                        )
+                    })
             {
                 return None;
             }
@@ -164,9 +166,10 @@ fn apply_aliased_import<'a, 'file>(
         .by_qual
         .get(qualified(&mut resolver.lookup_key, item.scope, alias))
         .is_some_and(|nodes| {
-            nodes
-                .iter()
-                .any(|n| n.path == *resolver.path && n.kind != crate::models::tags::NodeKind::ModuleDeclaration)
+            nodes.iter().any(|n| {
+                n.path == *resolver.path
+                    && n.kind != crate::models::tags::NodeKind::ModuleDeclaration
+            })
         });
     let mut targets = if local_declaration {
         Vec::new()
@@ -458,7 +461,7 @@ fn emit_import_edges<'a, 'file>(
                 EdgeKind::Imports,
                 r.line,
                 r.expression.as_str(),
-            EdgeConfidence::Exact,
+                EdgeConfidence::Exact,
             );
         } else if language_linker.emits_single_imported_target_edge()
             && !item.child_module
@@ -528,7 +531,9 @@ where
             interner: input.interner,
             dependencies: input.dependency_registry,
             reference: r,
-            language_state: input.semantic_context.import_state(profile.map_or("", LanguageProfile::id)),
+            language_state: input
+                .semantic_context
+                .import_state(profile.map_or("", LanguageProfile::id)),
             normalized,
             selected_namespace,
             family: profile.map_or(LanguageFamily(""), |profile| profile.family()),
@@ -565,11 +570,13 @@ where
                 .as_deref()
                 .is_some_and(|m| m.ends_with(".*") || m.ends_with("::*"));
         let export_type_only = modules.first().is_some_and(|m| {
-            m.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().is_some_and(|bindings| {
-                bindings.iter().any(|b| {
-                    b["name"].as_str() == Some(r.expression.as_str()) && b["type_only"] == true
+            m.detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+                .as_array()
+                .is_some_and(|bindings| {
+                    bindings.iter().any(|b| {
+                        b["name"].as_str() == Some(r.expression.as_str()) && b["type_only"] == true
+                    })
                 })
-            })
         });
         let is_type_only = matches!(r.receiver_hint.as_ref(), Some(ReceiverHint::TypeOnlyImport))
             || export_type_only;
@@ -610,7 +617,13 @@ where
         }
         let multi_file_allowed = language_linker.allows_multi_file_modules();
         let resolved = emit_import_coverage(resolver, multi_file_allowed, &item);
-        emit_import_edges(resolver, language_linker, multi_file_allowed, resolved, &item);
+        emit_import_edges(
+            resolver,
+            language_linker,
+            multi_file_allowed,
+            resolved,
+            &item,
+        );
     }
     let mut state = ImportScopeState {
         input: resolver.input,

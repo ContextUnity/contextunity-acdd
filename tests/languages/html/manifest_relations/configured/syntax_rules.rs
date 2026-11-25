@@ -57,8 +57,9 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
                     .iter()
                     .filter(|node| {
                         node.kind == "html_request"
-                            && serde_json::from_str::<serde_json::Value>(&node.details)
-                                .is_ok_and(|details| details["request_node_role"] == "configured_request")
+                            && serde_json::from_str::<serde_json::Value>(&node.details).is_ok_and(
+                                |details| details["request_node_role"] == "configured_request",
+                            )
                     })
                     .count(),
                 1,

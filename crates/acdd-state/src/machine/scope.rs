@@ -18,11 +18,8 @@ pub(crate) fn plan_extend_scope_with_obs(
     obs: &ValidatedObservations,
     input: &ExtendScopeInput,
 ) -> Result<TransitionPlan, StateError> {
-    let target_node = crate::machine::require_active_node(
-        snapshot,
-        &input.node_cursor,
-        "extend_scope",
-    )?;
+    let target_node =
+        crate::machine::require_active_node(snapshot, &input.node_cursor, "extend_scope")?;
     let target_id = target_node.node_id.as_str();
 
     if input.reason.trim().is_empty() {
@@ -75,7 +72,10 @@ pub(crate) fn plan_extend_scope_with_obs(
         }
     };
 
-    if matches!(task_node.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+    if matches!(
+        task_node.status,
+        NodeStatus::Completed | NodeStatus::Cancelled
+    ) {
         return Err(StateError::new(
             ErrorCode::GateVerificationFailed,
             format!(

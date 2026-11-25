@@ -321,8 +321,12 @@ mod tests {
         let db = dir.path().join("index.sqlite");
         let conn = Connection::open(&db).unwrap();
         initialize_code_map_schema(&conn).unwrap();
-        write_metadata(&conn, MetadataKey::SchemaVersion, acdd_core::config::ENGINE_SCHEMA_VERSION)
-            .unwrap();
+        write_metadata(
+            &conn,
+            MetadataKey::SchemaVersion,
+            acdd_core::config::ENGINE_SCHEMA_VERSION,
+        )
+        .unwrap();
         write_metadata(&conn, MetadataKey::IndexerEngine, "contextunity-acdd-rust").unwrap();
         write_metadata(
             &conn,

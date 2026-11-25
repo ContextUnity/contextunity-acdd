@@ -1,12 +1,12 @@
-use crate::interner::{LinkerInterner, SymbolId};
-use super::receivers;
 use super::super::resolution::input::ResolutionInput;
 use super::super::semantic_context::LanguageMemberLookup;
 use super::super::typescript::resolution::{
     has_indexed_name, has_indexed_symbol, has_indexed_symbol_id,
 };
-use crate::models::{Node, ReceiverHint, Reference};
+use super::receivers;
+use crate::interner::{LinkerInterner, SymbolId};
 use crate::languages::LanguageProfile;
+use crate::models::{Node, ReceiverHint, Reference};
 use hashbrown::{HashMap, HashSet};
 
 pub(in crate::linker) fn nullable_parameter_wrapper<F>(
@@ -201,7 +201,8 @@ pub(in crate::linker) fn imported_module_member<'a>(
     let (Some(class), None) = (declarations.next(), declarations.next()) else {
         return None;
     };
-    (class.kind == crate::models::tags::NodeKind::Class).then(|| python_member(member_lookup, class, member, false))
+    (class.kind == crate::models::tags::NodeKind::Class)
+        .then(|| python_member(member_lookup, class, member, false))
 }
 
 fn python_member<'a>(
@@ -279,7 +280,16 @@ fn is_super_shadowed<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_python_call_result_member<'ctx, 'a, 'keys, 'result, 'aliases, 'external, AliasFor, ExternalFor>(
+fn resolve_python_call_result_member<
+    'ctx,
+    'a,
+    'keys,
+    'result,
+    'aliases,
+    'external,
+    AliasFor,
+    ExternalFor,
+>(
     context: &PythonResolutionView<'ctx, 'a, 'keys>,
     profile: &'static dyn crate::languages::LanguageProfile,
     owner_and_id: (Option<crate::interner::SymbolId>, Option<&'a Node>),
@@ -333,7 +343,13 @@ where
         {
             candidates.extend(nodes.iter().copied().filter(|node| node.path == path));
         }
-        if crate::linker::types::shadowed_by_late_import(context.alias_import_positions, scope, head, reference.line, candidates) {
+        if crate::linker::types::shadowed_by_late_import(
+            context.alias_import_positions,
+            scope,
+            head,
+            reference.line,
+            candidates,
+        ) {
             constructor_shadowed = true;
             break;
         }
@@ -459,7 +475,8 @@ where
     let aliases = context.aliases;
     let member_lookup = context.member_lookup;
 
-    let mut computed: receivers::PythonReceiverMember<'result> = receivers::PythonReceiverMember::Unknown;
+    let mut computed: receivers::PythonReceiverMember<'result> =
+        receivers::PythonReceiverMember::Unknown;
     let mut literal_builtin = false;
     match reference.receiver_hint.as_ref() {
         Some(ReceiverHint::StringLiteral { member }) => {
@@ -468,17 +485,22 @@ where
         Some(ReceiverHint::Super { member }) => {
             if !is_super_shadowed(input, path, owner, aliases) {
                 if let Some((owner_id, owner)) = owner_id.zip(owner).filter(|&(owner_id, owner)| {
-                    owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str().is_some_and(|name| {
-                        matches!(name, "self" | "cls")
-                            && !input.interner.lookup_symbol(name).is_some_and(|name_id| {
-                                has_indexed_symbol_id(node_rebindings, owner_id, name_id)
-                            })
-                    })
+                    owner
+                        .detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+                        .as_str()
+                        .is_some_and(|name| {
+                            matches!(name, "self" | "cls")
+                                && !input.interner.lookup_symbol(name).is_some_and(|name_id| {
+                                    has_indexed_symbol_id(node_rebindings, owner_id, name_id)
+                                })
+                        })
                 }) {
                     let _ = owner_id;
                     if let Some((scope, _)) = owner.qualname.rsplit_once('.') {
                         if let Some([class]) = by_qual.get(scope).map(Vec::as_slice) {
-                            if class.kind == crate::models::tags::NodeKind::Class && class.path == path {
+                            if class.kind == crate::models::tags::NodeKind::Class
+                                && class.path == path
+                            {
                                 computed = python_member(member_lookup, class, member, true);
                             }
                         }
@@ -609,17 +631,20 @@ pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
                     .and_then(|owner| owner.qualname.rsplit_once('.'))
                     .and_then(|(scope, _)| by_qual.get(scope))
                     .and_then(|nodes| {
-                        let mut classes = nodes
-                            .iter()
-                            .copied()
-                            .filter(|node| node.path == path && node.kind == crate::models::tags::NodeKind::Class);
+                        let mut classes = nodes.iter().copied().filter(|node| {
+                            node.path == path && node.kind == crate::models::tags::NodeKind::Class
+                        });
                         let class = classes.next()?;
                         classes.next().is_none().then_some(class)
                     })
             } else if !shadowed {
                 let classes = imported.map(Vec::as_slice).unwrap_or_else(|| {
                     by_qual
-                        .get(crate::linker::types::qualified(lookup_key, file_module, first))
+                        .get(crate::linker::types::qualified(
+                            lookup_key,
+                            file_module,
+                            first,
+                        ))
                         .map(Vec::as_slice)
                         .unwrap_or_default()
                 });

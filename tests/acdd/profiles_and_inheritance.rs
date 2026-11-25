@@ -1,7 +1,7 @@
 use super::support::TestProvider;
 use crate::common::Workspace;
-use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::ErrorCode;
+use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::profile::{
     embedded_profile, render_command_with_test_filter, resolve_command_for_scope,
     resolve_profile_from_str_with_dirs, resolve_profile_ref_with_dirs,
@@ -30,19 +30,39 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{removed}");
     }
 
-    type EmbeddedCase<'a> = (&'a str, Option<&'a SubsystemRegistry>, bool, Result<(), ErrorCode>);
+    type EmbeddedCase<'a> = (
+        &'a str,
+        Option<&'a SubsystemRegistry>,
+        bool,
+        Result<(), ErrorCode>,
+    );
     let embedded_cases: &[EmbeddedCase<'_>] = &[
         ("base", Some(&code_disabled), false, Ok(())),
         ("base", None, true, Ok(())),
         ("code", None, true, Err(ErrorCode::CommandUnbound)),
         ("code", None, false, Ok(())),
-        ("code", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
+        (
+            "code",
+            Some(&code_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
         ("audit", None, true, Ok(())),
         ("audit", Some(&code_disabled), false, Ok(())),
         ("documentation", None, true, Ok(())),
         ("documentation", None, false, Ok(())),
-        ("documentation", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
-        ("documentation", Some(&docs_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
+        (
+            "documentation",
+            Some(&code_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
+        (
+            "documentation",
+            Some(&docs_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
         ("spec_planning", None, true, Ok(())),
         ("spec_planning", None, false, Ok(())),
         ("spec_planning", Some(&code_disabled), false, Ok(())),
@@ -50,7 +70,8 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
     ];
     for &(name, mods, require_bound, expected) in embedded_cases {
         assert!(embedded_profile(name).is_some());
-        let resolved = resolve_profile_ref_with_dirs(name, None, mods, None).expect("embedded resolves");
+        let resolved =
+            resolve_profile_ref_with_dirs(name, None, mods, None).expect("embedded resolves");
         let opts = ProfileValidationOptions {
             domain_providers: Some(providers.as_ref()),
             acdd_modules: mods,
@@ -147,7 +168,10 @@ gates_patch:
 
     // 3. Reject legacy 0.5 keys and legacy tool names fail-closed.
     for (label, bad_yaml) in [
-        ("legacy_persistence", "version: 2\ninherit: none\npersistence: commit\n"),
+        (
+            "legacy_persistence",
+            "version: 2\ninherit: none\npersistence: commit\n",
+        ),
         (
             "legacy_tool",
             "version: 2\ninherit: none\ndefault_tools: [session_checkpoint]\n",
@@ -157,17 +181,18 @@ gates_patch:
             "version: 2\ninherit: none\ndefault_tools: [sql_query]\n",
         ),
     ] {
-        let res = resolve_profile_from_str_with_dirs(bad_yaml, label, None, Some(ws.root()), None, None)
-            .and_then(|p| {
-            validate_profile(
-                &p,
-                &ProfileValidationOptions {
-                    domain_providers: Some(providers.as_ref()),
-                    acdd_modules: None,
-                    require_bound_commands: false,
-                },
-            )
-        });
+        let res =
+            resolve_profile_from_str_with_dirs(bad_yaml, label, None, Some(ws.root()), None, None)
+                .and_then(|p| {
+                    validate_profile(
+                        &p,
+                        &ProfileValidationOptions {
+                            domain_providers: Some(providers.as_ref()),
+                            acdd_modules: None,
+                            require_bound_commands: false,
+                        },
+                    )
+                });
         let err = res.expect_err(label);
         assert!(
             matches!(
@@ -221,12 +246,9 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
     .unwrap();
     assert_eq!(rendered, "cargo test --exact 'suite::it'\\''s_ok'");
 
-    let chained_err = render_command_with_test_filter(
-        "cargo clippy && cargo test",
-        None,
-        Some("suite::x"),
-    )
-    .unwrap_err();
+    let chained_err =
+        render_command_with_test_filter("cargo clippy && cargo test", None, Some("suite::x"))
+            .unwrap_err();
     assert_eq!(
         chained_err.code,
         ErrorCode::CommandTestFilterPlaceholderRequired

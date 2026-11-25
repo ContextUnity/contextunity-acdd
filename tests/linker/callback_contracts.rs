@@ -11,10 +11,16 @@ fn callback_param_callable_signature_and_compact_graph_contracts() {
         has_receiver: true,
         params: vec![CallableParameter {
             name: Some("cb".into()),
-            type_expr: TypeExpr::Named { name: "FnMut".into() },
-            callback_params: vec![TypeExpr::Named { name: "Item".into() }],
+            type_expr: TypeExpr::Named {
+                name: "FnMut".into(),
+            },
+            callback_params: vec![TypeExpr::Named {
+                name: "Item".into(),
+            }],
         }],
-        return_type: Some(TypeExpr::Named { name: "bool".into() }),
+        return_type: Some(TypeExpr::Named {
+            name: "bool".into(),
+        }),
     };
     assert!(!sig.is_empty());
     assert!(sig.valid());
@@ -171,7 +177,10 @@ pub fn drive(r: &Runner, mut item: Item) {
         .iter()
         .find(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "drive")
         .expect("missing drive node");
-    let drive_flow = typed.flows.get(drive_node).expect("missing drive value_flow");
+    let drive_flow = typed
+        .flows
+        .get(drive_node)
+        .expect("missing drive value_flow");
     fn unwrap_scoped(v: &ValueExpr) -> &ValueExpr {
         match v {
             ValueExpr::Scoped { value, .. } => value.as_ref(),
@@ -287,7 +296,11 @@ pub fn destructured_no_shadowing(
     }
 }
 
-#[cfg(all(feature = "lang-rust", feature = "lang-typescript", feature = "lang-python"))]
+#[cfg(all(
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-python"
+))]
 #[test]
 fn typed_callback_param_resolution_across_languages_matrix() {
     let workspace = crate::common::Workspace::new();

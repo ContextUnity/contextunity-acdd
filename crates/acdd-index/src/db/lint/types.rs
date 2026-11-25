@@ -135,7 +135,9 @@ impl LintScope {
     }
 }
 
-pub(super) fn load_test_line_spans(conn: &Connection) -> Result<HashMap<String, Vec<(usize, usize)>>> {
+pub(super) fn load_test_line_spans(
+    conn: &Connection,
+) -> Result<HashMap<String, Vec<(usize, usize)>>> {
     let mut spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
     let mut stmt = conn.prepare(
         "SELECT p.path, n.line, n.end_line, n.is_test, n.details
@@ -227,21 +229,21 @@ impl ExternalOccurrence {
 }
 
 fn extract_external_module_from_evidence(evidence: &str) -> Option<String> {
-    let raw = if let Some((_, rest)) = evidence.split_once("no indexed provider for absolute import ")
-    {
-        rest.split(';').next().unwrap_or(rest)
-    } else if let Some((_, rest)) = evidence.split_once("no indexed provider for ") {
-        rest.split(';').next().unwrap_or(rest)
-    } else if let Some((_, rest)) = evidence.split_once("external import ") {
-        rest.split(" at line ")
-            .next()
-            .unwrap_or(rest)
-            .split(';')
-            .next()
-            .unwrap_or(rest)
-    } else {
-        return None;
-    };
+    let raw =
+        if let Some((_, rest)) = evidence.split_once("no indexed provider for absolute import ") {
+            rest.split(';').next().unwrap_or(rest)
+        } else if let Some((_, rest)) = evidence.split_once("no indexed provider for ") {
+            rest.split(';').next().unwrap_or(rest)
+        } else if let Some((_, rest)) = evidence.split_once("external import ") {
+            rest.split(" at line ")
+                .next()
+                .unwrap_or(rest)
+                .split(';')
+                .next()
+                .unwrap_or(rest)
+        } else {
+            return None;
+        };
     let trimmed = raw.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
@@ -262,7 +264,8 @@ impl LintIndexData {
         let _budget = QueryBudget::new(conn);
         let mut files = BTreeMap::new();
         {
-            let mut stmt = conn.prepare("SELECT path, language, is_test FROM files ORDER BY path")?;
+            let mut stmt =
+                conn.prepare("SELECT path, language, is_test FROM files ORDER BY path")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 let path: String = row.get(0)?;
@@ -319,10 +322,36 @@ impl LintIndexData {
             )?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
-                let (hash, id, kind, name, qualname, path): (i64, String, String, String, String, String) =
-                    (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?);
-                let (line, end_line, is_test, language, generated, details_raw): (i64, i64, i64, String, i64, String) =
-                    (row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?);
+                let (hash, id, kind, name, qualname, path): (
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = (
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                );
+                let (line, end_line, is_test, language, generated, details_raw): (
+                    i64,
+                    i64,
+                    i64,
+                    String,
+                    i64,
+                    String,
+                ) = (
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                );
                 let (decorators, receiver_type, impl_trait, explicit_is_public) =
                     parse_node_lint_details(&details_raw);
                 by_path.entry(path.clone()).or_default().push(hash);
@@ -379,10 +408,7 @@ impl LintIndexData {
         Ok(self.edges.as_deref().expect("edges initialized"))
     }
 
-    pub(super) fn ensure_external(
-        &mut self,
-        conn: &Connection,
-    ) -> Result<&[ExternalOccurrence]> {
+    pub(super) fn ensure_external(&mut self, conn: &Connection) -> Result<&[ExternalOccurrence]> {
         if self.external_occurrences.is_none() {
             let _budget = QueryBudget::new(conn);
             let mut list = Vec::new();
@@ -406,8 +432,8 @@ impl LintIndexData {
                     let symbol: String = row.get(2)?;
                     let evidence: String = row.get(3)?;
                     let line_usize = line.max(1) as usize;
-                    let module_symbol = extract_external_module_from_evidence(&evidence)
-                        .filter(|m| m != &symbol);
+                    let module_symbol =
+                        extract_external_module_from_evidence(&evidence).filter(|m| m != &symbol);
                     seen_in_coverage.insert((path.clone(), symbol.clone()));
                     by_path.entry(path.clone()).or_default().push(list.len());
                     list.push(ExternalOccurrence {

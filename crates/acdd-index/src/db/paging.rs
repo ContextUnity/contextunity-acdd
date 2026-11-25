@@ -303,7 +303,11 @@ pub(crate) fn rows_with_window_total(
 
 #[inline]
 fn i64_decimal_len(number: i64) -> usize {
-    number.unsigned_abs().checked_ilog10().map_or(1, |l| l as usize + 1) + usize::from(number < 0)
+    number
+        .unsigned_abs()
+        .checked_ilog10()
+        .map_or(1, |l| l as usize + 1)
+        + usize::from(number < 0)
 }
 
 #[inline]
@@ -323,13 +327,26 @@ fn collect_rows(
     mode: RowMode,
     strip_leading_total: bool,
 ) -> Result<(Vec<Value>, Option<usize>, usize)> {
-    if limit == 0 || limit > 500000 { bail!("internal row budget exceeded"); }
-    if sql.len() > 64 * 1024 { bail!("SQL exceeds64KiB"); }
+    if limit == 0 || limit > 500000 {
+        bail!("internal row budget exceeded");
+    }
+    if sql.len() > 64 * 1024 {
+        bail!("SQL exceeds64KiB");
+    }
     let _budget = QueryBudget::new(conn);
     let mut statement = conn.prepare(sql)?;
-    if !statement.readonly() { bail!("query must be read-only"); }
-    let names: Vec<_> = statement.column_names().into_iter().map(str::to_owned).collect();
-    let key_colon_bytes: Vec<usize> = names.iter().map(|n| exact_json_str_bytes(n).saturating_add(1)).collect();
+    if !statement.readonly() {
+        bail!("query must be read-only");
+    }
+    let names: Vec<_> = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let key_colon_bytes: Vec<usize> = names
+        .iter()
+        .map(|n| exact_json_str_bytes(n).saturating_add(1))
+        .collect();
     let start_col = usize::from(strip_leading_total && !names.is_empty());
     let mut query = statement.query(params)?;
     let (mut result, mut total_bytes, mut window_total) = (Vec::new(), 2usize, None);
@@ -340,11 +357,18 @@ fn collect_rows(
         }
         let (mut value, mut row_bytes, mut prop_count) = (Map::new(), 2usize, 0usize);
         let row_sep = usize::from(!result.is_empty());
-        let avail = MAX_QUERY_RESULT_BYTES.saturating_sub(total_bytes).saturating_sub(row_sep);
+        let avail = MAX_QUERY_RESULT_BYTES
+            .saturating_sub(total_bytes)
+            .saturating_sub(row_sep);
 
         for i in start_col..names.len() {
             let name = &names[i];
-            if mode == RowMode::Structural && matches!(name.as_str(), "node_hash" | "path_hash" | "path_id" | "owner_path_id") {
+            if mode == RowMode::Structural
+                && matches!(
+                    name.as_str(),
+                    "node_hash" | "path_hash" | "path_id" | "owner_path_id"
+                )
+            {
                 continue;
             }
             if names[i + 1..].iter().any(|later| later == name) {
@@ -352,7 +376,11 @@ fn collect_rows(
                 continue;
             }
             let raw = row.get_ref(i)?;
-            let json_col = mode == RowMode::Structural && matches!(name.as_str(), "details" | "invariants" | "referenced_symbols");
+            let json_col = mode == RowMode::Structural
+                && matches!(
+                    name.as_str(),
+                    "details" | "invariants" | "referenced_symbols"
+                );
             let min_val = match raw {
                 ValueRef::Null => 4,
                 ValueRef::Integer(n) => i64_decimal_len(n),
@@ -368,28 +396,44 @@ fn collect_rows(
             let (cell, val_bytes) = match raw {
                 ValueRef::Null => (Value::Null, 4),
                 ValueRef::Integer(v) => (json!(v), i64_decimal_len(v)),
-                ValueRef::Real(v) => { let c = json!(v); let l = estimate_json_bytes(&c); (c, l) }
+                ValueRef::Real(v) => {
+                    let c = json!(v);
+                    let l = estimate_json_bytes(&c);
+                    (c, l)
+                }
                 ValueRef::Text(v) => {
                     let s = String::from_utf8_lossy(v);
                     if json_col {
                         match serde_json::from_str::<Value>(&s) {
-                            Ok(p) => { let l = estimate_json_bytes(&p); (p, l) }
+                            Ok(p) => {
+                                let l = estimate_json_bytes(&p);
+                                (p, l)
+                            }
                             Err(_) => (json!(s), exact_json_str_bytes(&s)),
                         }
                     } else {
                         (json!(s), exact_json_str_bytes(&s))
                     }
                 }
-                ValueRef::Blob(v) => (json!(hex::encode(v)), v.len().saturating_mul(2).saturating_add(2)),
+                ValueRef::Blob(v) => (
+                    json!(hex::encode(v)),
+                    v.len().saturating_mul(2).saturating_add(2),
+                ),
             };
             row_bytes = row_bytes.saturating_add(overhead).saturating_add(val_bytes);
             prop_count += 1;
-            if row_bytes > avail { bail!(QUERY_RESULT_TOO_LARGE); }
+            if row_bytes > avail {
+                bail!(QUERY_RESULT_TOO_LARGE);
+            }
             value.insert(name.clone(), cell);
         }
-        total_bytes = total_bytes.saturating_add(row_sep).saturating_add(row_bytes);
+        total_bytes = total_bytes
+            .saturating_add(row_sep)
+            .saturating_add(row_bytes);
         result.push(Value::Object(value));
-        if result.len() >= limit { break; }
+        if result.len() >= limit {
+            break;
+        }
     }
     Ok((result, window_total, total_bytes))
 }

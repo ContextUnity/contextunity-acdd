@@ -40,14 +40,16 @@ pub(super) fn collect_cycle_violations(
         );
     }
     for comp in components {
-        let mut nodes_in_scc: Vec<&(String, String, usize)> = comp
-            .iter()
-            .filter_map(|h| info_by_hash.get(h))
-            .collect();
+        let mut nodes_in_scc: Vec<&(String, String, usize)> =
+            comp.iter().filter_map(|h| info_by_hash.get(h)).collect();
         if nodes_in_scc.is_empty() {
             continue;
         }
-        nodes_in_scc.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)).then_with(|| a.0.cmp(&b.0)));
+        nodes_in_scc.sort_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         if !nodes_in_scc.iter().any(|(_, p, _)| scope.in_scope(p)) {
             continue;
         }
@@ -67,7 +69,9 @@ pub(super) fn collect_cycle_violations(
             rule_source: None,
             symbol: Some(rep_id.clone()),
             target: None,
-            suggestion: Some("Use code_map_query with operation 'slice' to inspect cycle boundaries.".to_owned()),
+            suggestion: Some(
+                "Use code_map_query with operation 'slice' to inspect cycle boundaries.".to_owned(),
+            ),
         });
     }
     Ok(())

@@ -38,7 +38,10 @@ fn ergonomic_task_aliases_reach_existing_operations() {
 
     let mut m = McpTestHarness::new(&w).expect("MCP initialize");
     let mcp_show = m
-        .payload("acdd_state", json!({"action":"show","node":"aliases.build","format":"json"}))
+        .payload(
+            "acdd_state",
+            json!({"action":"show","node":"aliases.build","format":"json"}),
+        )
         .expect("MCP acdd_state show");
     assert_eq!(
         mcp_show["node"]["node_id"],
@@ -54,7 +57,9 @@ fn ergonomic_task_aliases_reach_existing_operations() {
     assert_eq!(first_page["page"]["total_runs"], 1);
     assert_eq!(crate::json_array(&first_page["page"]["runs"]).len(), 1);
     let cli_page = w
-        .query(&["list", "--status", "active", "--limit", "1", "--offset", "0"])
+        .query(&[
+            "list", "--status", "active", "--limit", "1", "--offset", "0",
+        ])
         .expect("CLI should succeed");
     assert_eq!(cli_page["List"]["page"]["runs"], first_page["page"]["runs"]);
 

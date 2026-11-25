@@ -66,10 +66,9 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
             name
         };
         let manifest = format!(".acdd/frameworks/{identity}.{extension}");
-        let result =
-            FrameworkHarness::from_manifests(&[(&manifest, source)]).and_then(|harness| {
-                harness.link_sources(&[("index.html", "html", "<p>Example manifest</p>")])
-            });
+        let result = FrameworkHarness::from_manifests(&[(&manifest, source)]).and_then(|harness| {
+            harness.link_sources(&[("index.html", "html", "<p>Example manifest</p>")])
+        });
         if let Err(error) = result {
             failures.push(format!(
                 "{name}.{extension} ({manifest}) failed production loading: {error:#}"
@@ -362,59 +361,86 @@ activation = [{ kind = "any", conditions = [{ kind = "package", name = "alpinejs
 operation = { kind = "template_symbols", requires_loader = false, tags = ["alpha"], filters = [], libraries = [], library_routes = {} }
 "#;
     let invalid_cases = [
-        ("unknown activation kind", r#"[[syntax_rules]]
+        (
+            "unknown activation kind",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "header", name = "x" }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("unknown activation field", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "unknown activation field",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "syntax_attribute", name = "x-data", extra = true }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("empty syntax attribute", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "empty syntax attribute",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "syntax_attribute", name = "  " }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("empty syntax prefix", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "empty syntax prefix",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "syntax_attribute_prefix", prefix = "" }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("leading dot file extension", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "leading dot file extension",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "file_extension", extension = ".j2" }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("empty any conditions", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "empty any conditions",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "any", conditions = [] }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("deeply nested any (>4)", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "deeply nested any (>4)",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 activation = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "package", name = "django" }] }] }] }] }] }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
-"#),
-        ("unsupported language id", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "unsupported language id",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "elixir"
 operation = { kind = "implicit_builtins", names = ["foo"] }
-"#),
-        ("unknown package family", r#"[[syntax_rules]]
+"#,
+        ),
+        (
+            "unknown package family",
+            r#"[[syntax_rules]]
 id = "bad"
 language = "html"
 package_family = "unknown_family"
 operation = { kind = "implicit_builtins", names = ["foo"] }
-"#),
+"#,
+        ),
     ];
     for (label, source) in invalid_cases {
         assert!(

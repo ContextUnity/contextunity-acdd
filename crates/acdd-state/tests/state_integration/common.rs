@@ -3,9 +3,9 @@ use acdd_core::errors::StateError;
 use acdd_core::git::git_command;
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::ports::{
-    ActionCapability, CheckCapability, CompositeDomainProvider, DomainActionReq, DomainActionResult,
-    DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
-    DomainToolDef, DomainToolOutput, DomainToolReq,
+    ActionCapability, CheckCapability, CompositeDomainProvider, DomainActionReq,
+    DomainActionResult, DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq,
+    DomainProvider, DomainToolDef, DomainToolOutput, DomainToolReq,
 };
 use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
@@ -122,13 +122,27 @@ impl MockHttpProvider {
         *self.assert_repo_lock_free.lock().unwrap() = Some(lock_path);
     }
 
-    pub fn set_unsalted_check(&self, v: bool) { self.unsalted_check.store(v, Ordering::SeqCst); }
-    pub fn set_fail_check(&self, v: bool) { self.fail_check.store(v, Ordering::SeqCst); }
-    pub fn set_index_gen(&self, v: usize) { self.index_gen.store(v, Ordering::SeqCst); }
-    pub fn index_gen(&self) -> usize { self.index_gen.load(Ordering::SeqCst) }
-    pub fn tool_calls(&self) -> usize { self.tool_calls.load(Ordering::SeqCst) }
-    pub fn action_calls(&self) -> usize { self.action_calls.load(Ordering::SeqCst) }
-    pub fn lookup_calls(&self) -> usize { self.lookup_calls.load(Ordering::SeqCst) }
+    pub fn set_unsalted_check(&self, v: bool) {
+        self.unsalted_check.store(v, Ordering::SeqCst);
+    }
+    pub fn set_fail_check(&self, v: bool) {
+        self.fail_check.store(v, Ordering::SeqCst);
+    }
+    pub fn set_index_gen(&self, v: usize) {
+        self.index_gen.store(v, Ordering::SeqCst);
+    }
+    pub fn index_gen(&self) -> usize {
+        self.index_gen.load(Ordering::SeqCst)
+    }
+    pub fn tool_calls(&self) -> usize {
+        self.tool_calls.load(Ordering::SeqCst)
+    }
+    pub fn action_calls(&self) -> usize {
+        self.action_calls.load(Ordering::SeqCst)
+    }
+    pub fn lookup_calls(&self) -> usize {
+        self.lookup_calls.load(Ordering::SeqCst)
+    }
 
     fn evaluate_check(&self) -> DomainCheckOutcome {
         if self.fail_check.load(Ordering::SeqCst) {
@@ -138,21 +152,30 @@ impl MockHttpProvider {
             };
         }
         let salt = (!self.unsalted_check.load(Ordering::SeqCst)).then(|| "http-salt-v1".to_owned());
-        DomainCheckOutcome::Passed { summary: "headers valid".to_owned(), execution_digest_salt: salt }
+        DomainCheckOutcome::Passed {
+            summary: "headers valid".to_owned(),
+            execution_digest_salt: salt,
+        }
     }
 }
 
 impl DomainProvider for MockHttpProvider {
-    fn domain_id(&self) -> &str { "http" }
+    fn domain_id(&self) -> &str {
+        "http"
+    }
 
     fn capabilities(&self) -> DomainCapabilities {
         let mut probe_schema = SchemaDef::object();
-        probe_schema.properties.insert("url".to_owned(), SchemaDef::string());
+        probe_schema
+            .properties
+            .insert("url".to_owned(), SchemaDef::string());
         probe_schema.required = vec!["url".to_owned()];
         probe_schema.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
 
         let mut dispatch_schema = SchemaDef::object();
-        dispatch_schema.properties.insert("target".to_owned(), SchemaDef::string());
+        dispatch_schema
+            .properties
+            .insert("target".to_owned(), SchemaDef::string());
         dispatch_schema.required = vec!["target".to_owned()];
 
         DomainCapabilities {
@@ -204,7 +227,11 @@ impl DomainProvider for MockHttpProvider {
         })
     }
 
-    fn lookup_action_result(&self, action: &str, idempotency_key: &str) -> Result<Option<DomainActionResult>> {
+    fn lookup_action_result(
+        &self,
+        action: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<DomainActionResult>> {
         self.lookup_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(lock_path) = self.assert_repo_lock_free.lock().unwrap().as_ref() {
             let guard = acdd_core::lock::try_acquire_exclusive(lock_path)?;
@@ -224,7 +251,12 @@ impl DomainProvider for MockHttpProvider {
         }
     }
 
-    fn run_check(&self, check: &str, _params: &Value, _req: &DomainCheckReq) -> Result<DomainCheckOutcome> {
+    fn run_check(
+        &self,
+        check: &str,
+        _params: &Value,
+        _req: &DomainCheckReq,
+    ) -> Result<DomainCheckOutcome> {
         if check == "bump_gen" {
             self.index_gen.fetch_add(1, Ordering::SeqCst);
         }
@@ -240,12 +272,13 @@ impl DomainProvider for MockHttpProvider {
         let idx = self.index_gen.load(Ordering::SeqCst);
         let index_generation = (idx > 0).then(|| format!("gen-{idx}"));
         match self.evaluate_check() {
-            DomainCheckOutcome::Passed { execution_digest_salt, .. } => {
-                Ok(acdd_core::ports::FreshnessObservation::Passed {
-                    index_generation,
-                    execution_digest_salt,
-                })
-            }
+            DomainCheckOutcome::Passed {
+                execution_digest_salt,
+                ..
+            } => Ok(acdd_core::ports::FreshnessObservation::Passed {
+                index_generation,
+                execution_digest_salt,
+            }),
             DomainCheckOutcome::Failed { summary, .. } => {
                 Ok(acdd_core::ports::FreshnessObservation::Failed { summary })
             }
@@ -260,17 +293,26 @@ impl DomainProvider for MockHttpProvider {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
         let mut obj = serde_json::Map::new();
         obj.insert("tool".to_owned(), json!(tool));
-        obj.insert("url".to_owned(), args.get("url").cloned().unwrap_or(Value::Null));
+        obj.insert(
+            "url".to_owned(),
+            args.get("url").cloned().unwrap_or(Value::Null),
+        );
         obj.insert("status".to_owned(), json!(200));
         if let Some(ref wt) = req.worktree {
-            obj.insert("worktree".to_owned(), json!(wt.to_string_lossy().into_owned()));
+            obj.insert(
+                "worktree".to_owned(),
+                json!(wt.to_string_lossy().into_owned()),
+            );
         }
         Ok(DomainToolOutput::Json(Value::Object(obj)))
     }
 }
 
 pub fn make_temp_dir(label: &str) -> TempDir {
-    tempfile::Builder::new().prefix(&format!("acdd-usecases-{label}-")).tempdir().expect("create tempdir")
+    tempfile::Builder::new()
+        .prefix(&format!("acdd-usecases-{label}-"))
+        .tempdir()
+        .expect("create tempdir")
 }
 
 pub fn git_ok(dir: &Path, args: &[&str]) -> String {
@@ -440,7 +482,13 @@ pub fn verify_node(
     }
 }
 
-pub fn pass_req(rid: &str, node: &str, worker: &str, rev: Option<u32>, allow_main: bool) -> SubmitReq {
+pub fn pass_req(
+    rid: &str,
+    node: &str,
+    worker: &str,
+    rev: Option<u32>,
+    allow_main: bool,
+) -> SubmitReq {
     SubmitReq {
         run: Some(rid.to_owned()),
         node: node.to_owned(),
@@ -481,7 +529,11 @@ pub fn write_profile(root: &Path, name: &str, yaml: &str) -> String {
     format!(".acdd/profiles/{name}")
 }
 
-pub fn build_rich_graph(root: &Path, run_id_str: &str, isolation: IsolationMode) -> RunGraphSnapshot {
+pub fn build_rich_graph(
+    root: &Path,
+    run_id_str: &str,
+    isolation: IsolationMode,
+) -> RunGraphSnapshot {
     let mut non_domain_modules = SubsystemRegistry::default();
     non_domain_modules.disabled.insert("code".to_owned());
     non_domain_modules.disabled.insert("docs".to_owned());
@@ -489,7 +541,9 @@ pub fn build_rich_graph(root: &Path, run_id_str: &str, isolation: IsolationMode)
         resolve_optional_profile_ref_with_dirs(None, None, Some(&non_domain_modules), None)
             .expect("resolve default profile");
     for cmd in ["test", "build_check", "verify_all"] {
-        profile.commands.insert(cmd.to_owned(), CommandDef::Script("true".into()));
+        profile
+            .commands
+            .insert(cmd.to_owned(), CommandDef::Script("true".into()));
     }
     let run_id = RunId::new(run_id_str).unwrap();
     let run_name = RunName::new("sample-run").unwrap();
@@ -574,13 +628,76 @@ pub fn build_rich_graph(root: &Path, run_id_str: &str, isolation: IsolationMode)
     };
 
     let nodes = vec![
-        make_node("tasks#0", None, NodeKind::Container, None, "tasks#0", 0, NodeStatus::Ready, Vec::new()),
-        make_node("task:t1", Some("tasks#0"), NodeKind::Task, Some(t1.clone()), "__task__", 1, NodeStatus::Ready, vec!["crates/a/**".to_owned()]),
-        make_node("task:t1:build", Some("task:t1"), NodeKind::TaskGate, Some(t1.clone()), "build", 2, NodeStatus::Ready, vec!["crates/a/**".to_owned()]),
-        make_node("task:t1:review", Some("task:t1"), NodeKind::TaskGate, Some(t1), "review", 3, NodeStatus::Pending, vec!["crates/a/**".to_owned()]),
-        make_node("task:t2", Some("tasks#0"), NodeKind::Task, Some(t2.clone()), "__task__", 4, NodeStatus::Pending, vec!["crates/b/**".to_owned()]),
-        make_node("task:t2:build", Some("task:t2"), NodeKind::TaskGate, Some(t2.clone()), "build", 5, NodeStatus::Pending, vec!["crates/b/**".to_owned()]),
-        make_node("root:handoff", None, NodeKind::RootGate, None, "handoff", 6, NodeStatus::Pending, Vec::new()),
+        make_node(
+            "tasks#0",
+            None,
+            NodeKind::Container,
+            None,
+            "tasks#0",
+            0,
+            NodeStatus::Ready,
+            Vec::new(),
+        ),
+        make_node(
+            "task:t1",
+            Some("tasks#0"),
+            NodeKind::Task,
+            Some(t1.clone()),
+            "__task__",
+            1,
+            NodeStatus::Ready,
+            vec!["crates/a/**".to_owned()],
+        ),
+        make_node(
+            "task:t1:build",
+            Some("task:t1"),
+            NodeKind::TaskGate,
+            Some(t1.clone()),
+            "build",
+            2,
+            NodeStatus::Ready,
+            vec!["crates/a/**".to_owned()],
+        ),
+        make_node(
+            "task:t1:review",
+            Some("task:t1"),
+            NodeKind::TaskGate,
+            Some(t1),
+            "review",
+            3,
+            NodeStatus::Pending,
+            vec!["crates/a/**".to_owned()],
+        ),
+        make_node(
+            "task:t2",
+            Some("tasks#0"),
+            NodeKind::Task,
+            Some(t2.clone()),
+            "__task__",
+            4,
+            NodeStatus::Pending,
+            vec!["crates/b/**".to_owned()],
+        ),
+        make_node(
+            "task:t2:build",
+            Some("task:t2"),
+            NodeKind::TaskGate,
+            Some(t2.clone()),
+            "build",
+            5,
+            NodeStatus::Pending,
+            vec!["crates/b/**".to_owned()],
+        ),
+        make_node(
+            "root:handoff",
+            None,
+            NodeKind::RootGate,
+            None,
+            "handoff",
+            6,
+            NodeStatus::Pending,
+            Vec::new(),
+        ),
     ];
 
     RunGraphSnapshot {
@@ -615,7 +732,8 @@ pub fn reader_for(cfg: &StateEngineConfig) -> acdd_state::store::sqlite::SqliteS
 }
 
 pub fn backend_for(cfg: &StateEngineConfig) -> acdd_state::store::sqlite::SqliteStateBackend {
-    acdd_state::store::sqlite::SqliteStateBackend::open_with_options(cfg.sqlite_options(None)).unwrap()
+    acdd_state::store::sqlite::SqliteStateBackend::open_with_options(cfg.sqlite_options(None))
+        .unwrap()
 }
 
 pub fn query_with(
@@ -626,4 +744,3 @@ pub fn query_with(
     acdd_state::usecases::StateQueryEngine::open_read_only(cfg.clone(), provider.clone())?
         .query(query)
 }
-

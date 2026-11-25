@@ -130,7 +130,10 @@ pub(crate) fn result_for_presented(
                 return if text.len() <= budget {
                     CallToolResult::error(vec![ContentBlock::text(text)])
                 } else {
-                    bounded_error(&format!("{}: {}", state_err.code, state_err.message), budget)
+                    bounded_error(
+                        &format!("{}: {}", state_err.code, state_err.message),
+                        budget,
+                    )
                 };
             }
             let interrupted = error.chain().any(|cause| {
@@ -247,7 +250,10 @@ pub(crate) fn state_result(
                     serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_owned())
                 }
             };
-            enforce(CallToolResult::success(vec![ContentBlock::text(text)]), policy)
+            enforce(
+                CallToolResult::success(vec![ContentBlock::text(text)]),
+                policy,
+            )
         }
         Err(error) => result_for(
             Err(error),
@@ -548,7 +554,11 @@ mod tests {
             );
             assert_ne!(r.is_error, Some(true), "{format:?}: {r:?}");
             assert!(serialized_bytes(&r) <= MAX_OUTPUT_BYTES - 256);
-            assert!(r.content[0].as_text().unwrap().text.contains("snapshot-full-token-123456"));
+            assert!(r.content[0]
+                .as_text()
+                .unwrap()
+                .text
+                .contains("snapshot-full-token-123456"));
         }
 
         let err_res = result_with_format(
@@ -571,7 +581,10 @@ mod tests {
         assert_ne!(fitting.is_error, Some(true), "{fitting:?}");
         assert!(serialized_bytes(&fitting) <= MAX_OUTPUT_BYTES - 256);
 
-        let low = ResponsePolicy { max_output_bytes: 4_096, ..ResponsePolicy::default() };
+        let low = ResponsePolicy {
+            max_output_bytes: 4_096,
+            ..ResponsePolicy::default()
+        };
         let low_err = result_with_format(
             Ok(json!({"items":[{"id":"configured-limit","text":"x".repeat(5_000)}]})),
             &low,
@@ -580,7 +593,10 @@ mod tests {
         assert_eq!(low_err.is_error, Some(true));
         assert!(serialized_bytes(&low_err) <= 4_096 - 256);
 
-        let trim_policy = ResponsePolicy { max_output_bytes: 2_048, ..ResponsePolicy::default() };
+        let trim_policy = ResponsePolicy {
+            max_output_bytes: 2_048,
+            ..ResponsePolicy::default()
+        };
         let bounded = result(
             Ok(json!({"nodes":{"total":3,"offset":0,"limit":3,
                 "has_more":false,"next_offset":null,"generation":"tail-trim-continuation-token",
@@ -592,6 +608,10 @@ mod tests {
         assert_ne!(bounded.is_error, Some(true), "{bounded:?}");
         assert!(serialized_bytes(&bounded) <= 2_048 - 256);
         let text = bounded.content[0].as_text().unwrap().text.as_str();
-        assert!(text.contains("first-retained") && text.contains("tail-trim-continuation-token") && !text.contains("last-omitted"));
+        assert!(
+            text.contains("first-retained")
+                && text.contains("tail-trim-continuation-token")
+                && !text.contains("last-omitted")
+        );
     }
 }

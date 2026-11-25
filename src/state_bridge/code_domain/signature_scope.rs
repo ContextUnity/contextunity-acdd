@@ -66,7 +66,9 @@ impl CodeDomainProvider {
             let Some(lang) = languages::for_path(Path::new(rel)) else {
                 continue;
             };
-            let Some(head_src) = read_git_blob_utf8(&req.worktree, baseline, rel).ok().flatten()
+            let Some(head_src) = read_git_blob_utf8(&req.worktree, baseline, rel)
+                .ok()
+                .flatten()
             else {
                 continue;
             };
@@ -87,7 +89,10 @@ impl CodeDomainProvider {
             for head_node in public_callable_nodes(&head_facts) {
                 let head_sig =
                     normalize_sig(head_node.details["signature"].as_str().unwrap_or_default());
-                let cur_sig = cur_sigs.get(&(head_node.kind.as_str().to_owned(), head_node.qualname.clone()));
+                let cur_sig = cur_sigs.get(&(
+                    head_node.kind.as_str().to_owned(),
+                    head_node.qualname.clone(),
+                ));
                 if cur_sig.is_some_and(|s| s == &head_sig) {
                     continue;
                 }
@@ -167,7 +172,12 @@ fn find_external_callers_in_index(
          ORDER BY cp.path",
     )?;
     let rows = stmt.query_map(
-        params![symbol.path, symbol.kind.as_str(), symbol.name, symbol.qualname],
+        params![
+            symbol.path,
+            symbol.kind.as_str(),
+            symbol.name,
+            symbol.qualname
+        ],
         |row| row.get::<_, String>(0),
     )?;
     let mut external = BTreeSet::new();

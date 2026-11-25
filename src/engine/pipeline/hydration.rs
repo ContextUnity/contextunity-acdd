@@ -52,14 +52,8 @@ pub(super) fn extract_typed_with_cache(
     effective_ruleset_hash: &str,
     source: &mut String,
 ) -> Result<TypedFacts> {
-    let _source_file = open_and_read_verified_source(
-        root,
-        adapter,
-        &file.path,
-        file.bytes,
-        None,
-        source,
-    )?;
+    let _source_file =
+        open_and_read_verified_source(root, adapter, &file.path, file.bytes, None, source)?;
     let source_digest = hash_source_bytes(source);
     if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(

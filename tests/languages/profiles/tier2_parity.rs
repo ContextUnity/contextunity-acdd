@@ -45,9 +45,7 @@ fn run_parity_cases(cases: &[ParityCase]) {
 
         for &(path, expression, expected_status) in case.expected_coverage {
             if !coverage.iter().any(|row| {
-                row.path == path
-                    && row.expression == expression
-                    && row.status == expected_status
+                row.path == path && row.expression == expression && row.status == expected_status
             }) {
                 case_errors.push(format!(
                     "missing coverage ({path}, {expression}, {expected_status})"
@@ -58,9 +56,7 @@ fn run_parity_cases(cases: &[ParityCase]) {
         if let Some(check_path) = case.forbid_dynamic_in_path {
             let dynamic_rows: Vec<_> = coverage
                 .iter()
-                .filter(|row| {
-                    row.path == check_path && row.evidence.contains("dynamic callee")
-                })
+                .filter(|row| row.path == check_path && row.evidence.contains("dynamic callee"))
                 .collect();
             if !dynamic_rows.is_empty() {
                 case_errors.push(format!(

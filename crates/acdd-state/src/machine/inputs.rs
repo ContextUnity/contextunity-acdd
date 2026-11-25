@@ -6,7 +6,9 @@ use crate::types::{
     TaskDependencyRecord, TransitionPlan, WorktreeLifecycle,
 };
 use acdd_core::errors::StateError;
-use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, SubtaskRef, TaskRef, TreeOid, WorkerId};
+use acdd_core::ids::{
+    CommitOid, GateId, NodeCursor, RunId, SubtaskRef, TaskRef, TreeOid, WorkerId,
+};
 use acdd_core::schema::SchemaDef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

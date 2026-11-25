@@ -316,8 +316,7 @@ fn database_publication_recovery_matrix() {
                 reader.execute_batch("BEGIN; SELECT * FROM t;").unwrap();
                 writer.execute_batch("INSERT INTO t VALUES (2);").unwrap();
                 for truncate in [false, true] {
-                    let error =
-                        acdd_index::db::cache::checkpoint(&writer, truncate).unwrap_err();
+                    let error = acdd_index::db::cache::checkpoint(&writer, truncate).unwrap_err();
                     assert!(error.to_string().contains("incomplete"), "{error:#}");
                 }
                 reader.execute_batch("ROLLBACK").unwrap();
@@ -378,7 +377,8 @@ fn database_target_guard_matrix() {
                     let index = directory.join("code-map.sqlite");
                     build(&root, &index, None).unwrap();
                     {
-                        let published = acdd_index::db::reader::open_raw_confined_readonly(&index).unwrap();
+                        let published =
+                            acdd_index::db::reader::open_raw_confined_readonly(&index).unwrap();
                         let mode: String = published
                             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                             .unwrap();
@@ -405,29 +405,91 @@ fn database_target_guard_matrix() {
                     let leaf_link = directory.join("leaf-escape.sqlite");
                     std::os::unix::fs::symlink(outside.root(), &ancestor_link).unwrap();
                     std::os::unix::fs::symlink(outside.path("foreign.sqlite"), &leaf_link).unwrap();
-                    let missing_traversal = directory.join("nonexistent_probe/../escape/foreign.sqlite");
+                    let missing_traversal =
+                        directory.join("nonexistent_probe/../escape/foreign.sqlite");
                     for (label, rejected) in [
-                        ("open_ancestor_link", acdd_core::fs::confined_database_open_path(&ancestor_link.join("foreign.sqlite")).is_err()),
-                        ("open_leaf_link", acdd_core::fs::confined_database_open_path(&leaf_link).is_err()),
-                        ("create_missing_parent_traversal_symlink", acdd_core::fs::confined_database_create_path(&missing_traversal).is_err()),
-                        ("ensure_dir_missing_traversal", acdd_core::fs::ensure_confined_dir_all(directory, std::path::Path::new("nonexistent_probe/../escape/sub")).is_err()),
-                        ("atomic_replace_leaf_symlink", acdd_core::fs::atomic_replace(&leaf_link, b"hijack").is_err()),
-                        ("atomic_replace_ancestor_symlink", acdd_core::fs::atomic_replace(&ancestor_link.join("hijack.txt"), b"hijack").is_err()),
-                        ("atomic_replace_parent_traversal", acdd_core::fs::atomic_replace(&missing_traversal, b"hijack").is_err()),
-                        ("reader_ancestor_link", acdd_index::db::reader::open(&ancestor_link.join("foreign.sqlite"), &root).is_err()),
-                        ("reader_leaf_link", acdd_index::db::reader::open(&leaf_link, &root).is_err()),
-                        ("header_ancestor_link", acdd_index::db::reader::validate_database_header(&ancestor_link.join("foreign.sqlite")).is_err()),
-                        ("header_leaf_link", acdd_index::db::reader::validate_database_header(&leaf_link).is_err()),
+                        (
+                            "open_ancestor_link",
+                            acdd_core::fs::confined_database_open_path(
+                                &ancestor_link.join("foreign.sqlite"),
+                            )
+                            .is_err(),
+                        ),
+                        (
+                            "open_leaf_link",
+                            acdd_core::fs::confined_database_open_path(&leaf_link).is_err(),
+                        ),
+                        (
+                            "create_missing_parent_traversal_symlink",
+                            acdd_core::fs::confined_database_create_path(&missing_traversal)
+                                .is_err(),
+                        ),
+                        (
+                            "ensure_dir_missing_traversal",
+                            acdd_core::fs::ensure_confined_dir_all(
+                                directory,
+                                std::path::Path::new("nonexistent_probe/../escape/sub"),
+                            )
+                            .is_err(),
+                        ),
+                        (
+                            "atomic_replace_leaf_symlink",
+                            acdd_core::fs::atomic_replace(&leaf_link, b"hijack").is_err(),
+                        ),
+                        (
+                            "atomic_replace_ancestor_symlink",
+                            acdd_core::fs::atomic_replace(
+                                &ancestor_link.join("hijack.txt"),
+                                b"hijack",
+                            )
+                            .is_err(),
+                        ),
+                        (
+                            "atomic_replace_parent_traversal",
+                            acdd_core::fs::atomic_replace(&missing_traversal, b"hijack").is_err(),
+                        ),
+                        (
+                            "reader_ancestor_link",
+                            acdd_index::db::reader::open(
+                                &ancestor_link.join("foreign.sqlite"),
+                                &root,
+                            )
+                            .is_err(),
+                        ),
+                        (
+                            "reader_leaf_link",
+                            acdd_index::db::reader::open(&leaf_link, &root).is_err(),
+                        ),
+                        (
+                            "header_ancestor_link",
+                            acdd_index::db::reader::validate_database_header(
+                                &ancestor_link.join("foreign.sqlite"),
+                            )
+                            .is_err(),
+                        ),
+                        (
+                            "header_leaf_link",
+                            acdd_index::db::reader::validate_database_header(&leaf_link).is_err(),
+                        ),
                     ] {
                         assert!(rejected, "expected confinement rejection for {label}");
                     }
-                    assert!(!directory.join("nonexistent_probe").exists(), "rejected traversal must not create dirs");
-                    assert_eq!(std::fs::read(outside.path("foreign.sqlite")).unwrap(), b"foreign");
+                    assert!(
+                        !directory.join("nonexistent_probe").exists(),
+                        "rejected traversal must not create dirs"
+                    );
+                    assert_eq!(
+                        std::fs::read(outside.path("foreign.sqlite")).unwrap(),
+                        b"foreign"
+                    );
                     {
                         use std::os::unix::fs::PermissionsExt;
                         let fresh = directory.join("private-atomic-replace.txt");
                         acdd_core::fs::atomic_replace(&fresh, b"secret").unwrap();
-                        assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o600);
+                        assert_eq!(
+                            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+                            0o600
+                        );
                         std::fs::remove_file(&fresh).unwrap();
                     }
                     std::fs::remove_file(&ancestor_link).unwrap();
@@ -503,7 +565,11 @@ fn database_target_guard_matrix() {
                     (Target::StateName, false, "TASK_DATABASE_COLLISION"),
                     (Target::TaskSchema, false, "TASK_DATABASE_COLLISION"),
                     (Target::StateSchema, false, "TASK_DATABASE_COLLISION"),
-                    (Target::IndexSchema, true, "existing tables without _sqlite_meta"),
+                    (
+                        Target::IndexSchema,
+                        true,
+                        "existing tables without _sqlite_meta",
+                    ),
                     (Target::Configured, false, "TASK_DATABASE_COLLISION"),
                     (Target::ConfiguredStateDb, false, "TASK_DATABASE_COLLISION"),
                     (Target::CollidingConfig, false, "TASK_DATABASE_COLLISION"),

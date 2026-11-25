@@ -12,8 +12,10 @@ pub use workspace::Workspace;
 /// Removes ambient `ACDD_*` and `GIT_*` environment variables not explicitly configured on `command`.
 #[allow(dead_code)]
 pub fn isolate_acdd_env(command: &mut std::process::Command) -> &mut std::process::Command {
-    let explicit: std::collections::HashSet<_> =
-        command.get_envs().map(|(key, _)| key.to_os_string()).collect();
+    let explicit: std::collections::HashSet<_> = command
+        .get_envs()
+        .map(|(key, _)| key.to_os_string())
+        .collect();
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
         if (name.starts_with("ACDD_") || name.starts_with("GIT_")) && !explicit.contains(&key) {
@@ -39,14 +41,16 @@ pub fn link_facts_with_root(
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&std::path::Path>,
 ) -> acdd_index::models::Graph {
-    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(root);
+    let dependencies =
+        acdd_index::languages::dependency_registry::DependencyRegistry::collect(root);
     acdd_index::linker::link_with_registry(all, owners, root, &dependencies)
 }
 
 /// Test helper wrapping [`acdd_index::linker::link_compact_catalog_with_registry`].
 #[allow(dead_code)]
 pub fn link_catalog(catalog: &acdd_index::typed_facts::SymbolCatalog) -> acdd_index::models::Graph {
-    let dependencies = acdd_index::languages::dependency_registry::DependencyRegistry::collect(None);
+    let dependencies =
+        acdd_index::languages::dependency_registry::DependencyRegistry::collect(None);
     acdd_index::linker::link_compact_catalog_with_registry(catalog, None, &dependencies).into()
 }
 
@@ -58,7 +62,10 @@ pub fn decode_local_facts(blob: &[u8]) -> anyhow::Result<acdd_index::models::Fac
 
 /// Test helper resolving one selector via [`acdd_index::db::reader::inspect_paged_with_path`].
 #[allow(dead_code)]
-pub fn select_node(conn: &rusqlite::Connection, selector: &str) -> anyhow::Result<serde_json::Value> {
+pub fn select_node(
+    conn: &rusqlite::Connection,
+    selector: &str,
+) -> anyhow::Result<serde_json::Value> {
     let options = acdd_core::response::QueryOptions::resolve(
         &acdd_core::response::ResponsePolicy::default(),
         Some(1),

@@ -1,7 +1,5 @@
 use super::hooks::PipelineTestHooks;
-use super::runtime::{
-    PipelineConsumerOutput, PipelineControl, PipelineCounters, PipelineItem,
-};
+use super::runtime::{PipelineConsumerOutput, PipelineControl, PipelineCounters, PipelineItem};
 use acdd_index::{
     db::writer::{self as db_writer, PayloadStore, StagedFilePayload},
     typed_facts::SymbolCatalog,

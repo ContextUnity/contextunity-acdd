@@ -731,22 +731,52 @@ mod tests {
 
         // (path, admitted_scope, expected_scope_admitted, expected_agent_writable)
         let cases: &[(&str, &[&str], bool, bool)] = &[
-            ("crates/acdd-core/src/lib.rs", &["crates/acdd-core/**"], true, true),
-            ("crates/acdd-core/src/lib.rs", &["crates/acdd-core"], true, true),
-            ("crates/acdd-core-extra/src/lib.rs", &["crates/acdd-core"], false, false),
-            ("crates/acdd-core/Cargo.toml", &["crates/acdd-core/**"], true, true),
+            (
+                "crates/acdd-core/src/lib.rs",
+                &["crates/acdd-core/**"],
+                true,
+                true,
+            ),
+            (
+                "crates/acdd-core/src/lib.rs",
+                &["crates/acdd-core"],
+                true,
+                true,
+            ),
+            (
+                "crates/acdd-core-extra/src/lib.rs",
+                &["crates/acdd-core"],
+                false,
+                false,
+            ),
+            (
+                "crates/acdd-core/Cargo.toml",
+                &["crates/acdd-core/**"],
+                true,
+                true,
+            ),
             ("Cargo.toml", &["Cargo.toml"], true, false),
             ("CARGO.TOML", &["**"], true, false),
             ("build.rs", &["**"], true, false),
             ("BUILD.RS", &["**"], true, false),
-            ("docs/milestones/AC-008.md", &["docs/milestones/**"], true, false),
+            (
+                "docs/milestones/AC-008.md",
+                &["docs/milestones/**"],
+                true,
+                false,
+            ),
             ("DOCS/MILESTONES/AC-008.MD", &["**"], true, false),
             (".acdd/state.sqlite", &[".acdd/**", "**"], true, false),
             (".ACDD/state.sqlite", &["**"], true, false),
             (".acdd/run/r1/traces.jsonl", &[".acdd/**"], true, false),
             (".acdd/profile.yaml", &[".acdd/profile.yaml"], true, true),
             (".acdd/profile.yaml", &["src/**"], false, false),
-            (".acdd/profiles/team.yaml", &[".acdd/profiles/**"], true, true),
+            (
+                ".acdd/profiles/team.yaml",
+                &[".acdd/profiles/**"],
+                true,
+                true,
+            ),
             ("tests/a/b/fixture.jsonl", &["tests/**/*.jsonl"], true, true),
             ("tests/fixture.jsonl", &["tests/**/*.jsonl"], true, true),
             ("AGENTS.md", &["**/AGENTS.md"], true, true),
@@ -792,7 +822,11 @@ mod tests {
             ("docs/milestones/AC-008.md", false, false),
             ("../escape.md", false, false),
         ] {
-            assert_eq!(has_json_extension(path), expect_json, "has_json_extension({path:?})");
+            assert_eq!(
+                has_json_extension(path),
+                expect_json,
+                "has_json_extension({path:?})"
+            );
             assert_eq!(
                 policy.is_valid_report_path(path, &protected),
                 expect_valid_report,
@@ -870,15 +904,31 @@ mod tests {
 
         // 2. glob_matches & is_scope_admitted with braces.
         let match_cases: &[(&str, &str, bool)] = &[
-            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-core/src/lib.rs", true),
-            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-state/src/lib.rs", true),
-            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-index/src/lib.rs", false),
+            (
+                "crates/{acdd-core,acdd-state}/**",
+                "crates/acdd-core/src/lib.rs",
+                true,
+            ),
+            (
+                "crates/{acdd-core,acdd-state}/**",
+                "crates/acdd-state/src/lib.rs",
+                true,
+            ),
+            (
+                "crates/{acdd-core,acdd-state}/**",
+                "crates/acdd-index/src/lib.rs",
+                false,
+            ),
             ("src/{a,{b,c}}/*.{rs,md}", "src/c/mod.md", true),
             ("src/{a,{b,c}}/*.{rs,md}", "src/c/mod.py", false),
             ("src/{a,b", "src/a", false),
         ];
         for &(pat, path, expected) in match_cases {
-            assert_eq!(glob_matches(pat, path), expected, "glob_matches({pat:?}, {path:?})");
+            assert_eq!(
+                glob_matches(pat, path),
+                expected,
+                "glob_matches({pat:?}, {path:?})"
+            );
             assert_eq!(
                 policy.is_scope_admitted(path, &[pat.to_owned()]),
                 expected,
@@ -897,7 +947,11 @@ mod tests {
             ("**", "Cargo.toml", true),
         ];
         for &(a, b, expected) in overlap_cases {
-            assert_eq!(patterns_overlap(a, b), expected, "patterns_overlap({a:?}, {b:?})");
+            assert_eq!(
+                patterns_overlap(a, b),
+                expected,
+                "patterns_overlap({a:?}, {b:?})"
+            );
             assert_eq!(
                 scopes_overlap(&[a.to_owned()], &[b.to_owned()]),
                 expected,
@@ -912,7 +966,10 @@ mod tests {
             (
                 "./custom/state.sqlite",
                 "custom/code-map.sqlite",
-                &["docs/milestones/AC-001.md", "docs/milestones/archive/AC-001.md"],
+                &[
+                    "docs/milestones/AC-001.md",
+                    "docs/milestones/archive/AC-001.md",
+                ],
                 "custom/state.sqlite",
                 "custom/code-map.sqlite",
             ),

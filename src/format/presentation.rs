@@ -296,7 +296,10 @@ pub fn render_for_operation(
     discovery: Option<DiscoveryKind>,
     operation: OperationKind,
 ) -> String {
-    if format == OutputFormat::Markdown && operation == OperationKind::Navigation && discovery.is_none() {
+    if format == OutputFormat::Markdown
+        && operation == OperationKind::Navigation
+        && discovery.is_none()
+    {
         if let Some(kind) = traversal::kind_for(title, value) {
             return traversal::render(value, title, kind);
         }
@@ -389,7 +392,12 @@ fn render_read_node(out: &mut String, key: Option<&str>, value: &Value, depth: u
             });
             let (lang, mut deferred) = (infer_read_language(obj), Vec::new());
             for (k, child) in ordered_fields(obj) {
-                if matches!(k, "content" | "source") { if let Some(code) = child.as_str() { deferred.push((k, code)); continue; } }
+                if matches!(k, "content" | "source") {
+                    if let Some(code) = child.as_str() {
+                        deferred.push((k, code));
+                        continue;
+                    }
+                }
                 render_read_node(out, Some(k), child, d);
             }
             for (k, code) in deferred {
@@ -401,22 +409,50 @@ fn render_read_node(out: &mut String, key: Option<&str>, value: &Value, depth: u
         Value::Array(items) if !items.is_empty() && key.is_some() => {
             super::core::indent(out, depth);
             out.push_str(&format!("- **{}**\n", escape_label(key.unwrap_or(""))));
-            for (i, item) in items.iter().enumerate() { render_read_node(out, Some(&format!("[{i}]")), item, depth + 1); }
+            for (i, item) in items.iter().enumerate() {
+                render_read_node(out, Some(&format!("[{i}]")), item, depth + 1);
+            }
         }
-        _ => match key { Some(k) => render_field(out, k, value, depth), None => render_markdown_fields(out, value, depth, &[]) },
+        _ => match key {
+            Some(k) => render_field(out, k, value, depth),
+            None => render_markdown_fields(out, value, depth, &[]),
+        },
     }
 }
 
 fn infer_read_language(object: &Map<String, Value>) -> &str {
-    if object.get("mode").and_then(Value::as_str) == Some("delta") { return "diff"; }
-    if let Some(lang) = object.get("node").and_then(|n| text_field(n, "language")) { return lang; }
-    let path = object.get("path").and_then(Value::as_str).or_else(|| object.get("node").and_then(|n| text_field(n, "path"))).unwrap_or("");
-    if object.get("mode").and_then(Value::as_str) == Some("search") && path.contains(['*', '?', '[']) { return "text"; }
-    match path.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
-        Some("rs") => "rust", Some("py") => "python", Some("ts" | "tsx") => "typescript",
-        Some("js" | "jsx" | "mjs" | "cjs") => "javascript", Some("md" | "markdown") => "markdown",
-        Some("yaml" | "yml") => "yaml", Some("json") => "json", Some("toml") => "toml",
-        Some("sh" | "bash") => "bash", Some("sql") => "sql", _ => "text",
+    if object.get("mode").and_then(Value::as_str) == Some("delta") {
+        return "diff";
+    }
+    if let Some(lang) = object.get("node").and_then(|n| text_field(n, "language")) {
+        return lang;
+    }
+    let path = object
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| object.get("node").and_then(|n| text_field(n, "path")))
+        .unwrap_or("");
+    if object.get("mode").and_then(Value::as_str) == Some("search")
+        && path.contains(['*', '?', '['])
+    {
+        return "text";
+    }
+    match path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("rs") => "rust",
+        Some("py") => "python",
+        Some("ts" | "tsx") => "typescript",
+        Some("js" | "jsx" | "mjs" | "cjs") => "javascript",
+        Some("md" | "markdown") => "markdown",
+        Some("yaml" | "yml") => "yaml",
+        Some("json") => "json",
+        Some("toml") => "toml",
+        Some("sh" | "bash") => "bash",
+        Some("sql") => "sql",
+        _ => "text",
     }
 }
 
@@ -530,8 +566,14 @@ fn is_empty_collection(value: &Value) -> bool {
     value.as_array().is_some_and(Vec::is_empty)
         || value.get("total").is_some_and(|t| t == 0)
         || (value.get("total").is_none()
-            && value.get("items").and_then(Value::as_array).is_some_and(Vec::is_empty))
-        || value.get("items").and_then(Value::as_object).is_some_and(Map::is_empty)
+            && value
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty))
+        || value
+            .get("items")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty)
 }
 
 fn compact_freshness(freshness: &mut Option<Value>) {
@@ -991,7 +1033,10 @@ fn update_trimmed_page_tail_fields<T>(
     let returned = items.len() as u64;
     let next = offset.saturating_add(returned);
     let has_more = total.map_or(fallback_has_more, |total| next < total);
-    let omitted = byte_omitted_slot.as_ref().and_then(Value::as_u64).unwrap_or(0);
+    let omitted = byte_omitted_slot
+        .as_ref()
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     *returned_slot = Some(json!(returned));
     *byte_omitted_slot = Some(json!(omitted.saturating_add(1)));
     *has_more_slot = Some(json!(has_more));
@@ -1019,11 +1064,20 @@ fn trim_tasks_page_tail(value: &mut Value) -> bool {
     if !page_is_continuable {
         return false;
     }
-    let offset = pagination.offset.as_ref().and_then(Value::as_u64).unwrap_or(0);
+    let offset = pagination
+        .offset
+        .as_ref()
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let total = pagination.total.as_ref().and_then(Value::as_u64);
     let Some((next, has_more)) = update_trimmed_page_tail_fields(
         &mut page_dto.tasks,
-        [&mut pagination.returned, &mut pagination.byte_omitted, &mut pagination.has_more, &mut pagination.next_offset],
+        [
+            &mut pagination.returned,
+            &mut pagination.byte_omitted,
+            &mut pagination.has_more,
+            &mut pagination.next_offset,
+        ],
         offset,
         total,
         false,
@@ -1043,7 +1097,8 @@ fn trim_tasks_page_tail(value: &mut Value) -> bool {
             .as_ref()
             .filter(|hint| hint.is_object())
         {
-            if let Ok(mut hint) = serde_json::from_value::<TaskContinuationHintDto>(hint_val.clone())
+            if let Ok(mut hint) =
+                serde_json::from_value::<TaskContinuationHintDto>(hint_val.clone())
             {
                 hint.offset = next;
                 hint.generation = generation;
@@ -1092,7 +1147,12 @@ fn trim_items_page_tail(value: &mut Value) -> bool {
     let mut items = page.items.take();
     let Some((next, has_more)) = update_trimmed_page_tail_fields(
         &mut items,
-        [&mut page.returned, &mut page.byte_omitted, &mut page.has_more, &mut page.next_offset],
+        [
+            &mut page.returned,
+            &mut page.byte_omitted,
+            &mut page.has_more,
+            &mut page.next_offset,
+        ],
         items_tail_offset,
         total,
         has_more,
@@ -1424,10 +1484,24 @@ pub(crate) fn attach_traversal_presentation_uris(
             attach_array_items_uris(root, adapter, Some(invariants), key, Some("source"), "line");
         }
     }
-    attach_array_items_uris(root, adapter, value.get_mut("changes"), "files", None, "__no_line");
+    attach_array_items_uris(
+        root,
+        adapter,
+        value.get_mut("changes"),
+        "files",
+        None,
+        "__no_line",
+    );
     if let Some(calls) = value.get_mut("summary").and_then(|s| s.get_mut("calls")) {
         for direction in ["inbound", "outbound"] {
-            attach_array_items_uris(root, adapter, calls.get_mut(direction), "preview", None, "line");
+            attach_array_items_uris(
+                root,
+                adapter,
+                calls.get_mut(direction),
+                "preview",
+                None,
+                "line",
+            );
         }
     }
 }

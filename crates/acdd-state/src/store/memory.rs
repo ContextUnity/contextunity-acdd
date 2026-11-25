@@ -40,7 +40,7 @@ impl MemoryStateBackend {
     }
 }
 
-crate::store::impl_state_reader_delegate!(MemoryStateBackend, with_reader |s| s.inner);
+crate::store::impl_state_reader_delegate!(MemoryStateBackend, with_reader | s | s.inner);
 
 impl StateBackend for MemoryStateBackend {
     fn exec_tx_dyn(

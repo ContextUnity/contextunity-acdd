@@ -139,7 +139,10 @@ fn logging_factory_matrix() {
                     .iter()
                     .find(|coverage| coverage.expression == "log.info")
                     .unwrap();
-                assert_eq!(cov.status, "external", "compound annotation poisoned logging");
+                assert_eq!(
+                    cov.status, "external",
+                    "compound annotation poisoned logging"
+                );
                 assert_eq!(cov.evidence, "builtin:logging.Logger built-in: log.info");
             }
             // logging_factory_local_providers_and_mutation_boundaries_preserve_contracts
@@ -183,34 +186,37 @@ fn logging_factory_matrix() {
         let coverage = graph.coverage.iter().find(|coverage| coverage.expression == "logger.info").unwrap();
         assert_eq!(coverage.status, "unresolved", "{source}");
     }
-    let logger_src = concat!(
-        "import logging\n",
-        "from logging import Logger as L\n",
-        "def emit(logger: logging.Logger, aliased: L):\n",
-        "    logger.info('ok')\n",
-        "    logger.process()\n",
-        "    aliased.debug('ok')\n",
-        "log = logging.getLogger('app')\n",
-        "log.info('i')\n",
-        "log.process()\n",
-    );
-    let logger_facts = ast::extract("logger_types.py", "python", logger_src).unwrap();
-    let logger_graph = linker::link(&BTreeMap::from([("logger_types.py".to_owned(), logger_facts)]));
-    for (expr, expected_status, evidence_needle) in [
-        ("logger.info", "external", "builtin:logging.Logger"),
-        ("logger.process", "unresolved", ""),
-        ("aliased.debug", "external", "builtin:logging.Logger"),
-        ("log.info", "external", "builtin:logging.Logger"),
-        ("log.process", "unresolved", ""),
-    ] {
-        let cov = logger_graph
-            .coverage
-            .iter()
-            .find(|c| c.expression == expr)
-            .unwrap_or_else(|| panic!("missing coverage for {expr}"));
-        assert_eq!(cov.status, expected_status, "{expr}: {cov:#?}");
-        assert!(cov.evidence.contains(evidence_needle), "{expr}: {cov:#?}");
-    }
+                let logger_src = concat!(
+                    "import logging\n",
+                    "from logging import Logger as L\n",
+                    "def emit(logger: logging.Logger, aliased: L):\n",
+                    "    logger.info('ok')\n",
+                    "    logger.process()\n",
+                    "    aliased.debug('ok')\n",
+                    "log = logging.getLogger('app')\n",
+                    "log.info('i')\n",
+                    "log.process()\n",
+                );
+                let logger_facts = ast::extract("logger_types.py", "python", logger_src).unwrap();
+                let logger_graph = linker::link(&BTreeMap::from([(
+                    "logger_types.py".to_owned(),
+                    logger_facts,
+                )]));
+                for (expr, expected_status, evidence_needle) in [
+                    ("logger.info", "external", "builtin:logging.Logger"),
+                    ("logger.process", "unresolved", ""),
+                    ("aliased.debug", "external", "builtin:logging.Logger"),
+                    ("log.info", "external", "builtin:logging.Logger"),
+                    ("log.process", "unresolved", ""),
+                ] {
+                    let cov = logger_graph
+                        .coverage
+                        .iter()
+                        .find(|c| c.expression == expr)
+                        .unwrap_or_else(|| panic!("missing coverage for {expr}"));
+                    assert_eq!(cov.status, expected_status, "{expr}: {cov:#?}");
+                    assert!(cov.evidence.contains(evidence_needle), "{expr}: {cov:#?}");
+                }
             }
         }
     }

@@ -26,14 +26,13 @@ pub(crate) fn sorted_dir_paths(dir: &Path) -> Vec<PathBuf> {
 
 /// Read a confined file inside `root` as UTF-8.
 pub fn read_confined_utf8(root: &Path, relpath: &str) -> Result<String, StateError> {
-    let mut file = open_confined(root, Path::new(relpath), OpenOptions::new().read(true)).map_err(
-        |err| {
+    let mut file =
+        open_confined(root, Path::new(relpath), OpenOptions::new().read(true)).map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 format!("failed to read confined file '{relpath}': {err}"),
             )
-        },
-    )?;
+        })?;
     let mut buf = String::new();
     file.read_to_string(&mut buf).map_err(|err| {
         StateError::new(

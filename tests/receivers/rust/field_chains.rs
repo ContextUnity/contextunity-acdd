@@ -27,12 +27,18 @@ fn nominal_factory_receiver_matrix() {
                 let workspace = files[path]
                     .nodes
                     .iter()
-                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Struct && node.name == "Workspace")
+                    .find(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Struct
+                            && node.name == "Workspace"
+                    })
                     .unwrap();
                 let constructor = files[path]
                     .nodes
                     .iter()
-                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "new")
+                    .find(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Method
+                            && node.name == "new"
+                    })
                     .unwrap();
                 let self_references: Vec<_> = files[path]
                     .references
@@ -76,7 +82,10 @@ fn nominal_factory_receiver_matrix() {
                     let target = files[path]
                         .nodes
                         .iter()
-                        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == method)
+                        .find(|node| {
+                            node.kind == acdd_index::models::tags::NodeKind::Method
+                                && node.name == method
+                        })
                         .unwrap();
                     assert!(
                         graph.edges.iter().any(|edge| edge.kind == "calls"
@@ -96,13 +105,19 @@ fn nominal_factory_receiver_matrix() {
                 let method = facts
                     .nodes
                     .iter()
-                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "read")
+                    .find(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Method
+                            && node.name == "read"
+                    })
                     .unwrap();
                 let method_id = method.id.clone();
                 let inspect_id = facts
                     .nodes
                     .iter()
-                    .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.name == "inspect")
+                    .find(|node| {
+                        node.kind == acdd_index::models::tags::NodeKind::Method
+                            && node.name == "inspect"
+                    })
                     .unwrap()
                     .id
                     .clone();
@@ -183,12 +198,18 @@ fn nominal_factory_receiver_matrix() {
                 let work = facts["src/service.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "work" && node.kind == acdd_index::models::tags::NodeKind::Method)
+                    .find(|node| {
+                        node.name == "work"
+                            && node.kind == acdd_index::models::tags::NodeKind::Method
+                    })
                     .unwrap();
                 let new = facts["src/service.rs"]
                     .nodes
                     .iter()
-                    .find(|node| node.name == "new" && node.kind == acdd_index::models::tags::NodeKind::Method)
+                    .find(|node| {
+                        node.name == "new"
+                            && node.kind == acdd_index::models::tags::NodeKind::Method
+                    })
                     .unwrap();
                 assert_eq!(
                     graph
@@ -277,7 +298,10 @@ fn declared_field_matrix() {
                 let tuple = facts
                     .nodes
                     .iter()
-                    .find(|node| node.name == "Tuple" && node.kind == acdd_index::models::tags::NodeKind::Struct)
+                    .find(|node| {
+                        node.name == "Tuple"
+                            && node.kind == acdd_index::models::tags::NodeKind::Struct
+                    })
                     .unwrap();
                 let details = crate::common::assertions::projected_node_details(&facts, tuple);
                 let fields = details["value_flow"]["fields"].as_array().unwrap();
@@ -328,7 +352,10 @@ fn declared_field_matrix() {
                     let owner = facts
                         .nodes
                         .iter()
-                        .find(|node| node.name == name && node.kind == acdd_index::models::tags::NodeKind::Struct)
+                        .find(|node| {
+                            node.name == name
+                                && node.kind == acdd_index::models::tags::NodeKind::Struct
+                        })
                         .unwrap();
                     let details = crate::common::assertions::projected_node_details(&facts, owner);
                     let fields = details["value_flow"]["fields"].as_array().unwrap();

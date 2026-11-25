@@ -261,7 +261,9 @@ mod tests {
                     serde_json::json!({"status": 200, "url": url}),
                 ));
             }
-            Ok(DomainToolOutput::Markdown(format!("# Probe\n\nOK: {url}\n")))
+            Ok(DomainToolOutput::Markdown(format!(
+                "# Probe\n\nOK: {url}\n"
+            )))
         }
     }
 
@@ -439,13 +441,34 @@ mod tests {
 
         // Read-only state queries & blackboard read must NOT create state.sqlite
         for (idx, (tool, args)) in [
-            ("acdd_state", serde_json::json!({"action": "status", "format": "json"})),
-            ("acdd_state", serde_json::json!({"action": "list", "format": "json"})),
-            ("acdd_state", serde_json::json!({"action": "next", "format": "json"})),
-            ("acdd_state", serde_json::json!({"action": "observability", "format": "json"})),
-            ("acdd_state", serde_json::json!({"action": "context", "format": "json"})),
-            ("acdd_state", serde_json::json!({"action": "roadmap", "format": "json"})),
-            ("acdd_blackboard", serde_json::json!({"action": "read", "format": "json"})),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "status", "format": "json"}),
+            ),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "list", "format": "json"}),
+            ),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "next", "format": "json"}),
+            ),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "observability", "format": "json"}),
+            ),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "context", "format": "json"}),
+            ),
+            (
+                "acdd_state",
+                serde_json::json!({"action": "roadmap", "format": "json"}),
+            ),
+            (
+                "acdd_blackboard",
+                serde_json::json!({"action": "read", "format": "json"}),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -552,7 +575,10 @@ mod tests {
         // validate_explicit_worktree_git_ancestors accepts normal dirs/names and rejects symlinked explicit paths
         assert!(dispatch::validate_explicit_worktree_git_ancestors(ws.path(), None).is_ok());
         assert!(dispatch::validate_explicit_worktree_git_ancestors(ws.path(), Some(".")).is_ok());
-        assert!(dispatch::validate_explicit_worktree_git_ancestors(ws.path(), Some("named-only")).is_ok());
+        assert!(
+            dispatch::validate_explicit_worktree_git_ancestors(ws.path(), Some("named-only"))
+                .is_ok()
+        );
         #[cfg(unix)]
         {
             let real_wt = ws.path().join("real-wt");

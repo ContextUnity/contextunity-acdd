@@ -78,13 +78,16 @@ impl SymbolCatalog {
         let mut payload = CatalogStoragePayload::default();
         if retain_storage {
             payload.flows = facts.flows.clone();
-            payload.statement_fingerprints = std::mem::take(&mut facts.facts.statement_fingerprints);
+            payload.statement_fingerprints =
+                std::mem::take(&mut facts.facts.statement_fingerprints);
         } else {
             facts.facts.statement_fingerprints.clear();
         }
-        if facts.nodes.iter().any(|node| {
-            node.kind == NodeKind::Module && node.language == LanguageId::Python
-        }) {
+        if facts
+            .nodes
+            .iter()
+            .any(|node| node.kind == NodeKind::Module && node.language == LanguageId::Python)
+        {
             thread_local! {
                 static COMPRESSOR: std::cell::RefCell<(zstd::bulk::Compressor<'static>, Vec<u8>)> =
                     std::cell::RefCell::new((zstd::bulk::Compressor::new(1)
@@ -171,7 +174,8 @@ pub(crate) struct CatalogStoragePayload {
 
 impl CatalogStoragePayload {
     pub fn restore_composed_node(&self, node: &mut Node) {
-        let Some(source_id) = node.detail_str(crate::models::details::NodeDetailKey::SOURCE_ID) else {
+        let Some(source_id) = node.detail_str(crate::models::details::NodeDetailKey::SOURCE_ID)
+        else {
             return;
         };
         if let Some((_, original)) = self.node_details.iter().find(|(id, _)| id == source_id) {

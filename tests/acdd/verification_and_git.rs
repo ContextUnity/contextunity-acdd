@@ -88,7 +88,14 @@ scope: [src/lib.rs]
 ```
 "#,
     );
-    git_cmd(ws.root(), &["add", ".acdd/profiles/e2e.yaml", "docs/milestones/AC-010-e2e.md"]);
+    git_cmd(
+        ws.root(),
+        &[
+            "add",
+            ".acdd/profiles/e2e.yaml",
+            "docs/milestones/AC-010-e2e.md",
+        ],
+    );
     git_cmd(ws.root(), &["commit", "-m", "add e2e spec and profile"]);
 
     let cfg = base_engine_config(ws.root());
@@ -806,7 +813,9 @@ gates:
             .unwrap_err();
         assert_eq!(self_override_err.code, ErrorCode::GateVerificationFailed);
         assert!(
-            self_override_err.message.contains("cannot be self-approved"),
+            self_override_err
+                .message
+                .contains("cannot be self-approved"),
             "unexpected self-override error: {self_override_err}"
         );
 

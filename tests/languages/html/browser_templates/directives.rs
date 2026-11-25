@@ -25,7 +25,10 @@ fn django_jinja_directives_are_external_while_template_targets_remain_local() {
         .at_path(path)
         .extract(source);
     assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
-    assert!(facts.nodes.iter().any(|node| node.kind == acdd_index::models::tags::NodeKind::Module));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|node| node.kind == acdd_index::models::tags::NodeKind::Module));
     for (kind, target) in [("extends", "base.html"), ("includes", "partials/card.html")] {
         assert!(
             facts

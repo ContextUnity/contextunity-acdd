@@ -5,8 +5,13 @@ use hashbrown::HashSet;
 use std::sync::Arc;
 
 pub(super) fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {
-    (&a.path, a.line, &a.src, &a.dst, a.kind.as_str())
-        .cmp(&(&b.path, b.line, &b.src, &b.dst, b.kind.as_str()))
+    (&a.path, a.line, &a.src, &a.dst, a.kind.as_str()).cmp(&(
+        &b.path,
+        b.line,
+        &b.src,
+        &b.dst,
+        b.kind.as_str(),
+    ))
 }
 
 pub(super) fn compare_coverage(a: &Coverage, b: &Coverage) -> std::cmp::Ordering {
@@ -176,8 +181,9 @@ impl GraphPart {
                             .expect("internally encoded edge kind");
                         let path = intern_arc_str(&mut path_pool, read_str(&mut cursor));
                         let evidence = read_str(&mut cursor).into();
-                        let confidence = crate::models::tags::EdgeConfidence::parse(read_str(&mut cursor))
-                            .expect("internally encoded edge confidence");
+                        let confidence =
+                            crate::models::tags::EdgeConfidence::parse(read_str(&mut cursor))
+                                .expect("internally encoded edge confidence");
                         let line = read_number(&mut cursor);
                         Edge {
                             src,
@@ -264,8 +270,24 @@ mod tests {
         assert!(empty.coverage.is_empty());
 
         let mut first = Graph::default();
-        first.push_edge("src/a.rs", "fn:a", "fn:b", crate::models::tags::EdgeKind::Calls, 10, "b()", crate::models::tags::EdgeConfidence::Exact);
-        first.push_edge("src/a.rs", "fn:a", "fn:b", crate::models::tags::EdgeKind::Calls, 12, "b()", crate::models::tags::EdgeConfidence::Exact);
+        first.push_edge(
+            "src/a.rs",
+            "fn:a",
+            "fn:b",
+            crate::models::tags::EdgeKind::Calls,
+            10,
+            "b()",
+            crate::models::tags::EdgeConfidence::Exact,
+        );
+        first.push_edge(
+            "src/a.rs",
+            "fn:a",
+            "fn:b",
+            crate::models::tags::EdgeKind::Calls,
+            12,
+            "b()",
+            crate::models::tags::EdgeConfidence::Exact,
+        );
         first.push_coverage(
             "src/a.rs",
             10,
@@ -283,16 +305,33 @@ mod tests {
 
         let unpacked_first = GraphPart::new(first, true).into_graph();
         assert_eq!(unpacked_first.edges.len(), 2);
-        assert!(Arc::ptr_eq(&unpacked_first.edges[0].src, &unpacked_first.edges[1].src));
-        assert!(Arc::ptr_eq(&unpacked_first.edges[0].dst, &unpacked_first.edges[1].dst));
-        assert!(Arc::ptr_eq(&unpacked_first.edges[0].path, &unpacked_first.coverage[0].path));
+        assert!(Arc::ptr_eq(
+            &unpacked_first.edges[0].src,
+            &unpacked_first.edges[1].src
+        ));
+        assert!(Arc::ptr_eq(
+            &unpacked_first.edges[0].dst,
+            &unpacked_first.edges[1].dst
+        ));
+        assert!(Arc::ptr_eq(
+            &unpacked_first.edges[0].path,
+            &unpacked_first.coverage[0].path
+        ));
         assert!(Arc::ptr_eq(
             &unpacked_first.coverage[0].evidence,
             &unpacked_first.coverage[1].evidence
         ));
 
         let mut second = Graph::default();
-        second.push_edge("src/a.rs", "fn:b", "fn:a", crate::models::tags::EdgeKind::Calls, 20, "a()", crate::models::tags::EdgeConfidence::Exact);
+        second.push_edge(
+            "src/a.rs",
+            "fn:b",
+            "fn:a",
+            crate::models::tags::EdgeKind::Calls,
+            20,
+            "a()",
+            crate::models::tags::EdgeConfidence::Exact,
+        );
         second.push_coverage("src/a.rs", 22, "d()", "unresolved", "custom diagnostic");
         second.push_coverage(
             "src/a.rs",
@@ -309,7 +348,10 @@ mod tests {
         assert!(Arc::ptr_eq(&merged.edges[0].src, &merged.edges[2].dst));
         assert!(Arc::ptr_eq(&merged.edges[0].dst, &merged.edges[2].src));
         assert!(Arc::ptr_eq(&merged.edges[0].path, &merged.edges[2].path));
-        assert!(Arc::ptr_eq(&merged.coverage[0].evidence, &merged.coverage[3].evidence));
+        assert!(Arc::ptr_eq(
+            &merged.coverage[0].evidence,
+            &merged.coverage[3].evidence
+        ));
         assert_eq!(merged.coverage[2].evidence.as_ref(), "custom diagnostic");
         merged.clear_pools();
         assert!(merged.path_pool.is_empty());

@@ -233,8 +233,7 @@ impl Server {
                 refresh = "rebuild";
                 continue;
             }
-            let mut identity =
-                admitted_identity.map_or_else(|| cache::identity(&self.db), Ok)?;
+            let mut identity = admitted_identity.map_or_else(|| cache::identity(&self.db), Ok)?;
             if slot
                 .as_ref()
                 .is_none_or(|cached| cached.identity != identity)
@@ -244,11 +243,10 @@ impl Server {
                 // cleanup on the dropped connection does not invalidate our own baseline.
                 identity = cache::identity(&self.db)?;
                 let mut diagnostics = Vec::new();
-                let connection =
-                    reader::open_with_diagnostics(&self.db, &root, &mut |message| {
-                        eprintln!("{message}");
-                        diagnostics.push(message);
-                    })?;
+                let connection = reader::open_with_diagnostics(&self.db, &root, &mut |message| {
+                    eprintln!("{message}");
+                    diagnostics.push(message);
+                })?;
                 *slot = Some(CachedConnection {
                     identity: identity.clone(),
                     connection: Some(connection),

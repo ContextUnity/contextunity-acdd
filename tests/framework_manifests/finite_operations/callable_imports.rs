@@ -265,20 +265,15 @@ fn callable_imports_preserve_exact_targets_across_provider_deltas() {
                             "filesystem cold",
                         ),
                         ExpectedCold::SourceInventory(registry) => {
-                            let adapter = acdd_index::scanner::load_adapter(
-                                workspace.root(),
-                                None,
-                            )
-                            .unwrap();
+                            let adapter =
+                                acdd_index::scanner::load_adapter(workspace.root(), None).unwrap();
                             assert!(
                                 adapter.linked_workspaces.is_empty(),
                                 "RAM fixture inventory requires a single workspace"
                             );
-                            let report = acdd_index::scanner::scan_with_adapter(
-                                workspace.root(),
-                                &adapter,
-                            )
-                            .unwrap();
+                            let report =
+                                acdd_index::scanner::scan_with_adapter(workspace.root(), &adapter)
+                                    .unwrap();
                             let mut sources = VirtualWorkspace::default();
                             for file in report.entries {
                                 let source =

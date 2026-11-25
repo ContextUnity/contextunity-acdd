@@ -95,9 +95,7 @@ fn guide_configuration_matrix() {
         );
         assert_eq!(
             query,
-            harness
-                .payload("acdd_guide", json!({"topic":" "}))
-                .unwrap()
+            harness.payload("acdd_guide", json!({"topic":" "})).unwrap()
         );
         let cli = run_cli_json(&workspace, &["guide", "query"]);
         assert!(cli.status.success());
@@ -276,7 +274,10 @@ fn guide_content_and_surfaces_matrix() {
             "acdd" => {
                 let text = value.to_string().to_lowercase();
                 for term in ["gateprofile", "20 static", "domainprovider", "acdd start"] {
-                    assert!(text.contains(term), "acdd guide must explain {term}: {text}");
+                    assert!(
+                        text.contains(term),
+                        "acdd guide must explain {term}: {text}"
+                    );
                 }
                 assert!(value["mcp_tools"].is_object());
                 assert!(value["blackboard_topics"].is_object());

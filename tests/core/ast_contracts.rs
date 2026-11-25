@@ -32,7 +32,10 @@ complexity:
     );
 
     for (label, bad_yaml) in [
-        ("legacy_cognitive", "complexity:\n  max_cognitive_complexity: 42\n"),
+        (
+            "legacy_cognitive",
+            "complexity:\n  max_cognitive_complexity: 42\n",
+        ),
         ("legacy_nesting", "complexity:\n  max_nesting_depth: 5\n"),
         ("legacy_fanout", "complexity:\n  max_fanout: 30\n"),
     ] {
@@ -123,7 +126,11 @@ pub fn method_b(y: Foo) {
 "#;
     let typed = ast::extract_typed("src/sample.rs", "rust", rust_src).unwrap();
 
-    let flat_node = typed.nodes.iter().find(|n| n.name == "flat_router").unwrap();
+    let flat_node = typed
+        .nodes
+        .iter()
+        .find(|n| n.name == "flat_router")
+        .unwrap();
     assert_eq!(
         flat_node.details[NodeDetailKey::COGNITIVE_COMPLEXITY].as_u64(),
         Some(1),
@@ -135,7 +142,11 @@ pub fn method_b(y: Foo) {
         Some(1)
     );
 
-    let nested_node = typed.nodes.iter().find(|n| n.name == "deeply_nested").unwrap();
+    let nested_node = typed
+        .nodes
+        .iter()
+        .find(|n| n.name == "deeply_nested")
+        .unwrap();
     assert_eq!(
         nested_node.details[NodeDetailKey::COGNITIVE_COMPLEXITY].as_u64(),
         Some(6),
@@ -147,7 +158,11 @@ pub fn method_b(y: Foo) {
         Some(3)
     );
 
-    let single_node = typed.nodes.iter().find(|n| n.name == "single_line_call").unwrap();
+    let single_node = typed
+        .nodes
+        .iter()
+        .find(|n| n.name == "single_line_call")
+        .unwrap();
     let wrapped_node = typed
         .nodes
         .iter()
@@ -194,8 +209,14 @@ pub fn method_b(y: Foo) {
         .iter()
         .find(|fp| fp.node_id == other_callee_node.id)
         .unwrap();
-    let method_a_fp = fps.iter().find(|fp| fp.node_id == method_a_node.id).unwrap();
-    let method_b_fp = fps.iter().find(|fp| fp.node_id == method_b_node.id).unwrap();
+    let method_a_fp = fps
+        .iter()
+        .find(|fp| fp.node_id == method_a_node.id)
+        .unwrap();
+    let method_b_fp = fps
+        .iter()
+        .find(|fp| fp.node_id == method_b_node.id)
+        .unwrap();
 
     assert_eq!(
         single_fp.statements[0].hash, renamed_fp.statements[0].hash,
@@ -216,7 +237,10 @@ pub fn method_b(y: Foo) {
 
     let encoded = encode_facts(&typed).unwrap();
     let decoded: TypedFacts = decode_facts(&encoded).unwrap();
-    assert_eq!(decoded.facts.statement_fingerprints, typed.facts.statement_fingerprints);
+    assert_eq!(
+        decoded.facts.statement_fingerprints,
+        typed.facts.statement_fingerprints
+    );
 
     let mut m1 = ast::search::PreparedAstMatcher::new("rust", "helper($A, $B)").unwrap();
     let mut m2 = ast::search::PreparedAstMatcher::new("rust", "other_helper($A, $B)").unwrap();
@@ -242,7 +266,10 @@ pub fn method_b(y: Foo) {
         std::time::Instant::now() + std::time::Duration::from_secs(2),
     )
     .unwrap();
-    assert!(!limited[0].page.complete, "limit=1 with 2 matches must report incomplete");
+    assert!(
+        !limited[0].page.complete,
+        "limit=1 with 2 matches must report incomplete"
+    );
 
     let timed_out = ast::search::search_matchers_in_source(
         &mut [&mut m1],
@@ -252,5 +279,8 @@ pub fn method_b(y: Foo) {
         std::time::Instant::now() - std::time::Duration::from_secs(1),
     )
     .unwrap();
-    assert!(timed_out[0].page.work_limited, "expired deadline must report work_limited");
+    assert!(
+        timed_out[0].page.work_limited,
+        "expired deadline must report work_limited"
+    );
 }

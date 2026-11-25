@@ -1,4 +1,3 @@
-use crate::languages::profile::ProfileLinker;
 use super::lookup::{resolve_type, stored_type_expr};
 use super::types::{
     duplicate_position, flow_dependent, merge, node_position, same_fields, same_target,
@@ -7,6 +6,7 @@ use super::types::{
     SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex, EMPTY_SCOPE_FACTS,
 };
 use crate::interner::{LinkerInterner, SymbolId};
+use crate::languages::profile::ProfileLinker;
 use crate::models::{Facts, Node, ReceiverHint, Reference};
 use crate::semantic::{SourcePosition, ValueExpr, ValueFlowFacts};
 use hashbrown::HashMap;
@@ -69,7 +69,9 @@ fn initialize_scope<'a>(
             .get(&(node.path.as_str(), parent))
             .map(Vec::as_slice)
         {
-            if crate::languages::by_id(node.language.as_str()).is_none_or(|profile| profile.linker().inherits_scope(node, owner)) {
+            if crate::languages::by_id(node.language.as_str())
+                .is_none_or(|profile| profile.linker().inherits_scope(node, owner))
+            {
                 parents.push(owner.id.as_str());
             }
         }
@@ -133,7 +135,10 @@ fn initialize_scope<'a>(
             .rsplit_once('.')
             .and_then(|(enum_qual, _)| by_name.get(&(node.path.as_str(), enum_qual)))
             .and_then(|nodes| {
-                let mut enums = nodes.iter().copied().filter(|cand| cand.kind == crate::models::tags::NodeKind::Enum);
+                let mut enums = nodes
+                    .iter()
+                    .copied()
+                    .filter(|cand| cand.kind == crate::models::tags::NodeKind::Enum);
                 let first = enums.next()?;
                 enums.next().is_none().then_some(TypeTarget::Local(first))
             })
@@ -169,8 +174,9 @@ fn field_owner<'a>(
     if matches!(owner.kind.as_str(), "class" | "struct" | "interface") {
         return Some(owner);
     }
-    if crate::languages::by_id(owner.language.as_str())
-        .is_some_and(|profile| crate::languages::profile::ProfileLinker::linker(profile).owns_module_fields(owner)) {
+    if crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| {
+        crate::languages::profile::ProfileLinker::linker(profile).owns_module_fields(owner)
+    }) {
         return Some(owner);
     }
     let mut parent = owner
@@ -185,18 +191,22 @@ fn field_owner<'a>(
         }
         parent = parent.rsplit_once('.').map_or("", |(parent, _)| parent);
     }
-    owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE).as_str().and_then(|name| {
-        let clean = crate::linker::types::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
-        match resolver.resolve_symbol(
-            owner,
-            clean.as_ref(),
-            node_position(owner),
-            SymbolRole::Type,
-        ) {
-            Symbol::Type(TypeTarget::Local(node)) => Some(node),
-            _ => None,
-        }
-    })
+    owner
+        .detail_entry(crate::models::details::NodeDetailKey::RECEIVER_TYPE)
+        .as_str()
+        .and_then(|name| {
+            let clean =
+                crate::linker::types::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
+            match resolver.resolve_symbol(
+                owner,
+                clean.as_ref(),
+                node_position(owner),
+                SymbolRole::Type,
+            ) {
+                Symbol::Type(TypeTarget::Local(node)) => Some(node),
+                _ => None,
+            }
+        })
 }
 
 impl<'a> ValueFlowIndex<'a> {
@@ -353,7 +363,9 @@ impl<'a> ValueFlowIndex<'a> {
                 }
                 if let Some(element) =
                     crate::languages::by_id(node.language.as_str()).and_then(|profile| {
-                        profile.linker().collection_return_element(node, async_type, resolver, limits)
+                        profile
+                            .linker()
+                            .collection_return_element(node, async_type, resolver, limits)
                     })
                 {
                     self.async_return_collection_elements
@@ -362,7 +374,8 @@ impl<'a> ValueFlowIndex<'a> {
             }
         }
         if !crate::languages::by_id(node.language.as_str())
-            .is_some_and(|profile| profile.linker().supports_collection_facts()) {
+            .is_some_and(|profile| profile.linker().supports_collection_facts())
+        {
             return;
         }
         for fact in facts.collection_elements() {
@@ -379,9 +392,16 @@ impl<'a> ValueFlowIndex<'a> {
         }
         if matches!(node.kind.as_str(), "function" | "method") {
             if let Some(return_type) = facts.return_type.as_ref() {
-                if let Some(element) = crate::languages::by_id(node.language.as_str()).and_then(|profile| {
-                    profile.linker().collection_return_element(node, return_type, resolver, limits)
-                }) {
+                if let Some(element) =
+                    crate::languages::by_id(node.language.as_str()).and_then(|profile| {
+                        profile.linker().collection_return_element(
+                            node,
+                            return_type,
+                            resolver,
+                            limits,
+                        )
+                    })
+                {
                     self.return_collection_elements
                         .insert(node.id.as_str(), element);
                 }
@@ -474,7 +494,8 @@ impl<'a> ValueFlowIndex<'a> {
                         | ValueExpr::Scoped { body_end, .. } => Some(*body_end),
                         _ => None,
                     },
-                    restores_previous: crate::languages::by_id(owner.language.as_str()).is_none_or(|profile| profile.linker().scoped_binding_restores())
+                    restores_previous: crate::languages::by_id(owner.language.as_str())
+                        .is_none_or(|profile| profile.linker().scoped_binding_restores())
                         && matches!(binding.value, ValueExpr::Scoped { .. }),
                     immutable_initializer: binding.immutable_initializer,
                 };
@@ -559,7 +580,9 @@ impl<'a> ValueFlowIndex<'a> {
         target: &TypeTarget<'a>,
         resolver: &impl SemanticResolver<'a>,
     ) {
-        if !crate::languages::by_id(owner.language.as_str()).is_some_and(|profile| profile.linker().collection_return(target)) {
+        if !crate::languages::by_id(owner.language.as_str())
+            .is_some_and(|profile| profile.linker().collection_return(target))
+        {
             return;
         }
         let call = match binding.value {
@@ -988,7 +1011,11 @@ impl<'a> ValueFlowIndex<'a> {
             return TypeTarget::Unknown;
         }
         let eval = crate::languages::profile::CallEvalContext {
-            index: self, owner, at, resolver, trace: None,
+            index: self,
+            owner,
+            at,
+            resolver,
+            trace: None,
         };
         if let Some(result) = crate::languages::by_id(owner.language.as_str())
             .and_then(|profile| profile.linker().indirect_call_result(&eval, callee))
@@ -1061,7 +1088,8 @@ fn collect_binding_events<'a, 'raw>(
         .map(|(event_index, binding)| BindingEvent {
             name: typed.map_or_else(
                 || {
-                    owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["bindings"][event_index]["name"]
+                    owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)
+                        ["bindings"][event_index]["name"]
                         .as_str()
                         .expect("decoded binding name remains in arena")
                 },
@@ -1083,7 +1111,8 @@ fn collect_binding_events<'a, 'raw>(
                 .map(|(event_index, join)| BindingEvent {
                     name: typed.map_or_else(
                         || {
-                            owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)["branch_joins"][event_index]["name"]
+                            owner.detail_entry(crate::models::details::NodeDetailKey::VALUE_FLOW)
+                                ["branch_joins"][event_index]["name"]
                                 .as_str()
                                 .expect("decoded branch-join name remains in arena")
                         },
@@ -1154,7 +1183,9 @@ fn normalize_binding_target<'t, 'a>(
     if let Some(linker) = linker {
         loop {
             let next = linker.unwrap_reference(target);
-            if std::ptr::eq(target, next) { break; }
+            if std::ptr::eq(target, next) {
+                break;
+            }
             target = next;
         }
     }
@@ -1170,7 +1201,10 @@ fn finalize_binding_target<'a>(
     match prev_target {
         Some(prev)
             if matches!(evaluated, TypeTarget::Unknown)
-                || same_target(normalize_binding_target(&prev, linker), normalize_binding_target(&evaluated, linker)) =>
+                || same_target(
+                    normalize_binding_target(&prev, linker),
+                    normalize_binding_target(&evaluated, linker),
+                ) =>
         {
             prev
         }

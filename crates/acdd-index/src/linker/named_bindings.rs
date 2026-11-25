@@ -1,12 +1,12 @@
 //! Prepared, borrowed literal-key joins for configured language facts.
 use crate::interner::{LinkerInterner, PathId, SymbolId};
+use crate::languages::{self, dependency_registry::DependencyRegistry};
 use crate::models::Node;
 use crate::semantic::{
-        ExtractionRuleOrigin, NamedBindingFact, NamedBindingRole, NamedDefinitionUncertainty,
-        NamedTargetKind, StaticString, SymbolOperand,
-    };
+    ExtractionRuleOrigin, NamedBindingFact, NamedBindingRole, NamedDefinitionUncertainty,
+    NamedTargetKind, StaticString, SymbolOperand,
+};
 use crate::typed_facts::FlowState;
-use crate::languages::{self, dependency_registry::DependencyRegistry};
 use hashbrown::{HashMap, HashSet};
 
 pub(super) fn project<'a>(path: &'a str, dependencies: &'a DependencyRegistry) -> &'a str {
@@ -106,7 +106,10 @@ impl<'a> NamedBindings<'a> {
         use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
         for rule in &rules.syntax_rules {
             let SyntaxOperation::NamedBinding {
-                binding: NamedBindingForm::CallReference { provider_scopes, .. },
+                binding:
+                    NamedBindingForm::CallReference {
+                        provider_scopes, ..
+                    },
                 ..
             } = &rule.operation
             else {
@@ -341,8 +344,12 @@ impl<'a> NamedBindings<'a> {
             if let Some(target) = nodes.get(&target_id).copied().filter(|target| {
                 target.path == definition.owner.path
                     && match target_kind {
-                        NamedTargetKind::Object => target.kind == crate::models::tags::NodeKind::Object,
-                        NamedTargetKind::ListenerScope => target.kind == crate::models::tags::NodeKind::TemplateScope,
+                        NamedTargetKind::Object => {
+                            target.kind == crate::models::tags::NodeKind::Object
+                        }
+                        NamedTargetKind::ListenerScope => {
+                            target.kind == crate::models::tags::NodeKind::TemplateScope
+                        }
                         NamedTargetKind::Callable => false,
                     }
             }) {
@@ -360,7 +367,10 @@ impl<'a> NamedBindings<'a> {
                             path,
                             crate::semantic::SourcePosition {
                                 line: owner.line,
-                                column: owner.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
+                                column: owner
+                                    .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                                    .as_u64()
+                                    .unwrap_or(0) as usize,
                             },
                         ))
                         .or_default()
@@ -394,7 +404,8 @@ impl<'a> NamedBindings<'a> {
                     value = Some(TypeTarget::Unknown);
                     break;
                 };
-                if candidates.next().is_some() || members.insert(member.name.clone(), node).is_some()
+                if candidates.next().is_some()
+                    || members.insert(member.name.clone(), node).is_some()
                 {
                     value = Some(TypeTarget::Ambiguous);
                     break;

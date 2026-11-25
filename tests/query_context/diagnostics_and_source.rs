@@ -1067,9 +1067,21 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
             .unwrap();
             assert_eq!(overview["counts"]["unresolved"], 20 + unknown);
             assert_eq!(overview["counts"]["external_imports"], external);
-            let json = format::render_for_operation(&overview, OutputFormat::Json, "code_map_overview", None, format::OperationKind::Navigation);
+            let json = format::render_for_operation(
+                &overview,
+                OutputFormat::Json,
+                "code_map_overview",
+                None,
+                format::OperationKind::Navigation,
+            );
             assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), overview);
-            let markdown = format::render_for_operation(&overview, OutputFormat::Markdown, "code_map_overview", None, format::OperationKind::Navigation);
+            let markdown = format::render_for_operation(
+                &overview,
+                OutputFormat::Markdown,
+                "code_map_overview",
+                None,
+                format::OperationKind::Navigation,
+            );
             let mut expected_rows = vec![
                 format!("Resolution Health: {health}"),
                 "dynamic_callback): 6".to_owned(),

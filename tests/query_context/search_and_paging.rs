@@ -627,10 +627,7 @@ fn duplicates_paged_symbol_clone_matrix() {
                     "cross_a.py",
                     &format!("def alpha():\n{block}    return 1\n"),
                 );
-                workspace.write(
-                    "cross_b.py",
-                    &format!("def beta():\n{block}    return 2\n"),
-                );
+                workspace.write("cross_b.py", &format!("def beta():\n{block}    return 2\n"));
             },
         },
         DuplicatesCase {
@@ -644,9 +641,7 @@ fn duplicates_paged_symbol_clone_matrix() {
                 let block = five_line_clone_block();
                 workspace.write(
                     "intra.py",
-                    &format!(
-                        "def repeated():\n{block}    marker_a()\n{block}    return 0\n"
-                    ),
+                    &format!("def repeated():\n{block}    marker_a()\n{block}    return 0\n"),
                 );
             },
         },
@@ -675,8 +670,13 @@ fn duplicates_paged_symbol_clone_matrix() {
             forbid_match_types: &[],
             build: |workspace| {
                 let block = five_line_clone_block();
-                workspace.write("tiny.py", &format!("def tiny():
-{block}"));
+                workspace.write(
+                    "tiny.py",
+                    &format!(
+                        "def tiny():
+{block}"
+                    ),
+                );
                 workspace.write(
                     "long.py",
                     &format!(
@@ -698,12 +698,22 @@ fn duplicates_paged_symbol_clone_matrix() {
             forbid_match_types: &["block"],
             build: |workspace| {
                 let block = five_line_clone_block();
-                workspace.write("twin_a.py", &format!("def twin():
+                workspace.write(
+                    "twin_a.py",
+                    &format!(
+                        "def twin():
 {block}    return None
-"));
-                workspace.write("twin_b.py", &format!("def twin():
+"
+                    ),
+                );
+                workspace.write(
+                    "twin_b.py",
+                    &format!(
+                        "def twin():
 {block}    return None
-"));
+"
+                    ),
+                );
             },
         },
         DuplicatesCase {
@@ -738,15 +748,9 @@ fn duplicates_paged_symbol_clone_matrix() {
             );
         }
 
-        let result = traversal::duplicates_paged(
-            &conn,
-            None,
-            None,
-            None,
-            case.min_lines,
-            &options(50),
-        )
-        .unwrap();
+        let result =
+            traversal::duplicates_paged(&conn, None, None, None, case.min_lines, &options(50))
+                .unwrap();
         assert_eq!(
             result["total_duplicate_groups"].as_u64().unwrap() as usize,
             case.expect_groups,

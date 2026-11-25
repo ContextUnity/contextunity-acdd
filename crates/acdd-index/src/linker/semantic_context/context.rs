@@ -4,18 +4,15 @@
 //! workspace namespaces as ordinary graph linking. No disk or SQL is consulted
 //! while reducing values or resolving calls.
 
-use crate::languages::profile::ProfileLinker;
 pub(super) use crate::interner::{PathId, SymbolId};
+use crate::languages::profile::ProfileLinker;
+pub(super) use crate::languages::{
+    self, context::LanguageContext, dependency_registry::DependencyRegistry, types::ImportPath,
+};
 pub(super) use crate::linker::types::{
     import_provider_modules, ModulesByNamespace, PackageExports,
 };
 pub(super) use crate::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
-pub(super) use crate::languages::{
-    self,
-    context::LanguageContext,
-    dependency_registry::DependencyRegistry,
-    types::ImportPath,
-};
 pub(super) use crate::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::SourcePosition,
@@ -27,8 +24,10 @@ pub(super) type ArgumentFactoryKey = (SymbolId, usize, SymbolId);
 pub(super) type ArgumentFactoryCandidates =
     Vec<std::sync::Arc<crate::linker::value_flow::ConfiguredReceiverAuthority>>;
 pub(super) type ArgumentFactories = HashMap<ArgumentFactoryKey, ArgumentFactoryCandidates>;
-pub(super) type HierarchyAuthorities =
-    HashMap<(SymbolId, SymbolId), std::sync::Arc<crate::linker::value_flow::ConfiguredReceiverAuthority>>;
+pub(super) type HierarchyAuthorities = HashMap<
+    (SymbolId, SymbolId),
+    std::sync::Arc<crate::linker::value_flow::ConfiguredReceiverAuthority>,
+>;
 pub(super) type ImplicitBuiltinMap = HashMap<SymbolId, String>;
 
 pub(super) struct ReceiverTypes {
@@ -37,30 +36,24 @@ pub(super) struct ReceiverTypes {
 }
 
 impl ReceiverTypes {
-    pub(super) fn iter(&self) -> impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule> {
+    pub(super) fn iter(
+        &self,
+    ) -> impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule> {
         self.iter_with_meta().map(|(_, _, receiver)| receiver)
     }
 
     pub(super) fn iter_with_meta(
         &self,
-    ) -> impl Iterator<
-        Item = (
-            &str,
-            &str,
-            &languages::manifests::syntax::ReceiverTypeRule,
-        ),
-    > {
-        self.indices
-            .iter()
-            .filter_map(|&index| {
-                let rule = &self.rules.syntax_rules[index];
-                match &rule.operation {
-                    languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } => {
-                        Some((rule.pack.as_str(), rule.id.as_str(), receiver))
-                    }
-                    _ => None,
+    ) -> impl Iterator<Item = (&str, &str, &languages::manifests::syntax::ReceiverTypeRule)> {
+        self.indices.iter().filter_map(|&index| {
+            let rule = &self.rules.syntax_rules[index];
+            match &rule.operation {
+                languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } => {
+                    Some((rule.pack.as_str(), rule.id.as_str(), receiver))
                 }
-            })
+                _ => None,
+            }
+        })
     }
 }
 
@@ -68,7 +61,8 @@ pub(super) struct ResultScope<'a> {
     pub(super) config: &'a Node,
     pub(super) module: SymbolId,
     pub(super) exports: HashMap<SymbolId, Vec<(&'a Node, SymbolId)>>,
-    pub(super) calls: HashMap<SymbolId, std::sync::Arc<crate::linker::value_flow::ConfiguredCallResult>>,
+    pub(super) calls:
+        HashMap<SymbolId, std::sync::Arc<crate::linker::value_flow::ConfiguredCallResult>>,
 }
 
 #[derive(Default)]
@@ -162,8 +156,10 @@ pub(crate) struct Context<'a> {
     pub(super) callable_scopes: HashMap<PathId, Vec<std::sync::Arc<CallableScope<'a>>>>,
     pub(super) members: HashMap<(SymbolId, SymbolId, bool), Vec<&'a Node>>,
     pub(super) member_bases: HashMap<SymbolId, Vec<SymbolId>>,
-    pub(super) member_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageMemberIndex + 'a)>,
-    pub(super) import_states: HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
+    pub(super) member_states:
+        HashMap<&'static str, &'a (dyn languages::profile::LanguageMemberIndex + 'a)>,
+    pub(super) import_states:
+        HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
 }
 
 pub(crate) struct LanguageMemberLookup<'ctx, 'a> {
@@ -179,7 +175,10 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
         self.context
     }
 
-    fn member_state(&self, language_id: &str) -> Option<&'a (dyn languages::profile::LanguageMemberIndex + 'a)> {
+    fn member_state(
+        &self,
+        language_id: &str,
+    ) -> Option<&'a (dyn languages::profile::LanguageMemberIndex + 'a)> {
         self.context.member_state(language_id)
     }
 
@@ -195,11 +194,19 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
             .lookup_language_member(language_id, receiver, member, associated, caller)
     }
 
-    pub(in crate::linker) fn receiver_for(&self, language_id: &str, method: &Node) -> Option<&'a Node> {
+    pub(in crate::linker) fn receiver_for(
+        &self,
+        language_id: &str,
+        method: &Node,
+    ) -> Option<&'a Node> {
         self.member_state(language_id)?.receiver_for(method)
     }
 
-    pub(in crate::linker) fn deref_target(&self, language_id: &str, receiver: &Node) -> Option<&'a Node> {
+    pub(in crate::linker) fn deref_target(
+        &self,
+        language_id: &str,
+        receiver: &Node,
+    ) -> Option<&'a Node> {
         self.member_state(language_id)?.deref_target(receiver)
     }
 }
@@ -227,9 +234,19 @@ impl<'a> Context<'a> {
         associated: bool,
         caller: &Node,
     ) -> languages::profile::LanguageMemberResult<'a> {
-        languages::by_id(language_id).map_or(languages::profile::LanguageMemberResult::Unknown, |profile| {
-            profile.linker().lookup_member(&self.member_states, language_id, receiver, member, associated, caller)
-        })
+        languages::by_id(language_id).map_or(
+            languages::profile::LanguageMemberResult::Unknown,
+            |profile| {
+                profile.linker().lookup_member(
+                    &self.member_states,
+                    language_id,
+                    receiver,
+                    member,
+                    associated,
+                    caller,
+                )
+            },
+        )
     }
 
     pub(super) fn lookup_language_property(
@@ -239,7 +256,9 @@ impl<'a> Context<'a> {
         member: &str,
     ) -> languages::profile::LanguageMemberResult<'a> {
         self.member_state(language_id)
-            .map_or(languages::profile::LanguageMemberResult::Unknown, |state| state.lookup_property(receiver, member))
+            .map_or(languages::profile::LanguageMemberResult::Unknown, |state| {
+                state.lookup_property(receiver, member)
+            })
     }
 
     pub(in crate::linker) fn lookup_language_builtin(
@@ -250,9 +269,19 @@ impl<'a> Context<'a> {
         associated: bool,
         caller: &Node,
     ) -> languages::profile::LanguageMemberResult<'a> {
-        languages::by_id(language_id).map_or(languages::profile::LanguageMemberResult::Unknown, |profile| {
-            profile.linker().lookup_builtin(&self.member_states, language_id, receiver, member, associated, caller)
-        })
+        languages::by_id(language_id).map_or(
+            languages::profile::LanguageMemberResult::Unknown,
+            |profile| {
+                profile.linker().lookup_builtin(
+                    &self.member_states,
+                    language_id,
+                    receiver,
+                    member,
+                    associated,
+                    caller,
+                )
+            },
+        )
     }
 }
 
@@ -330,7 +359,11 @@ impl<'a> Context<'a> {
         false
     }
 
-    pub(super) fn implicit_factory_result(&self, owner: &Node, callee: &str) -> Option<TypeTarget<'a>> {
+    pub(super) fn implicit_factory_result(
+        &self,
+        owner: &Node,
+        callee: &str,
+    ) -> Option<TypeTarget<'a>> {
         let callee_id = self.symbol_id(callee)?;
         let mut providers = self
             .result_scopes
@@ -425,15 +458,8 @@ impl<'a> Context<'a> {
     pub(super) fn receiver_types_with_meta_for_path(
         &self,
         path: &str,
-    ) -> Option<
-        impl Iterator<
-            Item = (
-                &str,
-                &str,
-                &languages::manifests::syntax::ReceiverTypeRule,
-            ),
-        >,
-    > {
+    ) -> Option<impl Iterator<Item = (&str, &str, &languages::manifests::syntax::ReceiverTypeRule)>>
+    {
         let path = self.path_id(path)?;
         self.receiver_types
             .get(&path)
@@ -471,7 +497,10 @@ impl<'a> Context<'a> {
                     contract_decl,
                 ) {
                     languages::profile::LanguageMemberResult::Local(node)
-                        if node.id != contract_decl.id => Some(node),
+                        if node.id != contract_decl.id =>
+                    {
+                        Some(node)
+                    }
                     _ => None,
                 }
             })
@@ -750,7 +779,11 @@ impl<'a> Context<'a> {
                         }))
             }) || self
                 .by_qual
-                .get(crate::linker::types::qualified(&mut lookup_key, scope, name))
+                .get(crate::linker::types::qualified(
+                    &mut lookup_key,
+                    scope,
+                    name,
+                ))
                 .into_iter()
                 .flatten()
                 .any(|node| node.path == owner.path)
@@ -787,11 +820,17 @@ impl<'a> Context<'a> {
         owner: &Node,
         at: SourcePosition,
     ) -> bool {
-        self.import_state(scope.language.as_str()).is_some_and(|state| {
-            state.tracks_binding(scope, alias) && state.admits_binding(scope, alias, owner, at)
-        })
+        self.import_state(scope.language.as_str())
+            .is_some_and(|state| {
+                state.tracks_binding(scope, alias) && state.admits_binding(scope, alias, owner, at)
+            })
     }
-    pub(super) fn visible(owner: &Node, candidate: &Node, at: SourcePosition, role: SymbolRole) -> bool {
+    pub(super) fn visible(
+        owner: &Node,
+        candidate: &Node,
+        at: SourcePosition,
+        role: SymbolRole,
+    ) -> bool {
         if let Some(visible) = languages::by_id(owner.language.as_str())
             .and_then(|profile| profile.linker().symbol_visible(owner, candidate))
         {
@@ -816,7 +855,10 @@ impl<'a> Context<'a> {
         }
         SourcePosition {
             line: candidate.line,
-            column: candidate.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
+            column: candidate
+                .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                .as_u64()
+                .unwrap_or(0) as usize,
         } < at
     }
 
@@ -880,10 +922,14 @@ impl<'a> Context<'a> {
                     return Symbol::Unknown;
                 }
                 match target_kind {
-                    NamedTargetKind::Object if target.kind == crate::models::tags::NodeKind::Object => {
+                    NamedTargetKind::Object
+                        if target.kind == crate::models::tags::NodeKind::Object =>
+                    {
                         Symbol::Type(TypeTarget::Local(target))
                     }
-                    NamedTargetKind::ListenerScope if target.kind == crate::models::tags::NodeKind::TemplateScope => {
+                    NamedTargetKind::ListenerScope
+                        if target.kind == crate::models::tags::NodeKind::TemplateScope =>
+                    {
                         Symbol::Type(TypeTarget::Local(target))
                     }
                     NamedTargetKind::Callable
@@ -1179,7 +1225,11 @@ impl<'a> Context<'a> {
         self
     }
 
-    pub(in crate::linker) fn classify(&self, nodes: impl Iterator<Item = &'a Node>, role: SymbolRole) -> Symbol<'a> {
+    pub(in crate::linker) fn classify(
+        &self,
+        nodes: impl Iterator<Item = &'a Node>,
+        role: SymbolRole,
+    ) -> Symbol<'a> {
         let mut candidates: Vec<&'a Node> = nodes
             .filter(|node| {
                 languages::by_id(node.language.as_str())
@@ -1253,7 +1303,10 @@ impl<'a> Context<'a> {
         associated: bool,
         caller: &Node,
     ) -> Symbol<'a> {
-        if let Some(state) = self.member_state(receiver.language.as_str()).filter(|state| state.handles_receiver(receiver)) {
+        if let Some(state) = self
+            .member_state(receiver.language.as_str())
+            .filter(|state| state.handles_receiver(receiver))
+        {
             return match state.lookup_member(receiver, member, associated, caller) {
                 languages::profile::LanguageMemberResult::Ambiguous => Symbol::Ambiguous,
                 result => self.classify(result.into_nodes().into_iter(), SymbolRole::Callable),
@@ -1308,7 +1361,9 @@ impl<'a> Context<'a> {
         }
         match self.lookup_language_property(receiver.language.as_str(), receiver, member) {
             languages::profile::LanguageMemberResult::Local(field) => Member::Local(field),
-            languages::profile::LanguageMemberResult::Candidates(fields) if fields.len() > 1 => Member::Ambiguous,
+            languages::profile::LanguageMemberResult::Candidates(fields) if fields.len() > 1 => {
+                Member::Ambiguous
+            }
             _ => Member::Unknown,
         }
     }

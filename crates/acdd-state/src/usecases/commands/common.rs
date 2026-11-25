@@ -17,8 +17,8 @@ pub(super) fn ensure_no_managed_worktree_collision(
     candidate_branch: Option<&str>,
     existing_wt: Option<&str>,
 ) -> Result<(), StateError> {
-    let matches_existing =
-        existing_wt.is_some_and(|existing| canonicalize_macos_var(Path::new(existing)) == candidate_wt);
+    let matches_existing = existing_wt
+        .is_some_and(|existing| canonicalize_macos_var(Path::new(existing)) == candidate_wt);
     let managed_wt_root = canonicalize_macos_var(&primary.join(WORKTREES_DIR));
     let collides_managed_path = candidate_wt.parent() == Some(managed_wt_root.as_path())
         && candidate_wt

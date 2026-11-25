@@ -12,17 +12,16 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
-use crate::commitments::{CommitmentDomain, FtsDomain};
 pub use crate::commitments::{hash, ALGORITHM, DOMAINS};
+use crate::commitments::{CommitmentDomain, FtsDomain};
 #[cfg(test)]
 pub(crate) use base::fts_digest_vocab;
+pub(crate) use base::{
+    encode_blob, encode_int, encode_real, encode_text, encode_text_bytes, new_leaf_hasher,
+};
 pub use base::{
     key, read_metadata, read_metadata_optional, write_metadata, MetadataKey,
     MAX_QUERY_RESULT_BYTES, MAX_SQLITE_VALUE_BYTES,
-};
-pub(crate) use base::{
-    encode_blob, encode_int, encode_real, encode_text, encode_text_bytes,
-    new_leaf_hasher,
 };
 pub(crate) use domain_leaves::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
 pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};

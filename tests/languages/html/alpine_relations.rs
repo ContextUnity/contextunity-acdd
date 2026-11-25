@@ -50,11 +50,18 @@ fn alpine_syntax_activation_and_x_data_members_without_package_json() {
         "  <button x-on:click=\"toggle()\" x-bind:class=\"open\">Toggle</button>\n",
         "</div>\n",
     );
-    let plain_html = "<div data-state=\"idle\"><script>this.$refs; this.$dispatch('noop');</script></div>\n";
+    let plain_html =
+        "<div data-state=\"idle\"><script>this.$refs; this.$dispatch('noop');</script></div>\n";
     workspace.write("cdn/page.html", alpine_html);
     workspace.write("cdn/template.j2", "<section x-data=\"{ ready: true, ping() { const el = this.$el; return el; } }\" x-on:click=\"ping()\"></section>\n");
-    workspace.write("prefix/page.html", "<button x-on:click=\"this.$dispatch('clicked')\">Go</button>\n");
-    workspace.write("eof/unquoted.html", "<div x-data={open:false}><script>this.$dispatch('eof');</script></div>");
+    workspace.write(
+        "prefix/page.html",
+        "<button x-on:click=\"this.$dispatch('clicked')\">Go</button>\n",
+    );
+    workspace.write(
+        "eof/unquoted.html",
+        "<div x-data={open:false}><script>this.$dispatch('eof');</script></div>",
+    );
     workspace.write("plain/page.html", plain_html);
 
     let conn = workspace.build_and_open();
@@ -80,11 +87,7 @@ fn alpine_syntax_activation_and_x_data_members_without_package_json() {
         ("plain/page.html", "this.$dispatch", vec!["unresolved"]),
     ] {
         let observed = status_for(&conn, path, expression);
-        assert_eq!(
-            observed,
-            expected,
-            "{path} `{expression}` status mismatch"
-        );
+        assert_eq!(observed, expected, "{path} `{expression}` status mismatch");
     }
     let j2_lines: Vec<(i64, i64)> = conn
         .prepare("SELECT n.line, n.end_line FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE pd.path='cdn/template.j2' AND n.kind='template_scope'")
@@ -94,7 +97,10 @@ fn alpine_syntax_activation_and_x_data_members_without_package_json() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        !j2_lines.is_empty() && j2_lines.iter().all(|&(line, end_line)| line == 1 && end_line == 1),
+        !j2_lines.is_empty()
+            && j2_lines
+                .iter()
+                .all(|&(line, end_line)| line == 1 && end_line == 1),
         "1-line cdn/template.j2 scopes must have line==1 && end_line==1: {j2_lines:?}"
     );
     let eof_errors: i64 = conn

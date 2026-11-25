@@ -2,13 +2,17 @@
 
 use crate::types::{ExtendedScopeEntry, InvariantsState, SubtaskStatus};
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
+use acdd_core::ids::{
+    CommitOid, GateId, NodeCursor, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Lifecycle status of a specification document or task block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SpecStatus {
     /// Drafted or planned, not yet started.
@@ -428,10 +432,7 @@ pub fn parse_spec(raw: &str) -> Result<SpecDocument, StateError> {
         let parsed_yaml: TaskSpecYaml = serde_yaml::from_str(block.yaml_slice).map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!(
-                    "invalid YAML in '### task: {}': {err}",
-                    block.heading_ref
-                ),
+                format!("invalid YAML in '### task: {}': {err}", block.heading_ref),
             )
         })?;
         if let Some(yaml_ref) = &parsed_yaml.task_ref {
@@ -590,18 +591,12 @@ pub fn materialize_ephemeral_goal_spec_with_options(
 
         format!(
             "---\n{}---\n\n# {}\n\n{}\n\n### task: {}\n\n```yaml\n{}```\n",
-            fm_yaml,
-            fm.title,
-            trimmed_goal,
-            task_ref,
-            task_yaml_str
+            fm_yaml, fm.title, trimmed_goal, task_ref, task_yaml_str
         )
     } else {
         format!(
             "---\n{}---\n\n# {}\n\n{}\n",
-            fm_yaml,
-            fm.title,
-            trimmed_goal
+            fm_yaml, fm.title, trimmed_goal
         )
     };
     // Self-verify round-trip invariants.
@@ -1010,10 +1005,7 @@ status: planned
         let task_ref = TaskRef::new("goal").unwrap();
         let receipt = Receipt {
             run_id: run_id.clone(),
-            node_cursor: NodeCursor::task(
-                task_ref.clone(),
-                vec![GateId::new("deliver").unwrap()],
-            ),
+            node_cursor: NodeCursor::task(task_ref.clone(), vec![GateId::new("deliver").unwrap()]),
             gate_id: GateId::new("deliver").unwrap(),
             worker_id: WorkerId::new("reviewer-1").unwrap(),
             claim_revision: 1,
@@ -1021,7 +1013,10 @@ status: planned
             candidate_tree: TreeOid::new(oid_40('a')).unwrap(),
             committed_oid: Some(CommitOid::new(oid_40('b')).unwrap()),
             accepted_at: "2026-11-17T10:00:00.000Z".to_owned(),
-            need_proofs: BTreeMap::from([("review".to_owned(), serde_json::json!({"decision": "pass"}))]),
+            need_proofs: BTreeMap::from([(
+                "review".to_owned(),
+                serde_json::json!({"decision": "pass"}),
+            )]),
             rollup: Some(ReceiptRollup {
                 verified_invariants: InvariantsState {
                     applicable: vec!["INV-1".to_owned()],
@@ -1053,7 +1048,10 @@ status: planned
                     deferred_findings: vec!["Follow-up docs nit".to_owned()],
                     review_summary: Some("Integration verified".to_owned()),
                 },
-                metrics_summary: BTreeMap::from([("tasks_completed".to_owned(), serde_json::json!(1))]),
+                metrics_summary: BTreeMap::from([(
+                    "tasks_completed".to_owned(),
+                    serde_json::json!(1),
+                )]),
             },
             tasks: BTreeMap::from([(
                 task_ref.clone(),
@@ -1082,7 +1080,10 @@ status: planned
 
         let archived = parse_spec(&rendered_1).unwrap();
         assert_eq!(archived.status, SpecStatus::Completed);
-        assert_eq!(archived.closure.as_ref().unwrap().target_base.as_deref(), Some("main"));
+        assert_eq!(
+            archived.closure.as_ref().unwrap().target_base.as_deref(),
+            Some("main")
+        );
         assert_eq!(archived.tasks[0].status, SpecStatus::Completed);
         assert_eq!(archived.tasks[0].extended_scope.len(), 1);
         assert_eq!(archived.tasks[0].subtasks.len(), 1);

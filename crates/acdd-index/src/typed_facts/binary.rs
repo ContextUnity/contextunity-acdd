@@ -90,7 +90,10 @@ macro_rules! wire_tag_codec {
         }
     )+};
 }
-wire_tag_codec!(crate::models::tags::NodeKind, crate::models::tags::LanguageId);
+wire_tag_codec!(
+    crate::models::tags::NodeKind,
+    crate::models::tags::LanguageId
+);
 impl<T: BinaryEncode> BinaryEncode for Option<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
         self.is_some().encode(buf);
@@ -150,9 +153,14 @@ impl<T: BinaryEncode> BinaryEncode for std::collections::BTreeSet<T> {
 }
 impl<T: BinaryDecode + Ord> BinaryDecode for std::collections::BTreeSet<T> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        decode_items(bytes, cursor, |_| Self::new(), |set, value| {
-            set.insert(value);
-        })
+        decode_items(
+            bytes,
+            cursor,
+            |_| Self::new(),
+            |set, value| {
+                set.insert(value);
+            },
+        )
     }
 }
 
@@ -200,9 +208,14 @@ impl<K: BinaryEncode, V: BinaryEncode> BinaryEncode for std::collections::BTreeM
 }
 impl<K: BinaryDecode + Ord, V: BinaryDecode> BinaryDecode for std::collections::BTreeMap<K, V> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        decode_items(bytes, cursor, |_| Self::new(), |map, (k, v)| {
-            map.insert(k, v);
-        })
+        decode_items(
+            bytes,
+            cursor,
+            |_| Self::new(),
+            |map, (k, v)| {
+                map.insert(k, v);
+            },
+        )
     }
 }
 impl BinaryEncode for serde_json::Value {
@@ -499,7 +512,9 @@ fn validate_callable_signature(
     value.valid().then_some(value)
 }
 
-fn validate_value_expr(value: crate::semantic::types::ValueExpr) -> Option<crate::semantic::types::ValueExpr> {
+fn validate_value_expr(
+    value: crate::semantic::types::ValueExpr,
+) -> Option<crate::semantic::types::ValueExpr> {
     value.valid_call_sites(0).then_some(value)
 }
 fn validate_static_string(
@@ -595,9 +610,8 @@ impl BinaryDecode for TypedFacts {
             docs: Vec::decode(bytes, cursor)?,
             errors: Vec::decode(bytes, cursor)?,
             pending_flow_nodes: Vec::decode(bytes, cursor)?,
-            activation_signals: crate::languages::manifests::semantic::FileActivationSignals::decode(
-                bytes, cursor,
-            )?,
+            activation_signals:
+                crate::languages::manifests::semantic::FileActivationSignals::decode(bytes, cursor)?,
             statement_fingerprints: Vec::decode(bytes, cursor)?,
             ..Default::default()
         };
@@ -840,14 +854,18 @@ impl TypedFacts {
         for _ in 0..node_count {
             nodes.push(Node {
                 id: decode_string_from_table(&table, bytes, cursor)?,
-                kind: crate::models::tags::NodeKind::parse(&decode_string_from_table(&table, bytes, cursor)?)?,
+                kind: crate::models::tags::NodeKind::parse(&decode_string_from_table(
+                    &table, bytes, cursor,
+                )?)?,
                 name: decode_string_from_table(&table, bytes, cursor)?,
                 qualname: decode_string_from_table(&table, bytes, cursor)?,
                 path: decode_string_from_table(&table, bytes, cursor)?,
                 line: usize::decode(bytes, cursor)?,
                 end_line: usize::decode(bytes, cursor)?,
                 is_test: bool::decode(bytes, cursor)?,
-                language: crate::models::tags::LanguageId::parse(&decode_string_from_table(&table, bytes, cursor)?)?,
+                language: crate::models::tags::LanguageId::parse(&decode_string_from_table(
+                    &table, bytes, cursor,
+                )?)?,
                 generated: bool::decode(bytes, cursor)?,
                 details: serde_json::Value::decode(bytes, cursor)?,
                 native_semantic: Option::decode(bytes, cursor)?,
@@ -987,10 +1005,16 @@ mod tests {
     #[test]
     fn rust_type_variants_roundtrip_through_binary_and_json() {
         use crate::semantic::TypeExpr;
-        let item = TypeExpr::Named { name: "Item".into() };
+        let item = TypeExpr::Named {
+            name: "Item".into(),
+        };
         for expected in [
-            TypeExpr::RustRange { item: Box::new(item.clone()) },
-            TypeExpr::RustArray { item: Box::new(item.clone()) },
+            TypeExpr::RustRange {
+                item: Box::new(item.clone()),
+            },
+            TypeExpr::RustArray {
+                item: Box::new(item.clone()),
+            },
             TypeExpr::RustCallArguments { args: vec![item] },
         ] {
             let mut encoded = Vec::new();
@@ -999,10 +1023,13 @@ mod tests {
             let json = serde_json::to_value(&expected).unwrap();
             assert_eq!(serde_json::from_value::<TypeExpr>(json).unwrap(), expected);
         }
-        let source = crate::semantic::ValueExpr::Alias { name: "receiver".into() };
+        let source = crate::semantic::ValueExpr::Alias {
+            name: "receiver".into(),
+        };
         for value in [
             crate::semantic::ValueExpr::RustField {
-                value: Box::new(source.clone()), member: "field".into(),
+                value: Box::new(source.clone()),
+                member: "field".into(),
             },
             crate::semantic::ValueExpr::RustProject {
                 value: Box::new(source),
@@ -1011,27 +1038,58 @@ mod tests {
         ] {
             let mut encoded = Vec::new();
             value.encode(&mut encoded);
-            assert_eq!(crate::semantic::ValueExpr::decode(&encoded, &mut 0), Some(value.clone()));
+            assert_eq!(
+                crate::semantic::ValueExpr::decode(&encoded, &mut 0),
+                Some(value.clone())
+            );
             let json = serde_json::to_value(&value).unwrap();
-            assert_eq!(serde_json::from_value::<crate::semantic::ValueExpr>(json).unwrap(), value);
+            assert_eq!(
+                serde_json::from_value::<crate::semantic::ValueExpr>(json).unwrap(),
+                value
+            );
         }
         use crate::semantic::types::RustProjection;
-        for operation in [RustProjection::ClosureMap, RustProjection::ClosureAndThen,
-            RustProjection::ClosureFilterMap, RustProjection::ClosureFlatMap,
-            RustProjection::FlatMapItem, RustProjection::ClosureMapOr, RustProjection::ClosureRow,
-            RustProjection::FilterEntryItem, RustProjection::IteratorItem, RustProjection::LocalKey,
-            RustProjection::ErrorPayload, RustProjection::Index, RustProjection::ElementIndex,
-            RustProjection::RangeSlice, RustProjection::GetRange, RustProjection::MapTrim, RustProjection::MapString,
-            RustProjection::UnwrapOrStr, RustProjection::MapOrStr, RustProjection::MapAsStr,
-            RustProjection::MapU64, RustProjection::MapI64, RustProjection::MapBool, RustProjection::MapPathStr,
-            RustProjection::MapPathBuf, RustProjection::MapCloned, RustProjection::FilterMapOk,
-            RustProjection::MapArray, RustProjection::MapObject, RustProjection::MapTomlTable,
-            RustProjection::IdentitySome] {
+        for operation in [
+            RustProjection::ClosureMap,
+            RustProjection::ClosureAndThen,
+            RustProjection::ClosureFilterMap,
+            RustProjection::ClosureFlatMap,
+            RustProjection::FlatMapItem,
+            RustProjection::ClosureMapOr,
+            RustProjection::ClosureRow,
+            RustProjection::FilterEntryItem,
+            RustProjection::IteratorItem,
+            RustProjection::LocalKey,
+            RustProjection::ErrorPayload,
+            RustProjection::Index,
+            RustProjection::ElementIndex,
+            RustProjection::RangeSlice,
+            RustProjection::GetRange,
+            RustProjection::MapTrim,
+            RustProjection::MapString,
+            RustProjection::UnwrapOrStr,
+            RustProjection::MapOrStr,
+            RustProjection::MapAsStr,
+            RustProjection::MapU64,
+            RustProjection::MapI64,
+            RustProjection::MapBool,
+            RustProjection::MapPathStr,
+            RustProjection::MapPathBuf,
+            RustProjection::MapCloned,
+            RustProjection::FilterMapOk,
+            RustProjection::MapArray,
+            RustProjection::MapObject,
+            RustProjection::MapTomlTable,
+            RustProjection::IdentitySome,
+        ] {
             let mut encoded = Vec::new();
             operation.encode(&mut encoded);
             assert_eq!(RustProjection::decode(&encoded, &mut 0), Some(operation));
             let json = serde_json::to_value(operation).unwrap();
-            assert_eq!(serde_json::from_value::<RustProjection>(json).unwrap(), operation);
+            assert_eq!(
+                serde_json::from_value::<RustProjection>(json).unwrap(),
+                operation
+            );
         }
     }
 

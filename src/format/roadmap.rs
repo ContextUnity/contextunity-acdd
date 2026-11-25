@@ -191,10 +191,7 @@ fn render_planned_line(spec: &RoadmapSpecEntry, wave_idx: usize, number: Option<
 
     format!(
         "{prefix}**{}** — {} (_unblocks_: {} specs / {} tasks) — {overlap}{waiting}\n",
-        spec.spec_id,
-        spec.title,
-        spec.unblocks_specs,
-        spec.unblocks_tasks,
+        spec.spec_id, spec.title, spec.unblocks_specs, spec.unblocks_tasks,
     )
 }
 

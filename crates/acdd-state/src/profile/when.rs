@@ -72,7 +72,11 @@ impl WhenExpr {
     }
 
     /// Validate that every referenced tag is `"default"` or declared in `allowed_tags`.
-    pub fn validate_tags(&self, allowed_tags: &BTreeSet<String>, context: &str) -> Result<(), StateError> {
+    pub fn validate_tags(
+        &self,
+        allowed_tags: &BTreeSet<String>,
+        context: &str,
+    ) -> Result<(), StateError> {
         for tag in self.referenced_tags() {
             if tag != "default" && !allowed_tags.contains(&tag) {
                 return Err(StateError::new(
@@ -343,7 +347,9 @@ mod tests {
             let parsed = WhenExpr::parse(raw);
             if parses_ok {
                 let expr = parsed.expect("should parse");
-                let err = expr.validate_tags(&allowed, "test").expect_err("unknown tag");
+                let err = expr
+                    .validate_tags(&allowed, "test")
+                    .expect_err("unknown tag");
                 assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
             } else {
                 let err = parsed.expect_err("should fail parse");

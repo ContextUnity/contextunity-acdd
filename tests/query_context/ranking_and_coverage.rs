@@ -665,7 +665,8 @@ function shadowed(test: Function) {
     }
     workspace.build();
     let conn = workspace.open();
-    let inbound = symbols::tests_paged_with_path(&conn, "target", None, "inbound", &options(10)).unwrap();
+    let inbound =
+        symbols::tests_paged_with_path(&conn, "target", None, "inbound", &options(10)).unwrap();
     let items = inbound["nodes"]["items"].as_array().unwrap();
     let direct = items
         .iter()
@@ -683,7 +684,9 @@ function shadowed(test: Function) {
         failures.push(format!("verified indirect relation: {indirect}"));
     }
     assert!(indirect["connection"].get("path").is_none());
-    let outbound = symbols::tests_paged_with_path(&conn, "test_direct", None, "outbound", &options(10)).unwrap();
+    let outbound =
+        symbols::tests_paged_with_path(&conn, "test_direct", None, "outbound", &options(10))
+            .unwrap();
     let target = outbound["nodes"]["items"]
         .as_array()
         .unwrap()
@@ -693,7 +696,8 @@ function shadowed(test: Function) {
     assert_eq!(target["connection"]["relation"], "direct");
     let mut full = options(10);
     full.detail = Detail::Full;
-    let full_inbound = symbols::tests_paged_with_path(&conn, "target", None, "inbound", &full).unwrap();
+    let full_inbound =
+        symbols::tests_paged_with_path(&conn, "target", None, "inbound", &full).unwrap();
     let direct = full_inbound["nodes"]["items"]
         .as_array()
         .unwrap()
@@ -759,7 +763,8 @@ function shadowed(test: Function) {
                 ],
             ),
         ] {
-            let found = symbols::tests_paged_with_path(&conn, selector, None, "inbound", &query).unwrap();
+            let found =
+                symbols::tests_paged_with_path(&conn, selector, None, "inbound", &query).unwrap();
             let expected = Value::Array(
                 path.iter()
                     .map(|selector| node(selector)["id"].clone())
@@ -910,8 +915,14 @@ function shadowed(test: Function) {
                 .map(|selector| node(selector)["id"].clone())
                 .collect(),
         );
-        let found =
-            symbols::tests_paged_with_path(&conn, path.last().unwrap(), None, "inbound", &options(100)).unwrap();
+        let found = symbols::tests_paged_with_path(
+            &conn,
+            path.last().unwrap(),
+            None,
+            "inbound",
+            &options(100),
+        )
+        .unwrap();
         let case_id = node(path[0])["id"].clone();
         if !found["nodes"]["items"]
             .as_array()
@@ -1008,7 +1019,8 @@ function shadowed(test: Function) {
         "surface.py:possible_only",
         "surface.py:untouched",
     ] {
-        let found = symbols::tests_paged_with_path(&conn, selector, None, "inbound", &options(100)).unwrap();
+        let found = symbols::tests_paged_with_path(&conn, selector, None, "inbound", &options(100))
+            .unwrap();
         if found["nodes"]["items"]
             .as_array()
             .unwrap()
@@ -1112,7 +1124,9 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     );
     workspace.build();
     let conn = workspace.open();
-    let inbound = symbols::tests_paged_with_path(&conn, "ChannelSyncEntry", None, "inbound", &options(10)).unwrap();
+    let inbound =
+        symbols::tests_paged_with_path(&conn, "ChannelSyncEntry", None, "inbound", &options(10))
+            .unwrap();
     assert_eq!(inbound["discovery_method"], "lexical_fallback");
     assert_eq!(inbound["nodes"]["total"], 1);
     assert_eq!(
@@ -1164,7 +1178,8 @@ fn test_mapping_places_direct_evidence_before_earlier_transitive_tests() {
     );
     workspace.build();
     let conn = workspace.open();
-    let first = symbols::tests_paged_with_path(&conn, "target", None, "inbound", &options(1)).unwrap();
+    let first =
+        symbols::tests_paged_with_path(&conn, "target", None, "inbound", &options(1)).unwrap();
     assert_eq!(first["nodes"]["items"][0]["name"], "test_direct");
     assert_eq!(
         first["nodes"]["items"][0]["connection"]["relation"],
@@ -1291,7 +1306,8 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 fn tests_reports_unresolved_references_in_symbol_scope() {
     let workspace = navigation_workspace();
     let conn = workspace.open();
-    let res = symbols::tests_paged_with_path(&conn, "test_one", None, "inbound", &options(10)).unwrap();
+    let res =
+        symbols::tests_paged_with_path(&conn, "test_one", None, "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
     assert!(res["scope"]
         .as_str()

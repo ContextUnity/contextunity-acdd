@@ -1,17 +1,16 @@
 //! Profile inheritance (`inherit`), `gates` (replace) vs `gates_patch` (patch) resolution, SHA-256 pin verification, and template expansion.
 
 use super::schema::{
-    parse_profile, GateDef, GateTemplate, GitPolicy,
-    GitPolicyPatch, ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem,
-    ResolvedGateProfile, ResourceLimits, RoleDef, RolePatch, SavePolicy, SavePolicyPatch,
-    SubsystemRegistryPatch, TasksBlock, DEFAULT_MAX_ATTEMPTS,
+    parse_profile, GateDef, GateTemplate, GitPolicy, GitPolicyPatch, ParsedProfileFile, PatchField,
+    ProofDef, RawGateDef, RawGateItem, ResolvedGateProfile, ResourceLimits, RoleDef, RolePatch,
+    SavePolicy, SavePolicyPatch, SubsystemRegistryPatch, TasksBlock, DEFAULT_MAX_ATTEMPTS,
 };
 use super::when::{normalize_optional_when, WhenExpr};
 use crate::types::SaveAction;
-use acdd_core::fs::{checked_child, is_normalized_relative, open_confined};
-use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::{checked_child, is_normalized_relative, open_confined};
 use acdd_core::ids::{is_valid_short_hex_prefix, GateId};
+use acdd_core::subsystems::SubsystemRegistry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -188,7 +187,12 @@ pub fn resolve_optional_profile_ref_with_dirs(
     profiles_dirs: Option<&[String]>,
 ) -> Result<ResolvedGateProfile, StateError> {
     if let Some(explicit) = profile_ref {
-        return resolve_profile_ref_with_dirs(explicit, workspace_root, acdd_modules, profiles_dirs);
+        return resolve_profile_ref_with_dirs(
+            explicit,
+            workspace_root,
+            acdd_modules,
+            profiles_dirs,
+        );
     }
     if let Some(root) = workspace_root {
         if std::fs::symlink_metadata(root.join(".acdd/profile.yaml")).is_ok() {
@@ -200,7 +204,14 @@ pub fn resolve_optional_profile_ref_with_dirs(
             );
         }
     }
-    resolve_builtin("code", CODE_YAML, workspace_root, acdd_modules, profiles_dirs, true)
+    resolve_builtin(
+        "code",
+        CODE_YAML,
+        workspace_root,
+        acdd_modules,
+        profiles_dirs,
+        true,
+    )
 }
 
 /// Resolve an active run's `profile_id` during `sync --rebind-profile`, matching `start`'s
@@ -212,7 +223,14 @@ pub(crate) fn resolve_profile_for_rebind(
     profiles_dirs: Option<&[String]>,
 ) -> Result<ResolvedGateProfile, StateError> {
     if profile_id == "code" {
-        return resolve_builtin("code", CODE_YAML, workspace_root, acdd_modules, profiles_dirs, true);
+        return resolve_builtin(
+            "code",
+            CODE_YAML,
+            workspace_root,
+            acdd_modules,
+            profiles_dirs,
+            true,
+        );
     }
     resolve_profile_ref_with_dirs(profile_id, workspace_root, acdd_modules, profiles_dirs)
 }
@@ -258,7 +276,10 @@ fn finalize_working_profile(
     Ok(working.resolved)
 }
 
-fn path_cycle_identity(workspace_root: Option<&Path>, rel_path: &str) -> Result<String, StateError> {
+fn path_cycle_identity(
+    workspace_root: Option<&Path>,
+    rel_path: &str,
+) -> Result<String, StateError> {
     let norm_rel = rel_path.trim().replace('\\', "/");
     let norm_rel = norm_rel.strip_prefix("./").unwrap_or(&norm_rel);
     let Some(root) = workspace_root else {
@@ -349,12 +370,20 @@ pub(crate) fn profile_lineage_paths(
         let (raw, pin) = parse_path_and_pin(&reference)?;
         let rel = resolve_profile_path_in_workspace(root, &raw, Some(profiles_dirs))?;
         if paths.contains(&rel) {
-            return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "cyclic profile inheritance"));
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                "cyclic profile inheritance",
+            ));
         }
         let bytes = read_confined_profile_bytes(root, &rel)?;
-        if let Some(pin) = pin { verify_sha256_prefix(&bytes, &pin, &rel)?; }
-        let yaml = std::str::from_utf8(&bytes).map_err(|err| StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string()))?;
-        reference = parse_profile(yaml)?.inherit.unwrap_or_else(|| "none".to_owned());
+        if let Some(pin) = pin {
+            verify_sha256_prefix(&bytes, &pin, &rel)?;
+        }
+        let yaml = std::str::from_utf8(&bytes)
+            .map_err(|err| StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string()))?;
+        reference = parse_profile(yaml)?
+            .inherit
+            .unwrap_or_else(|| "none".to_owned());
         paths.push(rel);
     }
     Ok(paths)
@@ -567,11 +596,9 @@ fn strip_disabled_domains_from_gates(
                 .iter()
                 .any(|d| tool_belongs_to_domain(tool, d))
         });
-        gate.gate.context.retain(|ctx| {
-            !disabled_domains
-                .iter()
-                .any(|d| has_domain_prefix(ctx, d))
-        });
+        gate.gate
+            .context
+            .retain(|ctx| !disabled_domains.iter().any(|d| has_domain_prefix(ctx, d)));
         gate.gate.guidance.retain(|g| match g {
             super::schema::GateGuidanceRef::Slot(slot) => {
                 !disabled_domains.iter().any(|d| has_domain_prefix(slot, d))
@@ -618,7 +645,9 @@ fn parse_path_and_pin(raw: &str) -> Result<(String, Option<String>), StateError>
     if !is_normalized_relative(Path::new(path_part)) {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("inherited profile path '{path_part}' must be a normalized workspace-relative path"),
+            format!(
+                "inherited profile path '{path_part}' must be a normalized workspace-relative path"
+            ),
         ));
     }
     let normalized_pin = match pin_part {
@@ -626,9 +655,7 @@ fn parse_path_and_pin(raw: &str) -> Result<(String, Option<String>), StateError>
             if !is_valid_short_hex_prefix(pin) {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "inherit SHA-256 prefix '{pin}' must be 7..=64 hexadecimal characters"
-                    ),
+                    format!("inherit SHA-256 prefix '{pin}' must be 7..=64 hexadecimal characters"),
                 ));
             }
             Some(pin.to_ascii_lowercase())
@@ -835,8 +862,12 @@ fn merge_role(target: &mut RoleDef, patch: RolePatch) {
     } else if matches!(patch.models, PatchField::Clear) {
         target.models.clear();
     }
-    patch.guidance.apply_to_option(&mut target.guidance, Clone::clone);
-    patch.runner.apply_to_option(&mut target.runner, Clone::clone);
+    patch
+        .guidance
+        .apply_to_option(&mut target.guidance, Clone::clone);
+    patch
+        .runner
+        .apply_to_option(&mut target.runner, Clone::clone);
     patch
         .prompt_template
         .apply_to_option(&mut target.prompt_template, Clone::clone);
@@ -1091,7 +1122,10 @@ fn apply_gates_patch(
                                 })?;
                             let mut nested = *raw;
                             nested.id = Some(rest.to_owned());
-                            apply_gates_patch(&mut matched.children, vec![RawGateItem::Gate(Box::new(nested))])?;
+                            apply_gates_patch(
+                                &mut matched.children,
+                                vec![RawGateItem::Gate(Box::new(nested))],
+                            )?;
                         }
                     } else {
                         let matched = target
@@ -1119,7 +1153,10 @@ fn apply_gates_patch(
     Ok(())
 }
 
-fn delete_gate_by_selector(target: &mut Vec<WorkingGate>, selector: &str) -> Result<(), StateError> {
+fn delete_gate_by_selector(
+    target: &mut Vec<WorkingGate>,
+    selector: &str,
+) -> Result<(), StateError> {
     if let Some((head, rest)) = selector.split_once('.') {
         if head == "tasks" {
             let mut matching_blocks: Vec<&mut WorkingTasksBlock> = target
@@ -1233,7 +1270,10 @@ fn insert_gate_relative(
     if !new_gate.gate.id.is_empty() && target.iter().any(|g| g.gate.id == new_gate.gate.id) {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("inserted gate '{}' already exists at target level", new_gate.gate.id),
+            format!(
+                "inserted gate '{}' already exists at target level",
+                new_gate.gate.id
+            ),
         ));
     }
     let idx = if insert_after { pos + 1 } else { pos };
@@ -1470,7 +1510,9 @@ fn merge_save_policy(target: &mut SavePolicy, patch: SavePolicyPatch) {
         PatchField::Clear => target.prune = false,
         PatchField::Set(v) => target.prune = v,
     }
-    patch.report.apply_to_option(&mut target.report, Clone::clone);
+    patch
+        .report
+        .apply_to_option(&mut target.report, Clone::clone);
 }
 
 fn expand_templates_in_working(working: &mut WorkingProfile) -> Result<(), StateError> {
@@ -1479,10 +1521,7 @@ fn expand_templates_in_working(working: &mut WorkingProfile) -> Result<(), State
     expand_gate_list(&mut working.gates, &templates, &mut stack)
 }
 
-fn apply_template_defaults(
-    gate: &mut WorkingGate,
-    tpl: &GateTemplate,
-) {
+fn apply_template_defaults(gate: &mut WorkingGate, tpl: &GateTemplate) {
     if gate.gate.command.is_none() {
         gate.gate.command = tpl.command.clone();
     }

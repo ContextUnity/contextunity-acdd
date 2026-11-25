@@ -292,9 +292,7 @@ fn document_search_and_section_validation_boundaries() {
 #[test]
 fn ast_language_inference_and_actionable_diagnostics() {
     use acdd_index::languages;
-    let many_calls: String = (0..16)
-        .map(|i| format!("many_call({i})\n"))
-        .collect();
+    let many_calls: String = (0..16).map(|i| format!("many_call({i})\n")).collect();
     let fixture = AnalysisFixture::indexed_files(&[
         (
             "app.py",
@@ -316,14 +314,32 @@ fn ast_language_inference_and_actionable_diagnostics() {
         assert_eq!(result["matches"]["total"], 1, "{pattern}: {result}");
         assert_eq!(result["matches"]["limit"], 15, "{pattern}: {result}");
         if pattern.contains("$$$") {
-            assert!(!result["matches"]["items"][0]["captures"].as_object().unwrap().contains_key(""), "{result}");
+            assert!(
+                !result["matches"]["items"][0]["captures"]
+                    .as_object()
+                    .unwrap()
+                    .contains_key(""),
+                "{result}"
+            );
         }
     }
-    let mixed = m.payload("ast_grep_search", json!({"pattern":"def $NAME($$$)","path":"app.py"})).expect("MCP");
-    let mixed_caps = mixed["matches"]["items"][0]["captures"].as_object().unwrap();
+    let mixed = m
+        .payload(
+            "ast_grep_search",
+            json!({"pattern":"def $NAME($$$)","path":"app.py"}),
+        )
+        .expect("MCP");
+    let mixed_caps = mixed["matches"]["items"][0]["captures"]
+        .as_object()
+        .unwrap();
     assert_eq!(mixed_caps.get("NAME"), Some(&json!("target")));
     assert!(!mixed_caps.contains_key(""), "{mixed}");
-    let paged = m.payload("ast_grep_search", json!({"pattern":"many_call($$$)","path":"many.py"})).expect("MCP");
+    let paged = m
+        .payload(
+            "ast_grep_search",
+            json!({"pattern":"many_call($$$)","path":"many.py"}),
+        )
+        .expect("MCP");
     assert_eq!(paged["matches"]["limit"], 15);
     assert_eq!(crate::json_array(&paged["matches"]["items"]).len(), 15);
     assert_eq!(paged["matches"]["has_more"], true);
@@ -453,14 +469,17 @@ fn ast_language_inference_and_actionable_diagnostics() {
         (
             None,
             "def (((",
-            &["does not parse in any detected language", "language", "path", "acdd_guide", "Examples:"][..],
+            &[
+                "does not parse in any detected language",
+                "language",
+                "path",
+                "acdd_guide",
+                "Examples:",
+            ][..],
         ),
     ] {
         let (_, response) = m
-            .call(
-                "ast_grep_search",
-                json!({"pattern":pattern,"path":path}),
-            )
+            .call("ast_grep_search", json!({"pattern":pattern,"path":path}))
             .expect("MCP transport");
         assert_eq!(response["result"]["isError"], true, "{response}");
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -530,15 +549,28 @@ fn ast_language_inference_and_actionable_diagnostics() {
                 Some(l) => json!({"pattern":pattern,"language":l}),
                 None => json!({"pattern":pattern}),
             };
-            let res = mm.payload("ast_grep_search", args).expect("MCP tool should succeed");
+            let res = mm
+                .payload("ast_grep_search", args)
+                .expect("MCP tool should succeed");
             assert_eq!(res["language"], expected_lang, "{pattern}: {res}");
-            assert_eq!(res["matches"]["items"][0]["path"], expected_path, "{pattern}: {res}");
+            assert_eq!(
+                res["matches"]["items"][0]["path"], expected_path,
+                "{pattern}: {res}"
+            );
         }
         mm.finish().expect("server must finish successfully");
 
         let cli_out = run_cli(
             multi.workspace(),
-            &["--format", "json", "ast", "grep", "helper($ARG)", "--limit", "150"],
+            &[
+                "--format",
+                "json",
+                "ast",
+                "grep",
+                "helper($ARG)",
+                "--limit",
+                "150",
+            ],
         );
         assert!(
             cli_out.status.success(),
@@ -547,7 +579,11 @@ fn ast_language_inference_and_actionable_diagnostics() {
         );
         let cli_json: Value = serde_json::from_slice(&cli_out.stdout).expect("CLI JSON");
         assert_eq!(cli_json["language"], "python, rust", "{cli_json}");
-        assert_eq!(cli_json["matches"].as_array().unwrap().len(), 2, "{cli_json}");
+        assert_eq!(
+            cli_json["matches"].as_array().unwrap().len(),
+            2,
+            "{cli_json}"
+        );
     }
     for language in ["python"]
         .into_iter()

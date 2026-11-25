@@ -1,7 +1,7 @@
-use crate::languages::profile::{LanguageMemberResult, ProfileLinker};
 use super::context::PhaseContext;
 use super::inferred::{RefQuery, ReferenceState};
 use super::relation_edges;
+use crate::languages::profile::{LanguageMemberResult, ProfileLinker};
 use crate::linker::types::ReceiverType;
 use crate::models::{
     compact_graph::CompactGraph as Graph,
@@ -37,10 +37,7 @@ fn filter_candidates<'a, 'file, 'res>(
 {
     if state.imported.is_none()
         && state.typed_receiver.is_none()
-        && !matches!(
-            &state.receiver_member,
-            Some(LanguageMemberResult::Local(_))
-        )
+        && !matches!(&state.receiver_member, Some(LanguageMemberResult::Local(_)))
     {
         candidates.retain(|n| {
             n.path == *ctx.path
@@ -53,9 +50,7 @@ fn filter_candidates<'a, 'file, 'res>(
                         .get(n.path.as_str())
                         .into_iter()
                         .flatten()
-                        .any(|m| {
-                            m.kind == NodeKind::Module && m.qualname == ctx.file_module
-                        }))
+                        .any(|m| m.kind == NodeKind::Module && m.qualname == ctx.file_module))
                 || (!state.shadowed
                     && q.r.kind == EdgeKind::References.as_str()
                     && n.qualname == q.expression)
@@ -86,7 +81,8 @@ fn filter_candidates<'a, 'file, 'res>(
         }
     }
     candidates.retain(|n| {
-        let macro_reference = q.active_profile
+        let macro_reference = q
+            .active_profile
             .is_some_and(|profile| profile.linker().macro_reference_candidate(q.owner, n));
         match q.r.kind.as_str() {
             k if k == EdgeKind::Inherits.as_str() || k == EdgeKind::Bases.as_str() => {
@@ -148,8 +144,11 @@ fn filter_candidates<'a, 'file, 'res>(
     ) && !q.tail.is_empty()
     {
         candidates.retain(|candidate| {
-            crate::languages::by_id(candidate.language.as_str())
-                .is_none_or(|profile| profile.linker().admits_static_receiver_candidate(candidate, q.expression))
+            crate::languages::by_id(candidate.language.as_str()).is_none_or(|profile| {
+                profile
+                    .linker()
+                    .admits_static_receiver_candidate(candidate, q.expression)
+            })
         });
     }
 }
@@ -176,7 +175,9 @@ fn disambiguate_candidates<'a, 'file, 'res>(
         }
     }
     if let Some(profile) = ctx.profile {
-        profile.linker().record_candidate_gaps(profile, r, candidates, ctx.path, graph);
+        profile
+            .linker()
+            .record_candidate_gaps(profile, r, candidates, ctx.path, graph);
     }
 }
 
@@ -194,9 +195,15 @@ fn builtin_origin_and_evidence<'a, 'file, 'res>(
     {
         return Some((Cow::Borrowed(origin), evidence.into()));
     }
-    if let Some(origin) = q.active_profile.zip(ctx.reference_extension()).and_then(|(profile, extension)| {
-        profile.linker().template_builtin(q.expression, extension.syntax_rules())
-    }) {
+    if let Some(origin) =
+        q.active_profile
+            .zip(ctx.reference_extension())
+            .and_then(|(profile, extension)| {
+                profile
+                    .linker()
+                    .template_builtin(q.expression, extension.syntax_rules())
+            })
+    {
         let evidence = format!("{origin} {}", q.expression);
         return Some((Cow::Owned(origin), evidence.into()));
     }
@@ -230,10 +237,10 @@ fn builtin_origin_and_evidence<'a, 'file, 'res>(
     if let Some(origin) = q.active_profile.and_then(|profile| {
         profile.linker().platform_builtin_origin(
             profile,
-        q.first,
-        ctx.input
-            .semantic_context
-            .autoimport_evidence(ctx.path, q.first),
+            q.first,
+            ctx.input
+                .semantic_context
+                .autoimport_evidence(ctx.path, q.first),
         )
     }) {
         return Some((
@@ -271,14 +278,16 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
     let external_import = ctx.profile.is_some_and(|profile| {
         profile.linker().external_annotation(
             profile,
-        q.first,
-        ctx.path,
-        ctx.input.dependency_registry,
-    )
+            q.first,
+            ctx.path,
+            ctx.input.dependency_registry,
+        )
     });
-    let external_origin =
-        if let Some(LanguageMemberResult::External { module, import_line, .. }) =
-            &state.receiver_member
+    let external_origin = if let Some(LanguageMemberResult::External {
+        module,
+        import_line,
+        ..
+    }) = &state.receiver_member
     {
         Some((Cow::Borrowed(*module), *import_line))
     } else if let Some(ReceiverType::External(module, import_line)) = state.typed_receiver {
@@ -290,9 +299,9 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
         && candidates.is_empty()
         && (state.imported.is_some_and(|targets| targets.is_empty())
             || external_import
-                || ctx
-                    .external_call_for(q.first, q.owner, r.position())
-                    .is_some())
+            || ctx
+                .external_call_for(q.first, q.owner, r.position())
+                .is_some())
     {
         if let Some(target) = ctx
             .external_call_for(q.first, q.owner, r.position())
@@ -332,15 +341,20 @@ fn determine_external_origin_and_evidence<'a, 'file, 'res>(
     } else if let Some((module, import_line)) = external_origin {
         let module = module.as_ref();
         if let Some(provider) = framework_provider {
-            let diagnostic_marker = if ctx.profile.is_some_and(|profile| {
-                profile.linker().framework_magic_diagnostic(profile, module)
-            }) {
+            let diagnostic_marker = if ctx
+                .profile
+                .is_some_and(|profile| profile.linker().framework_magic_diagnostic(profile, module))
+            {
                 "; diagnostic_reason=framework_magic"
             } else {
                 ""
             };
             format!("{} {provider}.{} via external import {module} at line {import_line}{diagnostic_marker}", ctx.language_linker.framework_member_label(), q.tail).into()
-        } else if let Some(evidence) = ctx.profile.and_then(|profile| profile.linker().external_builtin_evidence(profile, module, q.expression)) {
+        } else if let Some(evidence) = ctx.profile.and_then(|profile| {
+            profile
+                .linker()
+                .external_builtin_evidence(profile, module, q.expression)
+        }) {
             evidence.into()
         } else {
             match (
@@ -393,10 +407,16 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
     let mut source_heuristic = false;
     if r.kind == EdgeKind::Implements.as_str() {
         if let Some(implementation) = q.owner.filter(|node| node.kind == NodeKind::Impl) {
-            if let Some(result) = ctx.language_linker.implementation_source(crate::linker::traits::ImplementationSource {
-                implementation, file_module: ctx.file_module, by_qual: ctx.input.by_qual,
-                by_name: ctx.input.by_name, aliases: ctx.aliases, lookup_key,
-            }) {
+            if let Some(result) = ctx.language_linker.implementation_source(
+                crate::linker::traits::ImplementationSource {
+                    implementation,
+                    file_module: ctx.file_module,
+                    by_qual: ctx.input.by_qual,
+                    by_name: ctx.input.by_name,
+                    aliases: ctx.aliases,
+                    lookup_key,
+                },
+            ) {
                 (source, source_heuristic) = result;
             }
         }
@@ -432,15 +452,11 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         } else {
             (source.as_str(), target)
         };
-        let kind =
-            if r.kind == EdgeKind::Bases.as_str() || r.kind == EdgeKind::Inherits.as_str() {
+        let kind = if r.kind == EdgeKind::Bases.as_str() || r.kind == EdgeKind::Inherits.as_str() {
             let is_interface = candidate.kind == NodeKind::Interface
                 || crate::languages::by_id(candidate.language.as_str())
                     .is_some_and(|profile| profile.linker().has_protocol_or_abc_base(candidate));
-                if is_interface
-                    && q.owner
-                        .is_some_and(|n| n.kind != NodeKind::Interface)
-                {
+            if is_interface && q.owner.is_some_and(|n| n.kind != NodeKind::Interface) {
                 EdgeKind::Implements
             } else {
                 EdgeKind::Inherits
@@ -471,12 +487,11 @@ fn emit_resolution_outcome<'a, 'file, 'res>(
         if (kind == EdgeKind::Implements || kind == EdgeKind::Inherits)
             && r.kind != EdgeKind::Decorates.as_str()
         {
-            let source_container_id = if q.owner.is_some_and(|n| n.kind == NodeKind::Impl)
-            {
-                    r.source.as_str()
-                } else {
-                    src
-                };
+            let source_container_id = if q.owner.is_some_and(|n| n.kind == NodeKind::Impl) {
+                r.source.as_str()
+            } else {
+                src
+            };
             relation_edges::emit_inherited_method_edges(
                 ctx.input,
                 graph,

@@ -156,30 +156,53 @@ impl LanguageLinker for RustLinker {
     fn incomplete_receiver(&self, receiver: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
         matches!(receiver, crate::linker::value_flow::TypeTarget::RustReference { target, .. } if matches!(target.as_ref(), crate::linker::value_flow::TypeTarget::Unknown))
     }
-    fn callback_receiver<'a>(&self, receiver: &crate::linker::value_flow::TypeTarget<'a>, method: &str) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn callback_receiver<'a>(
+        &self,
+        receiver: &crate::linker::value_flow::TypeTarget<'a>,
+        method: &str,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::callback_receiver(receiver, method)
     }
-    fn special_index_projection<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>, index: &str) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn special_index_projection<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+        index: &str,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::TypeTarget;
         match target {
-            TypeTarget::RustTuple(items) => Some(index.parse::<usize>().ok().and_then(|index| items.get(index)).cloned().unwrap_or(TypeTarget::Unknown)),
-            TypeTarget::RustCollection { item } | TypeTarget::RustSlice { item } | TypeTarget::RustTypedContainer { item, .. } => Some((**item).clone()),
+            TypeTarget::RustTuple(items) => Some(
+                index
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| items.get(index))
+                    .cloned()
+                    .unwrap_or(TypeTarget::Unknown),
+            ),
+            TypeTarget::RustCollection { item }
+            | TypeTarget::RustSlice { item }
+            | TypeTarget::RustTypedContainer { item, .. } => Some((**item).clone()),
             _ => None,
         }
     }
     fn special_field_projection<'a>(
-        &self, target: &crate::linker::value_flow::TypeTarget<'a>, member: &str, owner: &'a Node,
-        at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+        member: &str,
+        owner: &'a Node,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
     ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::{Symbol, TypeTarget};
         match target {
             TypeTarget::RustTuple(_) => self.special_index_projection(target, member),
-            TypeTarget::RustReference { .. } | TypeTarget::RustDeref { .. } => Some(match resolver.resolve_member(target, member, owner, at) {
-                Symbol::Type(target) => target,
-                Symbol::Callable(node) => TypeTarget::Callable(node),
-                Symbol::Ambiguous => TypeTarget::Ambiguous,
-                _ => TypeTarget::Unknown,
-            }),
+            TypeTarget::RustReference { .. } | TypeTarget::RustDeref { .. } => {
+                Some(match resolver.resolve_member(target, member, owner, at) {
+                    Symbol::Type(target) => target,
+                    Symbol::Callable(node) => TypeTarget::Callable(node),
+                    Symbol::Ambiguous => TypeTarget::Ambiguous,
+                    _ => TypeTarget::Unknown,
+                })
+            }
             _ => None,
         }
     }
@@ -190,24 +213,34 @@ impl LanguageLinker for RustLinker {
         limits: crate::linker::value_flow::SemanticLimits,
         evaluate: &dyn Fn(&crate::semantic::ValueExpr) -> crate::linker::value_flow::TypeTarget<'a>,
         payload: &dyn Fn(&crate::semantic::ValueExpr) -> crate::linker::value_flow::TypeTarget<'a>,
-        join: &dyn Fn(Vec<crate::linker::value_flow::TypeTarget<'a>>) -> crate::linker::value_flow::TypeTarget<'a>,
+        join: &dyn Fn(
+            Vec<crate::linker::value_flow::TypeTarget<'a>>,
+        ) -> crate::linker::value_flow::TypeTarget<'a>,
     ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
-        super::value_flow::evaluate_language_value(self, eval, value, limits, evaluate, payload, join)
+        super::value_flow::evaluate_language_value(
+            self, eval, value, limits, evaluate, payload, join,
+        )
     }
     fn join_language_targets<'a>(
         &self,
         targets: &[crate::linker::value_flow::TypeTarget<'a>],
-        join: &dyn Fn(Vec<crate::linker::value_flow::TypeTarget<'a>>) -> crate::linker::value_flow::TypeTarget<'a>,
+        join: &dyn Fn(
+            Vec<crate::linker::value_flow::TypeTarget<'a>>,
+        ) -> crate::linker::value_flow::TypeTarget<'a>,
     ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::join_targets(targets, join)
     }
     fn member_receiver<'b, 'a>(
-        &self, receiver: &'b crate::linker::value_flow::TypeTarget<'a>, member: &str,
+        &self,
+        receiver: &'b crate::linker::value_flow::TypeTarget<'a>,
+        member: &str,
     ) -> Option<Option<&'b crate::linker::value_flow::TypeTarget<'a>>> {
         use crate::linker::value_flow::TypeTarget;
         match receiver {
             TypeTarget::RustReference { target, .. } => Some(Some(target)),
-            TypeTarget::RustDeref { wrapper, target } => Some((!self.wrapper_value_member(wrapper, member)).then_some(target)),
+            TypeTarget::RustDeref { wrapper, target } => {
+                Some((!self.wrapper_value_member(wrapper, member)).then_some(target))
+            }
             _ => None,
         }
     }
@@ -218,15 +251,21 @@ impl LanguageLinker for RustLinker {
         in_hierarchy: &dyn Fn() -> bool,
     ) -> Option<Option<crate::linker::value_flow::TypeTarget<'a>>> {
         use crate::linker::value_flow::TypeTarget;
-        if !name.contains([':', '.']) && crate::languages::by_id("rust").is_some_and(|profile| profile.builtin_type(name)) {
+        if !name.contains([':', '.'])
+            && crate::languages::by_id("rust").is_some_and(|profile| profile.builtin_type(name))
+        {
             return Some(Some(TypeTarget::Builtin(name.to_owned())));
         }
         if !matches!(name.split("::").next(), Some("std" | "core" | "alloc"))
-            && !name.starts_with("serde::ser::") && !in_hierarchy()
+            && !name.starts_with("serde::ser::")
+            && !in_hierarchy()
         {
             return Some(None);
         }
-        Some(Some(TypeTarget::External { module: name.to_owned(), import_line }))
+        Some(Some(TypeTarget::External {
+            module: name.to_owned(),
+            import_line,
+        }))
     }
     fn special_symbol<'a>(
         &self,
@@ -268,9 +307,14 @@ impl LanguageLinker for RustLinker {
     }
     fn value_shadows_role(&self, name: &str, role: crate::linker::value_flow::SymbolRole) -> bool {
         !matches!(role, crate::linker::value_flow::SymbolRole::Type)
-            && !name.split_once('.').map_or(name, |(before_dot, _)| before_dot).contains("::")
+            && !name
+                .split_once('.')
+                .map_or(name, |(before_dot, _)| before_dot)
+                .contains("::")
     }
-    fn external_field_projection(&self) -> bool { true }
+    fn external_field_projection(&self) -> bool {
+        true
+    }
     fn reaching_payload_wrapper(&self, target: &crate::linker::value_flow::TypeTarget<'_>) -> bool {
         use crate::linker::value_flow::TypeTarget;
         matches!(target, TypeTarget::RustWrapper { .. })
@@ -287,7 +331,11 @@ impl LanguageLinker for RustLinker {
             || resolver.unshadowed_global(owner, "Some", at)
     }
     fn lexical_receiver_field(&self, owner: &Node, receiver: &str) -> bool {
-        receiver == "self" && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some("self")
+        receiver == "self"
+            && owner
+                .detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+                .as_str()
+                == Some("self")
     }
     fn special_property_lookup<'s, 'a>(
         &self,
@@ -306,7 +354,9 @@ impl LanguageLinker for RustLinker {
         caller: &'a Node,
         associated: bool,
     ) -> Option<crate::linker::semantic_context::context::Member<'s>> {
-        super::semantic_context::special_member_lookup(context, receiver, member, caller, associated)
+        super::semantic_context::special_member_lookup(
+            context, receiver, member, caller, associated,
+        )
     }
     fn member_call_result<'a>(
         &self,
@@ -347,7 +397,10 @@ impl LanguageLinker for RustLinker {
         flow: Option<&crate::typed_facts::FlowState>,
         first: &str,
     ) -> bool {
-        if binding_owner.parameter_types().any(|(param, _)| param == first) {
+        if binding_owner
+            .parameter_types()
+            .any(|(param, _)| param == first)
+        {
             return true;
         }
         let Some(crate::typed_facts::FlowState::Valid { facts, .. }) = flow else {
@@ -368,44 +421,122 @@ impl LanguageLinker for RustLinker {
         }
         !has_fact
     }
-    fn project_fields<'a>(&self, fields: &mut hashbrown::HashMap<&'a str, hashbrown::HashMap<String, crate::linker::value_flow::TypeTarget<'a>>>, owners: &[&'a Node], resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) {
+    fn project_fields<'a>(
+        &self,
+        fields: &mut hashbrown::HashMap<
+            &'a str,
+            hashbrown::HashMap<String, crate::linker::value_flow::TypeTarget<'a>>,
+        >,
+        owners: &[&'a Node],
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) {
         super::value_flow::project_deref_fields(fields, owners, resolver);
     }
-    fn receiver_symbol<'a>(&self, lookup: &crate::linker::semantic_context::LanguageMemberLookup<'_, 'a>, owner: &'a Node, name: &str, resolve_type: &mut dyn FnMut(&str) -> crate::linker::value_flow::Symbol<'a>) -> Option<crate::linker::value_flow::Symbol<'a>> {
+    fn receiver_symbol<'a>(
+        &self,
+        lookup: &crate::linker::semantic_context::LanguageMemberLookup<'_, 'a>,
+        owner: &'a Node,
+        name: &str,
+        resolve_type: &mut dyn FnMut(&str) -> crate::linker::value_flow::Symbol<'a>,
+    ) -> Option<crate::linker::value_flow::Symbol<'a>> {
         super::semantic_context::receiver_symbol(Some(lookup), owner, name, resolve_type)
     }
-    fn project_reference<'a>(&self, target: crate::linker::value_flow::TypeTarget<'a>, mutable: bool) -> crate::linker::value_flow::TypeTarget<'a> {
-        crate::linker::value_flow::TypeTarget::RustReference { mutable, target: Box::new(target) }
+    fn project_reference<'a>(
+        &self,
+        target: crate::linker::value_flow::TypeTarget<'a>,
+        mutable: bool,
+    ) -> crate::linker::value_flow::TypeTarget<'a> {
+        crate::linker::value_flow::TypeTarget::RustReference {
+            mutable,
+            target: Box::new(target),
+        }
     }
-    fn project_tuple<'a>(&self, items: Vec<crate::linker::value_flow::TypeTarget<'a>>) -> crate::linker::value_flow::TypeTarget<'a> {
+    fn project_tuple<'a>(
+        &self,
+        items: Vec<crate::linker::value_flow::TypeTarget<'a>>,
+    ) -> crate::linker::value_flow::TypeTarget<'a> {
         crate::linker::value_flow::TypeTarget::RustTuple(items)
     }
-    fn generic_sequence_return(&self) -> bool { false }
-    fn collection_item<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn generic_sequence_return(&self) -> bool {
+        false
+    }
+    fn collection_item<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::TypeTarget;
         match target {
-            TypeTarget::RustIterator { item } | TypeTarget::RustCollection { item } | TypeTarget::RustSlice { item } | TypeTarget::RustTypedContainer { item, .. } => Some((**item).clone()),
+            TypeTarget::RustIterator { item }
+            | TypeTarget::RustCollection { item }
+            | TypeTarget::RustSlice { item }
+            | TypeTarget::RustTypedContainer { item, .. } => Some((**item).clone()),
             _ => None,
         }
     }
-    fn project_applied_return<'a>(&self, name: &str, first: &crate::linker::value_flow::TypeTarget<'a>, second: &mut dyn FnMut() -> Option<crate::linker::value_flow::TypeTarget<'a>>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn project_applied_return<'a>(
+        &self,
+        name: &str,
+        first: &crate::linker::value_flow::TypeTarget<'a>,
+        second: &mut dyn FnMut() -> Option<crate::linker::value_flow::TypeTarget<'a>>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::{RustWrapperKind, TypeTarget};
         Some(match name {
-            "Option" => TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, ok: Box::new(first.clone()), err: None },
-            "Result" => TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, ok: Box::new(first.clone()), err: second().map(Box::new) },
-            "Iterator" => TypeTarget::RustIterator { item: Box::new(first.clone()) },
-            "Vec" => TypeTarget::RustCollection { item: Box::new(first.clone()) },
-            "Box" | "Arc" | "Rc" | "Cow" => TypeTarget::RustDeref { wrapper: match name { "Box" => "Box", "Arc" => "Arc", "Rc" => "Rc", _ => "Cow" }, target: Box::new(first.clone()) },
-            "VecDeque" | "HashSet" | "BTreeSet" => TypeTarget::RustTypedContainer { base: match name { "VecDeque" => "VecDeque", "HashSet" => "HashSet", _ => "BTreeSet" }, item: Box::new(first.clone()) },
-            "Slice" => TypeTarget::RustSlice { item: Box::new(first.clone()) },
+            "Option" => TypeTarget::RustWrapper {
+                wrapper: RustWrapperKind::Option,
+                ok: Box::new(first.clone()),
+                err: None,
+            },
+            "Result" => TypeTarget::RustWrapper {
+                wrapper: RustWrapperKind::Result,
+                ok: Box::new(first.clone()),
+                err: second().map(Box::new),
+            },
+            "Iterator" => TypeTarget::RustIterator {
+                item: Box::new(first.clone()),
+            },
+            "Vec" => TypeTarget::RustCollection {
+                item: Box::new(first.clone()),
+            },
+            "Box" | "Arc" | "Rc" | "Cow" => TypeTarget::RustDeref {
+                wrapper: match name {
+                    "Box" => "Box",
+                    "Arc" => "Arc",
+                    "Rc" => "Rc",
+                    _ => "Cow",
+                },
+                target: Box::new(first.clone()),
+            },
+            "VecDeque" | "HashSet" | "BTreeSet" => TypeTarget::RustTypedContainer {
+                base: match name {
+                    "VecDeque" => "VecDeque",
+                    "HashSet" => "HashSet",
+                    _ => "BTreeSet",
+                },
+                item: Box::new(first.clone()),
+            },
+            "Slice" => TypeTarget::RustSlice {
+                item: Box::new(first.clone()),
+            },
             _ => return None,
         })
     }
-    fn resolve_applied_type<'a>(&self, context: &crate::linker::semantic_context::context::Context<'a>, owner: &'a Node, (base, args): (&str, &[crate::semantic::TypeExpr]), nominal: &crate::linker::value_flow::Symbol<'a>, at: crate::semantic::SourcePosition) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn resolve_applied_type<'a>(
+        &self,
+        context: &crate::linker::semantic_context::context::Context<'a>,
+        owner: &'a Node,
+        (base, args): (&str, &[crate::semantic::TypeExpr]),
+        nominal: &crate::linker::value_flow::Symbol<'a>,
+        at: crate::semantic::SourcePosition,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::semantic_context::nominal_application(owner, nominal)
             .or_else(|| super::value_flow::resolve_applied(owner, base, args, nominal, at, context))
     }
-    fn admits_type_payload<'a>(&self, owner: &Node, wrapper: &crate::linker::value_flow::TypeTarget<'a>, count: usize) -> bool {
+    fn admits_type_payload<'a>(
+        &self,
+        owner: &Node,
+        wrapper: &crate::linker::value_flow::TypeTarget<'a>,
+        count: usize,
+    ) -> bool {
         super::semantic_context::admits_payload(owner, wrapper, count)
     }
     fn wrapper_value_member(&self, wrapper: &str, member: &str) -> bool {
@@ -414,79 +545,202 @@ impl LanguageLinker for RustLinker {
     fn standard_external_member(&self, module: &str, member: &str) -> bool {
         super::semantic_context::standard_member(module, member)
     }
-    fn structural_value<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>, operation: crate::semantic::types::RustProjection, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn structural_value<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+        operation: crate::semantic::types::RustProjection,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::project_structural(target, operation, resolver)
     }
-    fn adapter_value<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>, member: &str, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn adapter_value<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+        member: &str,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::project(target, member, resolver)
     }
-    fn declared_adapter_value<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>, member: &str, owner: &'a Node, at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn declared_adapter_value<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+        member: &str,
+        owner: &'a Node,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::declared_adapter_result(target, member, owner, at, resolver)
     }
-    fn deserialize_value<'a>(&self, owner: &'a Node, callee: &str, payload: &crate::semantic::TypeExpr, at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>, limits: crate::linker::value_flow::SemanticLimits) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn deserialize_value<'a>(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+        payload: &crate::semantic::TypeExpr,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+        limits: crate::linker::value_flow::SemanticLimits,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::deserializer_result(owner, callee, payload, at, resolver, limits)
     }
     fn is_value_adapter(&self, member: &str) -> bool {
         super::value_flow::is_adapter(member)
     }
-    fn value_payload<'a>(&self, target: &crate::linker::value_flow::TypeTarget<'a>) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn value_payload<'a>(
+        &self,
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         super::value_flow::unwrap_payload(target)
     }
-    fn preserves_external_import_line(&self) -> bool { true }
-    fn explicit_module_visible(&self, query: &crate::linker::traits::ExplicitModuleVisibility<'_, '_>) -> bool {
-        query.input.semantic_context.import_state("rust").is_none_or(|state| state.module_path_visible(&query.node.qualname, query.file_module))
+    fn preserves_external_import_line(&self) -> bool {
+        true
     }
-    fn supports_static_import_receiver(&self) -> bool { true }
-    fn allows_typed_member_read(&self, _known_receiver: bool) -> bool { true }
-    fn supports_constant_receiver(&self) -> bool { true }
-    fn associated_module_owner(&self, node: &Node) -> bool { node.kind == crate::models::tags::NodeKind::Module }
-    fn admits_lexical_candidate(&self, node: &Node) -> bool { node.kind != crate::models::tags::NodeKind::Impl }
-    fn imported_callable<'a>(&self, phase: &crate::linker::traits::ReferencePhase<'a, '_>, targets: &[&'a Node], member: &str) -> Vec<&'a Node> {
-        phase.owner.filter(|owner| owner.language == crate::models::tags::LanguageId::Rust)
-            .map_or_else(Vec::new, |owner| phase.input.semantic_context.resolve_rust_imported_call(owner, targets, member))
+    fn explicit_module_visible(
+        &self,
+        query: &crate::linker::traits::ExplicitModuleVisibility<'_, '_>,
+    ) -> bool {
+        query
+            .input
+            .semantic_context
+            .import_state("rust")
+            .is_none_or(|state| state.module_path_visible(&query.node.qualname, query.file_module))
+    }
+    fn supports_static_import_receiver(&self) -> bool {
+        true
+    }
+    fn allows_typed_member_read(&self, _known_receiver: bool) -> bool {
+        true
+    }
+    fn supports_constant_receiver(&self) -> bool {
+        true
+    }
+    fn associated_module_owner(&self, node: &Node) -> bool {
+        node.kind == crate::models::tags::NodeKind::Module
+    }
+    fn admits_lexical_candidate(&self, node: &Node) -> bool {
+        node.kind != crate::models::tags::NodeKind::Impl
+    }
+    fn imported_callable<'a>(
+        &self,
+        phase: &crate::linker::traits::ReferencePhase<'a, '_>,
+        targets: &[&'a Node],
+        member: &str,
+    ) -> Vec<&'a Node> {
+        phase
+            .owner
+            .filter(|owner| owner.language == crate::models::tags::LanguageId::Rust)
+            .map_or_else(Vec::new, |owner| {
+                phase
+                    .input
+                    .semantic_context
+                    .resolve_rust_imported_call(owner, targets, member)
+            })
     }
     fn dynamic_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
-        super::resolution::dynamic_receiver_member(phase.input, phase.path, phase.reference, phase.owner, phase.graph)
+        super::resolution::dynamic_receiver_member(
+            phase.input,
+            phase.path,
+            phase.reference,
+            phase.owner,
+            phase.graph,
+        )
     }
     fn early_reference(&self, phase: &mut crate::linker::traits::ReferencePhase<'_, '_>) -> bool {
-        let lookup = crate::linker::semantic_context::LanguageMemberLookup::new(phase.input.semantic_context);
-        super::resolution::resolve_self_reference(phase.profile, phase.reference, phase.owner, phase.path, &lookup, phase.graph)
+        let lookup = crate::linker::semantic_context::LanguageMemberLookup::new(
+            phase.input.semantic_context,
+        );
+        super::resolution::resolve_self_reference(
+            phase.profile,
+            phase.reference,
+            phase.owner,
+            phase.path,
+            &lookup,
+            phase.graph,
+        )
     }
     fn member_owner_scope<'a>(&self, scope: &'a str) -> &'a str {
         scope.split_once('<').map_or(scope, |(base, _)| base)
     }
     fn associated_member_owner(&self, node: &Node) -> bool {
-        matches!(node.kind, crate::models::tags::NodeKind::Struct | crate::models::tags::NodeKind::Enum | crate::models::tags::NodeKind::Trait)
+        matches!(
+            node.kind,
+            crate::models::tags::NodeKind::Struct
+                | crate::models::tags::NodeKind::Enum
+                | crate::models::tags::NodeKind::Trait
+        )
     }
-    fn explicit_constant_member<'a>(&self, constant: &'a Node, member: &str, owner: &'a Node,
-        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>) -> Option<&'a Node> {
+    fn explicit_constant_member<'a>(
+        &self,
+        constant: &'a Node,
+        member: &str,
+        owner: &'a Node,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+    ) -> Option<&'a Node> {
         use crate::linker::value_flow::{node_position, resolve_type, SemanticLimits, Symbol};
         let alias = resolver.value_flow(constant)?.alias_type.as_ref()?;
-        let target = resolve_type(constant, alias, node_position(constant), resolver, SemanticLimits::default());
+        let target = resolve_type(
+            constant,
+            alias,
+            node_position(constant),
+            resolver,
+            SemanticLimits::default(),
+        );
         match resolver.resolve_member(&target, member, owner, node_position(owner)) {
             Symbol::Callable(node) => Some(node),
             _ => None,
         }
     }
-    fn explicit_reexport_targets<'a>(&self, query: crate::linker::traits::ExplicitReexport<'a, '_>) -> Vec<&'a Node> {
-        super::resolution::explicit_reexport_targets(query.input, query.file_module, query.target, query.lookup_key)
+    fn explicit_reexport_targets<'a>(
+        &self,
+        query: crate::linker::traits::ExplicitReexport<'a, '_>,
+    ) -> Vec<&'a Node> {
+        super::resolution::explicit_reexport_targets(
+            query.input,
+            query.file_module,
+            query.target,
+            query.lookup_key,
+        )
     }
-    fn implementation_source(&self, input: crate::linker::traits::ImplementationSource<'_, '_>) -> Option<(Option<String>, bool)> {
-        Some(super::resolution::impl_source(input.implementation, &input.implementation.qualname,
-            input.file_module, input.by_qual, input.by_name, input.aliases, input.lookup_key))
+    fn implementation_source(
+        &self,
+        input: crate::linker::traits::ImplementationSource<'_, '_>,
+    ) -> Option<(Option<String>, bool)> {
+        Some(super::resolution::impl_source(
+            input.implementation,
+            &input.implementation.qualname,
+            input.file_module,
+            input.by_qual,
+            input.by_name,
+            input.aliases,
+            input.lookup_key,
+        ))
     }
-    fn property_before_member(&self) -> bool { true }
+    fn property_before_member(&self) -> bool {
+        true
+    }
 
     fn record_candidate_gaps(
-        &self, profile: &dyn crate::languages::LanguageProfile, reference: &crate::models::Reference,
-        candidates: &[&Node], path: &str, graph: &mut crate::models::compact_graph::CompactGraph,
+        &self,
+        profile: &dyn crate::languages::LanguageProfile,
+        reference: &crate::models::Reference,
+        candidates: &[&Node],
+        path: &str,
+        graph: &mut crate::models::compact_graph::CompactGraph,
     ) {
-        crate::linker::rust::resolution::macro_analysis_gap(Some(profile), reference, candidates, path, graph);
+        crate::linker::rust::resolution::macro_analysis_gap(
+            Some(profile),
+            reference,
+            candidates,
+            path,
+            graph,
+        );
     }
 
     fn macro_reference_candidate(&self, owner: Option<&Node>, candidate: &Node) -> bool {
         owner.is_some_and(|owner| owner.kind == crate::models::tags::NodeKind::Macro)
-            && matches!(candidate.kind, crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method)
+            && matches!(
+                candidate.kind,
+                crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
+            )
     }
 
     fn explicit_module_target(
@@ -556,7 +810,8 @@ impl LanguageLinker for RustLinker {
     }
 
     fn returns_parent_enum(&self, node: &Node) -> bool {
-        node.kind == crate::models::tags::NodeKind::Constant && node.detail_entry(crate::models::details::NodeDetailKey::RUST_ENUM_VARIANT) == true
+        node.kind == crate::models::tags::NodeKind::Constant
+            && node.detail_entry(crate::models::details::NodeDetailKey::RUST_ENUM_VARIANT) == true
     }
 
     fn uses_shared_class_members(&self) -> bool {
@@ -574,7 +829,6 @@ impl LanguageLinker for RustLinker {
         matches!(receiver, crate::linker::value_flow::TypeTarget::RustClosure)
             .then_some("invocation of a lexically proven Rust closure")
     }
-
 
     fn filter_call_candidates(
         &self,
@@ -854,10 +1108,9 @@ impl LanguageLinker for RustLinker {
             Some(context.by_qual),
         ));
         if !context.candidates.is_empty()
-            && context
-                .candidates
-                .iter()
-                .all(|node| node.kind != crate::models::tags::NodeKind::Module || node.path != module.path)
+            && context.candidates.iter().all(|node| {
+                node.kind != crate::models::tags::NodeKind::Module || node.path != module.path
+            })
         {
             resolution.reexport_symbol = true;
         }
@@ -905,7 +1158,8 @@ impl LanguageLinker for RustLinker {
                     && !matches!(node.kind.as_str(), "module" | "impl")
                     && (node.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true
                         || (crate_namespace(&module.path) == crate_namespace(&node.path)
-                            && node.detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
+                            && node
+                                .detail_entry(crate::models::details::NodeDetailKey::SIGNATURE)
                                 .as_str()
                                 .is_some_and(|sig| sig.starts_with("pub("))))
             };
@@ -975,13 +1229,32 @@ impl LanguageLinker for RustLinker {
         super::profile_linker::required_full_facts(facts, affected, catalog)
     }
 
-    fn apply_wildcard_import<'a, 'file>(&self, state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>, reference: &'a crate::models::Reference, profile: Option<&dyn LanguageProfile>, scope: &'file str, modules: &[&'a Node]) -> bool where 'a: 'file {
+    fn apply_wildcard_import<'a, 'file>(
+        &self,
+        state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+        reference: &'a crate::models::Reference,
+        profile: Option<&dyn LanguageProfile>,
+        scope: &'file str,
+        modules: &[&'a Node],
+    ) -> bool
+    where
+        'a: 'file,
+    {
         #[cfg(feature = "lang-rust")]
         if let [target_module] = modules {
-            if state.file_module.strip_prefix(&target_module.qualname).is_some_and(|s| s.starts_with('.')) {
+            if state
+                .file_module
+                .strip_prefix(&target_module.qualname)
+                .is_some_and(|s| s.starts_with('.'))
+            {
                 apply_rust_parent_wildcard(state, reference, profile, scope, target_module);
             }
-            if state.input.interner.lookup_node(state.input.by_id, reference.source.as_str()).is_some_and(|owner| owner.kind != crate::models::tags::NodeKind::Module) {
+            if state
+                .input
+                .interner
+                .lookup_node(state.input.by_id, reference.source.as_str())
+                .is_some_and(|owner| owner.kind != crate::models::tags::NodeKind::Module)
+            {
                 apply_rust_scope_wildcard_bindings(state, reference, scope, target_module);
             }
         }
@@ -990,33 +1263,87 @@ impl LanguageLinker for RustLinker {
         true
     }
 
-    fn apply_aliased_external_fallback<'a, 'file>(&self, state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>, reference: &'a crate::models::Reference, normalized: Option<&ImportPath>, scope: &'file str, alias: &'a str) where 'a: 'file {
+    fn apply_aliased_external_fallback<'a, 'file>(
+        &self,
+        state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+        reference: &'a crate::models::Reference,
+        normalized: Option<&ImportPath>,
+        scope: &'file str,
+        alias: &'a str,
+    ) where
+        'a: 'file,
+    {
         #[cfg(feature = "lang-rust")]
         if normalized.is_some_and(|import| import.relative) {
-            if let Some(crate::linker::semantic_context::Imported::External(origin, position, _, _)) = state.input.interner.lookup_symbol(&reference.source)
+            if let Some(crate::linker::semantic_context::Imported::External(
+                origin,
+                position,
+                _,
+                _,
+            )) = state
+                .input
+                .interner
+                .lookup_symbol(&reference.source)
                 .and_then(|owner| state.input.semantic_context.imports.get(&owner))
-                .and_then(|bindings| state.input.interner.lookup_symbol(alias).and_then(|name| bindings.get(&name)))
+                .and_then(|bindings| {
+                    state
+                        .input
+                        .interner
+                        .lookup_symbol(alias)
+                        .and_then(|name| bindings.get(&name))
+                })
             {
-                state.external_aliases.entry(scope).or_default().insert(alias, Some((origin.replace("::", "."), position.line)));
+                state
+                    .external_aliases
+                    .entry(scope)
+                    .or_default()
+                    .insert(alias, Some((origin.replace("::", "."), position.line)));
             }
         }
         #[cfg(not(feature = "lang-rust"))]
         let _ = (state, reference, normalized, scope, alias);
     }
 
-    fn apply_module_star_reexports<'a, 'file>(&self, state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>) where 'a: 'file {
+    fn apply_module_star_reexports<'a, 'file>(
+        &self,
+        state: &mut crate::linker::traits::ImportScopeState<'a, '_, 'file>,
+    ) where
+        'a: 'file,
+    {
         #[cfg(feature = "lang-rust")]
         apply_rust_module_star_reexports(state);
         #[cfg(not(feature = "lang-rust"))]
         let _ = state;
     }
 
-    fn checks_annotation_binding_shadowing(&self) -> bool { false }
-    fn module_shadows_annotation(&self) -> bool { true }
-    fn admits_external_generic_annotation(&self, profile: Option<&dyn LanguageProfile>, raw_annotation: &str, head: &str, module: &str) -> bool {
-        !(rust_has_non_lifetime_generics(raw_annotation) && !matches!(module.split("::").next(), Some("std" | "core" | "alloc")) && !profile.is_some_and(|p| p.builtin_generic(head)))
+    fn checks_annotation_binding_shadowing(&self) -> bool {
+        false
     }
-    fn external_parameter_annotation<'a>(&self, profile: Option<&dyn LanguageProfile>, raw_annotation: &'a str, raw_head: &'a str, head: &str, _member: &str, path: &str, dependencies: &DependencyRegistry, try_qualified: bool) -> Option<crate::linker::types::ReceiverType<'a>> {
+    fn module_shadows_annotation(&self) -> bool {
+        true
+    }
+    fn admits_external_generic_annotation(
+        &self,
+        profile: Option<&dyn LanguageProfile>,
+        raw_annotation: &str,
+        head: &str,
+        module: &str,
+    ) -> bool {
+        !(rust_has_non_lifetime_generics(raw_annotation)
+            && !matches!(module.split("::").next(), Some("std" | "core" | "alloc"))
+            && !profile.is_some_and(|p| p.builtin_generic(head)))
+    }
+    fn external_parameter_annotation<'a>(
+        &self,
+        profile: Option<&dyn LanguageProfile>,
+        raw_annotation: &'a str,
+        raw_head: &'a str,
+        head: &str,
+        _member: &str,
+        path: &str,
+        dependencies: &DependencyRegistry,
+        try_qualified: bool,
+    ) -> Option<crate::linker::types::ReceiverType<'a>> {
         use crate::linker::types::ReceiverType;
         match head {
             "std" => return Some(ReceiverType::External("std", 0)),
@@ -1027,36 +1354,93 @@ impl LanguageLinker for RustLinker {
         #[cfg(feature = "lang-rust")]
         {
             if try_qualified {
-                if let Some(q) = super::semantic_context::qualified_external_annotation(profile, raw_annotation, head, path, dependencies) {
+                if let Some(q) = super::semantic_context::qualified_external_annotation(
+                    profile,
+                    raw_annotation,
+                    head,
+                    path,
+                    dependencies,
+                ) {
                     return Some(q);
                 }
             }
-            super::semantic_context::external_annotation_type(profile, raw_head, head, path, dependencies)
+            super::semantic_context::external_annotation_type(
+                profile,
+                raw_head,
+                head,
+                path,
+                dependencies,
+            )
         }
         #[cfg(not(feature = "lang-rust"))]
-        { let _ = (profile, raw_annotation, raw_head, path, dependencies, try_qualified); None }
+        {
+            let _ = (
+                profile,
+                raw_annotation,
+                raw_head,
+                path,
+                dependencies,
+                try_qualified,
+            );
+            None
+        }
     }
-    fn symbol_visible(&self, owner: &Node, candidate: &Node) -> Option<bool> { super::value_flow::visible(owner, candidate) }
-    fn prepare_semantic_context<'a>(&self, context: &mut crate::linker::semantic_context::context::Context<'a>, prep: &crate::linker::traits::SemanticContextPrep<'a>) {
+    fn symbol_visible(&self, owner: &Node, candidate: &Node) -> Option<bool> {
+        super::value_flow::visible(owner, candidate)
+    }
+    fn prepare_semantic_context<'a>(
+        &self,
+        context: &mut crate::linker::semantic_context::context::Context<'a>,
+        prep: &crate::linker::traits::SemanticContextPrep<'a>,
+    ) {
         #[cfg(feature = "lang-rust")]
-        super::semantic_context::import_globs(context, prep.all, prep.by_id, prep.normalized_imports, prep.modules);
+        super::semantic_context::import_globs(
+            context,
+            prep.all,
+            prep.by_id,
+            prep.normalized_imports,
+            prep.modules,
+        );
         #[cfg(not(feature = "lang-rust"))]
         let _ = (context, prep);
     }
-    fn resolve_special_type_expr<'a>(&self, owner: &'a Node, expression: &crate::semantic::TypeExpr, at: crate::semantic::SourcePosition, resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>, limits: crate::linker::value_flow::SemanticLimits) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
+    fn resolve_special_type_expr<'a>(
+        &self,
+        owner: &'a Node,
+        expression: &crate::semantic::TypeExpr,
+        at: crate::semantic::SourcePosition,
+        resolver: &dyn crate::linker::value_flow::SemanticResolver<'a>,
+        limits: crate::linker::value_flow::SemanticLimits,
+    ) -> Option<crate::linker::value_flow::TypeTarget<'a>> {
         use crate::linker::value_flow::{resolve_type, TypeTarget};
         use crate::semantic::TypeExpr;
         match expression {
-            TypeExpr::RustRange { item } => Some(TypeTarget::RustDeref { wrapper: "Range", target: Box::new(TypeTarget::RustIterator { item: Box::new(resolve_type(owner, item, at, resolver, limits)) }) }),
-            TypeExpr::RustArray { item } => Some(TypeTarget::RustSlice { item: Box::new(resolve_type(owner, item, at, resolver, limits)) }),
-            TypeExpr::Applied { base, args } if base == "()" => Some(TypeTarget::RustTuple(args.iter().map(|i| resolve_type(owner, i, at, resolver, limits)).collect())),
-            TypeExpr::Applied { base, args } if matches!(base.as_str(), "&" | "&mut") => Some(match args.as_slice() {
-                [target] => match resolve_type(owner, target, at, resolver, limits) {
-                    inner @ TypeTarget::External { .. } => inner,
-                    inner => TypeTarget::RustReference { mutable: base == "&mut", target: Box::new(inner) },
-                },
-                _ => TypeTarget::Unknown,
+            TypeExpr::RustRange { item } => Some(TypeTarget::RustDeref {
+                wrapper: "Range",
+                target: Box::new(TypeTarget::RustIterator {
+                    item: Box::new(resolve_type(owner, item, at, resolver, limits)),
+                }),
             }),
+            TypeExpr::RustArray { item } => Some(TypeTarget::RustSlice {
+                item: Box::new(resolve_type(owner, item, at, resolver, limits)),
+            }),
+            TypeExpr::Applied { base, args } if base == "()" => Some(TypeTarget::RustTuple(
+                args.iter()
+                    .map(|i| resolve_type(owner, i, at, resolver, limits))
+                    .collect(),
+            )),
+            TypeExpr::Applied { base, args } if matches!(base.as_str(), "&" | "&mut") => {
+                Some(match args.as_slice() {
+                    [target] => match resolve_type(owner, target, at, resolver, limits) {
+                        inner @ TypeTarget::External { .. } => inner,
+                        inner => TypeTarget::RustReference {
+                            mutable: base == "&mut",
+                            target: Box::new(inner),
+                        },
+                    },
+                    _ => TypeTarget::Unknown,
+                })
+            }
             _ => None,
         }
     }
@@ -1072,7 +1456,9 @@ impl LanguageLinker for RustLinker {
             args: vec![crate::linker::value_flow::stored_type_expr(rest, "rust")],
         })
     }
-    fn disambiguate_candidates(&self, candidates: &mut Vec<&Node>) { disambiguate_rust_cfg_siblings(candidates); }
+    fn disambiguate_candidates(&self, candidates: &mut Vec<&Node>) {
+        disambiguate_rust_cfg_siblings(candidates);
+    }
 }
 
 pub(super) fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
@@ -1202,7 +1588,12 @@ fn apply_rust_parent_wildcard<'a, 'file>(
                 })
                 .is_some()
         {
-            state.aliases.entry(scope).or_default().entry(alias).or_default();
+            state
+                .aliases
+                .entry(scope)
+                .or_default()
+                .entry(alias)
+                .or_default();
             state
                 .external_aliases
                 .entry(scope)
@@ -1235,7 +1626,11 @@ fn apply_rust_scope_wildcard_bindings<'a, 'file>(
         }
         if input
             .by_qual
-            .get(crate::linker::types::qualified(state.lookup_key, scope, name))
+            .get(crate::linker::types::qualified(
+                state.lookup_key,
+                scope,
+                name,
+            ))
             .is_some_and(|nodes| nodes.iter().any(|node| node.path == state.path))
         {
             state.aliases.entry(scope).or_default().remove(name);

@@ -77,9 +77,8 @@ fn validate_profiles(
 /// Iterates over all compiled [`LanguageProfile`] instances.
 pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     static VALIDATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    VALIDATED.get_or_init(|| {
-        validate_profiles(registry()).expect("invalid compiled language registry")
-    });
+    VALIDATED
+        .get_or_init(|| validate_profiles(registry()).expect("invalid compiled language registry"));
     registry()
 }
 
@@ -163,11 +162,7 @@ pub fn module_name(path: &str) -> String {
     )
 }
 
-fn push_namespace_candidates(
-    profile: &dyn LanguageProfile,
-    ns: &str,
-    out: &mut BTreeSet<String>,
-) {
+fn push_namespace_candidates(profile: &dyn LanguageProfile, ns: &str, out: &mut BTreeSet<String>) {
     let mut cur = ns;
     loop {
         if !cur.is_empty() {
@@ -215,7 +210,10 @@ fn collect_js_import_candidates(
         return;
     }
     if profile.id() == "typescript" {
-        for cand in registry.typescript_paths.candidate_paths(owner_path, module) {
+        for cand in registry
+            .typescript_paths
+            .candidate_paths(owner_path, module)
+        {
             out.insert(cand.clone());
             for ext in profile.extensions() {
                 out.insert(format!("{cand}.{ext}"));
@@ -223,7 +221,10 @@ fn collect_js_import_candidates(
             }
         }
     }
-    if let Some(pkg) = registry.javascript_packages.normalize_import(owner_path, module) {
+    if let Some(pkg) = registry
+        .javascript_packages
+        .normalize_import(owner_path, module)
+    {
         push_namespace_candidates(profile, &pkg.namespace, out);
     }
 }
@@ -326,7 +327,10 @@ impl dependency_registry::DependencyRegistry {
         &self,
         path: &str,
         language: &str,
-        removed_by_group: &mut BTreeMap<(String, String, String, manifests::RuleDomain), BTreeSet<manifests::RuleIdentity>>,
+        removed_by_group: &mut BTreeMap<
+            (String, String, String, manifests::RuleDomain),
+            BTreeSet<manifests::RuleIdentity>,
+        >,
     ) {
         use manifests::{named_kind, RuleDomain};
         let Some(profile) = by_id(language) else {
@@ -436,8 +440,16 @@ mod tests {
         let all: Vec<_> = profiles().collect();
         validate_profiles(all.iter().copied()).unwrap();
         for profile in &all {
-            let expected = !matches!(profile.id(), "python" | "rust" | "typescript" | "javascript" | "vue");
-            assert_eq!(profile.linker().allows_multi_file_modules(), expected, "{}", profile.id());
+            let expected = !matches!(
+                profile.id(),
+                "python" | "rust" | "typescript" | "javascript" | "vue"
+            );
+            assert_eq!(
+                profile.linker().allows_multi_file_modules(),
+                expected,
+                "{}",
+                profile.id()
+            );
         }
         if let Some(first) = all.first() {
             assert!(validate_profiles([*first, *first]).is_err());
@@ -528,16 +540,46 @@ mod tests {
         assert!(extends.is_heritage());
 
         let invalid_cases = [
-            SyntaxGrammarSpec { declaration_roles: &[("bogus_kind", DeclarationRole::Function)], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { call_forms: &[("bogus_kind", CallForm::Direct)], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { import_forms: &[("bogus_kind", ImportKind::Static)], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { visibility_modifiers: &[("bogus_kind", Visibility::Private)], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { typed_bindings: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { assignments: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { constructors: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { member_calls: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { heritage: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
-            SyntaxGrammarSpec { conditionals: &["bogus_kind"], ..SyntaxGrammarSpec::DEFAULT },
+            SyntaxGrammarSpec {
+                declaration_roles: &[("bogus_kind", DeclarationRole::Function)],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                call_forms: &[("bogus_kind", CallForm::Direct)],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                import_forms: &[("bogus_kind", ImportKind::Static)],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                visibility_modifiers: &[("bogus_kind", Visibility::Private)],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                typed_bindings: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                assignments: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                constructors: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                member_calls: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                heritage: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
+            SyntaxGrammarSpec {
+                conditionals: &["bogus_kind"],
+                ..SyntaxGrammarSpec::DEFAULT
+            },
         ];
         for (idx, invalid) in invalid_cases.iter().enumerate() {
             assert!(

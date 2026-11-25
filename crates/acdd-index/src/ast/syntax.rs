@@ -119,7 +119,11 @@ pub trait ScopeVisitor<'source, 'tree> {
     ) -> (crate::semantic::ValueFlowFacts, Option<HashSet<String>>);
 }
 
-#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript"
+))]
 pub(crate) trait SyntaxCollector<'tree> {
     type Output;
     fn enter(&mut self, node: Syntax<'tree>);
@@ -127,7 +131,11 @@ pub(crate) trait SyntaxCollector<'tree> {
     fn finish(self) -> Self::Output;
 }
 
-#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript"
+))]
 pub(crate) fn collect<'tree, C: SyntaxCollector<'tree>>(
     root: Syntax<'tree>,
     mut collector: C,
@@ -341,7 +349,10 @@ pub(crate) fn advance_cursor(cursor: &mut tree_sitter::TreeCursor<'_>, descend: 
 }
 
 #[cfg(feature = "lang-rust")]
-pub(crate) fn rust_pattern_bindings<'tree>(pattern: Syntax<'tree>, mut emit: impl FnMut(Syntax<'tree>)) {
+pub(crate) fn rust_pattern_bindings<'tree>(
+    pattern: Syntax<'tree>,
+    mut emit: impl FnMut(Syntax<'tree>),
+) {
     if matches!(pattern.kind(), "identifier" | "shorthand_field_identifier") {
         emit(pattern);
         return;
@@ -392,7 +403,10 @@ fn binding_names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a st
                 out.insert(text(binding, source));
             });
         }
-        "identifier" | "shorthand_property_identifier_pattern" | "simple_identifier" | "variable_name" => {
+        "identifier"
+        | "shorthand_property_identifier_pattern"
+        | "simple_identifier"
+        | "variable_name" => {
             out.insert(text(node, source));
         }
         "default_parameter"

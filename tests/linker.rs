@@ -1,7 +1,7 @@
-#[path = "common/mod.rs"]
-pub mod common;
 #[path = "linker/callback_contracts.rs"]
 mod callback_contracts;
+#[path = "common/mod.rs"]
+pub mod common;
 #[path = "linker/early_interning_and_compact_facts.rs"]
 mod early_interning_and_compact_facts;
 #[path = "linker/receivers/inherited.rs"]
@@ -167,19 +167,89 @@ mod self_crate_resolution_tests {
         };
 
         for (src_path, src_fn, dst_path, expect_linked, label) in [
-            ("src/lib.rs", "bad_self_call", "src/lib.rs", false, "src/lib.rs must reject my_crate::target()"),
-            ("src/lib.rs", "good_crate_call", "src/lib.rs", true, "src/lib.rs crate::target() links"),
-            ("src/sub.rs", "bad_sub_direct", "src/lib.rs", false, "src/sub.rs must reject my_crate::target()"),
-            ("src/sub.rs", "bad_sub_use", "src/lib.rs", false, "src/sub.rs must reject use my_crate::target"),
-            ("src/main.rs", "main_calls", "src/lib.rs", true, "src/main.rs my_crate::target() links"),
-            ("src/bin/cli.rs", "bin_calls", "src/lib.rs", true, "src/bin/cli.rs my_crate::target() links"),
-            ("tests/it.rs", "test_calls", "src/lib.rs", true, "tests/it.rs my_crate::target() links"),
-            ("examples/demo.rs", "example_calls", "src/lib.rs", true, "examples/demo.rs my_crate::target() links"),
-            ("benches/perf.rs", "bench_calls", "src/lib.rs", true, "benches/perf.rs my_crate::target() links"),
-            ("crates/sub_crate/src/lib.rs", "bad_subcrate_self", "crates/sub_crate/src/lib.rs", false, "subcrate src/lib.rs must reject sub_crate::target()"),
-            ("crates/sub_crate/tests/it.rs", "subcrate_test_calls", "crates/sub_crate/src/lib.rs", true, "subcrate tests/it.rs sub_crate::target() links"),
+            (
+                "src/lib.rs",
+                "bad_self_call",
+                "src/lib.rs",
+                false,
+                "src/lib.rs must reject my_crate::target()",
+            ),
+            (
+                "src/lib.rs",
+                "good_crate_call",
+                "src/lib.rs",
+                true,
+                "src/lib.rs crate::target() links",
+            ),
+            (
+                "src/sub.rs",
+                "bad_sub_direct",
+                "src/lib.rs",
+                false,
+                "src/sub.rs must reject my_crate::target()",
+            ),
+            (
+                "src/sub.rs",
+                "bad_sub_use",
+                "src/lib.rs",
+                false,
+                "src/sub.rs must reject use my_crate::target",
+            ),
+            (
+                "src/main.rs",
+                "main_calls",
+                "src/lib.rs",
+                true,
+                "src/main.rs my_crate::target() links",
+            ),
+            (
+                "src/bin/cli.rs",
+                "bin_calls",
+                "src/lib.rs",
+                true,
+                "src/bin/cli.rs my_crate::target() links",
+            ),
+            (
+                "tests/it.rs",
+                "test_calls",
+                "src/lib.rs",
+                true,
+                "tests/it.rs my_crate::target() links",
+            ),
+            (
+                "examples/demo.rs",
+                "example_calls",
+                "src/lib.rs",
+                true,
+                "examples/demo.rs my_crate::target() links",
+            ),
+            (
+                "benches/perf.rs",
+                "bench_calls",
+                "src/lib.rs",
+                true,
+                "benches/perf.rs my_crate::target() links",
+            ),
+            (
+                "crates/sub_crate/src/lib.rs",
+                "bad_subcrate_self",
+                "crates/sub_crate/src/lib.rs",
+                false,
+                "subcrate src/lib.rs must reject sub_crate::target()",
+            ),
+            (
+                "crates/sub_crate/tests/it.rs",
+                "subcrate_test_calls",
+                "crates/sub_crate/src/lib.rs",
+                true,
+                "subcrate tests/it.rs sub_crate::target() links",
+            ),
         ] {
-            assert_eq!(has_call(src_path, src_fn, dst_path), expect_linked, "{label}");
+            assert_eq!(
+                has_call(src_path, src_fn, dst_path),
+                expect_linked,
+                "{label}"
+            );
         }
     }
 }

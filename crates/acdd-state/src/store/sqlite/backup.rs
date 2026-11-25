@@ -62,7 +62,10 @@ pub(crate) fn perform_backup_if_needed(
     let _lock = acquire_exclusive(&lock_path).map_err(|err| {
         StateError::new(
             ErrorCode::BackendConflict,
-            format!("failed to acquire backup.lock '{}': {err}", lock_path.display()),
+            format!(
+                "failed to acquire backup.lock '{}': {err}",
+                lock_path.display()
+            ),
         )
     })?;
 
@@ -89,7 +92,10 @@ pub(crate) fn perform_backup_if_needed(
     let confined_tmp = confined_database_create_path(&tmp_path).map_err(|err| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("invalid temporary backup path '{}': {err}", tmp_path.display()),
+            format!(
+                "invalid temporary backup path '{}': {err}",
+                tmp_path.display()
+            ),
         )
     })?;
 
@@ -104,7 +110,10 @@ pub(crate) fn perform_backup_if_needed(
             .map_err(|err| {
                 StateError::new(
                     ErrorCode::BackendConflict,
-                    format!("failed to open backup target '{}': {err}", confined_tmp.display()),
+                    format!(
+                        "failed to open backup target '{}': {err}",
+                        confined_tmp.display()
+                    ),
                 )
             })?;
             {
@@ -227,7 +236,10 @@ where
     let _lock = acquire_exclusive(&lock_path).map_err(|err| {
         StateError::new(
             ErrorCode::BackendConflict,
-            format!("failed to acquire backup.lock '{}': {err}", lock_path.display()),
+            format!(
+                "failed to acquire backup.lock '{}': {err}",
+                lock_path.display()
+            ),
         )
     })?;
 
@@ -257,7 +269,9 @@ where
         )
     })?;
     bak_conn
-        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+        .execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;",
+        )
         .map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
@@ -284,7 +298,10 @@ where
     let parent = db_path.parent().ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("database path '{}' has no parent directory", db_path.display()),
+            format!(
+                "database path '{}' has no parent directory",
+                db_path.display()
+            ),
         )
     })?;
     ensure_confined_dir(parent)?;
@@ -329,12 +346,13 @@ where
                 )
             })?;
             {
-                let backup = rusqlite::backup::Backup::new(&bak_conn, &mut dst_conn).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::BackendConflict,
-                        format!("failed to initialize restore backup copy: {err}"),
-                    )
-                })?;
+                let backup =
+                    rusqlite::backup::Backup::new(&bak_conn, &mut dst_conn).map_err(|err| {
+                        StateError::new(
+                            ErrorCode::BackendConflict,
+                            format!("failed to initialize restore backup copy: {err}"),
+                        )
+                    })?;
                 backup
                     .run_to_completion(256, Duration::from_millis(5), None)
                     .map_err(|err| {
@@ -437,11 +455,13 @@ where
                 )
             })?;
         for item in rows {
-            let (run_id, worktree, branch): (String, Option<String>, Option<String>) =
-                item.map_err(|err| {
+            let (run_id, worktree, branch): (String, Option<String>, Option<String>) = item
+                .map_err(|err| {
                     StateError::new(
                         ErrorCode::ProfileSchemaInvalid,
-                        format!("failed to decode task worktree during restore reconciliation: {err}"),
+                        format!(
+                            "failed to decode task worktree during restore reconciliation: {err}"
+                        ),
                     )
                 })?;
             task_rows_by_run
@@ -468,7 +488,9 @@ where
             .query_map([], |row| {
                 let run_id: String = row.get(0)?;
                 Ok(RestoredActiveRun {
-                    task_worktrees_and_branches: task_rows_by_run.remove(&run_id).unwrap_or_default(),
+                    task_worktrees_and_branches: task_rows_by_run
+                        .remove(&run_id)
+                        .unwrap_or_default(),
                     run_id,
                     run_name: row.get(1)?,
                     collection: row.get(2)?,
@@ -573,7 +595,10 @@ where
         .map_err(|err| {
             StateError::new(
                 ErrorCode::BackendConflict,
-                format!("failed to prune reconciled run '{}': {err}", tombstone.run_id),
+                format!(
+                    "failed to prune reconciled run '{}': {err}",
+                    tombstone.run_id
+                ),
             )
         })?;
 

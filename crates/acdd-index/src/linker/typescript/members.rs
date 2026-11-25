@@ -119,11 +119,7 @@ impl LanguageMemberIndex for TypeScriptMembers<'_> {
         }
     }
 
-    fn lookup_property<'a>(
-        &'a self,
-        receiver: &Node,
-        member: &str,
-    ) -> LanguageMemberResult<'a> {
+    fn lookup_property<'a>(&'a self, receiver: &Node, member: &str) -> LanguageMemberResult<'a> {
         let candidates = self.lookup_field(receiver, member);
         if candidates.is_empty() {
             LanguageMemberResult::Unknown
@@ -147,7 +143,9 @@ fn collect_type_script_classes(all: &dyn crate::models::FactsLookup) -> Vec<&Nod
                 && (matches!(node.kind.as_str(), "class" | "interface" | "enum")
                     || (node.language == crate::models::tags::LanguageId::Javascript
                         && node.kind == crate::models::tags::NodeKind::Function
-                        && *node.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_CONSTRUCTOR) == true))
+                        && *node.detail_entry(
+                            crate::models::details::NodeDetailKey::PROTOTYPE_CONSTRUCTOR,
+                        ) == true))
         })
         .collect()
 }
@@ -163,12 +161,18 @@ fn is_valid_prototype_method<'a>(
     if *method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_VALID) != true {
         return false;
     }
-    let assignment_line = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_LINE)
+    let assignment_line = method
+        .detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_LINE)
         .as_u64()
         .unwrap_or(method.line as u64) as usize;
-    let assignment_column = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_COLUMN)
+    let assignment_column = method
+        .detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_ASSIGNMENT_COLUMN)
         .as_u64()
-        .or_else(|| method.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64())
+        .or_else(|| {
+            method
+                .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                .as_u64()
+        })
         .unwrap_or(0) as usize;
     let lexical_class = resolver.resolve_symbol(
         method,
@@ -184,7 +188,11 @@ fn is_valid_prototype_method<'a>(
     let class_visible = class.kind == crate::models::tags::NodeKind::Function
         || class.line < assignment_line
         || (class.line == assignment_line
-            && class.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) < assignment_column as u64);
+            && class
+                .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+                .as_u64()
+                .unwrap_or(0)
+                < assignment_column as u64);
     exact_owner && class_visible
 }
 
@@ -199,17 +207,22 @@ fn collect_own_class_members<'a>(
     let methods = own.entry(class.id.as_str()).or_default();
     for method in &facts.nodes {
         let is_method = matches!(method.kind.as_str(), "method" | "function")
-            || (matches!(class.kind.as_str(), "enum" | "interface") && method.kind == crate::models::tags::NodeKind::Field);
+            || (matches!(class.kind.as_str(), "enum" | "interface")
+                && method.kind == crate::models::tags::NodeKind::Field);
         let is_field = method.kind == crate::models::tags::NodeKind::Field;
         if !is_method && !is_field {
             continue;
         }
-        let Some(name) = method.detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_MEMBER).as_str().or_else(|| {
-            method
-                .qualname
-                .strip_prefix(&prefix)
-                .filter(|name| !name.contains('.'))
-        }) else {
+        let Some(name) = method
+            .detail_entry(crate::models::details::NodeDetailKey::PROTOTYPE_MEMBER)
+            .as_str()
+            .or_else(|| {
+                method
+                    .qualname
+                    .strip_prefix(&prefix)
+                    .filter(|name| !name.contains('.'))
+            })
+        else {
             continue;
         };
         if !is_valid_prototype_method(class, method, resolver) {
@@ -219,20 +232,31 @@ fn collect_own_class_members<'a>(
             own_fields
                 .entry(class.id.as_str())
                 .or_default()
-                .entry((name, *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true))
+                .entry((
+                    name,
+                    *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true,
+                ))
                 .or_default()
                 .push(method);
         }
         if is_method {
             methods
-                .entry((name, *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true))
+                .entry((
+                    name,
+                    *method.detail_entry(crate::models::details::NodeDetailKey::IS_STATIC) == true,
+                ))
                 .or_default()
                 .push(method);
         }
     }
     for candidates in methods.values_mut() {
-        if candidates.iter().any(|node| *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true) {
-            candidates.retain(|node| *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true);
+        if candidates
+            .iter()
+            .any(|node| *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true)
+        {
+            candidates.retain(|node| {
+                *node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB) != true
+            });
         }
         candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
     }
@@ -293,7 +317,9 @@ fn record_concrete_implementors<'a>(
     parents: &HashMap<&'a str, Option<Vec<&'a Node>>>,
     implementors: &mut HashMap<&'a str, Vec<&'a Node>>,
 ) {
-    if class.kind != crate::models::tags::NodeKind::Class || *class.detail_entry(crate::models::details::NodeDetailKey::IS_ABSTRACT) == true {
+    if class.kind != crate::models::tags::NodeKind::Class
+        || *class.detail_entry(crate::models::details::NodeDetailKey::IS_ABSTRACT) == true
+    {
         return;
     }
     for base in implements_targets
@@ -310,7 +336,10 @@ fn record_concrete_implementors<'a>(
                 .copied(),
         )
     {
-        implementors.entry(base.id.as_str()).or_default().push(class);
+        implementors
+            .entry(base.id.as_str())
+            .or_default()
+            .push(class);
     }
 }
 

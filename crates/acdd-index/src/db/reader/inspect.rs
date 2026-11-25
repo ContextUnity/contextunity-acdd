@@ -275,7 +275,12 @@ fn governing_invariants_for_cte(
 /// Returns governing documentation invariants for a node.
 pub fn governing_invariants(conn: &Connection, node_id: &str) -> Result<Value> {
     let node_hash = crate::models::stable_hash64(node_id);
-    governing_invariants_for_cte(conn, "WITH scope_nodes(hash) AS (SELECT ?1)", &node_hash, false)
+    governing_invariants_for_cte(
+        conn,
+        "WITH scope_nodes(hash) AS (SELECT ?1)",
+        &node_hash,
+        false,
+    )
 }
 
 /// Returns bounded governing rules for every indexed symbol in a task scope.

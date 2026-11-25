@@ -4,8 +4,8 @@ use crate::languages::harness::{
     fixture_workspace, query_scalar, query_strings, remove_fixture, ExtractorHarness,
 };
 use crate::languages::PersistedWorkspaceHarness;
-use acdd_index::models::ReceiverHint;
 use acdd_index::ast;
+use acdd_index::models::ReceiverHint;
 use serde_json::json;
 use std::collections::BTreeMap;
 

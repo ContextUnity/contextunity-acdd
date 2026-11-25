@@ -3,9 +3,7 @@ use crate::common::Workspace;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_state::profile::{RoleDef, RoleExecutionMode};
-use acdd_state::runner::{
-    spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow,
-};
+use acdd_state::runner::{spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow};
 use acdd_state::types::ClaimOutcome;
 use acdd_state::usecases::dto::{RunReq, StartReq};
 use acdd_state::usecases::{StateCommand, StateCommandOutput, StateEngine};
@@ -15,7 +13,10 @@ use std::fs;
 fn init_workflow_ws(profile_rel: &str, profile_body: &str) -> Workspace {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");
-    ws.write("docs/milestones/minimal.md", include_str!("fixtures/milestones/minimal.md"));
+    ws.write(
+        "docs/milestones/minimal.md",
+        include_str!("fixtures/milestones/minimal.md"),
+    );
     ws.write(profile_rel, profile_body);
     git_cmd(ws.root(), &["add", "."]);
     git_cmd(ws.root(), &["commit", "-m", "seed workflow"]);
@@ -28,7 +29,10 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
 
     // 1. Ordered workflow fixture executes gates in `pass:` order.
     {
-        let ws = init_workflow_ws(".acdd/profiles/ordered.yaml", include_str!("fixtures/workflows/ordered.yaml"));
+        let ws = init_workflow_ws(
+            ".acdd/profiles/ordered.yaml",
+            include_str!("fixtures/workflows/ordered.yaml"),
+        );
         let cfg = base_engine_config(ws.root());
         let engine = StateEngine::open(cfg, providers.clone()).unwrap();
         let StateCommandOutput::Start(s) = engine
@@ -60,7 +64,10 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
 
     // 2. Retry workflow fixture recovers on second attempt (`attempt` -> `fail: prepare` -> `attempt` passes).
     {
-        let ws = init_workflow_ws(".acdd/profiles/retry.yaml", include_str!("fixtures/workflows/retry.yaml"));
+        let ws = init_workflow_ws(
+            ".acdd/profiles/retry.yaml",
+            include_str!("fixtures/workflows/retry.yaml"),
+        );
         let cfg = base_engine_config(ws.root());
         let engine = StateEngine::open(cfg, providers.clone()).unwrap();
         let StateCommandOutput::Start(s) = engine
@@ -86,12 +93,18 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
             panic!("expected RunResp");
         };
         assert_eq!(r.report.gates_completed, 3);
-        assert_eq!(fs::read_to_string(ws.path(".acdd/retry-result")).unwrap(), "retried\n");
+        assert_eq!(
+            fs::read_to_string(ws.path(".acdd/retry-result")).unwrap(),
+            "retried\n"
+        );
     }
 
     // 3. Failing workflow halts before running subsequent `forbidden` gate.
     {
-        let ws = init_workflow_ws(".acdd/profiles/failing.yaml", include_str!("fixtures/workflows/failing.yaml"));
+        let ws = init_workflow_ws(
+            ".acdd/profiles/failing.yaml",
+            include_str!("fixtures/workflows/failing.yaml"),
+        );
         let cfg = base_engine_config(ws.root());
         let engine = StateEngine::open(cfg, providers.clone()).unwrap();
         let StateCommandOutput::Start(s) = engine
@@ -117,7 +130,10 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
 
     // 4. Timeout workflow (`timeout_seconds: 1`) kills process group cleanly.
     {
-        let ws = init_workflow_ws(".acdd/profiles/timeout.yaml", include_str!("fixtures/workflows/timeout.yaml"));
+        let ws = init_workflow_ws(
+            ".acdd/profiles/timeout.yaml",
+            include_str!("fixtures/workflows/timeout.yaml"),
+        );
         let cfg = base_engine_config(ws.root());
         let engine = StateEngine::open(cfg, providers.clone()).unwrap();
         let StateCommandOutput::Start(s) = engine
@@ -180,7 +196,9 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let role_def = RoleDef {
             mode: RoleExecutionMode::Subagent,
             reuse_on_reject: true,
-            runner: Some("cat > prompt.md && printf 'SID:%s\n' \"$ACDD_AGENT_SESSION_ID\"".to_owned()),
+            runner: Some(
+                "cat > prompt.md && printf 'SID:%s\n' \"$ACDD_AGENT_SESSION_ID\"".to_owned(),
+            ),
             ..RoleDef::default()
         };
         let worker_id = WorkerId::new("w-role").unwrap();
@@ -205,7 +223,10 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         };
         let out = spawn_role_runner_borrowed(&req, &mut cache).unwrap();
         assert_eq!(out.exit_code, Some(0));
-        assert_eq!(fs::read_to_string(ws.path("prompt.md")).unwrap(), "# Prompt Body\n");
+        assert_eq!(
+            fs::read_to_string(ws.path("prompt.md")).unwrap(),
+            "# Prompt Body\n"
+        );
         let borrowed_out = spawn_role_runner_borrowed(&req, &mut cache).unwrap();
         assert_eq!(borrowed_out.exit_code, Some(0));
         assert_eq!(borrowed_out.agent_session_id, out.agent_session_id);

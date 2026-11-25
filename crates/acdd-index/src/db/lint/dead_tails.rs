@@ -93,7 +93,10 @@ fn normalize_rust_mod_decl_qualname(qualname: &str, path: &str) -> Option<String
     } else {
         return None;
     };
-    if let Some(rest) = qualname.strip_prefix(suffix).and_then(|s| s.strip_prefix('.')) {
+    if let Some(rest) = qualname
+        .strip_prefix(suffix)
+        .and_then(|s| s.strip_prefix('.'))
+    {
         return Some(rest.to_owned());
     }
     let needle = format!(".{suffix}.");
@@ -212,7 +215,9 @@ fn load_dead_tails_nodes(conn: &Connection) -> Result<LoadedNodes> {
     for (qn, path) in raw_cfg_test_decls {
         let norm = normalize_rust_mod_decl_qualname(&qn, &path);
         if non_test_mod_decls.contains(&qn)
-            || norm.as_deref().is_some_and(|n| non_test_mod_decls.contains(n))
+            || norm
+                .as_deref()
+                .is_some_and(|n| non_test_mod_decls.contains(n))
         {
             continue;
         }
@@ -446,7 +451,10 @@ fn wire_indexed_callbacks_and_unresolved_receivers(
     for node in nodes.values() {
         nodes_by_id.insert(node.id.as_str(), node);
         if node.is_test_ctx {
-            path_test_nodes.entry(node.path.as_str()).or_default().push(node);
+            path_test_nodes
+                .entry(node.path.as_str())
+                .or_default()
+                .push(node);
             continue;
         }
         if candidates.contains(&node.hash) {
@@ -485,9 +493,15 @@ fn wire_indexed_callbacks_and_unresolved_receivers(
             let Ok(typed) = decode_facts(&blob) else {
                 continue;
             };
-            let test_nodes = path_test_nodes.get(path.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+            let test_nodes = path_test_nodes
+                .get(path.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let mut wire_expr = |source_id: &str, expr: &str, line: i64| {
-                if test_nodes.iter().any(|t| line >= t.line && line <= t.end_line) {
+                if test_nodes
+                    .iter()
+                    .any(|t| line >= t.line && line <= t.end_line)
+                {
                     return;
                 }
                 let caller = nodes_by_id.get(source_id).copied();
@@ -589,9 +603,7 @@ fn wire_indexed_callbacks_and_unresolved_receivers(
                 continue;
             }
             let tail = expr.rsplit('.').next().unwrap_or("");
-            if !tail.is_empty()
-                && tail.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            {
+            if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
                 if let Some(cands) = method_cands_by_name.get(tail) {
                     for &cand in cands {
                         roots.insert(cand.hash);
@@ -620,20 +632,19 @@ fn compute_prod_live(graph: &DeadTailsGraph) -> HashSet<i64> {
     let mut live: HashSet<i64> = graph.roots.iter().copied().collect();
     let mut queue: VecDeque<i64> = graph.roots.iter().copied().collect();
 
-    let enqueue_siblings =
-        |node_hash: i64, live: &mut HashSet<i64>, queue: &mut VecDeque<i64>| {
-            if let Some(node) = graph.nodes.get(&node_hash) {
-                if let Some(siblings) =
-                    siblings_by_qualname.get(&(node.path.as_str(), node.qualname.as_str()))
-                {
-                    for &sib in siblings {
-                        if live.insert(sib) {
-                            queue.push_back(sib);
-                        }
+    let enqueue_siblings = |node_hash: i64, live: &mut HashSet<i64>, queue: &mut VecDeque<i64>| {
+        if let Some(node) = graph.nodes.get(&node_hash) {
+            if let Some(siblings) =
+                siblings_by_qualname.get(&(node.path.as_str(), node.qualname.as_str()))
+            {
+                for &sib in siblings {
+                    if live.insert(sib) {
+                        queue.push_back(sib);
                     }
                 }
             }
-        };
+        }
+    };
 
     while let Some(u) = queue.pop_front() {
         enqueue_siblings(u, &mut live, &mut queue);
@@ -768,10 +779,7 @@ fn collect_dangling_calls(
         .collect())
 }
 
-pub(crate) fn collect_dead_tails(
-    conn: &Connection,
-    scope: &str,
-) -> Result<DeadTailsReport> {
+pub(crate) fn collect_dead_tails(conn: &Connection, scope: &str) -> Result<DeadTailsReport> {
     let (lower, upper) = reader::path_bounds(scope);
     let graph = load_dead_tails_graph(conn)?;
     let prod_live = compute_prod_live(&graph);

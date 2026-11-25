@@ -4,9 +4,7 @@ use crate::models::{Facts, Node, Reference};
 pub use super::manifests::semantic::EffectiveSemanticRule;
 pub(crate) use super::manifests::semantic::{SemanticRelation, SemanticTarget};
 
-pub(crate) use crate::semantic::{
-    SemanticFact, SemanticFactRole, SemanticIdentity,
-};
+pub(crate) use crate::semantic::{SemanticFact, SemanticFactRole, SemanticIdentity};
 
 pub(crate) fn push(facts: &mut Facts, fact: SemanticFact) {
     if matches!(&fact.identity.target, SemanticTarget::ImportedSymbol { .. }) {

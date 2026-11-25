@@ -17,7 +17,9 @@ use crate::store::traits::StateReader;
 use crate::types::RunStatus;
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::{RoadmapReq, RoadmapResp};
-use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, primary_workspace_root};
+use crate::usecases::lifecycle::{
+    effective_spec_collections, list_all_runs, primary_workspace_root,
+};
 use acdd_core::errors::StateError;
 use acdd_core::fs::canonical_root;
 use std::collections::BTreeMap;

@@ -69,12 +69,8 @@ fn remap_semantic_fact(
 ) {
     let mut changed = remap_identifier(&mut fact.occurrence.owner_id, ids);
     changed |= match &mut fact.role {
-        SemanticFactRole::FileProvider { target } => {
-            remap_identifier(target, ids)
-        }
-        SemanticFactRole::CallToFile { import_owner, .. } => {
-            remap_identifier(import_owner, ids)
-        }
+        SemanticFactRole::FileProvider { target } => remap_identifier(target, ids),
+        SemanticFactRole::CallToFile { import_owner, .. } => remap_identifier(import_owner, ids),
         _ => false,
     };
     if changed {

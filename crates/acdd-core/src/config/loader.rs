@@ -49,8 +49,7 @@ fn insert_if_some<T: serde::Serialize>(
     value: Option<&T>,
 ) -> std::result::Result<(), AcddError> {
     if let Some(val) = value {
-        let json_val =
-            serde_json::to_value(val).map_err(|e| config_schema_err(e.to_string()))?;
+        let json_val = serde_json::to_value(val).map_err(|e| config_schema_err(e.to_string()))?;
         map.insert(key.to_owned(), json_val);
     }
     Ok(())
@@ -77,7 +76,11 @@ fn adapter_index_identity(raw: &AdapterFile) -> std::result::Result<Option<Value
         "excluded_file_names",
         raw.excluded_file_names.as_ref(),
     )?;
-    insert_if_some(&mut map, "linked_workspaces", raw.linked_workspaces.as_ref())?;
+    insert_if_some(
+        &mut map,
+        "linked_workspaces",
+        raw.linked_workspaces.as_ref(),
+    )?;
     insert_if_some(&mut map, "workspaces", raw.workspaces.as_ref())?;
     insert_if_some(&mut map, "owners", raw.owners.as_ref())?;
     insert_if_some(&mut map, "aliases", raw.aliases.as_ref())?;
@@ -95,8 +98,7 @@ fn parse_adapter_config_file(
     let Some(path) = selected else {
         return Ok((AdapterFile::default(), None));
     };
-    let metadata =
-        fs::symlink_metadata(path).map_err(|e| config_schema_err(e.to_string()))?;
+    let metadata = fs::symlink_metadata(path).map_err(|e| config_schema_err(e.to_string()))?;
     if metadata.file_type().is_symlink() {
         return Err(config_schema_err("adapter must not be a symlink"));
     }
@@ -107,8 +109,7 @@ fn parse_adapter_config_file(
         return Err(config_schema_err("adapter must be inside workspace root"));
     }
     let explicit_adapter_path = adapter_path.is_some().then(|| canonical.clone());
-    let content =
-        fs::read_to_string(&canonical).map_err(|e| config_schema_err(e.to_string()))?;
+    let content = fs::read_to_string(&canonical).map_err(|e| config_schema_err(e.to_string()))?;
     let parsed: AdapterFile = serde_yaml::from_str(&content)
         .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?;
     Ok((parsed, explicit_adapter_path))
@@ -187,21 +188,19 @@ fn load_adapter_inner(
         .iter()
         .map(|(k, v)| (k.as_str(), v.patterns()))
         .collect();
-    let digest = if identity.is_none()
-        && code_enabled
-        && docs_enabled
-        && specs_paths == default_specs_paths
-    {
-        String::new()
-    } else {
-        let payload = json!({
-            "identity": identity.unwrap_or(Value::Null),
-            "modules_code": code_enabled,
-            "modules_docs": docs_enabled,
-            "specs_paths": specs_paths,
-        });
-        crate::format::canonical_json_sha256(&payload)
-    };
+    let digest =
+        if identity.is_none() && code_enabled && docs_enabled && specs_paths == default_specs_paths
+        {
+            String::new()
+        } else {
+            let payload = json!({
+                "identity": identity.unwrap_or(Value::Null),
+                "modules_code": code_enabled,
+                "modules_docs": docs_enabled,
+                "specs_paths": specs_paths,
+            });
+            crate::format::canonical_json_sha256(&payload)
+        };
     let roots = raw
         .roots
         .or(raw.eligible_roots)
@@ -213,7 +212,9 @@ fn load_adapter_inner(
         }
         let relative = Path::new(&item);
         if !safe_relative(relative) {
-            return Err(config_schema_err("adapter roots must be relative plain paths"));
+            return Err(config_schema_err(
+                "adapter roots must be relative plain paths",
+            ));
         }
         let candidate =
             checked_child(root, relative).map_err(|e| config_schema_err(e.to_string()))?;
@@ -292,8 +293,7 @@ fn load_adapter_inner(
             debug: raw.debug
                 || std::env::var("ACDD_DEBUG")
                     .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                || std::env::var("DEBUG")
-                    .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+                || std::env::var("DEBUG").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
         },
         linked_workspace_errors,
     })
@@ -476,7 +476,10 @@ mod tests {
                 .len(),
             "DEFAULT_IGNORED_NAMES must not contain duplicates"
         );
-        assert_eq!(defaults.specs["milestones"].path.as_deref(), Some("docs/milestones"));
+        assert_eq!(
+            defaults.specs["milestones"].path.as_deref(),
+            Some("docs/milestones")
+        );
         assert_eq!(defaults.specs["milestones"].profile, None);
         assert_eq!(defaults.specs["plans"].path.as_deref(), Some("docs/plans"));
         assert_eq!(defaults.specs["plans"].profile, None);

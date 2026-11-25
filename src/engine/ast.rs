@@ -33,13 +33,7 @@ pub(crate) fn search_languages_with_adapter(
             generation.clone(),
         )?;
         let page = search_paged_languages_with_adapter(
-            conn,
-            root,
-            adapter,
-            pattern,
-            languages,
-            path,
-            &options,
+            conn, root, adapter, pattern, languages, path, &options,
         )?;
         if page.get("diagnostic").is_some() {
             return Ok(page);
@@ -90,7 +84,9 @@ fn test_prefilter_empty_candidate_fallback() {
         "assignment patterns must never use nodes.name prefiltering"
     );
     assert_eq!(
-        ast::pattern_symbol_name("def x():", "python").unwrap().as_deref(),
+        ast::pattern_symbol_name("def x():", "python")
+            .unwrap()
+            .as_deref(),
         Some("x")
     );
     let indexed: i64 = conn
@@ -285,11 +281,7 @@ fn public_pattern_diagnostics() {
 fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
     let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-tsx-upfront").unwrap();
     std::fs::create_dir_all(root.path().join("src")).unwrap();
-    std::fs::write(
-        root.path().join("src/app.ts"),
-        "const count: number = 1;\n",
-    )
-    .unwrap();
+    std::fs::write(root.path().join("src/app.ts"), "const count: number = 1;\n").unwrap();
     std::fs::write(
         root.path().join("src/view.tsx"),
         "const view = <Widget value={value} />;\n",
@@ -470,7 +462,11 @@ fn prefiltered_ast_search_matches_full_scan_with_100_percent_recall() {
             let batch = payload["items"].as_array().unwrap();
             paged_items.extend(batch.iter().cloned());
             if payload["has_more"] != true {
-                assert_eq!(payload["total"], oracle_items.len(), "{language} `{pattern}`");
+                assert_eq!(
+                    payload["total"],
+                    oracle_items.len(),
+                    "{language} `{pattern}`"
+                );
                 assert!(payload["next_offset"].is_null());
                 break;
             }
@@ -611,7 +607,15 @@ fn search_paged(
     let canon_root = scanner::canonical_root(root)?;
     let explicit_config = std::env::var_os("ACDD_CONFIG").map(std::path::PathBuf::from);
     let adapter = scanner::load_adapter(&canon_root, explicit_config.as_deref())?;
-    search_paged_with_adapter(conn, &canon_root, &adapter, pattern, language, path, options)
+    search_paged_with_adapter(
+        conn,
+        &canon_root,
+        &adapter,
+        pattern,
+        language,
+        path,
+        options,
+    )
 }
 
 /// Executes a paged structural AST pattern search using an already-loaded [`scanner::Adapter`].
@@ -638,7 +642,10 @@ pub(crate) fn search_paged_languages_with_adapter(
     path: Option<&str>,
     options: &QueryOptions,
 ) -> Result<Value> {
-    anyhow::ensure!(!languages.is_empty(), "at least one AST language is required");
+    anyhow::ensure!(
+        !languages.is_empty(),
+        "at least one AST language is required"
+    );
     for language in languages {
         acdd_index::languages::require(language)?;
     }

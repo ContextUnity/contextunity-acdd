@@ -41,7 +41,10 @@ fn scoped_matching_provider_module<'a, 'e>(
             dependencies,
         )
     })?;
-    let module = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module)?;
+    let module = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)?;
     Some((module, selector))
 }
 
@@ -51,8 +54,7 @@ pub(super) fn component_names(
     root: &str,
     extension: &str,
 ) -> Option<(String, String)> {
-    let relative =
-        languages::manifests::semantic::relative_under_directory(path, project, root)?;
+    let relative = languages::manifests::semantic::relative_under_directory(path, project, root)?;
     let stem = relative.strip_suffix(extension)?;
     if stem.is_empty()
         || !stem
@@ -196,7 +198,12 @@ impl<'a> super::Context<'a> {
         catalog_incomplete: &mut bool,
     ) -> HashMap<SymbolId, CallableCandidates<'a>> {
         let mut exported = HashMap::<SymbolId, CallableCandidates<'a>>::new();
-        for binding in provider.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
+        for binding in provider
+            .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             if binding["type_only"] == true || binding["name"] == "default" {
                 continue;
             }
@@ -259,7 +266,12 @@ impl<'a> super::Context<'a> {
             ) else {
                 continue;
             };
-            for binding in provider.detail_entry(crate::models::details::NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
+            for binding in provider
+                .detail_entry(crate::models::details::NodeDetailKey::EXPORTS)
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
                 if binding["type_only"] == true || binding["module"].as_str().is_some() {
                     continue;
                 }
@@ -362,8 +374,7 @@ impl<'a> super::Context<'a> {
         }
         let candidates = &mut self.component_candidates[index];
         for (provider_path, provider) in all.iter_facts() {
-            let Some((pascal, kebab)) =
-                component_names(provider_path, scope, directory, extension)
+            let Some((pascal, kebab)) = component_names(provider_path, scope, directory, extension)
             else {
                 continue;
             };
@@ -373,7 +384,8 @@ impl<'a> super::Context<'a> {
                 .find(|node| node.kind == crate::models::tags::NodeKind::Module)
                 .filter(|module| {
                     languages::by_id(module.language.as_str()).is_some_and(|profile| {
-                        dependencies.nearest_manifest_scope_for_path(profile.family(), provider_path)
+                        dependencies
+                            .nearest_manifest_scope_for_path(profile.family(), provider_path)
                             == Some(scope)
                     })
                 })
@@ -433,12 +445,17 @@ impl<'a> super::Context<'a> {
         ) else {
             return;
         };
-        let config = all
-            .get_facts(&config_path)
-            .and_then(|facts| facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module));
+        let config = all.get_facts(&config_path).and_then(|facts| {
+            facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+        });
         if rule.language == module_language && config.is_some() {
-            self.autoimports.entry(path_id).or_default().extend(
-                autoimports.iter().filter_map(|name| {
+            self.autoimports
+                .entry(path_id)
+                .or_default()
+                .extend(autoimports.iter().filter_map(|name| {
                     self.interner.lookup_symbol(name).map(|name| {
                         (
                             name,
@@ -453,8 +470,7 @@ impl<'a> super::Context<'a> {
                             ),
                         )
                     })
-                }),
-            );
+                }));
         }
         let configuration = config
             .and_then(|node| {
@@ -501,8 +517,10 @@ impl<'a> super::Context<'a> {
                     .interner
                     .lookup_symbol(name)
                     .expect("configured module is interned");
-                let key: ResultScopeKey =
-                    (component_rule_key(self.interner, config_node, rule), module_id);
+                let key: ResultScopeKey = (
+                    component_rule_key(self.interner, config_node, rule),
+                    module_id,
+                );
                 if let hashbrown::hash_map::Entry::Vacant(entry) = result_catalog.entry(key) {
                     let scope_val = self.build_result_scope(
                         all,
@@ -597,7 +615,11 @@ impl<'a> super::Context<'a> {
         let mut callable_catalog: HashMap<ComponentRuleKey, std::sync::Arc<CallableScope<'a>>> =
             HashMap::new();
         for (path, source) in all.iter_facts() {
-            let Some(module) = source.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
+            let Some(module) = source
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+            else {
                 continue;
             };
             let path_id = self

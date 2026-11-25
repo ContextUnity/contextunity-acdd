@@ -1,13 +1,8 @@
-use crate::languages::profile::ProfileLinker;
 use super::input::ResolutionInput;
-use crate::languages::{
-    self, LanguageProfile,
-};
+use crate::languages::profile::ProfileLinker;
+use crate::languages::{self, LanguageProfile};
 use crate::linker::{semantic_context, value_flow};
-use crate::models::{
-    compact_graph::CompactGraph as Graph,
-    Facts, Node, Reference,
-};
+use crate::models::{compact_graph::CompactGraph as Graph, Facts, Node, Reference};
 use hashbrown::{HashMap, HashSet};
 use std::borrow::Cow;
 use std::path::Path;
@@ -151,17 +146,13 @@ pub(super) fn chained_member_receiver<'a, 'idx>(
                     _ => None,
                 }
             }
-            value_flow::TypeTarget::Builtin(name) => {
-                profile.and_then(|profile| {
-                    profile.linker().resolve_builtin_property(
-                        path,
-                        name,
-                        field,
-                        semantic_context,
-                    )
+            value_flow::TypeTarget::Builtin(name) => profile
+                .and_then(|profile| {
+                    profile
+                        .linker()
+                        .resolve_builtin_property(path, name, field, semantic_context)
                 })
-                .map(Cow::Owned)
-            }
+                .map(Cow::Owned),
             other => profile
                 .and_then(|profile| profile.linker().local_receiver_class(other))
                 .and_then(|class| {
@@ -187,10 +178,16 @@ pub(super) fn chained_member_receiver<'a, 'idx>(
 }
 
 pub(in crate::linker) fn reference_scope<'a>(owner: &'a Node, path: &str) -> &'a str {
-    if owner.detail_entry(crate::models::details::NodeDetailKey::INCLUDED_FROM).is_string()
-        && owner.detail_entry(crate::models::details::NodeDetailKey::SOURCE_PATH).as_str() == Some(path)
+    if owner
+        .detail_entry(crate::models::details::NodeDetailKey::INCLUDED_FROM)
+        .is_string()
+        && owner
+            .detail_entry(crate::models::details::NodeDetailKey::SOURCE_PATH)
+            .as_str()
+            == Some(path)
     {
-        owner.detail_entry(crate::models::details::NodeDetailKey::SOURCE_QUALNAME)
+        owner
+            .detail_entry(crate::models::details::NodeDetailKey::SOURCE_QUALNAME)
             .as_str()
             .filter(|scope| !scope.is_empty())
             .unwrap_or(owner.qualname.as_str())
@@ -222,12 +219,12 @@ pub(super) fn document_symbol_candidates<'a>(
                 node.kind.as_str(),
                 "document" | "invariant" | "component" | "impl"
             ) && target_path.map_or_else(
-                    || {
-                        acdd_core::config::workspace_path(&node.path).0
-                            == acdd_core::config::workspace_path(source_path).0
-                    },
-                    |path| node.path == path,
-                )
+                || {
+                    acdd_core::config::workspace_path(&node.path).0
+                        == acdd_core::config::workspace_path(source_path).0
+                },
+                |path| node.path == path,
+            )
         }) {
             candidates.get_or_insert_with(Vec::new).push(node);
         }
@@ -259,7 +256,8 @@ pub(super) struct FileResolver<'a, 'file> {
     pub(super) external_aliases: HashMap<&'file str, ExternalAliases<'a>>,
     pub(super) type_only_aliases: HashMap<&'file str, HashSet<&'a str>>,
     pub(super) lookup_key: String,
-    pub(super) reference_extension: Option<Box<dyn crate::linker::traits::ReferenceExtension + 'file>>,
+    pub(super) reference_extension:
+        Option<Box<dyn crate::linker::traits::ReferenceExtension + 'file>>,
 }
 
 impl<'a, 'file> FileResolver<'a, 'file>
@@ -285,7 +283,9 @@ where
             evidence_pool: HashSet::new(),
         };
         for edge in &facts.edges {
-            graph.try_push_public_edge(edge).expect("invalid edge tag in linker facts");
+            graph
+                .try_push_public_edge(edge)
+                .expect("invalid edge tag in linker facts");
         }
         Self {
             input,

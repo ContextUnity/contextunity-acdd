@@ -107,7 +107,8 @@ fn ensure_real_directory(path: &Path, label: &str) -> Result<bool> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
-            return Err(error).with_context(|| format!("failed to inspect {label} {}", path.display()));
+            return Err(error)
+                .with_context(|| format!("failed to inspect {label} {}", path.display()));
         }
     };
     if metadata.file_type().is_symlink() {
@@ -365,9 +366,10 @@ impl DependencyRegistry {
 
             for rule in &manifest.syntax_rules {
                 let rule_family = rule.activation_family();
-                let outcome = ActivationCondition::matches_workspace_slice(&rule.activation, |pkg| {
-                    rule_family.is_some_and(|family| self.declares_for_path(family, path, pkg))
-                });
+                let outcome =
+                    ActivationCondition::matches_workspace_slice(&rule.activation, |pkg| {
+                        rule_family.is_some_and(|family| self.declares_for_path(family, path, pkg))
+                    });
                 if outcome == ActivationMatch::Inactive {
                     continue;
                 }
@@ -462,7 +464,10 @@ impl DependencyRegistry {
         path: &str,
         base: &str,
         pack: Option<&str>,
-    ) -> Option<(&str, &crate::languages::manifests::ClassHierarchyReceiverRule)> {
+    ) -> Option<(
+        &str,
+        &crate::languages::manifests::ClassHierarchyReceiverRule,
+    )> {
         let mut candidates = self.hierarchy_rows_for_path(path).filter(|(name, rule)| {
             pack.is_none_or(|pack| pack == *name)
                 && rule.bases.iter().any(|candidate| candidate == base)
@@ -619,8 +624,7 @@ impl DependencyRegistry {
                     } => {
                         for path in context.request_owners.iter().chain(&context.route_owners) {
                             anyhow::ensure!(
-                                self.workspaces
-                                    .contains(workspace_path(path).0),
+                                self.workspaces.contains(workspace_path(path).0),
                                 "unknown or disabled HTTP context workspace: {path}"
                             );
                         }
@@ -693,7 +697,6 @@ impl DependencyRegistry {
             .or_else(|| self.standard_framework_manifests.get(pack))
             .filter(|manifest| manifest.enabled)
     }
-
 }
 
 pub(crate) fn named_binding_project<'a>(
@@ -748,11 +751,17 @@ pub(crate) fn active_component_module_additions<'a>(
     rule: &'a crate::languages::manifests::syntax::SyntaxRule,
     path: &'a str,
     dependencies: &'a DependencyRegistry,
-) -> impl Iterator<Item = (&'a str, &'a crate::languages::manifests::syntax::ComponentModule)> {
+) -> impl Iterator<
+    Item = (
+        &'a str,
+        &'a crate::languages::manifests::syntax::ComponentModule,
+    ),
+> {
     configuration.modules.iter().filter_map(move |name| {
         let addition = modules.get(name).filter(|addition| {
-            rule.activation_family()
-                .is_some_and(|family| dependencies.declares_for_path(family, path, &addition.package))
+            rule.activation_family().is_some_and(|family| {
+                dependencies.declares_for_path(family, path, &addition.package)
+            })
         })?;
         Some((name.as_str(), addition))
     })

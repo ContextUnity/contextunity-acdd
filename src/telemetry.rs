@@ -53,10 +53,7 @@ impl SpanGuard {
                 if ctx_trace_id == Some(tp.trace_id) {
                     (tp.trace_id, Some(tp.span_id.to_string()))
                 } else {
-                    (
-                        ctx_trace_id.unwrap_or(tp.trace_id),
-                        Some(c.span_id.clone()),
-                    )
+                    (ctx_trace_id.unwrap_or(tp.trace_id), Some(c.span_id.clone()))
                 }
             }
             (Some(c), None) => (
@@ -479,8 +476,8 @@ pub fn log_cli(
 mod tests {
     use super::SpanGuard;
     use acdd_core::fs::ScopedTempDir;
-    use acdd_core::telemetry::{SpanId, TraceId, TraceParent, WorktreeSpanContext};
     use acdd_core::ids::RunId;
+    use acdd_core::telemetry::{SpanId, TraceId, TraceParent, WorktreeSpanContext};
     use std::fs;
 
     #[test]
@@ -539,7 +536,8 @@ mod tests {
             );
             async_guard.finish_async().await;
 
-            let mut no_ctx_guard = SpanGuard::from_worktree_context(root, None, "code_map_search", 1);
+            let mut no_ctx_guard =
+                SpanGuard::from_worktree_context(root, None, "code_map_search", 1);
             no_ctx_guard.set_debug_mcp(
                 root,
                 "code_map_search",
@@ -615,12 +613,14 @@ mod tests {
         let lines: Vec<&str> = content.trim().lines().collect();
         assert_eq!(lines.len(), 2);
 
-        let cli_entry: serde_json::Value = serde_json::from_str(lines[0]).expect("valid jsonl line 1");
+        let cli_entry: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("valid jsonl line 1");
         assert_eq!(cli_entry["source"], "cli");
         assert_eq!(cli_entry["command"], "query overview");
         assert_eq!(cli_entry["output"]["status"], "ok");
 
-        let mcp_entry: serde_json::Value = serde_json::from_str(lines[1]).expect("valid jsonl line 2");
+        let mcp_entry: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("valid jsonl line 2");
         assert_eq!(mcp_entry["source"], "mcp");
         assert_eq!(mcp_entry["tool"], "code_map_inspect");
         assert_eq!(mcp_entry["parameters"]["selector"], "foo::bar");

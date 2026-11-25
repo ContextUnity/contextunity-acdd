@@ -3,10 +3,10 @@ use super::semantic::{
     take_string_pairs, take_strings, NodeSemanticDto, NodeSemanticEntry, ParameterTypesView,
 };
 use super::tags::{LanguageId, NodeKind};
-#[cfg(test)]
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 /// Current index semantics version combining the contract epoch and language profile digest.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
@@ -329,19 +329,21 @@ impl Node {
     }
     pub fn binding_count(&self) -> usize {
         self.semantic_entry(NodeDetailKey::BINDINGS).map_or_else(
-            || self
-                .detail_entry(NodeDetailKey::BINDINGS)
-                .as_array()
-                .map_or(0, Vec::len),
+            || {
+                self.detail_entry(NodeDetailKey::BINDINGS)
+                    .as_array()
+                    .map_or(0, Vec::len)
+            },
             |entry| entry.binding_names().map_or(0, <[String]>::len),
         )
     }
     pub fn rebinding_count(&self) -> usize {
         self.semantic_entry(NodeDetailKey::REBINDINGS).map_or_else(
-            || self
-                .detail_entry(NodeDetailKey::REBINDINGS)
-                .as_array()
-                .map_or(0, Vec::len),
+            || {
+                self.detail_entry(NodeDetailKey::REBINDINGS)
+                    .as_array()
+                    .map_or(0, Vec::len)
+            },
             |entry| entry.rebinding_names().map_or(0, <[String]>::len),
         )
     }
@@ -357,10 +359,11 @@ impl Node {
     }
     pub fn has_parameter(&self, name: &str) -> bool {
         self.semantic_entry(NodeDetailKey::PARAM_TYPES).map_or_else(
-            || self
-                .detail_entry(NodeDetailKey::PARAM_TYPES)
-                .get(name)
-                .is_some(),
+            || {
+                self.detail_entry(NodeDetailKey::PARAM_TYPES)
+                    .get(name)
+                    .is_some()
+            },
             |entry| entry.param_types.iter().any(|(key, _)| key == name),
         )
     }
@@ -545,8 +548,14 @@ impl Node {
                     (!meta.param_types.is_empty()).then(|| serde_json::json!(meta.param_types)),
                 ),
                 (NodeDetailKey::RECEIVER, meta.receiver.map(Value::String)),
-                (NodeDetailKey::RECEIVER_TYPE, meta.receiver_type.map(Value::String)),
-                (NodeDetailKey::RECEIVER_HINT, meta.receiver_hint.map(Value::String)),
+                (
+                    NodeDetailKey::RECEIVER_TYPE,
+                    meta.receiver_type.map(Value::String),
+                ),
+                (
+                    NodeDetailKey::RECEIVER_HINT,
+                    meta.receiver_hint.map(Value::String),
+                ),
             ] {
                 if let Some(value) = value {
                     details.insert(key.into(), value);
@@ -597,17 +606,13 @@ impl NavigationDetails<'_> {
             if (self.persisted && key == NodeDetailKey::ENTRYPOINT_BASE)
                 || (self.clear_entrypoint && key == NodeDetailKey::ENTRYPOINT)
                 || (self.skip_inline_docs
-                    && matches!(
-                        key.as_str(),
-                        NodeDetailKey::DOC | NodeDetailKey::DOCSTRING
-                    ))
+                    && matches!(key.as_str(), NodeDetailKey::DOC | NodeDetailKey::DOCSTRING))
                 || (!matches!(
                     key.as_str(),
                     NodeDetailKey::BINDINGS
                         | NodeDetailKey::REBINDINGS
                         | NodeDetailKey::PARAM_TYPES
-                )
-                    && !include_navigation_detail(key, value))
+                ) && !include_navigation_detail(key, value))
             {
                 continue;
             }
@@ -664,9 +669,7 @@ impl Serialize for NavigationDetails<'_> {
             if semantic.has(NodeDetailKey::REBINDINGS) && !has_detail(NodeDetailKey::REBINDINGS) {
                 map.serialize_entry(NodeDetailKey::REBINDINGS, &semantic.rebindings)?;
             }
-            if semantic.has(NodeDetailKey::PARAM_TYPES)
-                && !has_detail(NodeDetailKey::PARAM_TYPES)
-            {
+            if semantic.has(NodeDetailKey::PARAM_TYPES) && !has_detail(NodeDetailKey::PARAM_TYPES) {
                 map.serialize_entry(NodeDetailKey::PARAM_TYPES, &ParameterTypesView(semantic))?;
             }
         }
@@ -990,6 +993,9 @@ mod tests {
             assert!(node.detail_get(key).is_none());
         }
         node.set_detail(NodeDetailKey::VALUE_FLOW, Value::Null);
-        assert_eq!(node.detail_get(NodeDetailKey::VALUE_FLOW), Some(&Value::Null));
+        assert_eq!(
+            node.detail_get(NodeDetailKey::VALUE_FLOW),
+            Some(&Value::Null)
+        );
     }
 }

@@ -19,7 +19,9 @@ pub fn resolve_state_db_path(root: &Path, adapter: &Adapter) -> PathBuf {
 /// Resolves an optional explicit DB path override against `root`, ignoring empty/whitespace values.
 pub fn resolve_custom_db_path(root: &Path, custom_db: Option<&Path>) -> Option<PathBuf> {
     match custom_db {
-        Some(p) if !p.as_os_str().is_empty() && !p.to_str().is_some_and(|s| s.trim().is_empty()) => {
+        Some(p)
+            if !p.as_os_str().is_empty() && !p.to_str().is_some_and(|s| s.trim().is_empty()) =>
+        {
             Some(if p.is_absolute() {
                 p.to_path_buf()
             } else {
@@ -73,11 +75,13 @@ fn memory_budget_mb_from_sources(
         Some(value) => Ok(Some(value)),
         None => environment_mb
             .map(|value| {
-                let mebibytes = value
-                    .parse::<u64>()
-                    .map_err(|_| invalid_input("ACDD_MEMORY_BUDGET_MB must be a positive integer"))?;
+                let mebibytes = value.parse::<u64>().map_err(|_| {
+                    invalid_input("ACDD_MEMORY_BUDGET_MB must be a positive integer")
+                })?;
                 if mebibytes == 0 {
-                    return Err(invalid_input("ACDD_MEMORY_BUDGET_MB must be a positive integer"));
+                    return Err(invalid_input(
+                        "ACDD_MEMORY_BUDGET_MB must be a positive integer",
+                    ));
                 }
                 Ok(mebibytes)
             })
@@ -324,12 +328,24 @@ mod tests {
 
     #[test]
     fn workspace_constants_and_db_path_resolution_matrix() {
-        assert_eq!(super::super::constants::ACDD_CONFIG_FILE, super::super::ACDD_CONFIG_FILE);
+        assert_eq!(
+            super::super::constants::ACDD_CONFIG_FILE,
+            super::super::ACDD_CONFIG_FILE
+        );
         assert_eq!(super::super::constants::ACDD_DIR, ".acdd");
         assert_eq!(super::super::constants::WORKTREES_DIR, ".worktrees");
-        assert_eq!(super::super::constants::DEFAULT_STATE_DB, ".acdd/state.sqlite");
-        assert_eq!(super::super::constants::DEFAULT_CODE_DB, ".acdd/code-map.sqlite");
-        assert_eq!(super::super::constants::SNAPSHOT_REF_PREFIX, "refs/acdd/snapshots/");
+        assert_eq!(
+            super::super::constants::DEFAULT_STATE_DB,
+            ".acdd/state.sqlite"
+        );
+        assert_eq!(
+            super::super::constants::DEFAULT_CODE_DB,
+            ".acdd/code-map.sqlite"
+        );
+        assert_eq!(
+            super::super::constants::SNAPSHOT_REF_PREFIX,
+            "refs/acdd/snapshots/"
+        );
         assert_eq!(super::super::constants::CLAIM_TRAILER_KEY, "Acdd-Claim");
 
         let root = Path::new("/repo");

@@ -99,9 +99,10 @@ pub(super) fn open_and_read_verified_source(
     if source.len() as u64 > adapter.limits.max_file_bytes
         || expected_bytes.is_some_and(|b| source.len() as u64 != b)
     {
-        return Err(
-            SourceSnapshotMismatch(format!("source changed during extraction: {rel_path}")).into(),
-        );
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {rel_path}"
+        ))
+        .into());
     }
     Ok(source_file)
 }
@@ -150,10 +151,7 @@ pub(super) fn extract_typed_source_with_digest(
         for (doc, metadata) in &parsed {
             let line = metadata["line"].as_u64().unwrap_or(1) as usize;
             let end_line = metadata["end_line"].as_u64().unwrap_or(line as u64) as usize;
-            if let Some(rule_errors) = metadata
-                .get("arch_rule_errors")
-                .and_then(Value::as_array)
-            {
+            if let Some(rule_errors) = metadata.get("arch_rule_errors").and_then(Value::as_array) {
                 for err in rule_errors {
                     let err_line = err["line"].as_u64().unwrap_or(line as u64) as usize;
                     if let Some(msg) = err["message"].as_str() {
@@ -277,9 +275,14 @@ pub(super) fn assign_file_component(
     f: &mut TypedFacts,
     owners: Option<&BTreeMap<String, String>>,
 ) {
-    f.facts.retain_nodes(|n| n.kind != acdd_index::models::tags::NodeKind::Component);
+    f.facts
+        .retain_nodes(|n| n.kind != acdd_index::models::tags::NodeKind::Component);
     f.edges.retain(|e| !e.src.starts_with("component:"));
-    if !f.nodes.iter().any(|n| n.kind == acdd_index::models::tags::NodeKind::Module) {
+    if !f
+        .nodes
+        .iter()
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Module)
+    {
         return;
     }
     let root = path.split_once('/').map_or(".", |(root, _)| root);

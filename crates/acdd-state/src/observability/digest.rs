@@ -47,30 +47,35 @@ pub fn build_completed_run_digest(
         .filter(|n| n.status == NodeStatus::Cancelled)
         .count();
 
-    let (applicable_invariants, verified_invariants, decisions_count, deferred_count, review_summary) =
-        if let Some(c) = closure {
-            (
-                c.rollup.verified_invariants.applicable.clone(),
-                c.rollup.verified_invariants.verified.clone(),
-                c.rollup.decisions.len(),
-                c.rollup.deferred_findings.len(),
-                c.rollup.review_summary.clone(),
-            )
-        } else {
-            let mut applicable = BTreeSet::new();
-            let mut verified = BTreeSet::new();
-            for node in &graph.nodes {
-                applicable.extend(node.invariants.applicable.iter().cloned());
-                verified.extend(node.invariants.verified.iter().cloned());
-            }
-            (
-                applicable.into_iter().collect(),
-                verified.into_iter().collect(),
-                0usize,
-                0usize,
-                None,
-            )
-        };
+    let (
+        applicable_invariants,
+        verified_invariants,
+        decisions_count,
+        deferred_count,
+        review_summary,
+    ) = if let Some(c) = closure {
+        (
+            c.rollup.verified_invariants.applicable.clone(),
+            c.rollup.verified_invariants.verified.clone(),
+            c.rollup.decisions.len(),
+            c.rollup.deferred_findings.len(),
+            c.rollup.review_summary.clone(),
+        )
+    } else {
+        let mut applicable = BTreeSet::new();
+        let mut verified = BTreeSet::new();
+        for node in &graph.nodes {
+            applicable.extend(node.invariants.applicable.iter().cloned());
+            verified.extend(node.invariants.verified.iter().cloned());
+        }
+        (
+            applicable.into_iter().collect(),
+            verified.into_iter().collect(),
+            0usize,
+            0usize,
+            None,
+        )
+    };
 
     let summary_val = json!({
         "run_id": digest.run_id,

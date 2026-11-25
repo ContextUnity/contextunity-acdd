@@ -346,8 +346,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
             case_sensitive: false,
         },
     ] {
-        if case.case_sensitive && acdd_core::fs::is_case_insensitive_volume(w.root())
-        {
+        if case.case_sensitive && acdd_core::fs::is_case_insensitive_volume(w.root()) {
             eprintln!("case coexistence unavailable on case-insensitive volume");
             continue;
         }

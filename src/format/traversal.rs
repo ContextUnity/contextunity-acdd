@@ -18,9 +18,19 @@ pub(super) fn kind_for(title: &str, value: &Value) -> Option<TraversalKind> {
         "code_map_impact" => Some(TraversalKind::Impact),
         "code_map_explain" => Some(TraversalKind::Explain),
         "code_map_tests" => Some(TraversalKind::Tests),
-        "code_map_query" if value.get("incoming").is_some() || value.get("outgoing").is_some() => Some(TraversalKind::Explain),
-        "code_map_query" if value.get("direction").is_some() && value.get("depth").is_some() && value.get("nodes").is_some() => Some(TraversalKind::Impact),
-        "code_map_query" if text_field(value, "operation") == Some("dead_tails") => Some(TraversalKind::DeadTails),
+        "code_map_query" if value.get("incoming").is_some() || value.get("outgoing").is_some() => {
+            Some(TraversalKind::Explain)
+        }
+        "code_map_query"
+            if value.get("direction").is_some()
+                && value.get("depth").is_some()
+                && value.get("nodes").is_some() =>
+        {
+            Some(TraversalKind::Impact)
+        }
+        "code_map_query" if text_field(value, "operation") == Some("dead_tails") => {
+            Some(TraversalKind::DeadTails)
+        }
         "code_map_query"
             if value
                 .get("items")
@@ -53,26 +63,58 @@ fn render_summary_fields(out: &mut String, heading: &str, value: &Value, fields:
     out.push_str(&format!("## {heading}\n\n"));
     for field in fields {
         if let Some(v) = value.get(*field) {
-            let lbl: String = field.split('_').map(|p| {
-                let mut c = p.chars();
-                c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
-            }).collect::<Vec<_>>().join(" ");
+            let lbl: String = field
+                .split('_')
+                .map(|p| {
+                    let mut c = p.chars();
+                    c.next()
+                        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
             let rendered = scalar_text(v);
-            let formatted = if v.is_string() { rendered } else { inline_code(&rendered) };
+            let formatted = if v.is_string() {
+                rendered
+            } else {
+                inline_code(&rendered)
+            };
             out.push_str(&format!("- **{lbl}:** {formatted}\n"));
         }
     }
 }
 
 fn render_impact(out: &mut String, value: &Value) {
-    render_summary_fields(out, "Traversal", value, &["direction", "depth", "mode", "complete"]);
+    render_summary_fields(
+        out,
+        "Traversal",
+        value,
+        &["direction", "depth", "mode", "complete"],
+    );
     if value.get("complete") == Some(&Value::Bool(false)) {
         out.push_str("\nTraversal is incomplete within the reported bounds; review unmapped changes and continuation details below.\n");
     }
-    if let Some(sel) = value.get("selector") { out.push_str("## Selected target\n\n"); render_record(out, sel, "symbol", &[]); }
-    if let Some(inv) = value.get("governing_invariants") { render_invariants(out, inv); }
-    let mut consumed = vec!["direction", "depth", "mode", "complete", "selector", "governing_invariants"];
-    for (field, heading) in [("nodes", "Reached nodes"), ("changed_symbols", "Changed symbols"), ("tests", "Affected tests"), ("unmapped_changes", "Unmapped changes"), ("affected_docs", "Affected documents")] {
+    if let Some(sel) = value.get("selector") {
+        out.push_str("## Selected target\n\n");
+        render_record(out, sel, "symbol", &[]);
+    }
+    if let Some(inv) = value.get("governing_invariants") {
+        render_invariants(out, inv);
+    }
+    let mut consumed = vec![
+        "direction",
+        "depth",
+        "mode",
+        "complete",
+        "selector",
+        "governing_invariants",
+    ];
+    for (field, heading) in [
+        ("nodes", "Reached nodes"),
+        ("changed_symbols", "Changed symbols"),
+        ("tests", "Affected tests"),
+        ("unmapped_changes", "Unmapped changes"),
+        ("affected_docs", "Affected documents"),
+    ] {
         if let Some(page) = value.get(field) {
             render_page(out, heading, page, |o, item| match field {
                 "nodes" => render_impact_node(o, item),
@@ -86,25 +128,45 @@ fn render_impact(out: &mut String, value: &Value) {
         out.push_str("## Git change view\n\n");
         if let Some(files) = changes.get("files").and_then(Value::as_array) {
             out.push_str("### Changed files\n\n");
-            if files.is_empty() { out.push_str("No changed files in this Git view.\n"); }
-            for f in files { render_record(out, f, "changed file", &[]); }
+            if files.is_empty() {
+                out.push_str("No changed files in this Git view.\n");
+            }
+            for f in files {
+                render_record(out, f, "changed file", &[]);
+            }
             render_markdown_fields(out, changes, 0, &["files"]);
-        } else { render_markdown_fields(out, changes, 0, &[]); }
+        } else {
+            render_markdown_fields(out, changes, 0, &[]);
+        }
         consumed.push("changes");
     }
     render_markdown_fields(out, value, 0, &consumed);
 }
 
 fn render_explain(out: &mut String, value: &Value) {
-    if let Some(node) = value.get("node") { out.push_str("## Selected symbol\n\n"); render_record(out, node, "symbol", &[]); }
-    if let Some(inv) = value.get("governing_invariants") { render_invariants(out, inv); }
+    if let Some(node) = value.get("node") {
+        out.push_str("## Selected symbol\n\n");
+        render_record(out, node, "symbol", &[]);
+    }
+    if let Some(inv) = value.get("governing_invariants") {
+        render_invariants(out, inv);
+    }
     let mut consumed = vec!["node", "governing_invariants"];
     for (field, heading, is_edge) in [
-        ("incoming", "Inbound relationships", true), ("outgoing", "Outbound relationships", true),
-        ("documents", "Verified documentation", false), ("affected_docs", "Affected documents", false), ("analysis_gaps", "Analysis gaps", false),
+        ("incoming", "Inbound relationships", true),
+        ("outgoing", "Outbound relationships", true),
+        ("documents", "Verified documentation", false),
+        ("affected_docs", "Affected documents", false),
+        ("analysis_gaps", "Analysis gaps", false),
     ] {
         if let Some(page) = value.get(field) {
-            render_page(out, heading, page, |o, item| if is_edge { render_edge(o, item); } else { render_record(o, item, "document", &[]); });
+            render_page(out, heading, page, |o, item| {
+                if is_edge {
+                    render_edge(o, item);
+                } else {
+                    render_record(o, item, "document", &[]);
+                }
+            });
             consumed.push(field);
         }
     }
@@ -112,18 +174,44 @@ fn render_explain(out: &mut String, value: &Value) {
 }
 
 fn render_tests(out: &mut String, value: &Value) {
-    render_summary_fields(out, "Test mapping", value, &["direction", "discovery_method", "unresolved_references", "scope"]);
+    render_summary_fields(
+        out,
+        "Test mapping",
+        value,
+        &[
+            "direction",
+            "discovery_method",
+            "unresolved_references",
+            "scope",
+        ],
+    );
     match text_field(value, "discovery_method") {
-        Some("lexical_fallback") => out.push_str("\n> [!NOTE]\n> Lexical fallback is unverified and supplies no graph call path.\n"),
+        Some("lexical_fallback") => out.push_str(
+            "\n> [!NOTE]\n> Lexical fallback is unverified and supplies no graph call path.\n",
+        ),
         Some("graph") => out.push_str("\nDiscovery uses verified exact-call graph paths.\n"),
         _ => {}
     }
     if let Some(c) = u64_field(value, "unresolved_references").filter(|c| *c > 0) {
         out.push_str(&format!("\nThe selected symbol scope contains {c} unresolved reference(s), which may conceal dynamic test callers.\n"));
     }
-    if let Some(sel) = value.get("selector") { out.push_str("## Selected symbol\n\n"); render_record(out, sel, "symbol", &[]); }
-    let mut consumed = vec!["direction", "discovery_method", "unresolved_references", "scope", "selector"];
-    if let Some(page) = value.get("nodes") { render_page(out, "Related tests and dependencies", page, |o, item| render_test_item(o, item, value)); consumed.push("nodes"); }
+    if let Some(sel) = value.get("selector") {
+        out.push_str("## Selected symbol\n\n");
+        render_record(out, sel, "symbol", &[]);
+    }
+    let mut consumed = vec![
+        "direction",
+        "discovery_method",
+        "unresolved_references",
+        "scope",
+        "selector",
+    ];
+    if let Some(page) = value.get("nodes") {
+        render_page(out, "Related tests and dependencies", page, |o, item| {
+            render_test_item(o, item, value)
+        });
+        consumed.push("nodes");
+    }
     render_markdown_fields(out, value, 0, &consumed);
 }
 
@@ -148,8 +236,13 @@ fn page_has_no_display_entries(page: &Value, items: Option<&[Value]>) -> bool {
 
 fn write_page_stats(out: &mut String, page: &Value, items: Option<&[Value]>) {
     let total = u64_field(page, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
-    let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
-    out.push_str(&format!("- **total**: `{total}` | **has_more**: `{has_more}`"));
+    let has_more = page
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    out.push_str(&format!(
+        "- **total**: `{total}` | **has_more**: `{has_more}`"
+    ));
     if let Some(next_offset) = u64_field(page, "next_offset") {
         out.push_str(&format!(" | **next_offset**: `{next_offset}`"));
     }
@@ -198,7 +291,11 @@ fn render_dead_tails(out: &mut String, value: &Value) {
     out.push_str("## Dead tails & phantom-tested code\n\n");
     if let Some(scope) = value.get("scope").filter(|v| !v.is_null()) {
         let s = scalar_text(scope);
-        let fmt = if scope.is_string() { s } else { inline_code(&s) };
+        let fmt = if scope.is_string() {
+            s
+        } else {
+            inline_code(&s)
+        };
         out.push_str(&format!("- **Scope:** {fmt}\n"));
     }
     if let Some(summary) = value.get("summary").filter(|v| v.is_object()) {
@@ -273,7 +370,10 @@ fn render_name(out: &mut String, name: &str, uri: Option<&str>, bold: bool) {
 }
 
 fn render_record(out: &mut String, value: &Value, fallback: &str, extra_excluded: &[&str]) {
-    if !value.is_object() { render_markdown_fields(out, value, 1, &[]); return; }
+    if !value.is_object() {
+        render_markdown_fields(out, value, 1, &[]);
+        return;
+    }
     render_record_heading(out, value, fallback, true);
     let mut excl = record_exclusions(value);
     excl.extend_from_slice(extra_excluded);
@@ -281,11 +381,19 @@ fn render_record(out: &mut String, value: &Value, fallback: &str, extra_excluded
 }
 
 fn render_record_heading(out: &mut String, item: &Value, fallback: &str, include_role: bool) {
-    let name = text_field(item, "name").or_else(|| text_field(item, "qualname")).unwrap_or(fallback);
+    let name = text_field(item, "name")
+        .or_else(|| text_field(item, "qualname"))
+        .unwrap_or(fallback);
     out.push_str("- ");
     render_name(out, name, text_field(item, "uri"), true);
-    if include_role { if let Some(r) = text_field(item, "test_role") { out.push_str(&format!(" ({})", inline_code(r))); } }
-    if let Some(id) = text_field(item, "id") { out.push_str(&format!(" — id {}", inline_code(id))); }
+    if include_role {
+        if let Some(r) = text_field(item, "test_role") {
+            out.push_str(&format!(" ({})", inline_code(r)));
+        }
+    }
+    if let Some(id) = text_field(item, "id") {
+        out.push_str(&format!(" — id {}", inline_code(id)));
+    }
     append_location(out, item, " — ");
     out.push('\n');
 }
@@ -293,61 +401,151 @@ fn render_record_heading(out: &mut String, item: &Value, fallback: &str, include
 fn record_exclusions(value: &Value) -> Vec<&'static str> {
     let mut excl = Vec::new();
     let (name, qualname) = (text_field(value, "name"), text_field(value, "qualname"));
-    if name.is_some() { excl.push("name"); if qualname == name { excl.push("qualname"); } }
-    else if qualname.is_some() { excl.push("qualname"); }
-    for key in ["id", "path", "test_role", "uri"] { if text_field(value, key).is_some() { excl.push(key); } }
-    if text_field(value, "path").is_some() && line_number(value).is_some() { excl.push("line"); }
+    if name.is_some() {
+        excl.push("name");
+        if qualname == name {
+            excl.push("qualname");
+        }
+    } else if qualname.is_some() {
+        excl.push("qualname");
+    }
+    for key in ["id", "path", "test_role", "uri"] {
+        if text_field(value, key).is_some() {
+            excl.push(key);
+        }
+    }
+    if text_field(value, "path").is_some() && line_number(value).is_some() {
+        excl.push("line");
+    }
     excl
 }
 
 fn render_impact_node(out: &mut String, value: &Value) {
-    let consumed: Vec<&str> = ["edge", "via"].into_iter().filter(|k| value.get(*k).is_some()).collect();
+    let consumed: Vec<&str> = ["edge", "via"]
+        .into_iter()
+        .filter(|k| value.get(*k).is_some())
+        .collect();
     render_record(out, value, "reached node", &consumed);
-    if let Some(edge) = value.get("edge") { render_edge(out, edge); }
+    if let Some(edge) = value.get("edge") {
+        render_edge(out, edge);
+    }
     if let Some(via) = value.get("via") {
         if via.is_object() {
-            out.push_str(&format!("  - Via {} using {}; this depth-grouped path has no call-site coordinate.\n", inline_code(text_field(via, "id").unwrap_or("unknown predecessor")), inline_code(text_field(via, "kind").unwrap_or("unknown relation"))));
+            out.push_str(&format!(
+                "  - Via {} using {}; this depth-grouped path has no call-site coordinate.\n",
+                inline_code(text_field(via, "id").unwrap_or("unknown predecessor")),
+                inline_code(text_field(via, "kind").unwrap_or("unknown relation"))
+            ));
             render_markdown_fields(out, via, 2, &["id", "kind"]);
-        } else { out.push_str("  - Via details: "); render_markdown_fields(out, via, 2, &[]); }
+        } else {
+            out.push_str("  - Via details: ");
+            render_markdown_fields(out, via, 2, &[]);
+        }
     }
 }
 
 fn render_edge(out: &mut String, edge: &Value) {
-    let (kind, confidence) = (text_field(edge, "kind").unwrap_or("relationship"), text_field(edge, "confidence"));
-    let badge = match (kind, confidence) { ("calls", Some("exact")) => "[proven call] ", ("possible_calls", _) => "[heuristic / candidate] ", _ => "" };
+    let (kind, confidence) = (
+        text_field(edge, "kind").unwrap_or("relationship"),
+        text_field(edge, "confidence"),
+    );
+    let badge = match (kind, confidence) {
+        ("calls", Some("exact")) => "[proven call] ",
+        ("possible_calls", _) => "[heuristic / candidate] ",
+        _ => "",
+    };
     out.push_str(&format!("  - {badge}{}", inline_code(kind)));
-    if let Some(s) = text_field(edge, "src_public_id") { out.push_str(&format!(" from {}", inline_code(s))); }
-    if let Some(t) = text_field(edge, "dst_public_id") { out.push_str(&format!(" to {}", inline_code(t))); }
-    if let Some(d) = text_field(edge, "direction") { out.push_str(&format!(" ({})", escape_text(d))); }
+    if let Some(s) = text_field(edge, "src_public_id") {
+        out.push_str(&format!(" from {}", inline_code(s)));
+    }
+    if let Some(t) = text_field(edge, "dst_public_id") {
+        out.push_str(&format!(" to {}", inline_code(t)));
+    }
+    if let Some(d) = text_field(edge, "direction") {
+        out.push_str(&format!(" ({})", escape_text(d)));
+    }
     append_location(out, edge, " at ");
-    if let Some(c) = confidence { out.push_str(&format!("; confidence {}", inline_code(c))); }
+    if let Some(c) = confidence {
+        out.push_str(&format!("; confidence {}", inline_code(c)));
+    }
     if let Some(n) = edge.get("occurrence_count") {
         let s = scalar_text(n);
-        out.push_str(&format!("; occurrences {}", if n.is_string() { s } else { inline_code(&s) }));
+        out.push_str(&format!(
+            "; occurrences {}",
+            if n.is_string() { s } else { inline_code(&s) }
+        ));
     }
     out.push('\n');
-    render_markdown_fields(out, edge, 2, &["kind", "confidence", "src_public_id", "dst_public_id", "direction", "path", "line", "uri", "occurrence_count"]);
+    render_markdown_fields(
+        out,
+        edge,
+        2,
+        &[
+            "kind",
+            "confidence",
+            "src_public_id",
+            "dst_public_id",
+            "direction",
+            "path",
+            "line",
+            "uri",
+            "occurrence_count",
+        ],
+    );
 }
 
 fn render_test_item(out: &mut String, item: &Value, response: &Value) {
     render_record_heading(out, item, "test result", false);
-    if let Some(r) = text_field(item, "test_role") { out.push_str(&format!("  - Supplied role: {}\n", inline_code(r))); }
-    let Some(conn) = item.get("connection") else { render_markdown_fields(out, item, 1, &record_exclusions(item)); return; };
+    if let Some(r) = text_field(item, "test_role") {
+        out.push_str(&format!("  - Supplied role: {}\n", inline_code(r)));
+    }
+    let Some(conn) = item.get("connection") else {
+        render_markdown_fields(out, item, 1, &record_exclusions(item));
+        return;
+    };
     let relation = text_field(conn, "relation");
-    if let Some(rel) = relation { out.push_str(&format!("  - Relationship: {}\n", inline_code(rel))); }
+    if let Some(rel) = relation {
+        out.push_str(&format!("  - Relationship: {}\n", inline_code(rel)));
+    }
     let mut conn_excl: Vec<&str> = relation.map(|_| "relation").into_iter().collect();
-    if text_field(response, "direction") == Some("inbound") && text_field(response, "discovery_method") == Some("graph") {
-        if let (Some(ids), Some(nodes)) = (conn.get("call_path").and_then(Value::as_array), conn.get("verified_call_path_nodes").and_then(Value::as_array)) {
-            if ids.len() == nodes.len() && !nodes.is_empty() && ids.iter().zip(nodes).all(|(id, n)| id.as_str().is_some() && n.get("id") == Some(id)) {
+    if text_field(response, "direction") == Some("inbound")
+        && text_field(response, "discovery_method") == Some("graph")
+    {
+        if let (Some(ids), Some(nodes)) = (
+            conn.get("call_path").and_then(Value::as_array),
+            conn.get("verified_call_path_nodes")
+                .and_then(Value::as_array),
+        ) {
+            if ids.len() == nodes.len()
+                && !nodes.is_empty()
+                && ids
+                    .iter()
+                    .zip(nodes)
+                    .all(|(id, n)| id.as_str().is_some() && n.get("id") == Some(id))
+            {
                 out.push_str("  - Verified call path: ");
                 for (i, node) in nodes.iter().enumerate() {
-                    if i > 0 { out.push_str(" -> "); }
-                    let name = text_field(node, "name").or_else(|| text_field(node, "qualname")).or_else(|| text_field(node, "id")).unwrap_or("unavailable node");
+                    if i > 0 {
+                        out.push_str(" -> ");
+                    }
+                    let name = text_field(node, "name")
+                        .or_else(|| text_field(node, "qualname"))
+                        .or_else(|| text_field(node, "id"))
+                        .unwrap_or("unavailable node");
                     render_name(out, name, text_field(node, "uri"), false);
-                    if let Some(id) = text_field(node, "id") { out.push_str(&format!(" {}", inline_code(id))); }
+                    if let Some(id) = text_field(node, "id") {
+                        out.push_str(&format!(" {}", inline_code(id)));
+                    }
                     append_location(out, node, " at ");
-                    if let Some(r) = text_field(node, "test_role") { out.push_str(&format!(" ({})", inline_code(r))); }
-                    if i + 1 == nodes.len() && text_field(node, "id").is_some_and(|id| response["selector"]["id"].as_str() == Some(id)) { out.push_str(" (target)"); }
+                    if let Some(r) = text_field(node, "test_role") {
+                        out.push_str(&format!(" ({})", inline_code(r)));
+                    }
+                    if i + 1 == nodes.len()
+                        && text_field(node, "id")
+                            .is_some_and(|id| response["selector"]["id"].as_str() == Some(id))
+                    {
+                        out.push_str(" (target)");
+                    }
                     render_markdown_fields(out, node, 2, &record_exclusions(node));
                 }
                 out.push('\n');
@@ -355,9 +553,17 @@ fn render_test_item(out: &mut String, item: &Value, response: &Value) {
             }
         }
     }
-    if conn.as_object().is_some_and(|f| f.keys().any(|k| !conn_excl.contains(&k.as_str()))) { out.push_str("  - Connection details:\n"); render_markdown_fields(out, conn, 2, &conn_excl); }
-    else if !conn.is_object() { render_markdown_fields(out, conn, 2, &[]); }
-    else if conn.as_object().is_some_and(|f| f.is_empty()) { out.push_str("  - Connection is an empty object.\n"); }
+    if conn
+        .as_object()
+        .is_some_and(|f| f.keys().any(|k| !conn_excl.contains(&k.as_str())))
+    {
+        out.push_str("  - Connection details:\n");
+        render_markdown_fields(out, conn, 2, &conn_excl);
+    } else if !conn.is_object() {
+        render_markdown_fields(out, conn, 2, &[]);
+    } else if conn.as_object().is_some_and(|f| f.is_empty()) {
+        out.push_str("  - Connection is an empty object.\n");
+    }
     let mut excluded = record_exclusions(item);
     excluded.push("connection");
     render_markdown_fields(out, item, 1, &excluded);
@@ -365,40 +571,69 @@ fn render_test_item(out: &mut String, item: &Value, response: &Value) {
 
 fn render_invariants(out: &mut String, value: &Value) {
     let mut excl = Vec::new();
-    if let Some(rules) = value.get("direct").and_then(Value::as_array).filter(|r| !r.is_empty()) {
+    if let Some(rules) = value
+        .get("direct")
+        .and_then(Value::as_array)
+        .filter(|r| !r.is_empty())
+    {
         excl.push("direct");
         out.push_str("\n> [!IMPORTANT] Governing Invariants\n");
         for rule in rules {
-            let (id, text) = (text_field(rule, "id").unwrap_or("identifier unavailable"), text_field(rule, "rule").unwrap_or("rule text unavailable"));
+            let (id, text) = (
+                text_field(rule, "id").unwrap_or("identifier unavailable"),
+                text_field(rule, "rule").unwrap_or("rule text unavailable"),
+            );
             for (i, line) in text.lines().enumerate() {
-                if i == 0 { out.push_str(&format!("> - {}: {}", inline_code(id), escape_text(line))); }
-                else { out.push_str(&format!("\n>   {}", escape_text(line))); }
+                if i == 0 {
+                    out.push_str(&format!("> - {}: {}", inline_code(id), escape_text(line)));
+                } else {
+                    out.push_str(&format!("\n>   {}", escape_text(line)));
+                }
             }
             append_location(out, &rule["source"], " — ");
             out.push('\n');
             render_markdown_fields(out, rule, 2, &["id", "rule", "source"]);
-            if let Some(src) = rule.get("source") { render_markdown_fields(out, src, 2, &["path", "line", "uri"]); }
+            if let Some(src) = rule.get("source") {
+                render_markdown_fields(out, src, 2, &["path", "line", "uri"]);
+            }
         }
         out.push('\n');
     }
     render_markdown_fields(out, value, 0, &excl);
 }
 
-fn render_page(out: &mut String, heading: &str, page: &Value, mut render_item: impl FnMut(&mut String, &Value)) {
+fn render_page(
+    out: &mut String,
+    heading: &str,
+    page: &Value,
+    mut render_item: impl FnMut(&mut String, &Value),
+) {
     let items = page_items(page);
     if page_has_no_display_entries(page, items) {
         return;
     }
     out.push_str(&format!("\n## {}\n\n", escape_text(heading)));
-    let Some(items) = items else { render_markdown_fields(out, page, 0, &[]); return; };
+    let Some(items) = items else {
+        render_markdown_fields(out, page, 0, &[]);
+        return;
+    };
     render_markdown_fields(out, page, 0, &["items"]);
-    for item in items { render_item(out, item); }
+    for item in items {
+        render_item(out, item);
+    }
 }
 
 fn append_location(out: &mut String, item: &Value, prefix: &str) {
-    let Some(path) = text_field(item, "path") else { return };
+    let Some(path) = text_field(item, "path") else {
+        return;
+    };
     if let Some(line) = line_number(item) {
         let loc = inline_code(&format!("{path}:{line}"));
-        match text_field(item, "uri") { Some(u) => out.push_str(&format!("{prefix}[{loc}]({u})")), None => out.push_str(&format!("{prefix}{loc}")) }
-    } else { out.push_str(&format!("{prefix}{}", inline_code(path))); }
+        match text_field(item, "uri") {
+            Some(u) => out.push_str(&format!("{prefix}[{loc}]({u})")),
+            None => out.push_str(&format!("{prefix}{loc}")),
+        }
+    } else {
+        out.push_str(&format!("{prefix}{}", inline_code(path)));
+    }
 }

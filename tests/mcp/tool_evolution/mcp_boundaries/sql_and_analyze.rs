@@ -13,7 +13,11 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         .expect("MCP transport");
     let tools = crate::json_array(&catalog["result"]["tools"]);
     for (name, canonical, aliases) in [
-        ("get_doc", "path_or_id", vec!["path", "file_path", "doc_id", "selector"]),
+        (
+            "get_doc",
+            "path_or_id",
+            vec!["path", "file_path", "doc_id", "selector"],
+        ),
         ("search_docs", "query", vec!["pattern", "path", "file_path"]),
         ("ast_grep_search", "pattern", vec!["query", "file_path"]),
         ("code_map_search", "pattern", vec!["query", "file_path"]),
@@ -21,10 +25,22 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         ("code_map_explain", "selector", vec!["symbol", "file_path"]),
         ("code_map_impact", "selector", vec!["symbol", "file_path"]),
         ("code_map_tests", "selector", vec!["symbol", "file_path"]),
-        ("code_map_prove_removal", "selector", vec!["symbol", "file_path"]),
-        ("code_map_analyze", "target", vec!["path", "file_path", "selector"]),
+        (
+            "code_map_prove_removal",
+            "selector",
+            vec!["symbol", "file_path"],
+        ),
+        (
+            "code_map_analyze",
+            "target",
+            vec!["path", "file_path", "selector"],
+        ),
         ("code_map_lint", "target", vec!["path", "file_path"]),
-        ("code_map_query", "selector", vec!["symbol", "query", "file_path"]),
+        (
+            "code_map_query",
+            "selector",
+            vec!["symbol", "query", "file_path"],
+        ),
     ] {
         let schema = &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
         assert!(

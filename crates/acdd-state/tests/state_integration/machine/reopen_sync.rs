@@ -3,9 +3,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::NodeCursor;
 use acdd_state::machine::graph::is_post_task_root_node;
 use acdd_state::machine::schedule::task_dependencies_satisfied;
-use acdd_state::types::{
-    IsolationMode, NodeKind, NodeStatus, SubtaskStatus, TaskDependencyRecord,
-};
+use acdd_state::types::{IsolationMode, NodeKind, NodeStatus, SubtaskStatus, TaskDependencyRecord};
 
 fn plan_sync(
     snapshot: &RunGraphSnapshot,
@@ -13,8 +11,12 @@ fn plan_sync(
     obs: &ValidatedObservations,
     input: &SyncInput,
 ) -> Result<SyncPlan, acdd_core::errors::StateError> {
-    let TransitionOutcome::Sync(plan) =
-        evaluate_transition(snapshot, profile, obs, &TransitionInput::Sync(input.clone()))?
+    let TransitionOutcome::Sync(plan) = evaluate_transition(
+        snapshot,
+        profile,
+        obs,
+        &TransitionInput::Sync(input.clone()),
+    )?
     else {
         unreachable!("Sync input must yield TransitionOutcome::Sync");
     };
@@ -88,7 +90,11 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         created_at: "2026-11-17T09:10:00.000Z".to_owned(),
     });
     for tid in ["task:T1", "task:T1:build", "task:T3", "task:T3:build"] {
-        snap.nodes.iter_mut().find(|n| n.node_id == tid).unwrap().status = NodeStatus::Ready;
+        snap.nodes
+            .iter_mut()
+            .find(|n| n.node_id == tid)
+            .unwrap()
+            .status = NodeStatus::Ready;
     }
 
     // 1. `sync` adding a new task T4 after pre-task `tasks:` fan-out fails with PreTaskArtifactStale.
@@ -218,15 +224,32 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
     // 2b. `#459`: `extend_scope` supports non-terminal `root:polish`, rejects other `RootGate`s and `protected_paths`, and rejects terminal `root:polish`.
     let mut polish_snap = snap.clone();
-    if let Some(existing) = polish_snap.nodes.iter_mut().find(|n| n.node_id == "root:polish") {
+    if let Some(existing) = polish_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "root:polish")
+    {
         existing.status = NodeStatus::Ready;
-        existing.scope = vec!["docs/**".to_owned(), "ROADMAP.md".to_owned(), "TESTS.md".to_owned()];
+        existing.scope = vec![
+            "docs/**".to_owned(),
+            "ROADMAP.md".to_owned(),
+            "TESTS.md".to_owned(),
+        ];
     } else {
-        let mut polish_node = polish_snap.nodes.iter().find(|n| n.node_id == "root:handoff").unwrap().clone();
+        let mut polish_node = polish_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:handoff")
+            .unwrap()
+            .clone();
         polish_node.node_id = "root:polish".to_owned();
         polish_node.gate_id = "polish".to_owned();
         polish_node.status = NodeStatus::Ready;
-        polish_node.scope = vec!["docs/**".to_owned(), "ROADMAP.md".to_owned(), "TESTS.md".to_owned()];
+        polish_node.scope = vec![
+            "docs/**".to_owned(),
+            "ROADMAP.md".to_owned(),
+            "TESTS.md".to_owned(),
+        ];
         polish_snap.nodes.push(polish_node);
     }
 
@@ -242,13 +265,28 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     )
     .unwrap();
     apply_plan_in_memory(&mut polish_snap, &polish_ext);
-    let updated_polish = polish_snap.nodes.iter().find(|n| n.node_id == "root:polish").unwrap();
+    let updated_polish = polish_snap
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "root:polish")
+        .unwrap();
     assert_eq!(updated_polish.contract_revision, 2);
-    assert!(acdd_state::machine::container_scope(&polish_snap, updated_polish).contains(&"crates/polish-extra.md".to_owned()));
+    assert!(
+        acdd_state::machine::container_scope(&polish_snap, updated_polish)
+            .contains(&"crates/polish-extra.md".to_owned())
+    );
 
     for (cursor, path, exp_code) in [
-        (NodeCursor::root(vec![g("handoff")]).unwrap(), "docs/x.md", ErrorCode::ProfileSchemaInvalid),
-        (NodeCursor::root(vec![g("polish")]).unwrap(), "Cargo.toml", ErrorCode::OutOfScopeChanges),
+        (
+            NodeCursor::root(vec![g("handoff")]).unwrap(),
+            "docs/x.md",
+            ErrorCode::ProfileSchemaInvalid,
+        ),
+        (
+            NodeCursor::root(vec![g("polish")]).unwrap(),
+            "Cargo.toml",
+            ErrorCode::OutOfScopeChanges,
+        ),
     ] {
         assert_eq!(
             plan_extend_scope(
@@ -266,7 +304,12 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
             exp_code
         );
     }
-    polish_snap.nodes.iter_mut().find(|n| n.node_id == "root:polish").unwrap().status = NodeStatus::Completed;
+    polish_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "root:polish")
+        .unwrap()
+        .status = NodeStatus::Completed;
     assert_eq!(
         plan_extend_scope(
             &polish_snap,
@@ -284,9 +327,17 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     );
 
     // 3. `reopen` completed T1 when dependent T2 is `InProgress` requires `--cascade`.
-    snap.nodes.iter_mut().find(|n| n.node_id == "task:T1").unwrap().status = NodeStatus::Completed;
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1")
+        .unwrap()
+        .status = NodeStatus::Completed;
     snap.dependencies[0].satisfied = true;
-    snap.nodes.iter_mut().find(|n| n.node_id == "task:T2").unwrap().status = NodeStatus::InProgress;
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T2")
+        .unwrap()
+        .status = NodeStatus::InProgress;
 
     assert_eq!(
         plan_reopen(
@@ -316,24 +367,44 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     apply_plan_in_memory(&mut snap, &cascade_plan);
     assert!(!snap.dependencies[0].satisfied);
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T2").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2")
+            .unwrap()
+            .status,
         NodeStatus::Stale
     );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T1").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T1").unwrap().claim_revision,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1")
+            .unwrap()
+            .claim_revision,
         2
     );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().claim_revision,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:build")
+            .unwrap()
+            .claim_revision,
         2
     );
 
     // 4. Reopen `blueprint_synthesis.synthesize` -> allows syncing new task T4 without resetting Completed T3!
-    snap.nodes.iter_mut().find(|n| n.node_id == "task:T3").unwrap().status = NodeStatus::Completed;
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T3")
+        .unwrap()
+        .status = NodeStatus::Completed;
     let reopen_pre = plan_reopen(
         &snap,
         &obs,
@@ -387,19 +458,42 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     )
     .unwrap();
     assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T4"));
-    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T1:lint"));
-    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T2:lint"));
-    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T4:lint"));
-    assert!(!sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T3:lint"));
-    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "root:audit"));
+    assert!(sync_ok
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "task:T1:lint"));
+    assert!(sync_ok
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "task:T2:lint"));
+    assert!(sync_ok
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "task:T4:lint"));
+    assert!(!sync_ok
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "task:T3:lint"));
+    assert!(sync_ok
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "root:audit"));
     assert_eq!(sync_ok.removed_dependencies.len(), 1);
     assert_eq!(sync_ok.removed_dependencies[0].task_ref, t("T2"));
     // Completed T3 must NOT appear in `node_patches`!
-    assert!(!sync_ok.transition.node_patches.iter().any(|p| p.node_id == "task:T3"));
+    assert!(!sync_ok
+        .transition
+        .node_patches
+        .iter()
+        .any(|p| p.node_id == "task:T3"));
 
     apply_sync_plan_in_memory(&mut snap, &sync_ok);
     // Runtime subtask status/evidence survived sync.
-    let t1_sub = snap.subtasks.iter().find(|s| s.node_id == "task:T1").unwrap();
+    let t1_sub = snap
+        .subtasks
+        .iter()
+        .find(|s| s.node_id == "task:T1")
+        .unwrap();
     assert_eq!(t1_sub.status, SubtaskStatus::InProgress);
     assert_eq!(t1_sub.evidence.as_deref(), Some("runtime wip"));
     // Re-complete pre-task barrier and place Pending T2 behind T2->T1 to verify dependency removal promotion.
@@ -408,10 +502,18 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         "root:blueprint_synthesis.review",
         "root:blueprint_synthesis",
     ] {
-        snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status = NodeStatus::Completed;
+        snap.nodes
+            .iter_mut()
+            .find(|n| n.node_id == nid)
+            .unwrap()
+            .status = NodeStatus::Completed;
     }
     for nid in ["task:T2", "task:T2:build"] {
-        snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status = NodeStatus::Pending;
+        snap.nodes
+            .iter_mut()
+            .find(|n| n.node_id == nid)
+            .unwrap()
+            .status = NodeStatus::Pending;
     }
     snap.dependencies.push(TaskDependencyRecord {
         run_id: snap.run.run_id.clone(),
@@ -446,24 +548,39 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     apply_sync_plan_in_memory(&mut snap, &sync_promote);
     assert!(snap.dependencies.is_empty());
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T2").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
     assert_eq!(
-        snap.nodes.iter().find(|n| n.node_id == "task:T2:build").unwrap().status,
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "task:T2:build")
+            .unwrap()
+            .status,
         NodeStatus::Ready
     );
     assert!(is_post_task_root_node(
         &snap,
-        snap.nodes.iter().find(|n| n.node_id == "root:verify").unwrap()
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "root:verify")
+            .unwrap()
     ));
     assert!(is_post_task_root_node(
         &snap,
-        snap.nodes.iter().find(|n| n.node_id == "root:audit").unwrap()
+        snap.nodes
+            .iter()
+            .find(|n| n.node_id == "root:audit")
+            .unwrap()
     ));
 
     // 5. #19: Transitive A -> B -> C cascade reopen clears B -> C satisfaction and schedule blocks C until B completes.
-    let (_, mut chain_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    let (_, mut chain_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t4 = t("T4");
     chain_snap.nodes.push(GateNodeRecord {
         run_id: chain_snap.run.run_id.clone(),
@@ -526,7 +643,12 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         active_span_id: None,
     });
     for tid in ["task:T1", "task:T2", "task:T3"] {
-        chain_snap.nodes.iter_mut().find(|n| n.node_id == tid).unwrap().status = NodeStatus::Completed;
+        chain_snap
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_id == tid)
+            .unwrap()
+            .status = NodeStatus::Completed;
     }
     chain_snap.dependencies[0].satisfied = true; // T2 -> T1
     chain_snap.dependencies.push(TaskDependencyRecord {
@@ -563,7 +685,10 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     .unwrap();
     apply_plan_in_memory(&mut chain_snap, &reopen_t4);
     assert!(!task_dependencies_satisfied(&chain_snap, &t4, &obs));
-    assert!(!compute_schedule(&chain_snap, &obs).unwrap().ready_tasks.contains(&t4));
+    assert!(!compute_schedule(&chain_snap, &obs)
+        .unwrap()
+        .ready_tasks
+        .contains(&t4));
     // Even if dep.satisfied were corrupted true while T2 is Stale, schedule still refuses T4.
     chain_snap.dependencies[1].satisfied = true;
     assert!(!task_dependencies_satisfied(&chain_snap, &t4, &obs));
@@ -593,11 +718,20 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
     // 6. #9: `rebind_profile` inserting a new gate ahead of an unclaimed `Ready` sibling gate
     // demotes that unclaimed sibling back to `Pending` and activates the newly inserted gate first.
-    let (p9_base_profile, mut p9_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
-    if let Some(b) = p9_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build") {
+    let (p9_base_profile, mut p9_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    if let Some(b) = p9_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:build")
+    {
         b.status = NodeStatus::Completed;
     }
-    if let Some(r) = p9_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review") {
+    if let Some(r) = p9_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:review")
+    {
         r.status = NodeStatus::Ready;
         r.claim_revision = 0;
     }
@@ -609,12 +743,18 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         }
     }
     let p9_spec = MachineSpecInput {
-        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &p9_snap.run.run_id)],
+        tasks: vec![make_task(
+            "T1",
+            &[],
+            &["crates/a/**"],
+            &[],
+            &p9_snap.run.run_id,
+        )],
         spec_digest: "p9".to_owned(),
     };
-    p9_snap.nodes.retain(|n| {
-        n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1"))
-    });
+    p9_snap
+        .nodes
+        .retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
     p9_snap.subtasks.retain(|s| s.node_id == "task:T1");
     let p9_sync = plan_sync(
         &p9_snap,
@@ -629,28 +769,47 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     .unwrap();
     apply_sync_plan_in_memory(&mut p9_snap, &p9_sync);
     assert_eq!(
-        p9_snap.nodes.iter().find(|n| n.node_id == "task:T1:check").unwrap().status,
+        p9_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:check")
+            .unwrap()
+            .status,
         NodeStatus::Ready,
         "newly inserted earlier gate must become Ready"
     );
     assert_eq!(
-        p9_snap.nodes.iter().find(|n| n.node_id == "task:T1:review").unwrap().status,
+        p9_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:T1:review")
+            .unwrap()
+            .status,
         NodeStatus::Pending,
         "unclaimed later Ready sibling gate must demote to Pending"
     );
 
     // #5: Root gate demotion when `rebind_profile` inserts an earlier root sibling gate ahead of unclaimed `Ready` sibling.
-    let (r_base, mut r_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
+    let (r_base, mut r_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let mut r_rebound = r_base.clone();
     if let Some(MachineGraphItem::Gate(ref mut bp)) = r_rebound.gates.first_mut() {
         bp.children.insert(0, MachineGateDef::minimal(g("early")));
     }
     let mut r_spec = MachineSpecInput {
-        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &r_snap.run.run_id)],
+        tasks: vec![make_task(
+            "T1",
+            &[],
+            &["crates/a/**"],
+            &[],
+            &r_snap.run.run_id,
+        )],
         spec_digest: "r5".to_owned(),
     };
     r_spec.tasks[0].depends_on.clear();
-    r_snap.nodes.retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
+    r_snap
+        .nodes
+        .retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
     r_snap.subtasks.retain(|s| s.node_id == "task:T1");
     let r_sync = plan_sync(
         &r_snap,
@@ -687,17 +846,27 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
     // Prepending a top-level root gate before unclaimed `blueprint_synthesis` container must
     // demote BOTH the container and its unclaimed `Ready` child gate, making the prepended root gate Ready.
-    let (rc_base, mut rc_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
+    let (rc_base, mut rc_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let mut rc_rebound = rc_base.clone();
-    rc_rebound
-        .gates
-        .insert(0, MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("pre_root")))));
+    rc_rebound.gates.insert(
+        0,
+        MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("pre_root")))),
+    );
     let mut rc_spec = MachineSpecInput {
-        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &rc_snap.run.run_id)],
+        tasks: vec![make_task(
+            "T1",
+            &[],
+            &["crates/a/**"],
+            &[],
+            &rc_snap.run.run_id,
+        )],
         spec_digest: "rc5".to_owned(),
     };
     rc_spec.tasks[0].depends_on.clear();
-    rc_snap.nodes.retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
+    rc_snap
+        .nodes
+        .retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
     rc_snap.subtasks.retain(|s| s.node_id == "task:T1");
     let rc_sync = plan_sync(
         &rc_snap,
@@ -745,7 +914,8 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     // Rebinding Container <-> RootGate fails closed (`ProfileSchemaInvalid`), and adding child gates
     // under a Completed/Cancelled ancestor never inserts orphaned children.
     let mut kind_flip = rc_base.clone();
-    kind_flip.gates[0] = MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("blueprint_synthesis"))));
+    kind_flip.gates[0] =
+        MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("blueprint_synthesis"))));
     let flip_err = plan_sync(
         &rc_snap,
         &rc_base,
@@ -765,12 +935,18 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         "root:blueprint_synthesis.synthesize",
         "root:blueprint_synthesis.review",
     ] {
-        rc_snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status =
-            NodeStatus::Completed;
+        rc_snap
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_id == nid)
+            .unwrap()
+            .status = NodeStatus::Completed;
     }
     let mut add_under_done = rc_base.clone();
     if let MachineGraphItem::Gate(ref mut gate_box) = add_under_done.gates[0] {
-        gate_box.children.push(MachineGateDef::minimal(g("late_extra")));
+        gate_box
+            .children
+            .push(MachineGateDef::minimal(g("late_extra")));
     }
     let done_sync = plan_sync(
         &rc_snap,
@@ -812,5 +988,7 @@ fn unified_evaluate_transition_routes_all_variants() {
         }),
     )
     .unwrap();
-    assert!(matches!(out, TransitionOutcome::Claim(b) if matches!(*b, ClaimDecision::Admit { .. })));
+    assert!(
+        matches!(out, TransitionOutcome::Claim(b) if matches!(*b, ClaimDecision::Admit { .. }))
+    );
 }

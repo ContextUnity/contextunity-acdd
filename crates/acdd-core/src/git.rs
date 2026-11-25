@@ -61,24 +61,28 @@ pub fn run_git_raw(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = cmd.spawn().with_context(|| {
-            format!(
-                "failed to spawn git {:?} in '{}'",
-                args,
-                worktree.display()
-            )
+            format!("failed to spawn git {:?} in '{}'", args, worktree.display())
         })?;
         let stdin = child.stdin.take();
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| -> Result<()> {
                 if let Some(mut stdin) = stdin {
                     stdin.write_all(bytes).with_context(|| {
-                        format!("failed to write stdin to git {:?} in '{}'", args, worktree.display())
+                        format!(
+                            "failed to write stdin to git {:?} in '{}'",
+                            args,
+                            worktree.display()
+                        )
                     })?;
                 }
                 Ok(())
             });
             let output = child.wait_with_output().with_context(|| {
-                format!("failed waiting on git {:?} in '{}'", args, worktree.display())
+                format!(
+                    "failed waiting on git {:?} in '{}'",
+                    args,
+                    worktree.display()
+                )
             });
             writer.join().expect("git stdin writer panicked")?;
             output
@@ -99,7 +103,11 @@ pub fn format_git_failure(args: &[&str], worktree: &Path, output: &Output) -> St
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let detail = if !stderr.is_empty() { stderr } else { stdout };
-    format!("git {:?} failed in '{}': {detail}", args, worktree.display())
+    format!(
+        "git {:?} failed in '{}': {detail}",
+        args,
+        worktree.display()
+    )
 }
 
 /// Executes `git` via [`run_git_raw`] and returns trimmed UTF-8-lossy stdout on exit code 0.
@@ -173,10 +181,7 @@ fn git_rev_parse_path_exact(worktree: &Path, flag: &str) -> Result<PathBuf> {
         .or_else(|| output.stdout.strip_suffix(b"\n"))
         .unwrap_or(&output.stdout);
     #[cfg(not(windows))]
-    let bytes = output
-        .stdout
-        .strip_suffix(b"\n")
-        .unwrap_or(&output.stdout);
+    let bytes = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
     let path = bytes_to_path_exact(bytes)?;
     Ok(path.canonicalize().unwrap_or(path))
 }
@@ -235,7 +240,9 @@ pub fn list_owned_worktrees_with_heads(root: &Path) -> Result<Vec<(PathBuf, Opti
             continue;
         }
         if seen.insert(canon_p.clone()) {
-            let head = records.peek().and_then(|record| record.strip_prefix(b"HEAD "))
+            let head = records
+                .peek()
+                .and_then(|record| record.strip_prefix(b"HEAD "))
                 .and_then(|oid| std::str::from_utf8(oid).ok())
                 .filter(|oid| {
                     (oid.len() == 40 || oid.len() == 64)
@@ -260,7 +267,11 @@ pub fn primary_worktree_root(root: &Path) -> Option<PathBuf> {
     if let Ok(common_dir) = git_common_dir(root) {
         if common_dir.file_name() == Some(std::ffi::OsStr::new(".git")) {
             if let Some(parent) = common_dir.parent().filter(|p| p.is_dir()) {
-                return Some(parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()));
+                return Some(
+                    parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf()),
+                );
             }
         }
         return list_owned_worktrees(root)
@@ -322,12 +333,18 @@ pub fn read_git_blobs_at_paths_batch(
             Ok(format!("{rev}:./{path}"))
         })
         .collect();
-    let refs: Vec<_> = specs.iter().filter_map(|spec| spec.as_deref().ok()).collect();
+    let refs: Vec<_> = specs
+        .iter()
+        .filter_map(|spec| spec.as_deref().ok())
+        .collect();
     let mut blobs = read_git_blob_specs_batch(worktree, &refs, true)?.into_iter();
     Ok(specs
         .into_iter()
         .map(|spec| match spec {
-            Ok(_) => blobs.next().expect("batch preserves input length").map_err(anyhow::Error::from),
+            Ok(_) => blobs
+                .next()
+                .expect("batch preserves input length")
+                .map_err(anyhow::Error::from),
             Err(err) => Err(err),
         })
         .collect())
@@ -342,14 +359,23 @@ pub fn git_paths_clean_against_head(worktree: &Path, paths: &[&str]) -> Result<b
         .iter()
         .map(|p| crate::path_policy::normalize_rel_path(p).context("invalid relative Git path"))
         .collect::<Result<_>>()?;
-    let mut args = vec!["status", "--porcelain", "-z", "--untracked-files=normal", "--"];
+    let mut args = vec![
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=normal",
+        "--",
+    ];
     args.extend(norm.iter().map(String::as_str));
     let out = run_git_raw(worktree, &args, None, &[], None)?;
     Ok(out.status.success() && out.stdout.is_empty())
 }
 
 /// Return immutable object IDs for revision/path pairs in a single Git process.
-pub fn git_object_ids_at_paths_batch(worktree: &Path, paths: &[(&str, &str)]) -> Result<Vec<Option<String>>> {
+pub fn git_object_ids_at_paths_batch(
+    worktree: &Path,
+    paths: &[(&str, &str)],
+) -> Result<Vec<Option<String>>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -359,28 +385,49 @@ pub fn git_object_ids_at_paths_batch(worktree: &Path, paths: &[(&str, &str)]) ->
         if rev.contains(['\0', '\n']) {
             bail!("invalid git revision '{rev}'");
         }
-        let path = crate::path_policy::normalize_rel_path(path).context("invalid relative Git path")?;
+        let path =
+            crate::path_policy::normalize_rel_path(path).context("invalid relative Git path")?;
         input.extend_from_slice(format!("{rev}:./{path}\0").as_bytes());
     }
-    let out = run_git_raw(worktree, &["cat-file", "--batch-check", "-Z"], None, &[], Some(&input))?;
+    let out = run_git_raw(
+        worktree,
+        &["cat-file", "--batch-check", "-Z"],
+        None,
+        &[],
+        Some(&input),
+    )?;
     if !out.status.success() {
-        bail!("git cat-file --batch-check failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "git cat-file --batch-check failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
-    let records: Vec<_> = out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
+    let records: Vec<_> = out
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .collect();
     if records.len() != paths.len() {
         bail!("git batch-check returned an unexpected number of records");
     }
-    records.into_iter().map(|record| {
-        if record.ends_with(b" missing") {
-            return Ok(None);
-        }
-        let oid = record.split(|&b| b == b' ').next().context("missing Git object ID")?;
-        let oid = std::str::from_utf8(oid)?;
-        if !(oid.len() == 40 || oid.len() == 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
-            bail!("invalid Git object ID");
-        }
-        Ok(Some(oid.to_owned()))
-    }).collect()
+    records
+        .into_iter()
+        .map(|record| {
+            if record.ends_with(b" missing") {
+                return Ok(None);
+            }
+            let oid = record
+                .split(|&b| b == b' ')
+                .next()
+                .context("missing Git object ID")?;
+            let oid = std::str::from_utf8(oid)?;
+            if !(oid.len() == 40 || oid.len() == 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                bail!("invalid Git object ID");
+            }
+            Ok(Some(oid.to_owned()))
+        })
+        .collect()
 }
 
 fn read_git_blob_specs_batch(
@@ -463,7 +510,10 @@ fn read_git_blob_utf8_spec(worktree: &Path, spec: &str) -> Result<Option<String>
     let show_out = run_git_raw(worktree, &["cat-file", "blob", spec], None, &[], None)?;
     if !show_out.status.success() {
         let stderr = String::from_utf8_lossy(&show_out.stderr).trim().to_owned();
-        bail!("git cat-file blob '{spec}' failed in '{}': {stderr}", worktree.display());
+        bail!(
+            "git cat-file blob '{spec}' failed in '{}': {stderr}",
+            worktree.display()
+        );
     }
     let text = String::from_utf8(show_out.stdout)
         .with_context(|| format!("git blob '{spec}' is not valid UTF-8"))?;
@@ -486,14 +536,23 @@ pub fn diff_worktree_file_against_rev(
     let live_path = crate::fs::checked_child(worktree, Path::new(&norm_rel))?;
 
     let tree_spec = format!("{rev}^{{tree}}");
-    let tree_oid = run_git_stdout(worktree, &["rev-parse", "--verify", &tree_spec], None, &[], None)
-        .context("delta baseline must resolve to a valid git commit or tree")?;
+    let tree_oid = run_git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &tree_spec],
+        None,
+        &[],
+        None,
+    )
+    .context("delta baseline must resolve to a valid git commit or tree")?;
     let unified_arg = format!("--unified={context_lines}");
 
     let live_meta = match std::fs::symlink_metadata(&live_path) {
         Ok(meta) => {
             if meta.file_type().is_symlink() || !meta.is_file() {
-                bail!("delta path '{}' must name a regular file", live_path.display());
+                bail!(
+                    "delta path '{}' must name a regular file",
+                    live_path.display()
+                );
             }
             Some(meta)
         }
@@ -564,8 +623,9 @@ pub fn diff_worktree_file_against_rev(
     let baseline_entry = baseline_blob_entry(worktree, &tree_oid, &norm_rel)?;
     let Some((baseline_mode, blob_oid)) = baseline_entry else {
         let out = run_no_index_diff(worktree, &unified_arg, None, abs_str)?;
-        return String::from_utf8(out)
-            .with_context(|| format!("git untracked delta output for '{norm_rel}' is not valid UTF-8"));
+        return String::from_utf8(out).with_context(|| {
+            format!("git untracked delta output for '{norm_rel}' is not valid UTF-8")
+        });
     };
 
     let baseline_blob = run_git_raw(worktree, &["cat-file", "blob", &blob_oid], None, &[], None)?;
@@ -604,8 +664,9 @@ pub fn diff_worktree_file_against_rev(
     let tmp_path = tmp_dir.write_private_file("baseline", &baseline_blob.stdout)?;
     let tmp_str = tmp_path.to_str().context("temp delta path is not UTF-8")?;
     let raw = run_no_index_diff(worktree, &unified_arg, Some(tmp_str), abs_str)?;
-    let text = String::from_utf8(raw)
-        .with_context(|| format!("git baseline untracked delta output for '{norm_rel}' is not UTF-8"))?;
+    let text = String::from_utf8(raw).with_context(|| {
+        format!("git baseline untracked delta output for '{norm_rel}' is not UTF-8")
+    })?;
     Ok(normalize_no_index_mode_headers(
         &text,
         &baseline_mode,
@@ -625,10 +686,21 @@ pub fn parse_ls_tree_z_record(record: &[u8]) -> Option<(String, String, String, 
     Some((mode, kind, oid, &record[tab + 1..]))
 }
 
-fn baseline_blob_entry(worktree: &Path, tree_oid: &str, norm_rel: &str) -> Result<Option<(String, String)>> {
+fn baseline_blob_entry(
+    worktree: &Path,
+    tree_oid: &str,
+    norm_rel: &str,
+) -> Result<Option<(String, String)>> {
     let out = run_git_raw(
         worktree,
-        &["--literal-pathspecs", "ls-tree", "-z", tree_oid, "--", norm_rel],
+        &[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-z",
+            tree_oid,
+            "--",
+            norm_rel,
+        ],
         None,
         &[],
         None,
@@ -763,9 +835,11 @@ mod tests {
         let repo = base.join("primary");
         std::fs::create_dir_all(&repo).unwrap();
         assert!(git_status(&repo, &["init"]).unwrap().success());
-        assert!(git_status(&repo, &["config", "user.email", "test@example.com"])
-            .unwrap()
-            .success());
+        assert!(
+            git_status(&repo, &["config", "user.email", "test@example.com"])
+                .unwrap()
+                .success()
+        );
         assert!(git_status(&repo, &["config", "user.name", "Test"])
             .unwrap()
             .success());
@@ -778,13 +852,7 @@ mod tests {
         let wt = base.join("linked");
         assert!(git_status(
             &repo,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "wt-branch",
-                wt.to_str().unwrap(),
-            ],
+            &["worktree", "add", "-b", "wt-branch", wt.to_str().unwrap(),],
         )
         .unwrap()
         .success());
@@ -794,7 +862,14 @@ mod tests {
         let orphan = base.join("orphan");
         assert!(git_status(
             &repo,
-            &["worktree", "add", "--orphan", "-b", "orphan-wt", orphan.to_str().unwrap()],
+            &[
+                "worktree",
+                "add",
+                "--orphan",
+                "-b",
+                "orphan-wt",
+                orphan.to_str().unwrap()
+            ],
         )
         .unwrap()
         .success());
@@ -809,42 +884,64 @@ mod tests {
         let wt_heads = list_owned_worktrees_with_heads(&repo).unwrap();
         assert!(wt_heads.iter().any(|(p, h)| p == &can_repo && h.is_some()));
         assert!(wt_heads.iter().any(|(p, h)| p == &can_wt && h.is_some()));
-        assert!(wt_heads.iter().any(|(p, h)| p == &can_orphan && h.is_none()));
+        assert!(wt_heads
+            .iter()
+            .any(|(p, h)| p == &can_orphan && h.is_none()));
 
-        let hashed = run_git_stdout(&repo, &["hash-object", "--stdin"], None, &[], Some(b"hi\n")).unwrap();
+        let hashed =
+            run_git_stdout(&repo, &["hash-object", "--stdin"], None, &[], Some(b"hi\n")).unwrap();
         assert_eq!(hashed.len(), 40);
         let mut cmd = Command::new("git");
         cmd.env("GIT_DIR", "/nonexistent");
         scrub_git_env(&mut cmd);
-        assert!(cmd
-            .get_envs()
-            .any(|(k, v)| k == "GIT_DIR" && v.is_none()));
+        assert!(cmd.get_envs().any(|(k, v)| k == "GIT_DIR" && v.is_none()));
 
         // Verify read_git_blob_utf8 across present, absent, non-blob, and invalid UTF-8 inputs.
         assert_eq!(
-            read_git_blob_utf8(&repo, "HEAD", "README.md").unwrap().as_deref(),
+            read_git_blob_utf8(&repo, "HEAD", "README.md")
+                .unwrap()
+                .as_deref(),
             Some("hi\n")
         );
-        assert_eq!(read_git_blob_utf8(&repo, "HEAD", "missing.txt").unwrap(), None);
+        assert_eq!(
+            read_git_blob_utf8(&repo, "HEAD", "missing.txt").unwrap(),
+            None
+        );
         std::fs::create_dir_all(repo.join("sub")).unwrap();
         std::fs::write(repo.join("sub/file.txt"), "one\ntwo\n").unwrap();
         std::fs::write(repo.join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
-        assert!(git_status(&repo, &["add", "sub/file.txt", "bin.dat"]).unwrap().success());
-        assert!(git_status(&repo, &["commit", "-m", "add sub and bin"]).unwrap().success());
+        assert!(git_status(&repo, &["add", "sub/file.txt", "bin.dat"])
+            .unwrap()
+            .success());
+        assert!(git_status(&repo, &["commit", "-m", "add sub and bin"])
+            .unwrap()
+            .success());
         assert_eq!(read_git_blob_utf8(&repo, "HEAD", "sub").unwrap(), None);
         assert!(read_git_blob_utf8(&repo, "HEAD", "bin.dat").is_err());
 
-        let blob = run_git_stdout(&repo, &["rev-parse", "HEAD:README.md"], None, &[], None).unwrap();
-        let binary = run_git_stdout(&repo, &["rev-parse", "HEAD:bin.dat"], None, &[], None).unwrap();
+        let blob =
+            run_git_stdout(&repo, &["rev-parse", "HEAD:README.md"], None, &[], None).unwrap();
+        let binary =
+            run_git_stdout(&repo, &["rev-parse", "HEAD:bin.dat"], None, &[], None).unwrap();
         let tree = run_git_stdout(&repo, &["rev-parse", "HEAD^{tree}"], None, &[], None).unwrap();
         let commit = run_git_stdout(&repo, &["rev-parse", "HEAD"], None, &[], None).unwrap();
         let missing = "0000000000000000000000000000000000000000";
         let cases: &[(&[&str], bool)] = &[
             (&[&blob, missing, &tree, &commit, &blob], false),
-            (&[], false), (&["not-hex"], true), (&[""], true), (&[&binary], true),
+            (&[], false),
+            (&["not-hex"], true),
+            (&[""], true),
+            (&[&binary], true),
         ];
-        let expected = read_git_blobs_utf8_batch(&repo, cases[0].0).unwrap().into_iter().collect::<std::result::Result<Vec<_>, _>>().unwrap();
-        assert_eq!(expected, vec![Some("hi\n".into()), None, None, None, Some("hi\n".into())]);
+        let expected = read_git_blobs_utf8_batch(&repo, cases[0].0)
+            .unwrap()
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            expected,
+            vec![Some("hi\n".into()), None, None, None, Some("hi\n".into())]
+        );
         let mixed = read_git_blobs_utf8_batch(&repo, &[&blob, &binary, &blob]).unwrap();
         assert_eq!(mixed[0].as_ref().unwrap().as_deref(), Some("hi\n"));
         assert!(mixed[1].is_err());
@@ -866,14 +963,30 @@ mod tests {
         assert!(paths[3].is_err());
         assert_eq!(paths[4].as_ref().unwrap().as_deref(), Some("hi\n"));
         for (oids, expect_error) in cases {
-            let batch: Result<Vec<_>> = read_git_blobs_utf8_batch(&repo, oids).and_then(|items| items.into_iter().map(|item| item.map_err(anyhow::Error::from)).collect());
-            let individual: Result<Vec<_>> = oids.iter().map(|oid| read_git_blobs_utf8_batch(&repo, &[*oid]).and_then(|mut items| items.remove(0).map_err(anyhow::Error::from))).collect();
+            let batch: Result<Vec<_>> = read_git_blobs_utf8_batch(&repo, oids).and_then(|items| {
+                items
+                    .into_iter()
+                    .map(|item| item.map_err(anyhow::Error::from))
+                    .collect()
+            });
+            let individual: Result<Vec<_>> = oids
+                .iter()
+                .map(|oid| {
+                    read_git_blobs_utf8_batch(&repo, &[*oid])
+                        .and_then(|mut items| items.remove(0).map_err(anyhow::Error::from))
+                })
+                .collect();
             assert_eq!(batch.is_err(), *expect_error, "{oids:?}");
             assert_eq!(individual.is_err(), *expect_error, "{oids:?}");
-            if !expect_error { assert_eq!(batch.unwrap(), individual.unwrap(), "{oids:?}"); }
+            if !expect_error {
+                assert_eq!(batch.unwrap(), individual.unwrap(), "{oids:?}");
+            }
         }
         let many = vec![blob.as_str(); 4096];
-        assert_eq!(read_git_blobs_utf8_batch(&repo, &many).unwrap().len(), many.len());
+        assert_eq!(
+            read_git_blobs_utf8_batch(&repo, &many).unwrap().len(),
+            many.len()
+        );
 
         // Verify diff_worktree_file_against_rev for tracked, untracked, pre-baseline untracked, deleted, and mode diffs.
         assert_eq!(
@@ -881,21 +994,30 @@ mod tests {
             ""
         );
         std::fs::write(repo.join("sub/file.txt"), "one\ntwo-edited\n").unwrap();
-        let tracked_diff = diff_worktree_file_against_rev(&repo, "HEAD", "sub/file.txt", 3).unwrap();
-        assert!(tracked_diff.contains("-two\n+two-edited\n"), "{tracked_diff}");
+        let tracked_diff =
+            diff_worktree_file_against_rev(&repo, "HEAD", "sub/file.txt", 3).unwrap();
+        assert!(
+            tracked_diff.contains("-two\n+two-edited\n"),
+            "{tracked_diff}"
+        );
 
         std::fs::write(repo.join("untracked.txt"), "fresh\n").unwrap();
-        let untracked_diff = diff_worktree_file_against_rev(&repo, "HEAD", "untracked.txt", 3).unwrap();
+        let untracked_diff =
+            diff_worktree_file_against_rev(&repo, "HEAD", "untracked.txt", 3).unwrap();
         assert!(untracked_diff.contains("--- /dev/null"), "{untracked_diff}");
         assert!(untracked_diff.contains("+fresh\n"), "{untracked_diff}");
 
-        let head_tree = run_git_stdout(&repo, &["rev-parse", "HEAD^{tree}"], None, &[], None).unwrap();
+        let head_tree =
+            run_git_stdout(&repo, &["rev-parse", "HEAD^{tree}"], None, &[], None).unwrap();
         std::fs::remove_file(repo.join("sub/file.txt")).unwrap();
-        let deleted_diff = diff_worktree_file_against_rev(&repo, &head_tree, "sub/file.txt", 3).unwrap();
+        let deleted_diff =
+            diff_worktree_file_against_rev(&repo, &head_tree, "sub/file.txt", 3).unwrap();
         assert!(deleted_diff.contains("-one\n-two\n"), "{deleted_diff}");
 
         // Restore as untracked identical to baseline tree -> empty diff; mode change -> mode diff.
-        assert!(git_status(&repo, &["rm", "--cached", "sub/file.txt"]).unwrap().success());
+        assert!(git_status(&repo, &["rm", "--cached", "sub/file.txt"])
+            .unwrap()
+            .success());
         std::fs::write(repo.join("sub/file.txt"), "one\ntwo\n").unwrap();
         assert_eq!(
             diff_worktree_file_against_rev(&repo, &head_tree, "sub/file.txt", 3).unwrap(),
@@ -908,38 +1030,93 @@ mod tests {
             let mut perms = std::fs::metadata(&p).unwrap().permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&p, perms).unwrap();
-            let mode_only = diff_worktree_file_against_rev(&repo, &head_tree, "sub/file.txt", 3).unwrap();
-            assert_eq!(mode_only.matches("old mode 100644").count(), 1, "{mode_only}");
-            assert_eq!(mode_only.matches("new mode 100755").count(), 1, "{mode_only}");
+            let mode_only =
+                diff_worktree_file_against_rev(&repo, &head_tree, "sub/file.txt", 3).unwrap();
+            assert_eq!(
+                mode_only.matches("old mode 100644").count(),
+                1,
+                "{mode_only}"
+            );
+            assert_eq!(
+                mode_only.matches("new mode 100755").count(),
+                1,
+                "{mode_only}"
+            );
         }
 
         // Preserve leading/trailing spaces in actual OS filenames while rejecting invalid delta paths.
         std::fs::create_dir_all(repo.join("src")).unwrap();
         let spaced_cases = [
-            ("src/ leading.rs", "pub fn leading_space() -> i32 { 1 }\n", "pub fn leading_space() -> i32 { 2 }\n"),
-            ("src/leading.rs", "pub fn plain() -> i32 { 10 }\n", "pub fn plain() -> i32 { 20 }\n"),
-            ("src/trailing.rs ", "pub fn trailing_space() -> i32 { 3 }\n", "pub fn trailing_space() -> i32 { 4 }\n"),
+            (
+                "src/ leading.rs",
+                "pub fn leading_space() -> i32 { 1 }\n",
+                "pub fn leading_space() -> i32 { 2 }\n",
+            ),
+            (
+                "src/leading.rs",
+                "pub fn plain() -> i32 { 10 }\n",
+                "pub fn plain() -> i32 { 20 }\n",
+            ),
+            (
+                "src/trailing.rs ",
+                "pub fn trailing_space() -> i32 { 3 }\n",
+                "pub fn trailing_space() -> i32 { 4 }\n",
+            ),
         ];
         for (rel, base_text, _) in spaced_cases {
             std::fs::write(repo.join(rel), base_text).unwrap();
             assert!(git_status(&repo, &["add", "--", rel]).unwrap().success());
         }
-        assert!(git_status(&repo, &["commit", "-m", "add spaced filenames"]).unwrap().success());
+        assert!(git_status(&repo, &["commit", "-m", "add spaced filenames"])
+            .unwrap()
+            .success());
         for (rel, _, live_text) in spaced_cases {
             std::fs::write(repo.join(rel), live_text).unwrap();
         }
         for (rel, expected_del, expected_add, forbidden) in [
-            ("src/ leading.rs", "-pub fn leading_space() -> i32 { 1 }", "+pub fn leading_space() -> i32 { 2 }", "plain()"),
-            ("./src/ leading.rs", "-pub fn leading_space() -> i32 { 1 }", "+pub fn leading_space() -> i32 { 2 }", "plain()"),
-            ("src/leading.rs", "-pub fn plain() -> i32 { 10 }", "+pub fn plain() -> i32 { 20 }", "leading_space()"),
-            ("src/trailing.rs ", "-pub fn trailing_space() -> i32 { 3 }", "+pub fn trailing_space() -> i32 { 4 }", "plain()"),
+            (
+                "src/ leading.rs",
+                "-pub fn leading_space() -> i32 { 1 }",
+                "+pub fn leading_space() -> i32 { 2 }",
+                "plain()",
+            ),
+            (
+                "./src/ leading.rs",
+                "-pub fn leading_space() -> i32 { 1 }",
+                "+pub fn leading_space() -> i32 { 2 }",
+                "plain()",
+            ),
+            (
+                "src/leading.rs",
+                "-pub fn plain() -> i32 { 10 }",
+                "+pub fn plain() -> i32 { 20 }",
+                "leading_space()",
+            ),
+            (
+                "src/trailing.rs ",
+                "-pub fn trailing_space() -> i32 { 3 }",
+                "+pub fn trailing_space() -> i32 { 4 }",
+                "plain()",
+            ),
         ] {
             let diff = diff_worktree_file_against_rev(&repo, "HEAD", rel, 3).unwrap();
             assert!(diff.contains(expected_del), "{rel}: {diff}");
             assert!(diff.contains(expected_add), "{rel}: {diff}");
-            assert!(!diff.contains(forbidden), "{rel} leaked neighbor diff: {diff}");
+            assert!(
+                !diff.contains(forbidden),
+                "{rel} leaked neighbor diff: {diff}"
+            );
         }
-        for invalid in ["", ".", "./", "../escape.rs", "/abs.rs", "\\win.rs", "C:drive.rs", "bad\0.rs"] {
+        for invalid in [
+            "",
+            ".",
+            "./",
+            "../escape.rs",
+            "/abs.rs",
+            "\\win.rs",
+            "C:drive.rs",
+            "bad\0.rs",
+        ] {
             assert!(
                 diff_worktree_file_against_rev(&repo, "HEAD", invalid, 3).is_err(),
                 "expected invalid delta path '{invalid:?}' to error"

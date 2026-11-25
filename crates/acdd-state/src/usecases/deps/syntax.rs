@@ -5,8 +5,8 @@ use crate::machine::MachineTaskDep;
 use crate::spec::SpecDocument;
 use crate::store::sqlite::SqliteStateReader;
 use crate::types::{RunRecord, RunTombstoneRecord};
-use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list_all_tombstones};
 use crate::usecases::config::StateEngineConfig;
+use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list_all_tombstones};
 use acdd_core::config::{
     load_adapter, resolve_effective_state_db_path, resolve_state_db_path, Adapter,
     SpecCollectionConfig,
@@ -92,7 +92,8 @@ pub(crate) fn parse_task_dependency_with_db(
             depends_on_ref: TaskRef::new(&t_ref)?,
         }),
         ParsedDepSyntax::LocalSpec { spec_id, task_ref } => {
-            let rid = resolve_external_run_id(Path::new(current_workspace), &spec_id, local_db, false)?;
+            let rid =
+                resolve_external_run_id(Path::new(current_workspace), &spec_id, local_db, false)?;
             let tref = match task_ref {
                 Some(t) => TaskRef::new(&t)?,
                 None => TaskRef::whole_spec(),
@@ -146,9 +147,7 @@ pub(crate) fn resolve_linked_workspace_root(
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!(
-                    "dependency '{raw_dep}' references unknown linked workspace '{ws_alias}'"
-                ),
+                format!("dependency '{raw_dep}' references unknown linked workspace '{ws_alias}'"),
             )
         })?;
     canonical_root(ws_path).map_err(|err| {

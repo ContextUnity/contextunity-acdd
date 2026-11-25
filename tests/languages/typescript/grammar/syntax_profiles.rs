@@ -63,10 +63,13 @@ export const processUser = (u: User) => {
         .nodes
         .iter()
         .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.name == "getUser"));
-    assert!(facts
-        .nodes
-        .iter()
-        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "processUser"));
+    assert!(
+        facts
+            .nodes
+            .iter()
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function
+                && n.name == "processUser")
+    );
     let process_user = facts
         .nodes
         .iter()
@@ -115,8 +118,7 @@ fn parser_slot_grammar_reuse() {
             "Third",
         ),
     ] {
-        let profile =
-            acdd_index::languages::by_id(profile_id).expect("compiled profile");
+        let profile = acdd_index::languages::by_id(profile_id).expect("compiled profile");
         let mut facts = acdd_index::models::Facts::default();
         acdd_index::ast::parse::parse_file(profile, path, source, path, &mut facts)
             .expect("parse failed");
@@ -126,10 +128,8 @@ fn parser_slot_grammar_reuse() {
             facts.errors
         );
         assert!(
-            facts
-                .nodes
-                .iter()
-                .any(|node| node.name == expected_name && node.kind == acdd_index::models::tags::NodeKind::Function),
+            facts.nodes.iter().any(|node| node.name == expected_name
+                && node.kind == acdd_index::models::tags::NodeKind::Function),
             "{profile_id}:{path}: {facts:#?}"
         );
     }

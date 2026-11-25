@@ -70,9 +70,10 @@ pub(super) fn reader_evictor(slot: &Arc<Mutex<ConnectionSlot>>) -> Arc<cache::Id
         };
         match slot.try_lock() {
             Ok(mut slot) => {
-                if slot.as_ref().is_some_and(|cached| {
-                    cache::registry_path(&cached.database_path) == db
-                }) {
+                if slot
+                    .as_ref()
+                    .is_some_and(|cached| cache::registry_path(&cached.database_path) == db)
+                {
                     *slot = None;
                 }
             }

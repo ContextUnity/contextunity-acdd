@@ -135,7 +135,9 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         "# Source rules\n\nKeep domain checks in their owner.\n{}",
         "Use the owning domain's test harness. ".repeat(40)
     );
-    let config = |cap| format!("roots: [src/]\nspecs:\n  milestones:\n    path: docs/milestones\nresponse:\n  max_output_bytes: {cap}\n");
+    let config = |cap| {
+        format!("roots: [src/]\nspecs:\n  milestones:\n    path: docs/milestones\nresponse:\n  max_output_bytes: {cap}\n")
+    };
     workspace.write("acdd.yaml", &config(4096));
     for (next, cap, root_source, local_source, descendants) in [
         (false, 4096, root_rules, local_rules.as_str(), 0),
@@ -147,7 +149,10 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         if descendants > 0 {
             let path = "docs/milestones/010-session.md";
             let spec = std::fs::read_to_string(workspace.path(path)).unwrap();
-            workspace.write(path, &spec.replace("scope: [src/]", "scope: [src/, tests/]"));
+            workspace.write(
+                path,
+                &spec.replace("scope: [src/]", "scope: [src/, tests/]"),
+            );
         }
         for index in 0..descendants {
             workspace.write(format!("src/{index}/AGENTS.md"), local_source);
@@ -184,7 +189,10 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         if let Some(fifo) = fifo {
             if claim.is_err() {
                 // Release a blocked reader on request timeout before dropping the harness.
-                let _ = std::fs::OpenOptions::new().read(true).write(true).open(&fifo);
+                let _ = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&fifo);
             }
             std::fs::remove_file(fifo).unwrap();
         }
@@ -208,7 +216,11 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         }
         for path in ["src/AGENTS.md", "AGENTS.md"] {
             let item = items.iter().find(|item| item["path"] == path).unwrap();
-            assert!(item.get("uri").is_none() && item.get("title").is_none() && item.get("content").is_none());
+            assert!(
+                item.get("uri").is_none()
+                    && item.get("title").is_none()
+                    && item.get("content").is_none()
+            );
             assert!(item["headings"].as_array().is_some_and(|h| !h.is_empty()));
         }
         workspace.write("acdd.yaml", &config(4096));
@@ -486,28 +498,64 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
 
     struct ProbeProvider;
     impl DomainProvider for ProbeProvider {
-        fn domain_id(&self) -> &str { "probe" }
+        fn domain_id(&self) -> &str {
+            "probe"
+        }
         fn capabilities(&self) -> DomainCapabilities {
             DomainCapabilities {
-                checks: vec![CheckCapability { name: "ping".into(), input_schema: acdd_core::schema::SchemaDef::object() }],
+                checks: vec![CheckCapability {
+                    name: "ping".into(),
+                    input_schema: acdd_core::schema::SchemaDef::object(),
+                }],
                 context_lenses: BTreeSet::from(["status".to_owned()]),
                 ..DomainCapabilities::default()
             }
         }
-        fn execute_action(&self, _: &str, _: &Value, _: &str, _: &DomainActionReq) -> anyhow::Result<DomainActionResult> { unreachable!() }
-        fn run_check(&self, c: &str, _: &Value, r: &DomainCheckReq) -> anyhow::Result<DomainCheckOutcome> {
-            anyhow::ensure!(c == "ping");
-            Ok(DomainCheckOutcome::Passed { summary: r.worktree.display().to_string(), execution_digest_salt: Some("v1".into()) })
+        fn execute_action(
+            &self,
+            _: &str,
+            _: &Value,
+            _: &str,
+            _: &DomainActionReq,
+        ) -> anyhow::Result<DomainActionResult> {
+            unreachable!()
         }
-        fn observe_freshness(&self, c: &str, _: &Value, _: &DomainCheckReq) -> anyhow::Result<FreshnessObservation> {
+        fn run_check(
+            &self,
+            c: &str,
+            _: &Value,
+            r: &DomainCheckReq,
+        ) -> anyhow::Result<DomainCheckOutcome> {
             anyhow::ensure!(c == "ping");
-            Ok(FreshnessObservation::Passed { index_generation: None, execution_digest_salt: Some("v1".into()) })
+            Ok(DomainCheckOutcome::Passed {
+                summary: r.worktree.display().to_string(),
+                execution_digest_salt: Some("v1".into()),
+            })
+        }
+        fn observe_freshness(
+            &self,
+            c: &str,
+            _: &Value,
+            _: &DomainCheckReq,
+        ) -> anyhow::Result<FreshnessObservation> {
+            anyhow::ensure!(c == "ping");
+            Ok(FreshnessObservation::Passed {
+                index_generation: None,
+                execution_digest_salt: Some("v1".into()),
+            })
         }
         fn provide_context(&self, l: &str, r: &DomainContextReq) -> anyhow::Result<Value> {
             anyhow::ensure!(l == "status");
             Ok(json!({ "ok": true, "worktree": r.worktree.display().to_string() }))
         }
-        fn call_tool(&self, _: &str, _: &Value, _: &DomainToolReq) -> anyhow::Result<DomainToolOutput> { unreachable!() }
+        fn call_tool(
+            &self,
+            _: &str,
+            _: &Value,
+            _: &DomainToolReq,
+        ) -> anyhow::Result<DomainToolOutput> {
+            unreachable!()
+        }
     }
 
     let workspace = Workspace::with_files(&[
@@ -520,7 +568,9 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     ]);
     workspace.seed_git().unwrap();
     let rel_wt = workspace.path(".worktrees/wt-rel");
-    workspace.run_git(&["worktree", "add", "--detach", rel_wt.to_str().unwrap()]).unwrap();
+    workspace
+        .run_git(&["worktree", "add", "--detach", rel_wt.to_str().unwrap()])
+        .unwrap();
     let (custom_code_db, wt_code_db, custom_state_db) = (
         workspace.path(".acdd/custom-code.sqlite"),
         rel_wt.join(".acdd/custom-code.sqlite"),
@@ -533,45 +583,137 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         .with_cache_dir(workspace.path(".acdd/extraction-cache"))
         .with_session_fingerprint("rel-wt-session".into())
         .with_invocation_settings(InvocationSettings {
-            root: workspace.root().to_path_buf(), config: None, profile: None,
-            state_db: Some(custom_state_db.clone()), code_db: custom_code_db.clone(),
+            root: workspace.root().to_path_buf(),
+            config: None,
+            profile: None,
+            state_db: Some(custom_state_db.clone()),
+            code_db: custom_code_db.clone(),
         });
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let call_json = |id: i64, name: &str, args: Value| -> Value {
         rt.block_on(async {
             let (_c, tr) = tokio::io::duplex(4096);
-            let running = serve_directly(Server::new(Default::default(), Default::default()), tokio::io::split(tr), None);
-            let ctx = RequestContext::<RoleServer>::new(NumberOrString::Number(id), running.peer().clone());
-            let req = CallToolRequestParams::new(name.to_owned()).with_arguments(args.as_object().cloned().unwrap_or_default());
-            let CallToolResponse::Complete(res) = server.call_tool(req, ctx).await.unwrap() else { panic!("incomplete"); };
+            let running = serve_directly(
+                Server::new(Default::default(), Default::default()),
+                tokio::io::split(tr),
+                None,
+            );
+            let ctx = RequestContext::<RoleServer>::new(
+                NumberOrString::Number(id),
+                running.peer().clone(),
+            );
+            let req = CallToolRequestParams::new(name.to_owned())
+                .with_arguments(args.as_object().cloned().unwrap_or_default());
+            let CallToolResponse::Complete(res) = server.call_tool(req, ctx).await.unwrap() else {
+                panic!("incomplete");
+            };
             let text = res.content[0].as_text().unwrap().text.as_str();
             assert_ne!(res.is_error, Some(true), "{name}({args}) failed: {text}");
             serde_json::from_str(text).unwrap()
         })
     };
 
-    let (canon_wt, canon_root) = (rel_wt.canonicalize().unwrap(), workspace.root().canonicalize().unwrap());
+    let (canon_wt, canon_root) = (
+        rel_wt.canonicalize().unwrap(),
+        workspace.root().canonicalize().unwrap(),
+    );
     let adapter = acdd_index::scanner::load_adapter(workspace.root(), None).unwrap();
-    for (idx, (label, wt_sel, exp_wt)) in [("rel", ".worktrees/wt-rel", &canon_wt), ("bare", "wt-rel", &canon_wt), ("dot", ".", &canon_root)].iter().enumerate() {
+    for (idx, (label, wt_sel, exp_wt)) in [
+        ("rel", ".worktrees/wt-rel", &canon_wt),
+        ("bare", "wt-rel", &canon_wt),
+        ("dot", ".", &canon_root),
+    ]
+    .iter()
+    .enumerate()
+    {
         let base = (idx as i64) * 10 + 1;
         let run_id = call_json(base, "acdd_state", json!({"action":"start","goal":label,"run_name":format!("run-{label}"),"scope":["src/lib.rs"],"in_place":true,"worktree":wt_sel,"format":"json"}))["run"]["run_id"].as_str().unwrap().to_owned();
-        assert_eq!(call_json(base + 1, "acdd_state", json!({"action":"status","run":&run_id,"worktree":wt_sel,"format":"json"}))["run"]["run_id"], run_id);
-        let claim = call_json(base + 2, "acdd_claim", json!({"run":&run_id,"node":"execute","worker_id":"builder","worktree":wt_sel,"format":"json"}));
-        assert!(claim["context_lenses"]["docs.adrs"]["items"].as_array().is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
-        assert_eq!(resolve_worktree_span_context(workspace.root(), exp_wt, Some(&custom_state_db), &adapter).unwrap().unwrap().run_id.as_str(), run_id);
-        assert_eq!(call_json(base + 3, "acdd_read", json!({"path":"src/lib.rs","worktree":wt_sel,"format":"json"}))["in_write_scope"], "ALLOWED");
-        let post = call_json(base + 4, "acdd_blackboard", json!({"action":"post","run":&run_id,"topic":"notes","payload":label,"worktree":wt_sel,"format":"json"}));
-        assert_eq!(call_json(base + 5, "acdd_blackboard", json!({"action":"read","run":&run_id,"worktree":wt_sel,"format":"json"}))["items"][0]["id"], post["entry"]["id"]);
-        assert_eq!(call_json(base + 6, "acdd_verify", json!({"run":&run_id,"node":"execute","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":wt_sel,"format":"json"}))["passed"], json!(true));
-        let sub = call_json(base + 7, "acdd_submit", json!({"run":&run_id,"node":"execute","action":"pass","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":wt_sel,"format":"json"}));
+        assert_eq!(
+            call_json(
+                base + 1,
+                "acdd_state",
+                json!({"action":"status","run":&run_id,"worktree":wt_sel,"format":"json"})
+            )["run"]["run_id"],
+            run_id
+        );
+        let claim = call_json(
+            base + 2,
+            "acdd_claim",
+            json!({"run":&run_id,"node":"execute","worker_id":"builder","worktree":wt_sel,"format":"json"}),
+        );
+        assert!(claim["context_lenses"]["docs.adrs"]["items"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
+        assert_eq!(
+            resolve_worktree_span_context(
+                workspace.root(),
+                exp_wt,
+                Some(&custom_state_db),
+                &adapter
+            )
+            .unwrap()
+            .unwrap()
+            .run_id
+            .as_str(),
+            run_id
+        );
+        assert_eq!(
+            call_json(
+                base + 3,
+                "acdd_read",
+                json!({"path":"src/lib.rs","worktree":wt_sel,"format":"json"})
+            )["in_write_scope"],
+            "ALLOWED"
+        );
+        let post = call_json(
+            base + 4,
+            "acdd_blackboard",
+            json!({"action":"post","run":&run_id,"topic":"notes","payload":label,"worktree":wt_sel,"format":"json"}),
+        );
+        assert_eq!(
+            call_json(
+                base + 5,
+                "acdd_blackboard",
+                json!({"action":"read","run":&run_id,"worktree":wt_sel,"format":"json"})
+            )["items"][0]["id"],
+            post["entry"]["id"]
+        );
+        assert_eq!(
+            call_json(
+                base + 6,
+                "acdd_verify",
+                json!({"run":&run_id,"node":"execute","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":wt_sel,"format":"json"})
+            )["passed"],
+            json!(true)
+        );
+        let sub = call_json(
+            base + 7,
+            "acdd_submit",
+            json!({"run":&run_id,"node":"execute","action":"pass","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":wt_sel,"format":"json"}),
+        );
         assert!(sub["run_completed"] == json!(true) || sub["node_cursor"].is_object());
     }
-    assert!(custom_state_db.is_file() && !workspace.path(".acdd/state.sqlite").exists() && !workspace.path(".acdd/code-map.sqlite").exists() && !rel_wt.join(".acdd/code-map.sqlite").exists());
+    assert!(
+        custom_state_db.is_file()
+            && !workspace.path(".acdd/state.sqlite").exists()
+            && !workspace.path(".acdd/code-map.sqlite").exists()
+            && !rel_wt.join(".acdd/code-map.sqlite").exists()
+    );
 
     let check_req = DomainCheckReq {
-        run_id: "custom-db-check".parse().unwrap(), node_cursor: "execute".parse().unwrap(), gate_id: "execute".parse().unwrap(),
-        workspace_root: workspace.root().to_path_buf(), worktree: canon_wt.clone(), admitted_scope: vec!["src/lib.rs".into()],
-        changed_paths: vec![], test_target: Some("src/lib.rs::covers_target".into()), path_policy: Default::default(), baseline_ref: None,
+        run_id: "custom-db-check".parse().unwrap(),
+        node_cursor: "execute".parse().unwrap(),
+        gate_id: "execute".parse().unwrap(),
+        workspace_root: workspace.root().to_path_buf(),
+        worktree: canon_wt.clone(),
+        admitted_scope: vec!["src/lib.rs".into()],
+        changed_paths: vec![],
+        test_target: Some("src/lib.rs::covers_target".into()),
+        path_policy: Default::default(),
+        baseline_ref: None,
     };
     let custom_providers = build_domain_providers(
         workspace.root(),
@@ -581,27 +723,73 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     )
     .unwrap();
     assert_eq!(
-        custom_providers.provide_context("probe.status", &DomainContextReq {
-            run_id: "custom-db-check".parse().unwrap(), node_cursor: "execute".parse().unwrap(), gate_id: "execute".parse().unwrap(),
-            workspace_root: workspace.root().to_path_buf(), worktree: canon_wt.clone(), admitted_scope: vec!["src/lib.rs".into()],
-            target: None, max_bytes: 16_384, path_policy: Default::default(), baseline_ref: None,
-        }).unwrap(),
+        custom_providers
+            .provide_context(
+                "probe.status",
+                &DomainContextReq {
+                    run_id: "custom-db-check".parse().unwrap(),
+                    node_cursor: "execute".parse().unwrap(),
+                    gate_id: "execute".parse().unwrap(),
+                    workspace_root: workspace.root().to_path_buf(),
+                    worktree: canon_wt.clone(),
+                    admitted_scope: vec!["src/lib.rs".into()],
+                    target: None,
+                    max_bytes: 16_384,
+                    path_policy: Default::default(),
+                    baseline_ref: None,
+                }
+            )
+            .unwrap(),
         json!({ "ok": true, "worktree": canon_wt.display().to_string() })
     );
     assert!(matches!(
-        custom_providers.run_check("probe.ping", &json!({}), &check_req).unwrap(),
+        custom_providers
+            .run_check("probe.ping", &json!({}), &check_req)
+            .unwrap(),
         DomainCheckOutcome::Passed { .. }
     ));
     let default_providers =
         build_domain_providers(workspace.root(), &adapter, None, Vec::new()).unwrap();
-    let FreshnessObservation::Passed { execution_digest_salt: Some(custom_salt), .. } = custom_providers.observe_freshness("code.seam", &json!({}), &check_req).unwrap() else { panic!("expected custom salt"); };
-    let FreshnessObservation::Passed { execution_digest_salt: Some(default_salt), .. } = default_providers.observe_freshness("code.seam", &json!({}), &check_req).unwrap() else { panic!("expected default salt"); };
-    assert!(!custom_salt.contains("index_generation=no-index") && default_salt.contains("index_generation=no-index"));
+    let FreshnessObservation::Passed {
+        execution_digest_salt: Some(custom_salt),
+        ..
+    } = custom_providers
+        .observe_freshness("code.seam", &json!({}), &check_req)
+        .unwrap()
+    else {
+        panic!("expected custom salt");
+    };
+    let FreshnessObservation::Passed {
+        execution_digest_salt: Some(default_salt),
+        ..
+    } = default_providers
+        .observe_freshness("code.seam", &json!({}), &check_req)
+        .unwrap()
+    else {
+        panic!("expected default salt");
+    };
+    assert!(
+        !custom_salt.contains("index_generation=no-index")
+            && default_salt.contains("index_generation=no-index")
+    );
     let adrs = custom_providers
-        .provide_context("docs.adrs", &DomainContextReq {
-            run_id: "custom-db-check".parse().unwrap(), node_cursor: "execute".parse().unwrap(), gate_id: "execute".parse().unwrap(),
-            workspace_root: workspace.root().to_path_buf(), worktree: canon_wt, admitted_scope: vec!["src/lib.rs".into()],
-            target: None, max_bytes: 16_384, path_policy: Default::default(), baseline_ref: None,
-        }).unwrap();
-    assert!(adrs["items"].as_array().is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
+        .provide_context(
+            "docs.adrs",
+            &DomainContextReq {
+                run_id: "custom-db-check".parse().unwrap(),
+                node_cursor: "execute".parse().unwrap(),
+                gate_id: "execute".parse().unwrap(),
+                workspace_root: workspace.root().to_path_buf(),
+                worktree: canon_wt,
+                admitted_scope: vec!["src/lib.rs".into()],
+                target: None,
+                max_bytes: 16_384,
+                path_policy: Default::default(),
+                baseline_ref: None,
+            },
+        )
+        .unwrap();
+    assert!(adrs["items"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
 }

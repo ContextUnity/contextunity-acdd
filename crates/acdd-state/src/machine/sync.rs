@@ -410,7 +410,11 @@ impl<'a> SyncPlanBuilder<'a> {
             .task_ref
             .as_ref()
             .expect("task nodes have task_ref");
-        let Some(t_task) = self.target_by_id.get(existing_task.node_id.as_str()).copied() else {
+        let Some(t_task) = self
+            .target_by_id
+            .get(existing_task.node_id.as_str())
+            .copied()
+        else {
             if !matches!(
                 existing_task.status,
                 NodeStatus::Completed | NodeStatus::Cancelled

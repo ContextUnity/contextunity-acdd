@@ -334,11 +334,10 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
         [0, "type Mixed = [typeof ".len() as u64],
         "ordinary type reference keeps legacy coordinates; only typeof is exact"
     );
-    let legacy: acdd_index::semantic::AnnotationReferenceFact =
-        serde_json::from_value(
-            serde_json::json!({"expression":"selected","position":{"line":2,"column":21}}),
-        )
-        .unwrap();
+    let legacy: acdd_index::semantic::AnnotationReferenceFact = serde_json::from_value(
+        serde_json::json!({"expression":"selected","position":{"line":2,"column":21}}),
+    )
+    .unwrap();
     assert!(
         !legacy.value_query,
         "legacy annotation evidence is type namespace only"
@@ -405,7 +404,13 @@ export function useCheckout() {
         .unwrap_or_else(|e| panic!("missing {path}:{expression}: {e}"))
     };
     assert_eq!(status("stores/cart.ts", "defineStore"), "external");
-    assert_eq!(status("composables/useCheckout.ts", "storeToRefs"), "external");
-    assert_eq!(status("composables/useCheckout.ts", "cart.increment"), "resolved");
+    assert_eq!(
+        status("composables/useCheckout.ts", "storeToRefs"),
+        "external"
+    );
+    assert_eq!(
+        status("composables/useCheckout.ts", "cart.increment"),
+        "resolved"
+    );
     acdd_index::db::commitments::verify(&conn).unwrap();
 }

@@ -355,7 +355,10 @@ fn declarative_macro_item_projection_and_opaque_fail_closed() {
         ("constant", "Paused"),
     ] {
         assert!(
-            facts.nodes.iter().any(|n| n.kind.as_str() == kind && n.name == name),
+            facts
+                .nodes
+                .iter()
+                .any(|n| n.kind.as_str() == kind && n.name == name),
             "expected synthesized {kind} {name}: {facts:#?}"
         );
     }

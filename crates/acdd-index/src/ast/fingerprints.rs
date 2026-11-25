@@ -3,14 +3,87 @@
 use crate::models::{stable_hash64, StatementFingerprint};
 use tree_sitter::Node as Syntax;
 
-const NESTED_DECLS: &[&str] = &["function_item", "function_definition", "function_declaration", "generator_function_declaration", "method_definition", "method_declaration", "class_definition", "class_declaration", "struct_item", "enum_item", "impl_item", "trait_item", "mod_item"];
-const STATEMENT_CONTAINERS: &[&str] = &["block", "statement_block", "compound_statement", "function_body", "suite", "declaration_list", "match_block", "switch_body", "case_block", "case_statement", "switch_case", "default_clause"];
-const CONTROL_CLAUSES: &[&str] = &["else_clause", "elif_clause", "catch_clause", "except_clause", "finally_clause"];
-const IGNORED_STMTS: &[&str] = &["empty_statement", "pass_statement", "match_arm", "switch_case", "default_clause", "case_statement", "case_clause", "when_entry", "visibility_modifier", "attribute_item", "inner_attribute_item", "decorator"];
-const BRANCH_AND_NEST_KINDS: &[&str] = &["for_expression", "for_statement", "for_in_statement", "for_of_statement", "for_range_statement", "while_expression", "while_statement", "loop_expression", "do_statement", "do_while_statement", "foreach_statement", "enhanced_for_statement", "match_expression", "match_statement", "switch_statement", "switch_expression", "catch_clause", "except_clause", "rescue", "conditional_expression", "ternary_expression"];
+const NESTED_DECLS: &[&str] = &[
+    "function_item",
+    "function_definition",
+    "function_declaration",
+    "generator_function_declaration",
+    "method_definition",
+    "method_declaration",
+    "class_definition",
+    "class_declaration",
+    "struct_item",
+    "enum_item",
+    "impl_item",
+    "trait_item",
+    "mod_item",
+];
+const STATEMENT_CONTAINERS: &[&str] = &[
+    "block",
+    "statement_block",
+    "compound_statement",
+    "function_body",
+    "suite",
+    "declaration_list",
+    "match_block",
+    "switch_body",
+    "case_block",
+    "case_statement",
+    "switch_case",
+    "default_clause",
+];
+const CONTROL_CLAUSES: &[&str] = &[
+    "else_clause",
+    "elif_clause",
+    "catch_clause",
+    "except_clause",
+    "finally_clause",
+];
+const IGNORED_STMTS: &[&str] = &[
+    "empty_statement",
+    "pass_statement",
+    "match_arm",
+    "switch_case",
+    "default_clause",
+    "case_statement",
+    "case_clause",
+    "when_entry",
+    "visibility_modifier",
+    "attribute_item",
+    "inner_attribute_item",
+    "decorator",
+];
+const BRANCH_AND_NEST_KINDS: &[&str] = &[
+    "for_expression",
+    "for_statement",
+    "for_in_statement",
+    "for_of_statement",
+    "for_range_statement",
+    "while_expression",
+    "while_statement",
+    "loop_expression",
+    "do_statement",
+    "do_while_statement",
+    "foreach_statement",
+    "enhanced_for_statement",
+    "match_expression",
+    "match_statement",
+    "switch_statement",
+    "switch_expression",
+    "catch_clause",
+    "except_clause",
+    "rescue",
+    "conditional_expression",
+    "ternary_expression",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlFlowEffect { BranchAndNest, FlatIncrement, NestOnly, None }
+enum ControlFlowEffect {
+    BranchAndNest,
+    FlatIncrement,
+    NestOnly,
+    None,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct MetricsNodeFrame {
@@ -66,7 +139,11 @@ impl CallableMetricsTracker {
             });
             return;
         }
-        let parent = self.stack.last().copied().unwrap_or(MetricsNodeFrame::EMPTY);
+        let parent = self
+            .stack
+            .last()
+            .copied()
+            .unwrap_or(MetricsNodeFrame::EMPTY);
         let (effect, logical_op) =
             control_flow_effect(node, kind, parent.is_else_clause, parent.logical_op);
         let pushed_nest = matches!(
@@ -87,8 +164,7 @@ impl CallableMetricsTracker {
             ControlFlowEffect::None => {}
         }
         let is_stmt_container = STATEMENT_CONTAINERS.contains(&kind);
-        let case_value_id = if matches!(kind, "case_statement" | "switch_case" | "default_clause")
-        {
+        let case_value_id = if matches!(kind, "case_statement" | "switch_case" | "default_clause") {
             node.child_by_field_name("value").map(|n| n.id())
         } else {
             None
@@ -141,14 +217,29 @@ impl CallableMetricsTracker {
     }
 }
 
-fn is_nested_or_comment(kind: &str) -> bool { NESTED_DECLS.contains(&kind) || kind.contains("comment") }
+fn is_nested_or_comment(kind: &str) -> bool {
+    NESTED_DECLS.contains(&kind) || kind.contains("comment")
+}
 
 fn logical_operator_token(node: Syntax<'_>, kind: &str) -> Option<&'static str> {
-    if !matches!(kind, "binary_expression" | "boolean_operator") { return None; }
-    let as_logic = |k: &str| match k { "&&" => Some("&&"), "||" => Some("||"), "and" => Some("and"), "or" => Some("or"), _ => None };
-    if let Some(op) = node.child_by_field_name("operator") { return as_logic(op.kind()); }
+    if !matches!(kind, "binary_expression" | "boolean_operator") {
+        return None;
+    }
+    let as_logic = |k: &str| match k {
+        "&&" => Some("&&"),
+        "||" => Some("||"),
+        "and" => Some("and"),
+        "or" => Some("or"),
+        _ => None,
+    };
+    if let Some(op) = node.child_by_field_name("operator") {
+        return as_logic(op.kind());
+    }
     let mut cursor = node.walk();
-    let op = node.children(&mut cursor).filter(|c| !c.is_named()).find_map(|c| as_logic(c.kind()));
+    let op = node
+        .children(&mut cursor)
+        .filter(|c| !c.is_named())
+        .find_map(|c| as_logic(c.kind()));
     op
 }
 
@@ -181,10 +272,12 @@ fn control_flow_effect(
         }
         "elif_clause" => (ControlFlowEffect::FlatIncrement, None),
         _ if BRANCH_AND_NEST_KINDS.contains(&kind) => (ControlFlowEffect::BranchAndNest, None),
-        "closure_expression" | "lambda" | "arrow_function" | "function_expression"
-        | "generator_function_expression" | "generator_function" => {
-            (ControlFlowEffect::NestOnly, None)
-        }
+        "closure_expression"
+        | "lambda"
+        | "arrow_function"
+        | "function_expression"
+        | "generator_function_expression"
+        | "generator_function" => (ControlFlowEffect::NestOnly, None),
         "binary_expression" | "boolean_operator" => match logical_operator_token(node, kind) {
             op @ Some(_) if parent_logical_op != op => (ControlFlowEffect::FlatIncrement, op),
             op => (ControlFlowEffect::None, op),
@@ -252,8 +345,23 @@ fn is_normalizable_local_ident(
         && parent_rule.1 != Some(node_id)
         && !matches!(
             raw,
-            "self" | "Self" | "super" | "crate" | "this" | "None" | "Some" | "Ok" | "Err"
-                | "true" | "false" | "True" | "False" | "null" | "undefined" | "nil" | "_"
+            "self"
+                | "Self"
+                | "super"
+                | "crate"
+                | "this"
+                | "None"
+                | "Some"
+                | "Ok"
+                | "Err"
+                | "true"
+                | "false"
+                | "True"
+                | "False"
+                | "null"
+                | "undefined"
+                | "nil"
+                | "_"
         )
 }
 
@@ -343,14 +451,7 @@ fn normalize_statement_into(
                 }
                 let parent_rule = parents.last().copied().unwrap_or((false, None));
                 for part in raw.split_whitespace() {
-                    push_normalized_token(
-                        out,
-                        kind,
-                        node_id,
-                        part,
-                        parent_rule,
-                        &mut ident_slots,
-                    );
+                    push_normalized_token(out, kind, node_id, part, parent_rule, &mut ident_slots);
                 }
                 if !matches!(raw, "{" | "}" | "(" | ")" | "[" | "]" | ";" | ",") {
                     token_count += 1;

@@ -116,7 +116,10 @@ pub(in crate::linker) fn callable_target_return<'s, 'a>(
         TypeTarget::Callable(callable) => index.return_type_tracked(callable, trace),
         TypeTarget::CallableReturn(ret) => Some(ret.as_ref()),
         TypeTarget::ClassType(inner) => Some(inner.as_ref()),
-        TypeTarget::Local(class) if owner.language == crate::models::tags::LanguageId::Python && class.kind == crate::models::tags::NodeKind::Class => {
+        TypeTarget::Local(class)
+            if owner.language == crate::models::tags::LanguageId::Python
+                && class.kind == crate::models::tags::NodeKind::Class =>
+        {
             match resolver.resolve_member(target, "__call__", owner, at) {
                 Symbol::Callable(call_fn) => index.return_type_tracked(call_fn, trace),
                 _ => None,
@@ -144,9 +147,7 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
         evidence,
     } = receiver
     {
-        if let ConfiguredReceiverAuthority::Hierarchy { pack, rule } =
-            authority.as_ref()
-        {
+        if let ConfiguredReceiverAuthority::Hierarchy { pack, rule } = authority.as_ref() {
             let prefix = format!("{member}.");
             let members: Vec<String> = rule
                 .members
@@ -157,7 +158,10 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
                 let returns = rule
                     .returns
                     .iter()
-                    .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|rest| (rest.to_owned(), v.clone())))
+                    .filter_map(|(k, v)| {
+                        k.strip_prefix(&prefix)
+                            .map(|rest| (rest.to_owned(), v.clone()))
+                    })
                     .collect();
                 let sub_rule = crate::languages::manifests::ClassHierarchyReceiverRule {
                     bases: rule.bases.clone(),
@@ -166,12 +170,10 @@ pub(in crate::linker) fn synthetic_property_result<'a>(
                     returns,
                 };
                 return Some(TypeTarget::ConfiguredReceiver {
-                    authority: std::sync::Arc::new(
-                        ConfiguredReceiverAuthority::Hierarchy {
-                            pack: pack.clone(),
-                            rule: std::sync::Arc::new(sub_rule),
-                        },
-                    ),
+                    authority: std::sync::Arc::new(ConfiguredReceiverAuthority::Hierarchy {
+                        pack: pack.clone(),
+                        rule: std::sync::Arc::new(sub_rule),
+                    }),
                     origin: origin.clone(),
                     fallback: fallback.clone(),
                     evidence: evidence.clone(),

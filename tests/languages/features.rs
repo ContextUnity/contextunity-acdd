@@ -208,7 +208,8 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(
                 facts.nodes.iter().any(|node| {
                     if fixture.id == "html" {
-                        node.id == "module:sample.html" && node.kind == acdd_index::models::tags::NodeKind::Module
+                        node.id == "module:sample.html"
+                            && node.kind == acdd_index::models::tags::NodeKind::Module
                     } else {
                         node.name == "marker"
                     }
@@ -245,17 +246,33 @@ fn language_profile_edge_cases_contract_matrix() {
     #[cfg(feature = "lang-rust")]
     {
         let rust = languages::by_id("rust").unwrap();
-        for cargo_only in ["Node", "Parser", "Error", "Value", "Graph", "Query", "Connection", "Row"] {
+        for cargo_only in [
+            "Node",
+            "Parser",
+            "Error",
+            "Value",
+            "Graph",
+            "Query",
+            "Connection",
+            "Row",
+        ] {
             assert!(
                 !rust.builtin_type(cargo_only),
                 "Cargo short type `{cargo_only}` must not be a Rust stdlib builtin"
             );
         }
         for std_type in ["Option", "Vec", "String", "HashMap", "BTreeMap"] {
-            assert!(rust.builtin_type(std_type), "expected stdlib type `{std_type}`");
+            assert!(
+                rust.builtin_type(std_type),
+                "expected stdlib type `{std_type}`"
+            );
         }
-        assert!(languages::rust::is_registered_rust_type("rusqlite::Connection"));
-        assert!(!languages::rust::is_registered_rust_type("rusqlite::Parser"));
+        assert!(languages::rust::is_registered_rust_type(
+            "rusqlite::Connection"
+        ));
+        assert!(!languages::rust::is_registered_rust_type(
+            "rusqlite::Parser"
+        ));
     }
 
     #[cfg(feature = "lang-php")]
@@ -509,9 +526,13 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         )
         .unwrap(),
     };
-    let impact =
-        acdd_index::db::traversal::impact::traverse_with_path_options(&conn, &view_node_id, None, &options)
-            .unwrap();
+    let impact = acdd_index::db::traversal::impact::traverse_with_path_options(
+        &conn,
+        &view_node_id,
+        None,
+        &options,
+    )
+    .unwrap();
     let impacted_items = impact["nodes"]["items"].as_array().expect("impact items");
     let impacted_paths: Vec<&str> = impacted_items
         .iter()

@@ -524,11 +524,7 @@ fn changed_reachability_cte(steps: &str) -> String {
     )
 }
 
-fn changed_dependency_steps(
-    direction: ImpactDirection,
-    forward: &str,
-    reverse: &str,
-) -> String {
+fn changed_dependency_steps(direction: ImpactDirection, forward: &str, reverse: &str) -> String {
     let (from, to) = edge_endpoints(direction);
     let forward_step = format!(
         "SELECT e.{to},w.depth+1,w.visited||printf('%lld,',e.{to}) FROM walk w JOIN edges e ON e.{from}=w.id WHERE w.depth<?2 AND e.kind IN({forward}) AND instr(w.visited,printf(',%lld,',e.{to}))=0"

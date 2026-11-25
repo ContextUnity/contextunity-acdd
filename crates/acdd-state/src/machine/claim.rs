@@ -2,8 +2,8 @@
 //! `in_place` single-active enforcement, and non-overlapping scope checks.
 
 use crate::machine::graph::{
-    active_claim_for_node, build_preconditions, container_scope, find_node,
-    is_post_task_root_node, is_pre_task_root_node,
+    active_claim_for_node, build_preconditions, container_scope, find_node, is_post_task_root_node,
+    is_pre_task_root_node,
 };
 use crate::machine::inputs::{ClaimDecision, ClaimInput, MachineProfileInput};
 use crate::machine::schedule::{
@@ -155,11 +155,8 @@ pub fn admit_claim(
     obs: &ValidatedObservations,
     input: &ClaimInput,
 ) -> Result<ClaimDecision, StateError> {
-    let node = crate::machine::require_active_claimable_node(
-        snapshot,
-        &input.node_cursor,
-        "claim node",
-    )?;
+    let node =
+        crate::machine::require_active_claimable_node(snapshot, &input.node_cursor, "claim node")?;
     let node_id = node.node_id.clone();
 
     if node.status == NodeStatus::InProgress {
@@ -297,7 +294,8 @@ pub fn admit_claim(
     let new_claim_rev = node.claim_revision + 1;
     let preconditions = build_preconditions(snapshot, &watch_ids, Some(node));
 
-    let (claim_insert, gate_patch) = build_claim_admission(node, new_claim_rev, input, &obs.now_utc);
+    let (claim_insert, gate_patch) =
+        build_claim_admission(node, new_claim_rev, input, &obs.now_utc);
     node_patches.push(gate_patch);
 
     let transition = TransitionPlan {

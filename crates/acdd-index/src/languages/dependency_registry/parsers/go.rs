@@ -19,7 +19,10 @@ impl ManifestParser for GoParser {
         let mut parsed = ParsedManifest::new(Ecosystem::Go);
         let mut in_require_block = false;
         for raw in content.lines() {
-            let line = raw.split_once("//").map_or(raw, |(before, _)| before).trim();
+            let line = raw
+                .split_once("//")
+                .map_or(raw, |(before, _)| before)
+                .trim();
             if line.is_empty() {
                 continue;
             }

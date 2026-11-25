@@ -2,8 +2,7 @@
 
 use super::syntax::{ScopeBindings, ScopeVisitor, Syntax};
 use crate::languages::{
-    support::value_flow_core::GenericScopeAnalysis,
-    types::CompiledSyntaxGrammar,
+    support::value_flow_core::GenericScopeAnalysis, types::CompiledSyntaxGrammar,
 };
 use std::{collections::HashSet, marker::PhantomData, sync::Arc};
 
@@ -11,7 +10,9 @@ enum LanguageAnalysis<'source, 'tree> {
     #[cfg(feature = "lang-python")]
     Python(Box<crate::languages::python::value_flow::PythonValueFlowCollector<'source, 'tree>>),
     #[cfg(feature = "lang-rust")]
-    Rust(Box<crate::languages::rust::value_flow::collector::RustValueFlowCollector<'source, 'tree>>),
+    Rust(
+        Box<crate::languages::rust::value_flow::collector::RustValueFlowCollector<'source, 'tree>>,
+    ),
     #[cfg(feature = "lang-typescript")]
     TypeScript(
         Box<crate::languages::typescript::value_flow::TypeScriptValueFlowCollector<'source, 'tree>>,
@@ -51,7 +52,9 @@ macro_rules! dispatch_visitor_mut {
             Some(LanguageAnalysis::TypeScript($visitor)) => $body,
             Some(LanguageAnalysis::Generic($visitor)) => $body,
             #[cfg(test)]
-            Some(LanguageAnalysis::Traced { inner: $visitor, .. }) => $body,
+            Some(LanguageAnalysis::Traced {
+                inner: $visitor, ..
+            }) => $body,
             Some(LanguageAnalysis::Marker(_)) | None => {}
         }
     };

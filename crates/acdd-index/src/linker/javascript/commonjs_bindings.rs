@@ -34,7 +34,10 @@ impl<'a> ResolvedCommonJsBindings<'a> {
                 node.kind == crate::models::tags::NodeKind::Module
                     && matches!(node.language.as_str(), "javascript" | "typescript" | "vue")
             }) {
-                let Some(records) = owner.detail_entry(crate::models::details::NodeDetailKey::COMMONJS_BINDINGS).as_array() else {
+                let Some(records) = owner
+                    .detail_entry(crate::models::details::NodeDetailKey::COMMONJS_BINDINGS)
+                    .as_array()
+                else {
                     continue;
                 };
                 if records.is_empty() {
@@ -119,13 +122,7 @@ impl crate::languages::profile::LanguageImportState for ResolvedCommonJsBindings
         self.tracks(scope, alias)
     }
 
-    fn admits_binding(
-        &self,
-        scope: &Node,
-        alias: &str,
-        owner: &Node,
-        at: SourcePosition,
-    ) -> bool {
+    fn admits_binding(&self, scope: &Node, alias: &str, owner: &Node, at: SourcePosition) -> bool {
         self.admits(scope, alias, owner, at)
     }
 }

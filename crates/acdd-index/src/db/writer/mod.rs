@@ -29,7 +29,6 @@ use cache::PreparedCatalogStorage;
 use dictionary::*;
 use ingest::*;
 
-
 mod payload_store;
 pub use ingest::LocalFactsBatchWriter;
 pub use payload_store::PayloadStore;
@@ -351,17 +350,47 @@ pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) ->
         }
         use commitments::MetadataKey;
         for (k, v) in [
-            (MetadataKey::SchemaVersion, config::ENGINE_SCHEMA_VERSION.to_owned()),
-            (MetadataKey::IndexSemanticsVersion, crate::models::INDEX_SEMANTICS_VERSION.to_owned()),
-            (MetadataKey::IndexerEngine, "contextunity-acdd-rust".to_owned()),
-            (MetadataKey::WorkspaceRoot, root.to_string_lossy().into_owned()),
-            (MetadataKey::Adapter, config::policy(root, adapter).to_string()),
-            (MetadataKey::AdapterVersion, adapter.adapter_version.clone().unwrap_or_default()),
+            (
+                MetadataKey::SchemaVersion,
+                config::ENGINE_SCHEMA_VERSION.to_owned(),
+            ),
+            (
+                MetadataKey::IndexSemanticsVersion,
+                crate::models::INDEX_SEMANTICS_VERSION.to_owned(),
+            ),
+            (
+                MetadataKey::IndexerEngine,
+                "contextunity-acdd-rust".to_owned(),
+            ),
+            (
+                MetadataKey::WorkspaceRoot,
+                root.to_string_lossy().into_owned(),
+            ),
+            (
+                MetadataKey::Adapter,
+                config::policy(root, adapter).to_string(),
+            ),
+            (
+                MetadataKey::AdapterVersion,
+                adapter.adapter_version.clone().unwrap_or_default(),
+            ),
             (MetadataKey::AdapterDigest, adapter.digest.clone()),
-            (MetadataKey::ManifestDigest, build_inputs.manifest_digest.to_owned()),
-            (MetadataKey::AdapterLinkedWorkspaces, serde_json::to_string(&adapter.linked_workspaces)?),
-            (MetadataKey::InventorySnapshot, serde_json::to_string(entries)?),
-            (MetadataKey::CorpusHash, acdd_core::format::sha256_serde_json_hex(entries)?),
+            (
+                MetadataKey::ManifestDigest,
+                build_inputs.manifest_digest.to_owned(),
+            ),
+            (
+                MetadataKey::AdapterLinkedWorkspaces,
+                serde_json::to_string(&adapter.linked_workspaces)?,
+            ),
+            (
+                MetadataKey::InventorySnapshot,
+                serde_json::to_string(entries)?,
+            ),
+            (
+                MetadataKey::CorpusHash,
+                acdd_core::format::sha256_serde_json_hex(entries)?,
+            ),
         ] {
             commitments::write_metadata(&tx, k, &v)?;
         }
@@ -579,11 +608,13 @@ fn catalog_payload(path: &str, encoded: &[u8]) -> Result<CatalogStoragePayload> 
 }
 
 fn prune_facts_for_stage(facts: &mut TypedFacts, keep_node_navigation_data: bool) {
-    let html = facts
-        .nodes
-        .iter()
-        .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html);
-    facts.flows.retain_persistence_facts(keep_node_navigation_data);
+    let html = facts.nodes.iter().any(|node| {
+        node.kind == crate::models::tags::NodeKind::Module
+            && node.language == crate::models::tags::LanguageId::Html
+    });
+    facts
+        .flows
+        .retain_persistence_facts(keep_node_navigation_data);
     facts.facts.edges = Vec::new();
     facts.facts.semantic = Default::default();
     facts.facts.pending_flow_nodes = Vec::new();

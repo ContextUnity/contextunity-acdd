@@ -6,7 +6,9 @@ use acdd_state::types::{BlackboardTopic, SubmitAction};
 use acdd_state::usecases::dto::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, StartReq, SubmitReq,
 };
-use acdd_state::usecases::{queries, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput};
+use acdd_state::usecases::{
+    queries, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput,
+};
 
 #[test]
 fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
@@ -27,16 +29,17 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     let providers = TestProvider::full_composite();
     let harness = RunHarness::in_memory().unwrap();
 
-    let StateCommandOutput::Start(started) = harness.execute(
-        &cfg,
-        &providers,
-        StateCommand::Start(StartReq {
-            spec_path: Some("docs/milestones/001-linear.md".to_owned()),
-            profile: Some(".acdd/profiles/bb.yaml".to_owned()),
-            ..StartReq::default()
-        }),
-    )
-    .unwrap()
+    let StateCommandOutput::Start(started) = harness
+        .execute(
+            &cfg,
+            &providers,
+            StateCommand::Start(StartReq {
+                spec_path: Some("docs/milestones/001-linear.md".to_owned()),
+                profile: Some(".acdd/profiles/bb.yaml".to_owned()),
+                ..StartReq::default()
+            }),
+        )
+        .unwrap()
     else {
         panic!("expected StartResp");
     };
@@ -54,21 +57,22 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     .into_iter()
     .enumerate()
     {
-        harness.execute(
-            &cfg,
-            &providers,
-            StateCommand::BlackboardPost(BlackboardPostReq {
-                run: Some(rid.clone()),
-                node: Some("first.work".to_owned()),
-                recipient_node: recipient.map(str::to_owned),
-                subtask_ref: None,
-                gate: Some("work".to_owned()),
-                author: format!("agent-{idx}"),
-                topic,
-                payload: format!("payload-{idx}"),
-            }),
-        )
-        .unwrap();
+        harness
+            .execute(
+                &cfg,
+                &providers,
+                StateCommand::BlackboardPost(BlackboardPostReq {
+                    run: Some(rid.clone()),
+                    node: Some("first.work".to_owned()),
+                    recipient_node: recipient.map(str::to_owned),
+                    subtask_ref: None,
+                    gate: Some("work".to_owned()),
+                    author: format!("agent-{idx}"),
+                    topic,
+                    payload: format!("payload-{idx}"),
+                }),
+            )
+            .unwrap();
     }
 
     // Filter by topic + pagination (`limit`, `offset`, `generation`).
@@ -83,8 +87,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
             ..BlackboardReadReq::default()
         }),
     )
-    .unwrap()
-    else {
+    .unwrap() else {
         panic!("expected BlackboardReadResp");
     };
     assert_eq!(page1.total, 6);
@@ -100,8 +103,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
             ..BlackboardReadReq::default()
         }),
     )
-    .unwrap()
-    else {
+    .unwrap() else {
         panic!("expected BlackboardReadResp");
     };
     assert_eq!(targeted.items.len(), 1);
@@ -123,40 +125,42 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     // Completing task `first` closes temporary `notes`/`draft` on task and promotes `deferred` to run level.
     let worker = acdd_core::ids::WorkerId::new("w1").unwrap();
     for gate in ["first.work", "first.finish"] {
-        harness.execute(
-            &cfg,
-            &providers,
-            StateCommand::Claim(ClaimReq {
-                run: Some(rid.clone()),
-                node: Some(gate.to_owned()),
-                worker_id: worker.clone(),
-                session_fingerprint: None,
-                force: false,
-                steal_remote: false,
-                worktree: None,
-            }),
-        )
-        .unwrap();
-        harness.execute(
-            &cfg,
-            &providers,
-            StateCommand::Submit(Box::new(SubmitReq {
-                run: Some(rid.clone()),
-                node: gate.to_owned(),
-                action: SubmitAction::Pass,
-                worker_id: worker.clone(),
-                claim_revision: Some(1),
-                test_target: None,
-                review_evidence: None,
-                rejection_findings: None,
-                custom_evidence: None,
-                verified_invariants: Vec::new(),
-                summary: None,
-                allow_main: true,
-                worktree: None,
-            })),
-        )
-        .unwrap();
+        harness
+            .execute(
+                &cfg,
+                &providers,
+                StateCommand::Claim(ClaimReq {
+                    run: Some(rid.clone()),
+                    node: Some(gate.to_owned()),
+                    worker_id: worker.clone(),
+                    session_fingerprint: None,
+                    force: false,
+                    steal_remote: false,
+                    worktree: None,
+                }),
+            )
+            .unwrap();
+        harness
+            .execute(
+                &cfg,
+                &providers,
+                StateCommand::Submit(Box::new(SubmitReq {
+                    run: Some(rid.clone()),
+                    node: gate.to_owned(),
+                    action: SubmitAction::Pass,
+                    worker_id: worker.clone(),
+                    claim_revision: Some(1),
+                    test_target: None,
+                    review_evidence: None,
+                    rejection_findings: None,
+                    custom_evidence: None,
+                    verified_invariants: Vec::new(),
+                    summary: None,
+                    allow_main: true,
+                    worktree: None,
+                })),
+            )
+            .unwrap();
     }
 
     let StateQueryOutput::BlackboardRead(deferred_after) = queries::execute_query(
@@ -169,8 +173,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
             ..BlackboardReadReq::default()
         }),
     )
-    .unwrap()
-    else {
+    .unwrap() else {
         panic!("expected BlackboardReadResp");
     };
     assert!(

@@ -1,4 +1,4 @@
-use super::types::{SyntaxContext};
+use super::types::SyntaxContext;
 #[cfg(any(feature = "lang-bash", feature = "lang-css", feature = "lang-json"))]
 use super::types::{module_stem, relative_namespace, ImportPath};
 use crate::ast::syntax as ast;
@@ -91,8 +91,19 @@ pub(in crate::languages) fn parse_namespace_line(source: &str) -> Option<&str> {
     feature = "lang-php",
     feature = "lang-ruby"
 ))]
-pub(in crate::languages) fn push_call_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, expression: &str, dynamic: bool) {
-    push_reference(ctx, facts, "calls", ast::bounded_expression(expression), dynamic);
+pub(in crate::languages) fn push_call_reference(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    expression: &str,
+    dynamic: bool,
+) {
+    push_reference(
+        ctx,
+        facts,
+        "calls",
+        ast::bounded_expression(expression),
+        dynamic,
+    );
 }
 
 #[cfg(any(feature = "lang-toml", feature = "lang-yaml"))]
@@ -192,7 +203,12 @@ mod shared {
         facts: &mut Facts,
         ty: Syntax<'_>,
     ) {
-        call_reference(ctx, facts, base_constructor_target(text(ty, ctx.source)), false);
+        call_reference(
+            ctx,
+            facts,
+            base_constructor_target(text(ty, ctx.source)),
+            false,
+        );
     }
 
     #[cfg(any(feature = "lang-java", feature = "lang-ruby"))]

@@ -4,13 +4,11 @@ use super::super::value_flow::resolve_type;
 use super::super::value_flow::types::{
     collect_candidate_join, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
 };
+use crate::interner::LinkerInterner;
+use crate::languages::{dependency_registry::DependencyRegistry, LanguageFamily, LanguageProfile};
+use crate::linker::traits::ModulesByNamespace;
 use crate::models::{Facts, Node, Reference};
 use crate::semantic::{SourcePosition, TypeExpr};
-use crate::languages::{
-    dependency_registry::DependencyRegistry, LanguageFamily, LanguageProfile,
-};
-use crate::interner::LinkerInterner;
-use crate::linker::traits::ModulesByNamespace;
 
 pub(in crate::linker) fn canonical_pathlib_class(class: &str) -> Option<&'static str> {
     match class {
@@ -27,7 +25,10 @@ pub(in crate::linker) fn canonical_pathlib_class(class: &str) -> Option<&'static
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
     (owner.language == crate::models::tags::LanguageId::Python
         && matches!(head, "self" | "cls")
-        && owner.detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME).as_str() == Some(head))
+        && owner
+            .detail_entry(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+            .as_str()
+            == Some(head))
     .then_some((false, false))
 }
 
@@ -135,7 +136,12 @@ pub(in crate::linker) fn external_factory_result<'a>(
                         owner,
                         callee,
                         at,
-                        (imported_module, position.line, &reference.expression, member),
+                        (
+                            imported_module,
+                            position.line,
+                            &reference.expression,
+                            member,
+                        ),
                     );
                 }
                 let exported = if reference.expression == *imported_module {
@@ -357,28 +363,29 @@ pub(in crate::linker) fn resolve_applied<'a>(
         return Some(match members.as_slice() {
             [] => TypeTarget::Unknown,
             [single] => resolve_type(owner, single, at, context, SemanticLimits::default()),
-            many => match collect_candidate_join(
-                many.iter()
-                    .map(|member| resolve_type(owner, member, at, context, SemanticLimits::default())),
-            ) {
-                TypeTarget::Candidates {
-                    exhausted: true, ..
-                } => TypeTarget::Candidates {
-                    targets: Vec::new(),
-                    complete: false,
-                    exhausted: true,
-                },
-                TypeTarget::Candidates {
-                    targets,
-                    complete: true,
-                    exhausted: false,
-                } if targets.len() >= 2 => TypeTarget::Candidates {
-                    targets,
-                    complete: true,
-                    exhausted: false,
-                },
-                _ => TypeTarget::Unknown,
-            },
+            many => {
+                match collect_candidate_join(many.iter().map(|member| {
+                    resolve_type(owner, member, at, context, SemanticLimits::default())
+                })) {
+                    TypeTarget::Candidates {
+                        exhausted: true, ..
+                    } => TypeTarget::Candidates {
+                        targets: Vec::new(),
+                        complete: false,
+                        exhausted: true,
+                    },
+                    TypeTarget::Candidates {
+                        targets,
+                        complete: true,
+                        exhausted: false,
+                    } if targets.len() >= 2 => TypeTarget::Candidates {
+                        targets,
+                        complete: true,
+                        exhausted: false,
+                    },
+                    _ => TypeTarget::Unknown,
+                }
+            }
         });
     }
     let typing_symbol = matches!(
@@ -414,9 +421,12 @@ pub(in crate::linker) fn resolve_applied<'a>(
     }
     if let Symbol::Type(TypeTarget::Local(node)) = nominal {
         let is_generic = node.kind == crate::models::tags::NodeKind::Class
-            && node.detail_entry(crate::models::details::NodeDetailKey::BASES).as_str().is_some_and(|bases| {
-                bases.contains("Generic") || bases.contains("Protocol") || bases.contains('[')
-            });
+            && node
+                .detail_entry(crate::models::details::NodeDetailKey::BASES)
+                .as_str()
+                .is_some_and(|bases| {
+                    bases.contains("Generic") || bases.contains("Protocol") || bases.contains('[')
+                });
         if is_generic {
             return Some(TypeTarget::Local(node));
         }
@@ -457,9 +467,9 @@ pub(in crate::linker) fn has_proven_type_checking(
             .get(&family)
             .and_then(|namespaces| namespaces.get(module_name))
             .is_some_and(|modules| {
-                modules.iter().any(|module| {
-                    crate::languages::workspace_path(&module.path).0 == workspace
-                })
+                modules
+                    .iter()
+                    .any(|module| crate::languages::workspace_path(&module.path).0 == workspace)
             })
     };
 
@@ -521,7 +531,8 @@ pub(in crate::linker) fn logging_factory_import_is_safe(
     if module.language != crate::models::tags::LanguageId::Python {
         return false;
     }
-    module.detail_entry(crate::models::details::NodeDetailKey::PYTHON_LOGGING_FACTORIES)
+    module
+        .detail_entry(crate::models::details::NodeDetailKey::PYTHON_LOGGING_FACTORIES)
         .as_array()
         .is_some_and(|entries| {
             let mut matching = entries.iter().filter(|entry| {
@@ -536,24 +547,38 @@ pub(in crate::linker) fn logging_factory_import_is_safe(
         })
 }
 impl<'a> crate::linker::semantic_context::context::Context<'a> {
-    pub(in crate::linker) fn python_super_member(&self, owner: &Node, member: &str) -> crate::linker::value_flow::Symbol<'a> {
+    pub(in crate::linker) fn python_super_member(
+        &self,
+        owner: &Node,
+        member: &str,
+    ) -> crate::linker::value_flow::Symbol<'a> {
         use crate::linker::value_flow::Symbol;
         if owner.language != crate::models::tags::LanguageId::Python
-            || !owner.detail_get(crate::models::details::NodeDetailKey::RECEIVER_NAME)
-                .and_then(|value| value.as_str()).is_some_and(|name| matches!(name, "self" | "cls"))
+            || !owner
+                .detail_get(crate::models::details::NodeDetailKey::RECEIVER_NAME)
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| matches!(name, "self" | "cls"))
         {
             return Symbol::Unknown;
         }
-        let Some((class_qual, _)) = owner.qualname.rsplit_once('.') else { return Symbol::Unknown; };
-        let Some(class) = self.nodes_in_path(class_qual, &owner.path)
-            .find(|node| node.kind == crate::models::tags::NodeKind::Class) else { return Symbol::Unknown; };
+        let Some((class_qual, _)) = owner.qualname.rsplit_once('.') else {
+            return Symbol::Unknown;
+        };
+        let Some(class) = self
+            .nodes_in_path(class_qual, &owner.path)
+            .find(|node| node.kind == crate::models::tags::NodeKind::Class)
+        else {
+            return Symbol::Unknown;
+        };
         let mut scope = owner.qualname.as_str();
         while !scope.is_empty() {
             if self.nodes_in_path(scope, &owner.path).any(|node| {
                 node.binding_names().any(|name| name == "super")
                     || self.node_has_rebinding(node, "super")
                     || self.imported_alias(node, "super").is_some()
-            }) { return Symbol::Unknown; }
+            }) {
+                return Symbol::Unknown;
+            }
             scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
         }
         match self.lookup_language_member("python", class, member, true, owner) {

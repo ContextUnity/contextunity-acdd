@@ -4,8 +4,8 @@
 //! from the input facts catalog without heap reallocation. Also computes 64-bit Bloom filter
 //! masks for rapid single-cycle import matching against declarative framework rules.
 
-use acdd_core::format::stable_hash64;
 use crate::models::{Facts, Node, NodeDetailKey};
+use acdd_core::format::stable_hash64;
 use hashbrown::{HashMap, HashSet};
 use std::{
     borrow::Borrow,
@@ -284,7 +284,12 @@ impl<'a> LinkerInterner<'a> {
         Self::from_catalog_lookup(all)
     }
 
-    fn intern_file_node_symbols(&mut self, file_path: &'a str, facts: &'a Facts, suffixed_paths: &mut HashSet<&'a str>) {
+    fn intern_file_node_symbols(
+        &mut self,
+        file_path: &'a str,
+        facts: &'a Facts,
+        suffixed_paths: &mut HashSet<&'a str>,
+    ) {
         let mut last_language: Option<&'a str> = None;
         let mut last_kind: Option<&'a str> = None;
         for (index, node) in facts.nodes.iter().enumerate() {
@@ -314,7 +319,12 @@ impl<'a> LinkerInterner<'a> {
                 self.intern_symbol(name);
             }
             if !facts.semantic.is_complete() && facts.semantic.state(index).is_none() {
-                for fact in node.detail_entry(NodeDetailKey::SEMANTIC_FACTS).as_array().into_iter().flatten() {
+                for fact in node
+                    .detail_entry(NodeDetailKey::SEMANTIC_FACTS)
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(expression) = fact["expression"].as_str() {
                         self.intern_symbol(expression);
                     }
@@ -323,7 +333,12 @@ impl<'a> LinkerInterner<'a> {
                     }
                 }
             }
-            for export in node.detail_entry(NodeDetailKey::EXPORTS).as_array().into_iter().flatten() {
+            for export in node
+                .detail_entry(NodeDetailKey::EXPORTS)
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
                 for key in ["name", "local", "module"] {
                     if let Some(value) = export.get(key).and_then(serde_json::Value::as_str) {
                         self.intern_symbol(value);

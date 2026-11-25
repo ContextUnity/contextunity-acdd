@@ -220,7 +220,10 @@ fn has_schema_derive_decorator(dec: &str) -> bool {
     if d.starts_with("#[serde(") || d.starts_with("#[schemars(") || d.starts_with("#[clap(") {
         return true;
     }
-    let Some(inner) = d.strip_prefix("#[derive(").and_then(|s| s.strip_suffix(")]")) else {
+    let Some(inner) = d
+        .strip_prefix("#[derive(")
+        .and_then(|s| s.strip_suffix(")]"))
+    else {
         return false;
     };
     inner.split(',').any(|trait_path| {

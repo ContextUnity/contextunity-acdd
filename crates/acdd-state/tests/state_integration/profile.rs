@@ -145,7 +145,12 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{removed}");
     }
 
-    type EmbeddedCase<'a> = (&'a str, Option<&'a SubsystemRegistry>, bool, Result<(), ErrorCode>);
+    type EmbeddedCase<'a> = (
+        &'a str,
+        Option<&'a SubsystemRegistry>,
+        bool,
+        Result<(), ErrorCode>,
+    );
     let cases: &[EmbeddedCase<'_>] = &[
         ("base", Some(&code_docs_disabled), false, Ok(())),
         ("base", None, false, Ok(())),
@@ -198,7 +203,10 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         };
         let res = validate_profile(&resolved, &opts);
         match expected {
-            Ok(()) => assert!(res.is_ok(), "{name} (require_bound={require_bound}): {res:?}"),
+            Ok(()) => assert!(
+                res.is_ok(),
+                "{name} (require_bound={require_bound}): {res:?}"
+            ),
             Err(code) => {
                 let err = res.expect_err("expected error");
                 assert_eq!(err.code, code, "{name}: {err}");
@@ -216,9 +224,15 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(code_p.default_tools.len(), 20);
     assert!(code_p.default_tools.contains(&"code_map_lint".to_owned()));
     assert!(code_p.tags.contains("docs"));
-    assert!(code_p.roles["independent_reviewer"].guidance.as_deref().is_some_and(|g| g.contains("fresh") && g.contains("distinct")));
+    assert!(code_p.roles["independent_reviewer"]
+        .guidance
+        .as_deref()
+        .is_some_and(|g| g.contains("fresh") && g.contains("distinct")));
     assert!(match &code_p.guidance["task.review"] {
-        GuidanceEntry::Structured(s) => s.criteria.iter().any(|c| c.contains("duplicates") && c.contains("dead_tails")),
+        GuidanceEntry::Structured(s) => s
+            .criteria
+            .iter()
+            .any(|c| c.contains("duplicates") && c.contains("dead_tails")),
         GuidanceEntry::Text(t) => t.contains("duplicates") && t.contains("dead_tails"),
     });
     let code_tasks = code_p
@@ -226,13 +240,22 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         .iter()
         .find_map(|g| g.tasks.as_ref())
         .expect("tasks block");
-    assert!(!code_tasks.gates.iter().any(|g| g.id == "contract" || g.id == "contract_review"));
+    assert!(!code_tasks
+        .gates
+        .iter()
+        .any(|g| g.id == "contract" || g.id == "contract_review"));
     let code_build = code_tasks.gates.iter().find(|g| g.id == "build").unwrap();
     let code_review = code_tasks.gates.iter().find(|g| g.id == "review").unwrap();
     assert_eq!(code_build.save.post, Some(SaveAction::Snapshot));
     assert_eq!(code_build.pass.as_ref().map(|g| g.as_str()), Some("review"));
-    assert_eq!(code_review.pass.as_ref().map(|g| g.as_str()), Some("deliver"));
-    assert_eq!(code_review.fail_drift.as_ref().map(|g| g.as_str()), Some("rearchitect"));
+    assert_eq!(
+        code_review.pass.as_ref().map(|g| g.as_str()),
+        Some("deliver")
+    );
+    assert_eq!(
+        code_review.fail_drift.as_ref().map(|g| g.as_str()),
+        Some("rearchitect")
+    );
     assert_eq!(code_build.checks.len(), 2);
     assert_eq!(code_build.checks[0].check, "code.seam");
     assert_eq!(code_build.checks[1].check, "code.lint");
@@ -247,15 +270,30 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         code_run_tests.checks[0].with,
         json!({ "categories": ["arch", "syntax", "docs"] })
     );
-    assert!(code_build.tools.is_none(), "inherited tools must stay deduplicated as None");
+    assert!(
+        code_build.tools.is_none(),
+        "inherited tools must stay deduplicated as None"
+    );
     assert_eq!(code_p.effective_tools(code_build).len(), 20);
-    assert_eq!(code_build.context.first().map(String::as_str), Some("docs.instructions"));
-    let code_rearch = code_tasks.gates.iter().find(|g| g.id == "rearchitect").unwrap();
+    assert_eq!(
+        code_build.context.first().map(String::as_str),
+        Some("docs.instructions")
+    );
+    let code_rearch = code_tasks
+        .gates
+        .iter()
+        .find(|g| g.id == "rearchitect")
+        .unwrap();
     assert_eq!(code_rearch.pass.as_ref().map(|g| g.as_str()), Some("build"));
     assert_eq!(code_rearch.max_attempts, 3);
     assert_eq!(
         code_rearch.context,
-        vec!["docs.instructions", "docs.adrs", "docs.invariants", "code.symbols"]
+        vec![
+            "docs.instructions",
+            "docs.adrs",
+            "docs.invariants",
+            "code.symbols"
+        ]
     );
     let plan = code_p.dispatch_plan();
     let plan_cursors: Vec<&str> = plan.iter().map(|g| g.cursor.as_str()).collect();
@@ -279,16 +317,23 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(plan[2].reuse_on_reject, Some(true));
     assert_eq!(plan[6].role, None);
     assert_eq!(plan[6].command.as_deref(), Some("verify_all"));
-    assert!(plan.iter().all(|g| g.guidance.is_none()), "dispatch_plan at start must omit per-role guidance: {plan:?}");
+    assert!(
+        plan.iter().all(|g| g.guidance.is_none()),
+        "dispatch_plan at start must omit per-role guidance: {plan:?}"
+    );
 
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let repo_p = resolve_profile_ref_with_dirs(".acdd/profile.yaml", Some(&repo_root), None, None).unwrap();
+    let repo_p =
+        resolve_profile_ref_with_dirs(".acdd/profile.yaml", Some(&repo_root), None, None).unwrap();
     let repo_plan = repo_p.dispatch_plan();
     let handoff = repo_plan.iter().find(|g| g.cursor == "handoff").unwrap();
     assert_eq!(handoff.role.as_deref(), Some("coordinator"));
     assert_eq!(handoff.mode, Some(RoleExecutionMode::Inline));
     assert_eq!(handoff.models, repo_p.roles["coordinator"].models);
-    let build = repo_plan.iter().find(|g| g.cursor == "tasks.build").unwrap();
+    let build = repo_plan
+        .iter()
+        .find(|g| g.cursor == "tasks.build")
+        .unwrap();
     assert_eq!(build.mode, Some(RoleExecutionMode::Subagent));
     assert_eq!(build.models, repo_p.roles["builder"].models);
     let custom_models = resolve_profile_from_str_with_dirs(
@@ -306,7 +351,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         .find(|g| g.cursor == "tasks.build")
         .unwrap();
     assert_eq!(
-        custom_build.models.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        custom_build
+            .models
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         vec!["model-a", "model-b:high"]
     );
 
@@ -388,7 +437,12 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert!(doc_build.command.is_none());
     assert_eq!(
         doc_build.context,
-        vec!["docs.instructions", "docs.adrs", "docs.invariants", "code.symbols"]
+        vec![
+            "docs.instructions",
+            "docs.adrs",
+            "docs.invariants",
+            "code.symbols"
+        ]
     );
     assert_eq!(doc_build.checks.len(), 2);
     assert_eq!(doc_build.checks[0].check, "docs.links");
@@ -459,7 +513,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
 
     let sp_code_off =
         resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_disabled), None).unwrap();
-    let sp_code_off_synth = sp_code_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    let sp_code_off_synth = sp_code_off
+        .gates
+        .iter()
+        .find(|g| g.id == "synthesize")
+        .unwrap();
     assert_eq!(
         sp_code_off_synth
             .checks
@@ -468,11 +526,18 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             .collect::<Vec<_>>(),
         vec!["docs.specs", "docs.links"]
     );
-    assert!(!sp_code_off.default_tools.iter().any(|t| t.starts_with("code_map_") || t == "ast_grep_search"));
+    assert!(!sp_code_off
+        .default_tools
+        .iter()
+        .any(|t| t.starts_with("code_map_") || t == "ast_grep_search"));
 
     let sp_docs_off =
         resolve_profile_ref_with_dirs("spec_planning", None, Some(&docs_disabled), None).unwrap();
-    let sp_docs_off_synth = sp_docs_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    let sp_docs_off_synth = sp_docs_off
+        .gates
+        .iter()
+        .find(|g| g.id == "synthesize")
+        .unwrap();
     assert_eq!(
         sp_docs_off_synth
             .checks
@@ -482,11 +547,19 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         vec!["code.lint"]
     );
     assert!(sp_docs_off_synth.context.is_empty());
-    assert!(!sp_docs_off.default_tools.iter().any(|t| t == "get_doc" || t == "search_docs"));
+    assert!(!sp_docs_off
+        .default_tools
+        .iter()
+        .any(|t| t == "get_doc" || t == "search_docs"));
 
     let sp_both_off =
-        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_docs_disabled), None).unwrap();
-    let sp_both_off_synth = sp_both_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_docs_disabled), None)
+            .unwrap();
+    let sp_both_off_synth = sp_both_off
+        .gates
+        .iter()
+        .find(|g| g.id == "synthesize")
+        .unwrap();
     assert!(sp_both_off_synth.checks.is_empty());
     assert!(sp_both_off_synth.context.is_empty());
 }
@@ -757,10 +830,17 @@ fn profile_schema_and_legacy_rejection_matrix() {
     ];
     for (label, body, supported) in cases {
         for action in ["snapshot", "{ post: snapshot }"] {
-            let yaml = format!("version: 2\ninherit: none\n{}", body.replace("{action}", action));
+            let yaml = format!(
+                "version: 2\ninherit: none\n{}",
+                body.replace("{action}", action)
+            );
             let checked = resolve_profile_from_str_with_dirs(&yaml, label, None, None, None, None)
                 .and_then(|p| validate_profile(&p, &opts));
-            assert_eq!(checked.err().map(|err| err.code), (!supported).then_some(ErrorCode::ProfileSchemaInvalid), "{label}: {action}");
+            assert_eq!(
+                checked.err().map(|err| err.code),
+                (!supported).then_some(ErrorCode::ProfileSchemaInvalid),
+                "{label}: {action}"
+            );
         }
     }
 }
@@ -951,14 +1031,21 @@ gates_patch:
     assert_eq!(tasks_block.gates[0].save.post, Some(SaveAction::None));
     assert!(tasks_block.gates[0].save.immutable);
 
-    let lint_pos = patched.gates.iter().position(|g| g.id == "lint_gate").unwrap();
-    let handoff_pos = patched.gates.iter().position(|g| g.id == "handoff").unwrap();
+    let lint_pos = patched
+        .gates
+        .iter()
+        .position(|g| g.id == "lint_gate")
+        .unwrap();
+    let handoff_pos = patched
+        .gates
+        .iter()
+        .position(|g| g.id == "handoff")
+        .unwrap();
     assert_eq!(lint_pos + 1, handoff_pos);
 
     // Template expansion check
     let tpl_prof =
-        resolve_profile_from_str_with_dirs(template_yaml, "tpl", None, None, None, None)
-            .unwrap();
+        resolve_profile_from_str_with_dirs(template_yaml, "tpl", None, None, None, None).unwrap();
     validate_profile(&tpl_prof, &opts).unwrap();
     assert_eq!(tpl_prof.gates[0].gates.len(), 2);
     assert_eq!(tpl_prof.gates[0].gates[0].max_attempts, 2);
@@ -1013,9 +1100,8 @@ gates_patch:
     ];
 
     for &(label, yaml, rel_path) in bad_cases {
-        let err =
-            resolve_profile_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
-                .expect_err("expected failure");
+        let err = resolve_profile_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
+            .expect_err("expected failure");
         assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
     }
 }
@@ -1150,12 +1236,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
             Some("my_test"),
             Err(ErrorCode::ProfileSchemaInvalid),
         ),
-        (
-            "true # don't change",
-            None,
-            None,
-            Ok("true # don't change"),
-        ),
+        ("true # don't change", None, None, Ok("true # don't change")),
         (
             "cargo test # don't append",
             None,
@@ -1204,9 +1285,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
     };
     assert_eq!(check_guidance_budget(40, 50, &limits, 200).unwrap(), 10);
     assert_eq!(
-        check_guidance_budget(40, 50, &limits, 80)
-            .unwrap_err()
-            .code,
+        check_guidance_budget(40, 50, &limits, 80).unwrap_err().code,
         ErrorCode::GuidanceBudgetExceeded
     );
     assert_eq!(
@@ -1320,7 +1399,10 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     };
     let code_no_docs =
         resolve_profile_ref_with_dirs("code", None, Some(&docs_disabled), None).unwrap();
-    assert!(!code_no_docs.default_tools.iter().any(|t| t == "get_doc" || t == "search_docs"));
+    assert!(!code_no_docs
+        .default_tools
+        .iter()
+        .any(|t| t == "get_doc" || t == "search_docs"));
     assert!(code_no_docs.tags.contains("docs"));
     validate_profile(
         &code_no_docs,
@@ -1370,7 +1452,9 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
     let ws_default = resolve_optional_profile_ref_with_dirs(None, Some(root), None, None).unwrap();
-    assert!(matches!(ws_default.commands.get("test"), Some(CommandDef::Script(s)) if s == "pytest {test_filter}"));
+    assert!(
+        matches!(ws_default.commands.get("test"), Some(CommandDef::Script(s)) if s == "pytest {test_filter}")
+    );
 
     // Audit overlay with gates_patch + valid save.report templates
     let audit_overlay = resolve_profile_from_str_with_dirs(
@@ -1392,11 +1476,25 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
     assert_eq!(
-        audit_overlay.gates.iter().find(|g| g.id == "analyze").unwrap().save.report.as_deref(),
+        audit_overlay
+            .gates
+            .iter()
+            .find(|g| g.id == "analyze")
+            .unwrap()
+            .save
+            .report
+            .as_deref(),
         Some(".acdd/reports/{spec_id}-{run_id}.json")
     );
     assert_eq!(
-        audit_overlay.gates.iter().find(|g| g.id == "triage").unwrap().save.report.as_deref(),
+        audit_overlay
+            .gates
+            .iter()
+            .find(|g| g.id == "triage")
+            .unwrap()
+            .save
+            .report
+            .as_deref(),
         Some(".acdd/reports/{run_name}-{gate_id}.md")
     );
 
@@ -1418,9 +1516,13 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
     let custom_p = resolve_profile_ref_with_dirs("team", Some(root), None, None).unwrap();
-    assert!(matches!(custom_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./..."));
+    assert!(
+        matches!(custom_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./...")
+    );
     let nested_p = resolve_profile_ref_with_dirs("nested", Some(root), None, None).unwrap();
-    assert!(matches!(nested_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./..."));
+    assert!(
+        matches!(nested_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./...")
+    );
 
     fs::write(
         root.join("custom/profiles/cyc-a.yaml"),
@@ -1444,7 +1546,11 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     assert_eq!(broken_cfg_err.code, ErrorCode::ProfileSchemaInvalid);
 
     // 4b. protected_paths malformed glob rejection + inherited when-tags preservation on tags: override.
-    for bad_prot in ["src/{a", "../escape", "{a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}.rs"] {
+    for bad_prot in [
+        "src/{a",
+        "../escape",
+        "{a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}.rs",
+    ] {
         let p_bad_prot = resolve_profile_from_str_with_dirs(
             &format!("version: 2\nprotected_paths: [\"{bad_prot}\"]\n"),
             "bad-prot",
@@ -1574,11 +1680,14 @@ gates_patch:
         max_attempts: 5
 "#;
     let patched =
-        resolve_profile_from_str_with_dirs(patch_yaml, "patched", None, None, None, None)
-            .unwrap();
+        resolve_profile_from_str_with_dirs(patch_yaml, "patched", None, None, None, None).unwrap();
     let tb = patched.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
     let review_g = tb.gates.iter().find(|g| g.id == "review").unwrap();
-    assert_eq!(review_g.tools.as_deref(), Some(&[][..]), "tools: null must clear to Some([])");
+    assert_eq!(
+        review_g.tools.as_deref(),
+        Some(&[][..]),
+        "tools: null must clear to Some([])"
+    );
     assert!(patched.effective_tools(review_g).is_empty());
     let build_g = tb.gates.iter().find(|g| g.id == "build").unwrap();
     assert_eq!(
@@ -1586,7 +1695,11 @@ gates_patch:
         &["acdd_read".to_owned(), "acdd_verify".to_owned()]
     );
 
-    let pair_g = patched.gates.iter().find(|g| g.id == "pair_container").unwrap();
+    let pair_g = patched
+        .gates
+        .iter()
+        .find(|g| g.id == "pair_container")
+        .unwrap();
     assert_eq!(pair_g.max_attempts, 2);
     assert_eq!(pair_g.gates.len(), 2);
     assert_eq!(pair_g.gates[0].id, "s1");
@@ -1596,11 +1709,17 @@ gates_patch:
 
     // Top-level scope_args_by_pattern stays deduplicated on profile; per-command overrides stay sparse.
     assert_eq!(
-        patched.scope_args_by_pattern.get("crates/a/**").map(String::as_str),
+        patched
+            .scope_args_by_pattern
+            .get("crates/a/**")
+            .map(String::as_str),
         Some("-p crate-a")
     );
     assert_eq!(
-        patched.scope_args_by_pattern.get("crates/b/**").map(String::as_str),
+        patched
+            .scope_args_by_pattern
+            .get("crates/b/**")
+            .map(String::as_str),
         Some("-p crate-b")
     );
     assert!(matches!(
@@ -1610,14 +1729,18 @@ gates_patch:
     match patched.commands.get("build_check").unwrap() {
         CommandDef::Detailed(d) => {
             assert_eq!(
-                d.scope_args_by_pattern.get("crates/a/**").map(String::as_str),
+                d.scope_args_by_pattern
+                    .get("crates/a/**")
+                    .map(String::as_str),
                 Some("--package override-a")
             );
             assert!(!d.scope_args_by_pattern.contains_key("crates/b/**"));
         }
         other => panic!("expected Detailed, got {other:?}"),
     }
-    assert!(matches!(patched.commands.get("plain_cmd"), Some(CommandDef::Script(s)) if s == "echo ok"));
+    assert!(
+        matches!(patched.commands.get("plain_cmd"), Some(CommandDef::Script(s)) if s == "echo ok")
+    );
 }
 
 #[test]
@@ -1640,10 +1763,34 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
     let doc_review_ev = ReviewEvidence {
         decision: SubmitAction::Pass,
         contours: BTreeMap::from([
-            ("paths".to_owned(), ReviewContourResult { applicable: true, evidence: "in scope".to_owned() }),
-            ("claims".to_owned(), ReviewContourResult { applicable: true, evidence: "all ACs met".to_owned() }),
-            ("architecture".to_owned(), ReviewContourResult { applicable: true, evidence: "SSOT valid".to_owned() }),
-            ("administration".to_owned(), ReviewContourResult { applicable: true, evidence: "clean".to_owned() }),
+            (
+                "paths".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "in scope".to_owned(),
+                },
+            ),
+            (
+                "claims".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "all ACs met".to_owned(),
+                },
+            ),
+            (
+                "architecture".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "SSOT valid".to_owned(),
+                },
+            ),
+            (
+                "administration".to_owned(),
+                ReviewContourResult {
+                    applicable: true,
+                    evidence: "clean".to_owned(),
+                },
+            ),
         ]),
         summary: "approved".to_owned(),
         notes: None,
@@ -1662,8 +1809,17 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
                 domain: "code".to_owned(),
                 check: "lint".to_owned(),
                 passed: lint_ok,
-                summary: if lint_ok { "0 violations" } else { "1 doc violation" }.to_owned(),
-                diagnostics: if lint_ok { Vec::new() } else { vec!["broken rule".to_owned()] },
+                summary: if lint_ok {
+                    "0 violations"
+                } else {
+                    "1 doc violation"
+                }
+                .to_owned(),
+                diagnostics: if lint_ok {
+                    Vec::new()
+                } else {
+                    vec!["broken rule".to_owned()]
+                },
                 execution_digest_salt: Some("gen1".to_owned()),
             },
         ]
@@ -1704,13 +1860,12 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
             let parent_versions: Vec<_> = parent_patches
                 .iter()
                 .filter_map(|p| {
-                    snap.nodes
-                        .iter()
-                        .find(|n| n.node_id == p.node_id)
-                        .map(|n| NodeVersionExpectation {
+                    snap.nodes.iter().find(|n| n.node_id == p.node_id).map(|n| {
+                        NodeVersionExpectation {
                             node_id: n.node_id.clone(),
                             expected_version: n.node_version,
-                        })
+                        }
+                    })
                 })
                 .collect();
             harness
@@ -1721,7 +1876,10 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
                             rid,
                             &TransitionPlan {
                                 preconditions: StoragePreconditions {
-                                    expected_run_generation: transition.preconditions.expected_run_generation + 1,
+                                    expected_run_generation: transition
+                                        .preconditions
+                                        .expected_run_generation
+                                        + 1,
                                     expected_node_versions: parent_versions,
                                     expected_claim_revision: None,
                                     expected_contract_revision: None,
@@ -1834,7 +1992,9 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
         let snap = harness.reader().load_run_graph(rid).unwrap().unwrap();
         let plan = match evaluate_submit(&snap, mprof, &obs, &input).unwrap() {
             SubmitEvaluation::Apply(p) => p,
-            SubmitEvaluation::MarkStaleAndReject { error, .. } => panic!("unexpected stale: {error}"),
+            SubmitEvaluation::MarkStaleAndReject { error, .. } => {
+                panic!("unexpected stale: {error}")
+            }
         };
         harness
             .exec_tx(|tx| tx.apply_transition_plan(rid, &plan))
@@ -1919,9 +2079,33 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
         let syn_cur = root_cur(&["blueprint_synthesis", "synthesize"]);
         let brev_cur = root_cur(&["blueprint_synthesis", "review"]);
         let c_syn = claim_step(&harness, &rid, &mprof, syn_cur.clone(), "arch-1");
-        submit_step(&harness, &rid, &mprof, syn_cur, "arch-1", c_syn, SubmitAction::Pass, None, None, None, Some(blueprint_proof.clone()));
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            syn_cur,
+            "arch-1",
+            c_syn,
+            SubmitAction::Pass,
+            None,
+            None,
+            None,
+            Some(blueprint_proof.clone()),
+        );
         let c_brev = claim_step(&harness, &rid, &mprof, brev_cur.clone(), "rev-1");
-        submit_step(&harness, &rid, &mprof, brev_cur, "rev-1", c_brev, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            brev_cur,
+            "rev-1",
+            c_brev,
+            SubmitAction::Pass,
+            None,
+            Some(doc_review_ev.clone()),
+            None,
+            None,
+        );
 
         // 2. tasks.build -> review (reject defect) -> build -> review (reject drift) -> rearchitect -> build -> review -> deliver
         let build_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("build").unwrap()]);
@@ -1930,28 +2114,172 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
         let rearch_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("rearchitect").unwrap()]);
 
         let c_b1 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
-        let d_b1 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b1, true);
-        submit_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder", c_b1, SubmitAction::Pass, Some(d_b1), None, None, None);
+        let d_b1 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur.clone(),
+            Some("doc-builder"),
+            c_b1,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur.clone(),
+            "doc-builder",
+            c_b1,
+            SubmitAction::Pass,
+            Some(d_b1),
+            None,
+            None,
+            None,
+        );
         let c_r1 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
-        submit_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev", c_r1, SubmitAction::Reject, None, None, Some(reject(RejectionKind::Defect, "Missing anchor", "docs/AGENTS.md")), None);
-        assert_eq!(harness.reader().load_node(&rid, &format!("task:{t_ref}:build")).unwrap().unwrap().status, NodeStatus::Ready);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            rev_cur.clone(),
+            "doc-rev",
+            c_r1,
+            SubmitAction::Reject,
+            None,
+            None,
+            Some(reject(
+                RejectionKind::Defect,
+                "Missing anchor",
+                "docs/AGENTS.md",
+            )),
+            None,
+        );
+        assert_eq!(
+            harness
+                .reader()
+                .load_node(&rid, &format!("task:{t_ref}:build"))
+                .unwrap()
+                .unwrap()
+                .status,
+            NodeStatus::Ready
+        );
 
         let c_b2 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
-        let d_b2 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b2, true);
-        submit_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder", c_b2, SubmitAction::Pass, Some(d_b2), None, None, None);
+        let d_b2 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur.clone(),
+            Some("doc-builder"),
+            c_b2,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur.clone(),
+            "doc-builder",
+            c_b2,
+            SubmitAction::Pass,
+            Some(d_b2),
+            None,
+            None,
+            None,
+        );
         let c_r2 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
-        submit_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev", c_r2, SubmitAction::Reject, None, None, Some(reject(RejectionKind::ArchitecturalDrift, "Duplicate INV-*", "docs/AGENTS.md")), None);
-        assert_eq!(harness.reader().load_node(&rid, &format!("task:{t_ref}:rearchitect")).unwrap().unwrap().status, NodeStatus::Ready);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            rev_cur.clone(),
+            "doc-rev",
+            c_r2,
+            SubmitAction::Reject,
+            None,
+            None,
+            Some(reject(
+                RejectionKind::ArchitecturalDrift,
+                "Duplicate INV-*",
+                "docs/AGENTS.md",
+            )),
+            None,
+        );
+        assert_eq!(
+            harness
+                .reader()
+                .load_node(&rid, &format!("task:{t_ref}:rearchitect"))
+                .unwrap()
+                .unwrap()
+                .status,
+            NodeStatus::Ready
+        );
 
         let c_ra = claim_step(&harness, &rid, &mprof, rearch_cur.clone(), "arch-1");
-        submit_step(&harness, &rid, &mprof, rearch_cur, "arch-1", c_ra, SubmitAction::Pass, None, None, None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            rearch_cur,
+            "arch-1",
+            c_ra,
+            SubmitAction::Pass,
+            None,
+            None,
+            None,
+            None,
+        );
         let c_b3 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
-        let d_b3 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b3, true);
-        submit_step(&harness, &rid, &mprof, build_cur, "doc-builder", c_b3, SubmitAction::Pass, Some(d_b3), None, None, None);
+        let d_b3 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur.clone(),
+            Some("doc-builder"),
+            c_b3,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            build_cur,
+            "doc-builder",
+            c_b3,
+            SubmitAction::Pass,
+            Some(d_b3),
+            None,
+            None,
+            None,
+        );
         let c_r3 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
-        submit_step(&harness, &rid, &mprof, rev_cur, "doc-rev", c_r3, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            rev_cur,
+            "doc-rev",
+            c_r3,
+            SubmitAction::Pass,
+            None,
+            Some(doc_review_ev.clone()),
+            None,
+            None,
+        );
         let c_del = claim_step(&harness, &rid, &mprof, del_cur.clone(), "doc-rev");
-        submit_step(&harness, &rid, &mprof, del_cur, "doc-rev", c_del, SubmitAction::Pass, None, None, None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            del_cur,
+            "doc-rev",
+            c_del,
+            SubmitAction::Pass,
+            None,
+            None,
+            None,
+            None,
+        );
 
         // 3. verify_docs failure -> polish -> verify_docs -> integration_review reject -> polish -> verify_docs -> integration_review -> handoff
         let vd_cur = root_cur(&["verify_docs"]);
@@ -1960,33 +2288,180 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
         let handoff_cur = root_cur(&["handoff"]);
 
         let c_vd1 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
-        verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd1, false);
-        assert_eq!(harness.reader().load_node(&rid, "root:polish").unwrap().unwrap().status, NodeStatus::Ready);
+        verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            vd_cur.clone(),
+            Some("mech"),
+            c_vd1,
+            false,
+        );
+        assert_eq!(
+            harness
+                .reader()
+                .load_node(&rid, "root:polish")
+                .unwrap()
+                .unwrap()
+                .status,
+            NodeStatus::Ready
+        );
 
         let c_pol1 = claim_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder");
-        let d_pol1 = verify_step(&harness, &rid, &mprof, pol_cur.clone(), Some("doc-builder"), c_pol1, true);
-        submit_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder", c_pol1, SubmitAction::Pass, Some(d_pol1), None, None, None);
+        let d_pol1 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            pol_cur.clone(),
+            Some("doc-builder"),
+            c_pol1,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            pol_cur.clone(),
+            "doc-builder",
+            c_pol1,
+            SubmitAction::Pass,
+            Some(d_pol1),
+            None,
+            None,
+            None,
+        );
         let c_vd2 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
-        let d_vd2 = verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd2, true);
-        submit_step(&harness, &rid, &mprof, vd_cur.clone(), "mech", c_vd2, SubmitAction::Pass, Some(d_vd2), None, None, None);
+        let d_vd2 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            vd_cur.clone(),
+            Some("mech"),
+            c_vd2,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            vd_cur.clone(),
+            "mech",
+            c_vd2,
+            SubmitAction::Pass,
+            Some(d_vd2),
+            None,
+            None,
+            None,
+        );
 
         let c_ir1 = claim_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev");
-        submit_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev", c_ir1, SubmitAction::Reject, None, None, Some(reject(RejectionKind::Defect, "Polish cross-link", "README.md")), None);
-        assert_eq!(harness.reader().load_node(&rid, "root:polish").unwrap().unwrap().status, NodeStatus::Ready);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            irev_cur.clone(),
+            "int-rev",
+            c_ir1,
+            SubmitAction::Reject,
+            None,
+            None,
+            Some(reject(
+                RejectionKind::Defect,
+                "Polish cross-link",
+                "README.md",
+            )),
+            None,
+        );
+        assert_eq!(
+            harness
+                .reader()
+                .load_node(&rid, "root:polish")
+                .unwrap()
+                .unwrap()
+                .status,
+            NodeStatus::Ready
+        );
 
         let c_pol2 = claim_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder");
-        let d_pol2 = verify_step(&harness, &rid, &mprof, pol_cur.clone(), Some("doc-builder"), c_pol2, true);
-        submit_step(&harness, &rid, &mprof, pol_cur, "doc-builder", c_pol2, SubmitAction::Pass, Some(d_pol2), None, None, None);
+        let d_pol2 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            pol_cur.clone(),
+            Some("doc-builder"),
+            c_pol2,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            pol_cur,
+            "doc-builder",
+            c_pol2,
+            SubmitAction::Pass,
+            Some(d_pol2),
+            None,
+            None,
+            None,
+        );
         let c_vd3 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
-        let d_vd3 = verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd3, true);
-        submit_step(&harness, &rid, &mprof, vd_cur, "mech", c_vd3, SubmitAction::Pass, Some(d_vd3), None, None, None);
+        let d_vd3 = verify_step(
+            &harness,
+            &rid,
+            &mprof,
+            vd_cur.clone(),
+            Some("mech"),
+            c_vd3,
+            true,
+        );
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            vd_cur,
+            "mech",
+            c_vd3,
+            SubmitAction::Pass,
+            Some(d_vd3),
+            None,
+            None,
+            None,
+        );
         let c_ir2 = claim_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev");
-        submit_step(&harness, &rid, &mprof, irev_cur, "int-rev", c_ir2, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            irev_cur,
+            "int-rev",
+            c_ir2,
+            SubmitAction::Pass,
+            None,
+            Some(doc_review_ev.clone()),
+            None,
+            None,
+        );
         let c_ho = claim_step(&harness, &rid, &mprof, handoff_cur.clone(), "int-rev");
-        submit_step(&harness, &rid, &mprof, handoff_cur, "int-rev", c_ho, SubmitAction::Pass, None, None, None, None);
+        submit_step(
+            &harness,
+            &rid,
+            &mprof,
+            handoff_cur,
+            "int-rev",
+            c_ho,
+            SubmitAction::Pass,
+            None,
+            None,
+            None,
+            None,
+        );
 
         let final_snap = harness.reader().load_run_graph(&rid).unwrap().unwrap();
         assert_eq!(final_snap.run.status, RunStatus::Completed);
-        assert!(final_snap.artifacts.iter().any(|a| a.kind == acdd_state::types::ArtifactKind::Receipt));
+        assert!(final_snap
+            .artifacts
+            .iter()
+            .any(|a| a.kind == acdd_state::types::ArtifactKind::Receipt));
     }
 }

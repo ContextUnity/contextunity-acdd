@@ -79,13 +79,15 @@ fn configure_read_only_conn(conn: &Connection, db_path: &Path) -> Result<(), rus
          PRAGMA query_only = ON;",
     )?;
     // Probe page 1 / WAL state now so missing `-shm` on a WAL DB is surfaced immediately.
-    let _: i64 = conn.query_row("SELECT 1 FROM sqlite_schema LIMIT 1", [], |row| row.get(0)).or_else(|err| {
-        if matches!(err, rusqlite::Error::QueryReturnedNoRows) {
-            Ok(1)
-        } else {
-            Err(err)
-        }
-    })?;
+    let _: i64 = conn
+        .query_row("SELECT 1 FROM sqlite_schema LIMIT 1", [], |row| row.get(0))
+        .or_else(|err| {
+            if matches!(err, rusqlite::Error::QueryReturnedNoRows) {
+                Ok(1)
+            } else {
+                Err(err)
+            }
+        })?;
     let _ = db_path;
     Ok(())
 }
@@ -338,13 +340,20 @@ impl StateReader for SqliteStateReader {
         }
     }
 
-    fn resolve_active_run_by_worktree(&self, worktree: &str) -> Result<Option<RunRecord>, StateError> {
+    fn resolve_active_run_by_worktree(
+        &self,
+        worktree: &str,
+    ) -> Result<Option<RunRecord>, StateError> {
         self.with_versioned_conn_or_default(None, |conn, schema_version| {
             reader::resolve_active_run_by_worktree_with_version(conn, worktree, schema_version)
         })
     }
 
-    fn load_node(&self, run_id: &RunId, node_id: &str) -> Result<Option<GateNodeRecord>, StateError> {
+    fn load_node(
+        &self,
+        run_id: &RunId,
+        node_id: &str,
+    ) -> Result<Option<GateNodeRecord>, StateError> {
         self.with_conn_or_default(None, |conn| reader::load_node(conn, run_id, node_id))
     }
 
@@ -471,18 +480,18 @@ impl SqliteStateBackend {
 
         if !options.is_custom_db {
             if let Some(ref backup_dir) = options.backup_dir {
-                let _ = backup::restore_from_backup_if_missing(
-                    &confined_path,
-                    backup_dir,
-                    reconciler,
-                )?;
+                let _ =
+                    backup::restore_from_backup_if_missing(&confined_path, backup_dir, reconciler)?;
             }
         }
 
         let parent = confined_path.parent().ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("database path '{}' has no parent directory", options.db_path.display()),
+                format!(
+                    "database path '{}' has no parent directory",
+                    options.db_path.display()
+                ),
             )
         })?;
         ensure_confined_dir_all(parent, parent).map_err(|err| {
@@ -601,7 +610,9 @@ impl SqliteStateBackend {
 
 /// Open an existing `state.sqlite` strictly read-only for `test-support` integration tests.
 #[cfg(any(test, feature = "test-support"))]
-pub fn open_read_only_with_version(db_path: &Path) -> Result<Option<(Connection, u32)>, StateError> {
+pub fn open_read_only_with_version(
+    db_path: &Path,
+) -> Result<Option<(Connection, u32)>, StateError> {
     open_read_only_if_exists(db_path)
 }
 
@@ -672,8 +683,7 @@ impl StateBackend for SqliteStateBackend {
                 "SQLite write connection mutex poisoned",
             )
         })?;
-        let _backed_up =
-            backup::perform_backup_if_needed(&mut guard, backup_dir, true)?;
+        let _backed_up = backup::perform_backup_if_needed(&mut guard, backup_dir, true)?;
         self.significant_dirty.store(false, Ordering::Release);
         Ok(())
     }
@@ -727,12 +737,14 @@ impl InMemorySqliteStore {
                 "in-memory SQLite mutex poisoned",
             )
         })?;
-        guard.execute_batch("PRAGMA query_only = ON;").map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to set PRAGMA query_only = ON: {err}"),
-            )
-        })?;
+        guard
+            .execute_batch("PRAGMA query_only = ON;")
+            .map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("failed to set PRAGMA query_only = ON: {err}"),
+                )
+            })?;
         let _reset = QueryOnlyGuard(&guard);
         f(&guard)
     }

@@ -8,8 +8,8 @@ use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvid
 use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
 use acdd_state::usecases::{
-    StateCommand, StateCommandOutput, StateEngine, StateEngineConfig, StateQuery,
-    StateQueryEngine, StateQueryOutput,
+    StateCommand, StateCommandOutput, StateEngine, StateEngineConfig, StateQuery, StateQueryEngine,
+    StateQueryOutput,
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -164,7 +164,9 @@ pub fn execute_state_command(
     providers: Arc<CompositeDomainProvider>,
     cmd: StateCommand,
 ) -> Result<StateCommandOutput, StateError> {
-    execute_state_command_with_config(root, worktree, state_db, code_db, config, providers, cmd, false)
+    execute_state_command_with_config(
+        root, worktree, state_db, code_db, config, providers, cmd, false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -229,10 +231,8 @@ pub(super) fn worktree_code_db_candidate(
             .ok()
             .map(Path::to_path_buf)
     });
-    let wt_candidate = acdd_core::config::resolve_code_db_path(
-        worktree,
-        wt_override.as_deref().or(code_db),
-    );
+    let wt_candidate =
+        acdd_core::config::resolve_code_db_path(worktree, wt_override.as_deref().or(code_db));
     let primary_candidate = acdd_core::config::resolve_code_db_path(&primary, code_db);
     (wt_candidate, primary_candidate)
 }
@@ -325,8 +325,7 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
     for item in items {
         let item_bytes = estimate_json_bytes(&item);
         let sep = usize::from(!kept.is_empty());
-        if used_bytes.saturating_add(sep).saturating_add(item_bytes) > max_bytes
-            && !kept.is_empty()
+        if used_bytes.saturating_add(sep).saturating_add(item_bytes) > max_bytes && !kept.is_empty()
         {
             break;
         }

@@ -68,13 +68,11 @@ pub(in crate::linker) fn deserializer_result<'a>(
         return None;
     }
     let payload = match payload {
-        TypeExpr::RustCallArguments { args } => {
-            match (member, args.as_slice()) {
-                ("from_reader", [_, payload]) => payload,
-                ("from_str" | "from_slice" | "from_value", [payload]) => payload,
-                _ => &TypeExpr::Unknown,
-            }
-        }
+        TypeExpr::RustCallArguments { args } => match (member, args.as_slice()) {
+            ("from_reader", [_, payload]) => payload,
+            ("from_str" | "from_slice" | "from_value", [payload]) => payload,
+            _ => &TypeExpr::Unknown,
+        },
         _ => &TypeExpr::Unknown,
     };
     Some(TypeTarget::RustWrapper {
@@ -168,7 +166,10 @@ fn constructor_local_result<'a>(
     {
         return Some(target.clone());
     }
-    if let Some(synth) = callable.detail_entry(crate::models::details::NodeDetailKey::RUST_SYNTH_RETURN).as_str() {
+    if let Some(synth) = callable
+        .detail_entry(crate::models::details::NodeDetailKey::RUST_SYNTH_RETURN)
+        .as_str()
+    {
         if let Some(resolved) = synth_return_target(synth, target) {
             return Some(resolved);
         }
@@ -254,7 +255,9 @@ pub(in crate::linker) fn constructor_result<'a>(
             );
         }
         TypeTarget::Builtin(name) => {
-            if let Some(res) = constructor_builtin_result(&target, name, member, owner, at, resolver) {
+            if let Some(res) =
+                constructor_builtin_result(&target, name, member, owner, at, resolver)
+            {
                 return Some(res);
             }
         }
@@ -266,17 +269,14 @@ pub(in crate::linker) fn constructor_result<'a>(
             }
         }
         TypeTarget::ConfiguredReceiver {
-            authority,
-            origin,
-            ..
+            authority, origin, ..
         } => {
             let module = match origin.as_ref() {
                 TypeTarget::External { module, .. } => Some(module.as_str()),
                 _ => match authority.as_ref() {
-                    ConfiguredReceiverAuthority::Hierarchy {
-                        rule,
-                        ..
-                    } => rule.bases.first().map(String::as_str),
+                    ConfiguredReceiverAuthority::Hierarchy { rule, .. } => {
+                        rule.bases.first().map(String::as_str)
+                    }
                     _ => None,
                 },
             };
@@ -373,260 +373,260 @@ pub(in crate::linker) fn is_adapter(member: &str) -> bool {
                 | "iter_mut"
                 | "into_iter"
                 | "par_iter"
-            | "par_iter_mut"
-            | "into_par_iter"
-            | "next"
-            | "map"
-            | "map_or"
-            | "map_or_else"
-            | "filter"
-            | "filter_entry"
-            | "enumerate"
-            | "take"
-            | "skip"
-            | "step_by"
-            | "zip"
-            | "chain"
-            | "rev"
-            | "peekable"
-            | "flatten"
-            | "collect"
-            | "strip_prefix"
-            | "strip_suffix"
-            | "replace"
-            | "replacen"
-            | "to_lowercase"
-            | "to_uppercase"
-            | "repeat"
-            | "rsplit"
-            | "rsplitn"
-            | "splitn"
-            | "find"
-            | "rfind"
-            | "args"
-            | "to_owned"
-            | "to_string"
-            | "into_owned"
-            | "into_bytes"
-            | "into_inner"
-            | "file_type"
-            | "elapsed"
-            | "prefix"
-            | "suffix"
-            | "tempdir"
-            | "tempdir_in"
-            | "tempfile"
-            | "tempfile_in"
-            | "head"
-            | "peel_to_commit"
-            | "peel_to_tree"
-            | "tree"
-            | "index"
-            | "path"
-            | "depth"
-            | "timestamp"
-            | "into"
-            | "as_bytes"
-            | "lines"
-            | "split"
-            | "split_inclusive"
-            | "split_terminator"
-            | "rsplit_terminator"
-            | "chars"
-            | "bytes"
-            | "join"
-            | "to_str"
-            | "to_string_lossy"
-            | "to_path_buf"
-            | "as_path"
-            | "as_os_str"
-            | "with_extension"
-            | "with_file_name"
-            | "components"
-            | "ancestors"
-            | "canonicalize"
-            | "file_name"
-            | "extension"
-            | "current_dir"
-            | "output"
-            | "status"
-            | "get"
-            | "get_ref"
-            | "get_or_insert"
-            | "get_or_insert_with"
-            | "get_or_init"
-            | "as_str"
-            | "as_array"
-            | "as_array_mut"
-            | "as_object"
-            | "as_object_mut"
-            | "as_u64"
-            | "as_i64"
-            | "as_bool"
-            | "arg"
-            | "and_then"
-            | "or"
-            | "or_else"
-            | "and"
-            | "transpose"
-            | "ok_or"
-            | "ok_or_else"
-            | "filter_map"
-            | "flat_map"
-            | "inspect"
-            | "fuse"
-            | "as_slice"
-            | "query_row"
-            | "prepare"
-            | "prepare_cached"
-            | "transaction"
-            | "unchecked_transaction"
-            | "transaction_with_behavior"
-            | "query"
-            | "parse"
-            | "parse_with"
-            | "child"
-            | "named_child"
-            | "child_by_field_name"
-            | "parent"
-            | "next_sibling"
-            | "prev_sibling"
-            | "next_named_sibling"
-            | "prev_named_sibling"
-            | "children"
-            | "named_children"
-            | "split_whitespace"
-            | "split_once"
-            | "rsplit_once"
-            | "first"
-            | "first_mut"
-            | "last"
-            | "last_mut"
-            | "get_mut"
-            | "pop"
-            | "pop_front"
-            | "pop_back"
-            | "front"
-            | "back"
-            | "remove"
-            | "swap_remove"
-            | "shift_remove"
-            | "insert"
-            | "get_key_value"
-            | "entry"
-            | "keys"
-            | "values"
-            | "values_mut"
-            | "into_keys"
-            | "into_values"
-            | "or_insert"
-            | "or_insert_with"
-            | "or_insert_with_key"
-            | "or_default"
-            | "and_modify"
-            | "lock"
-            | "try_lock"
-            | "read"
-            | "try_read"
-            | "write"
-            | "try_write"
-            | "borrow"
-            | "try_borrow"
-            | "borrow_mut"
-            | "try_borrow_mut"
-            | "get_or_try_init"
-            | "context"
-            | "with_context"
-            | "then_some"
-            | "unwrap_or"
-            | "unwrap_or_else"
-            | "unwrap_or_default"
-            | "map_err"
-            | "inspect_err"
-            | "as_deref_mut"
-            | "err"
-            | "position"
-            | "rposition"
-            | "is_none"
-            | "is_some"
-            | "is_ok"
-            | "is_err"
-            | "is_empty"
-            | "is_some_and"
-            | "is_none_or"
-            | "is_ok_and"
-            | "is_err_and"
-            | "then"
-            | "cmp"
-            | "partial_cmp"
-            | "then_with"
-            | "reverse"
-            | "is_eq"
-            | "is_ne"
-            | "is_lt"
-            | "is_le"
-            | "is_gt"
-            | "is_ge"
-            | "checked_add"
-            | "checked_sub"
-            | "checked_mul"
-            | "checked_div"
-            | "checked_rem"
-            | "saturating_add"
-            | "saturating_sub"
-            | "saturating_mul"
-            | "append"
-            | "truncate"
-            | "create"
-            | "create_new"
-            | "mode"
-            | "custom_flags"
-            | "open"
-            | "metadata"
-            | "symlink_metadata"
-            | "permissions"
-            | "file_stem"
-            | "is_file"
-            | "is_dir"
-            | "is_symlink"
-            | "exists"
-            | "contains"
-            | "contains_key"
-            | "starts_with"
-            | "ends_with"
-            | "is_ascii"
-            | "eq_ignore_ascii_case"
-            | "find_map"
-            | "partition"
-            | "try_fold"
-            | "try_for_each"
-            | "peek"
-            | "peek_mut"
-            | "next_if"
-            | "next_if_eq"
-            | "as_mut_slice"
-            | "windows"
-            | "chunks"
-            | "chunks_exact"
-            | "rchunks"
-            | "split_first"
-            | "split_last"
-            | "take_while"
-            | "skip_while"
-            | "max_by"
-            | "min_by"
-            | "max_by_key"
-            | "min_by_key"
-            | "reduce"
-            | "scan"
-            | "to_vec"
-            | "as_file"
-            | "key"
-            | "insert_entry"
-            | "char_indices"
-            | "into_mut"
-            | "remove_entry"
-    )
+                | "par_iter_mut"
+                | "into_par_iter"
+                | "next"
+                | "map"
+                | "map_or"
+                | "map_or_else"
+                | "filter"
+                | "filter_entry"
+                | "enumerate"
+                | "take"
+                | "skip"
+                | "step_by"
+                | "zip"
+                | "chain"
+                | "rev"
+                | "peekable"
+                | "flatten"
+                | "collect"
+                | "strip_prefix"
+                | "strip_suffix"
+                | "replace"
+                | "replacen"
+                | "to_lowercase"
+                | "to_uppercase"
+                | "repeat"
+                | "rsplit"
+                | "rsplitn"
+                | "splitn"
+                | "find"
+                | "rfind"
+                | "args"
+                | "to_owned"
+                | "to_string"
+                | "into_owned"
+                | "into_bytes"
+                | "into_inner"
+                | "file_type"
+                | "elapsed"
+                | "prefix"
+                | "suffix"
+                | "tempdir"
+                | "tempdir_in"
+                | "tempfile"
+                | "tempfile_in"
+                | "head"
+                | "peel_to_commit"
+                | "peel_to_tree"
+                | "tree"
+                | "index"
+                | "path"
+                | "depth"
+                | "timestamp"
+                | "into"
+                | "as_bytes"
+                | "lines"
+                | "split"
+                | "split_inclusive"
+                | "split_terminator"
+                | "rsplit_terminator"
+                | "chars"
+                | "bytes"
+                | "join"
+                | "to_str"
+                | "to_string_lossy"
+                | "to_path_buf"
+                | "as_path"
+                | "as_os_str"
+                | "with_extension"
+                | "with_file_name"
+                | "components"
+                | "ancestors"
+                | "canonicalize"
+                | "file_name"
+                | "extension"
+                | "current_dir"
+                | "output"
+                | "status"
+                | "get"
+                | "get_ref"
+                | "get_or_insert"
+                | "get_or_insert_with"
+                | "get_or_init"
+                | "as_str"
+                | "as_array"
+                | "as_array_mut"
+                | "as_object"
+                | "as_object_mut"
+                | "as_u64"
+                | "as_i64"
+                | "as_bool"
+                | "arg"
+                | "and_then"
+                | "or"
+                | "or_else"
+                | "and"
+                | "transpose"
+                | "ok_or"
+                | "ok_or_else"
+                | "filter_map"
+                | "flat_map"
+                | "inspect"
+                | "fuse"
+                | "as_slice"
+                | "query_row"
+                | "prepare"
+                | "prepare_cached"
+                | "transaction"
+                | "unchecked_transaction"
+                | "transaction_with_behavior"
+                | "query"
+                | "parse"
+                | "parse_with"
+                | "child"
+                | "named_child"
+                | "child_by_field_name"
+                | "parent"
+                | "next_sibling"
+                | "prev_sibling"
+                | "next_named_sibling"
+                | "prev_named_sibling"
+                | "children"
+                | "named_children"
+                | "split_whitespace"
+                | "split_once"
+                | "rsplit_once"
+                | "first"
+                | "first_mut"
+                | "last"
+                | "last_mut"
+                | "get_mut"
+                | "pop"
+                | "pop_front"
+                | "pop_back"
+                | "front"
+                | "back"
+                | "remove"
+                | "swap_remove"
+                | "shift_remove"
+                | "insert"
+                | "get_key_value"
+                | "entry"
+                | "keys"
+                | "values"
+                | "values_mut"
+                | "into_keys"
+                | "into_values"
+                | "or_insert"
+                | "or_insert_with"
+                | "or_insert_with_key"
+                | "or_default"
+                | "and_modify"
+                | "lock"
+                | "try_lock"
+                | "read"
+                | "try_read"
+                | "write"
+                | "try_write"
+                | "borrow"
+                | "try_borrow"
+                | "borrow_mut"
+                | "try_borrow_mut"
+                | "get_or_try_init"
+                | "context"
+                | "with_context"
+                | "then_some"
+                | "unwrap_or"
+                | "unwrap_or_else"
+                | "unwrap_or_default"
+                | "map_err"
+                | "inspect_err"
+                | "as_deref_mut"
+                | "err"
+                | "position"
+                | "rposition"
+                | "is_none"
+                | "is_some"
+                | "is_ok"
+                | "is_err"
+                | "is_empty"
+                | "is_some_and"
+                | "is_none_or"
+                | "is_ok_and"
+                | "is_err_and"
+                | "then"
+                | "cmp"
+                | "partial_cmp"
+                | "then_with"
+                | "reverse"
+                | "is_eq"
+                | "is_ne"
+                | "is_lt"
+                | "is_le"
+                | "is_gt"
+                | "is_ge"
+                | "checked_add"
+                | "checked_sub"
+                | "checked_mul"
+                | "checked_div"
+                | "checked_rem"
+                | "saturating_add"
+                | "saturating_sub"
+                | "saturating_mul"
+                | "append"
+                | "truncate"
+                | "create"
+                | "create_new"
+                | "mode"
+                | "custom_flags"
+                | "open"
+                | "metadata"
+                | "symlink_metadata"
+                | "permissions"
+                | "file_stem"
+                | "is_file"
+                | "is_dir"
+                | "is_symlink"
+                | "exists"
+                | "contains"
+                | "contains_key"
+                | "starts_with"
+                | "ends_with"
+                | "is_ascii"
+                | "eq_ignore_ascii_case"
+                | "find_map"
+                | "partition"
+                | "try_fold"
+                | "try_for_each"
+                | "peek"
+                | "peek_mut"
+                | "next_if"
+                | "next_if_eq"
+                | "as_mut_slice"
+                | "windows"
+                | "chunks"
+                | "chunks_exact"
+                | "rchunks"
+                | "split_first"
+                | "split_last"
+                | "take_while"
+                | "skip_while"
+                | "max_by"
+                | "min_by"
+                | "max_by_key"
+                | "min_by_key"
+                | "reduce"
+                | "scan"
+                | "to_vec"
+                | "as_file"
+                | "key"
+                | "insert_entry"
+                | "char_indices"
+                | "into_mut"
+                | "remove_entry"
+        )
 }
 
 fn receiver_matches(receiver: &TypeTarget<'_>, expected: &[&str]) -> bool {
@@ -708,7 +708,10 @@ pub(in crate::linker) fn declared_adapter_result<'a>(
     };
     if matches!(receiver, TypeTarget::Local(_)) {
         if let Symbol::Callable(callable) = resolver.resolve_member(receiver, member, owner, at) {
-            if let Some(synth) = callable.detail_entry(crate::models::details::NodeDetailKey::RUST_SYNTH_RETURN).as_str() {
+            if let Some(synth) = callable
+                .detail_entry(crate::models::details::NodeDetailKey::RUST_SYNTH_RETURN)
+                .as_str()
+            {
                 if let Some(resolved) = synth_return_target(synth, receiver) {
                     return Some(resolved);
                 }
@@ -800,7 +803,8 @@ fn wrap_unwrapped_adapter_override<'a>(
             err: None,
         };
     }
-    let result_override = (member == "output" && receiver_matches(receiver, &["std::process::Command"]))
+    let result_override = (member == "output"
+        && receiver_matches(receiver, &["std::process::Command"]))
         || (matches!(
             member,
             "prepare"
@@ -1006,8 +1010,15 @@ pub(in crate::linker) fn resolve_applied<'a>(
     if owner.language != crate::models::tags::LanguageId::Rust {
         return None;
     }
-    let resolve_item =
-        |item: &TypeExpr| Box::new(resolve_type(owner, item, at, resolver, SemanticLimits::default()));
+    let resolve_item = |item: &TypeExpr| {
+        Box::new(resolve_type(
+            owner,
+            item,
+            at,
+            resolver,
+            SemanticLimits::default(),
+        ))
+    };
     if matches!(
         base,
         "Iterator"
@@ -1053,11 +1064,7 @@ pub(in crate::linker) fn resolve_applied<'a>(
     }
     let is_collection = matches!(
         base,
-        "Vec"
-            | "std::vec::Vec"
-            | "alloc::vec::Vec"
-            | "std.vec.Vec"
-            | "alloc.vec.Vec"
+        "Vec" | "std::vec::Vec" | "alloc::vec::Vec" | "std.vec.Vec" | "alloc.vec.Vec"
     ) || matches!(nominal, Symbol::Type(target) if standard_collection(target));
     if is_collection {
         return single_arg(&|item| TypeTarget::RustCollection { item });
@@ -1107,11 +1114,7 @@ pub(in crate::linker) fn resolve_applied<'a>(
     }
     if matches!(
         base,
-        "Cow"
-            | "std::borrow::Cow"
-            | "alloc::borrow::Cow"
-            | "std.borrow.Cow"
-            | "alloc.borrow.Cow"
+        "Cow" | "std::borrow::Cow" | "alloc::borrow::Cow" | "std.borrow.Cow" | "alloc.borrow.Cow"
     ) && !args.is_empty()
     {
         return Some(TypeTarget::RustDeref {
@@ -1123,7 +1126,9 @@ pub(in crate::linker) fn resolve_applied<'a>(
         return Some(ext);
     }
     match nominal {
-        Symbol::Type(TypeTarget::Local(node)) if node.kind == crate::models::tags::NodeKind::Type => {
+        Symbol::Type(TypeTarget::Local(node))
+            if node.kind == crate::models::tags::NodeKind::Type =>
+        {
             if let Some(alias) = resolver
                 .value_flow(node)
                 .and_then(|facts| facts.alias_type.as_ref())
@@ -1139,7 +1144,8 @@ pub(in crate::linker) fn resolve_applied<'a>(
             None
         }
         Symbol::Type(TypeTarget::Local(node))
-            if owner.language == crate::models::tags::LanguageId::Rust && matches!(node.kind.as_str(), "struct" | "enum") =>
+            if owner.language == crate::models::tags::LanguageId::Rust
+                && matches!(node.kind.as_str(), "struct" | "enum") =>
         {
             Some(TypeTarget::Local(node))
         }
@@ -1182,10 +1188,7 @@ fn generic_external_container(base: &str, nominal: &Symbol<'_>) -> Option<&'stat
     })
 }
 
-fn stdlib_cross_pack_return<'a>(
-    receiver: &TypeTarget<'a>,
-    member: &str,
-) -> Option<TypeTarget<'a>> {
+fn stdlib_cross_pack_return<'a>(receiver: &TypeTarget<'a>, member: &str) -> Option<TypeTarget<'a>> {
     let ext = |module: &str| TypeTarget::External {
         module: module.to_owned(),
         import_line: 0,
@@ -1263,15 +1266,13 @@ fn stdlib_cross_pack_return<'a>(
     ) {
         let is_os = receiver_matches(
             receiver,
-            &[
-                "std::ffi::OsStr",
-                "OsStr",
-                "std::ffi::OsString",
-                "OsString",
-            ],
+            &["std::ffi::OsStr", "OsStr", "std::ffi::OsString", "OsString"],
         );
         return match member {
-            "to_str" => Some(opt(reference(&TypeTarget::Builtin("str".to_owned()), false))),
+            "to_str" => Some(opt(reference(
+                &TypeTarget::Builtin("str".to_owned()),
+                false,
+            ))),
             "to_string_lossy" => Some(TypeTarget::RustDeref {
                 wrapper: "Cow",
                 target: Box::new(TypeTarget::Builtin("str".to_owned())),
@@ -1279,9 +1280,7 @@ fn stdlib_cross_pack_return<'a>(
             "as_os_str" => Some(ext("std::ffi::OsStr")),
             "as_path" if !is_os => Some(ext("std::path::Path")),
             "parent" if !is_os => Some(opt(ext("std::path::Path"))),
-            "file_name" | "file_stem" | "extension" if !is_os => {
-                Some(opt(ext("std::ffi::OsStr")))
-            }
+            "file_name" | "file_stem" | "extension" if !is_os => Some(opt(ext("std::ffi::OsStr"))),
             "cmp" => Some(ext("std::cmp::Ordering")),
             "join" | "to_path_buf" | "with_extension" | "with_file_name" if !is_os => {
                 Some(TypeTarget::Builtin("PathBuf".to_owned()))
@@ -1298,9 +1297,7 @@ fn stdlib_cross_pack_return<'a>(
                 ok: Box::new(ext("std::path::Path")),
                 err: None,
             }),
-            "metadata" | "symlink_metadata" if !is_os => {
-                Some(io_res(ext("std::fs::Metadata")))
-            }
+            "metadata" | "symlink_metadata" if !is_os => Some(io_res(ext("std::fs::Metadata"))),
             "read_dir" if !is_os => Some(io_res(ext("std::fs::ReadDir"))),
             "read_link" if !is_os => Some(io_res(TypeTarget::Builtin("PathBuf".to_owned()))),
             _ => None,
@@ -1372,7 +1369,10 @@ fn stdlib_cross_pack_return<'a>(
             _ => None,
         };
     }
-    if receiver_matches(receiver, &["std::ffi::OsStr", "OsStr", "std::ffi::OsString", "OsString"]) {
+    if receiver_matches(
+        receiver,
+        &["std::ffi::OsStr", "OsStr", "std::ffi::OsString", "OsString"],
+    ) {
         return match member {
             "to_str" => Some(opt(TypeTarget::Builtin("str".to_owned()))),
             "to_string_lossy" => Some(TypeTarget::Builtin("String".to_owned())),
@@ -1449,10 +1449,9 @@ fn standard_wrapper(target: &TypeTarget<'_>) -> Option<RustWrapperKind> {
 
 fn standard_collection(target: &TypeTarget<'_>) -> bool {
     match target {
-        TypeTarget::Builtin(name) => matches!(
-            name.as_str(),
-            "Vec" | "VecDeque" | "HashSet" | "BTreeSet"
-        ),
+        TypeTarget::Builtin(name) => {
+            matches!(name.as_str(), "Vec" | "VecDeque" | "HashSet" | "BTreeSet")
+        }
         TypeTarget::External { module, .. } => {
             matches!(
                 import_path(module).as_ref(),
@@ -1587,10 +1586,14 @@ pub(in crate::linker) fn project_structural<'a>(
 ) -> Option<TypeTarget<'a>> {
     use crate::semantic::types::RustProjection;
     match operation {
-        RustProjection::Vector => Some(TypeTarget::RustCollection { item: Box::new(receiver.clone()) }),
+        RustProjection::Vector => Some(TypeTarget::RustCollection {
+            item: Box::new(receiver.clone()),
+        }),
         RustProjection::Some => Some(opt_wrap(receiver.clone())),
         RustProjection::Ok => Some(TypeTarget::RustWrapper {
-            wrapper: RustWrapperKind::Result, ok: Box::new(receiver.clone()), err: None,
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(receiver.clone()),
+            err: None,
         }),
         RustProjection::ClosureMap | RustProjection::ClosureMapOr => {
             if let TypeTarget::RustTuple(items) = referent(receiver).0 {
@@ -1609,8 +1612,14 @@ pub(in crate::linker) fn project_structural<'a>(
         RustProjection::ClosureRow => {
             if let TypeTarget::External { module, .. } = referent(receiver).0 {
                 let clean = module.replace("::", ".");
-                if matches!(clean.as_str(), "rusqlite.Connection" | "rusqlite.Statement" | "rusqlite.Transaction") {
-                    return Some(TypeTarget::External { module: "rusqlite::Row".to_owned(), import_line: 0 });
+                if matches!(
+                    clean.as_str(),
+                    "rusqlite.Connection" | "rusqlite.Statement" | "rusqlite.Transaction"
+                ) {
+                    return Some(TypeTarget::External {
+                        module: "rusqlite::Row".to_owned(),
+                        import_line: 0,
+                    });
                 }
             }
             Some(TypeTarget::Unknown)
@@ -1622,11 +1631,17 @@ pub(in crate::linker) fn project_structural<'a>(
                     TypeTarget::RustWrapper { ok, .. } => (**ok).clone(),
                     other => other.clone(),
                 }),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
-                _ if receiver_matches(receiver, &["ignore::WalkBuilder"]) => Some(TypeTarget::External {
-                    module: "ignore::DirEntry".to_owned(), import_line: 0,
-                }),
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
+                _ if receiver_matches(receiver, &["ignore::WalkBuilder"]) => {
+                    Some(TypeTarget::External {
+                        module: "ignore::DirEntry".to_owned(),
+                        import_line: 0,
+                    })
+                }
                 _ => None,
             }
         }
@@ -1635,10 +1650,14 @@ pub(in crate::linker) fn project_structural<'a>(
             match target {
                 TypeTarget::RustIterator { item } => Some((**item).clone()),
                 TypeTarget::RustWrapper { ok, .. } => Some((**ok).clone()),
-                TypeTarget::RustCollection { item } | TypeTarget::RustSlice { item }
+                TypeTarget::RustCollection { item }
+                | TypeTarget::RustSlice { item }
                 | TypeTarget::RustTypedContainer { item, .. } => Some(reference(item, false)),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => match project(receiver, "into_iter", resolver) {
                     Some(TypeTarget::RustIterator { item }) => Some(*item),
                     _ => None,
@@ -1646,56 +1665,101 @@ pub(in crate::linker) fn project_structural<'a>(
             }
         }
         RustProjection::LocalKey => match referent(receiver).0 {
-            TypeTarget::RustDeref { wrapper: "LocalKey", target } => match target.as_ref() {
+            TypeTarget::RustDeref {
+                wrapper: "LocalKey",
+                target,
+            } => match target.as_ref() {
                 TypeTarget::RustTuple(items) => items.first().map(|inner| reference(inner, false)),
                 _ => None,
             },
-            TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                project_structural(target, operation, resolver),
+            TypeTarget::RustDeref { wrapper, target }
+                if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+            {
+                project_structural(target, operation, resolver)
+            }
             _ => None,
         },
         RustProjection::ErrorPayload => match referent(receiver).0 {
-            TypeTarget::RustWrapper { err, .. } => Some(err.as_deref().cloned().unwrap_or(TypeTarget::Unknown)),
-            TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                project_structural(target, operation, resolver),
+            TypeTarget::RustWrapper { err, .. } => {
+                Some(err.as_deref().cloned().unwrap_or(TypeTarget::Unknown))
+            }
+            TypeTarget::RustDeref { wrapper, target }
+                if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+            {
+                project_structural(target, operation, resolver)
+            }
             _ => None,
         },
         RustProjection::MapTrim | RustProjection::MapString => {
-            let result = TypeTarget::Builtin(if operation == RustProjection::MapTrim { "str" } else { "String" }.to_owned());
+            let result = TypeTarget::Builtin(
+                if operation == RustProjection::MapTrim {
+                    "str"
+                } else {
+                    "String"
+                }
+                .to_owned(),
+            );
             match referent(receiver).0 {
                 TypeTarget::RustWrapper { wrapper, err, .. } => Some(TypeTarget::RustWrapper {
-                    wrapper: *wrapper, ok: Box::new(result), err: err.clone(),
+                    wrapper: *wrapper,
+                    ok: Box::new(result),
+                    err: err.clone(),
                 }),
                 TypeTarget::RustIterator { .. } => Some(iter_of(result)),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => None,
             }
         }
         RustProjection::UnwrapOrStr | RustProjection::MapOrStr => {
             let (target, borrowed, _) = referent(receiver);
             match target {
-                TypeTarget::RustWrapper { .. } if operation == RustProjection::MapOrStr =>
-                    Some(TypeTarget::Builtin("str".to_owned())),
-                TypeTarget::RustWrapper { ok, .. } if !borrowed => Some(if matches!(ok.as_ref(), TypeTarget::Unknown) {
-                    TypeTarget::Builtin("str".to_owned())
-                } else { (**ok).clone() }),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustWrapper { .. } if operation == RustProjection::MapOrStr => {
+                    Some(TypeTarget::Builtin("str".to_owned()))
+                }
+                TypeTarget::RustWrapper { ok, .. } if !borrowed => {
+                    Some(if matches!(ok.as_ref(), TypeTarget::Unknown) {
+                        TypeTarget::Builtin("str".to_owned())
+                    } else {
+                        (**ok).clone()
+                    })
+                }
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => None,
             }
         }
-        RustProjection::MapAsStr | RustProjection::MapU64 | RustProjection::MapI64 | RustProjection::MapBool | RustProjection::MapPathStr => {
+        RustProjection::MapAsStr
+        | RustProjection::MapU64
+        | RustProjection::MapI64
+        | RustProjection::MapBool
+        | RustProjection::MapPathStr => {
             let name = match operation {
-                RustProjection::MapU64 => "u64", RustProjection::MapI64 => "i64", RustProjection::MapBool => "bool", _ => "str",
+                RustProjection::MapU64 => "u64",
+                RustProjection::MapI64 => "i64",
+                RustProjection::MapBool => "bool",
+                _ => "str",
             };
             let result = TypeTarget::Builtin(name.to_owned());
-            let result = if operation == RustProjection::MapPathStr { reference(&result, false) } else { result };
+            let result = if operation == RustProjection::MapPathStr {
+                reference(&result, false)
+            } else {
+                result
+            };
             match referent(receiver).0 {
                 TypeTarget::RustWrapper { .. } => Some(opt_wrap(result)),
                 TypeTarget::RustIterator { .. } => Some(iter_of(result)),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => None,
             }
         }
@@ -1704,77 +1768,168 @@ pub(in crate::linker) fn project_structural<'a>(
             match target {
                 TypeTarget::RustWrapper { wrapper, ok, err } => Some(TypeTarget::RustWrapper {
                     wrapper: *wrapper,
-                    ok: Box::new(if operation == RustProjection::MapCloned { referent(ok).0.clone() } else { TypeTarget::Builtin("PathBuf".to_owned()) }),
+                    ok: Box::new(if operation == RustProjection::MapCloned {
+                        referent(ok).0.clone()
+                    } else {
+                        TypeTarget::Builtin("PathBuf".to_owned())
+                    }),
                     err: err.clone(),
                 }),
-                TypeTarget::RustIterator { item } => Some(if operation == RustProjection::MapPathBuf {
-                    iter_of(TypeTarget::Builtin("PathBuf".to_owned()))
-                } else if !borrowed || mutable {
-                    iterator_item_by_value(item).map_or(TypeTarget::Unknown, iter_of)
-                } else { TypeTarget::Unknown }),
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustIterator { item } => {
+                    Some(if operation == RustProjection::MapPathBuf {
+                        iter_of(TypeTarget::Builtin("PathBuf".to_owned()))
+                    } else if !borrowed || mutable {
+                        iterator_item_by_value(item).map_or(TypeTarget::Unknown, iter_of)
+                    } else {
+                        TypeTarget::Unknown
+                    })
+                }
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => None,
             }
         }
         RustProjection::FilterMapOk => match referent(receiver).0 {
             TypeTarget::RustIterator { item } => Some(match item.as_ref() {
-                TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, ok, .. } => iter_of((**ok).clone()),
+                TypeTarget::RustWrapper {
+                    wrapper: RustWrapperKind::Result,
+                    ok,
+                    ..
+                } => iter_of((**ok).clone()),
                 _ => TypeTarget::Unknown,
             }),
-            TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                project_structural(target, operation, resolver),
+            TypeTarget::RustDeref { wrapper, target }
+                if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+            {
+                project_structural(target, operation, resolver)
+            }
             _ => None,
         },
         RustProjection::MapArray | RustProjection::MapObject | RustProjection::MapTomlTable => {
             match referent(receiver).0 {
                 TypeTarget::RustWrapper { .. } => {
-                    let json = TypeTarget::External { module: "serde_json::Value".to_owned(), import_line: 0 };
+                    let json = TypeTarget::External {
+                        module: "serde_json::Value".to_owned(),
+                        import_line: 0,
+                    };
                     let inner = match operation {
-                        RustProjection::MapArray => TypeTarget::RustCollection { item: Box::new(json) },
-                        RustProjection::MapTomlTable => TypeTarget::External { module: "toml::Table".to_owned(), import_line: 0 },
-                        _ => TypeTarget::RustDeref { wrapper: "HashMap", target: Box::new(TypeTarget::RustTuple(vec![TypeTarget::Builtin("String".to_owned()), json])) },
+                        RustProjection::MapArray => TypeTarget::RustCollection {
+                            item: Box::new(json),
+                        },
+                        RustProjection::MapTomlTable => TypeTarget::External {
+                            module: "toml::Table".to_owned(),
+                            import_line: 0,
+                        },
+                        _ => TypeTarget::RustDeref {
+                            wrapper: "HashMap",
+                            target: Box::new(TypeTarget::RustTuple(vec![
+                                TypeTarget::Builtin("String".to_owned()),
+                                json,
+                            ])),
+                        },
                     };
                     Some(opt_wrap(reference(&inner, false)))
                 }
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
                 _ => None,
             }
         }
         RustProjection::IdentitySome => {
             let (target, borrowed, _) = referent(receiver);
-            Some(if !borrowed && matches!(target, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, .. }) {
-                target.clone()
-            } else { TypeTarget::Unknown })
+            Some(
+                if !borrowed
+                    && matches!(
+                        target,
+                        TypeTarget::RustWrapper {
+                            wrapper: RustWrapperKind::Option,
+                            ..
+                        }
+                    )
+                {
+                    target.clone()
+                } else {
+                    TypeTarget::Unknown
+                },
+            )
         }
-        RustProjection::Index | RustProjection::ElementIndex | RustProjection::RangeSlice | RustProjection::GetRange => {
+        RustProjection::Index
+        | RustProjection::ElementIndex
+        | RustProjection::RangeSlice
+        | RustProjection::GetRange => {
             let target = referent(receiver).0;
             match target {
-                TypeTarget::RustDeref { wrapper, target } if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
-                    project_structural(target, operation, resolver),
-                TypeTarget::RustDeref { wrapper: "HashMap" | "BTreeMap" | "IndexMap", target }
-                    if matches!(operation, RustProjection::Index | RustProjection::ElementIndex) => match target.as_ref() {
+                TypeTarget::RustDeref { wrapper, target }
+                    if is_deref_smart_pointer(wrapper) || *wrapper == "Range" =>
+                {
+                    project_structural(target, operation, resolver)
+                }
+                TypeTarget::RustDeref {
+                    wrapper: "HashMap" | "BTreeMap" | "IndexMap",
+                    target,
+                } if matches!(
+                    operation,
+                    RustProjection::Index | RustProjection::ElementIndex
+                ) =>
+                {
+                    match target.as_ref() {
                         TypeTarget::RustTuple(pair) => pair.get(1).cloned(),
                         _ => None,
-                    },
-                TypeTarget::RustCollection { item } | TypeTarget::RustSlice { item }
+                    }
+                }
+                TypeTarget::RustCollection { item }
+                | TypeTarget::RustSlice { item }
                 | TypeTarget::RustTypedContainer { item, .. } => match operation {
                     RustProjection::ElementIndex => Some((**item).clone()),
-                    RustProjection::RangeSlice => Some(TypeTarget::RustSlice { item: item.clone() }),
-                    RustProjection::GetRange => Some(opt_wrap(TypeTarget::RustSlice { item: item.clone() })),
+                    RustProjection::RangeSlice => {
+                        Some(TypeTarget::RustSlice { item: item.clone() })
+                    }
+                    RustProjection::GetRange => {
+                        Some(opt_wrap(TypeTarget::RustSlice { item: item.clone() }))
+                    }
                     _ => None,
                 },
-                TypeTarget::Builtin(name) if matches!(operation, RustProjection::RangeSlice | RustProjection::GetRange) && matches!(name.as_str(), "str" | "String") => {
+                TypeTarget::Builtin(name)
+                    if matches!(
+                        operation,
+                        RustProjection::RangeSlice | RustProjection::GetRange
+                    ) && matches!(name.as_str(), "str" | "String") =>
+                {
                     let target = TypeTarget::Builtin("str".to_owned());
-                    Some(if operation == RustProjection::GetRange { opt_wrap(target) } else { target })
-                },
-                TypeTarget::External { module, .. } if matches!(operation, RustProjection::Index | RustProjection::ElementIndex) => {
+                    Some(if operation == RustProjection::GetRange {
+                        opt_wrap(target)
+                    } else {
+                        target
+                    })
+                }
+                TypeTarget::External { module, .. }
+                    if matches!(
+                        operation,
+                        RustProjection::Index | RustProjection::ElementIndex
+                    ) =>
+                {
                     match import_path(module).as_ref() {
-                        "std.collections.HashMap" | "hashbrown.HashMap" | "std.collections.BTreeMap" | "indexmap.IndexMap" => Some(TypeTarget::Unknown),
-                        "serde_json.Map" | "serde_json.map.Map" => Some(TypeTarget::External { module: "serde_json::Value".to_owned(), import_line: 0 }),
-                        "toml.Table" | "toml.map.Map" => Some(TypeTarget::External { module: "toml::Value".to_owned(), import_line: 0 }),
-                        "serde_json.Value" | "serde_yaml.Value" | "toml.Value" => Some(target.clone()),
+                        "std.collections.HashMap"
+                        | "hashbrown.HashMap"
+                        | "std.collections.BTreeMap"
+                        | "indexmap.IndexMap" => Some(TypeTarget::Unknown),
+                        "serde_json.Map" | "serde_json.map.Map" => Some(TypeTarget::External {
+                            module: "serde_json::Value".to_owned(),
+                            import_line: 0,
+                        }),
+                        "toml.Table" | "toml.map.Map" => Some(TypeTarget::External {
+                            module: "toml::Value".to_owned(),
+                            import_line: 0,
+                        }),
+                        "serde_json.Value" | "serde_yaml.Value" | "toml.Value" => {
+                            Some(target.clone())
+                        }
                         _ => None,
                     }
                 }
@@ -1817,9 +1972,9 @@ pub(in crate::linker) fn project<'a>(
         TypeTarget::Builtin(name) if matches!(name.as_str(), "str" | "String") => {
             project_string_member(member)
         }
-        TypeTarget::RustDeref { wrapper, target } => {
-            project_deref_wrapper(wrapper, target, receiver, member, borrowed, mutable, resolver)
-        }
+        TypeTarget::RustDeref { wrapper, target } => project_deref_wrapper(
+            wrapper, target, receiver, member, borrowed, mutable, resolver,
+        ),
         TypeTarget::Builtin(name) if name == "char" => project_char_member(member),
         TypeTarget::Builtin(name) if name == "bool" => match member {
             "then" | "then_some" => Some(opt_wrap(TypeTarget::Unknown)),
@@ -1828,8 +1983,17 @@ pub(in crate::linker) fn project<'a>(
         TypeTarget::Builtin(name)
             if matches!(
                 name.as_str(),
-                "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                    | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                "u8" | "u16"
+                    | "u32"
+                    | "u64"
+                    | "u128"
+                    | "usize"
+                    | "i8"
+                    | "i16"
+                    | "i32"
+                    | "i64"
+                    | "i128"
+                    | "isize"
             ) =>
         {
             match member {
@@ -1862,11 +2026,9 @@ pub(in crate::linker) fn project<'a>(
         TypeTarget::RustWrapper { .. } => Some(project_wrapper_member(
             receiver, member, borrowed, mutable, resolver,
         )),
-        TypeTarget::RustIterator { item } => {
-            Some(project_iterator_member(
-                receiver, item, member, borrowed, mutable,
-            ))
-        }
+        TypeTarget::RustIterator { item } => Some(project_iterator_member(
+            receiver, item, member, borrowed, mutable,
+        )),
         TypeTarget::RustTypedContainer { base, item } => match (*base, member) {
             ("VecDeque", "pop_front" | "pop_back") | ("HashSet" | "BTreeSet", "take") => {
                 Some(opt_wrap((**item).clone()))
@@ -1895,7 +2057,11 @@ fn project_string_member<'a>(member: &str) -> Option<TypeTarget<'a>> {
     match member {
         _ if is_str_slice_method(member) => Some(TypeTarget::Builtin("str".to_owned())),
         "as_str" | "as_ref" => Some(TypeTarget::Builtin("str".to_owned())),
-        "is_empty" | "contains" | "starts_with" | "ends_with" | "is_ascii"
+        "is_empty"
+        | "contains"
+        | "starts_with"
+        | "ends_with"
+        | "is_ascii"
         | "eq_ignore_ascii_case" => Some(TypeTarget::Builtin("bool".to_owned())),
         "to_owned" | "to_string" | "replace" | "replacen" | "to_lowercase" | "to_uppercase"
         | "repeat" | "into" => Some(TypeTarget::Builtin("String".to_owned())),
@@ -1933,10 +2099,21 @@ fn project_char_member<'a>(member: &str) -> Option<TypeTarget<'a>> {
             Some(iter_of(TypeTarget::Builtin("char".to_owned())))
         }
         "to_digit" => Some(opt_wrap(TypeTarget::Builtin("u32".to_owned()))),
-        "is_control" | "is_graphic" | "is_digit" | "is_whitespace" | "is_alphanumeric"
-        | "is_alphabetic" | "is_numeric" | "is_ascii" | "is_ascii_digit"
-        | "is_ascii_alphabetic" | "is_ascii_alphanumeric" | "is_ascii_whitespace"
-        | "is_ascii_hexdigit" | "is_ascii_punctuation" | "is_ascii_graphic"
+        "is_control"
+        | "is_graphic"
+        | "is_digit"
+        | "is_whitespace"
+        | "is_alphanumeric"
+        | "is_alphabetic"
+        | "is_numeric"
+        | "is_ascii"
+        | "is_ascii_digit"
+        | "is_ascii_alphabetic"
+        | "is_ascii_alphanumeric"
+        | "is_ascii_whitespace"
+        | "is_ascii_hexdigit"
+        | "is_ascii_punctuation"
+        | "is_ascii_graphic"
         | "is_ascii_control" => Some(TypeTarget::Builtin("bool".to_owned())),
         "to_string" => Some(TypeTarget::Builtin("String".to_owned())),
         _ => None,
@@ -1977,7 +2154,9 @@ fn project_external_member<'a>(
         } else {
             TypeTarget::RustTuple(vec![TypeTarget::Unknown, TypeTarget::Unknown])
         };
-        return project_deref_wrapper(wrapper, &pair, receiver, member, borrowed, mutable, resolver);
+        return project_deref_wrapper(
+            wrapper, &pair, receiver, member, borrowed, mutable, resolver,
+        );
     }
     if matches!(
         ext_path.as_ref(),
@@ -2160,7 +2339,9 @@ fn project_wrapper_member<'a>(
         "as_ref" => TypeTarget::RustWrapper {
             wrapper,
             ok: Box::new(reference(ok, false)),
-            err: err.as_deref().map(|error| Box::new(reference(error, false))),
+            err: err
+                .as_deref()
+                .map(|error| Box::new(reference(error, false))),
         },
         "as_mut" if !borrowed || mutable => TypeTarget::RustWrapper {
             wrapper,
@@ -2171,14 +2352,18 @@ fn project_wrapper_member<'a>(
             TypeTarget::RustWrapper {
                 wrapper,
                 ok: Box::new(reference(&target, false)),
-                err: err.as_deref().map(|error| Box::new(reference(error, false))),
+                err: err
+                    .as_deref()
+                    .map(|error| Box::new(reference(error, false))),
             }
         }),
         "as_deref_mut" if !borrowed || mutable => {
-            deref_target(ok, resolver).map_or(TypeTarget::Unknown, |target| TypeTarget::RustWrapper {
-                wrapper,
-                ok: Box::new(reference(&target, true)),
-                err: err.as_deref().map(|error| Box::new(reference(error, true))),
+            deref_target(ok, resolver).map_or(TypeTarget::Unknown, |target| {
+                TypeTarget::RustWrapper {
+                    wrapper,
+                    ok: Box::new(reference(&target, true)),
+                    err: err.as_deref().map(|error| Box::new(reference(error, true))),
+                }
             })
         }
         "cloned" | "copied" if !borrowed || wrapper == RustWrapperKind::Option => {
@@ -2196,7 +2381,11 @@ fn project_wrapper_member<'a>(
         "is_some" | "is_none" | "is_ok" | "is_err" | "is_some_and" | "is_none_or" | "is_ok_and"
         | "is_err_and" => TypeTarget::Builtin("bool".to_owned()),
         "iter" => iter_of(reference(ok, false)),
-        "into_iter" => iter_of(if borrowed { reference(ok, mutable) } else { ok.clone() }),
+        "into_iter" => iter_of(if borrowed {
+            reference(ok, mutable)
+        } else {
+            ok.clone()
+        }),
         _ => TypeTarget::Unknown,
     }
 }
@@ -2209,8 +2398,8 @@ fn project_iterator_member<'a>(
     mutable: bool,
 ) -> TypeTarget<'a> {
     match member {
-        "next" | "find" | "peek" | "peek_mut" | "max_by" | "min_by" | "max_by_key" | "min_by_key"
-        | "reduce"
+        "next" | "find" | "peek" | "peek_mut" | "max_by" | "min_by" | "max_by_key"
+        | "min_by_key" | "reduce"
             if !borrowed || mutable =>
         {
             opt_wrap(item.clone())
@@ -2233,7 +2422,10 @@ fn project_iterator_member<'a>(
             },
         ]),
         "chain" => iter_of(item.clone()),
-        "zip" => iter_of(TypeTarget::RustTuple(vec![item.clone(), TypeTarget::Unknown])),
+        "zip" => iter_of(TypeTarget::RustTuple(vec![
+            item.clone(),
+            TypeTarget::Unknown,
+        ])),
         "flatten" => match referent(item).0 {
             TypeTarget::RustWrapper {
                 wrapper: RustWrapperKind::Option | RustWrapperKind::Result,
@@ -2258,7 +2450,10 @@ fn project_iterator_member<'a>(
     }
 }
 
-fn project_closure_tuple<'a>(items: &[TypeTarget<'a>], operation: crate::semantic::types::RustProjection) -> Option<TypeTarget<'a>> {
+fn project_closure_tuple<'a>(
+    items: &[TypeTarget<'a>],
+    operation: crate::semantic::types::RustProjection,
+) -> Option<TypeTarget<'a>> {
     use crate::semantic::types::RustProjection;
     let mut recv = referent(items.first()?).0;
     while let TypeTarget::RustDeref {
@@ -2383,18 +2578,12 @@ fn project_deref_wrapper<'a>(
                 TypeTarget::Builtin(name) if name == "str" => {
                     TypeTarget::Builtin("String".to_owned())
                 }
-                TypeTarget::RustSlice { item } => {
-                    TypeTarget::RustCollection { item: item.clone() }
-                }
+                TypeTarget::RustSlice { item } => TypeTarget::RustCollection { item: item.clone() },
                 other => other.clone(),
             }),
-            "to_mut" if wrapper == "Cow" && (!borrowed || mutable) => {
-                Some(reference(target, true))
-            }
+            "to_mut" if wrapper == "Cow" && (!borrowed || mutable) => Some(reference(target, true)),
             "as_ref" => Some(reference(target, false)),
-            "as_mut" if wrapper == "Box" && (!borrowed || mutable) => {
-                Some(reference(target, true))
-            }
+            "as_mut" if wrapper == "Box" && (!borrowed || mutable) => Some(reference(target, true)),
             _ => project(target, member, resolver),
         };
     }
@@ -2419,9 +2608,7 @@ fn project_deref_wrapper<'a>(
                     reference(k, false),
                     reference(v, false),
                 ]))),
-                "insert" | "remove" | "swap_remove" | "shift_remove"
-                    if !borrowed || mutable =>
-                {
+                "insert" | "remove" | "swap_remove" | "shift_remove" if !borrowed || mutable => {
                     Some(opt(v.clone()))
                 }
                 "iter" | "par_iter" => Some(TypeTarget::RustIterator {
@@ -2440,14 +2627,13 @@ fn project_deref_wrapper<'a>(
                 }
                 "into_iter" => {
                     let item = if borrowed {
-                        TypeTarget::RustTuple(vec![
-                            reference(k, false),
-                            reference(v, mutable),
-                        ])
+                        TypeTarget::RustTuple(vec![reference(k, false), reference(v, mutable)])
                     } else {
                         TypeTarget::RustTuple(vec![k.clone(), v.clone()])
                     };
-                    Some(TypeTarget::RustIterator { item: Box::new(item) })
+                    Some(TypeTarget::RustIterator {
+                        item: Box::new(item),
+                    })
                 }
                 "keys" => Some(TypeTarget::RustIterator {
                     item: Box::new(reference(k, false)),
@@ -2477,11 +2663,7 @@ fn project_deref_wrapper<'a>(
             };
             let v = items.first()?;
             match member {
-                "or_insert"
-                | "or_insert_with"
-                | "or_insert_with_key"
-                | "or_default"
-                | "insert"
+                "or_insert" | "or_insert_with" | "or_insert_with_key" | "or_default" | "insert"
                 | "insert_entry" => Some(reference(v, true)),
                 "key" => items.get(1).map(|k| reference(k, false)),
                 "get" => Some(reference(v, false)),
@@ -2575,36 +2757,76 @@ pub(in crate::linker) fn local_class<'a>(mut target: &TypeTarget<'a>) -> Option<
     }
 }
 
-pub(in crate::linker) fn callback_receiver<'a>(mut receiver: &TypeTarget<'a>, method: &str) -> Option<TypeTarget<'a>> {
+pub(in crate::linker) fn callback_receiver<'a>(
+    mut receiver: &TypeTarget<'a>,
+    method: &str,
+) -> Option<TypeTarget<'a>> {
     while matches!(receiver, TypeTarget::RustReference { .. })
         || matches!(receiver, TypeTarget::RustDeref { wrapper, .. } if *wrapper != "LocalKey")
     {
         match receiver {
-            TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => receiver = target,
+            TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => {
+                receiver = target
+            }
             _ => break,
         }
     }
     match receiver {
-        TypeTarget::RustDeref { wrapper: "LocalKey", target } if matches!(method, "with" | "try_with") => {
-            Some(match target.as_ref() {
-                TypeTarget::RustTuple(items) => items.first().map_or(TypeTarget::Unknown, |inner| TypeTarget::RustReference {
-                    mutable: false, target: Box::new(inner.clone()),
-                }),
-                _ => TypeTarget::Unknown,
+        TypeTarget::RustDeref {
+            wrapper: "LocalKey",
+            target,
+        } if matches!(method, "with" | "try_with") => Some(match target.as_ref() {
+            TypeTarget::RustTuple(items) => {
+                items
+                    .first()
+                    .map_or(TypeTarget::Unknown, |inner| TypeTarget::RustReference {
+                        mutable: false,
+                        target: Box::new(inner.clone()),
+                    })
+            }
+            _ => TypeTarget::Unknown,
+        }),
+        TypeTarget::Promise(inner) if matches!(method, "then" | "finally") => {
+            Some(if method == "then" {
+                (**inner).clone()
+            } else {
+                TypeTarget::Unknown
             })
         }
-        TypeTarget::Promise(inner) if matches!(method, "then" | "finally") => {
-            Some(if method == "then" { (**inner).clone() } else { TypeTarget::Unknown })
-        }
         TypeTarget::Collection { item, .. }
-            if crate::linker::value_flow::collection_callback(method) => Some((**item).clone()),
-        TypeTarget::RustIterator { item } | TypeTarget::RustCollection { item } | TypeTarget::RustSlice { item }
+            if crate::linker::value_flow::collection_callback(method) =>
+        {
+            Some((**item).clone())
+        }
+        TypeTarget::RustIterator { item }
+        | TypeTarget::RustCollection { item }
+        | TypeTarget::RustSlice { item }
         | TypeTarget::RustTypedContainer { item, .. }
-            if crate::linker::value_flow::collection_callback(method) => Some((**item).clone()),
+            if crate::linker::value_flow::collection_callback(method) =>
+        {
+            Some((**item).clone())
+        }
         TypeTarget::RustWrapper { ok, .. }
-            if matches!(method, "map" | "and_then" | "inspect" | "filter" | "is_some_and" | "is_none_or" | "ok_or_else" | "map_or" | "map_or_else") => Some((**ok).clone()),
+            if matches!(
+                method,
+                "map"
+                    | "and_then"
+                    | "inspect"
+                    | "filter"
+                    | "is_some_and"
+                    | "is_none_or"
+                    | "ok_or_else"
+                    | "map_or"
+                    | "map_or_else"
+            ) =>
+        {
+            Some((**ok).clone())
+        }
         TypeTarget::RustWrapper { err: Some(err), .. }
-            if matches!(method, "map_err" | "or_else" | "inspect_err") => Some((**err).clone()),
+            if matches!(method, "map_err" | "or_else" | "inspect_err") =>
+        {
+            Some((**err).clone())
+        }
         _ => None,
     }
 }
@@ -2623,89 +2845,193 @@ pub(in crate::linker) fn evaluate_language_value<'a>(
 
     let (value, member, operation) = match expression {
         ValueExpr::RustClosure => return Some(TypeTarget::RustClosure),
-        ValueExpr::RustField { value, member } => (value.as_ref(), member.as_str(), Projection::Field(member.clone())),
+        ValueExpr::RustField { value, member } => (
+            value.as_ref(),
+            member.as_str(),
+            Projection::Field(member.clone()),
+        ),
         ValueExpr::RustProject { value, operation } => {
             let projection = match operation {
                 RustProjection::GenericCall => Projection::GenericCall,
                 RustProjection::Array => Projection::Array,
                 RustProjection::Tuple => Projection::Tuple,
                 RustProjection::BranchJoin => Projection::BranchJoin,
-                RustProjection::Reference { mutable } => Projection::Reference { mutable: *mutable },
+                RustProjection::Reference { mutable } => {
+                    Projection::Reference { mutable: *mutable }
+                }
                 special => {
-                    if !linker.structural_operation_admitted(eval.owner, *special, eval.at, eval.resolver) {
+                    if !linker.structural_operation_admitted(
+                        eval.owner,
+                        *special,
+                        eval.at,
+                        eval.resolver,
+                    ) {
                         return Some(TypeTarget::Unknown);
                     }
-                    return Some(linker.structural_value(&evaluate(value), *special, eval.resolver).unwrap_or(TypeTarget::Unknown));
+                    return Some(
+                        linker
+                            .structural_value(&evaluate(value), *special, eval.resolver)
+                            .unwrap_or(TypeTarget::Unknown),
+                    );
                 }
             };
             (value.as_ref(), "", projection)
         }
-        ValueExpr::Project { value, member } => (value.as_ref(), member.as_str(), linker.value_projection(member)?),
+        ValueExpr::Project { value, member } => (
+            value.as_ref(),
+            member.as_str(),
+            linker.value_projection(member)?,
+        ),
         _ => return None,
     };
     if matches!(operation, Projection::GenericCall) {
-        let ValueExpr::BranchJoin { alternatives } = value else { return Some(TypeTarget::Unknown); };
-        let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] = alternatives.as_slice() else {
+        let ValueExpr::BranchJoin { alternatives } = value else {
             return Some(TypeTarget::Unknown);
         };
-        return Some(linker.deserialize_value(eval.owner, callee, type_expr, eval.at, eval.resolver, limits)
-            .unwrap_or_else(|| evaluate(call)));
+        let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] =
+            alternatives.as_slice()
+        else {
+            return Some(TypeTarget::Unknown);
+        };
+        return Some(
+            linker
+                .deserialize_value(
+                    eval.owner,
+                    callee,
+                    type_expr,
+                    eval.at,
+                    eval.resolver,
+                    limits,
+                )
+                .unwrap_or_else(|| evaluate(call)),
+        );
     }
-    if matches!(operation, Projection::Array | Projection::Tuple | Projection::BranchJoin) {
-        let ValueExpr::BranchJoin { alternatives } = value else { return Some(TypeTarget::Unknown); };
+    if matches!(
+        operation,
+        Projection::Array | Projection::Tuple | Projection::BranchJoin
+    ) {
+        let ValueExpr::BranchJoin { alternatives } = value else {
+            return Some(TypeTarget::Unknown);
+        };
         if matches!(operation, Projection::Tuple) {
-            return Some(TypeTarget::RustTuple(alternatives.iter().map(evaluate).collect()));
+            return Some(TypeTarget::RustTuple(
+                alternatives.iter().map(evaluate).collect(),
+            ));
         }
         if matches!(operation, Projection::BranchJoin) {
             return Some(join(alternatives.iter().map(evaluate).collect()));
         }
         let mut items = alternatives.iter().map(evaluate);
         let item = items.next().unwrap_or(TypeTarget::Unknown);
-        let item = if items.all(|other| crate::linker::value_flow::types::same_target(&item, &other)) { item } else { TypeTarget::Unknown };
-        return Some(TypeTarget::RustCollection { item: Box::new(item) });
+        let item =
+            if items.all(|other| crate::linker::value_flow::types::same_target(&item, &other)) {
+                item
+            } else {
+                TypeTarget::Unknown
+            };
+        return Some(TypeTarget::RustCollection {
+            item: Box::new(item),
+        });
     }
     if let Projection::Reference { mutable } = operation {
-        return Some(TypeTarget::RustReference { target: Box::new(evaluate(value)), mutable });
+        return Some(TypeTarget::RustReference {
+            target: Box::new(evaluate(value)),
+            mutable,
+        });
     }
     if let Projection::Field(field) = operation {
         let source = if matches!(value, ValueExpr::Alias { name } if name == "self")
             && linker.lexical_receiver_field(eval.owner, "self")
         {
-            crate::linker::value_flow::types::symbol_type(
-                eval.resolver.resolve_symbol(eval.owner, "Self", eval.at, crate::linker::value_flow::SymbolRole::Type),
-            )
-        } else { evaluate(value) };
+            crate::linker::value_flow::types::symbol_type(eval.resolver.resolve_symbol(
+                eval.owner,
+                "Self",
+                eval.at,
+                crate::linker::value_flow::SymbolRole::Type,
+            ))
+        } else {
+            evaluate(value)
+        };
         if let TypeTarget::RustTuple(items) = linker.unwrap_reference(&source) {
-            return Some(field.parse::<usize>().ok().and_then(|index| items.get(index)).cloned().unwrap_or(TypeTarget::Unknown));
+            return Some(
+                field
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| items.get(index))
+                    .cloned()
+                    .unwrap_or(TypeTarget::Unknown),
+            );
         }
-        return Some(linker.local_receiver_class(&source)
-            .and_then(|class| eval.index.field_type_tracked(class, &field, eval.trace))
-            .cloned()
-            .or_else(|| if matches!(&source, TypeTarget::External { .. } | TypeTarget::Builtin(_)) {
-                eval.resolver.resolve_member_result(&source, &field, eval.owner, eval.at)
-            } else { None })
-            .unwrap_or(TypeTarget::Unknown));
+        return Some(
+            linker
+                .local_receiver_class(&source)
+                .and_then(|class| eval.index.field_type_tracked(class, &field, eval.trace))
+                .cloned()
+                .or_else(|| {
+                    if matches!(
+                        &source,
+                        TypeTarget::External { .. } | TypeTarget::Builtin(_)
+                    ) {
+                        eval.resolver
+                            .resolve_member_result(&source, &field, eval.owner, eval.at)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(TypeTarget::Unknown),
+        );
     }
-    if !matches!(operation, Projection::Adapter) { return None; }
+    if !matches!(operation, Projection::Adapter) {
+        return None;
+    }
     let receiver = evaluate(value);
-    let should_payload = || matches!(member, "?" | "unwrap" | "expect")
-        && (matches!(&receiver, TypeTarget::Unknown)
-            || matches!(&receiver, TypeTarget::Builtin(name) if name == "Option" || name == "Result"));
+    let should_payload = || {
+        matches!(member, "?" | "unwrap" | "expect")
+            && (matches!(&receiver, TypeTarget::Unknown)
+                || matches!(&receiver, TypeTarget::Builtin(name) if name == "Option" || name == "Result"))
+    };
     if let Some(projected) = linker.adapter_value(&receiver, member, eval.resolver) {
-        return Some(if !matches!(projected, TypeTarget::Unknown) { projected }
-            else if should_payload() { payload(value) } else { TypeTarget::Unknown });
+        return Some(if !matches!(projected, TypeTarget::Unknown) {
+            projected
+        } else if should_payload() {
+            payload(value)
+        } else {
+            TypeTarget::Unknown
+        });
     }
     if member != "?" {
-        if let Symbol::Callable(callable) = eval.resolver.resolve_member(&receiver, member, eval.owner, eval.at) {
-            if let Some(trace) = eval.trace { trace.returned(callable.id.as_str()); }
-            if let Some(result) = eval.index.return_type_tracked(callable, None).filter(|target| !matches!(target, TypeTarget::Unknown)) {
+        if let Symbol::Callable(callable) = eval
+            .resolver
+            .resolve_member(&receiver, member, eval.owner, eval.at)
+        {
+            if let Some(trace) = eval.trace {
+                trace.returned(callable.id.as_str());
+            }
+            if let Some(result) = eval
+                .index
+                .return_type_tracked(callable, None)
+                .filter(|target| !matches!(target, TypeTarget::Unknown))
+            {
                 return Some(result.clone());
             }
-            return Some(linker.member_call_result(&receiver, member, eval.owner, eval.at, eval.resolver).unwrap_or(TypeTarget::Unknown));
+            return Some(
+                linker
+                    .member_call_result(&receiver, member, eval.owner, eval.at, eval.resolver)
+                    .unwrap_or(TypeTarget::Unknown),
+            );
         }
     }
-    Some(linker.member_call_result(&receiver, member, eval.owner, eval.at, eval.resolver)
-        .unwrap_or_else(|| if should_payload() { payload(value) } else { TypeTarget::Unknown }))
+    Some(
+        linker
+            .member_call_result(&receiver, member, eval.owner, eval.at, eval.resolver)
+            .unwrap_or_else(|| {
+                if should_payload() {
+                    payload(value)
+                } else {
+                    TypeTarget::Unknown
+                }
+            }),
+    )
 }
 
 pub(in crate::linker) fn join_targets<'a>(
@@ -2714,27 +3040,63 @@ pub(in crate::linker) fn join_targets<'a>(
 ) -> Option<TypeTarget<'a>> {
     use crate::linker::value_flow::RustWrapperKind;
     if let TypeTarget::RustTuple(first) = targets.first()? {
-        if targets.iter().all(|target| matches!(target, TypeTarget::RustTuple(items) if items.len() == first.len())) {
-            let joined = (0..first.len()).map(|index| {
-                join(targets.iter().filter_map(|target| match target {
-                    TypeTarget::RustTuple(items) => Some(items[index].clone()),
-                    _ => None,
-                }).collect())
-            }).collect();
+        if targets.iter().all(
+            |target| matches!(target, TypeTarget::RustTuple(items) if items.len() == first.len()),
+        ) {
+            let joined = (0..first.len())
+                .map(|index| {
+                    join(
+                        targets
+                            .iter()
+                            .filter_map(|target| match target {
+                                TypeTarget::RustTuple(items) => Some(items[index].clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
             return Some(TypeTarget::RustTuple(joined));
         }
     }
-    let is_option = |target: &TypeTarget<'a>| matches!(target, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, .. });
-    if targets.iter().any(is_option) && targets.iter().all(|target| {
-        is_option(target) || matches!(target, TypeTarget::Unknown) || matches!(target, TypeTarget::Builtin(name) if name == "Option")
-    }) {
-        let payloads = targets.iter().filter_map(|target| match target {
-            TypeTarget::RustWrapper { ok, .. } => Some((**ok).clone()),
-            _ => None,
-        }).collect();
-        return Some(TypeTarget::RustWrapper { wrapper: RustWrapperKind::Option, ok: Box::new(join(payloads)), err: None });
+    let is_option = |target: &TypeTarget<'a>| {
+        matches!(
+            target,
+            TypeTarget::RustWrapper {
+                wrapper: RustWrapperKind::Option,
+                ..
+            }
+        )
+    };
+    if targets.iter().any(is_option)
+        && targets.iter().all(|target| {
+            is_option(target)
+                || matches!(target, TypeTarget::Unknown)
+                || matches!(target, TypeTarget::Builtin(name) if name == "Option")
+        })
+    {
+        let payloads = targets
+            .iter()
+            .filter_map(|target| match target {
+                TypeTarget::RustWrapper { ok, .. } => Some((**ok).clone()),
+                _ => None,
+            })
+            .collect();
+        return Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Option,
+            ok: Box::new(join(payloads)),
+            err: None,
+        });
     }
-    if targets.iter().all(|target| matches!(target, TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, .. })) {
+    if targets.iter().all(|target| {
+        matches!(
+            target,
+            TypeTarget::RustWrapper {
+                wrapper: RustWrapperKind::Result,
+                ..
+            }
+        )
+    }) {
         let mut oks = Vec::with_capacity(targets.len());
         let mut errs = Vec::with_capacity(targets.len());
         for target in targets {
@@ -2744,7 +3106,11 @@ pub(in crate::linker) fn join_targets<'a>(
             }
         }
         let err = (errs.len() == oks.len()).then(|| Box::new(join(errs)));
-        return Some(TypeTarget::RustWrapper { wrapper: RustWrapperKind::Result, ok: Box::new(join(oks)), err });
+        return Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(join(oks)),
+            err,
+        });
     }
     None
 }
@@ -2755,10 +3121,10 @@ pub(in crate::linker) fn project_deref_fields<'a>(
     resolver: &dyn SemanticResolver<'a>,
 ) {
     let mut projected = Vec::new();
-    for owner in owners
-        .iter()
-        .filter(|owner| owner.language == crate::models::tags::LanguageId::Rust && owner.kind == crate::models::tags::NodeKind::Struct)
-    {
+    for owner in owners.iter().filter(|owner| {
+        owner.language == crate::models::tags::LanguageId::Rust
+            && owner.kind == crate::models::tags::NodeKind::Struct
+    }) {
         let mut target = *owner;
         for _ in 0..64 {
             let Some(next) = resolver.deref_target(target) else {
@@ -2781,7 +3147,9 @@ pub(in crate::linker) fn project_deref_fields<'a>(
     }
 }
 
-pub(in crate::linker) fn referent<'target, 'a>(target: &'target TypeTarget<'a>) -> (&'target TypeTarget<'a>, bool, bool) {
+pub(in crate::linker) fn referent<'target, 'a>(
+    target: &'target TypeTarget<'a>,
+) -> (&'target TypeTarget<'a>, bool, bool) {
     let mut referent = target;
     let mut borrowed = false;
     let mut mutable = true;
@@ -2851,7 +3219,9 @@ fn deref_target<'a>(
 }
 
 pub(in crate::linker) fn visible(owner: &Node, candidate: &Node) -> Option<bool> {
-    if candidate.language == crate::models::tags::LanguageId::Rust && candidate.kind == crate::models::tags::NodeKind::Impl {
+    if candidate.language == crate::models::tags::LanguageId::Rust
+        && candidate.kind == crate::models::tags::NodeKind::Impl
+    {
         Some(false)
     } else if owner.language == crate::models::tags::LanguageId::Rust {
         Some(true)

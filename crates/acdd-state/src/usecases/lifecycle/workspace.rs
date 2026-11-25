@@ -137,15 +137,17 @@ pub fn acquire_repo_lock(
     let Some(l) = layout else {
         return Ok(None);
     };
-    acquire_exclusive(&l.repo_lock_path).map(Some).map_err(|err| {
-        StateError::new(
-            ErrorCode::BackendConflict,
-            format!(
-                "failed to acquire repo.lock '{}': {err}",
-                l.repo_lock_path.display()
-            ),
-        )
-    })
+    acquire_exclusive(&l.repo_lock_path)
+        .map(Some)
+        .map_err(|err| {
+            StateError::new(
+                ErrorCode::BackendConflict,
+                format!(
+                    "failed to acquire repo.lock '{}': {err}",
+                    l.repo_lock_path.display()
+                ),
+            )
+        })
 }
 
 pub(in crate::usecases) fn snapshot_worktree_layout(
@@ -202,16 +204,10 @@ fn relativize_db_path(
         .unwrap_or_else(|| default_rel.to_owned())
 }
 
-fn push_run_managed_paths(
-    config: &StateEngineConfig,
-    run: &RunRecord,
-    managed: &mut Vec<String>,
-) {
+fn push_run_managed_paths(config: &StateEngineConfig, run: &RunRecord, managed: &mut Vec<String>) {
     if let Some(ref sp) = run.spec_path {
         managed.push(sp.clone());
-        if let Ok(archive_rel) =
-            compute_archive_relpath(config, run.collection.as_deref(), sp)
-        {
+        if let Ok(archive_rel) = compute_archive_relpath(config, run.collection.as_deref(), sp) {
             managed.push(archive_rel);
         }
     }
@@ -235,7 +231,9 @@ pub fn build_path_policy(
     let mut managed: Vec<String> = extra_managed.to_vec();
     let fast_isolated = current_run.filter(|run| {
         run.isolation == IsolationMode::Worktree
-            && target_canon.as_ref().is_some_and(|target| *target != primary)
+            && target_canon
+                .as_ref()
+                .is_some_and(|target| *target != primary)
     });
     if let Some(run) = fast_isolated {
         push_run_managed_paths(config, run, &mut managed);
@@ -272,8 +270,12 @@ pub fn build_path_policy(
     }
 
     let (state_db_abs, _) = config.resolved_state_db_path();
-    let state_db_rel =
-        relativize_db_path(&state_db_abs, &primary, &config.workspace_root, DEFAULT_STATE_DB);
+    let state_db_rel = relativize_db_path(
+        &state_db_abs,
+        &primary,
+        &config.workspace_root,
+        DEFAULT_STATE_DB,
+    );
 
     let code_db_rel = config
         .code_db_path
@@ -304,8 +306,7 @@ pub fn resolve_source_checkout(
         primary.join(candidate)
     };
     let drift = |msg: String| StateError::new(ErrorCode::ExternalGitDrift, msg);
-    acdd_core::fs::check_git_entry_no_symlinks(&abs_raw)
-        .map_err(|err| drift(err.to_string()))?;
+    acdd_core::fs::check_git_entry_no_symlinks(&abs_raw).map_err(|err| drift(err.to_string()))?;
     let canon = canonicalize_macos_var(&abs_raw);
     if !canon.exists() && explicit && layout.is_some() {
         return Ok(canon);
@@ -346,11 +347,15 @@ pub fn checkout_config(
     let primary_canon = canonicalize_macos_var(primary);
     let mut checkout = config.clone();
     checkout.worktree = source.clone();
-    let apply_adapter = |target: &mut StateEngineConfig, adapter: &Adapter| -> Result<(), StateError> {
+    let apply_adapter = |target: &mut StateEngineConfig,
+                         adapter: &Adapter|
+     -> Result<(), StateError> {
         target.spec_collections = adapter.specs.clone();
         target.profiles_dirs = adapter.profiles_dirs.clone();
         for lw in &adapter.linked_workspaces {
-            target.linked_workspaces.insert(lw.name.clone(), lw.path.clone());
+            target
+                .linked_workspaces
+                .insert(lw.name.clone(), lw.path.clone());
         }
         target.modules = adapter.modules.clone();
         target.response_policy = adapter.response.clone();
@@ -370,7 +375,10 @@ pub fn checkout_config(
         let adapter = load_adapter(&source, None).map_err(|err| {
             StateError::new(
                 ErrorCode::ConfigMigrationRequired,
-                format!("failed to load {ACDD_CONFIG_FILE} from '{}': {err}", source.display()),
+                format!(
+                    "failed to load {ACDD_CONFIG_FILE} from '{}': {err}",
+                    source.display()
+                ),
             )
         })?;
         apply_adapter(&mut checkout, &adapter)?;

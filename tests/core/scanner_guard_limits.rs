@@ -147,7 +147,8 @@ limits:
     fs::create_dir_all(&source).unwrap();
     let mut created_paths = 0;
     for group_start in (0..=acdd_core::config::constants::DEFAULT_MAX_FILES).step_by(100) {
-        let group_end = (group_start + 100).min(acdd_core::config::constants::DEFAULT_MAX_FILES + 1);
+        let group_end =
+            (group_start + 100).min(acdd_core::config::constants::DEFAULT_MAX_FILES + 1);
         let seed = workspace
             .root()
             .join(format!(".file-limit-seed-{group_start}.data"));
@@ -174,7 +175,10 @@ limits:
 
     assert_eq!(acdd_core::config::constants::DEFAULT_MAX_FILES, 100_000);
     assert_eq!(created_paths, 100_001);
-    assert_eq!(created_paths, acdd_core::config::constants::DEFAULT_MAX_FILES + 1);
+    assert_eq!(
+        created_paths,
+        acdd_core::config::constants::DEFAULT_MAX_FILES + 1
+    );
     let canonical = scanner::canonical_root(workspace.root()).unwrap();
     let default_adapter = scanner::load_adapter(&canonical, None).unwrap();
     let error = scanner::scan_with_adapter(&canonical, &default_adapter)

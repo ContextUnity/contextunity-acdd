@@ -95,19 +95,20 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
         assert_eq!(future_err.code, ErrorCode::ProfileSchemaInvalid);
 
         let conn = Connection::open(&db_path).expect("restore v1 version");
-        conn.execute("UPDATE _sqlite_meta SET schema_version = 1 WHERE id = 1", [])
-            .expect("reset schema_version to 1");
+        conn.execute(
+            "UPDATE _sqlite_meta SET schema_version = 1 WHERE id = 1",
+            [],
+        )
+        .expect("reset schema_version to 1");
     }
 
     // 2. Open with SqliteStateBackend -> migrates v1 -> v2, persists and reads spec_id.
     {
-        let backend = SqliteStateBackend::open(&db_path)
-            .expect("open backend migrates v1 -> v2");
+        let backend = SqliteStateBackend::open(&db_path).expect("open backend migrates v1 -> v2");
         assert_eq!(backend.read_meta().expect("meta").schema_version, 2);
         // Reopen is idempotent when schema is already v2.
         drop(backend);
-        let backend = SqliteStateBackend::open(&db_path)
-            .expect("reopen idempotent v2");
+        let backend = SqliteStateBackend::open(&db_path).expect("reopen idempotent v2");
         assert_eq!(backend.read_meta().expect("meta2").schema_version, 2);
 
         backend
@@ -268,31 +269,48 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
         fs::write(
             git_ws.join("docs/plans/archive/AC-101.md"),
             "---\nid: AC-101\ntitle: Other Collection\nstatus: completed\n---\n",
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             git_ws.join("docs/milestones/archive/AC-103.md"),
             "---\nid: AC-999\ntitle: Mismatched Spec ID\nstatus: completed\n---\n",
-        ).unwrap();
-        for args in [
-            vec!["add", "."],
-            vec!["commit", "-m", "seed head"],
-        ] {
+        )
+        .unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-m", "seed head"]] {
             assert!(git_command(&git_ws, &args).unwrap().status.success());
         }
         // Uncommitted working-tree archive must NOT be trusted in a Git repo.
         fs::write(
             git_ws.join("docs/milestones/archive/AC-102.md"),
             "---\nid: AC-102\ntitle: Uncommitted Disk\nstatus: completed\n---\n",
-        ).unwrap();
+        )
+        .unwrap();
         // Branch-only committed archive on `milestone/AC-104` MUST reconcile when `row.branch` matches.
-        assert!(git_command(&git_ws, &["checkout", "-b", "milestone/AC-104"]).unwrap().status.success());
+        assert!(
+            git_command(&git_ws, &["checkout", "-b", "milestone/AC-104"])
+                .unwrap()
+                .status
+                .success()
+        );
         fs::write(
             git_ws.join("docs/milestones/archive/AC-104.md"),
             "---\nid: AC-104\ntitle: Branch Archive\nstatus: completed\n---\n",
-        ).unwrap();
-        assert!(git_command(&git_ws, &["add", "docs/milestones/archive/AC-104.md"]).unwrap().status.success());
-        assert!(git_command(&git_ws, &["commit", "-m", "branch archive"]).unwrap().status.success());
-        assert!(git_command(&git_ws, &["checkout", "-"]).unwrap().status.success());
+        )
+        .unwrap();
+        assert!(
+            git_command(&git_ws, &["add", "docs/milestones/archive/AC-104.md"])
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(git_command(&git_ws, &["commit", "-m", "branch archive"])
+            .unwrap()
+            .status
+            .success());
+        assert!(git_command(&git_ws, &["checkout", "-"])
+            .unwrap()
+            .status
+            .success());
 
         let b_db = git_ws.join(".acdd/state.sqlite");
         let b_bak = git_ws.join(".git/acdd");
@@ -304,16 +322,44 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
             is_custom_db: false,
         };
         let b_backend = SqliteStateBackend::open_with_options(b_opts.clone()).unwrap();
-        let mut r101 = RunHarness::build_sample_graph("run-101", "AC-101", git_ws.to_str().unwrap(), None, &["T1"]).unwrap();
+        let mut r101 = RunHarness::build_sample_graph(
+            "run-101",
+            "AC-101",
+            git_ws.to_str().unwrap(),
+            None,
+            &["T1"],
+        )
+        .unwrap();
         r101.run.spec_path = Some("docs/milestones/AC-101.md".to_owned());
         r101.run.spec_id = Some("AC-101".to_owned());
-        let mut r102 = RunHarness::build_sample_graph("run-102", "AC-102", git_ws.to_str().unwrap(), None, &["T1"]).unwrap();
+        let mut r102 = RunHarness::build_sample_graph(
+            "run-102",
+            "AC-102",
+            git_ws.to_str().unwrap(),
+            None,
+            &["T1"],
+        )
+        .unwrap();
         r102.run.spec_path = Some("docs/milestones/AC-102.md".to_owned());
         r102.run.spec_id = Some("AC-102".to_owned());
-        let mut r103 = RunHarness::build_sample_graph("run-103", "AC-103", git_ws.to_str().unwrap(), None, &["T1"]).unwrap();
+        let mut r103 = RunHarness::build_sample_graph(
+            "run-103",
+            "AC-103",
+            git_ws.to_str().unwrap(),
+            None,
+            &["T1"],
+        )
+        .unwrap();
         r103.run.spec_path = Some("docs/milestones/AC-103.md".to_owned());
         r103.run.spec_id = Some("AC-103".to_owned());
-        let mut r104 = RunHarness::build_sample_graph("run-104", "AC-104", git_ws.to_str().unwrap(), None, &["T1"]).unwrap();
+        let mut r104 = RunHarness::build_sample_graph(
+            "run-104",
+            "AC-104",
+            git_ws.to_str().unwrap(),
+            None,
+            &["T1"],
+        )
+        .unwrap();
         r104.run.spec_path = Some("docs/milestones/AC-104.md".to_owned());
         r104.run.spec_id = Some("AC-104".to_owned());
         r104.run.branch = Some("milestone/AC-104".to_owned());
@@ -327,12 +373,14 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
             depends_on_ref: TaskRef::new("E1").unwrap(),
             satisfied: false,
         });
-        b_backend.exec_tx(|tx| {
-            tx.insert_run_graph(&r101)?;
-            tx.insert_run_graph(&r102)?;
-            tx.insert_run_graph(&r103)?;
-            tx.insert_run_graph(&r104)
-        }).unwrap();
+        b_backend
+            .exec_tx(|tx| {
+                tx.insert_run_graph(&r101)?;
+                tx.insert_run_graph(&r102)?;
+                tx.insert_run_graph(&r103)?;
+                tx.insert_run_graph(&r104)
+            })
+            .unwrap();
 
         let sync_plan = SyncPlan {
             transition: TransitionPlan {
@@ -363,11 +411,18 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
             seq_order_updates: vec![("task:T1".to_owned(), 9)],
             spec_digest: "synced-digest".to_owned(),
         };
-        b_backend.exec_tx(|tx| tx.apply_sync_plan(&r101.run.run_id, &sync_plan, None)).unwrap();
+        b_backend
+            .exec_tx(|tx| tx.apply_sync_plan(&r101.run.run_id, &sync_plan, None))
+            .unwrap();
         let r101_after = b_backend.load_run_graph(&r101.run.run_id).unwrap().unwrap();
         assert!(r101_after.dependencies.is_empty());
         assert_eq!(
-            r101_after.nodes.iter().find(|n| n.node_id == "task:T1").unwrap().seq_order,
+            r101_after
+                .nodes
+                .iter()
+                .find(|n| n.node_id == "task:T1")
+                .unwrap()
+                .seq_order,
             9
         );
 
@@ -392,17 +447,17 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
                 }
                 rusqlite::hooks::Authorization::Allow
             }));
-            let snap_during_delete = load_run_graph_with_version(
-                &ro_conn,
-                &RunId::new("run-101").unwrap(),
-                sv,
-            )
-            .unwrap()
-            .expect("snapshot should remain atomic across interleaved DELETE");
+            let snap_during_delete =
+                load_run_graph_with_version(&ro_conn, &RunId::new("run-101").unwrap(), sv)
+                    .unwrap()
+                    .expect("snapshot should remain atomic across interleaved DELETE");
             assert!(deleted.load(std::sync::atomic::Ordering::SeqCst));
             assert!(!snap_during_delete.nodes.is_empty());
             assert!(ro_conn.is_autocommit(), "read tx must roll back on exit");
-            assert!(b_backend.load_run_graph(&r101.run.run_id).unwrap().is_none());
+            assert!(b_backend
+                .load_run_graph(&r101.run.run_id)
+                .unwrap()
+                .is_none());
             // Re-insert r101 cleanly for restore test below.
             b_backend.exec_tx(|tx| tx.insert_run_graph(&r101)).unwrap();
         }
@@ -414,11 +469,26 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
         let _ = fs::remove_file(git_ws.join(".acdd/state.sqlite-wal"));
         let _ = fs::remove_file(git_ws.join(".acdd/state.sqlite-shm"));
         let b_restored = RunHarness::open_sqlite_with_archive_reconciler(b_opts).unwrap();
-        assert!(b_restored.load_run_graph(&RunId::new("run-101").unwrap()).unwrap().is_some());
-        assert!(b_restored.load_run_graph(&RunId::new("run-102").unwrap()).unwrap().is_some());
-        assert!(b_restored.load_run_graph(&RunId::new("run-103").unwrap()).unwrap().is_some());
-        assert!(b_restored.load_run_graph(&RunId::new("run-104").unwrap()).unwrap().is_none());
-        let tomb_104 = b_restored.load_tombstone(&RunId::new("run-104").unwrap()).unwrap().unwrap();
+        assert!(b_restored
+            .load_run_graph(&RunId::new("run-101").unwrap())
+            .unwrap()
+            .is_some());
+        assert!(b_restored
+            .load_run_graph(&RunId::new("run-102").unwrap())
+            .unwrap()
+            .is_some());
+        assert!(b_restored
+            .load_run_graph(&RunId::new("run-103").unwrap())
+            .unwrap()
+            .is_some());
+        assert!(b_restored
+            .load_run_graph(&RunId::new("run-104").unwrap())
+            .unwrap()
+            .is_none());
+        let tomb_104 = b_restored
+            .load_tombstone(&RunId::new("run-104").unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(tomb_104.terminal_status, TerminalStatus::Completed);
         assert!(tomb_104.closed_commit.is_some());
     }

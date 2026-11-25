@@ -6,12 +6,12 @@ mod search;
 mod test_discovery;
 mod types;
 
+#[cfg(test)]
+pub(crate) use inspect::snippet_paged;
 pub use inspect::{
     attach_inspect_document_contents, explain_with_path_options, inspect_with_path_options,
     snippet_paged_with_response_budget,
 };
-#[cfg(test)]
-pub(crate) use inspect::snippet_paged;
 pub(crate) use inspect::{explain_paged_response, inspect_paged_response};
 pub use search::{search_results_with_navigation, search_with_options};
 pub use test_discovery::tests_paged_with_path;
@@ -25,7 +25,9 @@ mod tests {
         reader::{self, ExplainDirection},
         schema::initialize_code_map_schema,
     };
-    use acdd_core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions};
+    use acdd_core::response::{
+        CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions,
+    };
     use rusqlite::Connection;
     use std::path::Path;
 
@@ -75,8 +77,8 @@ mod tests {
             None,
         )
         .unwrap();
-        let source = SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0)
-            .unwrap();
+        let source =
+            SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
 
         let explained = explain_with_path_options(
             &conn,
@@ -126,8 +128,17 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         initialize_code_map_schema(&conn).unwrap();
         write_metadata(&conn, MetadataKey::OutputRoot, "gen1").unwrap();
-        write_metadata(&conn, MetadataKey::WorkspaceRoot, &root.canonicalize().unwrap().to_string_lossy()).unwrap();
-        conn.execute("INSERT INTO path_dictionary(path_id, path) VALUES (1, 'code.py')", []).unwrap();
+        write_metadata(
+            &conn,
+            MetadataKey::WorkspaceRoot,
+            &root.canonicalize().unwrap().to_string_lossy(),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO path_dictionary(path_id, path) VALUES (1, 'code.py')",
+            [],
+        )
+        .unwrap();
         let digest = acdd_index_digest(&code);
         conn.execute(
             "INSERT INTO files(path, status, digest, size, language, is_test, generated, path_hash) VALUES ('code.py', 'indexed', ?1, 0, 'python', 0, 0, ?2)",
@@ -140,19 +151,27 @@ mod tests {
             [h],
         ).unwrap();
         let policy = ResponsePolicy::default();
-        let opts = QueryOptions::resolve(&policy, Some(30), 0, Some(Detail::Compact), None).unwrap();
+        let opts =
+            QueryOptions::resolve(&policy, Some(30), 0, Some(Detail::Compact), None).unwrap();
         let source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), 0).unwrap();
         let first = snippet_paged(&conn, root, "target", &source, &opts).unwrap();
-        let offset = first["source_preview"]["next_source_offset"].as_u64().unwrap() as usize;
+        let offset = first["source_preview"]["next_source_offset"]
+            .as_u64()
+            .unwrap() as usize;
         assert_eq!(offset, 35);
-        let next_source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
+        let next_source =
+            SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
         assert!(snippet_paged(&conn, root, "target", &next_source, &opts).is_err());
         let mut pinned = opts.clone();
         pinned.generation = Some("gen1".to_owned());
         let second = snippet_paged(&conn, root, "target", &next_source, &pinned).unwrap();
         assert_eq!(second["source_preview"]["has_more"], false);
         assert_eq!(
-            format!("{}{}", first["source"].as_str().unwrap(), second["source"].as_str().unwrap()),
+            format!(
+                "{}{}",
+                first["source"].as_str().unwrap(),
+                second["source"].as_str().unwrap()
+            ),
             code
         );
         pinned.generation = Some("stale".to_owned());
@@ -225,7 +244,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(inspect_err.to_string().contains(expected), "{inspect_err:#}");
+        assert!(
+            inspect_err.to_string().contains(expected),
+            "{inspect_err:#}"
+        );
 
         let explain_err = explain_with_path_options(
             &conn,
@@ -243,7 +265,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(explain_err.to_string().contains(expected), "{explain_err:#}");
+        assert!(
+            explain_err.to_string().contains(expected),
+            "{explain_err:#}"
+        );
 
         let select_err =
             snippet_paged(&conn, root, "a.py:resilient_hit", &source_opts, &page).unwrap_err();

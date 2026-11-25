@@ -926,7 +926,10 @@ pub struct CallableParameter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Annotated parameter type (`TypeExpr::Unknown` when unannotated).
-    #[serde(default = "default_unknown_type", skip_serializing_if = "is_unknown_type")]
+    #[serde(
+        default = "default_unknown_type",
+        skip_serializing_if = "is_unknown_type"
+    )]
     pub type_expr: TypeExpr,
     /// Typed callback argument types when this parameter accepts a higher-order callable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1380,7 +1383,10 @@ impl FrameworkScopeFacts {
             && self.return_value.is_none()
             && self.return_position.is_none()
             && self.alias_type.is_none()
-            && self.callable_signature.as_ref().is_none_or(CallableSignature::is_empty)
+            && self
+                .callable_signature
+                .as_ref()
+                .is_none_or(CallableSignature::is_empty)
             && self.facts.is_empty()
     }
 
@@ -1716,9 +1722,13 @@ impl ValueFlowFacts {
                         type_keys(argument, visit, depth + 1);
                     }
                 }
-                TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => type_keys(item, visit, depth + 1),
+                TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => {
+                    type_keys(item, visit, depth + 1)
+                }
                 TypeExpr::RustCallArguments { args } => {
-                    for argument in args.iter().take(16) { type_keys(argument, visit, depth + 1); }
+                    for argument in args.iter().take(16) {
+                        type_keys(argument, visit, depth + 1);
+                    }
                 }
                 TypeExpr::Unknown => {}
             }
@@ -1771,9 +1781,11 @@ impl ValueFlowFacts {
             .chain(self.async_return_type.iter())
             .chain(self.alias_type.iter())
             .chain(self.callable_signature.iter().flat_map(|sig| {
-                sig.return_type.iter().chain(sig.params.iter().flat_map(|param| {
-                    std::iter::once(&param.type_expr).chain(param.callback_params.iter())
-                }))
+                sig.return_type
+                    .iter()
+                    .chain(sig.params.iter().flat_map(|param| {
+                        std::iter::once(&param.type_expr).chain(param.callback_params.iter())
+                    }))
             }))
         {
             type_keys(ty, &mut visit, 0);
@@ -1934,10 +1946,7 @@ impl ValueFlowFacts {
         }
     }
 
-    fn visit_flow_fact_entry<'a>(
-        fact: &'a serde_json::Value,
-        visit: &mut impl FnMut(&'a str),
-    ) {
+    fn visit_flow_fact_entry<'a>(fact: &'a serde_json::Value, visit: &mut impl FnMut(&'a str)) {
         for operand in [
             fact.get("source"),
             fact.get("target"),
@@ -1991,7 +2000,11 @@ impl ValueFlowFacts {
         flow: &'a serde_json::Value,
         mut visit: impl FnMut(&'a str),
     ) {
-        for key in [NodeDetailKey::RETURN_TYPE, "async_return_type", "alias_type"] {
+        for key in [
+            NodeDetailKey::RETURN_TYPE,
+            "async_return_type",
+            "alias_type",
+        ] {
             if let Some(ty) = flow.get(key) {
                 Self::walk_type_reference_keys(ty, &mut visit, 0);
             }

@@ -109,12 +109,9 @@ fn open_or_rebuild(
 ) -> Result<reader::LockedConnection> {
     writer::validate_code_map_target(root, db)?;
     let rebuild = || match cache_dir {
-        Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
-            root,
-            db,
-            explicit_config,
-            cache_dir,
-        ),
+        Some(cache_dir) => {
+            crate::engine::pipeline::build_with_cache_dir(root, db, explicit_config, cache_dir)
+        }
         None => writer::build(root, db, explicit_config),
     };
     match reader::open_locked(db, root) {
@@ -133,9 +130,7 @@ fn open_or_rebuild(
         }
         Err(err) => {
             let msg = err.to_string();
-            let requires_rebuild = err
-                .downcast_ref::<reader::IndexRebuildRequired>()
-                .is_some();
+            let requires_rebuild = err.downcast_ref::<reader::IndexRebuildRequired>().is_some();
             if requires_rebuild || !db.exists() {
                 eprintln!(
                     "ACDD index incompatible or missing ({msg}); auto-rebuilding for {}...",
@@ -154,7 +149,10 @@ fn require_subsystem(adapter: &Adapter, id: SubsystemId) -> Result<()> {
     if !adapter.modules.is_subsystem_enabled(id) {
         return Err(StateError::new(
             ErrorCode::FeatureDisabled,
-            format!("FEATURE_DISABLED: '{}' module is disabled in modules:", id.as_str()),
+            format!(
+                "FEATURE_DISABLED: '{}' module is disabled in modules:",
+                id.as_str()
+            ),
         )
         .into());
     }
@@ -460,10 +458,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
             db_lint::run_lint(
                 &conn,
                 &db_lint::LintRequest {
-                    target: target
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty()),
+                    target: target.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     paths: None,
                     categories: parsed_categories.as_deref(),
                     rule_ids: rule_ids.as_deref().filter(|r| !r.is_empty()),
@@ -498,7 +493,13 @@ fn dispatch_query(
                 None,
                 generation,
             )?;
-            crate::state_bridge::overview(conn, ctx.root, Some(ctx.adapter), aspects.as_deref(), &page)
+            crate::state_bridge::overview(
+                conn,
+                ctx.root,
+                Some(ctx.adapter),
+                aspects.as_deref(),
+                &page,
+            )
         }
         QueryCommand::Inspect {
             selector,
@@ -519,13 +520,8 @@ fn dispatch_query(
                 source.has_valid_paging_anchor(generation.as_deref()),
                 "source continuation requires restarting at source_offset=0 or providing the previous page's generation"
             );
-            let page = QueryOptions::resolve(
-                &ResponsePolicy::default(),
-                Some(100),
-                0,
-                None,
-                generation,
-            )?;
+            let page =
+                QueryOptions::resolve(&ResponsePolicy::default(), Some(100), 0, None, generation)?;
             let mut result = symbols::inspect_with_path_options(
                 conn,
                 ctx.root,
@@ -574,7 +570,8 @@ fn dispatch_query(
                     page: &page,
                 },
             )?;
-            let mut result = symbols::search_results_with_navigation(conn, ctx.root, result, false)?;
+            let mut result =
+                symbols::search_results_with_navigation(conn, ctx.root, result, false)?;
             if ctx.output_format == OutputFormat::Markdown {
                 result["request_scope"] = json!({
                     "workspace_root": ctx.root.display().to_string(),

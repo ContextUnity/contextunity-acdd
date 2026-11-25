@@ -66,7 +66,10 @@ fn map_write_err(err: rusqlite::Error, context: &str) -> StateError {
     StateError::new(ErrorCode::ProfileSchemaInvalid, format!("{context}: {err}"))
 }
 
-fn serialize_json<T: serde::Serialize + ?Sized>(val: &T, field: &str) -> Result<String, StateError> {
+fn serialize_json<T: serde::Serialize + ?Sized>(
+    val: &T,
+    field: &str,
+) -> Result<String, StateError> {
     serde_json::to_string(val).map_err(|err| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
@@ -494,11 +497,21 @@ fn apply_node_patch(
     }
     if let Some(ref opt_claim_tree) = patch.claim_tree {
         sets.push("claim_tree = ?");
-        values.push(opt_claim_tree.as_ref().map(|t| t.as_str().to_owned()).into());
+        values.push(
+            opt_claim_tree
+                .as_ref()
+                .map(|t| t.as_str().to_owned())
+                .into(),
+        );
     }
     if let Some(ref opt_accepted_tree) = patch.accepted_tree {
         sets.push("accepted_tree = ?");
-        values.push(opt_accepted_tree.as_ref().map(|t| t.as_str().to_owned()).into());
+        values.push(
+            opt_accepted_tree
+                .as_ref()
+                .map(|t| t.as_str().to_owned())
+                .into(),
+        );
     }
     if let Some(ref opt_digest) = patch.accepted_definition_digest {
         sets.push("accepted_definition_digest = ?");
@@ -711,7 +724,6 @@ impl StateTx for SqliteTx<'_> {
         bump_write_seq(self.conn)?;
         Ok(())
     }
-
 
     fn admit_claim(
         &mut self,
@@ -1054,7 +1066,6 @@ impl StateTx for SqliteTx<'_> {
         Ok(())
     }
 
-
     fn apply_transition_plan(
         &mut self,
         run_id: &RunId,
@@ -1133,9 +1144,7 @@ impl StateTx for SqliteTx<'_> {
             if changed != 1 {
                 return Err(StateError::new(
                     ErrorCode::BackendConflict,
-                    format!(
-                        "apply_transition_plan CAS conflict on runs.generation for '{run_id}'"
-                    ),
+                    format!("apply_transition_plan CAS conflict on runs.generation for '{run_id}'"),
                 ));
             }
         } else {
@@ -1270,7 +1279,8 @@ impl StateTx for SqliteTx<'_> {
             }
             drop(stmt);
 
-            for node in order_nodes_parent_first_with_existing(&plan.added_nodes, &existing_parents)?
+            for node in
+                order_nodes_parent_first_with_existing(&plan.added_nodes, &existing_parents)?
             {
                 insert_gate_node(self.conn, node)?;
             }
@@ -1393,7 +1403,10 @@ impl StateTx for SqliteTx<'_> {
         Ok(())
     }
 
-    fn insert_blackboard(&mut self, item: &BlackboardRecord) -> Result<BlackboardRecord, StateError> {
+    fn insert_blackboard(
+        &mut self,
+        item: &BlackboardRecord,
+    ) -> Result<BlackboardRecord, StateError> {
         let stored = insert_blackboard_row(self.conn, item)?;
         bump_write_seq(self.conn)?;
         Ok(stored)
@@ -1524,7 +1537,6 @@ impl StateTx for SqliteTx<'_> {
         bump_write_seq(self.conn)?;
         Ok(())
     }
-
 
     fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), StateError> {
         let changed = self

@@ -236,7 +236,8 @@ impl PipeReaders {
         let fd = pipe.as_raw_fd();
         // SAFETY: fd belongs to the owned pipe and remains valid for both fcntl calls.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
             return Err(io::Error::last_os_error());
         }
         let cancel = std::sync::Arc::clone(&self.cancel);
@@ -423,12 +424,18 @@ impl Drop for ManagedChild {
 }
 
 #[cfg(unix)]
-fn spawn_stdin_writer(child: &mut Child, stdin_bytes: Option<&[u8]>) -> Result<Option<JoinHandle<()>>, StateError> {
+fn spawn_stdin_writer(
+    child: &mut Child,
+    stdin_bytes: Option<&[u8]>,
+) -> Result<Option<JoinHandle<()>>, StateError> {
     let Some(payload) = stdin_bytes else {
         return Ok(None);
     };
     let mut stdin = child.stdin.take().ok_or_else(|| {
-        StateError::new(ErrorCode::GateVerificationFailed, "child stdin pipe unavailable")
+        StateError::new(
+            ErrorCode::GateVerificationFailed,
+            "child stdin pipe unavailable",
+        )
     })?;
     let owned = payload.to_vec();
     let handle = thread::Builder::new()
@@ -485,7 +492,10 @@ fn drain_pipe_events(
         if child_exited && ended_streams >= 2 {
             break;
         }
-        let Some(remaining) = timeout.checked_sub(started.elapsed()).filter(|d| !d.is_zero()) else {
+        let Some(remaining) = timeout
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+        else {
             timed_out = true;
             break;
         };
@@ -522,8 +532,18 @@ fn drain_pipe_events(
     }
 
     if !timed_out && callback_err.is_none() {
-        flush_line_accumulator(&mut stdout_acc, StreamKind::Stdout, &mut callback_err, on_line);
-        flush_line_accumulator(&mut stderr_acc, StreamKind::Stderr, &mut callback_err, on_line);
+        flush_line_accumulator(
+            &mut stdout_acc,
+            StreamKind::Stdout,
+            &mut callback_err,
+            on_line,
+        );
+        flush_line_accumulator(
+            &mut stderr_acc,
+            StreamKind::Stderr,
+            &mut callback_err,
+            on_line,
+        );
     }
     (timed_out, callback_err)
 }
@@ -556,10 +576,16 @@ fn run_isolated_process_unix(
 
     let stdin_handle = spawn_stdin_writer(&mut child, stdin_bytes)?;
     let stdout_pipe = child.stdout.take().ok_or_else(|| {
-        StateError::new(ErrorCode::GateVerificationFailed, "child stdout pipe unavailable")
+        StateError::new(
+            ErrorCode::GateVerificationFailed,
+            "child stdout pipe unavailable",
+        )
     })?;
     let stderr_pipe = child.stderr.take().ok_or_else(|| {
-        StateError::new(ErrorCode::GateVerificationFailed, "child stderr pipe unavailable")
+        StateError::new(
+            ErrorCode::GateVerificationFailed,
+            "child stderr pipe unavailable",
+        )
     })?;
 
     let mut managed = ManagedChild::new(child);

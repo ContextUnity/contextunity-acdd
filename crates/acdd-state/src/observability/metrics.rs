@@ -30,13 +30,12 @@ pub fn render_prometheus_text(snapshot: &ObservabilitySnapshot) -> String {
         "# HELP acdd_runs_completed_total Total completed ACDD runs"
     );
     let _ = writeln!(out, "# TYPE acdd_runs_completed_total counter");
+    let _ = writeln!(out, "acdd_runs_completed_total {}", snapshot.completed_runs);
+
     let _ = writeln!(
         out,
-        "acdd_runs_completed_total {}",
-        snapshot.completed_runs
+        "# HELP acdd_runs_cleared_total Total cleared ACDD runs"
     );
-
-    let _ = writeln!(out, "# HELP acdd_runs_cleared_total Total cleared ACDD runs");
     let _ = writeln!(out, "# TYPE acdd_runs_cleared_total counter");
     let _ = writeln!(out, "acdd_runs_cleared_total {}", snapshot.cleared_runs);
 

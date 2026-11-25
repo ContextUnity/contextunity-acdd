@@ -101,7 +101,9 @@ pub(super) fn validate_linked_workspace_target(
     let canonical_ws = abs_target.canonicalize().map_err(|err| {
         format!("failed to canonicalize linked workspace '{lw_name}' path '{raw_path_str}': {err}")
     })?;
-    if raw_path.is_relative() && safe_relative(raw_path) && !canonical_ws.starts_with(canonical_root)
+    if raw_path.is_relative()
+        && safe_relative(raw_path)
+        && !canonical_ws.starts_with(canonical_root)
     {
         return Err(format!(
             "linked workspace '{lw_name}' path '{raw_path_str}' escapes workspace root via symlink"
@@ -158,9 +160,8 @@ pub(super) fn resolve_linked_workspaces(
             continue;
         }
         if !seen_lw_names.insert(trimmed_name.to_owned()) {
-            linked_workspace_errors.push(format!(
-                "duplicate linked_workspaces name '{trimmed_name}'"
-            ));
+            linked_workspace_errors
+                .push(format!("duplicate linked_workspaces name '{trimmed_name}'"));
             continue;
         }
         if !lw_cfg.enabled.unwrap_or(true) {

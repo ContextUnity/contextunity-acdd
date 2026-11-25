@@ -1094,8 +1094,7 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
         .is_empty());
     static AWAITED_SHARED_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
         std::sync::OnceLock::new();
-    let shared_conn =
-        cached_snapshot(&AWAITED_SHARED_SNAPSHOT, &[("awaited.ts", &source)]).open();
+    let shared_conn = cached_snapshot(&AWAITED_SHARED_SNAPSHOT, &[("awaited.ts", &source)]).open();
 
     for (label, caller_name, payload_var, p_var, receiver_var, resolves) in rendered_cases {
         let payload_ev = format!("{payload_var}.work");
@@ -1161,8 +1160,11 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
     static SHADOWED_PROMISE_SNAPSHOT: std::sync::OnceLock<
         crate::common::sqlite::PersistedSnapshot,
     > = std::sync::OnceLock::new();
-    let shadowed_conn =
-        cached_snapshot(&SHADOWED_PROMISE_SNAPSHOT, &[("awaited.ts", shadowed_source)]).open();
+    let shadowed_conn = cached_snapshot(
+        &SHADOWED_PROMISE_SNAPSHOT,
+        &[("awaited.ts", shadowed_source)],
+    )
+    .open();
     let shadowed_resolved: bool = shadowed_conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM edges e \
@@ -1532,7 +1534,8 @@ fn exercise<'a>(
     assert!(
         interner_nodes
             .iter()
-            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method && n.qualname.ends_with(".LinkerInterner.from_catalog")),
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Method
+                && n.qualname.ends_with(".LinkerInterner.from_catalog")),
         "expected normalized qualname without <'a>: {interner_nodes:#?}"
     );
     assert!(
@@ -1547,7 +1550,11 @@ fn exercise<'a>(
         ("src/lib.rs", "Self::build", "resolved"),
         ("src/lib.rs", "self.finish", "resolved"),
         ("src/interner.rs", "self.peek", "resolved"),
-        ("src/lib.rs", "interner::LinkerInterner::from_catalog", "resolved"),
+        (
+            "src/lib.rs",
+            "interner::LinkerInterner::from_catalog",
+            "resolved",
+        ),
         ("src/lib.rs", "interner.intern", "resolved"),
         ("src/lib.rs", "opt.is_some", "external"),
         ("src/lib.rs", "items.len", "external"),
@@ -1562,12 +1569,9 @@ fn exercise<'a>(
     ];
     for (path, expression, expected_status) in coverage_cases {
         assert!(
-            graph
-                .coverage
-                .iter()
-                .any(|row| row.path == path
-                    && row.expression == expression
-                    && row.status == expected_status),
+            graph.coverage.iter().any(|row| row.path == path
+                && row.expression == expression
+                && row.status == expected_status),
             "{path} `{expression}` expected status `{expected_status}`, got: {:#?}",
             graph
                 .coverage
@@ -1589,17 +1593,16 @@ fn exercise<'a>(
 
     // &dyn (Engine + Sync) emits inferred call to trait decl + possible_calls to FastEngine.
     assert!(
-        graph
-            .edges
-            .iter()
-            .any(|e| e.kind == "calls" && e.evidence == "engine.execute" && e.confidence == "inferred"),
+        graph.edges.iter().any(|e| e.kind == "calls"
+            && e.evidence == "engine.execute"
+            && e.confidence == "inferred"),
         "missing inferred dyn trait call: {:#?}",
         graph.edges
     );
     assert!(
-        graph.edges.iter().any(
-            |e| e.kind == "possible_calls" && e.evidence == "engine.execute" && e.confidence == "possible"
-        ),
+        graph.edges.iter().any(|e| e.kind == "possible_calls"
+            && e.evidence == "engine.execute"
+            && e.confidence == "possible"),
         "missing possible_calls implementor edge: {:#?}",
         graph.edges
     );
@@ -1926,10 +1929,7 @@ members = ["ping"]
         "Cargo.toml",
         "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = \"1\"\n",
     );
-    workspace.write(
-        "py_reexport.py",
-        "from ext_pkg import ExtHelper\n",
-    );
+    workspace.write("py_reexport.py", "from ext_pkg import ExtHelper\n");
     workspace.write(
         "py_consumer.py",
         "from py_reexport import ExtHelper\n\ndef run_py():\n    ExtHelper.run()\n    client = py_connect()\n    client.ping()\n",
@@ -2059,7 +2059,10 @@ pub fn tuple_option_join_and_monotonic_loop(
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(mixed_possible, 2, "expected 2 possible_calls for mixed_item.shared_work");
+    assert_eq!(
+        mixed_possible, 2,
+        "expected 2 possible_calls for mixed_item.shared_work"
+    );
 
     // Also verify element-wise TypeTarget::Tuple branch join directly in ValueFlowIndex.
     let tuple_owner = acdd_index::models::Node {

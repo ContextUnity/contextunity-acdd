@@ -31,7 +31,10 @@ pub struct ScheduleReport {
 /// Return `true` if a task has already been claimed (`claim_revision >= 1` on task or any child gate)
 /// and has not yet reached a terminal state (`Completed` or `Cancelled`).
 fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeRecord) -> bool {
-    if matches!(task_node.status, NodeStatus::Completed | NodeStatus::Cancelled) {
+    if matches!(
+        task_node.status,
+        NodeStatus::Completed | NodeStatus::Cancelled
+    ) {
         return false;
     }
     if task_node.claim_revision >= 1 || task_node.status == NodeStatus::InProgress {
@@ -76,9 +79,10 @@ pub(crate) fn has_any_in_progress_node(snapshot: &RunGraphSnapshot) -> bool {
         .nodes
         .iter()
         .any(|n| n.kind != NodeKind::Container && n.status == NodeStatus::InProgress)
-        || snapshot.nodes.iter().any(|n| {
-            n.kind == NodeKind::Task && n.status == NodeStatus::InProgress
-        })
+        || snapshot
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::Task && n.status == NodeStatus::InProgress)
 }
 
 /// Return `true` if `dep` is satisfied given live in-run completion status and external observations.
@@ -188,8 +192,8 @@ pub fn compute_schedule(
         None
     };
 
-    let any_active_in_place = snapshot.run.isolation == IsolationMode::InPlace
-        && has_any_in_progress_node(snapshot);
+    let any_active_in_place =
+        snapshot.run.isolation == IsolationMode::InPlace && has_any_in_progress_node(snapshot);
 
     let mut ready_root_nodes = Vec::new();
     for node in &snapshot.nodes {
@@ -238,12 +242,18 @@ pub fn compute_schedule(
 }
 
 /// Returns `(task_ref, effective_scope)` for every task that is currently claimed and unfinished.
-pub(crate) fn claimed_unfinished_scopes(snapshot: &RunGraphSnapshot) -> Vec<(TaskRef, Vec<String>)> {
+pub(crate) fn claimed_unfinished_scopes(
+    snapshot: &RunGraphSnapshot,
+) -> Vec<(TaskRef, Vec<String>)> {
     snapshot
         .nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Task && is_task_claimed_unfinished(snapshot, n))
-        .filter_map(|n| n.task_ref.clone().map(|tr| (tr, container_scope(snapshot, n))))
+        .filter_map(|n| {
+            n.task_ref
+                .clone()
+                .map(|tr| (tr, container_scope(snapshot, n)))
+        })
         .collect()
 }
 
@@ -270,9 +280,9 @@ pub(crate) fn is_task_schedule_eligible(
         return false;
     }
     let my_scope = container_scope(snapshot, task_node);
-    !claimed_unfinished
-        .iter()
-        .any(|(other_ref, other_scope)| other_ref != task_ref && scopes_overlap(&my_scope, other_scope))
+    !claimed_unfinished.iter().any(|(other_ref, other_scope)| {
+        other_ref != task_ref && scopes_overlap(&my_scope, other_scope)
+    })
 }
 
 fn compute_task_waves(
@@ -352,9 +362,7 @@ fn compute_task_waves(
         // Prioritize already-claimed unfinished tasks in the first wave so scope barriers
         // do not starve active work.
         eligible.sort_by_key(|tref| {
-            let is_claimed = claimed_unfinished_scopes
-                .iter()
-                .any(|(ct, _)| ct == tref);
+            let is_claimed = claimed_unfinished_scopes.iter().any(|(ct, _)| ct == tref);
             (!is_claimed, tref.clone())
         });
 
@@ -374,9 +382,7 @@ fn compute_task_waves(
                     continue;
                 }
             }
-            let conflicts_wave = wave_scopes
-                .iter()
-                .any(|ws| scopes_overlap(&my_scope, ws));
+            let conflicts_wave = wave_scopes.iter().any(|ws| scopes_overlap(&my_scope, ws));
             if !conflicts_wave {
                 wave.push(tref);
                 wave_scopes.push(my_scope);

@@ -837,16 +837,32 @@ fn rust_recovery_reexports_trait_dispatch_and_bounded_inherents_matrix() {
     let graph = ExtractorHarness::linked_with_root("rust", &borrowed, Some(workspace.root())).graph;
 
     let cases = [
-        ("crates/core/src/sibling.rs", "crate::syntax::Syntax", "external"),
+        (
+            "crates/core/src/sibling.rs",
+            "crate::syntax::Syntax",
+            "external",
+        ),
         ("crates/core/src/sibling.rs", "node.kind", "external"),
         ("crates/core/src/sibling.rs", "Target::build", "resolved"),
         ("crates/core/src/sibling.rs", "g.push_edge", "resolved"),
         ("crates/core/src/graph.rs", "Self::shared", "resolved"),
         ("crates/core/src/sibling.rs", "gb.bounded", "unresolved"),
         ("crates/core/src/sibling.rs", "prod.finish", "resolved"),
-        ("crates/core/src/sibling.rs", "factory.make().finish", "resolved"),
-        ("crates/consumer/src/lib.rs", "core_pkg::syntax::Syntax", "unresolved"),
-        ("crates/consumer/src/lib.rs", "core_pkg::syntax::PrivateParser", "unresolved"),
+        (
+            "crates/core/src/sibling.rs",
+            "factory.make().finish",
+            "resolved",
+        ),
+        (
+            "crates/consumer/src/lib.rs",
+            "core_pkg::syntax::Syntax",
+            "unresolved",
+        ),
+        (
+            "crates/consumer/src/lib.rs",
+            "core_pkg::syntax::PrivateParser",
+            "unresolved",
+        ),
         ("crates/consumer/src/lib.rs", "Target::build", "resolved"),
     ];
     for (path, expr, expected) in cases {
@@ -854,14 +870,21 @@ fn rust_recovery_reexports_trait_dispatch_and_bounded_inherents_matrix() {
             .coverage
             .iter()
             .find(|c| c.path == path && c.expression == expr)
-            .unwrap_or_else(|| panic!("missing coverage for {path} `{expr}`: {:#?}", graph.coverage));
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing coverage for {path} `{expr}`: {:#?}",
+                    graph.coverage
+                )
+            });
         assert_eq!(row.status, expected, "{path} `{expr}`: {row:#?}");
     }
 
     let trait_dispatch_rows: Vec<_> = graph
         .coverage
         .iter()
-        .filter(|c| c.path == "crates/core/src/sibling.rs" && c.expression == "trait_object_dispatch")
+        .filter(|c| {
+            c.path == "crates/core/src/sibling.rs" && c.expression == "trait_object_dispatch"
+        })
         .collect();
     assert!(
         trait_dispatch_rows

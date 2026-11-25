@@ -21,22 +21,21 @@ pub use runs::{
     collect_integration_inputs, compute_unintegrated_tasks, generate_run_id, list_all_tombstones,
     load_active_run_graph, resolve_active_run, resolve_run_optional, LoadedRunGraph,
 };
-pub(crate) use specs::{compute_archive_relpath, reconcile_restored_runs_with_archives};
 pub use specs::{
     auto_select_context_cursor, auto_select_ready_cursor, effective_spec_collections,
     match_spec_collection, next_spec_id_for_prefix, parse_cursor_for_snapshot,
     parse_profile_from_run, to_machine_profile,
 };
+pub(crate) use specs::{compute_archive_relpath, reconcile_restored_runs_with_archives};
 pub(super) use workspace::snapshot_worktree_layout;
+pub use workspace::{
+    acquire_repo_lock, build_path_policy, checkout_config, effective_modules_for_profile,
+    ensure_blackboard_enabled, ensure_state_enabled, primary_workspace_root, resolve_node_worktree,
+    resolve_repo_layout_optional, resolve_source_checkout, validate_profile_fail_closed,
+};
 pub(crate) use workspace::{
     apply_effective_isolation, with_repo_lock_and_maintenance,
     with_repo_lock_and_maintenance_unchecked,
-};
-pub use workspace::{
-    acquire_repo_lock, build_path_policy, checkout_config, effective_modules_for_profile,
-    ensure_blackboard_enabled, ensure_state_enabled, primary_workspace_root,
-    resolve_node_worktree, resolve_repo_layout_optional, resolve_source_checkout,
-    validate_profile_fail_closed,
 };
 
 #[cfg(test)]
@@ -126,14 +125,8 @@ mod tests {
             .exec_tx(|tx| tx.insert_run_graph(&sibling_graph))
             .expect("insert sibling graph");
 
-        let scoped_wt1 = build_path_policy(
-            &cfg,
-            &harness,
-            &[],
-            Some(&graph.run),
-            Some(&wt1),
-        )
-        .expect("scoped policy wt1");
+        let scoped_wt1 = build_path_policy(&cfg, &harness, &[], Some(&graph.run), Some(&wt1))
+            .expect("scoped policy wt1");
         assert!(!scoped_wt1.is_candidate_included("docs/milestones/AC-001.md"));
         assert!(!scoped_wt1.is_candidate_included("docs/milestones/archive/AC-001.md"));
         assert!(
@@ -144,26 +137,15 @@ mod tests {
         let corrupt_db = root.join("not-sqlite.db");
         fs::write(&corrupt_db, b"not a sqlite database").expect("write corrupt db");
         let bad_reader = crate::store::sqlite::SqliteStateReader::new(corrupt_db);
-        let fast_wt1 = build_path_policy(
-            &cfg,
-            &bad_reader,
-            &[],
-            Some(&graph.run),
-            Some(&wt1),
-        )
-        .expect("isolated worktree fast path must bypass SQLite list_runs");
+        let fast_wt1 = build_path_policy(&cfg, &bad_reader, &[], Some(&graph.run), Some(&wt1))
+            .expect("isolated worktree fast path must bypass SQLite list_runs");
         assert!(!fast_wt1.is_candidate_included("docs/milestones/AC-001.md"));
         assert!(!fast_wt1.is_candidate_included("docs/milestones/archive/AC-001.md"));
         assert!(fast_wt1.is_candidate_included("docs/milestones/AC-002.md"));
 
-        let scoped_shared = build_path_policy(
-            &cfg,
-            &harness,
-            &[],
-            Some(&sibling_graph.run),
-            Some(root),
-        )
-        .expect("scoped policy shared root");
+        let scoped_shared =
+            build_path_policy(&cfg, &harness, &[], Some(&sibling_graph.run), Some(root))
+                .expect("scoped policy shared root");
         assert!(!scoped_shared.is_candidate_included("docs/milestones/AC-001.md"));
         assert!(!scoped_shared.is_candidate_included("docs/milestones/AC-002.md"));
 
@@ -200,14 +182,9 @@ mod tests {
             build_path_policy(&cfg, &bad_reader, &[], Some(&in_place_a.run), Some(&wt1)).is_err(),
             "in_place runs must not skip SQLite list_runs fast path"
         );
-        let in_place_policy = build_path_policy(
-            &cfg,
-            &harness,
-            &[],
-            Some(&in_place_b.run),
-            Some(root),
-        )
-        .expect("shared in_place checkout policy");
+        let in_place_policy =
+            build_path_policy(&cfg, &harness, &[], Some(&in_place_b.run), Some(root))
+                .expect("shared in_place checkout policy");
         assert!(!in_place_policy.is_candidate_included("docs/milestones/AC-001.md"));
         assert!(!in_place_policy.is_candidate_included("docs/milestones/AC-004.md"));
         assert!(in_place_policy.is_candidate_included("docs/milestones/AC-003.md"));
@@ -217,12 +194,17 @@ mod tests {
         fs::create_dir_all(root.join("docs/milestones")).expect("mkdir");
         fs::write(root.join("docs/milestones/AC-001.md"), "# spec\n").expect("write spec");
         let manual_manifest = build_tombstone_cleanup_manifest_from_snapshot(&cfg, &graph, root);
-        assert!(manual_manifest.iter().any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
-        assert!(!manual_manifest.iter().any(|e| matches!(e.kind.as_str(), "worktree" | "branch")));
+        assert!(manual_manifest
+            .iter()
+            .any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
+        assert!(!manual_manifest
+            .iter()
+            .any(|e| matches!(e.kind.as_str(), "worktree" | "branch")));
 
         // 3. Managed worktrees profile includes ONLY ACDD-managed `.worktrees/<run>-...` and `task/<run>-...`.
         let mut managed_graph = graph.clone();
-        managed_graph.run.profile_json = r#"{"version":2,"git":{"worktrees":"managed"}}"#.to_owned();
+        managed_graph.run.profile_json =
+            r#"{"version":2,"git":{"worktrees":"managed"}}"#.to_owned();
         managed_graph.run.worktree = Some(
             root.join(WORKTREES_DIR)
                 .join("AC-001")
@@ -240,19 +222,31 @@ mod tests {
                 .clone()
         });
         let manifest = build_tombstone_cleanup_manifest_from_snapshot(&cfg, &managed_graph, root);
-        assert!(manifest.iter().any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
-        assert!(manifest.iter().any(|e| e.kind == "branch" && e.path_or_ref == "task/AC-001-t1"));
+        assert!(manifest
+            .iter()
+            .any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
+        assert!(manifest
+            .iter()
+            .any(|e| e.kind == "branch" && e.path_or_ref == "task/AC-001-t1"));
         let expected_t1_wt = format!("{WORKTREES_DIR}/AC-001-t1");
         let expected_run_wt = format!("{WORKTREES_DIR}/AC-001");
-        assert!(manifest.iter().any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(&expected_t1_wt)));
-        assert!(manifest.iter().any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(&expected_run_wt)));
-        assert!(!manifest.iter().any(|e| e.path_or_ref.contains("manual-wt") || e.path_or_ref == "feature/manual-branch"));
+        assert!(manifest
+            .iter()
+            .any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(&expected_t1_wt)));
+        assert!(manifest
+            .iter()
+            .any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(&expected_run_wt)));
+        assert!(!manifest.iter().any(
+            |e| e.path_or_ref.contains("manual-wt") || e.path_or_ref == "feature/manual-branch"
+        ));
         assert!(
             !manifest.iter().any(|e| e.kind == "snapshot_ref"),
             "cleanup_manifest must not emit dead snapshot_ref entries: {manifest:?}"
         );
         assert!(
-            !manifest.iter().any(|e| e.path_or_ref == "feature/user-owned"),
+            !manifest
+                .iter()
+                .any(|e| e.path_or_ref == "feature/user-owned"),
             "cleanup_manifest must never include user/run branch: {manifest:?}"
         );
         assert!(
@@ -357,16 +351,28 @@ mod tests {
         prune_old_run_trace_dirs(root, &harness, 10, Some(160), Some("run-exempt-keep"))
             .expect("prune with budget");
         assert!(active_dir.is_dir(), "active run dir must never be pruned");
-        assert!(exempt_dir.is_dir(), "exempt_run_id dir must never be pruned");
-        assert!(!closed_big.exists(), "closed dir exceeding byte budget must be pruned");
-        assert!(closed_small.is_dir(), "closed dir within count & byte budget kept");
+        assert!(
+            exempt_dir.is_dir(),
+            "exempt_run_id dir must never be pruned"
+        );
+        assert!(
+            !closed_big.exists(),
+            "closed dir exceeding byte budget must be pruned"
+        );
+        assert!(
+            closed_small.is_dir(),
+            "closed dir within count & byte budget kept"
+        );
 
         // Fail closed when the state DB cannot be read: preserve existing closed dirs.
         let corrupt_db = root.join(ACDD_DIR).join("corrupt-state.sqlite");
         fs::write(&corrupt_db, b"not-a-valid-sqlite-database").unwrap();
         let corrupt_reader = crate::store::sqlite::SqliteStateReader::new(corrupt_db);
         assert!(prune_old_run_trace_dirs(root, &corrupt_reader, 0, Some(0), None).is_err());
-        assert!(closed_small.is_dir(), "corrupt reader must fail closed without deleting trace dirs");
+        assert!(
+            closed_small.is_dir(),
+            "corrupt reader must fail closed without deleting trace dirs"
+        );
 
         // 7. `checkout_config` overlays `limits.{max_snapshot_file_bytes,allowed_binary_extensions}`.
         let mut ad = acdd_core::config::Adapter::default();
@@ -376,7 +382,10 @@ mod tests {
         assert_eq!(overlaid.max_snapshot_file_bytes, Some(8192));
         assert_eq!(
             overlaid.allowed_binary_extensions,
-            Some(std::collections::BTreeSet::from(["mo".to_owned(), "png".to_owned()]))
+            Some(std::collections::BTreeSet::from([
+                "mo".to_owned(),
+                "png".to_owned()
+            ]))
         );
     }
 }

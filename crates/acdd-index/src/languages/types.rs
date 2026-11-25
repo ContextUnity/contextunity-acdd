@@ -57,11 +57,7 @@ impl Ecosystem {
 }
 
 pub(crate) fn profile_available(id: &str) -> bool {
-    let provider = if id == "javascript" {
-        "typescript"
-    } else {
-        id
-    };
+    let provider = if id == "javascript" { "typescript" } else { id };
     matches!(
         provider,
         "bash"
@@ -147,7 +143,11 @@ pub(crate) fn compiled_language_families() -> impl Iterator<Item = &'static str>
         Some("sql"),
         #[cfg(feature = "lang-toml")]
         Some("toml"),
-        #[cfg(any(feature = "lang-typescript", feature = "lang-html", feature = "lang-vue"))]
+        #[cfg(any(
+            feature = "lang-typescript",
+            feature = "lang-html",
+            feature = "lang-vue"
+        ))]
         Some("javascript"),
         #[cfg(feature = "lang-yaml")]
         Some("yaml"),
@@ -776,7 +776,10 @@ thread_local! {
 }
 
 impl SyntaxGrammarSpec {
-    pub(crate) fn compile(&self, grammar: &tree_sitter::Language) -> anyhow::Result<CompiledSyntaxGrammar> {
+    pub(crate) fn compile(
+        &self,
+        grammar: &tree_sitter::Language,
+    ) -> anyhow::Result<CompiledSyntaxGrammar> {
         let kind = |name: &str| -> anyhow::Result<u16> {
             let id = grammar.id_for_node_kind(name, true);
             anyhow::ensure!(
@@ -786,21 +789,23 @@ impl SyntaxGrammarSpec {
             Ok(id)
         };
         let mut compiled_kinds = vec![None::<CompiledSyntaxKind>; grammar.node_kind_count()];
-        let mut register_decl =
-            |name: &str, category: &'static str, role: Option<DeclarationRole>| -> anyhow::Result<()> {
-                anyhow::ensure!(
-                    !category.is_empty(),
-                    "SyntaxGrammarSpec declaration category is empty"
-                );
-                let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
-                anyhow::ensure!(
-                    compiled.declaration.is_none(),
-                    "SyntaxGrammarSpec repeats declaration kind '{name}'"
-                );
-                compiled.declaration = Some(category);
-                compiled.declaration_role = role;
-                Ok(())
-            };
+        let mut register_decl = |name: &str,
+                                 category: &'static str,
+                                 role: Option<DeclarationRole>|
+         -> anyhow::Result<()> {
+            anyhow::ensure!(
+                !category.is_empty(),
+                "SyntaxGrammarSpec declaration category is empty"
+            );
+            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
+            anyhow::ensure!(
+                compiled.declaration.is_none(),
+                "SyntaxGrammarSpec repeats declaration kind '{name}'"
+            );
+            compiled.declaration = Some(category);
+            compiled.declaration_role = role;
+            Ok(())
+        };
         for (name, category) in self.declarations {
             register_decl(name, category, DeclarationRole::parse(category))?;
         }

@@ -516,7 +516,8 @@ fn collect_doc_files(root: &Path, scoped_rel_paths: Option<&[String]>) -> Result
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if !acdd_core::path_policy::WorkspacePathPolicy::default().is_scope_admitted(&rel, scope)
+            if !acdd_core::path_policy::WorkspacePathPolicy::default()
+                .is_scope_admitted(&rel, scope)
             {
                 continue;
             }
@@ -582,7 +583,10 @@ fn check_link_target(
     let display = source.strip_prefix(root).unwrap_or(source).display();
     if !target.exists() {
         if !(is_archive && !acdd_core::fs::is_doc_path(&target.to_string_lossy())) {
-            errors.push(format!("{display}:{}: missing target {}", link.line, link.target));
+            errors.push(format!(
+                "{display}:{}: missing target {}",
+                link.line, link.target
+            ));
         }
         return Ok(());
     }

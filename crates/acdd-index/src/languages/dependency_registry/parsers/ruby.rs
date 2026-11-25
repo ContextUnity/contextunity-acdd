@@ -51,7 +51,9 @@ impl ManifestParser for RubyParser {
             {
                 continue;
             }
-            if let Some(name) = extract_quoted_ruby_string(rest.trim_start_matches([' ', '\t', '('])) {
+            if let Some(name) =
+                extract_quoted_ruby_string(rest.trim_start_matches([' ', '\t', '(']))
+            {
                 parsed.dependencies.push(name.to_owned());
             }
         }

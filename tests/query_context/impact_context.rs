@@ -1,10 +1,10 @@
 use crate::common::Workspace;
-use anyhow::Result;
 use acdd_core::{
     format::stable_hash64,
     response::{Detail, QueryOptions, ResponsePolicy},
 };
 use acdd_index::db::{schema::SCHEMA_DDL, traversal};
+use anyhow::Result;
 use rusqlite::{params, Connection};
 fn database(workspace: &Workspace) -> Result<Connection> {
     let conn = Connection::open(workspace.path("graph.sqlite"))?;
@@ -251,7 +251,12 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     let conn = database(&workspace)?;
     conn.execute_batch("INSERT INTO path_dictionary(path_id,path) VALUES(3,'orphan.py'),(4,'other.py'),(5,'caller.py'); INSERT INTO coverage_expressions(expression_id,expression) VALUES(1,'dynamic()'),(2,'orphan');")?;
     conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('orphan','function','orphan','orphan',3,1,1,0,'python',0,'{}',?1,3)", [stable_hash64("orphan")])?;
-    let clean = traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
+    let clean = traversal::removal_paged_with_path(
+        &conn,
+        "orphan",
+        None,
+        &options(10, 0, Detail::Compact)?,
+    )?;
     assert_eq!(clean["assessment"]["verdict"], "no_indexed_blockers");
     assert_eq!(clean["safe_to_remove"], true);
     let isolated = traversal::impact::traverse_with_path_options(
@@ -274,7 +279,12 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         "INSERT INTO errors(path,line,message) VALUES('other.py',1,'syntax error')",
         [],
     )?;
-    let unrelated = traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
+    let unrelated = traversal::removal_paged_with_path(
+        &conn,
+        "orphan",
+        None,
+        &options(10, 0, Detail::Compact)?,
+    )?;
     assert_eq!(unrelated["safe_to_remove"], true);
     assert_eq!(unrelated["unresolved_references"], 0);
     assert_eq!(unrelated["parse_errors"], 0);
@@ -285,7 +295,8 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     ] {
         assert!(unrelated.get(duplicate).is_none());
     }
-    let result = traversal::removal_paged_with_path(&conn, "b", None, &options(10, 0, Detail::Compact)?)?;
+    let result =
+        traversal::removal_paged_with_path(&conn, "b", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(result["assessment"]["verdict"], "blocked");
     assert_eq!(
         result["assessment"]["blocking_reasons"]
@@ -317,8 +328,12 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         "INSERT INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES(5,1,2,'unresolved',1)",
         [],
     )?;
-    let blocked_target =
-        traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
+    let blocked_target = traversal::removal_paged_with_path(
+        &conn,
+        "orphan",
+        None,
+        &options(10, 0, Detail::Compact)?,
+    )?;
     assert_eq!(blocked_target["safe_to_remove"], false);
     assert_eq!(blocked_target["unresolved_references"], 1);
     assert_eq!(blocked_target["assessment"]["verdict"], "blocked");
@@ -380,7 +395,12 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
         "fixture must have only a candidate caller"
     );
 
-    let removal = traversal::removal_paged_with_path(&conn, &target_id, None, &options(10, 0, Detail::Full)?)?;
+    let removal = traversal::removal_paged_with_path(
+        &conn,
+        &target_id,
+        None,
+        &options(10, 0, Detail::Full)?,
+    )?;
     assert_eq!(removal["safe_to_remove"], false);
     assert_eq!(removal["assessment"]["verdict"], "blocked");
     let incoming = removal["incoming_dependencies"]["items"]
@@ -395,8 +415,8 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
 }
 
 #[test]
-fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling_calls() -> Result<()>
-{
+fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling_calls(
+) -> Result<()> {
     let workspace = Workspace::new();
     let conn = Connection::open(workspace.path("dead_tails.sqlite"))?;
     conn.execute_batch(SCHEMA_DDL)?;
@@ -518,18 +538,54 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
         "{}",
     )?;
     insert_node("b_trait_decl", "trait", "MyTrait", 2, 93, 97, 0, "{}")?;
-    insert_node("b_dead_cycle_a", "function", "dead_cycle_a", 2, 98, 104, 0, "{}")?;
-    insert_node("b_dead_cycle_b", "function", "dead_cycle_b", 2, 106, 110, 0, "{}")?;
+    insert_node(
+        "b_dead_cycle_a",
+        "function",
+        "dead_cycle_a",
+        2,
+        98,
+        104,
+        0,
+        "{}",
+    )?;
+    insert_node(
+        "b_dead_cycle_b",
+        "function",
+        "dead_cycle_b",
+        2,
+        106,
+        110,
+        0,
+        "{}",
+    )?;
     insert_node("b_status_field", "field", "status", 2, 75, 75, 0, "{}")?;
     conn.execute(
         "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
          VALUES('b_gen_macro','function','gen_macro_fn','b_gen_macro',2,112,115,0,'rust',1,'{}',?1,2)",
         params![stable_hash64("b_gen_macro")],
     )?;
-    insert_node("b_gen_callee", "function", "gen_callee", 2, 117, 120, 0, "{}")?;
+    insert_node(
+        "b_gen_callee",
+        "function",
+        "gen_callee",
+        2,
+        117,
+        120,
+        0,
+        "{}",
+    )?;
     insert_node("b_local_impl", "impl", "LocalHelper", 2, 12, 14, 0, "{}")?;
     insert_node("b_nested_reap", "method", "nested_reap", 2, 13, 14, 0, "{}")?;
-    insert_node("b_decode_row", "function", "decode_row", 2, 122, 126, 0, "{}")?;
+    insert_node(
+        "b_decode_row",
+        "function",
+        "decode_row",
+        2,
+        122,
+        126,
+        0,
+        "{}",
+    )?;
     insert_node("b_apply_v2", "function", "apply_v2", 2, 128, 132, 0, "{}")?;
     insert_node(
         "b_test_case",
@@ -597,17 +653,20 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
 
     let mut crate_b_facts = acdd_index::typed_facts::TypedFacts::default();
     for (line, expr) in [(11, "decode_row"), (12, "apply_v2")] {
-        crate_b_facts.facts.references.push(acdd_index::models::Reference {
-            source: "b_cross_live".to_owned(),
-            line,
-            column: 0,
-            expression: expr.to_owned(),
-            kind: "references".to_owned(),
-            alias: None,
-            module: None,
-            dynamic: false,
-            receiver_hint: None,
-        });
+        crate_b_facts
+            .facts
+            .references
+            .push(acdd_index::models::Reference {
+                source: "b_cross_live".to_owned(),
+                line,
+                column: 0,
+                expression: expr.to_owned(),
+                kind: "references".to_owned(),
+                alias: None,
+                module: None,
+                dynamic: false,
+                receiver_hint: None,
+            });
     }
     let facts_blob = acdd_index::typed_facts::encode_facts(&crate_b_facts)?;
     conn.execute(
@@ -650,7 +709,12 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
             limit: 30,
             offset: 0,
             exp_phantom: &["phantom_a", "phantom_b"],
-            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dead: &[
+                "dead_chain_a",
+                "dead_cycle_a",
+                "dead_chain_b",
+                "dead_cycle_b",
+            ],
             exp_dangling: &[
                 "self::removed_local",
                 "crate::missing::deleted_fn",
@@ -664,7 +728,12 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
             limit: 30,
             offset: 0,
             exp_phantom: &["phantom_a", "phantom_b"],
-            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dead: &[
+                "dead_chain_a",
+                "dead_cycle_a",
+                "dead_chain_b",
+                "dead_cycle_b",
+            ],
             exp_dangling: &[
                 "crate::missing::deleted_fn",
                 "crate::missing::status",
@@ -677,7 +746,12 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
             limit: 30,
             offset: 0,
             exp_phantom: &["phantom_a", "phantom_b"],
-            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dead: &[
+                "dead_chain_a",
+                "dead_cycle_a",
+                "dead_chain_b",
+                "dead_cycle_b",
+            ],
             exp_dangling: &[
                 "crate::missing::deleted_fn",
                 "crate::missing::status",
@@ -748,7 +822,10 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
         );
         assert!(md.contains("## Dead tails & phantom-tested code"), "{md}");
         assert!(md.contains("`crates/b/src/lib.rs:"), "{md}");
-        assert!(!md.contains("file:///repo/"), "dead_tails markdown must use repo-relative paths: {md}");
+        assert!(
+            !md.contains("file:///repo/"),
+            "dead_tails markdown must use repo-relative paths: {md}"
+        );
         assert!(md.contains("## Dangling internal calls"), "{md}");
         if case.selector == Some("crates/b") && case.offset == 0 {
             assert!(md.contains("crate::missing::deleted_fn"), "{md}");

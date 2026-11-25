@@ -4,18 +4,14 @@ use crate::languages::{
     semantic::{self, SemanticFact, SemanticRelation},
     types::{workspace_path, LanguageFamily},
 };
-use crate::models::{
-    compact_graph::CompactGraph as Graph,
-    Node,
-};
+use crate::models::{compact_graph::CompactGraph as Graph, Node};
 use hashbrown::HashMap;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct PreparedSemanticFacts<'a> {
     pub(crate) interner: &'a LinkerInterner<'a>,
-    pub(crate) facts:
-        BTreeMap<PathId, Vec<std::borrow::Cow<'a, SemanticFact>>>,
+    pub(crate) facts: BTreeMap<PathId, Vec<std::borrow::Cow<'a, SemanticFact>>>,
     pub(crate) errors: BTreeMap<PathId, Vec<(usize, String, String)>>,
 }
 
@@ -33,12 +29,7 @@ pub(crate) enum DeclarativeRulePrimitive {
     EmitEdge { evidence: &'static str },
 }
 
-type OccurrenceKey = (
-    SymbolId,
-    usize,
-    usize,
-    SemanticRelation,
-);
+type OccurrenceKey = (SymbolId, usize, usize, SemanticRelation);
 pub(in crate::linker) type OccurrenceValue = (SymbolId, BTreeSet<SymbolId>, bool, bool);
 
 #[derive(Default)]
@@ -229,12 +220,13 @@ pub(in crate::linker) const ENDPOINT_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
         ambiguous_prefix: "ambiguous endpoint route",
     };
 
-pub(super) const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive = DeclarativeRulePrimitive::EmitRoute {
-    kind: crate::models::tags::EdgeKind::ReferencesRoute,
-    resolved_prefix: "unique route name",
-    unmatched_prefix: "unmatched route name",
-    ambiguous_prefix: "ambiguous route name",
-};
+pub(super) const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
+    DeclarativeRulePrimitive::EmitRoute {
+        kind: crate::models::tags::EdgeKind::ReferencesRoute,
+        resolved_prefix: "unique route name",
+        unmatched_prefix: "unmatched route name",
+        ambiguous_prefix: "ambiguous route name",
+    };
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::linker) fn emit_route_match<E>(
@@ -259,7 +251,15 @@ pub(in crate::linker) fn emit_route_match<E>(
     };
     let (status, evidence) = match matched {
         Ok(Some(route)) => {
-            graph.push_edge(path, src, route.id.clone(), kind, line, expression, crate::models::tags::EdgeConfidence::Exact);
+            graph.push_edge(
+                path,
+                src,
+                route.id.clone(),
+                kind,
+                line,
+                expression,
+                crate::models::tags::EdgeConfidence::Exact,
+            );
             (
                 "resolved",
                 format!(

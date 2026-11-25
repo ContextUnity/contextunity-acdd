@@ -290,9 +290,7 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
             ..Facts::default()
         }),
     );
-    assert!(
-        large.values().map(|facts| facts.nodes.len()).sum::<usize>() >= 2048
-    );
+    assert!(large.values().map(|facts| facts.nodes.len()).sum::<usize>() >= 2048);
     let mut catalog = acdd_index::typed_facts::SymbolCatalog::default();
     for (path, facts) in &large {
         catalog.insert_typed(path.clone(), facts.clone());

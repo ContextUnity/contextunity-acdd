@@ -418,14 +418,30 @@ async function probe(el: Element, resp: Response) {
         ("e2e/checkout.spec.ts", "context.newPage", "external"),
         ("e2e/checkout.spec.ts", "browser.close", "external"),
         ("plain/checkout.spec.ts", "page.locator", "unresolved"),
-        ("webidl/dom_extended.ts", "el.getBoundingClientRect", "external"),
+        (
+            "webidl/dom_extended.ts",
+            "el.getBoundingClientRect",
+            "external",
+        ),
         ("webidl/dom_extended.ts", "rect.top", "resolved"),
-        ("webidl/dom_extended.ts", "navigator.clipboard.writeText", "external"),
+        (
+            "webidl/dom_extended.ts",
+            "navigator.clipboard.writeText",
+            "external",
+        ),
         ("webidl/dom_extended.ts", "navigator.onLine", "external"),
         ("webidl/dom_extended.ts", "location.hash", "external"),
         ("webidl/dom_extended.ts", "location.reload", "external"),
-        ("webidl/dom_extended.ts", "performance.getEntries", "external"),
-        ("webidl/dom_extended.ts", "crypto.subtle.generateKey", "external"),
+        (
+            "webidl/dom_extended.ts",
+            "performance.getEntries",
+            "external",
+        ),
+        (
+            "webidl/dom_extended.ts",
+            "crypto.subtle.generateKey",
+            "external",
+        ),
         ("webidl/dom_extended.ts", "ws.send", "external"),
         ("webidl/dom_extended.ts", "form.append", "external"),
         ("webidl/dom_extended.ts", "controller.abort", "external"),
@@ -466,8 +482,14 @@ test('compound playwright and webidl chains', async ({ page, request }) => {
     let conn = w.open();
     for (expression, expected) in [
         ("page.locator('button').filter", "external"),
-        ("page.locator('button').filter({ hasText: 'Go' }).first", "external"),
-        ("page.locator('button').filter({ hasText: 'Go' }).first().click", "external"),
+        (
+            "page.locator('button').filter({ hasText: 'Go' }).first",
+            "external",
+        ),
+        (
+            "page.locator('button').filter({ hasText: 'Go' }).first().click",
+            "external",
+        ),
         ("resp.json", "external"),
         ("expect(page.locator('h1')).not.toBeVisible", "external"),
         ("fetched.blob", "external"),

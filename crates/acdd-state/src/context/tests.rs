@@ -1,10 +1,3 @@
-use acdd_core::errors::ErrorCode;
-use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
-use acdd_core::path_policy::WorkspacePathPolicy;
-use acdd_core::ports::{
-    CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
-    DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
-};
 use super::*;
 use crate::profile::{
     resolve_profile_ref_with_dirs,
@@ -16,6 +9,13 @@ use crate::types::{
     BlackboardRecord, BlackboardStatus, BlackboardTopic, FindingItem, FindingSeverity,
     GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RejectionFindings,
     RejectionKind, RunRecord, RunStatus,
+};
+use acdd_core::errors::ErrorCode;
+use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
+use acdd_core::path_policy::WorkspacePathPolicy;
+use acdd_core::ports::{
+    CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
+    DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -72,9 +72,10 @@ fn base_request() -> ClaimContextRequest {
     let tree = TreeOid::new("1".repeat(40)).unwrap();
     let commit = CommitOid::new("2".repeat(40)).unwrap();
     let mut profile = ResolvedGateProfile::default();
-    profile
-        .guidance
-        .insert("g1".to_owned(), GuidanceEntry::Text("Follow rules".to_owned()));
+    profile.guidance.insert(
+        "g1".to_owned(),
+        GuidanceEntry::Text("Follow rules".to_owned()),
+    );
     profile
         .roles
         .insert("builder".to_owned(), RoleDef::default());
@@ -208,9 +209,12 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     // Case 1: Guidance overflow fails closed with GuidanceBudgetExceeded (never silently truncated).
     let mut overflow_req = base_request();
     overflow_req.profile.limits.max_guidance_bytes = 128;
-    overflow_req.gate.guidance.push(GateGuidanceRef::Inline(InlineGuidance {
-        inline: "x".repeat(512),
-    }));
+    overflow_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "x".repeat(512),
+        }));
     let err = build_claim_context(&overflow_req, &empty_provider).expect_err("must fail closed");
     assert_eq!(err.code, ErrorCode::GuidanceBudgetExceeded);
 
@@ -232,7 +236,10 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     tiered_req.pre_task_slice = Some(json!({ "layer": "core", "summary": "slice" }));
     tiered_req.dependency_receipts = vec![Receipt {
         run_id: RunId::new("run-1").unwrap(),
-        node_cursor: NodeCursor::task(TaskRef::new("t0").unwrap(), vec![GateId::new("deliver").unwrap()]),
+        node_cursor: NodeCursor::task(
+            TaskRef::new("t0").unwrap(),
+            vec![GateId::new("deliver").unwrap()],
+        ),
         gate_id: GateId::new("deliver").unwrap(),
         worker_id: WorkerId::new("w0").unwrap(),
         claim_revision: 1,
@@ -294,7 +301,9 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     assert!(!trimmed.blackboard.is_empty());
     assert!(trimmed.context_lenses.contains_key("code.symbols"));
     assert!(!trimmed.context_lenses.contains_key("code.tests"));
-    assert!(trimmed.omitted_sections.contains(&"context:code.tests".to_owned()));
+    assert!(trimmed
+        .omitted_sections
+        .contains(&"context:code.tests".to_owned()));
 
     // Razor-tight budget where `omitted_sections` itself cannot fit: total_bytes MUST still not overflow!
     let mut tiny_req = base_request();
@@ -362,7 +371,10 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
         reset_resp.contract["required_skills"],
         json!(["acdd", "close-review-findings"])
     );
-    assert_eq!(reset_resp.total_bytes, serde_json::to_vec(&reset_resp).unwrap().len());
+    assert_eq!(
+        reset_resp.total_bytes,
+        serde_json::to_vec(&reset_resp).unwrap().len()
+    );
     let reset_md = render_claim_prompt_markdown(&reset_resp, None);
     assert!(reset_md.contains("CONTEXT RESET REQUIRED"));
     assert!(reset_md.contains("close-review-findings"));
@@ -370,25 +382,56 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     // Tier 5 Blackboard filters unrelated sibling task notes and keeps only latest BUDGET_OVERRIDE per scope.
     let mut bb_req = base_request();
     bb_req.gate.context.clear();
-    let make_bb = |id, node_id: Option<&str>, rec: Option<&str>, topic, payload: &str| BlackboardRecord {
-        id: Some(id),
-        run_id: RunId::new("run-1").unwrap(),
-        node_id: node_id.map(str::to_owned),
-        recipient_node_id: rec.map(str::to_owned),
-        subtask_ref: None,
-        gate: Some("build".to_owned()),
-        author: "arch".to_owned(),
-        topic,
-        status: BlackboardStatus::Open,
-        payload: payload.to_owned(),
-        created_at: "2026-11-20T10:00:00.000Z".to_owned(),
-    };
+    let make_bb =
+        |id, node_id: Option<&str>, rec: Option<&str>, topic, payload: &str| BlackboardRecord {
+            id: Some(id),
+            run_id: RunId::new("run-1").unwrap(),
+            node_id: node_id.map(str::to_owned),
+            recipient_node_id: rec.map(str::to_owned),
+            subtask_ref: None,
+            gate: Some("build".to_owned()),
+            author: "arch".to_owned(),
+            topic,
+            status: BlackboardStatus::Open,
+            payload: payload.to_owned(),
+            created_at: "2026-11-20T10:00:00.000Z".to_owned(),
+        };
     bb_req.blackboard_items = vec![
-        make_bb(1, Some("task:t0:build"), None, BlackboardTopic::Notes, "stale sibling task note"),
-        make_bb(2, Some("task:t0:review"), Some("task:t1:build"), BlackboardTopic::Notes, "directed handoff note"),
-        make_bb(3, Some("root:blueprint_synthesis.synthesize"), None, BlackboardTopic::Decisions, "global arch decision"),
-        make_bb(4, Some("task:t1:build"), None, BlackboardTopic::Decisions, "BUDGET_OVERRIDE: old limit 200"),
-        make_bb(5, Some("task:t1:build"), None, BlackboardTopic::Decisions, "BUDGET_OVERRIDE: latest limit 300"),
+        make_bb(
+            1,
+            Some("task:t0:build"),
+            None,
+            BlackboardTopic::Notes,
+            "stale sibling task note",
+        ),
+        make_bb(
+            2,
+            Some("task:t0:review"),
+            Some("task:t1:build"),
+            BlackboardTopic::Notes,
+            "directed handoff note",
+        ),
+        make_bb(
+            3,
+            Some("root:blueprint_synthesis.synthesize"),
+            None,
+            BlackboardTopic::Decisions,
+            "global arch decision",
+        ),
+        make_bb(
+            4,
+            Some("task:t1:build"),
+            None,
+            BlackboardTopic::Decisions,
+            "BUDGET_OVERRIDE: old limit 200",
+        ),
+        make_bb(
+            5,
+            Some("task:t1:build"),
+            None,
+            BlackboardTopic::Decisions,
+            "BUDGET_OVERRIDE: latest limit 300",
+        ),
     ];
     let bb_resp = build_claim_context(&bb_req, &empty_provider).unwrap();
     let bb_payloads: Vec<&str> = bb_resp
@@ -418,7 +461,10 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     }));
     let pred_built = build_claim_context(&pred_resp, &empty_provider).unwrap();
     let pred_md = render_claim_prompt_markdown(&pred_built, None);
-    assert!(pred_md.contains("### Predecessor Proof: `synthesize`"), "{pred_md}");
+    assert!(
+        pred_md.contains("### Predecessor Proof: `synthesize`"),
+        "{pred_md}"
+    );
     assert!(pred_md.contains("#### Task Slice: `t1`"), "{pred_md}");
     assert!(pred_md.contains("Batch reader"), "{pred_md}");
 }
@@ -525,13 +571,20 @@ fn profile_gates_claim_context_window_budget_matrix() {
                 }
             }
         }
-        assert!(!leaf_gates.is_empty(), "{label} profile must declare leaf gates");
+        assert!(
+            !leaf_gates.is_empty(),
+            "{label} profile must declare leaf gates"
+        );
 
         for (gate_label, gate, is_task) in leaf_gates {
             let mut req = base_request();
             req.profile = profile.clone();
             req.gate = gate;
-            req.node.kind = if is_task { NodeKind::TaskGate } else { NodeKind::RootGate };
+            req.node.kind = if is_task {
+                NodeKind::TaskGate
+            } else {
+                NodeKind::RootGate
+            };
             req.node.node_id = if is_task {
                 format!("task:t1:{}", req.gate.id)
             } else {
@@ -571,7 +624,10 @@ fn profile_gates_claim_context_window_budget_matrix() {
                     md.contains("- zone `core`: [crates/core/**]"),
                     "{label}/{gate_label}: missing zone rendering:\n{md}"
                 );
-                assert!(!md.contains("``"), "{label}/{gate_label}: empty backticks:\n{md}");
+                assert!(
+                    !md.contains("``"),
+                    "{label}/{gate_label}: empty backticks:\n{md}"
+                );
             }
             if md.contains("## Governing Invariants") {
                 assert!(
@@ -585,9 +641,10 @@ fn profile_gates_claim_context_window_budget_matrix() {
             }
             if let Some(guidance_md) = md.split("\n## Guidance\n").nth(1) {
                 let guidance_section = guidance_md.split("\n## ").next().unwrap_or(guidance_md);
-                if let (Some(hitl_pos), Some(sub_pos)) =
-                    (guidance_section.find("- HITL"), guidance_section.find("\n### "))
-                {
+                if let (Some(hitl_pos), Some(sub_pos)) = (
+                    guidance_section.find("- HITL"),
+                    guidance_section.find("\n### "),
+                ) {
                     assert!(
                         hitl_pos < sub_pos,
                         "{label}/{gate_label}: ungrouped HITL must precede ### subsections"

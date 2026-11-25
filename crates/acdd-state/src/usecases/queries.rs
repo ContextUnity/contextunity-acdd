@@ -14,16 +14,16 @@ use crate::types::{
     RunStatus, SubtaskRecord, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
-use crate::usecases::dto::{
-    BlackboardReadReq, BlackboardReadResp, ContextReq, ListReq, ListResp, NextReq, NextResp, ObservabilityReq,
-    ObservabilityResp, ShowReq, ShowResp, StateQuery, StateQueryOutput, StatusReq, StatusResp,
-};
 use crate::usecases::deps::collect_external_satisfied_deps;
+use crate::usecases::dto::{
+    BlackboardReadReq, BlackboardReadResp, ContextReq, ListReq, ListResp, NextReq, NextResp,
+    ObservabilityReq, ObservabilityResp, ShowReq, ShowResp, StateQuery, StateQueryOutput,
+    StatusReq, StatusResp,
+};
 use crate::usecases::lifecycle::{
-    auto_select_context_cursor, build_path_policy,
-    compute_unintegrated_tasks, ensure_blackboard_enabled, ensure_state_enabled,
-    parse_cursor_for_snapshot, parse_profile_from_run, primary_workspace_root,
-    resolve_node_worktree, resolve_run_optional,
+    auto_select_context_cursor, build_path_policy, compute_unintegrated_tasks,
+    ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
+    parse_profile_from_run, primary_workspace_root, resolve_node_worktree, resolve_run_optional,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, TreeOid, WorkerId};
@@ -155,13 +155,14 @@ fn handle_show(
     provider: &CompositeDomainProvider,
     req: ShowReq,
 ) -> Result<ShowResp, StateError> {
-    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?
-        .ok_or_else(|| {
+    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
+        || {
             StateError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found matching show request",
             )
-        })?;
+        },
+    )?;
 
     let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
         StateError::new(
@@ -195,7 +196,10 @@ fn handle_show(
 
     let subtask_owner_id = match node.kind {
         NodeKind::Task => node.node_id.clone(),
-        NodeKind::TaskGate => node.parent_id.clone().unwrap_or_else(|| node.node_id.clone()),
+        NodeKind::TaskGate => node
+            .parent_id
+            .clone()
+            .unwrap_or_else(|| node.node_id.clone()),
         _ => String::new(),
     };
     let subtasks: Vec<SubtaskRecord> = if subtask_owner_id.is_empty() {
@@ -243,13 +247,7 @@ fn build_node_context_request(
         .or_else(|| node.accepted_tree.clone())
         .unwrap_or_else(|| TreeOid::new("0".repeat(40)).expect("40 zeros valid"));
     let primary = primary_workspace_root(config);
-    let path_policy = build_path_policy(
-        config,
-        reader,
-        &[],
-        Some(&graph.run),
-        Some(&worktree),
-    )?;
+    let path_policy = build_path_policy(config, reader, &[], Some(&graph.run), Some(&worktree))?;
     GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
         config,
         reader,
@@ -287,7 +285,8 @@ fn build_show_context_preview(
         cursor,
         node.claim_revision.max(1),
         worker_id,
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
 
@@ -373,18 +372,21 @@ fn handle_blackboard_read(
     reader: &dyn StateReader,
     req: BlackboardReadReq,
 ) -> Result<BlackboardReadResp, StateError> {
-    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?
-        .ok_or_else(|| {
+    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
+        || {
             StateError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found for blackboard read",
             )
-        })?;
+        },
+    )?;
 
     let graph_opt = reader.load_run_graph(&run.run_id)?;
     let normalize_cursor = |raw: &str| -> Result<String, StateError> {
         if let Some(ref g) = graph_opt {
-            parse_cursor_for_snapshot(g, raw)?.to_node_id().map_err(StateError::from)
+            parse_cursor_for_snapshot(g, raw)?
+                .to_node_id()
+                .map_err(StateError::from)
         } else {
             raw.parse::<NodeCursor>()
                 .map_err(StateError::from)?
@@ -439,21 +441,20 @@ fn handle_observability(
     })
 }
 
-
-
 fn handle_context(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     provider: &CompositeDomainProvider,
     req: ContextReq,
 ) -> Result<crate::context::ClaimResp, StateError> {
-    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?
-        .ok_or_else(|| {
+    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
+        || {
             StateError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found matching context request",
             )
-        })?;
+        },
+    )?;
 
     let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
         StateError::new(
@@ -481,7 +482,10 @@ fn handle_context(
     if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("context is only available for gate nodes; '{cursor}' is {:?}", node.kind),
+            format!(
+                "context is only available for gate nodes; '{cursor}' is {:?}",
+                node.kind
+            ),
         ));
     }
     if !matches!(node.status, NodeStatus::InProgress | NodeStatus::Ready) {
@@ -501,7 +505,10 @@ fn handle_context(
                 ErrorCode::TaskAlreadyClaimed,
                 format!(
                     "gate '{cursor}' is claimed by {}; specify the owning worker or omit --worker",
-                    node.worker_id.as_ref().map(ToString::to_string).unwrap_or_default()
+                    node.worker_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
                 ),
             ));
         }

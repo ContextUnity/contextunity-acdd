@@ -12,10 +12,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InvalidNamedUncertaintyCarrier;
 
-pub(crate) fn remap_identifier(
-    value: &mut String,
-    ids: &HashMap<String, String>,
-) -> bool {
+pub(crate) fn remap_identifier(value: &mut String, ids: &HashMap<String, String>) -> bool {
     let Some(replacement) = ids.get(value) else {
         return false;
     };
@@ -25,9 +22,7 @@ pub(crate) fn remap_identifier(
 
 #[derive(Clone, Debug)]
 pub enum FlowState {
-    Valid {
-        facts: Box<ValueFlowFacts>,
-    },
+    Valid { facts: Box<ValueFlowFacts> },
     Invalid(Value),
 }
 
@@ -96,7 +91,8 @@ impl FlowStore {
     }
     pub fn named_uncertainty_entries(
         &self,
-    ) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::types::NamedDefinitionUncertainty])> {
+    ) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::types::NamedDefinitionUncertainty])>
+    {
         self.uncertainties
             .iter()
             .map(|(id, values)| (id.as_str(), values.as_slice()))
@@ -135,8 +131,8 @@ impl FlowStore {
         if fault.is_some_and(|value| !value.is_boolean()) {
             return Err(());
         }
-        let Some(raw) = node
-            .detail_get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES)
+        let Some(raw) =
+            node.detail_get(crate::models::details::NodeDetailKey::NAMED_DEFINITION_UNCERTAINTIES)
         else {
             return Ok(Vec::new());
         };
@@ -162,7 +158,8 @@ impl FlowStore {
             }
             keys.push(&marker.key);
             if keys.len() > 128
-                || (keys.len() > 1 && keys.contains(&&crate::semantic::types::StaticString::Unknown))
+                || (keys.len() > 1
+                    && keys.contains(&&crate::semantic::types::StaticString::Unknown))
             {
                 return Err(());
             }
@@ -395,8 +392,7 @@ impl FlowStore {
             }
         };
         for state in self.entries.values_mut() {
-            let FlowState::Valid { facts } = state
-            else {
+            let FlowState::Valid { facts } = state else {
                 continue;
             };
             let Some(framework) = facts.framework.as_mut() else {
@@ -535,8 +531,7 @@ impl FlowStore {
         self.uncertainty_faults.clear();
         self.invalid_uncertainty_carriers.clear();
         self.entries.retain(|_, state| {
-            let FlowState::Valid { facts } = state
-            else {
+            let FlowState::Valid { facts } = state else {
                 return false;
             };
             facts.bindings = Vec::new();
@@ -556,9 +551,12 @@ impl FlowStore {
                 framework.return_position = None;
                 framework.alias_type = None;
                 framework.callable_signature = None;
-                framework
-                    .facts
-                    .retain(|fact| matches!(fact, crate::semantic::types::FrameworkFact::TemplateContext(_)));
+                framework.facts.retain(|fact| {
+                    matches!(
+                        fact,
+                        crate::semantic::types::FrameworkFact::TemplateContext(_)
+                    )
+                });
                 if framework.async_return_type.is_none() && framework.facts.is_empty() {
                     facts.framework = None;
                 }

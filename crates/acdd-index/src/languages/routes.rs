@@ -305,11 +305,7 @@ impl RouteContext {
             .and_then(|id| self.lexical.python_writes.get(id))
             .map_or(0, |w| w.count(name))
     }
-    pub(crate) fn prepare(
-        root: Syntax<'_>,
-        source: &str,
-        rules: &LanguageContext,
-    ) -> Self {
+    pub(crate) fn prepare(root: Syntax<'_>, source: &str, rules: &LanguageContext) -> Self {
         #[cfg(feature = "lang-python")]
         if root.kind() == "module"
             && *root.language() == tree_sitter_python::language()
@@ -412,11 +408,7 @@ impl RouteContext {
         }
     }
 
-    pub(crate) fn build(
-        root: Syntax<'_>,
-        source: &str,
-        rules: &LanguageContext,
-    ) -> Self {
+    pub(crate) fn build(root: Syntax<'_>, source: &str, rules: &LanguageContext) -> Self {
         Self::build_with_python_admission(root, source, rules, None)
     }
 
@@ -715,9 +707,12 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
         route.method
     );
     if let Some(existing) = facts.nodes.iter_mut().find(|n| n.id == id) {
-        if let (Some(handler), Some(handlers)) =
-            (route.handler, existing.detail_entry_mut(crate::models::details::NodeDetailKey::HANDLERS).as_array_mut())
-        {
+        if let (Some(handler), Some(handlers)) = (
+            route.handler,
+            existing
+                .detail_entry_mut(crate::models::details::NodeDetailKey::HANDLERS)
+                .as_array_mut(),
+        ) {
             handlers.push(json!(handler));
         }
     } else {
@@ -764,10 +759,7 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
 }
 
 #[cfg(feature = "lang-python")]
-pub(crate) fn declaration_candidate(
-    ctx: &SyntaxContext<'_, '_>,
-    rule_ir: &RuleIRHandle,
-) -> bool {
+pub(crate) fn declaration_candidate(ctx: &SyntaxContext<'_, '_>, rule_ir: &RuleIRHandle) -> bool {
     relations::decorators(ctx.node)
         .into_iter()
         .any(|decorator| {
@@ -1340,10 +1332,7 @@ pub(crate) struct RouteContextBuilder<'source, 'tree> {
     #[cfg(feature = "lang-python")]
     python_root: bool,
     candidates: Vec<Syntax<'tree>>,
-    collectors: Vec<(
-        Syntax<'tree>,
-        BindingCollector<'source, 'tree>,
-    )>,
+    collectors: Vec<(Syntax<'tree>, BindingCollector<'source, 'tree>)>,
     #[cfg(feature = "lang-python")]
     python_collectors: Vec<(
         Syntax<'tree>,
@@ -1457,11 +1446,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
         }
     }
 
-    pub(crate) fn new(
-        root: Syntax<'tree>,
-        source: &'source str,
-        rules: &LanguageContext,
-    ) -> Self {
+    pub(crate) fn new(root: Syntax<'tree>, source: &'source str, rules: &LanguageContext) -> Self {
         Self::new_with_python_admission(root, source, rules, None)
     }
 
@@ -1554,22 +1539,21 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                     .push((rule.clone(), PrefixBindings::default()));
             }
         }
-        let semantic_bindings =
-            rules.semantic_rules.iter().any(|rule| {
-                rule.active
-                    && matches!(
-                rule.rule.operation,
-                manifests::semantic::SemanticOperation::SymbolAttachment { .. }
-                    | manifests::semantic::SemanticOperation::EndpointProjection { .. }
-            )
-            }) || rules.syntax_rules.iter().any(|rule| {
-                rule.language == "python"
-                    && matches!(
-                        rule.operation,
-                        manifests::syntax::SyntaxOperation::NamedBinding { .. }
-                            | manifests::syntax::SyntaxOperation::ClassMethodRegistration { .. }
-                    )
-            });
+        let semantic_bindings = rules.semantic_rules.iter().any(|rule| {
+            rule.active
+                && matches!(
+                    rule.rule.operation,
+                    manifests::semantic::SemanticOperation::SymbolAttachment { .. }
+                        | manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                )
+        }) || rules.syntax_rules.iter().any(|rule| {
+            rule.language == "python"
+                && matches!(
+                    rule.operation,
+                    manifests::syntax::SyntaxOperation::NamedBinding { .. }
+                        | manifests::syntax::SyntaxOperation::ClassMethodRegistration { .. }
+                )
+        });
         if rules.route_decorators.is_empty() && rules.route_calls.is_empty() && !semantic_bindings {
             return Self::inactive(context, root, source);
         }
@@ -1598,8 +1582,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                 }
             }
             if scope {
-                let mut collector =
-                    BindingCollector::new_with_kind(node, self.source, kind);
+                let mut collector = BindingCollector::new_with_kind(node, self.source, kind);
                 collector.enter_with_kind(node, kind);
                 self.collectors.push((node, collector));
             }
@@ -1693,12 +1676,15 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                     if self.python_root {
                         let writes = self.context.lexical.python_writes.get(&scope_node.id());
                         names.extend(
-                            super::python::lexical::lexical_type_parameters(scope_node, self.source)
-                                .into_iter()
-                                .filter(|name| {
-                                    !self.context.lexical.python_module
-                                        || writes.is_none_or(|writes| writes.count(name) == 0)
-                                }),
+                            super::python::lexical::lexical_type_parameters(
+                                scope_node,
+                                self.source,
+                            )
+                            .into_iter()
+                            .filter(|name| {
+                                !self.context.lexical.python_module
+                                    || writes.is_none_or(|writes| writes.count(name) == 0)
+                            }),
                         );
                     }
                     names

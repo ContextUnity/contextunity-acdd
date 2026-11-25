@@ -71,7 +71,10 @@ impl SpecCollectionConfig {
     /// Return `true` if `rel` (a workspace-relative file or directory path) falls under any pattern.
     pub fn matches_rel_path(&self, rel: &str) -> bool {
         let trimmed = rel.trim().replace('\\', "/");
-        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed).trim_end_matches('/');
+        let norm = trimmed
+            .strip_prefix("./")
+            .unwrap_or(&trimmed)
+            .trim_end_matches('/');
         if norm.is_empty() {
             return false;
         }
@@ -88,7 +91,10 @@ impl SpecCollectionConfig {
     /// `extensions/*/docs/milestones` resolves to `extensions/pkg/docs/milestones`.
     pub fn matched_concrete_root(&self, rel: &str) -> Option<String> {
         let trimmed = rel.trim().replace('\\', "/");
-        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed).trim_end_matches('/');
+        let norm = trimmed
+            .strip_prefix("./")
+            .unwrap_or(&trimmed)
+            .trim_end_matches('/');
         if norm.is_empty() {
             return None;
         }
@@ -171,9 +177,7 @@ fn expand_spec_dir_segments(
 ) -> std::io::Result<()> {
     if segs.is_empty() {
         if current_rel.as_os_str().is_empty()
-            || current_rel
-                .components()
-                .any(|c| c.as_os_str() == "archive")
+            || current_rel.components().any(|c| c.as_os_str() == "archive")
         {
             return Ok(());
         }
@@ -224,7 +228,12 @@ fn expand_spec_dir_segments(
                 continue;
             }
             if first == "**" {
-                expand_spec_dir_segments(root, &current_rel.join(entry.file_name()), next_segs, out)?;
+                expand_spec_dir_segments(
+                    root,
+                    &current_rel.join(entry.file_name()),
+                    next_segs,
+                    out,
+                )?;
             } else {
                 let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                     continue;
@@ -406,10 +415,7 @@ impl ScannerLimits {
             .map(crate::path_policy::normalize_binary_extensions)
             .transpose()
             .map_err(|msg| {
-                crate::errors::StateError::new(
-                    crate::errors::ErrorCode::ProfileSchemaInvalid,
-                    msg,
-                )
+                crate::errors::StateError::new(crate::errors::ErrorCode::ProfileSchemaInvalid, msg)
             })
     }
 }
@@ -695,16 +701,26 @@ mod tests {
 
         limits.max_metadata_bytes = 256;
         limits.max_snapshot_file_bytes = Some(1024);
-        limits.allowed_binary_extensions = Some(vec![".PNG".to_owned(), "mo".to_owned(), "c++".to_owned()]);
+        limits.allowed_binary_extensions =
+            Some(vec![".PNG".to_owned(), "mo".to_owned(), "c++".to_owned()]);
         assert!(limits.validate().is_ok());
 
         limits.max_snapshot_file_bytes = Some(0);
-        assert!(limits.validate().unwrap_err().to_string().contains("max_snapshot_file_bytes"));
+        assert!(limits
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("max_snapshot_file_bytes"));
         limits.max_snapshot_file_bytes = Some(1024);
 
-        for bad_ext in ["", ".", "..png", "png jpg", "*.png", "a/png", "a\\png", "png?"] {
+        for bad_ext in [
+            "", ".", "..png", "png jpg", "*.png", "a/png", "a\\png", "png?",
+        ] {
             limits.allowed_binary_extensions = Some(vec![bad_ext.to_owned()]);
-            assert!(limits.validate().is_err(), "expected invalid extension '{bad_ext}' to fail");
+            assert!(
+                limits.validate().is_err(),
+                "expected invalid extension '{bad_ext}' to fail"
+            );
         }
         limits.allowed_binary_extensions = None;
 
@@ -777,7 +793,8 @@ mod tests {
         assert!(!rec_dirs.contains(&root.join("docs/milestones/archive")));
         assert!(rec_dirs.contains(&root.join("docs/milestones/team")));
         assert_eq!(
-            ms.matched_concrete_root("docs/milestones/team/target.md").as_deref(),
+            ms.matched_concrete_root("docs/milestones/team/target.md")
+                .as_deref(),
             Some("docs/milestones")
         );
         assert_eq!(
@@ -786,7 +803,9 @@ mod tests {
             Some("extensions/alpha/docs/milestones")
         );
         assert_eq!(
-            rec_col.matched_concrete_root("docs/milestones/team/target.md").as_deref(),
+            rec_col
+                .matched_concrete_root("docs/milestones/team/target.md")
+                .as_deref(),
             Some("docs/milestones")
         );
         let deep_col = SpecCollectionConfig {
@@ -830,11 +849,8 @@ mod tests {
             let wx_dir = root.join("wx-only");
             std::fs::create_dir_all(&wx_dir).unwrap();
             std::fs::set_permissions(&wx_dir, std::fs::Permissions::from_mode(0o300)).unwrap();
-            let res = crate::fs::write_new_confined(
-                root,
-                Path::new("wx-only/review-probe.md"),
-                b"probe",
-            );
+            let res =
+                crate::fs::write_new_confined(root, Path::new("wx-only/review-probe.md"), b"probe");
             std::fs::set_permissions(&wx_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
             assert!(res.is_err(), "0o300 dir must fail before publishing target");
             assert!(

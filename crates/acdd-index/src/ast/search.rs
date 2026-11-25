@@ -1062,7 +1062,9 @@ fn source_satisfies_anchors(language_id: &str, anchors: &[String], source: &str)
     if supports_unicode_identifier_escapes(language_id) && source.contains("\\u") {
         return true;
     }
-    anchors.iter().all(|anchor| source.contains(anchor.as_str()))
+    anchors
+        .iter()
+        .all(|anchor| source.contains(anchor.as_str()))
 }
 
 fn supports_unicode_identifier_escapes(language_id: &str) -> bool {
@@ -1147,31 +1149,92 @@ fn is_language_keyword(language_id: &str, token: &str) -> bool {
     match language_id {
         "rust" => matches!(
             token,
-            "fn" | "pub" | "mut" | "mod" | "use" | "crate" | "match" | "where" | "ref" | "move"
-                | "dyn" | "unsafe" | "extern" | "Self" | "macro_rules"
+            "fn" | "pub"
+                | "mut"
+                | "mod"
+                | "use"
+                | "crate"
+                | "match"
+                | "where"
+                | "ref"
+                | "move"
+                | "dyn"
+                | "unsafe"
+                | "extern"
+                | "Self"
+                | "macro_rules"
         ),
         "python" => matches!(
             token,
-            "def" | "lambda" | "pass" | "yield" | "raise" | "with" | "None" | "True" | "False"
-                | "and" | "or" | "not" | "elif" | "except" | "global" | "nonlocal" | "assert"
+            "def"
+                | "lambda"
+                | "pass"
+                | "yield"
+                | "raise"
+                | "with"
+                | "None"
+                | "True"
+                | "False"
+                | "and"
+                | "or"
+                | "not"
+                | "elif"
+                | "except"
+                | "global"
+                | "nonlocal"
+                | "assert"
                 | "del"
         ),
         "typescript" | "javascript" | "vue" => matches!(
             token,
-            "function" | "undefined" | "typeof" | "instanceof" | "delete" | "yield" | "declare"
-                | "namespace" | "readonly" | "implements" | "extends" | "abstract" | "keyof"
+            "function"
+                | "undefined"
+                | "typeof"
+                | "instanceof"
+                | "delete"
+                | "yield"
+                | "declare"
+                | "namespace"
+                | "readonly"
+                | "implements"
+                | "extends"
+                | "abstract"
+                | "keyof"
                 | "infer"
         ),
         "go" => matches!(
             token,
-            "func" | "package" | "defer" | "go" | "chan" | "select" | "range" | "map" | "fallthrough"
+            "func"
+                | "package"
+                | "defer"
+                | "go"
+                | "chan"
+                | "select"
+                | "range"
+                | "map"
+                | "fallthrough"
                 | "nil"
         ),
         "java" | "kotlin" | "csharp" => matches!(
             token,
-            "extends" | "implements" | "package" | "final" | "abstract" | "synchronized"
-                | "volatile" | "transient" | "native" | "fun" | "val" | "object" | "when"
-                | "internal" | "override" | "sealed" | "using" | "namespace"
+            "extends"
+                | "implements"
+                | "package"
+                | "final"
+                | "abstract"
+                | "synchronized"
+                | "volatile"
+                | "transient"
+                | "native"
+                | "fun"
+                | "val"
+                | "object"
+                | "when"
+                | "internal"
+                | "override"
+                | "sealed"
+                | "using"
+                | "namespace"
         ),
         _ => false,
     }
@@ -1181,7 +1244,9 @@ fn is_valid_literal_anchor(language_id: &str, token: &str) -> bool {
     !token.is_empty()
         && !token.starts_with("__ACDD_")
         && !token.starts_with("__acdd_")
-        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && token.bytes().any(|b| b.is_ascii_alphabetic() || b == b'_')
         && !is_language_keyword(language_id, token)
 }
@@ -1231,7 +1296,9 @@ fn extract_required_anchors(
         let omit_declaration_body = ctx.capabilities.declaration_kinds.contains(&kind)
             && (declaration_root
                 || node.named_children(&mut node.walk()).any(|child| {
-                    ctx.capabilities.declaration_body_kinds.contains(&child.kind())
+                    ctx.capabilities
+                        .declaration_body_kinds
+                        .contains(&child.kind())
                         && child
                             .named_children(&mut child.walk())
                             .all(|nested| nested.kind().contains("comment"))
@@ -1243,7 +1310,10 @@ fn extract_required_anchors(
             }
             if child.kind().contains("comment")
                 || (omit_declaration_body
-                    && ctx.capabilities.declaration_body_kinds.contains(&child.kind()))
+                    && ctx
+                        .capabilities
+                        .declaration_body_kinds
+                        .contains(&child.kind()))
             {
                 continue;
             }
@@ -1277,7 +1347,11 @@ mod tests {
         #[cfg(feature = "lang-rust")]
         {
             cases.push(("rust", "fn target_fn() {}", Some("target_fn")));
-            cases.push(("rust", "struct TargetType { field: i32 }", Some("TargetType")));
+            cases.push((
+                "rust",
+                "struct TargetType { field: i32 }",
+                Some("TargetType"),
+            ));
             cases.push(("rust", "let x = $EXPR", None));
             cases.push(("rust", "x = $EXPR", None));
             cases.push(("rust", "x($ARGS)", None));

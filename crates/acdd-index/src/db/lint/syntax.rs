@@ -3,10 +3,7 @@ use crate::db::commitments::{read_metadata_optional, MetadataKey};
 use crate::db::paging;
 use crate::db::reader::{selectors::path_bounds, sql::rows};
 use crate::languages::dependency_registry::DependencyRegistry;
-use crate::models::{
-    details::NodeDetailKey,
-    tags::NodeKind,
-};
+use crate::models::{details::NodeDetailKey, tags::NodeKind};
 use acdd_core::lint::{ComplexityLimits, LintCategory, LintSeverity};
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{ensure, Result};
@@ -114,7 +111,12 @@ fn collect_parse_violations(
            AND f.language IN (SELECT value FROM json_each(?4))
          ORDER BY e.path, e.line, e.message, e.rowid",
     )?;
-    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, profiles_json])?;
+    let mut rows = stmt.query(rusqlite::params![
+        prefix_target,
+        lower,
+        upper,
+        profiles_json
+    ])?;
     while let Some(row) = rows.next()? {
         let path: String = row.get(0)?;
         if !scope.in_scope(&path) {
@@ -188,8 +190,11 @@ fn collect_fact_budget_violations(
     let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, budget_pat])?;
     let inv = complexity.invariant.as_deref();
     while let Some(row) = rows.next()? {
-        let (qualname, path, line): (String, String, usize) =
-            (row.get(0)?, row.get(1)?, row.get::<_, i64>(2)?.max(1) as usize);
+        let (qualname, path, line): (String, String, usize) = (
+            row.get(0)?,
+            row.get(1)?,
+            row.get::<_, i64>(2)?.max(1) as usize,
+        );
         if !is_production_node_in_scope(index, &path, line) {
             continue;
         }
@@ -197,7 +202,11 @@ fn collect_fact_budget_violations(
         let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
             continue;
         };
-        if details.get(NodeDetailKey::FACT_LIMIT_EXCEEDED).and_then(Value::as_bool) == Some(true) {
+        if details
+            .get(NodeDetailKey::FACT_LIMIT_EXCEEDED)
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
             push_syntax(
                 violations,
                 "syntax.fact_budget_exceeded",
@@ -274,20 +283,36 @@ fn collect_type_homonym_violations(
     type GroupKey = (String, String, String);
     let mut groups: BTreeMap<GroupKey, Vec<(String, String, usize)>> = BTreeMap::new();
     while let Some(row) = rows.next()? {
-        let (name, qualname, path, line, language): (String, String, String, usize, String) =
-            (row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)?.max(1) as usize, row.get(4)?);
+        let (name, qualname, path, line, language): (String, String, String, usize, String) = (
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get::<_, i64>(3)?.max(1) as usize,
+            row.get(4)?,
+        );
         if is_archived_path(&path) || index.is_test_location(&path, line) {
             continue;
         }
         let bucket = package_bucket_for_node(&path, &language, dep_registry.as_ref());
-        groups.entry((bucket, language, name)).or_default().push((qualname, path, line));
+        groups
+            .entry((bucket, language, name))
+            .or_default()
+            .push((qualname, path, line));
     }
     for ((bucket, _lang, name), entries) in groups {
-        let distinct_file_count = entries.iter().map(|(_, p, _)| p.as_str()).collect::<BTreeSet<_>>().len();
+        let distinct_file_count = entries
+            .iter()
+            .map(|(_, p, _)| p.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
         if distinct_file_count < 2 {
             continue;
         }
-        let scope_label = if bucket.is_empty() { "workspace" } else { bucket.as_str() };
+        let scope_label = if bucket.is_empty() {
+            "workspace"
+        } else {
+            bucket.as_str()
+        };
         for (qualname, path, line) in entries {
             if !index.scope.in_scope(&path) {
                 continue;

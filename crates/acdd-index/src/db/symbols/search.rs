@@ -1,6 +1,5 @@
 use super::inspect::direct_call_summary;
 use super::preview::{first_docstring_sentence, resolve_indexed_text_match, source_preview};
-use crate::db::source::VerifiedSourceCache;
 use super::test_discovery::tests_paged_with_path;
 use super::types::SearchOptions;
 use crate::db::paging;
@@ -8,6 +7,7 @@ use crate::db::reader::{
     selectors::{path_bounds, strip_selector_uri_prefix},
     sql::{rows, QueryBudget},
 };
+use crate::db::source::VerifiedSourceCache;
 use crate::models::{
     details::NodeDetailKey,
     stable_hash64,
@@ -631,7 +631,8 @@ pub fn search_with_options(
             let mut hit: SearchHitDto =
                 serde_json::from_value(item.clone()).context("invalid search result")?;
             let _ = (&hit.bm25_rank, &hit.graph_boost);
-            if options.detail == Detail::Compact && hit.match_reason.as_deref() == Some("name_pattern")
+            if options.detail == Detail::Compact
+                && hit.match_reason.as_deref() == Some("name_pattern")
             {
                 hit.match_reason = None;
             }
@@ -680,10 +681,7 @@ fn ranked_search_page(
         let first_limit = 1_i64;
         let first_offset = 0_i64;
         let mut first_page_bindings = params.to_vec();
-        first_page_bindings.extend([
-            &first_limit as &dyn ToSql,
-            &first_offset as &dyn ToSql,
-        ]);
+        first_page_bindings.extend([&first_limit as &dyn ToSql, &first_offset as &dyn ToSql]);
         let first_page = rows(
             conn,
             &format!(
@@ -817,10 +815,8 @@ pub fn search_results_with_navigation(
         }
         let mut dto: SearchNavigationItemDto =
             serde_json::from_value(item.clone()).context("search result has no symbol id")?;
-        let (signature, is_test, docstring) = metadata
-            .get(&dto.id)
-            .cloned()
-            .unwrap_or((None, None, None));
+        let (signature, is_test, docstring) =
+            metadata.get(&dto.id).cloned().unwrap_or((None, None, None));
         dto.signature = signature.map(|value| {
             let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
             if value.chars().count() > SIGNATURE_CHAR_LIMIT {

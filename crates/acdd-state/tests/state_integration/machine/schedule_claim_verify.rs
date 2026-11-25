@@ -2,17 +2,20 @@ use super::helpers::*;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{NodeCursor, RunName};
 use acdd_state::machine::verify::ExecutionDigestInput;
-use acdd_state::types::{
-    CheckResultRecord, IsolationMode, NodeKind, NodeStatus, TraceStatus,
-};
+use acdd_state::types::{CheckResultRecord, IsolationMode, NodeKind, NodeStatus, TraceStatus};
 use serde_json::json;
 
 #[test]
 fn graph_construction_node_ids_and_when_filtering() {
     let allowed = BTreeSet::from(["code".to_owned(), "docs".to_owned()]);
-    assert_eq!(effective_task_tags(&[], &allowed).unwrap(), vec!["default".to_owned()]);
     assert_eq!(
-        effective_task_tags(&["nope".to_owned()], &allowed).unwrap_err().code,
+        effective_task_tags(&[], &allowed).unwrap(),
+        vec!["default".to_owned()]
+    );
+    assert_eq!(
+        effective_task_tags(&["nope".to_owned()], &allowed)
+            .unwrap_err()
+            .code,
         ErrorCode::ProfileSchemaInvalid
     );
     let (mut profile, _) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
@@ -157,7 +160,8 @@ fn schedule_waves_scope_overlap_and_in_place_constraints() {
 
 #[test]
 fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
-    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let obs = obs_with_tree(tree('a'));
 
     let claim_t1 = ClaimInput {
@@ -188,12 +192,66 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
     }
 
     let cases = [
-        ClaimCase { label: "idempotent_same", worker: "worker-1", fp: Some("host:100:1"), worktree: "/repo/.worktrees/T1", force: false, steal: false, pid_alive: None, expected: Ok(true) },
-        ClaimCase { label: "other_worker_no_force", worker: "worker-2", fp: Some("host:200:2"), worktree: "/repo/.worktrees/T1", force: false, steal: false, pid_alive: None, expected: Err(ErrorCode::TaskAlreadyClaimed) },
-        ClaimCase { label: "other_worker_force_live_pid", worker: "worker-2", fp: Some("host:200:2"), worktree: "/repo/.worktrees/T1", force: true, steal: false, pid_alive: Some(true), expected: Err(ErrorCode::TaskAlreadyClaimed) },
-        ClaimCase { label: "same_worker_force_new_fp", worker: "worker-1", fp: Some("host:101:2"), worktree: "/repo/.worktrees/T1", force: true, steal: false, pid_alive: Some(true), expected: Ok(false) },
-        ClaimCase { label: "other_worker_dead_pid", worker: "worker-2", fp: Some("host:200:2"), worktree: "/repo/.worktrees/T1", force: true, steal: false, pid_alive: Some(false), expected: Ok(false) },
-        ClaimCase { label: "other_worker_steal_remote", worker: "worker-3", fp: Some("remote:999:9"), worktree: "/repo/.worktrees/T1", force: true, steal: true, pid_alive: None, expected: Ok(false) },
+        ClaimCase {
+            label: "idempotent_same",
+            worker: "worker-1",
+            fp: Some("host:100:1"),
+            worktree: "/repo/.worktrees/T1",
+            force: false,
+            steal: false,
+            pid_alive: None,
+            expected: Ok(true),
+        },
+        ClaimCase {
+            label: "other_worker_no_force",
+            worker: "worker-2",
+            fp: Some("host:200:2"),
+            worktree: "/repo/.worktrees/T1",
+            force: false,
+            steal: false,
+            pid_alive: None,
+            expected: Err(ErrorCode::TaskAlreadyClaimed),
+        },
+        ClaimCase {
+            label: "other_worker_force_live_pid",
+            worker: "worker-2",
+            fp: Some("host:200:2"),
+            worktree: "/repo/.worktrees/T1",
+            force: true,
+            steal: false,
+            pid_alive: Some(true),
+            expected: Err(ErrorCode::TaskAlreadyClaimed),
+        },
+        ClaimCase {
+            label: "same_worker_force_new_fp",
+            worker: "worker-1",
+            fp: Some("host:101:2"),
+            worktree: "/repo/.worktrees/T1",
+            force: true,
+            steal: false,
+            pid_alive: Some(true),
+            expected: Ok(false),
+        },
+        ClaimCase {
+            label: "other_worker_dead_pid",
+            worker: "worker-2",
+            fp: Some("host:200:2"),
+            worktree: "/repo/.worktrees/T1",
+            force: true,
+            steal: false,
+            pid_alive: Some(false),
+            expected: Ok(false),
+        },
+        ClaimCase {
+            label: "other_worker_steal_remote",
+            worker: "worker-3",
+            fp: Some("remote:999:9"),
+            worktree: "/repo/.worktrees/T1",
+            force: true,
+            steal: true,
+            pid_alive: None,
+            expected: Ok(false),
+        },
     ];
 
     for case in cases {
@@ -254,7 +312,8 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
     );
 
     // `in_place` single-active constraint rejects claiming T3 while T1 is InProgress.
-    let (ip_profile, mut ip_snap) = RunHarness::build_machine_sample_graph(IsolationMode::InPlace, false);
+    let (ip_profile, mut ip_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::InPlace, false);
     let ip_claim_t1 = ClaimInput {
         worktree: "/repo".to_owned(),
         branch: None,
@@ -275,7 +334,8 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
     );
 
     // Pre-task barrier error names the exact pending pre-task gate cursor and suggests claiming it next.
-    let (pre_profile, pre_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
+    let (pre_profile, pre_snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let pre_err = admit_claim(
         &pre_snap,
         &pre_profile,
@@ -313,7 +373,8 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
 
 #[test]
 fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
-    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t_a = tree('a');
     let obs = obs_with_tree(t_a.clone());
 
@@ -350,12 +411,60 @@ fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
     }
 
     let command_cases = [
-        CommandCase { label: "valid_zero_exit", exit_code: Some(0), timed_out: false, aborted: false, changed: &[], exp_trace: TraceStatus::Passed, exp_err: None },
-        CommandCase { label: "nonzero_exit_fails", exit_code: Some(1), timed_out: false, aborted: false, changed: &[], exp_trace: TraceStatus::Failed, exp_err: Some(ErrorCode::GateVerificationFailed) },
-        CommandCase { label: "missing_exit_fails", exit_code: None, timed_out: false, aborted: false, changed: &[], exp_trace: TraceStatus::Failed, exp_err: Some(ErrorCode::GateVerificationFailed) },
-        CommandCase { label: "aborted", exit_code: None, timed_out: false, aborted: true, changed: &[], exp_trace: TraceStatus::Aborted, exp_err: Some(ErrorCode::GateVerificationFailed) },
-        CommandCase { label: "timed_out", exit_code: None, timed_out: true, aborted: false, changed: &[], exp_trace: TraceStatus::TimedOut, exp_err: Some(ErrorCode::GateVerificationFailed) },
-        CommandCase { label: "out_of_scope", exit_code: Some(0), timed_out: false, aborted: false, changed: &["Cargo.toml"], exp_trace: TraceStatus::ScopeViolation, exp_err: Some(ErrorCode::OutOfScopeChanges) },
+        CommandCase {
+            label: "valid_zero_exit",
+            exit_code: Some(0),
+            timed_out: false,
+            aborted: false,
+            changed: &[],
+            exp_trace: TraceStatus::Passed,
+            exp_err: None,
+        },
+        CommandCase {
+            label: "nonzero_exit_fails",
+            exit_code: Some(1),
+            timed_out: false,
+            aborted: false,
+            changed: &[],
+            exp_trace: TraceStatus::Failed,
+            exp_err: Some(ErrorCode::GateVerificationFailed),
+        },
+        CommandCase {
+            label: "missing_exit_fails",
+            exit_code: None,
+            timed_out: false,
+            aborted: false,
+            changed: &[],
+            exp_trace: TraceStatus::Failed,
+            exp_err: Some(ErrorCode::GateVerificationFailed),
+        },
+        CommandCase {
+            label: "aborted",
+            exit_code: None,
+            timed_out: false,
+            aborted: true,
+            changed: &[],
+            exp_trace: TraceStatus::Aborted,
+            exp_err: Some(ErrorCode::GateVerificationFailed),
+        },
+        CommandCase {
+            label: "timed_out",
+            exit_code: None,
+            timed_out: true,
+            aborted: false,
+            changed: &[],
+            exp_trace: TraceStatus::TimedOut,
+            exp_err: Some(ErrorCode::GateVerificationFailed),
+        },
+        CommandCase {
+            label: "out_of_scope",
+            exit_code: Some(0),
+            timed_out: false,
+            aborted: false,
+            changed: &["Cargo.toml"],
+            exp_trace: TraceStatus::ScopeViolation,
+            exp_err: Some(ErrorCode::OutOfScopeChanges),
+        },
     ];
 
     for case in command_cases {
@@ -488,16 +597,35 @@ fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
         .unwrap();
         record_verify_in_memory(&mut root_snap, &ev);
         assert_eq!(root_snap.run.root_cycle_count, cycle);
-        let v_node = root_snap.nodes.iter().find(|n| n.node_id == "root:verify").unwrap();
+        let v_node = root_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:verify")
+            .unwrap();
         if cycle < 3 {
             assert_eq!(v_node.status, NodeStatus::Pending);
             assert_eq!(
-                root_snap.nodes.iter().find(|n| n.node_id == "root:polish").unwrap().status,
+                root_snap
+                    .nodes
+                    .iter()
+                    .find(|n| n.node_id == "root:polish")
+                    .unwrap()
+                    .status,
                 NodeStatus::Ready
             );
             // Reset polish -> verify Ready for next cycle test
-            root_snap.nodes.iter_mut().find(|n| n.node_id == "root:polish").unwrap().status = NodeStatus::Pending;
-            root_snap.nodes.iter_mut().find(|n| n.node_id == "root:verify").unwrap().status = NodeStatus::Ready;
+            root_snap
+                .nodes
+                .iter_mut()
+                .find(|n| n.node_id == "root:polish")
+                .unwrap()
+                .status = NodeStatus::Pending;
+            root_snap
+                .nodes
+                .iter_mut()
+                .find(|n| n.node_id == "root:verify")
+                .unwrap()
+                .status = NodeStatus::Ready;
         } else {
             assert_eq!(v_node.status, NodeStatus::Escalated);
         }
@@ -511,7 +639,11 @@ fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
         vgate.command = None;
     }
     let mut call_snap = snap.clone();
-    let v_node = call_snap.nodes.iter_mut().find(|n| n.node_id == "root:verify").unwrap();
+    let v_node = call_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "root:verify")
+        .unwrap();
     v_node.status = NodeStatus::InProgress;
     v_node.claim_revision = 1;
     v_node.worker_id = Some(w("deploy-bot"));
@@ -559,4 +691,3 @@ fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
     );
     assert!(uncertain.failure_transition.is_none());
 }
-

@@ -69,8 +69,7 @@ fn decode_lowercase_hex<const N: usize>(raw: &str, label: &str) -> anyhow::Resul
         raw.len()
     );
     ensure!(
-        raw.bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
         "{label} must contain only lowercase hexadecimal characters"
     );
     let mut bytes = [0u8; N];
@@ -260,8 +259,7 @@ impl FromStr for TraceParent {
 fn decode_hex_byte(raw: &str, label: &str) -> anyhow::Result<u8> {
     ensure!(raw.len() == 2, "{label} must be 2 hex characters");
     ensure!(
-        raw.bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
         "{label} must contain only lowercase hexadecimal characters"
     );
     let mut out = [0u8; 1];

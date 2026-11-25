@@ -7,8 +7,8 @@ mod run_ops;
 mod start;
 pub(super) mod task_ops;
 
-pub(crate) use claim::handle_claim_dyn;
 pub(crate) use crate::context::is_context_reset_required;
+pub(crate) use claim::handle_claim_dyn;
 pub(crate) use run_ops::{handle_clear_dyn, handle_draft_dyn, handle_sync_dyn};
 pub(crate) use start::handle_start_dyn;
 pub(crate) use task_ops::{

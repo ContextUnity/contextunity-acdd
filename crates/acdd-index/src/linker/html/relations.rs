@@ -1,18 +1,15 @@
 use super::templates::{ExpressionRegistry, Match, RenderContextRegistry};
 use crate::languages;
-use crate::models::{
-    compact_graph::CompactGraph as Graph,
-    Facts, Node,
-};
+use crate::models::{compact_graph::CompactGraph as Graph, Facts, Node};
 use crate::semantic::ValueFlowFacts;
 use crate::typed_facts::FlowState;
 use hashbrown::HashMap;
 
 fn is_html_file(facts: &Facts) -> bool {
-    facts
-        .nodes
-        .iter()
-        .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
+    facts.nodes.iter().any(|node| {
+        node.kind == crate::models::tags::NodeKind::Module
+            && node.language == crate::models::tags::LanguageId::Html
+    })
 }
 
 fn is_request_with_rules(
@@ -22,20 +19,19 @@ fn is_request_with_rules(
 ) -> bool {
     node.language == crate::models::tags::LanguageId::Html
         && node.kind == crate::models::tags::NodeKind::HtmlRequest
-        && !flow.fact_limit_exceeded
-        && flow.rule_origins().any(|origin| {
-            syntax_rules.iter().any(|rule| {
-                rule.pack == origin.pack
-                    && rule.id == origin.rule
-                    && matches!(
-                        &rule.operation,
-                        languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes {
-                            request_node, ..
-                        } if node.detail_str(crate::models::details::NodeDetailKey::REQUEST_NODE_ROLE)
-                            == Some(request_node.as_str())
-                    )
-            })
+        && !flow.fact_limit_exceeded && flow.rule_origins().any(|origin| {
+        syntax_rules.iter().any(|rule| {
+            rule.pack == origin.pack
+                && rule.id == origin.rule
+                && matches!(
+                    &rule.operation,
+                    languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes {
+                        request_node, ..
+                    } if node.detail_str(crate::models::details::NodeDetailKey::REQUEST_NODE_ROLE)
+                        == Some(request_node.as_str())
+                )
         })
+    })
 }
 
 pub(crate) fn is_request(
@@ -86,7 +82,8 @@ fn has_client_route_mismatch(client_url: &str, route_node: &Node) -> bool {
         .next()
         .unwrap_or(client_url)
         .trim_matches('/');
-    let route_path = route_node.detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH)
+    let route_path = route_node
+        .detail_entry(crate::models::details::NodeDetailKey::ROUTE_PATH)
         .as_str()
         .unwrap_or("")
         .trim_start_matches('^')
@@ -147,7 +144,10 @@ pub(in crate::linker) fn emit_request_routes(
         is_request_with_rules(node, facts, &context.syntax_rules)
     }) {
         let (method, url) = node.name.split_once(' ').unwrap_or(("GET", &node.name));
-        let status = node.detail_entry(crate::models::details::NodeDetailKey::URL_STATUS).as_str().unwrap_or("");
+        let status = node
+            .detail_entry(crate::models::details::NodeDetailKey::URL_STATUS)
+            .as_str()
+            .unwrap_or("");
         match status {
             "remote" => graph.push_coverage(
                 path,

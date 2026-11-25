@@ -688,7 +688,8 @@ impl DependencyGraphBuilder<'_> {
             )
         };
         let empty_archives = BTreeMap::new();
-        let archived_specs = self.discovered
+        let archived_specs = self
+            .discovered
             .checkout_archives
             .get(checkout)
             .unwrap_or(&empty_archives);
@@ -712,14 +713,16 @@ impl DependencyGraphBuilder<'_> {
             Some(&preloaded),
         )?;
         if qualified.is_none() && matches!(resolved, DepTargetResolution::NotFound) {
-            if let Some(sibling) = self.discovered
+            if let Some(sibling) = self
+                .discovered
                 .sibling_candidates
                 .get(spec_id)
                 .and_then(|paths| paths.iter().find(|path| path.as_path() != checkout))
             {
                 let scoped = &self.discovered.checkout_specs[sibling];
                 let sibling_context = PreloadedDepContext {
-                    archived_specs: self.discovered
+                    archived_specs: self
+                        .discovered
                         .checkout_archives
                         .get(sibling)
                         .unwrap_or(&empty_archives),
@@ -760,7 +763,8 @@ impl DependencyGraphBuilder<'_> {
         };
         let local_vertex = qualified.is_some()
             && target_in_checkout
-            && self.discovered
+            && self
+                .discovered
                 .specs_by_id
                 .get(spec_id)
                 .is_some_and(|info| info.checkout == checkout);

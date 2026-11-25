@@ -144,10 +144,7 @@ fn bounded_chars(value: &str, maximum: usize) -> String {
     value.chars().take(maximum).collect()
 }
 
-fn ambiguous_candidates(
-    conn: &Connection,
-    ids: &[String],
-) -> Result<Vec<AmbiguousCandidate>> {
+fn ambiguous_candidates(conn: &Connection, ids: &[String]) -> Result<Vec<AmbiguousCandidate>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

@@ -16,7 +16,9 @@ pub enum ActivationCondition {
     /// Activates when the file extension (without leading dot) equals `extension`.
     FileExtension { extension: String },
     /// Activates when any nested condition matches (bounded nesting depth <= 4).
-    Any { conditions: Vec<ActivationCondition> },
+    Any {
+        conditions: Vec<ActivationCondition>,
+    },
 }
 
 /// Two-tier evaluation state for workspace-time vs file-syntax-time activation.
@@ -82,7 +84,9 @@ impl ActivationCondition {
         match self {
             Self::Package { name } => {
                 ensure!(
-                    !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control),
+                    !name.trim().is_empty()
+                        && name.len() <= 256
+                        && !name.chars().any(char::is_control),
                     "activation.name must be nonempty"
                 );
             }

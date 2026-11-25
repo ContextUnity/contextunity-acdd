@@ -19,10 +19,10 @@ use serde_json::{json, Value};
 
 pub(crate) use dead_tails::dead_tails_paged;
 pub use duplicates::duplicates_paged;
-pub use impact::{impact_with_path_options, removal_paged_with_path};
 use impact::traverse_with_path_options;
-pub use types::{GraphQueryOptions, ImpactDirection, TraversalMode, TraversalOptions};
+pub use impact::{impact_with_path_options, removal_paged_with_path};
 use types::GraphQueryOp;
+pub use types::{GraphQueryOptions, ImpactDirection, TraversalMode, TraversalOptions};
 
 pub(super) fn predecessor_endpoints(
     direction: ImpactDirection,
@@ -108,7 +108,9 @@ pub fn query_with_path_options(
                 page: options,
             },
         ),
-        GraphQueryOp::Slice => slice::slice_paged(conn, selector.unwrap_or(""), path, depth, options),
+        GraphQueryOp::Slice => {
+            slice::slice_paged(conn, selector.unwrap_or(""), path, depth, options)
+        }
         GraphQueryOp::Untested => impact::untested_paged(conn, selector, path, options),
         GraphQueryOp::Implementations => {
             impact::implementations_paged(conn, selector.unwrap_or(""), path, options)
@@ -183,14 +185,29 @@ mod traversal_seam_tests {
 
     #[test]
     fn boundary_enums_parse_accepted_and_rejected_values() {
-        assert_eq!(ImpactDirection::parse_optional(None).unwrap(), ImpactDirection::Inbound);
-        assert_eq!(ImpactDirection::parse_optional(Some("outbound")).unwrap(), ImpactDirection::Outbound);
+        assert_eq!(
+            ImpactDirection::parse_optional(None).unwrap(),
+            ImpactDirection::Inbound
+        );
+        assert_eq!(
+            ImpactDirection::parse_optional(Some("outbound")).unwrap(),
+            ImpactDirection::Outbound
+        );
         assert!(ImpactDirection::parse_optional(Some("sideways")).is_err());
 
         assert_eq!(TraversalMode::parse_optional(None), TraversalMode::Calls);
-        assert_eq!(TraversalMode::parse_optional(Some("dataflow")), TraversalMode::DataFlow);
-        assert_eq!(TraversalMode::parse_optional(Some("all")), TraversalMode::All);
-        assert!(matches!("dead_tails".parse::<GraphQueryOp>(), Ok(GraphQueryOp::DeadTails)));
+        assert_eq!(
+            TraversalMode::parse_optional(Some("dataflow")),
+            TraversalMode::DataFlow
+        );
+        assert_eq!(
+            TraversalMode::parse_optional(Some("all")),
+            TraversalMode::All
+        );
+        assert!(matches!(
+            "dead_tails".parse::<GraphQueryOp>(),
+            Ok(GraphQueryOp::DeadTails)
+        ));
         assert!("cypher".parse::<GraphQueryOp>().is_err());
     }
 
@@ -258,7 +275,11 @@ mod traversal_seam_tests {
                 a["src_public_id"]
                     .as_str()
                     .cmp(&b["src_public_id"].as_str())
-                    .then_with(|| a["dst_public_id"].as_str().cmp(&b["dst_public_id"].as_str()))
+                    .then_with(|| {
+                        a["dst_public_id"]
+                            .as_str()
+                            .cmp(&b["dst_public_id"].as_str())
+                    })
                     .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
                     .then_with(|| a["line"].as_i64().cmp(&b["line"].as_i64()))
                     .then_with(|| {

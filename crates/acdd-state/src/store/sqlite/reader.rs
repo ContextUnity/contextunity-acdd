@@ -6,10 +6,12 @@ use crate::types::{
     ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot, RunGraphSnapshot, RunRecord,
     RunTombstoneRecord, SubtaskRecord, TaskDependencyRecord, TraceStatus,
 };
-use acdd_core::fs::same_filesystem_path;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::same_filesystem_path;
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, Row};
+use rusqlite::{
+    params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, Row,
+};
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -139,11 +141,19 @@ fn to_bool_flag(val: i64, field: &str) -> Result<bool, StateError> {
     }
 }
 
-fn col<T: rusqlite::types::FromSql>(row: &Row<'_>, idx: usize, field: &str) -> Result<T, StateError> {
+fn col<T: rusqlite::types::FromSql>(
+    row: &Row<'_>,
+    idx: usize,
+    field: &str,
+) -> Result<T, StateError> {
     row.get(idx).map_err(|err| map_sql_err(err, field))
 }
 
-fn col_enum<T: FromStr<Err = StateError>>(row: &Row<'_>, idx: usize, field: &str) -> Result<T, StateError> {
+fn col_enum<T: FromStr<Err = StateError>>(
+    row: &Row<'_>,
+    idx: usize,
+    field: &str,
+) -> Result<T, StateError> {
     parse_enum(&col::<String>(row, idx, field)?, field)
 }
 
@@ -251,7 +261,11 @@ fn decode_dependency_row(row: &Row<'_>) -> Result<TaskDependencyRecord, StateErr
         depends_on_ref: if depends_on_ref_raw == TaskRef::WHOLE_SPEC {
             TaskRef::whole_spec()
         } else {
-            parse_id(depends_on_ref_raw, TaskRef::new, "task_dependencies.depends_on_ref")?
+            parse_id(
+                depends_on_ref_raw,
+                TaskRef::new,
+                "task_dependencies.depends_on_ref",
+            )?
         },
         satisfied: col_bool(row, 5, "task_dependencies.satisfied")?,
     })
@@ -304,9 +318,18 @@ fn decode_trace_row(row: &Row<'_>) -> Result<GateTraceRecord, StateError> {
         exit_code: col(row, 12, "gate_traces.exit_code")?,
         passed_tests: col_json(row, 13, "gate_traces.passed_tests_json")?,
         failed_tests: col_json(row, 14, "gate_traces.failed_tests_json")?,
-        check_results: col_json::<Vec<CheckResultRecord>>(row, 15, "gate_traces.check_results_json")?,
+        check_results: col_json::<Vec<CheckResultRecord>>(
+            row,
+            15,
+            "gate_traces.check_results_json",
+        )?,
         candidate_tree_before: col_id(row, 16, TreeOid::new, "gate_traces.candidate_tree_before")?,
-        candidate_tree_after: col_opt_id(row, 17, TreeOid::new, "gate_traces.candidate_tree_after")?,
+        candidate_tree_after: col_opt_id(
+            row,
+            17,
+            TreeOid::new,
+            "gate_traces.candidate_tree_after",
+        )?,
         log_relpath: col(row, 18, "gate_traces.log_relpath")?,
         started_at: col(row, 19, "gate_traces.started_at")?,
         finished_at: col(row, 20, "gate_traces.finished_at")?,
@@ -354,7 +377,12 @@ fn decode_tombstone_row(row: &Row<'_>) -> Result<RunTombstoneRecord, StateError>
         generation: col_u64(row, 8, "run_tombstones.generation")?,
         terminal_status: col_enum(row, 9, "run_tombstones.terminal_status")?,
         target_base: col(row, 10, "run_tombstones.target_base")?,
-        target_base_commit: col_opt_id(row, 11, CommitOid::new, "run_tombstones.target_base_commit")?,
+        target_base_commit: col_opt_id(
+            row,
+            11,
+            CommitOid::new,
+            "run_tombstones.target_base_commit",
+        )?,
         archive_path: col(row, 12, "run_tombstones.archive_path")?,
         closed_commit: col_opt_id(row, 13, CommitOid::new, "run_tombstones.closed_commit")?,
         cleanup_pending: col_bool(row, 14, "run_tombstones.cleanup_pending")?,
@@ -611,7 +639,9 @@ fn query_paginated_table<T>(
 ) -> Result<(Vec<T>, usize), StateError> {
     let count_sql = format!("SELECT COUNT(*) FROM {table}{where_sql}");
     let total_raw: i64 = conn
-        .query_row(&count_sql, params_from_iter(bind_values.iter()), |row| row.get(0))
+        .query_row(&count_sql, params_from_iter(bind_values.iter()), |row| {
+            row.get(0)
+        })
         .map_err(|err| map_sql_err(err, &format!("list_{table}(count)")))?;
     let total = to_usize(total_raw, &format!("{table}_total"))?;
 
@@ -619,9 +649,8 @@ fn query_paginated_table<T>(
     page_params.push(SqlValue::Integer(i64::try_from(limit).unwrap_or(100)));
     page_params.push(SqlValue::Integer(i64::try_from(offset).unwrap_or(i64::MAX)));
 
-    let page_sql = format!(
-        "SELECT {cols_sql} FROM {table}{where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?"
-    );
+    let page_sql =
+        format!("SELECT {cols_sql} FROM {table}{where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?");
     let mut stmt = conn
         .prepare(&page_sql)
         .map_err(|err| map_sql_err(err, &format!("prepare list_{table}")))?;
@@ -694,7 +723,11 @@ fn list_runs_inner(
         };
         query_paginated_table(
             conn,
-            ("run_tombstones", TOMBSTONE_COLS, "closed_at DESC, run_id ASC"),
+            (
+                "run_tombstones",
+                TOMBSTONE_COLS,
+                "closed_at DESC, run_id ASC",
+            ),
             tomb_where,
             tomb_values,
             (limit, offset),
@@ -743,9 +776,8 @@ fn resolve_active_run_by_worktree_inner(
 ) -> Result<Option<RunRecord>, StateError> {
     let run_cols_sql = run_cols(schema_version);
     // 1. Direct exact match on runs.worktree (enforced unique for active runs by uq_runs_active_worktree).
-    let exact_run_sql = format!(
-        "SELECT {run_cols_sql} FROM runs WHERE status = 'active' AND worktree = ?1"
-    );
+    let exact_run_sql =
+        format!("SELECT {run_cols_sql} FROM runs WHERE status = 'active' AND worktree = ?1");
     if let Some(run) = query_opt_decoded(
         conn,
         &exact_run_sql,
@@ -827,7 +859,8 @@ fn resolve_active_run_by_worktree_inner(
         .map_err(|err| map_sql_err(err, "resolve_active_run_by_worktree(node_wt)"))?;
 
     for row in wt_rows {
-        let (rid_raw, wt) = row.map_err(|err| map_sql_err(err, "resolve_active_run_by_worktree(node_wt row)"))?;
+        let (rid_raw, wt) =
+            row.map_err(|err| map_sql_err(err, "resolve_active_run_by_worktree(node_wt row)"))?;
         if same_filesystem_path(Path::new(&wt), target_path) {
             let rid = parse_id(rid_raw, RunId::new, "gate_nodes.run_id")?;
             if matched_ids.insert(rid.clone()) {
@@ -871,7 +904,13 @@ pub(crate) fn load_node(
     node_id: &str,
 ) -> Result<Option<GateNodeRecord>, StateError> {
     let sql = format!("SELECT {NODE_COLS} FROM gate_nodes WHERE run_id = ?1 AND node_id = ?2");
-    query_opt_decoded(conn, &sql, params![run_id.as_str(), node_id], decode_node_row, "load_node")
+    query_opt_decoded(
+        conn,
+        &sql,
+        params![run_id.as_str(), node_id],
+        decode_node_row,
+        "load_node",
+    )
 }
 
 pub(crate) fn latest_claim(
@@ -1058,7 +1097,13 @@ pub(crate) fn load_tombstone(
     run_id: &RunId,
 ) -> Result<Option<RunTombstoneRecord>, StateError> {
     let sql = format!("SELECT {TOMBSTONE_COLS} FROM run_tombstones WHERE run_id = ?1");
-    query_opt_decoded(conn, &sql, params![run_id.as_str()], decode_tombstone_row, "load_tombstone")
+    query_opt_decoded(
+        conn,
+        &sql,
+        params![run_id.as_str()],
+        decode_tombstone_row,
+        "load_tombstone",
+    )
 }
 
 fn extract_spec_number(candidate: &str, prefix: &str) -> Option<u32> {
@@ -1102,7 +1147,8 @@ fn max_spec_number_inner(
         })
         .map_err(|err| map_sql_err(err, "max_spec_number(runs)"))?;
     for row in runs_rows {
-        let (run_name, spec_path) = row.map_err(|err| map_sql_err(err, "max_spec_number(runs row)"))?;
+        let (run_name, spec_path) =
+            row.map_err(|err| map_sql_err(err, "max_spec_number(runs row)"))?;
         for candidate in [Some(run_name), spec_path].into_iter().flatten() {
             if let Some(num) = extract_spec_number(&candidate, prefix) {
                 best = Some(best.map_or(num, |cur| cur.max(num)));
@@ -1124,7 +1170,10 @@ fn max_spec_number_inner(
     for row in tomb_rows {
         let (run_name, spec_id, archive_path) =
             row.map_err(|err| map_sql_err(err, "max_spec_number(run_tombstones row)"))?;
-        for candidate in [Some(run_name), spec_id, archive_path].into_iter().flatten() {
+        for candidate in [Some(run_name), spec_id, archive_path]
+            .into_iter()
+            .flatten()
+        {
             if let Some(num) = extract_spec_number(&candidate, prefix) {
                 best = Some(best.map_or(num, |cur| cur.max(num)));
             }
@@ -1134,7 +1183,9 @@ fn max_spec_number_inner(
     Ok(best)
 }
 
-pub(crate) fn observability_snapshot(conn: &Connection) -> Result<ObservabilitySnapshot, StateError> {
+pub(crate) fn observability_snapshot(
+    conn: &Connection,
+) -> Result<ObservabilitySnapshot, StateError> {
     with_read_tx(conn, "begin observability_snapshot", || {
         observability_snapshot_inner(conn)
     })
@@ -1142,9 +1193,11 @@ pub(crate) fn observability_snapshot(conn: &Connection) -> Result<ObservabilityS
 
 fn observability_snapshot_inner(conn: &Connection) -> Result<ObservabilitySnapshot, StateError> {
     let active_runs: i64 = conn
-        .query_row("SELECT COUNT(*) FROM runs WHERE status = 'active'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE status = 'active'",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|err| map_sql_err(err, "observability_snapshot(active_runs)"))?;
 
     let completed_runs: i64 = conn

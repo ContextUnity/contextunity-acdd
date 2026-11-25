@@ -7,9 +7,7 @@ use crate::machine::{
     MachineProfileInput, MachineProofKind, MachineSavePolicy, MachineTasksBlockDef,
 };
 use crate::profile::{GateDef, ProofDef, ProofKind, ResolvedGateProfile};
-use crate::spec::{
-    extract_spec_number, format_next_spec_id, parse_spec, SpecDocument, SpecStatus,
-};
+use crate::spec::{extract_spec_number, format_next_spec_id, parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::backup::RestoredActiveRun;
 use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunTombstoneRecord,
@@ -48,13 +46,7 @@ pub fn match_spec_collection(
     collections
         .iter()
         .filter(|(_, cfg)| cfg.matches_rel_path(norm))
-        .max_by_key(|(_, cfg)| {
-            cfg.patterns()
-                .into_iter()
-                .map(str::len)
-                .max()
-                .unwrap_or(0)
-        })
+        .max_by_key(|(_, cfg)| cfg.patterns().into_iter().map(str::len).max().unwrap_or(0))
         .map(|(name, _)| name.clone())
 }
 
@@ -112,7 +104,9 @@ pub fn parse_profile_from_run(run: &RunRecord) -> Result<ResolvedGateProfile, St
 }
 
 /// Convert a [`ResolvedGateProfile`] into the pure state machine's [`MachineProfileInput`].
-pub fn to_machine_profile(profile: &ResolvedGateProfile) -> Result<MachineProfileInput, StateError> {
+pub fn to_machine_profile(
+    profile: &ResolvedGateProfile,
+) -> Result<MachineProfileInput, StateError> {
     let mut proof_schemas: BTreeMap<String, SchemaDef> = profile
         .proofs
         .iter()
@@ -245,10 +239,9 @@ pub fn parse_cursor_for_snapshot(
 ) -> Result<NodeCursor, StateError> {
     let trimmed = raw.trim();
     NodeCursor::parse_with_task_lookup(trimmed, |seg| {
-        snapshot
-            .nodes
-            .iter()
-            .any(|n| n.kind == NodeKind::Task && n.task_ref.as_ref().is_some_and(|t| t.as_str() == seg))
+        snapshot.nodes.iter().any(|n| {
+            n.kind == NodeKind::Task && n.task_ref.as_ref().is_some_and(|t| t.as_str() == seg)
+        })
     })
     .map_err(StateError::from)
 }
@@ -290,7 +283,10 @@ pub fn auto_select_ready_cursor(
     }
     Err(StateError::new(
         ErrorCode::GateVerificationFailed,
-        format!("no ready gate nodes available to claim in run '{}'", snapshot.run.run_id),
+        format!(
+            "no ready gate nodes available to claim in run '{}'",
+            snapshot.run.run_id
+        ),
     ))
 }
 
@@ -300,9 +296,8 @@ pub fn auto_select_context_cursor(
     worker_id: Option<&WorkerId>,
 ) -> Result<NodeCursor, StateError> {
     let is_gate = |n: &GateNodeRecord| matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate);
-    let matches_worker = |n: &GateNodeRecord| {
-        worker_id.is_none_or(|w| n.worker_id.as_ref() == Some(w))
-    };
+    let matches_worker =
+        |n: &GateNodeRecord| worker_id.is_none_or(|w| n.worker_id.as_ref() == Some(w));
     let to_cursors = |nodes: &[&GateNodeRecord]| -> Result<Vec<String>, StateError> {
         nodes
             .iter()
@@ -383,7 +378,9 @@ fn candidate_archive_relpaths(spec_path: &str, spec_collection_paths: &[String])
             .strip_prefix("./")
             .unwrap_or(&trimmed)
             .trim_end_matches('/');
-        if !trimmed.is_empty() && path.starts_with(Path::new(trimmed)) && trimmed.len() > matched_len
+        if !trimmed.is_empty()
+            && path.starts_with(Path::new(trimmed))
+            && trimmed.len() > matched_len
         {
             matched_len = trimmed.len();
             matched_col = Some(trimmed.to_owned());
@@ -604,12 +601,7 @@ pub(crate) fn reconcile_restored_runs_with_archives(
     Ok(tombstones)
 }
 
-fn max_spec_num_in_dir(
-    primary: &Path,
-    scan_dir: &Path,
-    prefix: &str,
-    max_num: &mut Option<u32>,
-) {
+fn max_spec_num_in_dir(primary: &Path, scan_dir: &Path, prefix: &str, max_num: &mut Option<u32>) {
     if fs::symlink_metadata(scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
         return;
     }

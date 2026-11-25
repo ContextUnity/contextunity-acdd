@@ -431,7 +431,11 @@ fn build_active_task_entries(
             let raw = if dep.depends_on_run_id == graph.run.run_id {
                 dep.depends_on_ref.as_str().to_owned()
             } else if dep.depends_on_workspace == "." {
-                format!("{}:{}", dep.depends_on_run_id.as_str(), dep.depends_on_ref.as_str())
+                format!(
+                    "{}:{}",
+                    dep.depends_on_run_id.as_str(),
+                    dep.depends_on_ref.as_str()
+                )
             } else {
                 format!(
                     "{}/{}:{}",
@@ -469,7 +473,8 @@ fn build_active_task_entries(
         let t_ref = task_ref.as_str().to_owned();
         let disk_task = info.doc.tasks.iter().find(|t| t.task_ref.as_str() == t_ref);
         let deps = deps_by_task.remove(&t_ref).unwrap_or_default();
-        let all_deps_ok = crate::machine::schedule::task_dependencies_satisfied(graph, task_ref, &obs);
+        let all_deps_ok =
+            crate::machine::schedule::task_dependencies_satisfied(graph, task_ref, &obs);
         let (status, active_gates) = resolve_task_status_and_gates(
             info,
             &t_ref,

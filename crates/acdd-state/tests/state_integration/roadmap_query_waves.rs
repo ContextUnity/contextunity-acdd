@@ -395,8 +395,12 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
         )
     };
     let uncommitted = query_cross_worktree();
-    let sibling_dep = uncommitted.waves.iter().flat_map(|wave| &wave.specs)
-        .find(|spec| spec.spec_id == "AC-015").unwrap();
+    let sibling_dep = uncommitted
+        .waves
+        .iter()
+        .flat_map(|wave| &wave.specs)
+        .find(|spec| spec.spec_id == "AC-015")
+        .unwrap();
     assert_eq!(sibling_dep.depends_on[0].status, "planned");
     assert!(uncommitted
         .archived
@@ -425,7 +429,10 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
         "---\nid: AC-012\ntitle: Sibling Archive In Main With Different Digest\nstatus: completed\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [crates/s/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    git_ok(main_root, &["add", "docs/milestones/archive/AC-012-sib-arch.md"]);
+    git_ok(
+        main_root,
+        &["add", "docs/milestones/archive/AC-012-sib-arch.md"],
+    );
     git_ok(main_root, &["commit", "-m", "Commit archive in main"]);
     fs::write(
         feat_wt.join("docs/milestones/AC-012-planned.md"),
@@ -446,7 +453,10 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
     let ac01 = all_w0.iter().find(|s| s.spec_id == "AC-001").unwrap();
     assert_eq!(ac01.divergence.len(), 2);
     assert!(cross_resp.warnings.iter().any(|w| w.contains("AC-001")));
-    assert!(cross_resp.warnings.iter().any(|w| w.contains("AC-012") && w.contains("diverges")));
+    assert!(cross_resp
+        .warnings
+        .iter()
+        .any(|w| w.contains("AC-012") && w.contains("diverges")));
     let ac13 = all_w0
         .iter()
         .find(|s| s.spec_id == "AC-013")
@@ -473,17 +483,33 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
 
     let writer_cfg = base_config(main_root);
     let _writer = StateEngine::open(writer_cfg.clone(), provider).unwrap();
-    let mut graph = build_rich_graph(main_root, "run-cleared-archive", acdd_state::types::IsolationMode::InPlace);
+    let mut graph = build_rich_graph(
+        main_root,
+        "run-cleared-archive",
+        acdd_state::types::IsolationMode::InPlace,
+    );
     graph.run.worktree = None;
     graph.run.run_name = RunName::new("cleared-archive").unwrap();
-    let tombstone = sample_tombstone("run-cleared-archive", "cleared-archive", Some("AC-012"), acdd_state::types::TerminalStatus::Cleared, None);
-    backend_for(&writer_cfg).exec_tx(|tx| {
-        tx.insert_run_graph(&graph)?;
-        tx.archive_and_prune_run(&empty_preconditions(1), &tombstone)
-    }).unwrap();
+    let tombstone = sample_tombstone(
+        "run-cleared-archive",
+        "cleared-archive",
+        Some("AC-012"),
+        acdd_state::types::TerminalStatus::Cleared,
+        None,
+    );
+    backend_for(&writer_cfg)
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&graph)?;
+            tx.archive_and_prune_run(&empty_preconditions(1), &tombstone)
+        })
+        .unwrap();
     let cleared = query_cross_worktree();
-    let dependency = cleared.waves.iter().flat_map(|wave| &wave.specs)
-        .find(|spec| spec.spec_id == "AC-013").unwrap();
+    let dependency = cleared
+        .waves
+        .iter()
+        .flat_map(|wave| &wave.specs)
+        .find(|spec| spec.spec_id == "AC-013")
+        .unwrap();
     assert_eq!(dependency.depends_on[0].status, "cleared");
     assert!(!dependency.depends_on[0].satisfied);
 }
@@ -676,8 +702,9 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
         "docs/milestones/AC-CONF.md",
         "---\nid: AC-CONF\ntitle: Confinement Base\nstatus: planned\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     );
-    let adv_ro = StateQueryEngine::open_read_only(base_config(adv_root), adv_provider.clone()).unwrap();
-// Confinement fail-closed on symlink escaping workspace root in docs/milestones/ AND in archive/.
+    let adv_ro =
+        StateQueryEngine::open_read_only(base_config(adv_root), adv_provider.clone()).unwrap();
+    // Confinement fail-closed on symlink escaping workspace root in docs/milestones/ AND in archive/.
     let outside = make_temp_dir("outside-escape");
     fs::write(outside.path().join("secret.md"), "# escaped\n").unwrap();
     let active_link = adv_root.join("docs/milestones/escape.md");
@@ -878,7 +905,6 @@ fn seam_roadmap_query_waves_malformed_linked_deps() {
 fn seam_roadmap_query_waves_archive_symlink_identity_and_non_utf8() {
     let adv_provider = mock_provider();
 
-
     let ws_tmp = make_temp_dir("roadmap-r7-git-identity");
     let ws_root = ws_tmp.path();
     let outside = make_temp_dir("roadmap-r7-outside");
@@ -939,11 +965,24 @@ fn seam_roadmap_query_waves_archive_symlink_identity_and_non_utf8() {
         "unexpected warnings: {:?}",
         r7_resp.warnings
     );
-    fs::write(ws_root.join("docs/milestones/archive/invalid-utf8.md"), [0xff]).unwrap();
+    fs::write(
+        ws_root.join("docs/milestones/archive/invalid-utf8.md"),
+        [0xff],
+    )
+    .unwrap();
     git_commit_all(ws_root, "invalid utf8 archive");
-    let mixed = roadmap_query(&r7_ro, RoadmapReq { archived: true, ..RoadmapReq::default() });
+    let mixed = roadmap_query(
+        &r7_ro,
+        RoadmapReq {
+            archived: true,
+            ..RoadmapReq::default()
+        },
+    );
     assert_eq!(mixed.archived_count, 2);
-    assert!(mixed.warnings.iter().any(|warning| warning.contains("invalid-utf8.md")));
+    assert!(mixed
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("invalid-utf8.md")));
 
     // Round 8a: Committed-only symlink AT `docs/milestones/archive` itself fails closed.
     let arch_sym_tmp = make_temp_dir("roadmap-r8-archive-dir-sym");
@@ -1264,7 +1303,8 @@ fn seam_roadmap_query_waves_stale_and_same_basename_sibling_checkouts() {
         "---\nid: AC-DIV\ntitle: Right Copy\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/right/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let sib_ro = StateQueryEngine::open_read_only(base_config(&sib_pri), adv_provider.clone()).unwrap();
+    let sib_ro =
+        StateQueryEngine::open_read_only(base_config(&sib_pri), adv_provider.clone()).unwrap();
     let sib_resp = roadmap_query(&sib_ro, RoadmapReq::default());
     let div_spec = sib_resp
         .waves
@@ -1771,23 +1811,46 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     write_spec(&lw_ext_pri, archive, archived_doc);
     git_commit_all(&lw_ext_pri, "closed archive");
     let closed = git_ok(&lw_ext_pri, &["rev-parse", "HEAD"]);
-    let mut graph = build_rich_graph(&lw_ext_pri, "run-ext-closed", acdd_state::types::IsolationMode::InPlace);
+    let mut graph = build_rich_graph(
+        &lw_ext_pri,
+        "run-ext-closed",
+        acdd_state::types::IsolationMode::InPlace,
+    );
     graph.run.run_name = RunName::new("ext-closed").unwrap();
     graph.run.worktree = None;
-    let mut tomb = sample_tombstone("run-ext-closed", "ext-closed", Some("EXT-011"), acdd_state::types::TerminalStatus::Completed, Some(archive));
+    let mut tomb = sample_tombstone(
+        "run-ext-closed",
+        "ext-closed",
+        Some("EXT-011"),
+        acdd_state::types::TerminalStatus::Completed,
+        Some(archive),
+    );
     tomb.closed_commit = Some(acdd_core::ids::CommitOid::new(closed.trim()).unwrap());
-    backend_for(&ext_cfg).exec_tx(|tx| {
-        tx.insert_run_graph(&graph)?;
-        tx.archive_and_prune_run(&empty_preconditions(1), &tomb)
-    }).unwrap();
-    write_spec(&lw_ext_pri, archive, &archived_doc.replace("status: completed\nacceptance_criteria", "status: planned\nacceptance_criteria"));
+    backend_for(&ext_cfg)
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&graph)?;
+            tx.archive_and_prune_run(&empty_preconditions(1), &tomb)
+        })
+        .unwrap();
+    write_spec(
+        &lw_ext_pri,
+        archive,
+        &archived_doc.replace(
+            "status: completed\nacceptance_criteria",
+            "status: planned\nacceptance_criteria",
+        ),
+    );
     git_commit_all(&lw_ext_pri, "change archive after closure");
     for (task, expected_ok) in [("T-01", true), ("T-02", false), ("missing", false)] {
         let source = linked_source.replace("EXT-010:T-01", &format!("EXT-011:{task}"));
         let doc = acdd_state::spec::parse_spec(&source).unwrap();
         let issues = acdd_state::usecases::deps::validate_spec_dependencies(
-            &lw_main, &acdd_core::config::load_adapter(&lw_main, None).unwrap(), None, None,
-            &doc, std::slice::from_ref(&doc),
+            &lw_main,
+            &acdd_core::config::load_adapter(&lw_main, None).unwrap(),
+            None,
+            None,
+            &doc,
+            std::slice::from_ref(&doc),
         );
         assert_eq!(issues.is_empty(), expected_ok, "{task}: {issues:?}");
     }
@@ -1812,31 +1875,31 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     fs::write(&outside_spec, "# Outside\n").unwrap();
     #[cfg(unix)]
     {
-    for (checkout, link, target, diagnostic) in [
-        (
-            "ext-sec",
-            lw_ext_sec.join("docs/milestones/EXT-999.md"),
-            outside_spec,
-            "must not be a symlink",
-        ),
-        (
-            "ext-dangling",
-            lw_tmp.path().join("ext-dangling"),
-            lw_tmp.path().join("absent"),
-            "invalid or confined-check failed",
-        ),
-    ] {
-        std::os::unix::fs::symlink(target, &link).unwrap();
-        fs::write(
-            lw_main.join("docs/milestones/MAIN-001.md"),
-            linked_source.replace("../ext-sec", &format!("../{checkout}")),
-        )
-        .unwrap();
-        let error = roadmap_query_err(&lw_ro, RoadmapReq::default());
-        assert_eq!(error.code, ErrorCode::ProfileSchemaInvalid);
-        assert!(error.message.contains(diagnostic), "{error}");
-        fs::remove_file(link).unwrap();
-    }
+        for (checkout, link, target, diagnostic) in [
+            (
+                "ext-sec",
+                lw_ext_sec.join("docs/milestones/EXT-999.md"),
+                outside_spec,
+                "must not be a symlink",
+            ),
+            (
+                "ext-dangling",
+                lw_tmp.path().join("ext-dangling"),
+                lw_tmp.path().join("absent"),
+                "invalid or confined-check failed",
+            ),
+        ] {
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            fs::write(
+                lw_main.join("docs/milestones/MAIN-001.md"),
+                linked_source.replace("../ext-sec", &format!("../{checkout}")),
+            )
+            .unwrap();
+            let error = roadmap_query_err(&lw_ro, RoadmapReq::default());
+            assert_eq!(error.code, ErrorCode::ProfileSchemaInvalid);
+            assert!(error.message.contains(diagnostic), "{error}");
+            fs::remove_file(link).unwrap();
+        }
     }
 }
 
@@ -1869,7 +1932,14 @@ impl MultiRunFixture {
         fs::create_dir(root.join(".acdd/state.sqlite")).unwrap();
         let rw = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
         let ro = StateQueryEngine::open_read_only(cfg.clone(), provider).unwrap();
-        Self { _tmp: tmp, root, prof, cfg, rw, ro }
+        Self {
+            _tmp: tmp,
+            root,
+            prof,
+            cfg,
+            rw,
+            ro,
+        }
     }
 
     fn start_sibling_run(&self) -> (acdd_state::usecases::StartResp, PathBuf) {
@@ -1921,7 +1991,17 @@ impl MultiRunFixture {
         )
         .unwrap();
         let run_id = started.run.run_id.as_str();
-        claim_node(&self.rw, run_id, "T-01.build", "wrong-worker", None, false, false, None).unwrap();
+        claim_node(
+            &self.rw,
+            run_id,
+            "T-01.build",
+            "wrong-worker",
+            None,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         self.rw
             .execute(StateCommand::Submit(Box::new(SubmitReq {
                 run: Some(run_id.to_owned()),
@@ -1988,7 +2068,10 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
     assert!(!sibling.depends_on[0].satisfied);
     assert_eq!(sibling.tasks[0].status, "planned");
     git_ok(&wt_b, &["add", "custom/specs"]);
-    git_ok(&wt_b, &["commit", "-m", "Archive producer in sibling collection"]);
+    git_ok(
+        &wt_b,
+        &["commit", "-m", "Archive producer in sibling collection"],
+    );
     fs::remove_file(wt_b.join("custom/specs/archive/AC-ARC.md")).unwrap();
     fs::write(
         multi_root.join("docs/milestones/AC-ABSENT.md"),
@@ -2026,7 +2109,10 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         assert!(row.scope_overlaps.is_empty());
         assert_eq!(row.tasks[0].target.as_deref(), Some(task_target));
         assert_eq!(row.tasks[0].depends_on[0].satisfied, satisfied);
-        assert_eq!(row.tasks[0].status, if satisfied { "ready" } else { "planned" });
+        assert_eq!(
+            row.tasks[0].status,
+            if satisfied { "ready" } else { "planned" }
+        );
         let StateQueryOutput::Next(next) = fx
             .ro
             .query(StateQuery::Next(NextReq {
@@ -2037,31 +2123,51 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         else {
             panic!("unexpected next");
         };
-        assert_eq!(next.ready_cursors.contains(&row.tasks[0].task_ref), row.tasks[0].status == "ready");
+        assert_eq!(
+            next.ready_cursors.contains(&row.tasks[0].task_ref),
+            row.tasks[0].status == "ready"
+        );
         let annotations: Vec<_> = row
             .depends_on
             .iter()
             .map(|dep| (dep.raw.as_str(), dep.status.as_str(), dep.satisfied))
             .collect();
         if satisfied {
-            assert_eq!(annotations, [("sibling/AC-ARC", "archived", true), ("sibling/AC-ABSENT", "missing", false)]);
+            assert_eq!(
+                annotations,
+                [
+                    ("sibling/AC-ARC", "archived", true),
+                    ("sibling/AC-ABSENT", "missing", false)
+                ]
+            );
         } else {
             assert!(annotations.is_empty());
         }
     }
     let StateQueryOutput::Roadmap(checkouts) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            include_tasks: true,
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
     };
     let planned = |id| {
-        checkouts.waves.iter().flat_map(|wave| &wave.specs).find(|spec| spec.spec_id == id).unwrap()
+        checkouts
+            .waves
+            .iter()
+            .flat_map(|wave| &wave.specs)
+            .find(|spec| spec.spec_id == id)
+            .unwrap()
     };
     let consumer = planned("AC-CHECKOUT");
     for deps in [&consumer.depends_on, &consumer.tasks[0].depends_on] {
-        let outcomes: Vec<_> = deps.iter().map(|dep| (dep.status.as_str(), dep.satisfied)).collect();
+        let outcomes: Vec<_> = deps
+            .iter()
+            .map(|dep| (dep.status.as_str(), dep.satisfied))
+            .collect();
         assert_eq!(outcomes, [("archived", true), ("missing", false)]);
     }
     for id in ["AC-ARC", "AC-ABSENT"] {
@@ -2071,7 +2177,10 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         }
     }
     assert_eq!(planned("AC-ABSENT").unblocks_specs, 0);
-    let wrong_runs = [fx.start_wrong_run("AC-ABSENT", true), fx.start_wrong_run("AC-ARC", false)];
+    let wrong_runs = [
+        fx.start_wrong_run("AC-ABSENT", true),
+        fx.start_wrong_run("AC-ARC", false),
+    ];
     let after_wrong_runs = query_multi();
     let sibling = after_wrong_runs
         .in_progress
@@ -2079,12 +2188,19 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         .find(|entry| entry.run_id.as_deref() == Some(run_b.run.run_id.as_str()))
         .unwrap();
     assert_eq!(
-        sibling.depends_on.iter().map(|dep| (dep.status.as_str(), dep.satisfied)).collect::<Vec<_>>(),
+        sibling
+            .depends_on
+            .iter()
+            .map(|dep| (dep.status.as_str(), dep.satisfied))
+            .collect::<Vec<_>>(),
         [("archived", true), ("missing", false)]
     );
     let StateQueryOutput::Roadmap(after_wrong_runs) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            include_tasks: true,
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
@@ -2096,7 +2212,10 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         .find(|spec| spec.spec_id == "AC-CHECKOUT")
         .unwrap();
     for deps in [&consumer.depends_on, &consumer.tasks[0].depends_on] {
-        let outcomes: Vec<_> = deps.iter().map(|dep| (dep.status.as_str(), dep.satisfied)).collect();
+        let outcomes: Vec<_> = deps
+            .iter()
+            .map(|dep| (dep.status.as_str(), dep.satisfied))
+            .collect();
         assert_eq!(outcomes, [("archived", true), ("missing", false)]);
     }
     for run in &wrong_runs {
@@ -2105,8 +2224,14 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
             .iter()
             .find(|entry| entry.run_id.as_deref() == Some(run.run.run_id.as_str()))
             .unwrap();
-        assert!(entry.blocks.iter().all(|label| !label.starts_with("AC-CHECKOUT")));
-        assert!(entry.tasks[0].blocks.iter().all(|label| !label.starts_with("AC-CHECKOUT")));
+        assert!(entry
+            .blocks
+            .iter()
+            .all(|label| !label.starts_with("AC-CHECKOUT")));
+        assert!(entry.tasks[0]
+            .blocks
+            .iter()
+            .all(|label| !label.starts_with("AC-CHECKOUT")));
     }
     let run_b_id = run_b.run.run_id.as_str();
     rusqlite::Connection::open(multi_root.join(".acdd/custom-state.sqlite"))
@@ -2117,26 +2242,51 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
     let checkout_source = fs::read_to_string(&checkout_path).unwrap();
     fs::write(
         checkout_path,
-        checkout_source.replace(planned_deps, "['sibling/AC-ARC:T-01', 'sibling/AC-ABSENT:T-01', 'sibling/AC-MULTI:T-01']"),
+        checkout_source.replace(
+            planned_deps,
+            "['sibling/AC-ARC:T-01', 'sibling/AC-ABSENT:T-01', 'sibling/AC-MULTI:T-01']",
+        ),
     )
     .unwrap();
     let StateQueryOutput::Roadmap(duplicates) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { spec_id: Some("AC-CHECKOUT".to_owned()), ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            spec_id: Some("AC-CHECKOUT".to_owned()),
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
     };
-    let consumer = duplicates.waves.iter().flat_map(|wave| &wave.specs).next().unwrap();
+    let consumer = duplicates
+        .waves
+        .iter()
+        .flat_map(|wave| &wave.specs)
+        .next()
+        .unwrap();
     for deps in [&consumer.depends_on, &consumer.tasks[0].depends_on] {
-        assert_eq!((deps[2].status.as_str(), deps[2].satisfied), ("satisfied", true));
+        assert_eq!(
+            (deps[2].status.as_str(), deps[2].satisfied),
+            ("satisfied", true)
+        );
     }
     let tomb_rel = "docs/milestones/archive/AC-TOMB.md";
     let tomb_doc = "---\nid: AC-TOMB\ntitle: Checkout Tomb\nstatus: completed\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/t/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n";
     write_spec(multi_root, tomb_rel, tomb_doc);
     git_commit_all(multi_root, "root tombstone archive completed");
-    write_spec(&wt_b, tomb_rel, &tomb_doc.replace("status: completed\nacceptance_criteria", "status: planned\nacceptance_criteria"));
-    let mut tomb_graph = build_rich_graph(multi_root, "run-tomb-local", acdd_state::types::IsolationMode::InPlace);
+    write_spec(
+        &wt_b,
+        tomb_rel,
+        &tomb_doc.replace(
+            "status: completed\nacceptance_criteria",
+            "status: planned\nacceptance_criteria",
+        ),
+    );
+    let mut tomb_graph = build_rich_graph(
+        multi_root,
+        "run-tomb-local",
+        acdd_state::types::IsolationMode::InPlace,
+    );
     tomb_graph.run.run_name = RunName::new("tomb-local").unwrap();
     tomb_graph.run.spec_id = Some("AC-TOMB".to_owned());
     tomb_graph.run.worktree = None;
@@ -2147,12 +2297,24 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         acdd_state::types::TerminalStatus::Completed,
         Some(tomb_rel),
     );
-    backend_for(&fx.cfg).exec_tx(|tx| {
-        tx.insert_run_graph(&tomb_graph)?;
-        tx.archive_and_prune_run(&empty_preconditions(1), &tomb_record)
-    }).unwrap();
+    backend_for(&fx.cfg)
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&tomb_graph)?;
+            tx.archive_and_prune_run(&empty_preconditions(1), &tomb_record)
+        })
+        .unwrap();
     let orphan_wt = fx._tmp.path().join("orphan-wt");
-    git_ok(multi_root, &["worktree", "add", "--orphan", "-b", "orphan-wt", orphan_wt.to_str().unwrap()]);
+    git_ok(
+        multi_root,
+        &[
+            "worktree",
+            "add",
+            "--orphan",
+            "-b",
+            "orphan-wt",
+            orphan_wt.to_str().unwrap(),
+        ],
+    );
     write_spec(
         &orphan_wt,
         "docs/milestones/AC-ORPHAN.md",
@@ -2169,16 +2331,39 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
             .replace("task_ref: T-01", "task_ref: T-01\ndepends_on: ['sibling/AC-TOMB:T-01']"),
     )
     .unwrap();
-    let tomb_isolation = roadmap_query(&fx.ro, RoadmapReq { archived: true, include_tasks: true, ..RoadmapReq::default() });
-    assert!(tomb_isolation.waves.iter().flat_map(|w| &w.specs).any(|s| s.spec_id == "AC-ORPHAN"));
+    let tomb_isolation = roadmap_query(
+        &fx.ro,
+        RoadmapReq {
+            archived: true,
+            include_tasks: true,
+            ..RoadmapReq::default()
+        },
+    );
+    assert!(tomb_isolation
+        .waves
+        .iter()
+        .flat_map(|w| &w.specs)
+        .any(|s| s.spec_id == "AC-ORPHAN"));
     let consumer_tomb = tomb_isolation
         .waves
         .iter()
         .flat_map(|w| &w.specs)
         .find(|s| s.spec_id == "AC-CHECKOUT")
         .unwrap();
-    assert_eq!((consumer_tomb.depends_on[0].status.as_str(), consumer_tomb.depends_on[0].satisfied), ("missing", false));
-    assert_eq!((consumer_tomb.tasks[0].depends_on[0].status.as_str(), consumer_tomb.tasks[0].depends_on[0].satisfied), ("missing", false));
+    assert_eq!(
+        (
+            consumer_tomb.depends_on[0].status.as_str(),
+            consumer_tomb.depends_on[0].satisfied
+        ),
+        ("missing", false)
+    );
+    assert_eq!(
+        (
+            consumer_tomb.tasks[0].depends_on[0].status.as_str(),
+            consumer_tomb.tasks[0].depends_on[0].satisfied
+        ),
+        ("missing", false)
+    );
     fs::write(wt_b.join("acdd.yaml"), "specs: [invalid").unwrap();
     let invalid_cfg = fx
         .ro
@@ -2213,7 +2398,11 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
     git_ok(&wt_b, &["commit", "-m", "Sibling AC-MULTI"]);
     let run_b_id = run_b.run.run_id.as_str();
     let db = rusqlite::Connection::open(multi_root.join(".acdd/custom-state.sqlite")).unwrap();
-    db.execute("UPDATE gate_nodes SET status = 'completed' WHERE run_id = ?1 AND node_id = 'task:T-01'", [run_b_id]).unwrap();
+    db.execute(
+        "UPDATE gate_nodes SET status = 'completed' WHERE run_id = ?1 AND node_id = 'task:T-01'",
+        [run_b_id],
+    )
+    .unwrap();
     let sibling_rel = wt_b.strip_prefix(multi_root).unwrap().display();
     fs::write(
         multi_root.join("docs/milestones/AC-BIND.md"),
@@ -2230,11 +2419,23 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         },
     )
     .unwrap();
-    let graph = reader_for(&fx.cfg).load_run_graph(&binding.run.run_id).unwrap().unwrap();
-    let dep = |task: &str| graph.dependencies.iter().find(|dep| dep.task_ref.as_str() == task).unwrap();
+    let graph = reader_for(&fx.cfg)
+        .load_run_graph(&binding.run.run_id)
+        .unwrap()
+        .unwrap();
+    let dep = |task: &str| {
+        graph
+            .dependencies
+            .iter()
+            .find(|dep| dep.task_ref.as_str() == task)
+            .unwrap()
+    };
     assert_eq!(dep("T-01").depends_on_run_id, run_b.run.run_id);
     assert_eq!(dep("T-01").depends_on_workspace, wt_b.to_string_lossy());
-    assert_eq!(dep("T-02").depends_on_workspace, multi_root.to_string_lossy());
+    assert_eq!(
+        dep("T-02").depends_on_workspace,
+        multi_root.to_string_lossy()
+    );
     assert_eq!(dep("T-03").depends_on_workspace, ".");
     for (task, run) in [("T-01", &run_a), ("T-02", &run_b), ("T-03", &run_b)] {
         db.execute(
@@ -2244,14 +2445,20 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
     }
     let StateQueryOutput::Next(next) = fx
         .ro
-        .query(StateQuery::Next(NextReq { run: Some(binding.run.run_id.to_string()), ..NextReq::default() }))
+        .query(StateQuery::Next(NextReq {
+            run: Some(binding.run.run_id.to_string()),
+            ..NextReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected next");
     };
     let StateQueryOutput::Roadmap(binding_roadmap) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            include_tasks: true,
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
@@ -2262,9 +2469,17 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         .find(|entry| entry.run_id.as_deref() == Some(binding.run.run_id.as_str()))
         .unwrap();
     for (task, ready) in [("T-01", true), ("T-02", false), ("T-03", true)] {
-        let row = binding_row.tasks.iter().find(|row| row.task_ref == task).unwrap();
+        let row = binding_row
+            .tasks
+            .iter()
+            .find(|row| row.task_ref == task)
+            .unwrap();
         assert_eq!(row.depends_on[0].satisfied, ready, "{task}");
-        assert_eq!(next.ready_cursors.contains(&format!("{task}.build")), ready, "{task}: {next:?}");
+        assert_eq!(
+            next.ready_cursors.contains(&format!("{task}.build")),
+            ready,
+            "{task}: {next:?}"
+        );
     }
     let sibling_row = binding_roadmap
         .in_progress
@@ -2281,16 +2496,30 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
             .iter()
             .find(|entry| entry.run_id.as_deref() == Some(run.run.run_id.as_str()))
             .unwrap();
-        assert_eq!(row.blocks.contains(&legacy_bind.to_owned()), expected, "spec block before sync");
-        assert_eq!(row.tasks[0].blocks.contains(&legacy_bind.to_owned()), expected, "task block before sync");
+        assert_eq!(
+            row.blocks.contains(&legacy_bind.to_owned()),
+            expected,
+            "spec block before sync"
+        );
+        assert_eq!(
+            row.tasks[0].blocks.contains(&legacy_bind.to_owned()),
+            expected,
+            "task block before sync"
+        );
     }
     let producer = binding_roadmap
         .in_progress
         .iter()
         .find(|entry| entry.run_id.as_deref() == Some(run_a.run.run_id.as_str()))
         .unwrap();
-    assert_eq!(producer.unblocks_specs, 1, "stale satisfied bit still fans out");
-    assert_eq!(producer.unblocks_tasks, 3, "stale satisfied bit still fans out");
+    assert_eq!(
+        producer.unblocks_specs, 1,
+        "stale satisfied bit still fans out"
+    );
+    assert_eq!(
+        producer.unblocks_tasks, 3,
+        "stale satisfied bit still fans out"
+    );
     fx.rw
         .execute(StateCommand::Sync(acdd_state::usecases::SyncReq {
             run: Some(binding.run.run_id.to_string()),
@@ -2299,7 +2528,10 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         .unwrap();
     let StateQueryOutput::Roadmap(binding_after_sync) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            include_tasks: true,
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
@@ -2310,11 +2542,28 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
             .iter()
             .find(|entry| entry.run_id.as_deref() == Some(run.run.run_id.as_str()))
             .unwrap();
-        assert_eq!(row.blocks.contains(&legacy_bind.to_owned()), expected, "spec block after sync");
-        assert_eq!(row.tasks[0].blocks.contains(&legacy_bind.to_owned()), expected, "task block after sync");
+        assert_eq!(
+            row.blocks.contains(&legacy_bind.to_owned()),
+            expected,
+            "spec block after sync"
+        );
+        assert_eq!(
+            row.tasks[0].blocks.contains(&legacy_bind.to_owned()),
+            expected,
+            "task block after sync"
+        );
     }
     let planned_wt = multi_root.join("planned-sibling");
-    git_ok(multi_root, &["worktree", "add", "-b", "planned-sibling", planned_wt.to_str().unwrap()]);
+    git_ok(
+        multi_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "planned-sibling",
+            planned_wt.to_str().unwrap(),
+        ],
+    );
     let planned_canon = acdd_core::fs::canonical_root(&planned_wt).unwrap();
     db.execute(
         "UPDATE task_dependencies SET depends_on_run_id = ?1, depends_on_workspace = ?2, satisfied = 0 WHERE run_id = ?3 AND task_ref = 'T-01'",
@@ -2323,7 +2572,10 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
     .unwrap();
     let StateQueryOutput::Roadmap(planned_roadmap) = fx
         .ro
-        .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+        .query(StateQuery::Roadmap(RoadmapReq {
+            include_tasks: true,
+            ..RoadmapReq::default()
+        }))
         .unwrap()
     else {
         panic!("expected roadmap");
@@ -2332,7 +2584,9 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         .waves
         .iter()
         .flat_map(|wave| &wave.specs)
-        .find(|spec| spec.spec_id == "AC-MULTI" && spec.blocks.iter().any(|label| label == legacy_bind))
+        .find(|spec| {
+            spec.spec_id == "AC-MULTI" && spec.blocks.iter().any(|label| label == legacy_bind)
+        })
         .expect("planned sibling target");
     assert!(planned_target.tasks.iter().any(|task| {
         task.task_ref == "T-01" && task.blocks.iter().any(|label| label == legacy_bind)
@@ -2343,7 +2597,10 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         .find(|entry| entry.run_id.as_deref() == Some(run_a.run.run_id.as_str()))
         .unwrap();
     assert!(!primary.blocks.iter().any(|label| label == legacy_bind));
-    assert!(!primary.tasks[0].blocks.iter().any(|label| label == legacy_bind));
+    assert!(!primary.tasks[0]
+        .blocks
+        .iter()
+        .any(|label| label == legacy_bind));
 }
 
 #[test]
@@ -2357,7 +2614,16 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
     .unwrap();
     let wrong_absent = fx.start_wrong_run("AC-ABSENT", true);
     let late_checkout = multi_root.join("late-target");
-    git_ok(multi_root, &["worktree", "add", "-b", "late-target", late_checkout.to_str().unwrap()]);
+    git_ok(
+        multi_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "late-target",
+            late_checkout.to_str().unwrap(),
+        ],
+    );
     let _ = write_profile(&late_checkout, "multi-p.yaml", MULTI_PROFILE_YAML);
     fs::write(
         late_checkout.join("docs/milestones/AC-ABSENT.md"),
@@ -2379,8 +2645,14 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
         },
     )
     .unwrap();
-    let late_graph = reader_for(&fx.cfg).load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
-    assert_eq!(late_graph.dependencies[0].depends_on_run_id.as_str(), "AC-ABSENT");
+    let late_graph = reader_for(&fx.cfg)
+        .load_run_graph(&late_consumer.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        late_graph.dependencies[0].depends_on_run_id.as_str(),
+        "AC-ABSENT"
+    );
     let late_producer = start_run(
         &fx.rw,
         StartReq {
@@ -2400,12 +2672,21 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
                     rebind_profile: false,
                 }))
                 .unwrap();
-            let graph = reader_for(&fx.cfg).load_run_graph(&late_consumer.run.run_id).unwrap().unwrap();
-            assert_eq!(graph.dependencies[0].depends_on_run_id, late_producer.run.run_id);
+            let graph = reader_for(&fx.cfg)
+                .load_run_graph(&late_consumer.run.run_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                graph.dependencies[0].depends_on_run_id,
+                late_producer.run.run_id
+            );
         }
         let StateQueryOutput::Roadmap(roadmap) = fx
             .ro
-            .query(StateQuery::Roadmap(RoadmapReq { include_tasks: true, ..RoadmapReq::default() }))
+            .query(StateQuery::Roadmap(RoadmapReq {
+                include_tasks: true,
+                ..RoadmapReq::default()
+            }))
             .unwrap()
         else {
             panic!("expected roadmap");
@@ -2416,8 +2697,16 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
                 .iter()
                 .find(|row| row.run_id.as_deref() == Some(run.run.run_id.as_str()))
                 .unwrap();
-            assert_eq!(row.blocks.contains(&"AC-LATE:T-01".to_owned()), expected, "spec block, sync={sync}");
-            assert_eq!(row.tasks[0].blocks.contains(&"AC-LATE:T-01".to_owned()), expected, "task block, sync={sync}");
+            assert_eq!(
+                row.blocks.contains(&"AC-LATE:T-01".to_owned()),
+                expected,
+                "spec block, sync={sync}"
+            );
+            assert_eq!(
+                row.tasks[0].blocks.contains(&"AC-LATE:T-01".to_owned()),
+                expected,
+                "task block, sync={sync}"
+            );
         }
     }
 }

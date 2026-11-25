@@ -1,10 +1,10 @@
 use super::parser::ModulePrefix;
 use super::parsers;
+use crate::languages::context::{LanguageContext, RuleIRHandle};
+use crate::languages::manifests::FrameworkManifest;
 use crate::languages::registries::{
     javascript_packages::JavascriptPackageRegistry, typescript_paths::TypeScriptPathsRegistry,
 };
-use crate::languages::context::{LanguageContext, RuleIRHandle};
-use crate::languages::manifests::FrameworkManifest;
 use crate::languages::types::{workspace_path, ImportPath, LanguageFamily};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -54,7 +54,8 @@ pub struct DependencyRegistry {
     pub(crate) scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
     pub(in crate::languages) scoped_origins:
         HashMap<LanguageFamily, HashMap<String, HashMap<String, String>>>,
-    pub(in crate::languages) module_prefixes: HashMap<LanguageFamily, HashMap<String, Vec<ModulePrefix>>>,
+    pub(in crate::languages) module_prefixes:
+        HashMap<LanguageFamily, HashMap<String, Vec<ModulePrefix>>>,
     pub(crate) own_packages: HashMap<String, HashSet<String>>,
     pub(crate) workspaces: HashSet<String>,
     pub(crate) named_provider_scopes:
@@ -214,8 +215,7 @@ impl DependencyRegistry {
     /// Returns whether `path` is a sibling non-library Cargo target (`tests/`, `examples/`,
     /// `benches/`, `src/main.rs`, `src/bin/`) that implicitly imports its own package's library crate.
     pub fn is_rust_sibling_target_path(&self, path: &str) -> bool {
-        let Some(scope) = self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)
-        else {
+        let Some(scope) = self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path) else {
             return false;
         };
         let rel = if scope.is_empty() {

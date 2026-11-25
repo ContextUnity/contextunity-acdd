@@ -368,7 +368,9 @@ pub(super) fn canonical_owner_language_leaves(
             hex::encode(hasher.finalize()),
         )
     };
-    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| hash_owner((o, r)));
+    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| {
+        hash_owner((o, r))
+    });
     Ok(Some(leaves))
 }
 
@@ -443,6 +445,8 @@ pub(super) fn canonical_language_count_leaves(
             hex::encode(hasher.finalize()),
         )
     };
-    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| hash_owner((o, r)));
+    let leaves = collect_hashed_leaves(by_owner.into_iter().collect(), false, |(o, r)| {
+        hash_owner((o, r))
+    });
     Ok(Some(leaves))
 }

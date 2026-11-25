@@ -104,11 +104,7 @@ impl RuleIRHandle {
         Self::default()
     }
 
-    pub(crate) fn bind(
-        &self,
-        grammar: &tree_sitter::Language,
-        context: &LanguageContext,
-    ) -> Self {
+    pub(crate) fn bind(&self, grammar: &tree_sitter::Language, context: &LanguageContext) -> Self {
         if let Some(cached) = self
             .prepared
             .read()
@@ -155,7 +151,10 @@ impl RuleIRHandle {
             .map_or(&[], |compiled| compiled.route_calls.as_slice())
     }
 
-    pub(crate) fn di_calls_for_kind(&self, kind: u16) -> &[CompiledRouteRule<manifests::DiCallRule>] {
+    pub(crate) fn di_calls_for_kind(
+        &self,
+        kind: u16,
+    ) -> &[CompiledRouteRule<manifests::DiCallRule>] {
         self.bound
             .as_ref()
             .filter(|compiled| compiled.contains_call_kind(kind))
@@ -173,8 +172,7 @@ pub struct LanguageContext {
     pub route_decorators: Vec<manifests::RouteDecoratorRule>,
     /// Registration call route rules.
     pub route_calls: Vec<manifests::RouteCallRule>,
-    pub(crate) route_rule_origins:
-        HashMap<(bool, usize), crate::semantic::ExtractionRuleOrigin>,
+    pub(crate) route_rule_origins: HashMap<(bool, usize), crate::semantic::ExtractionRuleOrigin>,
     /// Dependency-injection call rules.
     pub di_calls: Vec<manifests::DiCallRule>,
     pub(crate) di_rule_origins: HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
@@ -359,7 +357,11 @@ impl LanguageContext {
         {
             return true;
         }
-        manifests::semantic::ActivationCondition::matches_file_slice(&rule.activation, path, signals)
+        manifests::semantic::ActivationCondition::matches_file_slice(
+            &rule.activation,
+            path,
+            signals,
+        )
     }
 
     /// Iterates over syntax rules active for `path` and `signals`.
@@ -488,9 +490,7 @@ pub(crate) struct PreparedRules {
     pub(crate) syntax_constructors: Vec<usize>,
 }
 
-pub(crate) fn prepare_projection_rules(
-    rules: &LanguageContext,
-) -> HashMap<String, PreparedRules> {
+pub(crate) fn prepare_projection_rules(rules: &LanguageContext) -> HashMap<String, PreparedRules> {
     use manifests::{
         projections::{Api, AttachmentSource, NamedBindingForm},
         syntax::SyntaxOperation,
@@ -775,14 +775,14 @@ pub(crate) fn execute_call_rules<'source>(
 
 /// Project effective rules onto actual module identities, including empty files.
 pub(crate) fn file_providers(facts: &mut Facts, context: &LanguageContext) {
-    let Some(module) = facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) else {
+    let Some(module) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+    else {
         return;
     };
-    let (id, path, language) = (
-        module.id.clone(),
-        module.path.clone(),
-        module.language,
-    );
+    let (id, path, language) = (module.id.clone(), module.path.clone(), module.language);
     let prepared = context.file_provider_rules_for_language(language.as_str());
     let indices = prepared.into_iter().flatten().copied().chain(
         0..if prepared.is_none() {

@@ -277,9 +277,12 @@ fn page_call_nodes(
         }
         let item_path = item["path"].as_str().unwrap_or_default();
         let connection_path = if direct {
-            path.edges.first().map(|(edge_path, _)| edge_path.as_str()).filter(
-                |edge_path| !(compact && (*edge_path == selected_path || *edge_path == item_path)),
-            )
+            path.edges
+                .first()
+                .map(|(edge_path, _)| edge_path.as_str())
+                .filter(|edge_path| {
+                    !(compact && (*edge_path == selected_path || *edge_path == item_path))
+                })
         } else {
             None
         };

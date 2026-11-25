@@ -358,85 +358,86 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
     if !collect_update_mutation_use(tokens, operation, &mut uses) {
         return uses;
     }
-fn apply_cte_scope_events(
-    events: Option<&std::collections::HashMap<usize, Vec<(String, bool)>>>,
-    index: usize,
-    ctes: &mut std::collections::HashMap<String, usize>,
-) {
-    let Some(changes) = events.and_then(|map| map.get(&index)) else {
-        return;
-    };
-    for (key, add) in changes {
-        let count = ctes.entry(key.clone()).or_default();
-        if *add {
-            *count += 1;
-        } else {
-            *count = count.saturating_sub(1);
+    fn apply_cte_scope_events(
+        events: Option<&std::collections::HashMap<usize, Vec<(String, bool)>>>,
+        index: usize,
+        ctes: &mut std::collections::HashMap<String, usize>,
+    ) {
+        let Some(changes) = events.and_then(|map| map.get(&index)) else {
+            return;
+        };
+        for (key, add) in changes {
+            let count = ctes.entry(key.clone()).or_default();
+            if *add {
+                *count += 1;
+            } else {
+                *count = count.saturating_sub(1);
+            }
         }
     }
-}
 
-fn push_sql_token_use(
-    tokens: &[Token<'_>],
-    i: usize,
-    operation: usize,
-    relations: &mut [bool],
-    depth: usize,
-    ctes: &std::collections::HashMap<String, usize>,
-    uses: &mut Vec<(String, &'static str, usize)>,
-) {
-    let token = &tokens[i];
-    let from = keyword(Some(token), "FROM");
-    let join = keyword(Some(token), "JOIN");
-    if from {
-        relations[depth] = true;
-    }
-    if [
-        "WHERE",
-        "GROUP",
-        "ORDER",
-        "HAVING",
-        "LIMIT",
-        "UNION",
-        "RETURNING",
-        "SET",
-    ]
-    .iter()
-    .any(|word| keyword(Some(token), word))
-    {
-        relations[depth] = false;
-    }
-    let kind = if from || join || (token.text == "," && relations[depth]) {
-        Some(if from && i > 0 && keyword(tokens.get(i - 1), "DELETE") {
-            "mutates_table"
+    fn push_sql_token_use(
+        tokens: &[Token<'_>],
+        i: usize,
+        operation: usize,
+        relations: &mut [bool],
+        depth: usize,
+        ctes: &std::collections::HashMap<String, usize>,
+        uses: &mut Vec<(String, &'static str, usize)>,
+    ) {
+        let token = &tokens[i];
+        let from = keyword(Some(token), "FROM");
+        let join = keyword(Some(token), "JOIN");
+        if from {
+            relations[depth] = true;
+        }
+        if [
+            "WHERE",
+            "GROUP",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "UNION",
+            "RETURNING",
+            "SET",
+        ]
+        .iter()
+        .any(|word| keyword(Some(token), word))
+        {
+            relations[depth] = false;
+        }
+        let kind = if from || join || (token.text == "," && relations[depth]) {
+            Some(if from && i > 0 && keyword(tokens.get(i - 1), "DELETE") {
+                "mutates_table"
+            } else {
+                "queries_table"
+            })
+        } else if keyword(Some(token), "INTO")
+            && (keyword(tokens.get(operation), "INSERT")
+                || keyword(tokens.get(operation), "REPLACE"))
+        {
+            Some("mutates_table")
+        } else if keyword(Some(token), "REFERENCES") {
+            Some("references_table")
         } else {
-            "queries_table"
-        })
-    } else if keyword(Some(token), "INTO")
-        && (keyword(tokens.get(operation), "INSERT") || keyword(tokens.get(operation), "REPLACE"))
-    {
-        Some("mutates_table")
-    } else if keyword(Some(token), "REFERENCES") {
-        Some("references_table")
-    } else {
-        None
-    };
-    let Some(kind) = kind else {
-        return;
-    };
-    let mut next = i + 1;
-    if keyword(tokens.get(next), "ONLY") {
-        next += 1;
-    }
-    if let Some((name, _)) = name_at(tokens, next) {
-        if ctes.is_empty() || {
-            let (key, _, qualified) = identifier_keys(&name);
-            qualified || ctes.get(&key).copied().unwrap_or_default() == 0
-        } {
-            uses.push((name, kind, token.line));
+            None
+        };
+        let Some(kind) = kind else {
+            return;
+        };
+        let mut next = i + 1;
+        if keyword(tokens.get(next), "ONLY") {
+            next += 1;
+        }
+        if let Some((name, _)) = name_at(tokens, next) {
+            if ctes.is_empty() || {
+                let (key, _, qualified) = identifier_keys(&name);
+                qualified || ctes.get(&key).copied().unwrap_or_default() == 0
+            } {
+                uses.push((name, kind, token.line));
+            }
         }
     }
-}
 
     for (i, token) in tokens.iter().enumerate() {
         apply_cte_scope_events(events.as_ref(), i, &mut ctes);
@@ -453,7 +454,15 @@ fn push_sql_token_use(
             relations.pop();
             continue;
         }
-        push_sql_token_use(tokens, i, operation, &mut relations, depth, &ctes, &mut uses);
+        push_sql_token_use(
+            tokens,
+            i,
+            operation,
+            &mut relations,
+            depth,
+            &ctes,
+            &mut uses,
+        );
     }
     if depth > 0 {
         return Vec::new();
@@ -722,7 +731,10 @@ fn reference(facts: &mut Facts, owner: &str, name: String, kind: &str, line: usi
     });
 }
 
-fn extract_create_table_columns(statement: &[Token<'_>], after: usize) -> (Vec<String>, Vec<usize>, Vec<String>) {
+fn extract_create_table_columns(
+    statement: &[Token<'_>],
+    after: usize,
+) -> (Vec<String>, Vec<usize>, Vec<String>) {
     let mut columns = Vec::new();
     let mut column_lines = Vec::new();
     let mut primary = Vec::new();

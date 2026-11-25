@@ -107,9 +107,7 @@ impl SchemaDef {
         match self.schema_type.as_str() {
             "object" => {
                 if self.items.is_some() {
-                    return Err(schema_err(format!(
-                        "{path}.items is only valid for arrays"
-                    )));
+                    return Err(schema_err(format!("{path}.items is only valid for arrays")));
                 }
                 for req in &self.required {
                     if !self.properties.contains_key(req) {
@@ -151,9 +149,7 @@ impl SchemaDef {
                 }
             }
             other => {
-                return Err(schema_err(format!(
-                    "{path}.type '{other}' is unsupported"
-                )));
+                return Err(schema_err(format!("{path}.type '{other}' is unsupported")));
             }
         }
 

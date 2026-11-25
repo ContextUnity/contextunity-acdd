@@ -1,5 +1,5 @@
-use acdd_index::db::commitments;
 use crate::common::Workspace;
+use acdd_index::db::commitments;
 use contextunity_acdd::engine::pipeline;
 use rusqlite::{ffi, Connection};
 use std::{

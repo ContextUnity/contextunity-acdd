@@ -260,7 +260,11 @@ mod tests {
             ("non_numeric_starttime", "1234 (proc) S 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 abc 0 0", None),
         ];
         for (label, sample, expected) in cases {
-            assert_eq!(parse_linux_proc_stat_start_time(sample), expected, "{label}");
+            assert_eq!(
+                parse_linux_proc_stat_start_time(sample),
+                expected,
+                "{label}"
+            );
         }
 
         let ps_cmd = macos_ps_command(42);
@@ -273,8 +277,14 @@ mod tests {
                 )
             })
             .collect();
-        assert!(envs.contains(&("LC_ALL".to_owned(), Some("C".to_owned()))), "{envs:?}");
-        assert!(envs.contains(&("TZ".to_owned(), Some("UTC".to_owned()))), "{envs:?}");
+        assert!(
+            envs.contains(&("LC_ALL".to_owned(), Some("C".to_owned()))),
+            "{envs:?}"
+        );
+        assert!(
+            envs.contains(&("TZ".to_owned(), Some("UTC".to_owned()))),
+            "{envs:?}"
+        );
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {

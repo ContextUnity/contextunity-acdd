@@ -1,5 +1,5 @@
-use crate::languages::profile::ProfileLinker;
 use crate::interner::{LinkerInterner, SymbolId};
+use crate::languages::profile::ProfileLinker;
 use crate::models::{tags::NodeKind, Facts, Node};
 use crate::{
     languages::{
@@ -26,10 +26,7 @@ impl<'a> NamespaceIndexes<'a> {
         dependency_registry: &'a DependencyRegistry,
     ) -> ModulesByNamespace<'a> {
         let mut modules_by_namespace: ModulesByNamespace<'a> = HashMap::new();
-        for node in nodes
-            .iter()
-            .filter(|node| node.kind == NodeKind::Module)
-        {
+        for node in nodes.iter().filter(|node| node.kind == NodeKind::Module) {
             let Some(profile) = profiles.get(node.path.as_str()) else {
                 continue;
             };
@@ -128,7 +125,8 @@ impl<'a> NamespaceIndexes<'a> {
                 files.iter().flat_map(normalize_file).collect()
             }
         };
-        let build_modules = || Self::collect_modules_by_namespace(nodes, &profiles, dependency_registry);
+        let build_modules =
+            || Self::collect_modules_by_namespace(nodes, &profiles, dependency_registry);
         let (normalized_imports, modules_by_namespace) =
             if files.len() >= PARALLEL_LINKER_PREP_MIN_FILES {
                 rayon::join(build_imports, build_modules)
@@ -199,7 +197,8 @@ impl<'a> InheritanceIndexes<'a> {
         namespaces: &'index NamespaceIndexes<'a>,
         package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
         dependency_registry: &'a DependencyRegistry,
-        #[cfg(feature = "lang-rust")] rust_forwarding: &'index super::rust::forwarding::RustForwarding<'a>,
+        #[cfg(feature = "lang-rust")]
+        rust_forwarding: &'index super::rust::forwarding::RustForwarding<'a>,
     ) -> Self {
         let build_python = || {
             #[cfg(feature = "lang-python")]
@@ -221,7 +220,17 @@ impl<'a> InheritanceIndexes<'a> {
             }
             #[cfg(not(feature = "lang-python"))]
             {
-                let _ = (interner, by_id, by_qual, node_bindings, node_rebindings, by_module, namespaces, package_exports, dependency_registry);
+                let _ = (
+                    interner,
+                    by_id,
+                    by_qual,
+                    node_bindings,
+                    node_rebindings,
+                    by_module,
+                    namespaces,
+                    package_exports,
+                    dependency_registry,
+                );
                 super::python::receivers::PythonReceivers::build(
                     all,
                     |_, _| super::python::receivers::Base::Unknown,

@@ -39,55 +39,196 @@ struct AuditedFixture {
 
 const FIXTURE_AUDIT: &[AuditedFixture] = &[
     // --- milestones/ (19) ---
-    AuditedFixture { relpath: "milestones/archived_after_sync.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/archive_metrics.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/branching_deps.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/cancellation.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/configured_directories.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/context_retention.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/crash_recovery.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/custom_contract.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/declared_projects.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/default_aliases.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/deferred_defects.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/foreign_handoff.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/lifecycle_task.md", kind: FixtureKind::TemplateSpec },
-    AuditedFixture { relpath: "milestones/linear.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/minimal.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/owner_aliases.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/progress_catalog.json", kind: FixtureKind::ValidCatalogJson },
-    AuditedFixture { relpath: "milestones/queued_after_sync.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "milestones/verification_profile.yaml", kind: FixtureKind::ValidProfile },
+    AuditedFixture {
+        relpath: "milestones/archived_after_sync.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/archive_metrics.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/branching_deps.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/cancellation.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/configured_directories.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/context_retention.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/crash_recovery.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/custom_contract.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/declared_projects.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/default_aliases.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/deferred_defects.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/foreign_handoff.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/lifecycle_task.md",
+        kind: FixtureKind::TemplateSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/linear.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/minimal.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/owner_aliases.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/progress_catalog.json",
+        kind: FixtureKind::ValidCatalogJson,
+    },
+    AuditedFixture {
+        relpath: "milestones/queued_after_sync.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "milestones/verification_profile.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
     // --- plans/ (18) ---
-    AuditedFixture { relpath: "plans/acdd.yaml", kind: FixtureKind::ValidAdapterConfig },
-    AuditedFixture { relpath: "plans/commit.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "plans/completed-subtask.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "plans/configured-snapshot.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "plans/custom-config.yaml", kind: FixtureKind::ValidAdapterConfig },
-    AuditedFixture { relpath: "plans/dag.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "plans/drift-snapshot.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "plans/immutable-drift.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "plans/linear.md", kind: FixtureKind::ValidSpec },
-    AuditedFixture { relpath: "plans/snapshot.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "plans/rejected-profile.yaml", kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "plans/catalog-invalid.yaml", kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "plans/cycle.md", kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "plans/unknown-dependency.md", kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "plans/unsafe-scope.md", kind: FixtureKind::NegativeUnsafeScope(ErrorCode::OutOfScopeChanges) },
-    AuditedFixture { relpath: "plans/missing-subtask-evidence.md", kind: FixtureKind::NegativeSpecParse(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "plans/pending-subtask.md", kind: FixtureKind::NegativeSpecSubmit(ErrorCode::GateVerificationFailed) },
-    AuditedFixture { relpath: "plans/cancelled-dependency.md", kind: FixtureKind::NegativeSpecClaim(ErrorCode::GateVerificationFailed) },
+    AuditedFixture {
+        relpath: "plans/acdd.yaml",
+        kind: FixtureKind::ValidAdapterConfig,
+    },
+    AuditedFixture {
+        relpath: "plans/commit.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "plans/completed-subtask.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "plans/configured-snapshot.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "plans/custom-config.yaml",
+        kind: FixtureKind::ValidAdapterConfig,
+    },
+    AuditedFixture {
+        relpath: "plans/dag.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "plans/drift-snapshot.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "plans/immutable-drift.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "plans/linear.md",
+        kind: FixtureKind::ValidSpec,
+    },
+    AuditedFixture {
+        relpath: "plans/snapshot.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "plans/rejected-profile.yaml",
+        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "plans/catalog-invalid.yaml",
+        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "plans/cycle.md",
+        kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "plans/unknown-dependency.md",
+        kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "plans/unsafe-scope.md",
+        kind: FixtureKind::NegativeUnsafeScope(ErrorCode::OutOfScopeChanges),
+    },
+    AuditedFixture {
+        relpath: "plans/missing-subtask-evidence.md",
+        kind: FixtureKind::NegativeSpecParse(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "plans/pending-subtask.md",
+        kind: FixtureKind::NegativeSpecSubmit(ErrorCode::GateVerificationFailed),
+    },
+    AuditedFixture {
+        relpath: "plans/cancelled-dependency.md",
+        kind: FixtureKind::NegativeSpecClaim(ErrorCode::GateVerificationFailed),
+    },
     // --- workflows/ (10) ---
-    AuditedFixture { relpath: "workflows/agents.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/artifact-refresh.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/catalog-invalid.yaml", kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid) },
-    AuditedFixture { relpath: "workflows/count-free-role.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/failing.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/ordered.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/rejection_routing.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/retry.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/simple.yaml", kind: FixtureKind::ValidProfile },
-    AuditedFixture { relpath: "workflows/timeout.yaml", kind: FixtureKind::ValidProfile },
+    AuditedFixture {
+        relpath: "workflows/agents.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/artifact-refresh.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/catalog-invalid.yaml",
+        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+    },
+    AuditedFixture {
+        relpath: "workflows/count-free-role.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/failing.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/ordered.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/rejection_routing.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/retry.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/simple.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
+    AuditedFixture {
+        relpath: "workflows/timeout.yaml",
+        kind: FixtureKind::ValidProfile,
+    },
 ];
 
 #[test]
@@ -98,7 +239,10 @@ fn audit_all_47_fixtures_for_060_validity_and_negative_error_codes() {
         for entry in fs::read_dir(fixtures_dir.join(dir)).unwrap() {
             let p = entry.unwrap().path();
             if p.is_file() {
-                disk_files.insert(format!("{dir}/{}", p.file_name().unwrap().to_string_lossy()));
+                disk_files.insert(format!(
+                    "{dir}/{}",
+                    p.file_name().unwrap().to_string_lossy()
+                ));
             }
         }
     }
@@ -161,13 +305,13 @@ gates:
                     None,
                     None,
                 )
-                        .unwrap_or_else(|e| panic!("resolve {}: {e}", item.relpath));
+                .unwrap_or_else(|e| panic!("resolve {}: {e}", item.relpath));
                 validate_profile(&resolved, &val_opts)
                     .unwrap_or_else(|e| panic!("validate {}: {e}", item.relpath));
             }
             FixtureKind::ValidSpec => {
-                let doc = parse_spec(&raw)
-                    .unwrap_or_else(|e| panic!("parse_spec {}: {e}", item.relpath));
+                let doc =
+                    parse_spec(&raw).unwrap_or_else(|e| panic!("parse_spec {}: {e}", item.relpath));
                 assert!(!doc.id.is_empty(), "empty id in {}", item.relpath);
             }
             FixtureKind::ValidAdapterConfig => {
@@ -185,9 +329,10 @@ gates:
                 for (path, val) in obj.as_object().unwrap() {
                     if let Some(content) = val.as_str() {
                         if path == "acdd.yaml" {
-                            let _: AdapterFile = serde_yaml::from_str(content).unwrap_or_else(|e| {
-                                panic!("{} -> {path} AdapterFile invalid: {e}", item.relpath)
-                            });
+                            let _: AdapterFile =
+                                serde_yaml::from_str(content).unwrap_or_else(|e| {
+                                    panic!("{} -> {path} AdapterFile invalid: {e}", item.relpath)
+                                });
                         } else if path.ends_with(".md") && content.starts_with("---\n") {
                             if path.ends_with("README.md") {
                                 continue;
@@ -222,63 +367,66 @@ gates:
                     None,
                     None,
                 )
-                        .and_then(|p| validate_profile(&p, &val_opts));
+                .and_then(|p| validate_profile(&p, &val_opts));
                 let err = res.expect_err(&format!("{} must fail validation", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
             FixtureKind::NegativeSpecParse(expected) => {
-                let err = parse_spec(&raw)
-                    .expect_err(&format!("{} must fail parse_spec", item.relpath));
+                let err =
+                    parse_spec(&raw).expect_err(&format!("{} must fail parse_spec", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
             FixtureKind::NegativeSpecStart(expected) => {
                 let harness = RunHarness::in_memory().unwrap();
                 let rel = format!("docs/plans/neg-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let err = harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Start(StartReq {
-                        spec_path: Some(rel),
-                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
-                        ..StartReq::default()
-                    }),
-                )
-                .expect_err(&format!("{} must fail Start", item.relpath));
+                let err = harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Start(StartReq {
+                            spec_path: Some(rel),
+                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            ..StartReq::default()
+                        }),
+                    )
+                    .expect_err(&format!("{} must fail Start", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
             FixtureKind::NegativeSpecClaim(expected) => {
                 let harness = RunHarness::in_memory().unwrap();
                 let rel = format!("docs/plans/neg-claim-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let started = match harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Start(StartReq {
-                        spec_path: Some(rel),
-                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
-                        ..StartReq::default()
-                    }),
-                )
-                .unwrap()
+                let started = match harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Start(StartReq {
+                            spec_path: Some(rel),
+                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            ..StartReq::default()
+                        }),
+                    )
+                    .unwrap()
                 {
                     acdd_state::usecases::StateCommandOutput::Start(s) => s,
                     _ => unreachable!(),
                 };
-                let err = harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Claim(ClaimReq {
-                        run: Some(started.run.run_id.to_string()),
-                        node: Some("second-step.work".to_owned()),
-                        worker_id: WorkerId::new("w1").unwrap(),
-                        session_fingerprint: None,
-                        force: false,
-                        steal_remote: false,
-                        worktree: None,
-                    }),
-                )
-                .expect_err(&format!("{} must fail Claim", item.relpath));
+                let err = harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Claim(ClaimReq {
+                            run: Some(started.run.run_id.to_string()),
+                            node: Some("second-step.work".to_owned()),
+                            worker_id: WorkerId::new("w1").unwrap(),
+                            session_fingerprint: None,
+                            force: false,
+                            steal_remote: false,
+                            worktree: None,
+                        }),
+                    )
+                    .expect_err(&format!("{} must fail Claim", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
             FixtureKind::NegativeSpecSubmit(expected) => {
@@ -287,90 +435,95 @@ gates:
                 fs::write(ws.path(&rel), &raw).unwrap();
                 git_cmd(ws.root(), &["add", "docs/plans"]);
                 git_cmd(ws.root(), &["commit", "-m", "add neg-sub"]);
-                let started = match harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Start(StartReq {
-                        spec_path: Some(rel),
-                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
-                        ..StartReq::default()
-                    }),
-                )
-                .unwrap()
+                let started = match harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Start(StartReq {
+                            spec_path: Some(rel),
+                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            ..StartReq::default()
+                        }),
+                    )
+                    .unwrap()
                 {
                     acdd_state::usecases::StateCommandOutput::Start(s) => s,
                     _ => unreachable!(),
                 };
                 let rid = started.run.run_id.to_string();
                 let w = WorkerId::new("w1").unwrap();
-                harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Claim(ClaimReq {
-                        run: Some(rid.clone()),
-                        node: Some("guarded-step.work".to_owned()),
-                        worker_id: w.clone(),
-                        session_fingerprint: None,
-                        force: false,
-                        steal_remote: false,
-                        worktree: None,
-                    }),
-                )
-                .unwrap();
-                harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Submit(Box::new(SubmitReq {
-                        run: Some(rid.clone()),
-                        node: "guarded-step.work".to_owned(),
-                        action: SubmitAction::Pass,
-                        worker_id: w.clone(),
-                        claim_revision: Some(1),
-                        test_target: None,
-                        review_evidence: None,
-                        rejection_findings: None,
-                        custom_evidence: None,
-                        verified_invariants: Vec::new(),
-                        summary: None,
-                        allow_main: true,
-                        worktree: None,
-                    })),
-                )
-                .unwrap();
-                harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Claim(ClaimReq {
-                        run: Some(rid.clone()),
-                        node: Some("guarded-step.finish".to_owned()),
-                        worker_id: w.clone(),
-                        session_fingerprint: None,
-                        force: false,
-                        steal_remote: false,
-                        worktree: None,
-                    }),
-                )
-                .unwrap();
-                let err = harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Submit(Box::new(SubmitReq {
-                        run: Some(rid),
-                        node: "guarded-step.finish".to_owned(),
-                        action: SubmitAction::Pass,
-                        worker_id: w,
-                        claim_revision: Some(1),
-                        test_target: None,
-                        review_evidence: None,
-                        rejection_findings: None,
-                        custom_evidence: None,
-                        verified_invariants: Vec::new(),
-                        summary: None,
-                        allow_main: true,
-                        worktree: None,
-                    })),
-                )
-                .expect_err(&format!("{} must fail Submit", item.relpath));
+                harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Claim(ClaimReq {
+                            run: Some(rid.clone()),
+                            node: Some("guarded-step.work".to_owned()),
+                            worker_id: w.clone(),
+                            session_fingerprint: None,
+                            force: false,
+                            steal_remote: false,
+                            worktree: None,
+                        }),
+                    )
+                    .unwrap();
+                harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Submit(Box::new(SubmitReq {
+                            run: Some(rid.clone()),
+                            node: "guarded-step.work".to_owned(),
+                            action: SubmitAction::Pass,
+                            worker_id: w.clone(),
+                            claim_revision: Some(1),
+                            test_target: None,
+                            review_evidence: None,
+                            rejection_findings: None,
+                            custom_evidence: None,
+                            verified_invariants: Vec::new(),
+                            summary: None,
+                            allow_main: true,
+                            worktree: None,
+                        })),
+                    )
+                    .unwrap();
+                harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Claim(ClaimReq {
+                            run: Some(rid.clone()),
+                            node: Some("guarded-step.finish".to_owned()),
+                            worker_id: w.clone(),
+                            session_fingerprint: None,
+                            force: false,
+                            steal_remote: false,
+                            worktree: None,
+                        }),
+                    )
+                    .unwrap();
+                let err = harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Submit(Box::new(SubmitReq {
+                            run: Some(rid),
+                            node: "guarded-step.finish".to_owned(),
+                            action: SubmitAction::Pass,
+                            worker_id: w,
+                            claim_revision: Some(1),
+                            test_target: None,
+                            review_evidence: None,
+                            rejection_findings: None,
+                            custom_evidence: None,
+                            verified_invariants: Vec::new(),
+                            summary: None,
+                            allow_main: true,
+                            worktree: None,
+                        })),
+                    )
+                    .expect_err(&format!("{} must fail Submit", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
             FixtureKind::NegativeUnsafeScope(expected) => {
@@ -384,48 +537,56 @@ gates:
                 );
                 let rel = format!("docs/plans/neg-scope-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let start_err = harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Start(StartReq {
-                        spec_path: Some(rel),
-                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
-                        ..StartReq::default()
-                    }),
-                )
-                .expect_err("Start must reject unsafe scope glob fail-closed");
-                assert_eq!(start_err.code, ErrorCode::ProfileSchemaInvalid, "{}", item.relpath);
+                let start_err = harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Start(StartReq {
+                            spec_path: Some(rel),
+                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            ..StartReq::default()
+                        }),
+                    )
+                    .expect_err("Start must reject unsafe scope glob fail-closed");
+                assert_eq!(
+                    start_err.code,
+                    ErrorCode::ProfileSchemaInvalid,
+                    "{}",
+                    item.relpath
+                );
 
                 let valid_raw = fs::read_to_string(fixtures_dir.join("plans/linear.md")).unwrap();
                 let valid_rel = format!("docs/plans/neg-scope-valid-{idx}.md");
                 fs::write(ws.path(&valid_rel), &valid_raw).unwrap();
-                let started = match harness.execute(
-                    &cfg,
-                    &providers,
-                    StateCommand::Start(StartReq {
-                        spec_path: Some(valid_rel),
-                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
-                        ..StartReq::default()
-                    }),
-                )
-                .unwrap()
+                let started = match harness
+                    .execute(
+                        &cfg,
+                        &providers,
+                        StateCommand::Start(StartReq {
+                            spec_path: Some(valid_rel),
+                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            ..StartReq::default()
+                        }),
+                    )
+                    .unwrap()
                 {
                     acdd_state::usecases::StateCommandOutput::Start(s) => s,
                     _ => unreachable!(),
                 };
                 for bad_paths in [unsafe_scope.clone(), vec!["src/{a".to_owned()]] {
-                    let err = harness.execute(
-                        &cfg,
-                        &providers,
-                        StateCommand::ExtendScope(ExtendScopeReq {
-                            run: Some(started.run.run_id.to_string()),
-                            node: "step-1".to_owned(),
-                            paths: bad_paths.clone(),
-                            reason: "attempt escaping or malformed scope".to_owned(),
-                            worker_id: None,
-                        }),
-                    )
-                    .expect_err(&format!("ExtendScope must reject {bad_paths:?}"));
+                    let err = harness
+                        .execute(
+                            &cfg,
+                            &providers,
+                            StateCommand::ExtendScope(ExtendScopeReq {
+                                run: Some(started.run.run_id.to_string()),
+                                node: "step-1".to_owned(),
+                                paths: bad_paths.clone(),
+                                reason: "attempt escaping or malformed scope".to_owned(),
+                                worker_id: None,
+                            }),
+                        )
+                        .expect_err(&format!("ExtendScope must reject {bad_paths:?}"));
                     assert_eq!(err.code, expected, "{}", item.relpath);
                 }
             }

@@ -28,21 +28,17 @@ where
     let mut annotation_shadowed = false;
     while !scope.is_empty() {
         if check_binding_shadowing
-            && ctx
-                .input
-                .by_qual
-                .get(scope)
-                .is_some_and(|scope_nodes| {
-                    scope_nodes.iter().any(|scope_node| {
-                        scope_node.path == *ctx.path
-                            && has_node_binding(
-                                ctx.input.interner,
-                                ctx.input.node_rebindings,
-                                scope_node.id.as_str(),
-                                head,
-                            )
-                    })
+            && ctx.input.by_qual.get(scope).is_some_and(|scope_nodes| {
+                scope_nodes.iter().any(|scope_node| {
+                    scope_node.path == *ctx.path
+                        && has_node_binding(
+                            ctx.input.interner,
+                            ctx.input.node_rebindings,
+                            scope_node.id.as_str(),
+                            head,
+                        )
                 })
+            })
         {
             annotation_shadowed = true;
             break;
@@ -53,7 +49,13 @@ where
                 .copied()
                 .filter(|candidate| candidate.path == *ctx.path),
         );
-        if crate::linker::types::shadowed_by_late_import(&ctx.alias_import_positions, scope, head, node.line, type_candidates) {
+        if crate::linker::types::shadowed_by_late_import(
+            &ctx.alias_import_positions,
+            scope,
+            head,
+            node.line,
+            type_candidates,
+        ) {
             annotation_shadowed = true;
             break;
         }
@@ -80,23 +82,19 @@ where
             break;
         }
         if check_binding_shadowing
-            && ctx
-                .input
-                .by_qual
-                .get(scope)
-                .is_some_and(|scope_nodes| {
-                    scope_nodes
-                        .iter()
-                        .filter(|scope_node| scope_node.path == *ctx.path)
-                        .any(|scope_node| {
-                            has_node_binding(
-                                ctx.input.interner,
-                                ctx.input.node_bindings,
-                                scope_node.id.as_str(),
-                                head,
-                            )
-                        })
-                })
+            && ctx.input.by_qual.get(scope).is_some_and(|scope_nodes| {
+                scope_nodes
+                    .iter()
+                    .filter(|scope_node| scope_node.path == *ctx.path)
+                    .any(|scope_node| {
+                        has_node_binding(
+                            ctx.input.interner,
+                            ctx.input.node_bindings,
+                            scope_node.id.as_str(),
+                            head,
+                        )
+                    })
+            })
         {
             annotation_shadowed = true;
             break;

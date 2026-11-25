@@ -1,9 +1,9 @@
 //! Role runner subprocess spawning (`stdin` Markdown prompt, `ACDD_*` env, session reuse).
 
-use crate::profile::RoleDef;
 use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, BoundedLogWriter,
 };
+use crate::profile::RoleDef;
 use crate::types::ClaimOutcome;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
@@ -179,7 +179,8 @@ pub(super) fn spawn_role_runner_borrowed_inner(
         }
     }
 
-    let timeout = timeout_override.unwrap_or_else(|| Duration::from_secs(req.timeout_seconds.max(1)));
+    let timeout =
+        timeout_override.unwrap_or_else(|| Duration::from_secs(req.timeout_seconds.max(1)));
     let outcome = run_isolated_process(
         &mut cmd,
         Some(req.prompt_markdown.as_bytes()),

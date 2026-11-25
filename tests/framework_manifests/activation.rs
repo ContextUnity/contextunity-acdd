@@ -280,8 +280,14 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         let sources = sources_for(case, Some(case.declaration), None, true);
         let indexed = sources.index().unwrap();
         if case.pack == "django" {
-            let has_template_symbols = |path: &str| indexed.registry.language_context_for_path(path)
-                .syntax_rules.iter().any(|rule| rule.pack == "django" && rule.id == "template-symbols");
+            let has_template_symbols = |path: &str| {
+                indexed
+                    .registry
+                    .language_context_for_path(path)
+                    .syntax_rules
+                    .iter()
+                    .any(|rule| rule.pack == "django" && rule.id == "template-symbols")
+            };
             assert!(has_template_symbols(case.edge.0));
             assert!(!has_template_symbols("plain/probe.py"));
         }
@@ -384,10 +390,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
             }
             sources.index().unwrap()
         };
-        let check = |conn: &Connection,
-                     enabled: bool,
-                     bundled: bool,
-                     overlay: bool| {
+        let check = |conn: &Connection, enabled: bool, bundled: bool, overlay: bool| {
             commitments::verify(conn).unwrap();
             let mut expected = Vec::new();
             if enabled && bundled {
@@ -415,12 +418,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
 
         let enabled_source = serialize(&value);
         let enabled = index_with(Some(&enabled_source));
-        check(
-            &enabled.conn,
-            true,
-            mode != "replace",
-            true,
-        );
+        check(&enabled.conn, true, mode != "replace", true);
 
         value["enabled"] = false.into();
         let disabled_source = serialize(&value);
@@ -437,20 +435,10 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         value["enabled"] = true.into();
         let reenabled_source = serialize(&value);
         let reenabled = index_with(Some(&reenabled_source));
-        check(
-            &reenabled.conn,
-            true,
-            mode != "replace",
-            true,
-        );
+        check(&reenabled.conn, true, mode != "replace", true);
 
         let restored_defaults = index_with(None);
-        check(
-            &restored_defaults.conn,
-            true,
-            true,
-            false,
-        );
+        check(&restored_defaults.conn, true, true, false);
         assert_eq!(route_names(&restored_defaults.conn), ["ANY /records/"]);
 
         let atelier_manifest = format!(".acdd/frameworks/atelier.{extension}");

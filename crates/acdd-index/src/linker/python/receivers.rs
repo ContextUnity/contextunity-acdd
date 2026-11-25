@@ -1,5 +1,5 @@
-use crate::models::{Node, Reference};
 use crate::languages::profile::{LanguageMemberIndex, LanguageMemberResult};
+use crate::models::{Node, Reference};
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
@@ -42,7 +42,14 @@ impl<'a> From<PythonReceiverMember<'a>> for LanguageMemberResult<'a> {
     fn from(member: PythonReceiverMember<'a>) -> Self {
         match member {
             PythonReceiverMember::Local(node) => Self::Local(node),
-            PythonReceiverMember::External(module, import_line, provider, hierarchy) => Self::External { module, import_line, provider, hierarchy },
+            PythonReceiverMember::External(module, import_line, provider, hierarchy) => {
+                Self::External {
+                    module,
+                    import_line,
+                    provider,
+                    hierarchy,
+                }
+            }
             PythonReceiverMember::Ambiguous => Self::Ambiguous,
             PythonReceiverMember::Unknown => Self::Unknown,
         }
@@ -50,8 +57,13 @@ impl<'a> From<PythonReceiverMember<'a>> for LanguageMemberResult<'a> {
 }
 
 fn is_stub_or_overload(node: &Node) -> bool {
-    node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB).as_bool().unwrap_or(false)
-        || node.detail_entry(crate::models::details::NodeDetailKey::IS_OVERLOAD).as_bool().unwrap_or(false)
+    node.detail_entry(crate::models::details::NodeDetailKey::IS_STUB)
+        .as_bool()
+        .unwrap_or(false)
+        || node
+            .detail_entry(crate::models::details::NodeDetailKey::IS_OVERLOAD)
+            .as_bool()
+            .unwrap_or(false)
 }
 
 /// Precomputes Python C3 order and member lookup before generic reference linking.
@@ -116,7 +128,8 @@ fn collect_python_mutation_owners<'a>(
                 continue;
             };
             while !scope.is_empty() {
-                if let Some(class) = find_enclosing_python_class(class_names, &node.path, scope, node)
+                if let Some(class) =
+                    find_enclosing_python_class(class_names, &node.path, scope, node)
                 {
                     mutation_owners.insert(node.id.as_str(), class);
                     assigned_members
@@ -135,7 +148,11 @@ fn insert_python_class_node_member<'a>(
     node: &'a Node,
 ) {
     let callable = matches!(node.kind.as_str(), "function" | "method");
-    let conditional = callable && node.detail_entry(crate::models::details::NodeDetailKey::IS_CONDITIONAL).as_bool().unwrap_or(false);
+    let conditional = callable
+        && node
+            .detail_entry(crate::models::details::NodeDetailKey::IS_CONDITIONAL)
+            .as_bool()
+            .unwrap_or(false);
     let node_is_stub = is_stub_or_overload(node);
     match members.get(node.name.as_str()) {
         None => {
@@ -195,7 +212,10 @@ impl<'a> PythonReceivers<'a> {
         let classes: HashMap<&str, &Node> = all
             .values_facts()
             .flat_map(|facts| &facts.nodes)
-            .filter(|node| node.language == crate::models::tags::LanguageId::Python && node.kind == crate::models::tags::NodeKind::Class)
+            .filter(|node| {
+                node.language == crate::models::tags::LanguageId::Python
+                    && node.kind == crate::models::tags::NodeKind::Class
+            })
             .map(|node| (node.id.as_str(), node))
             .collect();
         if classes.is_empty() {
@@ -214,8 +234,7 @@ impl<'a> PythonReceivers<'a> {
                 .or_default()
                 .push(*class);
         }
-        let (mutation_owners, assigned_members) =
-            collect_python_mutation_owners(all, &class_names);
+        let (mutation_owners, assigned_members) = collect_python_mutation_owners(all, &class_names);
         for facts in all.values_facts() {
             let assigned_fields: HashSet<&str> = facts
                 .edges
@@ -224,12 +243,9 @@ impl<'a> PythonReceivers<'a> {
                 .map(|edge| edge.dst.as_str())
                 .collect();
             for node in &facts.nodes {
-                let owning_class = node
-                    .qualname
-                    .rsplit_once('.')
-                    .and_then(|(parent, _)| {
-                        find_enclosing_python_class(&class_names, &node.path, parent, node)
-                    });
+                let owning_class = node.qualname.rsplit_once('.').and_then(|(parent, _)| {
+                    find_enclosing_python_class(&class_names, &node.path, parent, node)
+                });
                 // PythonReceiverMember reads create synthetic field nodes; they do not override methods.
                 if node.kind == crate::models::tags::NodeKind::Field
                     && !assigned_fields.contains(node.id.as_str())
@@ -240,7 +256,10 @@ impl<'a> PythonReceivers<'a> {
                     continue;
                 }
                 if let Some(class) = owning_class {
-                    insert_python_class_node_member(own.entry(class.id.as_str()).or_default(), node);
+                    insert_python_class_node_member(
+                        own.entry(class.id.as_str()).or_default(),
+                        node,
+                    );
                 }
             }
             for reference in &facts.references {
@@ -276,7 +295,8 @@ impl<'a> PythonReceivers<'a> {
                     .or_default()
                     .entry(binding)
                     .or_insert(PythonReceiverMember::Unknown);
-                if !matches!(member, PythonReceiverMember::Local(node) if node.kind == crate::models::tags::NodeKind::Field) {
+                if !matches!(member, PythonReceiverMember::Local(node) if node.kind == crate::models::tags::NodeKind::Field)
+                {
                     *member = PythonReceiverMember::Unknown;
                 }
             }
@@ -333,14 +353,14 @@ impl<'a> PythonReceivers<'a> {
                             {
                                 continue;
                             }
-                            inherited
-                                .entry(name.as_str())
-                                .or_insert(PythonReceiverMember::External(
+                            inherited.entry(name.as_str()).or_insert(
+                                PythonReceiverMember::External(
                                     origin,
                                     *line,
                                     Some(provider),
                                     Some((pack, rule)),
-                                ));
+                                ),
+                            );
                         }
                     }
                     // An unindexed base can override any later base's members.
@@ -375,12 +395,13 @@ impl<'a> PythonReceivers<'a> {
                 continue;
             };
             let class_node = classes[id];
-            if !is_stub_or_overload(class_node)
-                && !has_protocol_or_abc_base(class_node)
-            {
+            if !is_stub_or_overload(class_node) && !has_protocol_or_abc_base(class_node) {
                 for base in order.iter().skip(1) {
                     if let Base::Local(base_id) = base {
-                        self.implementors.entry(base_id).or_default().push(class_node);
+                        self.implementors
+                            .entry(base_id)
+                            .or_default()
+                            .push(class_node);
                     }
                 }
             }
@@ -410,7 +431,12 @@ impl<'a> PythonReceivers<'a> {
         self.implementors.get(base_id).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> PythonReceiverMember<'a> {
+    pub(crate) fn lookup(
+        &self,
+        class: &Node,
+        member: &str,
+        super_call: bool,
+    ) -> PythonReceiverMember<'a> {
         let map = if super_call {
             &self.supers
         } else {
@@ -442,7 +468,8 @@ impl<'a> PythonReceivers<'a> {
         &'a crate::languages::manifests::ClassHierarchyReceiverRule,
         &'a crate::languages::manifests::ReturnPolicy,
     )> {
-        let PythonReceiverMember::External(_, _, _, Some((pack, rule))) = self.lookup(class, member, false)
+        let PythonReceiverMember::External(_, _, _, Some((pack, rule))) =
+            self.lookup(class, member, false)
         else {
             return None;
         };
@@ -460,7 +487,11 @@ impl LanguageMemberIndex for PythonReceivers<'_> {
     }
 
     fn lookup_local_member<'a>(
-        &'a self, receiver: &Node, member: &str, _associated: bool, caller: &Node,
+        &'a self,
+        receiver: &Node,
+        member: &str,
+        _associated: bool,
+        caller: &Node,
     ) -> LanguageMemberResult<'a> {
         self.lookup_member(receiver, member, false, caller)
     }
@@ -483,7 +514,11 @@ impl LanguageMemberIndex for PythonReceivers<'_> {
         &self,
         receiver: &Node,
         member: &str,
-    ) -> Option<(&str, &crate::languages::manifests::ClassHierarchyReceiverRule, &crate::languages::manifests::ReturnPolicy)> {
+    ) -> Option<(
+        &str,
+        &crate::languages::manifests::ClassHierarchyReceiverRule,
+        &crate::languages::manifests::ReturnPolicy,
+    )> {
         PythonReceivers::return_policy(self, receiver, member)
     }
 }

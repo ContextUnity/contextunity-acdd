@@ -6,9 +6,7 @@ use super::{
         MAX_DEEP_TRAVERSAL_FRONTIER,
     },
 };
-use crate::db::paging::{
-    self, immediate_links, REVERSE_DEPENDENCIES,
-};
+use crate::db::paging::{self, immediate_links, REVERSE_DEPENDENCIES};
 use crate::db::reader;
 use crate::models::{
     details::NodeDetailKey,
@@ -266,10 +264,7 @@ fn traverse_with_path_options_dto<'a>(
             .__predecessor
             .take()
             .or_else(|| reason.as_ref().map(|pair| pair.0.clone()));
-        let edge_kind = row
-            .__edge_kind
-            .take()
-            .or_else(|| reason.map(|pair| pair.1));
+        let edge_kind = row.__edge_kind.take().or_else(|| reason.map(|pair| pair.1));
         if row.fields.get("id").and_then(Value::as_str) == Some(id) {
             row.is_seed = Some(true);
         } else {
@@ -515,7 +510,9 @@ pub(super) fn untested_paged(
         &[&scope, &lower, &upper],
         options,
     )?;
-    Ok(json!({"nodes":nodes,"meaning":"no direct indexed test caller; not a runtime coverage proof"}))
+    Ok(
+        json!({"nodes":nodes,"meaning":"no direct indexed test caller; not a runtime coverage proof"}),
+    )
 }
 
 pub(super) fn implementations_paged(

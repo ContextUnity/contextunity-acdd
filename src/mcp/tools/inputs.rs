@@ -1,7 +1,9 @@
 use crate::format::OutputFormat;
 use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_core::lint::{LintCategory, LintSeverity};
-use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions, SymbolClassification};
+use acdd_core::response::{
+    Detail, QueryOptions, ResponsePolicy, SourceOptions, SymbolClassification,
+};
 use acdd_state::types::{RejectionFindings, ReviewEvidence, SubmitAction};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -494,7 +496,11 @@ pub struct Impact {
 }
 impl Impact {
     pub(super) fn selector(&self) -> anyhow::Result<Option<&str>> {
-        aliased_value(self.selector.as_deref(), &[self.symbol.as_deref()], "selector")
+        aliased_value(
+            self.selector.as_deref(),
+            &[self.symbol.as_deref()],
+            "selector",
+        )
     }
 
     pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {

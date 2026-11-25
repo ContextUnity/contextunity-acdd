@@ -46,12 +46,7 @@ fn extracted_files(files: &[(&str, &str)], language: Option<&str>) -> BTreeMap<S
         .collect()
 }
 
-fn linked_files(
-    files: &[(&str, &str)],
-) -> (
-    BTreeMap<String, Facts>,
-    acdd_index::models::Graph,
-) {
+fn linked_files(files: &[(&str, &str)]) -> (BTreeMap<String, Facts>, acdd_index::models::Graph) {
     let facts = extracted_files(files, None);
     let graph = ExtractorHarness::link_graph(&facts);
     (facts, graph)

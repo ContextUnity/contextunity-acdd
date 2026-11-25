@@ -24,8 +24,8 @@ pub fn render_claim_prompt_markdown(claim: &ClaimResp, template: Option<&str>) -
         .as_ref()
         .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
         .unwrap_or_default();
-    let receipts_json =
-        serde_json::to_string_pretty(&claim.dependency_receipts).unwrap_or_else(|_| "[]".to_owned());
+    let receipts_json = serde_json::to_string_pretty(&claim.dependency_receipts)
+        .unwrap_or_else(|_| "[]".to_owned());
     let blackboard_json =
         serde_json::to_string_pretty(&claim.blackboard).unwrap_or_else(|_| "[]".to_owned());
     let lenses_json =
@@ -61,7 +61,10 @@ fn render_guidance_lines(guidance: &[Value]) -> String {
     let mut top_bullets = Vec::new();
     let mut section_blocks = Vec::new();
     for item in guidance {
-        let text = item.as_str().map(str::to_owned).unwrap_or_else(|| item.to_string());
+        let text = item
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| item.to_string());
         let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
@@ -102,7 +105,10 @@ fn push_str_list(out: &mut String, label: &str, items: &[Value]) {
     out.push_str(label);
     out.push_str("**:\n");
     for item in items {
-        let s = item.as_str().map(str::to_owned).unwrap_or_else(|| item.to_string());
+        let s = item
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| item.to_string());
         out.push_str("  - ");
         out.push_str(&s);
         out.push('\n');
@@ -149,7 +155,10 @@ fn render_contract_scalars(out: &mut String, obj: &serde_json::Map<String, Value
         ("target", "Target"),
     ] {
         if let Some(val) = obj.get(key) {
-            let s = val.as_str().map(str::to_owned).unwrap_or_else(|| val.to_string());
+            let s = val
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| val.to_string());
             if !s.is_empty() {
                 out.push_str(&format!("- **{label}**: {s}\n"));
             }
@@ -161,10 +170,18 @@ fn render_contract_scalars(out: &mut String, obj: &serde_json::Map<String, Value
         ("scope", "Scope"),
         ("owners", "Owners"),
     ] {
-        if let Some(arr) = obj.get(key).and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        if let Some(arr) = obj
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|a| !a.is_empty())
+        {
             let joined = arr
                 .iter()
-                .map(|v| v.as_str().map(|s| format!("`{s}`")).unwrap_or_else(|| v.to_string()))
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| format!("`{s}`"))
+                        .unwrap_or_else(|| v.to_string())
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!("- **{label}**: {joined}\n"));
@@ -178,7 +195,11 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
         return;
     };
     render_contract_scalars(out, obj);
-    if let Some(arr) = obj.get("checks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+    if let Some(arr) = obj
+        .get("checks")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
         let joined = arr
             .iter()
             .filter_map(|v| v.get("check").and_then(Value::as_str))
@@ -189,11 +210,21 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
             out.push_str(&format!("- **Checks**: {joined}\n"));
         }
     }
-    if let Some(arr) = obj.get("extended_scope").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+    if let Some(arr) = obj
+        .get("extended_scope")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
         out.push_str("- **Extended Scope**:\n");
         for entry in arr {
-            let path = entry.get("path").and_then(Value::as_str).unwrap_or_default();
-            let reason = entry.get("reason").and_then(Value::as_str).unwrap_or_default();
+            let path = entry
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let reason = entry
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if reason.is_empty() {
                 out.push_str(&format!("  - `{path}`\n"));
             } else {
@@ -210,31 +241,60 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
         }
     }
     for (key, label) in [("spec", "Spec Details"), ("task_spec", "Task Spec")] {
-        if let Some(s) = obj.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        if let Some(s) = obj
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
             out.push_str(&format!("\n### {label}\n\n{}\n", s.trim()));
         }
     }
-    if let Some(arr) = obj.get("acceptance_criteria").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+    if let Some(arr) = obj
+        .get("acceptance_criteria")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
         out.push('\n');
         push_str_list(out, "Acceptance Criteria", arr);
     }
-    if let Some(arr) = obj.get("subtasks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+    if let Some(arr) = obj
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
         out.push_str("\n### Subtasks\n\n");
         for sub in arr {
-            let sref = sub.get("subtask_ref").and_then(Value::as_str).unwrap_or_default();
+            let sref = sub
+                .get("subtask_ref")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let title = sub.get("title").and_then(Value::as_str).unwrap_or_default();
-            let status = sub.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let status = sub
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
             out.push_str(&format!("- [{status}] `{sref}`: {title}"));
-            if let Some(ev) = sub.get("evidence").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            if let Some(ev) = sub
+                .get("evidence")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 out.push_str(&format!(" — {ev}"));
             }
             out.push('\n');
         }
     }
-    if let Some(contours) = obj.get("contours").and_then(Value::as_object).filter(|c| !c.is_empty()) {
+    if let Some(contours) = obj
+        .get("contours")
+        .and_then(Value::as_object)
+        .filter(|c| !c.is_empty())
+    {
         out.push_str("\n### Contours\n");
         for (name, def) in contours {
-            let desc = def.get("description").and_then(Value::as_str).unwrap_or_default();
+            let desc = def
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             out.push_str(&format!("\n#### `{name}`\n"));
             if !desc.is_empty() {
                 out.push_str(&format!("{desc}\n"));
@@ -252,21 +312,39 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
 
 fn render_findings_markdown(out: &mut String, payload: &Value) {
     if let Some(findings) = payload.get("findings").filter(|v| !v.is_null()) {
-        let kind = findings.get("kind").and_then(Value::as_str).unwrap_or("defect");
-        let summary = findings.get("summary").and_then(Value::as_str).unwrap_or_default();
+        let kind = findings
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("defect");
+        let summary = findings
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         out.push_str(&format!("- **Kind**: `{kind}`\n"));
         if !summary.is_empty() {
             out.push_str(&format!("- **Summary**: {summary}\n"));
         }
-        if let Some(bb_id) = findings.get("blackboard_message_id").and_then(Value::as_i64) {
+        if let Some(bb_id) = findings
+            .get("blackboard_message_id")
+            .and_then(Value::as_i64)
+        {
             out.push_str(&format!("- **Blackboard**: #{bb_id}\n"));
         }
         if let Some(items) = findings.get("items").and_then(Value::as_array) {
             for item in items {
-                let sev = item.get("severity").and_then(Value::as_str).unwrap_or("medium");
+                let sev = item
+                    .get("severity")
+                    .and_then(Value::as_str)
+                    .unwrap_or("medium");
                 let path = item.get("path").and_then(Value::as_str).unwrap_or("-");
-                let msg = item.get("message").and_then(Value::as_str).unwrap_or_default();
-                let fix = item.get("remediation").and_then(Value::as_str).unwrap_or_default();
+                let msg = item
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let fix = item
+                    .get("remediation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 out.push_str(&format!("- [{sev}] `{path}`: {msg}"));
                 if !fix.is_empty() {
                     out.push_str(&format!(" | Remediation: {fix}"));
@@ -275,7 +353,11 @@ fn render_findings_markdown(out: &mut String, payload: &Value) {
             }
         }
     }
-    if let Some(tail) = payload.get("failed_trace_log_tail").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    if let Some(tail) = payload
+        .get("failed_trace_log_tail")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         out.push_str("\n### Failed Trace Log Tail\n\n```text\n");
         out.push_str(tail);
         if !tail.ends_with('\n') {
@@ -288,7 +370,10 @@ fn render_findings_markdown(out: &mut String, payload: &Value) {
 fn push_labeled_scalars(out: &mut String, obj: &Map<String, Value>, fields: &[(&str, &str)]) {
     for (k, label) in fields {
         if let Some(v) = obj.get(*k).filter(|v| !v.is_null()) {
-            let s = v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
+            let s = v
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| v.to_string());
             if !s.is_empty() {
                 out.push_str(&format!("- **{label}**: {s}\n"));
             }
@@ -335,13 +420,23 @@ fn render_slice_markdown(out: &mut String, slice: &Value) {
         ("incoming_seams", "Incoming Seams", "source_task"),
         ("outgoing_seams", "Outgoing Seams", "target_task"),
     ] {
-        if let Some(arr) = obj.get(k).and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        if let Some(arr) = obj
+            .get(k)
+            .and_then(Value::as_array)
+            .filter(|a| !a.is_empty())
+        {
             out.push_str(&format!("- **{label}**:\n"));
             for s in arr {
                 let peer = s.get(peer_key).and_then(Value::as_str).unwrap_or("-");
-                let ctype = s.get("contract_type").and_then(Value::as_str).unwrap_or("-");
+                let ctype = s
+                    .get("contract_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
                 let cref = s.get("contract_ref").and_then(Value::as_str).unwrap_or("-");
-                let spec = s.get("specification").and_then(Value::as_str).unwrap_or_default();
+                let spec = s
+                    .get("specification")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 out.push_str(&format!("  - `{peer}` ({ctype}) `{cref}`: {spec}\n"));
             }
         }
@@ -428,7 +523,12 @@ fn render_instructions_lens(out: &mut String, val: &Value) {
         .unwrap_or("MANDATORY: read repository rules for respective scope.");
     out.push_str(directive);
     out.push_str("\n\n");
-    for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+    for item in val
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
         let headings = join_json_str_list(item.get("headings"));
         if headings.is_empty() {
@@ -446,7 +546,10 @@ fn render_workspace_config_lens(out: &mut String, val: &Value) {
             out.push_str(&format!("- {key}: [{}]\n", join_json_str_list(Some(arr))));
         }
     }
-    if let Some(max_meta) = val.pointer("/limits/max_metadata_bytes").and_then(Value::as_u64) {
+    if let Some(max_meta) = val
+        .pointer("/limits/max_metadata_bytes")
+        .and_then(Value::as_u64)
+    {
         out.push_str(&format!("- limits.max_metadata_bytes: {max_meta}\n"));
     }
     if let Some(zones) = val.get("architecture_zones").and_then(Value::as_object) {
@@ -457,7 +560,12 @@ fn render_workspace_config_lens(out: &mut String, val: &Value) {
             ));
         }
     }
-    for (name, spec) in val.get("specs").and_then(Value::as_object).into_iter().flatten() {
+    for (name, spec) in val
+        .get("specs")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
         let next_ids = spec
             .get("next_ids")
             .and_then(Value::as_object)
@@ -492,7 +600,11 @@ fn render_workspace_config_lens(out: &mut String, val: &Value) {
         if let Some(d) = spec.get("digits").and_then(Value::as_u64) {
             meta.push(format!("digits: {d}"));
         }
-        if let Some(p) = spec.get("profile").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        if let Some(p) = spec
+            .get("profile")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
             meta.push(format!("profile: `{p}`"));
         }
         if !next_ids.is_empty() {
@@ -501,18 +613,30 @@ fn render_workspace_config_lens(out: &mut String, val: &Value) {
         if meta.is_empty() {
             out.push_str(&format!("- spec `{name}`: `{location}`\n"));
         } else {
-            out.push_str(&format!("- spec `{name}`: `{location}` ({})\n", meta.join(", ")));
+            out.push_str(&format!(
+                "- spec `{name}`: `{location}` ({})\n",
+                meta.join(", ")
+            ));
         }
     }
 }
 
 fn render_docs_invariants_lens(out: &mut String, val: &Value) {
     out.push_str("\n## Governing Invariants\n\n");
-    for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
+    for item in val
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
         let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
         let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
-        let loc = if line > 0 { format!("{path}:{line}") } else { path.to_owned() };
+        let loc = if line > 0 {
+            format!("{path}:{line}")
+        } else {
+            path.to_owned()
+        };
         let enforced = if item.get("enforced").and_then(Value::as_bool) == Some(true) {
             " [ENFORCED]"
         } else {
@@ -533,8 +657,16 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
             "docs.instructions" => render_instructions_lens(out, val),
             "docs.adrs" => {
                 out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
-                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
-                    let title = item.get("title").and_then(Value::as_str).unwrap_or_default();
+                for item in val
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let title = item
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
                     out.push_str(&format!("- {title}: `{path}`\n"));
                 }
@@ -543,18 +675,37 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
             "docs.invariants" => render_docs_invariants_lens(out, val),
             "code.symbols" => {
                 out.push_str("\n## Scoped Symbols\n\n");
-                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
-                    let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                for item in val
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let qn = item
+                        .get("qualname")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
                     let end = item.get("end_line").and_then(Value::as_u64).unwrap_or(line);
-                    let sig = item.get("signature").and_then(Value::as_str).unwrap_or_default();
+                    let sig = item
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     out.push_str(&format!("- `{qn}` : {line}:{end} : `{sig}`\n"));
                 }
             }
             "code.tests" => {
                 out.push_str("\n## Scoped Tests\n\n");
-                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
-                    let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                for item in val
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let qn = item
+                        .get("qualname")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
                     let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
                     out.push_str(&format!("- `{qn}` (`{path}:{line}`)\n"));
@@ -562,10 +713,21 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
             }
             "code.external_callers" => {
                 out.push_str("\n## External Callers\n\n");
-                for item in val.get("items").and_then(Value::as_array).into_iter().flatten() {
-                    let sym = item.get("symbol").and_then(Value::as_str).unwrap_or_default();
+                for item in val
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let sym = item
+                        .get("symbol")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                    let sig_chg = item.get("signature_changed").and_then(Value::as_bool).unwrap_or(false);
+                    let sig_chg = item
+                        .get("signature_changed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     let callers = join_json_str_list(item.get("external_callers"));
                     let flag = if sig_chg { " [SIG CHANGED]" } else { "" };
                     out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
@@ -622,15 +784,26 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
     if !claim.dependency_receipts.is_empty() {
         out.push_str("\n## Dependency Receipts\n\n");
         for r in &claim.dependency_receipts {
-            let cursor = r.get("node_cursor").map(format_cursor_value).unwrap_or_default();
-            let tree = r.get("candidate_tree").and_then(Value::as_str).unwrap_or_default();
+            let cursor = r
+                .get("node_cursor")
+                .map(format_cursor_value)
+                .unwrap_or_default();
+            let tree = r
+                .get("candidate_tree")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let oid = r
                 .get("committed_oid")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty() && *s != "-");
-            let ts = r.get("accepted_at").and_then(Value::as_str).unwrap_or_default();
+            let ts = r
+                .get("accepted_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             match oid {
-                Some(oid) => out.push_str(&format!("- `{cursor}` @ `{tree}` (commit `{oid}`, {ts})\n")),
+                Some(oid) => {
+                    out.push_str(&format!("- `{cursor}` @ `{tree}` (commit `{oid}`, {ts})\n"))
+                }
                 None => out.push_str(&format!("- `{cursor}` @ `{tree}` ({ts})\n")),
             }
         }
@@ -638,10 +811,17 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
     if !claim.blackboard.is_empty() {
         out.push_str("\n## Blackboard\n\n");
         for item in &claim.blackboard {
-            let id = item.get("id").and_then(Value::as_i64).map(|v| format!("#{v}")).unwrap_or_default();
+            let id = item
+                .get("id")
+                .and_then(Value::as_i64)
+                .map(|v| format!("#{v}"))
+                .unwrap_or_default();
             let topic = item.get("topic").and_then(Value::as_str).unwrap_or("notes");
             let author = item.get("author").and_then(Value::as_str).unwrap_or("-");
-            let payload = item.get("payload").and_then(Value::as_str).unwrap_or_default();
+            let payload = item
+                .get("payload")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             out.push_str(&format!("- {id} [{topic} | {author}]: {payload}\n"));
         }
     }

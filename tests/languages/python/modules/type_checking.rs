@@ -23,9 +23,7 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
             "SELECT facts_blob FROM local_facts WHERE path='src/consumer.py'",
             [],
         );
-        let facts = TypedFacts::from_public(
-            crate::common::decode_local_facts(&blob).unwrap(),
-        );
+        let facts = TypedFacts::from_public(crate::common::decode_local_facts(&blob).unwrap());
         let nodes = serde_json::to_value(facts.nodes_view()).unwrap();
         let module = nodes
             .as_array()

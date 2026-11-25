@@ -40,7 +40,8 @@ def standalone_helper(x: int) -> int:
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function && n.name == "standalone_helper"));
+        .any(|n| n.kind == acdd_index::models::tags::NodeKind::Function
+            && n.name == "standalone_helper"));
 
     let cases = [
         ("def run(): pass\nif __name__ == '__main__':\n    run()\n", true),

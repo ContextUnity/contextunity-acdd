@@ -14,13 +14,21 @@ use tempfile::TempDir;
 
 fn git_ok(dir: &Path, args: &[&str]) -> String {
     let out = git_command(dir, args).expect("spawn git");
-    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim_end().to_owned()
 }
 
 fn init_test_repo(dir: &Path) -> CommitOid {
     fs::create_dir_all(dir.join("src")).expect("create repo dir");
-    for args in [&["init", "-b", "main"][..], &["config", "user.email", "test@contextunity.local"], &["config", "user.name", "ACDD Test"]] {
+    for args in [
+        &["init", "-b", "main"][..],
+        &["config", "user.email", "test@contextunity.local"],
+        &["config", "user.name", "ACDD Test"],
+    ] {
         git_ok(dir, args);
     }
     fs::write(dir.join("README.md"), "# Test Repo\n").unwrap();
@@ -29,7 +37,6 @@ fn init_test_repo(dir: &Path) -> CommitOid {
     git_ok(dir, &["commit", "-m", "initial commit"]);
     current_head_commit(dir).expect("initial head")
 }
-
 
 fn run_failpoint_child(case: &str, repo: &Path) {
     let run_id = RunId::new("run-fp-01").expect("run_id");
@@ -62,8 +69,7 @@ fn run_failpoint_child(case: &str, repo: &Path) {
         "integrate_rebase_conflict" => {
             let target_wt = repo.join("run-wt");
             let source_wt = repo.join("task-wt");
-            let accepted_tree =
-                current_scope_tree(&source_wt, None, &policy).expect("accepted");
+            let accepted_tree = current_scope_tree(&source_wt, None, &policy).expect("accepted");
             let _ = integrate_task_branch(&IntegrateTaskReq {
                 target_worktree: target_wt,
                 source_worktree: Some(source_wt),
@@ -101,9 +107,8 @@ fn run_failpoint_child(case: &str, repo: &Path) {
 #[test]
 fn failpoint_crash_recovery_matrix() {
     if let Ok(child_case) = std::env::var("ACDD_GIT_OPS_FAILPOINT_CHILD") {
-        let repo = PathBuf::from(
-            std::env::var("ACDD_FAILPOINT_REPO").expect("ACDD_FAILPOINT_REPO"),
-        );
+        let repo =
+            PathBuf::from(std::env::var("ACDD_FAILPOINT_REPO").expect("ACDD_FAILPOINT_REPO"));
         run_failpoint_child(&child_case, &repo);
         return;
     }
@@ -307,7 +312,11 @@ fn failpoint_crash_recovery_matrix() {
         .expect("archive idempotent retry");
         assert!(retry.recovered_idempotently, "{case}");
         assert_eq!(retry.committed_oid, expected_oid);
-        assert_eq!(repo.join("docs/milestones/AC-FP.md").exists(), !should_commit, "{case}");
+        assert_eq!(
+            repo.join("docs/milestones/AC-FP.md").exists(),
+            !should_commit,
+            "{case}"
+        );
         assert!(repo.join("docs/milestones/archive/AC-FP.md").is_file());
     }
 }

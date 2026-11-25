@@ -127,11 +127,7 @@ pub(super) fn build_archive_render_input(
             .max_by_key(|a| a.claim_revision)
             .and_then(|a| serde_json::from_str::<Receipt>(&a.payload_json).ok());
         if let Some(ref rec) = task_receipt {
-            collect_rollup_notes(
-                rec.rollup.as_ref(),
-                &mut decisions,
-                &mut deferred_findings,
-            );
+            collect_rollup_notes(rec.rollup.as_ref(), &mut decisions, &mut deferred_findings);
             task_receipts.insert(tref.clone(), rec.clone());
         }
 

@@ -281,7 +281,11 @@ pub(super) fn resolve_traversal_kinds(
             String::new(),
         ),
         TraversalMode::All => (
-            format!("{}{}", paging::FORWARD_DEPENDENCIES, paging::STRUCTURAL_DEPENDENCIES),
+            format!(
+                "{}{}",
+                paging::FORWARD_DEPENDENCIES,
+                paging::STRUCTURAL_DEPENDENCIES
+            ),
             paging::REVERSE_DEPENDENCIES.into(),
         ),
         TraversalMode::Calls => {

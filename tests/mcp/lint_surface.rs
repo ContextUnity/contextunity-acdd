@@ -171,14 +171,17 @@ message: "avoid direct connect calls"
         .text("code_map_lint", json!({"format": "markdown"}))
         .expect("MCP markdown");
 
-    let expected_prefix = format!(
-        "file://{}",
-        ws.root().canonicalize().unwrap().display()
-    );
+    let expected_prefix = format!("file://{}", ws.root().canonicalize().unwrap().display());
     for (surface, md) in [("CLI", cli_md_text.as_ref()), ("MCP", mcp_md_text.as_str())] {
         assert!(md.contains("INV-TEST-CORE-ISOLATION"), "{surface}: {md}");
-        assert!(md.contains(&expected_prefix), "{surface} missing confined file:/// URI: {md}");
-        assert!(!md.contains(".."), "{surface} leaked parent traversal: {md}");
+        assert!(
+            md.contains(&expected_prefix),
+            "{surface} missing confined file:/// URI: {md}"
+        );
+        assert!(
+            !md.contains(".."),
+            "{surface} leaked parent traversal: {md}"
+        );
     }
 
     // Response budgeting & paging under configured 2048-byte limit.
@@ -187,9 +190,8 @@ message: "avoid direct connect calls"
         big_src.push_str(&format!("pub fn todo_placeholder_{i}() {{ connect(); }}\n"));
     }
     ws.write("src/core/service.rs", &big_src);
-    let mut extra_rules = String::from(
-        "---\ntitle: Extra Rules\ndoc_type: architecture\n---\n# Extra Rules\n",
-    );
+    let mut extra_rules =
+        String::from("---\ntitle: Extra Rules\ndoc_type: architecture\n---\n# Extra Rules\n");
     for i in 0..15 {
         extra_rules.push_str(&format!(
             "```acdd-rule\nid: WARN-EXTRA-{i}\nkind: ast_pattern\nseverity: warn\nfrom:\n  paths: [\"src/core/service.rs\"]\n  languages: [rust]\nast_pattern: \"pub fn todo_placeholder_{i}() {{ $$$BODY }}\"\nmessage: \"extra diagnostic payload padding {i} for response budget test\"\n```\n"

@@ -110,7 +110,9 @@ impl ErrorCode {
             Self::ProfileSchemaInvalid => "ACDD_PROFILE_SCHEMA_INVALID",
             Self::CommandUnbound => "COMMAND_UNBOUND",
             Self::CommandTestFilterUnsupported => "COMMAND_TEST_FILTER_UNSUPPORTED",
-            Self::CommandTestFilterPlaceholderRequired => "COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED",
+            Self::CommandTestFilterPlaceholderRequired => {
+                "COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED"
+            }
             Self::UnknownGuidanceSlot => "UNKNOWN_GUIDANCE_SLOT",
             Self::GuidanceBudgetExceeded => "GUIDANCE_BUDGET_EXCEEDED",
             Self::RunSelectorAmbiguous => "RUN_SELECTOR_AMBIGUOUS",
@@ -234,7 +236,8 @@ impl AcddError {
 
     /// Extract a `&AcddError` from an `anyhow::Error` chain if present.
     pub fn from_anyhow(err: &anyhow::Error) -> Option<&Self> {
-        err.chain().find_map(|cause| cause.downcast_ref::<AcddError>())
+        err.chain()
+            .find_map(|cause| cause.downcast_ref::<AcddError>())
     }
 }
 

@@ -164,7 +164,12 @@ pub(crate) fn create_managed_worktree(
     )?;
 
     let base_check = format!("{}^{{commit}}", req.base_ref);
-    run_git_stdout(&primary, &["rev-parse", "--verify", &base_check], None, ErrorCode::ExternalGitDrift)?;
+    run_git_stdout(
+        &primary,
+        &["rev-parse", "--verify", &base_check],
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?;
 
     let raw_target = if req.worktree_path.is_absolute() {
         req.worktree_path.clone()
@@ -182,7 +187,10 @@ pub(crate) fn create_managed_worktree(
     let parent = target_wt.parent().ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("worktree path '{}' requires a parent directory", target_wt.display()),
+            format!(
+                "worktree path '{}' requires a parent directory",
+                target_wt.display()
+            ),
         )
     })?;
     ensure_confined_dir_exists(parent)?;
@@ -190,15 +198,25 @@ pub(crate) fn create_managed_worktree(
     let target_str = target_wt.to_string_lossy().into_owned();
     run_git_checked(
         &primary,
-        &["worktree", "add", "-b", &req.branch_name, &target_str, &req.base_ref],
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &req.branch_name,
+            &target_str,
+            &req.base_ref,
+        ],
         None,
         None,
         ErrorCode::ExternalGitDrift,
     )?;
 
     let copy_source = copy_source.unwrap_or(&primary);
-    if let Err(copy_err) = copy_uncommitted_files(copy_source, &target_wt, &req.copy_uncommitted_paths) {
-        let _ = remove_worktree_and_branch(&primary, Some(&target_wt), Some(&req.branch_name), true);
+    if let Err(copy_err) =
+        copy_uncommitted_files(copy_source, &target_wt, &req.copy_uncommitted_paths)
+    {
+        let _ =
+            remove_worktree_and_branch(&primary, Some(&target_wt), Some(&req.branch_name), true);
         return Err(copy_err);
     }
 
@@ -212,12 +230,17 @@ pub(crate) fn create_managed_worktree(
 }
 
 fn ensure_confined_dir_exists(dir: &Path) -> Result<(), StateError> {
-    ensure_confined_dir_all(dir, dir).map(|_| ()).map_err(|err| {
-        StateError::new(
-            ErrorCode::ExternalGitDrift,
-            format!("failed preparing confined directory '{}': {err}", dir.display()),
-        )
-    })
+    ensure_confined_dir_all(dir, dir)
+        .map(|_| ())
+        .map_err(|err| {
+            StateError::new(
+                ErrorCode::ExternalGitDrift,
+                format!(
+                    "failed preparing confined directory '{}': {err}",
+                    dir.display()
+                ),
+            )
+        })
 }
 
 fn copy_uncommitted_files(
@@ -381,7 +404,13 @@ pub fn remove_worktree_and_branch(
         )?;
         if exists.status.success() {
             let flag = if force { "-D" } else { "-d" };
-            run_git_checked(&primary, &["branch", flag, short], None, None, ErrorCode::ExternalGitDrift)?;
+            run_git_checked(
+                &primary,
+                &["branch", flag, short],
+                None,
+                None,
+                ErrorCode::ExternalGitDrift,
+            )?;
         }
     }
 
@@ -390,41 +419,61 @@ pub fn remove_worktree_and_branch(
 
 /// Delete `refs/acdd/{runs,snapshots,keep}/<run_id>/*` across primary and linked workspaces.
 pub fn cleanup_run_refs<'a>(
-    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
+    locked: Option<&'a RepoWorktreeLayout>,
+    workspaces: impl IntoIterator<Item = &'a PathBuf>,
     run_id: &RunId,
 ) -> Result<Vec<String>, StateError> {
     cleanup_refs(locked, workspaces, run_id, None)
 }
 
 pub(crate) fn try_lock_secondary_repo(
-    locked: Option<&RepoWorktreeLayout>, target: &RepoWorktreeLayout,
+    locked: Option<&RepoWorktreeLayout>,
+    target: &RepoWorktreeLayout,
 ) -> Result<Option<FileLockGuard>, StateError> {
     if locked.is_some_and(|primary| primary.git_common_dir == target.git_common_dir) {
         return Ok(None);
     }
     try_acquire_exclusive(&target.repo_lock_path)
         .map_err(|err| StateError::new(ErrorCode::BackendConflict, err.to_string()))?
-        .map(Some).ok_or_else(|| StateError::new(ErrorCode::BackendConflict,
-            format!("repository lock is busy: '{}'", target.repo_lock_path.display())))
+        .map(Some)
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::BackendConflict,
+                format!(
+                    "repository lock is busy: '{}'",
+                    target.repo_lock_path.display()
+                ),
+            )
+        })
 }
 
 pub(crate) fn cleanup_refs<'a>(
-    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
-    run_id: &RunId, snapshot: Option<String>,
+    locked: Option<&'a RepoWorktreeLayout>,
+    workspaces: impl IntoIterator<Item = &'a PathBuf>,
+    run_id: &RunId,
+    snapshot: Option<String>,
 ) -> Result<Vec<String>, StateError> {
     let repos = lock_cleanup_repos(locked, workspaces)?;
     cleanup_locked_refs(&repos, run_id, snapshot, None, None, None)
 }
 
 pub(crate) fn lock_cleanup_repos<'a>(
-    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
+    locked: Option<&'a RepoWorktreeLayout>,
+    workspaces: impl IntoIterator<Item = &'a PathBuf>,
 ) -> Result<Vec<(RepoWorktreeLayout, Option<FileLockGuard>)>, StateError> {
     let mut seen_common_dirs = BTreeSet::new();
     let mut repos = Vec::new();
-    for ws in locked.map(|layout| &layout.primary_worktree).into_iter().chain(workspaces) {
+    for ws in locked
+        .map(|layout| &layout.primary_worktree)
+        .into_iter()
+        .chain(workspaces)
+    {
         if !locked.is_some_and(|primary| primary.primary_worktree == *ws)
             && ws.is_dir()
-            && ws.join(".git").symlink_metadata().is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+            && ws
+                .join(".git")
+                .symlink_metadata()
+                .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
             && acdd_core::git::git_common_dir(ws).is_err()
         {
             continue;
@@ -439,26 +488,51 @@ pub(crate) fn lock_cleanup_repos<'a>(
 }
 
 pub(crate) fn cleanup_locked_refs(
-    repos: &[(RepoWorktreeLayout, Option<FileLockGuard>)], run_id: &RunId, snapshot: Option<String>, exact: Option<&str>,
-    suffix: Option<&str>, older_than: Option<i64>,
+    repos: &[(RepoWorktreeLayout, Option<FileLockGuard>)],
+    run_id: &RunId,
+    snapshot: Option<String>,
+    exact: Option<&str>,
+    suffix: Option<&str>,
+    older_than: Option<i64>,
 ) -> Result<Vec<String>, StateError> {
     let mut deleted = Vec::new();
     let prefixes = match snapshot {
         Some(prefix) => vec![prefix],
-        None => ["runs", "snapshots", "keep"].map(|kind| format!("refs/acdd/{kind}/{run_id}/")).to_vec(),
+        None => ["runs", "snapshots", "keep"]
+            .map(|kind| format!("refs/acdd/{kind}/{run_id}/"))
+            .to_vec(),
     };
-    let mut args = vec!["for-each-ref", "--format=%(refname)%09%(committerdate:unix)%09%(objectname)"];
+    let mut args = vec![
+        "for-each-ref",
+        "--format=%(refname)%09%(committerdate:unix)%09%(objectname)",
+    ];
     args.extend(prefixes.iter().map(String::as_str));
     for (layout, _) in repos {
-        let listed = run_git_stdout(&layout.primary_worktree, &args, None, ErrorCode::ExternalGitDrift)?;
+        let listed = run_git_stdout(
+            &layout.primary_worktree,
+            &args,
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?;
         let names: Vec<(String, String)> = listed.lines().filter_map(|line| {
             let mut fields = line.split('\t'); let (name, ts, oid) = (fields.next()?, fields.next()?, fields.next()?);
             let valid_shape = name.strip_prefix("refs/acdd/snapshots/").is_none_or(|tail| { let mut parts = tail.split('/'); matches!((parts.next(), parts.next(), parts.next(), parts.next()), (Some(k), Some(lbl), Some(r), None) if if k == "_adhoc" { super::snapshot::validate_snapshot_label(lbl).is_ok() && parse_canonical_revision(r, "").is_some() } else { r == "pre" || parse_canonical_revision(r, "").is_some() }) });
             (exact.is_none_or(|r| name == r) && valid_shape && suffix.is_none_or(|s| name.ends_with(s) && name.rsplit('/').next() == s.strip_prefix('/')) && older_than.is_none_or(|c| ts.parse::<i64>().ok().filter(|ts| *ts > 0).is_some_and(|ts| ts < c))).then(|| (name.to_owned(), oid.to_owned()))
         }).collect();
-        if names.is_empty() { continue; }
-        let batch: String = names.iter().map(|(r, oid)| format!("delete {r} {oid}\n")).collect();
-        run_git_checked(&layout.primary_worktree, &["update-ref", "--no-deref", "--stdin"], None, Some(batch.as_bytes()), ErrorCode::ExternalGitDrift)?;
+        if names.is_empty() {
+            continue;
+        }
+        let batch: String = names
+            .iter()
+            .map(|(r, oid)| format!("delete {r} {oid}\n"))
+            .collect();
+        run_git_checked(
+            &layout.primary_worktree,
+            &["update-ref", "--no-deref", "--stdin"],
+            None,
+            Some(batch.as_bytes()),
+            ErrorCode::ExternalGitDrift,
+        )?;
         deleted.extend(names.into_iter().map(|(name, _)| name));
     }
     Ok(deleted)

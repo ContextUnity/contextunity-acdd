@@ -1,8 +1,7 @@
 use super::shared::component_owners;
 use acdd_core::config;
 use acdd_index::{
-    languages,
-    linker,
+    languages, linker,
     models::{stable_hash64, Facts, FileEntry},
     typed_facts::{decode_facts, TypedFacts},
 };
@@ -68,7 +67,10 @@ pub(super) fn ensure_temp_frontier_tables(conn: &Connection) -> Result<TempFront
     ] {
         tables.push(TempTableGuard::new(conn, name, schema)?);
     }
-    Ok(TempFrontierTables { conn, tables: Some(tables) })
+    Ok(TempFrontierTables {
+        conn,
+        tables: Some(tables),
+    })
 }
 
 pub(super) fn populate_temp_frontier<T: rusqlite::ToSql>(
@@ -160,7 +162,11 @@ pub(super) fn rust_impl_shapes(facts: &Facts) -> Result<RustImplShapes> {
         .collect();
     let mut shapes = RustImplShapes::new();
     let mut implementation_keys = std::collections::HashMap::new();
-    for implementation in facts.nodes.iter().filter(|node| node.kind == acdd_index::models::tags::NodeKind::Impl) {
+    for implementation in facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Impl)
+    {
         let identity = serde_json::json!({
             "receiver_type": implementation.details["receiver_type"],
             "impl_trait": implementation.details["impl_trait"],
@@ -292,12 +298,10 @@ pub(super) fn route_include_closure(
     }
     for (path, typed) in facts {
         let workspace = config::workspace_path(path).0.to_owned();
-        for module in typed
-            .facts
-            .nodes
-            .iter()
-            .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Module && node.language == acdd_index::models::tags::LanguageId::Python)
-        {
+        for module in typed.facts.nodes.iter().filter(|node| {
+            node.kind == acdd_index::models::tags::NodeKind::Module
+                && node.language == acdd_index::models::tags::LanguageId::Python
+        }) {
             module_paths.insert((workspace.clone(), module.qualname.clone()), path.clone());
         }
     }
@@ -321,7 +325,12 @@ pub(super) fn route_include_closure(
         }
     }
     for (path, typed) in facts {
-        for route in typed.facts.nodes.iter().filter(|node| node.kind == acdd_index::models::tags::NodeKind::Route) {
+        for route in typed
+            .facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == acdd_index::models::tags::NodeKind::Route)
+        {
             if let Some(module) = route.details["include_module"].as_str() {
                 include_rows.push((path.clone(), module.to_owned()));
             }
@@ -646,7 +655,12 @@ pub(super) fn module_exposes_provider_contract(
         *loaded_fact_files += 1;
     }
     let typed = facts.get(owner).expect("module facts were loaded");
-    let Some(module) = typed.facts.nodes.iter().find(|node| node.kind == acdd_index::models::tags::NodeKind::Module) else {
+    let Some(module) = typed
+        .facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == acdd_index::models::tags::NodeKind::Module)
+    else {
         return Ok(true);
     };
     let mut statement = conn.prepare(
@@ -697,8 +711,10 @@ pub(super) fn module_exposes_provider_contract(
         imported_names.insert(alias.to_owned());
         let is_typescript_namespace_import =
             reference.expression == "*" && alias != "*" && targets.module && !targets.non_module;
-        let is_python_module_import =
-            module.language == acdd_index::models::tags::LanguageId::Python && targets.module && !targets.non_module;
+        let is_python_module_import = module.language
+            == acdd_index::models::tags::LanguageId::Python
+            && targets.module
+            && !targets.non_module;
         if is_typescript_namespace_import || is_python_module_import {
             qualified_aliases.insert(alias.to_owned());
         }
@@ -752,10 +768,12 @@ pub(super) fn module_exposes_provider_contract(
     Ok(false)
 }
 
-pub(super) fn resolution_identity_changed_facts(old_facts: &TypedFacts, facts: &TypedFacts) -> Result<bool> {
+pub(super) fn resolution_identity_changed_facts(
+    old_facts: &TypedFacts,
+    facts: &TypedFacts,
+) -> Result<bool> {
     let old_contracts = linker::contracts::Contracts::new_typed(old_facts);
     let new_contracts = linker::contracts::Contracts::new_typed(facts);
     Ok(old_contracts.resolution_digest(&old_facts.facts)?
         != new_contracts.resolution_digest(&facts.facts)?)
 }
-

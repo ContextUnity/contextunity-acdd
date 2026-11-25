@@ -6,5 +6,5 @@ mod types;
 mod worktree;
 
 pub use session::serve_with_state_config;
-pub(crate) use types::{primary_workspace_root_for, RequestAdapter};
 pub use types::Server;
+pub(crate) use types::{primary_workspace_root_for, RequestAdapter};

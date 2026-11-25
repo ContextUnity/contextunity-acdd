@@ -251,7 +251,9 @@ pub enum Symbol<'a> {
 /// Defines semantic resolver behavior.
 pub trait SemanticResolver<'a> {
     /// Whether a language global remains unshadowed at this source position.
-    fn unshadowed_global(&self, _scope: &'a Node, _name: &str, _at: SourcePosition) -> bool { false }
+    fn unshadowed_global(&self, _scope: &'a Node, _name: &str, _at: SourcePosition) -> bool {
+        false
+    }
     /// Returns the statically proven nominal target of a Rust dereference implementation.
     fn deref_target(&self, _receiver: &'a Node) -> Option<&'a Node> {
         None
@@ -371,7 +373,10 @@ pub trait SemanticResolver<'a> {
         Symbol::Unknown
     }
     /// Returns the typed callable signature for `node`, when extracted.
-    fn callable_signature(&self, _node: &'a Node) -> Option<&'a crate::semantic::CallableSignature> {
+    fn callable_signature(
+        &self,
+        _node: &'a Node,
+    ) -> Option<&'a crate::semantic::CallableSignature> {
         None
     }
 }
@@ -622,7 +627,10 @@ impl<'a, 'b> ReadTrace<'a, 'b> {
 pub(in crate::linker) fn node_position(node: &Node) -> SourcePosition {
     SourcePosition {
         line: node.line,
-        column: node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
+        column: node
+            .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+            .as_u64()
+            .unwrap_or(0) as usize,
     }
 }
 
@@ -1058,7 +1066,9 @@ pub(super) fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize
                     .and_then(|site| site.receiver.as_deref())
                     .is_none_or(|receiver| valid_value(receiver, limits, depth + 1))
         }
-        ValueExpr::Await { value: inner } | ValueExpr::RustProject { value: inner, .. } => valid_value(inner, limits, depth + 1),
+        ValueExpr::Await { value: inner } | ValueExpr::RustProject { value: inner, .. } => {
+            valid_value(inner, limits, depth + 1)
+        }
         ValueExpr::LoopElement { iterable, body_end } => text(iterable) && body_end.line > 0,
         ValueExpr::Scoped {
             value: inner,
@@ -1075,7 +1085,8 @@ pub(super) fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize
         ValueExpr::Project {
             value: inner,
             member,
-        } | ValueExpr::RustField {
+        }
+        | ValueExpr::RustField {
             value: inner,
             member,
         } => text(member) && valid_value(inner, limits, depth + 1),
@@ -1137,8 +1148,13 @@ pub(super) fn valid_type(expression: &TypeExpr, limits: SemanticLimits, depth: u
                 && args.len() <= limits.facts_per_scope
                 && args.iter().all(|arg| valid_type(arg, limits, depth + 1))
         }
-        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => valid_type(item, limits, depth + 1),
-        TypeExpr::RustCallArguments { args } => args.len() <= limits.facts_per_scope && args.iter().all(|arg| valid_type(arg, limits, depth + 1)),
+        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => {
+            valid_type(item, limits, depth + 1)
+        }
+        TypeExpr::RustCallArguments { args } => {
+            args.len() <= limits.facts_per_scope
+                && args.iter().all(|arg| valid_type(arg, limits, depth + 1))
+        }
         TypeExpr::Unknown => true,
     }
 }

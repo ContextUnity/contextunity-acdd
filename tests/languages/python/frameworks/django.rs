@@ -386,9 +386,17 @@ fn django_commands_models_auth_and_unittest_framework_members() {
         ("app/users.py", "item.save", "external"),
         ("app/users.py", "item.refresh_from_db", "external"),
         ("app/users.py", "item.missing", "unresolved"),
-        ("app/users.py", "Item.objects.only('id').distinct().filter", "external"),
+        (
+            "app/users.py",
+            "Item.objects.only('id').distinct().filter",
+            "external",
+        ),
         ("app/users.py", "User.objects.filter", "external"),
-        ("app/users.py", "get_user_model().objects.filter", "external"),
+        (
+            "app/users.py",
+            "get_user_model().objects.filter",
+            "external",
+        ),
         ("app/users.py", "User.objects.invented", "unresolved"),
         ("tests/test_app.py", "self.client.get", "external"),
         ("tests/test_app.py", "self.assertContains", "external"),
@@ -428,7 +436,10 @@ fn django_queryset_compound_return_and_item_projection() {
     for (expression, expected) in [
         ("Post.objects.filter", "external"),
         ("Post.objects.filter(published=True).order_by", "external"),
-        ("Post.objects.filter(published=True).order_by('title').first", "external"),
+        (
+            "Post.objects.filter(published=True).order_by('title').first",
+            "external",
+        ),
         ("latest.save", "external"),
         ("latest.invented", "unresolved"),
     ] {

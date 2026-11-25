@@ -142,7 +142,10 @@ pub(super) fn insert_multi_value_batch<const COLUMNS: usize>(
 #[cfg(test)]
 mod tests {
     use super::super::{dictionary::*, ingest::*};
-    use super::{insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue, MAX_MULTI_VALUE_BATCH_ROWS};
+    use super::{
+        insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue,
+        MAX_MULTI_VALUE_BATCH_ROWS,
+    };
     use crate::db::schema::SCHEMA_DDL;
     use crate::models::compact_graph::{CompactCoverage as Coverage, CompactEdge, CompactGraph};
     use crate::models::{Facts, FileEntry, Node, Reference};

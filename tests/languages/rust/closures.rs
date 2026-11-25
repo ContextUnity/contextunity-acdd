@@ -237,7 +237,10 @@ fn callback_receiver_authority() {
             let target = &facts
                 .nodes
                 .iter()
-                .find(|node| node.kind == acdd_index::models::tags::NodeKind::Method && node.qualname.ends_with(".Item.finish"))
+                .find(|node| {
+                    node.kind == acdd_index::models::tags::NodeKind::Method
+                        && node.qualname.ends_with(".Item.finish")
+                })
                 .unwrap()
                 .id;
             let mut references: Vec<_> = facts

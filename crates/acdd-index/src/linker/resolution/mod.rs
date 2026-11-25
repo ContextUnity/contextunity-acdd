@@ -1,5 +1,5 @@
-use crate::languages::profile::ProfileLinker;
 use crate::languages::module_name;
+use crate::languages::profile::ProfileLinker;
 use crate::linker::compact::{sort_graph, GraphPart};
 use crate::linker::semantic_context;
 use crate::models::tags::NodeKind;
@@ -42,9 +42,7 @@ pub(super) fn resolve<'a>(input: ResolutionInput<'a>) -> Vec<GraphPart> {
     let extensions: Vec<_> = crate::languages::profiles()
         .filter_map(|profile| profile.linker().reference_extension_factory(&workspace))
         .collect();
-    let linker_context = LinkerContext {
-        member_lookup,
-    };
+    let linker_context = LinkerContext { member_lookup };
 
     let prepared_files: Vec<_> = all
         .iter_facts()
@@ -90,7 +88,13 @@ pub(super) fn resolve<'a>(input: ResolutionInput<'a>) -> Vec<GraphPart> {
             );
             imports::phase_imports(&mut file_resolver);
             file_resolver.reference_extension = extensions.iter().find_map(|extension| {
-                extension.prepare(&input, path, references, file_language_context, &mut file_resolver.graph)
+                extension.prepare(
+                    &input,
+                    path,
+                    references,
+                    file_language_context,
+                    &mut file_resolver.graph,
+                )
             });
             value_flow_phase::phase_value_flow(&mut file_resolver);
             documentation::phase_documentation(&mut file_resolver);

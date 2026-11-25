@@ -5,7 +5,12 @@ const PAYLOAD_CASES: &[(&str, &str, bool, &str)] = &[
     ("take", "take(1)", true, "resolved"),
     ("skip", "skip(1)", true, "resolved"),
     ("step_by", "step_by(1)", true, "resolved"),
-    ("collect_into_iter", "collect::<Vec<_>>().into_iter()", true, "resolved"),
+    (
+        "collect_into_iter",
+        "collect::<Vec<_>>().into_iter()",
+        true,
+        "resolved",
+    ),
     ("map_constant", "map(|_| B)", false, "unresolved"),
     ("map_conversion", "map(convert)", false, "resolved"),
     ("enumerate", "enumerate()", false, "unresolved"),
@@ -147,7 +152,9 @@ fn computed_iterator_receiver_identity() {
         .iter()
         .find(|node| node.name == "finish" && node.details["receiver_type"] == "A")
         .unwrap();
-    for (index, (label, adapter, preserves_item, expected_status)) in PAYLOAD_CASES.iter().enumerate() {
+    for (index, (label, adapter, preserves_item, expected_status)) in
+        PAYLOAD_CASES.iter().enumerate()
+    {
         let source = format!(
             "struct A; impl A {{ fn finish(&self) {{}} }}\n\
              struct B; impl B {{ fn finish(&self) {{}} }}\n\
@@ -163,11 +170,7 @@ fn computed_iterator_receiver_identity() {
 
         let expression = format!("item_{index}.finish");
         let observed = coverage(&owned, &expression);
-        assert_eq!(
-            observed.status,
-            *expected_status,
-            "{label}: {observed:#?}"
-        );
+        assert_eq!(observed.status, *expected_status, "{label}: {observed:#?}");
         if *label == "map_conversion" {
             assert!(
                 observed.evidence.contains("B.finish"),
@@ -247,7 +250,8 @@ fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
         facts
             .nodes
             .iter()
-            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Constant && n.name == "GLOBAL_CFG"),
+            .any(|n| n.kind == acdd_index::models::tags::NodeKind::Constant
+                && n.name == "GLOBAL_CFG"),
         "{facts:#?}"
     );
     assert!(

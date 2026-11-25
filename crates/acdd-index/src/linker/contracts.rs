@@ -1,8 +1,8 @@
 use super::value_flow::{valid_scope_facts, SemanticLimits};
+use crate::languages;
 use crate::models::{Facts, Node};
 use crate::semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
 use crate::typed_facts::{FlowState, FlowStore, TypedFacts};
-use crate::languages;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -102,7 +102,9 @@ impl<'a> Contracts<'a> {
                 if let Some(flow) = store.get(node) {
                     flows.insert(node.id.as_str(), Cow::Borrowed(flow));
                 }
-            } else if let Some(value) = node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW) {
+            } else if let Some(value) =
+                node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW)
+            {
                 if let Ok(flow) = ValueFlowFacts::deserialize(value) {
                     flows.insert(node.id.as_str(), Cow::Owned(flow));
                 }
@@ -229,7 +231,8 @@ impl<'a> Contracts<'a> {
         if let Some(store) = self.typed_flows {
             store.state(node).is_none()
         } else {
-            node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW).is_none_or(Value::is_null)
+            node.detail_get(crate::models::details::NodeDetailKey::VALUE_FLOW)
+                .is_none_or(Value::is_null)
         }
     }
 
@@ -308,9 +311,15 @@ impl<'a> Contracts<'a> {
         }
         match ty {
             TypeExpr::Unknown => json!({"kind": "unknown"}),
-            TypeExpr::RustRange { item } => json!({"rust_range": self.type_contract(owner, item, stack, depth + 1)}),
-            TypeExpr::RustArray { item } => json!({"rust_array": self.type_contract(owner, item, stack, depth + 1)}),
-            TypeExpr::RustCallArguments { args } => json!({"rust_call_arguments": args.iter().map(|arg| self.type_contract(owner, arg, stack, depth + 1)).collect::<Vec<_>>()}),
+            TypeExpr::RustRange { item } => {
+                json!({"rust_range": self.type_contract(owner, item, stack, depth + 1)})
+            }
+            TypeExpr::RustArray { item } => {
+                json!({"rust_array": self.type_contract(owner, item, stack, depth + 1)})
+            }
+            TypeExpr::RustCallArguments { args } => {
+                json!({"rust_call_arguments": args.iter().map(|arg| self.type_contract(owner, arg, stack, depth + 1)).collect::<Vec<_>>()})
+            }
             TypeExpr::Applied { base, args } => json!({"applied": base, "args": args.iter()
                 .map(|arg| self.type_contract(owner, arg, stack, depth + 1)).collect::<Vec<_>>()}),
             TypeExpr::Named { name } => {
@@ -321,7 +330,9 @@ impl<'a> Contracts<'a> {
                     ) {
                         return nominal(node);
                     }
-                    if node.kind == crate::models::tags::NodeKind::Type && !stack.contains(&node.id.as_str()) {
+                    if node.kind == crate::models::tags::NodeKind::Type
+                        && !stack.contains(&node.id.as_str())
+                    {
                         if let Some(alias) = self
                             .flows
                             .get(node.id.as_str())
@@ -509,8 +520,12 @@ impl<'a> Contracts<'a> {
             }
             ValueExpr::Field { receiver, .. } => json!({"opaque_value": value, "receiver":
                 self.value_contract(owner, flow, &ValueExpr::Alias { name: receiver.clone() }, at, stack, depth + 1)}),
-            ValueExpr::Project { value: source, .. } | ValueExpr::RustField { value: source, .. } | ValueExpr::RustProject { value: source, .. } => json!({"opaque_value": value, "source":
-                self.value_contract(owner, flow, source, at, stack, depth + 1)}),
+            ValueExpr::Project { value: source, .. }
+            | ValueExpr::RustField { value: source, .. }
+            | ValueExpr::RustProject { value: source, .. } => {
+                json!({"opaque_value": value, "source":
+                self.value_contract(owner, flow, source, at, stack, depth + 1)})
+            }
         }
     }
 
@@ -604,7 +619,10 @@ impl<'a> Contracts<'a> {
 fn position(node: &Node) -> SourcePosition {
     SourcePosition {
         line: node.line,
-        column: node.detail_entry(crate::models::details::NodeDetailKey::COLUMN).as_u64().unwrap_or(0) as usize,
+        column: node
+            .detail_entry(crate::models::details::NodeDetailKey::COLUMN)
+            .as_u64()
+            .unwrap_or(0) as usize,
     }
 }
 

@@ -443,7 +443,9 @@ fn start_holding_repo_lock(
                     dep.satisfied = false;
                 }
                 let dest_satisfied = collect_external_satisfied_deps(&destination, &graph)?;
-                for (dep, was_satisfied) in graph.dependencies.iter_mut().zip(satisfied_before_check) {
+                for (dep, was_satisfied) in
+                    graph.dependencies.iter_mut().zip(satisfied_before_check)
+                {
                     dep.satisfied = was_satisfied;
                 }
                 if dest_satisfied != obs.external_satisfied_deps {

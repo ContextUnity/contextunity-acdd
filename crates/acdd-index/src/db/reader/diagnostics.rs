@@ -139,8 +139,19 @@ pub fn analyze_paged(
     }
     result["resolution_languages"] = serde_json::to_value(resolution_languages)?;
     if exact_file {
-        let error_columns = if options.detail == Detail::Full { "*" } else { "path,line,substr(message,1,512) message,length(message)>512 message_truncated" };
-        result["errors"] = paging::query(conn, &format!("SELECT {error_columns} FROM errors WHERE path=?1 ORDER BY line,message,rowid"), &[&path], options)?;
+        let error_columns = if options.detail == Detail::Full {
+            "*"
+        } else {
+            "path,line,substr(message,1,512) message,length(message)>512 message_truncated"
+        };
+        result["errors"] = paging::query(
+            conn,
+            &format!(
+                "SELECT {error_columns} FROM errors WHERE path=?1 ORDER BY line,message,rowid"
+            ),
+            &[&path],
+            options,
+        )?;
         let resolution_sql = if options.detail == Detail::Full {
             format!("SELECT {},{} cause,e.evidence AS __evidence FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status IN('{unresolved}','{ambiguous}') AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.status,c.evidence_id", paging::coverage("c", Detail::Full), resolution_cause_sql())
         } else {

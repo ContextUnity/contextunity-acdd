@@ -148,7 +148,11 @@ pub(super) fn add_omitted_section(
     max_bytes: usize,
 ) {
     // `,"omitted_sections":[]` = 22 bytes on first element, `,` = 1 byte thereafter.
-    let overhead = if resp.omitted_sections.is_empty() { 22 } else { 1 };
+    let overhead = if resp.omitted_sections.is_empty() {
+        22
+    } else {
+        1
+    };
     let delta = overhead + estimate_json_bytes(&section);
     if *running_bytes + delta <= max_bytes {
         *running_bytes += delta;
@@ -181,10 +185,7 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     obj.insert("proof".to_owned(), json!(req.gate.proof));
     obj.insert("scope".to_owned(), json!(req.node.scope));
     if !req.node.extended_scope.is_empty() {
-        obj.insert(
-            "extended_scope".to_owned(),
-            json!(req.node.extended_scope),
-        );
+        obj.insert("extended_scope".to_owned(), json!(req.node.extended_scope));
     }
     if !req.node.invariants.applicable.is_empty() || !req.node.invariants.verified.is_empty() {
         obj.insert("invariants".to_owned(), json!(req.node.invariants));

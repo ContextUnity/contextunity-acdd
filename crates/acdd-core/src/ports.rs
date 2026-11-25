@@ -319,7 +319,10 @@ pub trait DomainProvider: Send + Sync {
     ) -> Result<DomainToolOutput> {
         Err(StateError::new(
             ErrorCode::DomainCapabilityUnavailable,
-            format!("domain '{}' does not implement plugin tools", self.domain_id()),
+            format!(
+                "domain '{}' does not implement plugin tools",
+                self.domain_id()
+            ),
         )
         .into())
     }
@@ -582,7 +585,10 @@ impl CompositeDomainProvider {
     }
 
     /// Validate that a plugin tool name `<domain>_<name>` is registered and its domain is enabled.
-    pub fn validate_plugin_tool_name(&self, full_name: &str) -> std::result::Result<(), StateError> {
+    pub fn validate_plugin_tool_name(
+        &self,
+        full_name: &str,
+    ) -> std::result::Result<(), StateError> {
         let Some(tool) = self.plugin_tools.get(full_name) else {
             return Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
@@ -693,7 +699,10 @@ impl CompositeDomainProvider {
         entry.provider.call_tool(&tool.def.name, args, req)
     }
 
-    fn active_provider(&self, domain: &str) -> std::result::Result<&RegisteredProvider, StateError> {
+    fn active_provider(
+        &self,
+        domain: &str,
+    ) -> std::result::Result<&RegisteredProvider, StateError> {
         let Some(entry) = self.providers.get(domain) else {
             return Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
@@ -1041,7 +1050,12 @@ mod tests {
 
         // Happy path across all 4 SPI surfaces
         let act = composite
-            .execute_action("http.probe", &json!({"url": "https://example.test"}), "k1", &action_req)
+            .execute_action(
+                "http.probe",
+                &json!({"url": "https://example.test"}),
+                "k1",
+                &action_req,
+            )
             .unwrap();
         assert_eq!(act.summary, "http.probe:k1");
         assert!(composite
@@ -1049,7 +1063,9 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(matches!(
-            composite.run_check("http.health", &json!({}), &check_req).unwrap(),
+            composite
+                .run_check("http.health", &json!({}), &check_req)
+                .unwrap(),
             DomainCheckOutcome::Passed { .. }
         ));
         assert_eq!(
@@ -1079,12 +1095,18 @@ mod tests {
             }
         );
         assert_eq!(
-            composite.provide_context("http.endpoints", &ctx_req).unwrap(),
+            composite
+                .provide_context("http.endpoints", &ctx_req)
+                .unwrap(),
             json!({"lens": "http.endpoints"})
         );
         assert!(matches!(
             composite
-                .call_tool("http_request", &json!({"url": "https://example.test"}), &tool_req)
+                .call_tool(
+                    "http_request",
+                    &json!({"url": "https://example.test"}),
+                    &tool_req
+                )
                 .unwrap(),
             DomainToolOutput::Markdown(_)
         ));
@@ -1151,9 +1173,7 @@ mod tests {
         // Noop provider fails closed with DomainCapabilityUnavailable
         let noop = NoopDomainProvider::default();
         assert_eq!(noop.domain_id(), "noop");
-        let noop_err = noop
-            .run_check("x", &json!({}), &check_req)
-            .unwrap_err();
+        let noop_err = noop.run_check("x", &json!({}), &check_req).unwrap_err();
         assert_eq!(
             StateError::from_anyhow(&noop_err).unwrap().code,
             ErrorCode::DomainCapabilityUnavailable
@@ -1184,7 +1204,10 @@ mod tests {
             let val_res = composite
                 .validate_action_ref(qualified, &json!({"url": "https://example.test"}))
                 .map_err(|e| e.code);
-            let cap_res = composite.action_capability(qualified).map(|_| ()).map_err(|e| e.code);
+            let cap_res = composite
+                .action_capability(qualified)
+                .map(|_| ())
+                .map_err(|e| e.code);
             let exec_res = composite
                 .execute_action(
                     qualified,
@@ -1207,7 +1230,10 @@ mod tests {
         for (qualified, expected) in [
             ("http.health", Ok(())),
             ("http.missing", Err(ErrorCode::DomainCapabilityUnavailable)),
-            ("missing.health", Err(ErrorCode::DomainCapabilityUnavailable)),
+            (
+                "missing.health",
+                Err(ErrorCode::DomainCapabilityUnavailable),
+            ),
             ("malformed", Err(ErrorCode::ProfileSchemaInvalid)),
         ] {
             let val_res = composite

@@ -105,7 +105,11 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
         HashSet::new()
     };
     if categories.contains(&LintCategory::Docs) {
-        docs_lint::evaluate_docs_lint(&scoped_doc_findings, &doc_integrity_covered, &mut violations);
+        docs_lint::evaluate_docs_lint(
+            &scoped_doc_findings,
+            &doc_integrity_covered,
+            &mut violations,
+        );
     }
     if categories.contains(&LintCategory::Syntax) {
         syntax::collect_syntax_violations(
@@ -160,11 +164,7 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
             LintSeverity::Warn => warnings += 1,
         }
         let key = v.category.as_str();
-        let next = by_category
-            .get(key)
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            + 1;
+        let next = by_category.get(key).and_then(Value::as_u64).unwrap_or(0) + 1;
         by_category.insert(key.to_owned(), json!(next));
     }
 

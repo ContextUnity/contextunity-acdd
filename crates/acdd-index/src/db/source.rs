@@ -72,7 +72,8 @@ impl VerifiedSourceCache {
                         workspace.get("name").and_then(Value::as_str),
                         workspace.get("path").and_then(Value::as_str),
                     ) {
-                        self.linked.push((format!("[{name}]/"), PathBuf::from(path)));
+                        self.linked
+                            .push((format!("[{name}]/"), PathBuf::from(path)));
                     }
                 }
             }

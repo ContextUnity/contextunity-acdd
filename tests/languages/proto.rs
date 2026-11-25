@@ -33,7 +33,11 @@ service AuthService {
         .extract(&fs::read_to_string(w.root().join("protos/auth.proto")).unwrap());
 
     // Verify module qualname is package
-    let module_node = facts.nodes.iter().find(|n| n.kind == acdd_index::models::tags::NodeKind::Module).unwrap();
+    let module_node = facts
+        .nodes
+        .iter()
+        .find(|n| n.kind == acdd_index::models::tags::NodeKind::Module)
+        .unwrap();
     assert_eq!(module_node.qualname, "mycompany.auth");
 
     // Verify field references was extracted
@@ -216,11 +220,27 @@ service EventService {
             .unwrap()
     };
     for (expr, expected_status, evidence_needle) in [
-        ("google/protobuf/timestamp.proto", "external", "standard library"),
-        ("google/protobuf/empty.proto", "external", "standard library"),
+        (
+            "google/protobuf/timestamp.proto",
+            "external",
+            "standard library",
+        ),
+        (
+            "google/protobuf/empty.proto",
+            "external",
+            "standard library",
+        ),
         ("custom/missing.proto", "external", "external dependency"),
-        ("google.protobuf.Timestamp", "resolved", "standard library or built-in"),
-        ("google.protobuf.Empty", "resolved", "standard library or built-in"),
+        (
+            "google.protobuf.Timestamp",
+            "resolved",
+            "standard library or built-in",
+        ),
+        (
+            "google.protobuf.Empty",
+            "resolved",
+            "standard library or built-in",
+        ),
         ("custom.Missing", "unresolved", ""),
     ] {
         let found = rows

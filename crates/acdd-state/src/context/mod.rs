@@ -11,8 +11,8 @@ pub use markdown::render_claim_prompt_markdown;
 #[cfg(test)]
 mod tests;
 pub(crate) use tiers::is_context_reset_required;
-pub use types::{ClaimContextRequest, ClaimResp};
 pub(crate) use types::{baseline_ref_for_node, SnapshotContextInput};
+pub use types::{ClaimContextRequest, ClaimResp};
 
 use self::slices::{
     collect_dependency_receipts, extract_global_blueprint_slice, extract_pre_task_slice,

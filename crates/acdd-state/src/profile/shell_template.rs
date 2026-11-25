@@ -89,10 +89,8 @@ fn scan_shell_template<'a>(template: &str, placeholders: &[&'a str]) -> ShellSca
                 .find(|ph| template[i..].starts_with(ph))
             {
                 if escaped {
-                    out.bad_placeholder.get_or_insert((
-                        ph,
-                        "must not be backslash-escaped",
-                    ));
+                    out.bad_placeholder
+                        .get_or_insert((ph, "must not be backslash-escaped"));
                 } else {
                     match state {
                         ShellQuoteState::Unquoted => {
@@ -101,16 +99,12 @@ fn scan_shell_template<'a>(template: &str, placeholders: &[&'a str]) -> ShellSca
                             continue;
                         }
                         ShellQuoteState::SingleQuoted => {
-                            out.bad_placeholder.get_or_insert((
-                                ph,
-                                "must not appear inside single quotes",
-                            ));
+                            out.bad_placeholder
+                                .get_or_insert((ph, "must not appear inside single quotes"));
                         }
                         ShellQuoteState::DoubleQuoted => {
-                            out.bad_placeholder.get_or_insert((
-                                ph,
-                                "must not appear inside double quotes",
-                            ));
+                            out.bad_placeholder
+                                .get_or_insert((ph, "must not appear inside double quotes"));
                         }
                     }
                 }
@@ -214,8 +208,7 @@ fn substitute_active_placeholder(
         out.push_str(&template[cursor..]);
         out
     } else {
-        let mut out =
-            String::with_capacity(template.len() + replacement.len() * positions.len());
+        let mut out = String::with_capacity(template.len() + replacement.len() * positions.len());
         let mut cursor = 0usize;
         for &pos in positions {
             out.push_str(&template[cursor..pos]);
@@ -356,7 +349,10 @@ fn expand_matched_scope_arg(path: &str, entry: &ValidatedScopeArg<'_>) -> Option
     if path.contains('*') || path.contains('?') || path.contains('[') || path.contains('{') {
         return None;
     }
-    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     if entry
         .placeholders
         .iter()
@@ -405,10 +401,7 @@ fn scope_entry_matches_path(entry: &ValidatedScopeArg<'_>, path: &str) -> bool {
         && glob_matches(entry.pattern, &format!("{path}/__scope__.rs"))
 }
 
-fn select_scope_args(
-    validated_args: &[ValidatedScopeArg<'_>],
-    paths: &[String],
-) -> Vec<String> {
+fn select_scope_args(validated_args: &[ValidatedScopeArg<'_>], paths: &[String]) -> Vec<String> {
     if validated_args.is_empty() {
         return Vec::new();
     }

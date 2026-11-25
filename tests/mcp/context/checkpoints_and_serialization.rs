@@ -18,7 +18,11 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let git = |args: &[&str]| {
         let out = acdd_core::git::git_command(workspace.root(), args)
             .unwrap_or_else(|err| panic!("git {args:?} failed: {err}"));
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     };
     git(&["init", "-q"]);
@@ -67,16 +71,25 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
         let result = client.payload("acdd_state", json!({
             "action": "snapshot", "snapshot_action": "save", "task_ref": "snap-task", "rev": rev, "run": &run_id, "format": "json"
         })).expect("snapshot save");
-        assert!(result.to_string().contains(&format!("/snap-task/r{rev}")), "save r{rev}: {result}");
+        assert!(
+            result.to_string().contains(&format!("/snap-task/r{rev}")),
+            "save r{rev}: {result}"
+        );
     }
     let refs_before_missing = snapshot_refs();
     assert!(
-        refs_before_missing.contains("/snap-task/r1") && refs_before_missing.contains("/snap-task/r2"),
+        refs_before_missing.contains("/snap-task/r1")
+            && refs_before_missing.contains("/snap-task/r2"),
         "{refs_before_missing}"
     );
-    let missing = client.payload("acdd_state", json!({
-        "action": "snapshot", "task_ref": "snap-task", "run": &run_id
-    })).expect_err("snapshot_action is required");
+    let missing = client
+        .payload(
+            "acdd_state",
+            json!({
+                "action": "snapshot", "task_ref": "snap-task", "run": &run_id
+            }),
+        )
+        .expect_err("snapshot_action is required");
     let missing_text = missing.to_string();
     assert!(
         missing_text.contains("ACDD_PROFILE_SCHEMA_INVALID")
@@ -92,17 +105,32 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let restored = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id, "format": "json"
     })).expect("restore r1");
-    assert!(restored.to_string().contains("/snap-task/r1") && !restored.to_string().contains("/snap-task/r2"), "{restored}");
-    assert_eq!(std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(), r1);
+    assert!(
+        restored.to_string().contains("/snap-task/r1")
+            && !restored.to_string().contains("/snap-task/r2"),
+        "{restored}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(),
+        r1
+    );
     let cleared = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "clear", "task_ref": "snap-task", "run": &run_id, "format": "json"
     })).expect("clear task");
     assert!(cleared.to_string().contains("/snap-task/r1"), "{cleared}");
-    assert!(!snapshot_refs().contains("refs/acdd/snapshots/"), "{}", snapshot_refs());
+    assert!(
+        !snapshot_refs().contains("refs/acdd/snapshots/"),
+        "{}",
+        snapshot_refs()
+    );
     let unrestorable = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id
     })).expect_err("cleared revision");
-    assert!(unrestorable.to_string().contains("r1") || unrestorable.to_string().contains("refs/acdd/snapshots"), "{unrestorable}");
+    assert!(
+        unrestorable.to_string().contains("r1")
+            || unrestorable.to_string().contains("refs/acdd/snapshots"),
+        "{unrestorable}"
+    );
     assert_eq!(
         std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(),
         r1,
@@ -116,13 +144,21 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let cleared_all = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "clear", "all": true, "run": &run_id, "format": "json"
     })).expect("clear all");
-    assert!(cleared_all.to_string().contains("/snap-task/r1"), "{cleared_all}");
-    assert!(!snapshot_refs().contains("refs/acdd/snapshots/"), "{}", snapshot_refs());
+    assert!(
+        cleared_all.to_string().contains("/snap-task/r1"),
+        "{cleared_all}"
+    );
+    assert!(
+        !snapshot_refs().contains("refs/acdd/snapshots/"),
+        "{}",
+        snapshot_refs()
+    );
     let unrestorable_all = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id
     })).expect_err("cleared revision after run-wide clear");
     assert!(
-        unrestorable_all.to_string().contains("r1") || unrestorable_all.to_string().contains("refs/acdd/snapshots"),
+        unrestorable_all.to_string().contains("r1")
+            || unrestorable_all.to_string().contains("refs/acdd/snapshots"),
         "{unrestorable_all}"
     );
     assert_eq!(
@@ -135,11 +171,17 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let saved_adhoc = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "save", "name": "note", "rev": 1, "worktree": worktree,
     })).expect("save adhoc snapshot");
-    assert!(saved_adhoc.to_string().contains("_adhoc/note/r1"), "{saved_adhoc}");
+    assert!(
+        saved_adhoc.to_string().contains("_adhoc/note/r1"),
+        "{saved_adhoc}"
+    );
     let restored_adhoc = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "restore", "name": "note", "rev": 1, "worktree": worktree,
     })).expect("restore adhoc snapshot");
-    assert!(restored_adhoc.to_string().contains("_adhoc/note/r1"), "{restored_adhoc}");
+    assert!(
+        restored_adhoc.to_string().contains("_adhoc/note/r1"),
+        "{restored_adhoc}"
+    );
     let tree = git(&["write-tree"]);
     let backdated = std::process::Command::new("git")
         .current_dir(workspace.root())
@@ -148,21 +190,35 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
         .args(["commit-tree", &tree, "-m", "backdated"])
         .output()
         .expect("create backdated commit");
-    assert!(backdated.status.success(), "{}", String::from_utf8_lossy(&backdated.stderr));
-    git(&["update-ref", "refs/acdd/snapshots/_adhoc/note/r2", std::str::from_utf8(&backdated.stdout).unwrap().trim()]);
+    assert!(
+        backdated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backdated.stderr)
+    );
+    git(&[
+        "update-ref",
+        "refs/acdd/snapshots/_adhoc/note/r2",
+        std::str::from_utf8(&backdated.stdout).unwrap().trim(),
+    ]);
     let listed_rev1 = client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "list", "name": "note", "rev": 1, "worktree": worktree, "format": "json",
     })).expect("list filtered adhoc snapshot");
     let listed_refs = listed_rev1["refs"].as_array().expect("refs array");
     assert_eq!(listed_refs.len(), 1, "{listed_rev1}");
-    assert_eq!(listed_refs[0].as_str(), Some("refs/acdd/snapshots/_adhoc/note/r1"));
+    assert_eq!(
+        listed_refs[0].as_str(),
+        Some("refs/acdd/snapshots/_adhoc/note/r1")
+    );
     client.payload("acdd_state", json!({
         "action": "snapshot", "snapshot_action": "save", "name": "note", "rev": 3, "worktree": worktree,
     })).expect("save fresh adhoc snapshot");
     let cleared_adhoc = client.payload("acdd_state", json!({
         "action": "snapshot", "delete": true, "name": "note", "older_than": "1d", "worktree": worktree,
     })).expect("clear expired adhoc snapshot");
-    assert!(cleared_adhoc.to_string().contains("_adhoc/note/r2"), "{cleared_adhoc}");
+    assert!(
+        cleared_adhoc.to_string().contains("_adhoc/note/r2"),
+        "{cleared_adhoc}"
+    );
     let surviving_adhoc = snapshot_refs();
     assert!(
         surviving_adhoc.contains("_adhoc/note/r3") && !surviving_adhoc.contains("_adhoc/note/r2"),
@@ -203,7 +259,10 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
             "invalid MCP format {invalid:?}: {rejected}"
         );
         let cli_rejected = run_cli(&workspace, &["--format", invalid, "blackboard", "read"]);
-        assert!(!cli_rejected.status.success(), "invalid CLI format {invalid:?}");
+        assert!(
+            !cli_rejected.status.success(),
+            "invalid CLI format {invalid:?}"
+        );
     }
 
     let read_json = client

@@ -68,7 +68,10 @@ impl<'a> PreparedGraph<'a> {
         graph: &'a CompactGraph,
         facts: &'a BTreeMap<String, TypedFacts>,
     ) -> Result<Self> {
-        let total_nodes: usize = facts.values().map(|file_facts| file_facts.nodes.len()).sum();
+        let total_nodes: usize = facts
+            .values()
+            .map(|file_facts| file_facts.nodes.len())
+            .sum();
         let mut node_by_id = hashbrown::HashMap::with_capacity(total_nodes);
         for file_facts in facts.values() {
             for node in &file_facts.nodes {
@@ -160,16 +163,19 @@ impl<'a> PreparedCoverage<'a> {
             html_islands: hashbrown::HashMap::new(),
         };
         for (path, file_facts) in facts {
-            if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == crate::models::tags::NodeKind::Module) {
+            if let Some(module) = file_facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == crate::models::tags::NodeKind::Module)
+            {
                 prepared
                     .file_languages
                     .insert(path.as_str(), module.language.as_str());
             }
-            if !file_facts
-                .nodes
-                .iter()
-                .any(|node| node.kind == crate::models::tags::NodeKind::Module && node.language == crate::models::tags::LanguageId::Html)
-            {
+            if !file_facts.nodes.iter().any(|node| {
+                node.kind == crate::models::tags::NodeKind::Module
+                    && node.language == crate::models::tags::LanguageId::Html
+            }) {
                 continue;
             }
             let node_languages: hashbrown::HashMap<_, _> = file_facts
@@ -180,7 +186,10 @@ impl<'a> PreparedCoverage<'a> {
             let islands: Vec<_> = file_facts
                 .nodes
                 .iter()
-                .filter(|node| node.kind == crate::models::tags::NodeKind::IslandScope && node.language == crate::models::tags::LanguageId::Javascript)
+                .filter(|node| {
+                    node.kind == crate::models::tags::NodeKind::IslandScope
+                        && node.language == crate::models::tags::LanguageId::Javascript
+                })
                 .map(|node| (node.line, node.end_line))
                 .collect();
             let mut owners = hashbrown::HashMap::new();
@@ -331,9 +340,18 @@ pub(super) fn persist_delta_files(
     facts: &BTreeMap<String, TypedFacts>,
     dirty_fts: crate::db::commitments::FtsDirtySet,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, PersistFilesParams {
-        entries, facts, loader: None, graph_ranks: None, dirty_fts: Some(dirty_fts), inventory_ready: false,
-    })
+    persist_files_impl(
+        tx,
+        path_cache,
+        PersistFilesParams {
+            entries,
+            facts,
+            loader: None,
+            graph_ranks: None,
+            dirty_fts: Some(dirty_fts),
+            inventory_ready: false,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -348,9 +366,18 @@ pub(super) fn persist_files(
         node_search: true,
         doc_search: true,
     });
-    persist_files_impl(tx, path_cache, PersistFilesParams {
-        entries, facts, loader: None, graph_ranks: None, dirty_fts: dirty, inventory_ready: false,
-    })
+    persist_files_impl(
+        tx,
+        path_cache,
+        PersistFilesParams {
+            entries,
+            facts,
+            loader: None,
+            graph_ranks: None,
+            dirty_fts: dirty,
+            inventory_ready: false,
+        },
+    )
 }
 
 pub(super) fn persist_files_with_ranks(
@@ -360,9 +387,18 @@ pub(super) fn persist_files_with_ranks(
     facts: &BTreeMap<String, TypedFacts>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, PersistFilesParams {
-        entries, facts, loader: None, graph_ranks, dirty_fts: None, inventory_ready: false,
-    })
+    persist_files_impl(
+        tx,
+        path_cache,
+        PersistFilesParams {
+            entries,
+            facts,
+            loader: None,
+            graph_ranks,
+            dirty_fts: None,
+            inventory_ready: false,
+        },
+    )
 }
 
 pub(super) struct LoadedCatalogFile {
@@ -389,9 +425,18 @@ pub(super) fn persist_catalog_files(
     graph_ranks: &hashbrown::HashMap<&str, Option<i64>>,
     inventory_ready: bool,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, PersistFilesParams {
-        entries, facts, loader: Some(loader), graph_ranks: Some(graph_ranks), dirty_fts: None, inventory_ready,
-    })
+    persist_files_impl(
+        tx,
+        path_cache,
+        PersistFilesParams {
+            entries,
+            facts,
+            loader: Some(loader),
+            graph_ranks: Some(graph_ranks),
+            dirty_fts: None,
+            inventory_ready,
+        },
+    )
 }
 
 struct EncodedLocalFactsEntry {
@@ -524,7 +569,11 @@ fn prepare_chunk_node_details(
                         navigation_node
                             .navigation_details_with_documentation(&navigation_node.details)
                     }
-                    .persisted(return_type.as_deref(), category, clear_entrypoint);
+                    .persisted(
+                        return_type.as_deref(),
+                        category,
+                        clear_entrypoint,
+                    );
                     Ok((node_index, serde_json::to_vec(&navigation)?))
                 })
                 .collect::<Result<Vec<_>>>()
@@ -567,7 +616,10 @@ fn persist_local_facts_entry<'tx>(
     insert_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
     replace_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
 ) -> Result<()> {
-    local_facts_leaves.insert(std::mem::take(&mut entry.leaf.0), std::mem::take(&mut entry.leaf.1));
+    local_facts_leaves.insert(
+        std::mem::take(&mut entry.leaf.0),
+        std::mem::take(&mut entry.leaf.1),
+    );
     let Some(blob) = entry.blob.take() else {
         return Ok(());
     };
@@ -592,7 +644,8 @@ fn push_node_search_row(
 ) -> Result<()> {
     owned_search_batch.push(SearchRow { search_id, text });
     if owned_search_batch.len() == owned_search_batch_rows {
-        *fts_insert_ms += flush_owned_search_batch(tx, owned_search_batch, reusable_search_buffers)?;
+        *fts_insert_ms +=
+            flush_owned_search_batch(tx, owned_search_batch, reusable_search_buffers)?;
     }
     Ok(())
 }
@@ -726,7 +779,9 @@ fn persist_files_impl<'data>(
     } = params;
     let bulk_search = dirty_fts.is_none();
     let initial_node_id: i64 =
-        tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| r.get(0))?;
+        tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
+            r.get(0)
+        })?;
     let mut encode_facts_ms = 0.0;
     let mut local_facts_leaves = std::collections::BTreeMap::new();
 
@@ -791,12 +846,8 @@ fn persist_files_impl<'data>(
             .as_mut()
             .map(|loader| loader(tx, file_chunk, facts))
             .transpose()?;
-        let mut encoded_chunk = encode_chunk_local_facts(
-            file_chunk,
-            facts,
-            loaded.as_mut(),
-            &mut encode_facts_ms,
-        )?;
+        let mut encoded_chunk =
+            encode_chunk_local_facts(file_chunk, facts, loaded.as_mut(), &mut encode_facts_ms)?;
         let mut prepared_node_details =
             prepare_chunk_node_details(file_chunk, facts, loaded.as_deref(), graph_ranks)?;
         let mut node_batch =
@@ -814,12 +865,7 @@ fn persist_files_impl<'data>(
                 } else {
                     (None, None, None)
                 };
-            validate_staged_file_counts(
-                &file.path,
-                f,
-                search_texts,
-                doc_bodies.as_deref(),
-            )?;
+            validate_staged_file_counts(&file.path, f, search_texts, doc_bodies.as_deref())?;
             let owner_id = persist_file_record(
                 tx,
                 path_cache,
@@ -839,7 +885,8 @@ fn persist_files_impl<'data>(
             node_id = node_id
                 .checked_add(i64::try_from(f.nodes.len())?)
                 .context("node ID overflow")?;
-            for (node_index, details_bytes) in std::mem::take(&mut prepared_node_details[chunk_index])
+            for (node_index, details_bytes) in
+                std::mem::take(&mut prepared_node_details[chunk_index])
             {
                 let n = &f.nodes[node_index];
                 let row_node_id = node_id_start
@@ -1083,9 +1130,13 @@ fn write_return_type(output: &mut String, ty: &crate::semantic::TypeExpr) {
         TypeExpr::Named { name } | TypeExpr::Applied { base: name, .. } => {
             output.push_str(name);
         }
-        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => write_return_type(output, item),
+        TypeExpr::RustRange { item } | TypeExpr::RustArray { item } => {
+            write_return_type(output, item)
+        }
         TypeExpr::RustCallArguments { args } => {
-            for arg in args { write_return_type(output, arg); }
+            for arg in args {
+                write_return_type(output, arg);
+            }
         }
         TypeExpr::Unknown => {}
     }
@@ -1346,13 +1397,12 @@ fn persist_edge_occurrences_phase<'a>(
     let mut current_ordinal = 0usize;
     let mut occurrence_batch =
         MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edge_occurrences VALUES")?;
-    let mut unique_edges = Vec::<StoredEdge<'a>>::with_capacity(
-        if materialize_edges && prepared.is_none() {
+    let mut unique_edges =
+        Vec::<StoredEdge<'a>>::with_capacity(if materialize_edges && prepared.is_none() {
             graph.edges.len()
         } else {
             0
-        },
-    );
+        });
     let mut stmt_select_path = prepared
         .is_none()
         .then(|| {
@@ -1424,7 +1474,11 @@ fn persist_edge_occurrences_phase<'a>(
         }
     }
     occurrence_batch.flush()?;
-    Ok((unique_edges, resolved_edge_paths, phase.elapsed().as_secs_f64() * 1000.))
+    Ok((
+        unique_edges,
+        resolved_edge_paths,
+        phase.elapsed().as_secs_f64() * 1000.,
+    ))
 }
 
 fn persist_unique_edges_phase<'a>(

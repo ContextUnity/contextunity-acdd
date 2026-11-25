@@ -56,16 +56,12 @@ pub fn validate_standard_ident(raw: &str, kind: &'static str) -> Result<(), IdEr
 #[cfg(test)]
 pub(crate) fn is_valid_full_oid(raw: &str) -> bool {
     (raw.len() == 40 || raw.len() == 64)
-        && raw
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn validate_full_oid(raw: &str, kind: &'static str) -> Result<(), IdError> {
     let valid = (raw.len() == 40 || raw.len() == 64)
-        && raw
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        && raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     if valid {
         Ok(())
     } else {
@@ -675,9 +671,18 @@ mod tests {
         }
 
         for raw in invalid_cases {
-            assert!(RunId::from_str(raw).is_err(), "expected RunId err for {raw:?}");
-            assert!(RunName::from_str(raw).is_err(), "expected RunName err for {raw:?}");
-            assert!(TaskRef::from_str(raw).is_err(), "expected TaskRef err for {raw:?}");
+            assert!(
+                RunId::from_str(raw).is_err(),
+                "expected RunId err for {raw:?}"
+            );
+            assert!(
+                RunName::from_str(raw).is_err(),
+                "expected RunName err for {raw:?}"
+            );
+            assert!(
+                TaskRef::from_str(raw).is_err(),
+                "expected TaskRef err for {raw:?}"
+            );
             assert!(
                 SubtaskRef::from_str(raw).is_err(),
                 "expected SubtaskRef err for {raw:?}"

@@ -137,8 +137,7 @@ pub(super) fn resolve_rework_diagnostics(
                 .join("run")
                 .join(snapshot.run.run_id.as_str())
                 .join(&trace.log_relpath);
-            let mut file =
-                open_confined(primary, &rel, fs::OpenOptions::new().read(true)).ok()?;
+            let mut file = open_confined(primary, &rel, fs::OpenOptions::new().read(true)).ok()?;
             let mut content = String::new();
             file.read_to_string(&mut content).ok()?;
             Some(utf8_tail(&content, max_bytes).to_owned())
@@ -173,7 +172,12 @@ pub(super) fn apply_tier2_findings(
             return;
         }
     }
-    add_omitted_section(resp, running_bytes, "unresolved_findings", req.response_max_bytes);
+    add_omitted_section(
+        resp,
+        running_bytes,
+        "unresolved_findings",
+        req.response_max_bytes,
+    );
 }
 
 pub(super) fn apply_tier3_pre_task_slice(
@@ -188,7 +192,12 @@ pub(super) fn apply_tier3_pre_task_slice(
             resp.pre_task_slice = Some(slice.clone());
             *running_bytes += slice_delta;
         } else {
-            add_omitted_section(resp, running_bytes, "pre_task_slice", req.response_max_bytes);
+            add_omitted_section(
+                resp,
+                running_bytes,
+                "pre_task_slice",
+                req.response_max_bytes,
+            );
         }
     }
 }
@@ -212,7 +221,11 @@ pub(super) fn apply_tier4_receipts(
         obj.insert("accepted_at".to_owned(), json!(receipt.accepted_at));
         let val = Value::Object(obj);
         // `,"dependency_receipts":[]` = 25 bytes on first element, `,` = 1 byte thereafter.
-        let overhead = if resp.dependency_receipts.is_empty() { 25 } else { 1 };
+        let overhead = if resp.dependency_receipts.is_empty() {
+            25
+        } else {
+            1
+        };
         let delta = overhead + estimate_json_bytes(&val);
         if *running_bytes + delta <= req.response_max_bytes {
             resp.dependency_receipts.push(val);
@@ -223,7 +236,12 @@ pub(super) fn apply_tier4_receipts(
         }
     }
     if omitted {
-        add_omitted_section(resp, running_bytes, "dependency_receipts", req.response_max_bytes);
+        add_omitted_section(
+            resp,
+            running_bytes,
+            "dependency_receipts",
+            req.response_max_bytes,
+        );
     }
     Ok(())
 }
@@ -370,7 +388,9 @@ fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
         .then(|| req.node.task_ref.as_ref().zip(req.spec.as_ref()))
         .flatten()
         .and_then(|(tref, spec)| spec.tasks.iter().find(|t| &t.task_ref == tref));
-    let (scope, ext) = task.map_or((&req.node.scope, &req.node.extended_scope), |t| (&t.scope, &t.extended_scope));
+    let (scope, ext) = task.map_or((&req.node.scope, &req.node.extended_scope), |t| {
+        (&t.scope, &t.extended_scope)
+    });
     for path in scope.iter().chain(ext.iter().map(|ext| &ext.path)) {
         if seen.insert(path.as_str()) {
             combined.push(path.clone());
@@ -414,9 +434,16 @@ pub(super) fn apply_tier6_context_lenses(
         let entry_overhead = if resp.context_lenses.contains_key(qualified_lens) {
             0
         } else {
-            key_bytes + if resp.context_lenses.is_empty() { container_bytes } else { 1 }
+            key_bytes
+                + if resp.context_lenses.is_empty() {
+                    container_bytes
+                } else {
+                    1
+                }
         };
-        let remaining = req.response_max_bytes.saturating_sub(*running_bytes + entry_overhead);
+        let remaining = req
+            .response_max_bytes
+            .saturating_sub(*running_bytes + entry_overhead);
         if remaining == 0 {
             let section = format!("context:{qualified_lens}");
             add_omitted_section(resp, running_bytes, &section, req.response_max_bytes);
@@ -457,16 +484,18 @@ pub(super) fn apply_tier6_context_lenses(
             baseline_ref,
         };
 
-        let val = provider.provide_context(qualified_lens, &ctx_req).map_err(|err| {
-            if let Some(state_err) = StateError::from_anyhow(&err) {
-                state_err.clone()
-            } else {
-                StateError::new(
-                    ErrorCode::DomainCapabilityUnavailable,
-                    format!("context lens '{qualified_lens}' failed: {err}"),
-                )
-            }
-        })?;
+        let val = provider
+            .provide_context(qualified_lens, &ctx_req)
+            .map_err(|err| {
+                if let Some(state_err) = StateError::from_anyhow(&err) {
+                    state_err.clone()
+                } else {
+                    StateError::new(
+                        ErrorCode::DomainCapabilityUnavailable,
+                        format!("context lens '{qualified_lens}' failed: {err}"),
+                    )
+                }
+            })?;
 
         if is_empty_items_lens(&val) && !resp.context_lenses.contains_key(qualified_lens) {
             continue;
@@ -483,7 +512,11 @@ pub(super) fn apply_tier6_context_lenses(
                 resp.context_lenses.shift_remove(qualified_lens);
                 let removed_delta = old_val_bytes
                     + key_bytes
-                    + if resp.context_lenses.is_empty() { container_bytes } else { 1 };
+                    + if resp.context_lenses.is_empty() {
+                        container_bytes
+                    } else {
+                        1
+                    };
                 *running_bytes -= removed_delta;
                 let section = format!("context:{qualified_lens}");
                 add_omitted_section(resp, running_bytes, &section, req.response_max_bytes);

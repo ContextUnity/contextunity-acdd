@@ -92,9 +92,13 @@ fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
     if bytes[i] == b'"' {
         let mut j = i + 1;
         while j < bytes.len() {
-            if bytes[j] == b'\\' && j + 1 < bytes.len() { j += 2; }
-            else if bytes[j] == b'"' { return Some(j + 1); }
-            else { j += 1; }
+            if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                j += 2;
+            } else if bytes[j] == b'"' {
+                return Some(j + 1);
+            } else {
+                j += 1;
+            }
         }
         return Some(bytes.len());
     }
@@ -104,7 +108,10 @@ fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
         if q < bytes.len() && bytes[q] == b'"' {
             let mut j = q + 1;
             while j < bytes.len() {
-                if bytes[j] == b'"' && j + hashes < bytes.len() && bytes[j + 1..=j + hashes].iter().all(|b| *b == b'#') {
+                if bytes[j] == b'"'
+                    && j + hashes < bytes.len()
+                    && bytes[j + 1..=j + hashes].iter().all(|b| *b == b'#')
+                {
                     return Some(j + 1 + hashes);
                 }
                 j += 1;
@@ -126,28 +133,52 @@ fn strip_cfg_test_items(code: &str) -> String {
         if bytes[i..].starts_with(b"#[") {
             let (mut attr_depth, mut j) = (0usize, i);
             while j < bytes.len() {
-                if let Some(next) = skip_literal(bytes, j) { j = next; }
-                else if bytes[j] == b'[' { attr_depth += 1; j += 1; }
-                else if bytes[j] == b']' {
+                if let Some(next) = skip_literal(bytes, j) {
+                    j = next;
+                } else if bytes[j] == b'[' {
+                    attr_depth += 1;
+                    j += 1;
+                } else if bytes[j] == b']' {
                     attr_depth -= 1;
                     j += 1;
-                    if attr_depth == 0 { break; }
-                } else { j += 1; }
+                    if attr_depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
             }
             let compact: String = code[i..j].chars().filter(|c| !c.is_whitespace()).collect();
             let is_test = compact
                 .strip_prefix("#[cfg(")
                 .and_then(|s| s.strip_suffix(")]"))
-                .is_some_and(|inner| inner.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-').any(|t| t == "test"));
+                .is_some_and(|inner| {
+                    inner
+                        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                        .any(|t| t == "test")
+                });
             if is_test {
                 i = j;
                 let (mut depth, mut seen_block) = (0usize, false);
                 while i < bytes.len() {
-                    if let Some(next) = skip_literal(bytes, i) { i = next; }
-                    else if bytes[i] == b'{' { seen_block = true; depth += 1; i += 1; }
-                    else if bytes[i] == b'}' && depth > 0 { depth -= 1; i += 1; if depth == 0 { break; } }
-                    else if bytes[i] == b';' && depth == 0 && !seen_block { i += 1; break; }
-                    else { i += 1; }
+                    if let Some(next) = skip_literal(bytes, i) {
+                        i = next;
+                    } else if bytes[i] == b'{' {
+                        seen_block = true;
+                        depth += 1;
+                        i += 1;
+                    } else if bytes[i] == b'}' && depth > 0 {
+                        depth -= 1;
+                        i += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else if bytes[i] == b';' && depth == 0 && !seen_block {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
                 }
                 continue;
             }
@@ -188,8 +219,17 @@ fn acdd_state_cargo_dependencies_and_pure_core_import_fence() {
     );
 
     let core_src_dir = manifest_dir.join("crates/acdd-core/src");
-    for moved in ["commitments.rs", "interner.rs", "models.rs", "semantic.rs", "typed_facts.rs"] {
-        assert!(!core_src_dir.join(moved).exists(), "crates/acdd-core/src/{moved} must remain moved into crates/acdd-index");
+    for moved in [
+        "commitments.rs",
+        "interner.rs",
+        "models.rs",
+        "semantic.rs",
+        "typed_facts.rs",
+    ] {
+        assert!(
+            !core_src_dir.join(moved).exists(),
+            "crates/acdd-core/src/{moved} must remain moved into crates/acdd-index"
+        );
     }
 
     let core_cargo_path = manifest_dir.join("crates/acdd-core/Cargo.toml");
@@ -198,8 +238,16 @@ fn acdd_state_cargo_dependencies_and_pure_core_import_fence() {
     let parsed_core_cargo: toml::Value = toml::from_str(&core_cargo)
         .unwrap_or_else(|e| panic!("parse {}: {e}", core_cargo_path.display()));
     let core_forbidden_crates = [
-        "acdd-index", "acdd-state", "rusqlite", "tree-sitter", "zstd",
-        "rayon", "hashbrown", "clap", "rmcp", "tokio",
+        "acdd-index",
+        "acdd-state",
+        "rusqlite",
+        "tree-sitter",
+        "zstd",
+        "rayon",
+        "hashbrown",
+        "clap",
+        "rmcp",
+        "tokio",
     ];
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parsed_core_cargo
@@ -280,7 +328,12 @@ fn acdd_state_cargo_dependencies_and_pure_core_import_fence() {
             );
         } else {
             let prod_code = strip_cfg_test_items(&code);
-            for forbidden in ["acdd_core::git", "crate::git_ops", "crate::spec", "crate::usecases"] {
+            for forbidden in [
+                "acdd_core::git",
+                "crate::git_ops",
+                "crate::spec",
+                "crate::usecases",
+            ] {
                 assert!(
                     !prod_code.contains(forbidden),
                     "SQLite store file {} must not reference '{forbidden}'",
@@ -298,8 +351,13 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
         acdd_core::format::stable_hash64("workspace_boundary"),
         7897085170651836845
     );
-    assert_eq!(acdd_core::config::ScannerLimits::default().max_files, 100_000);
-    assert!(acdd_core::path_policy::WorkspacePathPolicy::default().is_candidate_included("Cargo.lock"));
+    assert_eq!(
+        acdd_core::config::ScannerLimits::default().max_files,
+        100_000
+    );
+    assert!(
+        acdd_core::path_policy::WorkspacePathPolicy::default().is_candidate_included("Cargo.lock")
+    );
 
     // acdd-index: commitments, language registry, route index, schema DDL, and AST extractor
     assert!(acdd_index::commitments::DOMAINS.contains(&"nodes"));
@@ -317,7 +375,9 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
     assert!(acdd_index::languages::by_id("rust").is_some());
 
     let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
-    mem_conn.execute_batch(acdd_index::db::schema::SCHEMA_DDL).unwrap();
+    mem_conn
+        .execute_batch(acdd_index::db::schema::SCHEMA_DDL)
+        .unwrap();
     let table_count: i64 = mem_conn
         .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('nodes', 'edges', 'metadata', 'resolution_coverage')", [], |r| r.get(0))
         .unwrap();
@@ -325,7 +385,9 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
 
     // acdd-state + host state_bridge::build_domain_providers + acdd_index::ast::extract_typed
     let ws = crate::common::Workspace::new();
-    let backend = acdd_state::store::sqlite::SqliteStateBackend::open(ws.path("test-state-store.sqlite")).unwrap();
+    let backend =
+        acdd_state::store::sqlite::SqliteStateBackend::open(ws.path("test-state-store.sqlite"))
+            .unwrap();
     assert_eq!(backend.read_meta().unwrap().schema_version, 2);
     drop(backend);
 
@@ -335,14 +397,22 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
         None,
         Vec::new(),
     )
-        .expect("state_bridge domain providers must initialize cleanly");
+    .expect("state_bridge domain providers must initialize cleanly");
     assert!(providers.plugin_tools().is_empty());
 
     #[cfg(feature = "lang-rust")]
     {
-        let facts = acdd_index::ast::extract_typed("tests/seam.rs", "rust", "#[test] fn sample_seam() { assert!(true); }")
-            .expect("production extractor must be wired");
-        assert!(facts.facts.nodes.iter().any(|n| n.is_test && n.name == "sample_seam"));
+        let facts = acdd_index::ast::extract_typed(
+            "tests/seam.rs",
+            "rust",
+            "#[test] fn sample_seam() { assert!(true); }",
+        )
+        .expect("production extractor must be wired");
+        assert!(facts
+            .facts
+            .nodes
+            .iter()
+            .any(|n| n.is_test && n.name == "sample_seam"));
     }
 }
 
@@ -389,23 +459,42 @@ fn inv_single_owner_architectural_fences() {
 
     // 3. Single-owner fences across `crates/{acdd-core,acdd-state,acdd-index}/src` and `src`.
     let mut all_src_rs = Vec::new();
-    for root in ["crates/acdd-core/src", "crates/acdd-state/src", "crates/acdd-index/src", "src"] {
+    for root in [
+        "crates/acdd-core/src",
+        "crates/acdd-state/src",
+        "crates/acdd-index/src",
+        "src",
+    ] {
         collect_rs_files(&manifest_dir.join(root), &mut all_src_rs);
     }
     let forbidden_glob_engines = [
-        "fn glob_matches", "fn glob_match_bytes", "fn match_pattern_intersection",
-        "fn segment_globs_intersect", "fn is_valid_scope_glob", "fn has_valid_scope_braces",
-        "fn has_balanced_nonempty_braces", "fn expand_glob_braces",
+        "fn glob_matches",
+        "fn glob_match_bytes",
+        "fn match_pattern_intersection",
+        "fn segment_globs_intersect",
+        "fn is_valid_scope_glob",
+        "fn has_valid_scope_braces",
+        "fn has_balanced_nonempty_braces",
+        "fn expand_glob_braces",
     ];
     let banned_duplicate_fns = [
-        "fn verify_no_symlink_traversal", "fn glob_pattern_matches", "fn matches_path_pattern",
-        "fn now_utc_iso(", "fn collapse_placeholder_spaces", "fn crate_name_from_cargo_toml",
+        "fn verify_no_symlink_traversal",
+        "fn glob_pattern_matches",
+        "fn matches_path_pattern",
+        "fn now_utc_iso(",
+        "fn collapse_placeholder_spaces",
+        "fn crate_name_from_cargo_toml",
     ];
     let mut violations = Vec::new();
     for file in &all_src_rs {
-        let raw = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+        let raw = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
         let code = strip_rust_comments(&raw);
-        let rel = file.strip_prefix(manifest_dir).unwrap_or(file).to_string_lossy().replace('\\', "/");
+        let rel = file
+            .strip_prefix(manifest_dir)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
         if rel != "crates/acdd-core/src/path_policy.rs" {
             for pat in forbidden_glob_engines {
                 if code.contains(pat) {
@@ -415,7 +504,10 @@ fn inv_single_owner_architectural_fences() {
         }
         if rel != "crates/acdd-core/src/git.rs" {
             if code.contains("Command::new(\"git\")")
-                || code.split_whitespace().collect::<String>().contains("Command::new(\"git\")")
+                || code
+                    .split_whitespace()
+                    .collect::<String>()
+                    .contains("Command::new(\"git\")")
             {
                 violations.push(format!("{rel}: direct `Command::new(\"git\")` forbidden outside crates/acdd-core/src/git.rs"));
             }
@@ -432,17 +524,27 @@ fn inv_single_owner_architectural_fences() {
             || rel.starts_with("crates/acdd-index/src/")
             || rel.starts_with("crates/acdd-state/src/");
         if check_prod_temp && strip_cfg_test_items(&code).contains("env::temp_dir") {
-            violations.push(format!("{rel}: production `env::temp_dir` forbidden (use `acdd_core::fs::ScopedTempDir`)"));
+            violations.push(format!(
+                "{rel}: production `env::temp_dir` forbidden (use `acdd_core::fs::ScopedTempDir`)"
+            ));
         }
     }
-    assert!(violations.is_empty(), "INV-SINGLE-OWNER architectural fence violations:\n{}", violations.join("\n"));
+    assert!(
+        violations.is_empty(),
+        "INV-SINGLE-OWNER architectural fence violations:\n{}",
+        violations.join("\n")
+    );
     for delegator in [
         "crates/acdd-state/src/profile/validate.rs",
         "crates/acdd-state/src/machine/schedule.rs",
         "crates/acdd-state/src/validate.rs",
     ] {
-        let code = strip_rust_comments(&std::fs::read_to_string(manifest_dir.join(delegator)).unwrap());
-        assert!(code.contains("acdd_core::path_policy"), "{delegator} must delegate to acdd_core::path_policy");
+        let code =
+            strip_rust_comments(&std::fs::read_to_string(manifest_dir.join(delegator)).unwrap());
+        assert!(
+            code.contains("acdd_core::path_policy"),
+            "{delegator} must delegate to acdd_core::path_policy"
+        );
     }
 
     // 4. Embedded `base.yaml` is domain-pure and `code.yaml` inherits `base`.
@@ -479,9 +581,21 @@ fn inv_single_owner_architectural_fences() {
     )
     .unwrap();
     let audit_yaml: serde_yaml::Value = serde_yaml::from_str(&audit_raw).unwrap();
-    assert_eq!(audit_yaml["inherit"].as_str(), Some("base"), "embedded audit.yaml must use `inherit: base`");
-    assert_eq!(audit_yaml["git"]["isolation"].as_str(), Some("in_place"), "audit.yaml must isolate in_place");
-    assert_eq!(audit_yaml["save"].as_str(), Some("none"), "audit.yaml must default save: none");
+    assert_eq!(
+        audit_yaml["inherit"].as_str(),
+        Some("base"),
+        "embedded audit.yaml must use `inherit: base`"
+    );
+    assert_eq!(
+        audit_yaml["git"]["isolation"].as_str(),
+        Some("in_place"),
+        "audit.yaml must isolate in_place"
+    );
+    assert_eq!(
+        audit_yaml["save"].as_str(),
+        Some("none"),
+        "audit.yaml must default save: none"
+    );
     let triage_gate = audit_yaml["gates"]
         .as_sequence()
         .unwrap()

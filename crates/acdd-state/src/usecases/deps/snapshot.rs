@@ -348,7 +348,10 @@ fn probe_disk_archive_dirs(
             let Some(rel_utf8) = rel_native.to_str() else {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!("archive entry '{}' is not valid UTF-8", rel_native.display()),
+                    format!(
+                        "archive entry '{}' is not valid UTF-8",
+                        rel_native.display()
+                    ),
                 ));
             };
             let rel_posix = rel_utf8.replace('\\', "/");
@@ -419,7 +422,11 @@ fn list_collection_git_entries(
         }
     }
     let prefix_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
-    Ok(Some(list_git_tree_entries_multi(ws_path, &tree_oid, &prefix_refs)?))
+    Ok(Some(list_git_tree_entries_multi(
+        ws_path,
+        &tree_oid,
+        &prefix_refs,
+    )?))
 }
 
 fn validate_and_collect_git_archive_entry(
@@ -432,7 +439,10 @@ fn validate_and_collect_git_archive_entry(
     let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
         return Ok(());
     };
-    let (parent_bytes, file_bytes) = (&entry.raw_path[..slash_pos], &entry.raw_path[slash_pos + 1..]);
+    let (parent_bytes, file_bytes) = (
+        &entry.raw_path[..slash_pos],
+        &entry.raw_path[slash_pos + 1..],
+    );
     if file_bytes == b"archive" {
         if is_admitted_git_collection_root(col, parent_bytes)? && entry.mode == "120000" {
             let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
@@ -483,7 +493,9 @@ fn validate_and_collect_git_archive_entry(
     if file_str.contains('\\') && file_str.ends_with(".md") {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
-            format!("archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"),
+            format!(
+                "archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"
+            ),
         ));
     }
     if col.is_direct_archive_file(raw_str) && seen_paths.insert(raw_str.to_owned()) {

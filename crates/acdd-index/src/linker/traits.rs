@@ -23,7 +23,9 @@ pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&crate::models::No
     }
     if let Some(first) = candidates.first() {
         if candidates.len() > 1
-            && candidates.iter().all(|node| node.language == first.language)
+            && candidates
+                .iter()
+                .all(|node| node.language == first.language)
         {
             if let Some(profile) = crate::languages::by_id(first.language.as_str()) {
                 use crate::languages::profile::ProfileLinker;
@@ -39,10 +41,10 @@ pub(in crate::linker) fn receiver_language_requires_static(node: &crate::models:
         .is_some_and(|profile| profile.linker().receiver_requires_static())
 }
 pub use super::types::{ModulesByNamespace, PackageExports};
-pub(crate) use crate::languages::profile::{resolve_default_import, FileRelationContext, LanguageLinker, GENERIC_LINKER};
-pub use crate::languages::profile::{
-    ImportContext, ImportNormalizationContext, ImportResolution,
+pub(crate) use crate::languages::profile::{
+    resolve_default_import, FileRelationContext, LanguageLinker, GENERIC_LINKER,
 };
+pub use crate::languages::profile::{ImportContext, ImportNormalizationContext, ImportResolution};
 
 /// A workspace namespace selected by an explicit module path.
 pub struct ExplicitModuleTarget {
@@ -58,7 +60,8 @@ pub(crate) struct ImplementationSource<'a, 'b> {
     pub(in crate::linker) file_module: &'b str,
     pub(in crate::linker) by_qual: &'b hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>,
     pub(in crate::linker) by_name: &'b hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>,
-    pub(in crate::linker) aliases: &'b hashbrown::HashMap<&'b str, hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>>,
+    pub(in crate::linker) aliases:
+        &'b hashbrown::HashMap<&'b str, hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>>,
     pub(in crate::linker) lookup_key: &'b mut String,
 }
 
@@ -80,8 +83,12 @@ pub(crate) struct ExplicitModuleVisibility<'a, 'b> {
 pub(crate) struct ImportVisibility<'a, 'b, 'keys> {
     pub(in crate::linker) input: &'b super::resolution::input::ResolutionInput<'a>,
     pub(in crate::linker) path: &'b str,
-    pub(in crate::linker) aliases: &'b hashbrown::HashMap<&'keys str, hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>>,
-    pub(in crate::linker) alias_import_positions: &'b hashbrown::HashMap<(&'keys str, &'keys str), crate::semantic::SourcePosition>,
+    pub(in crate::linker) aliases: &'b hashbrown::HashMap<
+        &'keys str,
+        hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>,
+    >,
+    pub(in crate::linker) alias_import_positions:
+        &'b hashbrown::HashMap<(&'keys str, &'keys str), crate::semantic::SourcePosition>,
 }
 
 /// Inputs for a language-owned lookup of an implicit receiver.
@@ -96,8 +103,18 @@ pub(crate) struct ImplicitReceiver<'a, 'b, 'keys> {
 }
 
 pub(crate) trait DynamicAliasResolver<'a> {
-    fn alias_for(&self, name: &str, owner: Option<&crate::models::Node>, definition_scope: bool) -> Option<&Vec<&'a crate::models::Node>>;
-    fn external_for(&self, name: &str, owner: Option<&crate::models::Node>, definition_scope: bool) -> Option<&(String, usize)>;
+    fn alias_for(
+        &self,
+        name: &str,
+        owner: Option<&crate::models::Node>,
+        definition_scope: bool,
+    ) -> Option<&Vec<&'a crate::models::Node>>;
+    fn external_for(
+        &self,
+        name: &str,
+        owner: Option<&crate::models::Node>,
+        definition_scope: bool,
+    ) -> Option<&(String, usize)>;
 }
 
 /// Borrowed inputs for computed receiver lookup.
@@ -105,7 +122,8 @@ pub(crate) struct DynamicReceiver<'a, 'b, 'keys> {
     pub(in crate::linker) visibility: ImportVisibility<'a, 'b, 'keys>,
     pub(in crate::linker) file_module: &'b str,
     pub(in crate::linker) reference: &'b crate::models::Reference,
-    pub(in crate::linker) constructor_aliases: &'b hashbrown::HashMap<(&'keys str, &'keys str), &'keys crate::models::Reference>,
+    pub(in crate::linker) constructor_aliases:
+        &'b hashbrown::HashMap<(&'keys str, &'keys str), &'keys crate::models::Reference>,
     pub(in crate::linker) candidates: &'b mut Vec<&'a crate::models::Node>,
     pub(in crate::linker) lookup: &'b mut String,
     pub(in crate::linker) resolver: &'b dyn DynamicAliasResolver<'a>,
@@ -114,15 +132,21 @@ pub(crate) struct DynamicReceiver<'a, 'b, 'keys> {
 /// Inputs for resolving a member on a locally constructed object.
 pub(crate) struct ObjectReference<'a, 'b, 'keys> {
     pub(in crate::linker) phase: ReferencePhase<'a, 'b>,
-    pub(in crate::linker) aliases: &'b hashbrown::HashMap<&'keys str, hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>>,
-    pub(in crate::linker) ownership: &'b dyn Fn(&crate::models::Node) -> Option<&'a crate::semantic::ObjectOwnershipFact>,
+    pub(in crate::linker) aliases: &'b hashbrown::HashMap<
+        &'keys str,
+        hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>,
+    >,
+    pub(in crate::linker) ownership:
+        &'b dyn Fn(&crate::models::Node) -> Option<&'a crate::semantic::ObjectOwnershipFact>,
     pub(in crate::linker) calls: &'b hashbrown::HashSet<(&'keys str, usize, usize, &'keys str)>,
     pub(in crate::linker) language_context: &'b crate::languages::LanguageContext,
-    pub(in crate::linker) activation_signals: &'b crate::languages::manifests::semantic::FileActivationSignals,
+    pub(in crate::linker) activation_signals:
+        &'b crate::languages::manifests::semantic::FileActivationSignals,
 }
 
 /// Inputs for resolving a component template member.
-type ComponentAliasLookup<'a, 'b> = dyn Fn(&str, Option<&'a crate::models::Node>, bool) -> Option<&'b Vec<&'a crate::models::Node>> + 'b;
+type ComponentAliasLookup<'a, 'b> = dyn Fn(&str, Option<&'a crate::models::Node>, bool) -> Option<&'b Vec<&'a crate::models::Node>>
+    + 'b;
 pub(crate) struct ComponentSlotReference<'a, 'b> {
     pub(in crate::linker) phase: ReferencePhase<'a, 'b>,
     pub(in crate::linker) first: &'b str,
@@ -134,10 +158,13 @@ pub(crate) struct ComponentSlotReference<'a, 'b> {
 /// Shared inputs for preparing workspace reference state.
 pub(crate) struct ReferenceWorkspace<'a> {
     pub(crate) all: &'a (dyn crate::FactsLookup + Sync),
-    pub(crate) flows: Option<&'a hashbrown::HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>>,
+    pub(crate) flows: Option<
+        &'a hashbrown::HashMap<crate::interner::SymbolId, &'a crate::typed_facts::FlowState>,
+    >,
     pub(crate) interner: &'a crate::interner::LinkerInterner<'a>,
     pub(crate) dependencies: &'a crate::languages::dependency_registry::DependencyRegistry,
-    pub(crate) imports: &'a hashbrown::HashMap<(&'a str, &'a str), Option<crate::languages::ImportPath>>,
+    pub(crate) imports:
+        &'a hashbrown::HashMap<(&'a str, &'a str), Option<crate::languages::ImportPath>>,
     pub(crate) modules: &'a ModulesByNamespace<'a>,
 }
 
@@ -148,16 +175,22 @@ pub(crate) struct ImportScopeState<'a, 'b, 'file> {
     pub(in crate::linker) file_module: &'b str,
     pub(in crate::linker) facts: &'a crate::models::Facts,
     pub(in crate::linker) references: &'b [crate::models::Reference],
-    pub(in crate::linker) aliases: &'b mut hashbrown::HashMap<&'file str, hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>>,
-    pub(in crate::linker) external_aliases: &'b mut hashbrown::HashMap<&'file str, super::resolution::context::ExternalAliases<'a>>,
+    pub(in crate::linker) aliases: &'b mut hashbrown::HashMap<
+        &'file str,
+        hashbrown::HashMap<&'a str, Vec<&'a crate::models::Node>>,
+    >,
+    pub(in crate::linker) external_aliases:
+        &'b mut hashbrown::HashMap<&'file str, super::resolution::context::ExternalAliases<'a>>,
     pub(in crate::linker) lookup_key: &'b mut String,
 }
 
 /// Borrowed workspace inputs passed to language-owned semantic context preparation hooks.
 pub(crate) struct SemanticContextPrep<'a> {
     pub(in crate::linker) all: &'a dyn crate::FactsLookup,
-    pub(in crate::linker) by_id: &'a hashbrown::HashMap<crate::interner::SymbolId, &'a crate::models::Node>,
-    pub(in crate::linker) normalized_imports: &'a hashbrown::HashMap<(&'a str, &'a str), Option<crate::languages::ImportPath>>,
+    pub(in crate::linker) by_id:
+        &'a hashbrown::HashMap<crate::interner::SymbolId, &'a crate::models::Node>,
+    pub(in crate::linker) normalized_imports:
+        &'a hashbrown::HashMap<(&'a str, &'a str), Option<crate::languages::ImportPath>>,
     pub(in crate::linker) modules: &'a ModulesByNamespace<'a>,
 }
 
@@ -178,11 +211,26 @@ pub(crate) trait ReferenceExtensionFactory<'a>: Send + Sync {
 /// Language-owned per-file reference state.
 pub(crate) trait ReferenceExtension {
     fn resolve(&self, phase: &mut ReferencePhase<'_, '_>) -> bool;
-    fn candidates<'a>(&'a self, _path: &str, _owner: Option<&crate::models::Node>, _reference: &crate::models::Reference, _name: &str) -> Vec<&'a crate::models::Node> {
+    fn candidates<'a>(
+        &'a self,
+        _path: &str,
+        _owner: Option<&crate::models::Node>,
+        _reference: &crate::models::Reference,
+        _name: &str,
+    ) -> Vec<&'a crate::models::Node> {
         Vec::new()
     }
-    fn syntax_rules(&self) -> &[&crate::languages::manifests::syntax::SyntaxRule] { &[] }
-    fn builtin_in_scope(&self, _expression: &str, _reference: &crate::models::Reference, _profile: Option<&dyn crate::languages::LanguageProfile>) -> Option<bool> { None }
+    fn syntax_rules(&self) -> &[&crate::languages::manifests::syntax::SyntaxRule] {
+        &[]
+    }
+    fn builtin_in_scope(
+        &self,
+        _expression: &str,
+        _reference: &crate::models::Reference,
+        _profile: Option<&dyn crate::languages::LanguageProfile>,
+    ) -> Option<bool> {
+        None
+    }
 }
 
 /// Borrowed state used by language-owned reference dispatch.
@@ -200,28 +248,59 @@ pub struct ReferencePhase<'a, 'b> {
 
 impl ReferencePhase<'_, '_> {
     pub(crate) fn resolve_extension(&mut self) -> bool {
-        self.extension.is_some_and(|extension| extension.resolve(self))
+        self.extension
+            .is_some_and(|extension| extension.resolve(self))
     }
-    pub(crate) fn resolve_lexical_binding(&mut self, first: &str, component: Option<&crate::models::Node>, linker: &dyn LanguageLinker, evidence: &str) -> bool {
+    pub(crate) fn resolve_lexical_binding(
+        &mut self,
+        first: &str,
+        component: Option<&crate::models::Node>,
+        linker: &dyn LanguageLinker,
+        evidence: &str,
+    ) -> bool {
         use crate::models::tags::{CoverageStatus, EdgeConfidence, EdgeKind, NodeKind};
         if self.reference.kind != EdgeKind::References.as_str()
-            || !self.owner.is_some_and(|owner| owner.kind == NodeKind::TemplateScope) {
+            || !self
+                .owner
+                .is_some_and(|owner| owner.kind == NodeKind::TemplateScope)
+        {
             return false;
         }
         let mut scope = self.owner.map_or("", |owner| owner.qualname.as_str());
         let mut binding = None;
         while !scope.is_empty() {
-            binding = self.input.by_qual.get(scope).and_then(|nodes| nodes.iter().copied().find(|node| {
-                node.path == *self.path && node.kind == NodeKind::TemplateScope
-                    && super::types::has_node_binding(self.input.interner, self.input.node_bindings, &node.id, first)
-            }));
-            if binding.is_some() { break; }
+            binding = self.input.by_qual.get(scope).and_then(|nodes| {
+                nodes.iter().copied().find(|node| {
+                    node.path == *self.path
+                        && node.kind == NodeKind::TemplateScope
+                        && super::types::has_node_binding(
+                            self.input.interner,
+                            self.input.node_bindings,
+                            &node.id,
+                            first,
+                        )
+                })
+            });
+            if binding.is_some() {
+                break;
+            }
             scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
         }
         let binding = binding.or_else(|| linker.template_setup_binding(self.reference, component));
         if let Some(binding) = binding {
-            self.graph.reference_edge(self.path, self.reference, binding.id.clone(), EdgeKind::References, EdgeConfidence::Exact);
-            self.graph.reference_coverage(self.path, self.reference, CoverageStatus::Resolved.as_str(), format!("{evidence} {}", binding.qualname).into());
+            self.graph.reference_edge(
+                self.path,
+                self.reference,
+                binding.id.clone(),
+                EdgeKind::References,
+                EdgeConfidence::Exact,
+            );
+            self.graph.reference_coverage(
+                self.path,
+                self.reference,
+                CoverageStatus::Resolved.as_str(),
+                format!("{evidence} {}", binding.qualname).into(),
+            );
             return true;
         }
         false
