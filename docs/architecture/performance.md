@@ -438,3 +438,44 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > In `crates/acdd-index/src/db/writer/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
 - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/acdd-index/src/db/writer/dictionary.rs).
+
+---
+
+## Executable Performance and Memory Rules
+
+```acdd-rule
+- id: PERF-AST-NO-CTX-NODE-PARENT
+  invariant: INV-PERF-FLAT-TREE-CURSOR-WALK
+  severity: error
+  kind: ast_pattern
+  from:
+    paths: ["crates/acdd-index/src/languages/**"]
+    languages: ["rust"]
+  ast_pattern: "ctx.node.parent()"
+  include_tests: false
+  message: "Use cached ctx.parent() / ctx.ancestor(depth) instead of raw tree-sitter FFI ctx.node.parent()"
+
+- id: PERF-AST-NO-RAW-WALK-IN-ORDER
+  invariant: INV-PERF-FLAT-TREE-CURSOR-WALK
+  severity: error
+  kind: ast_pattern
+  from:
+    paths: ["crates/acdd-index/src/ast/visitor.rs"]
+    languages: ["rust"]
+  ast_pattern: "walk_in_order($$$)"
+  include_tests: false
+  message: "Use walk_in_order_with_ancestors in visitor.rs to avoid per-node parent() FFI walks"
+
+- id: PERF-RSS-TRIM-SINGLE-OWNER
+  invariant: INV-PERF-BOUNDED-STAGING-AND-TRIM
+  severity: error
+  kind: ast_pattern
+  from:
+    paths: ["src/**", "crates/**"]
+    exclude_paths:
+      - "crates/acdd-core/src/sys.rs"
+    languages: ["rust"]
+  ast_pattern: "libc::malloc_trim($N)"
+  include_tests: false
+  message: "Call acdd_core::sys::trim_allocator() instead of raw libc::malloc_trim"
+```

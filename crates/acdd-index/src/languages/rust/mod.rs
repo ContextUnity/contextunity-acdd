@@ -1529,7 +1529,6 @@ fn normalize_bare_or_crate_import(
 fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if ctx.node.child_by_field_name("body").is_some()
         || !ctx
-            .node
             .parent()
             .is_some_and(|parent| parent.kind() == "source_file")
         || ctx.node.has_error()
@@ -2024,7 +2023,7 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 }
 
 fn extract_scoped_identifier_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    if let Some(parent) = ctx.node.parent() {
+    if let Some(parent) = ctx.parent() {
         if matches!(parent.kind(), "scoped_identifier" | "scoped_type_identifier")
             || (parent.kind() == "call_expression"
                 && parent
@@ -2046,7 +2045,7 @@ fn extract_scoped_identifier_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut 
             return;
         }
     }
-    let mut anc = ctx.node.parent();
+    let mut anc = ctx.parent();
     while let Some(node) = anc {
         match node.kind() {
             "use_declaration"

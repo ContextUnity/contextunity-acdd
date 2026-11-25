@@ -1213,7 +1213,6 @@ impl LanguageProfile for TypeScript {
                 if require_is_shadowed(ctx) {
                     call(ctx, facts, false);
                 } else if !ctx
-                    .node
                     .parent()
                     .is_some_and(|parent| parent.kind() == "variable_declarator")
                 {

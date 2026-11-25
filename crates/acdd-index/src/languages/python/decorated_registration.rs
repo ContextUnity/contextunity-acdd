@@ -113,14 +113,9 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
 }
 
 pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    if ctx.node.kind() != "assignment" || !ctx.owner.starts_with("module:") {
-        return;
-    }
-    if !ctx
-        .node
-        .parent()
-        .and_then(|node| node.parent())
-        .is_some_and(|node| node.kind() == "module")
+    if ctx.kind() != "assignment"
+        || !ctx.owner.starts_with("module:")
+        || !ctx.ancestor(2).is_some_and(|node| node.kind() == "module")
     {
         return;
     }

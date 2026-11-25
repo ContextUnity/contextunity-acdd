@@ -356,7 +356,7 @@ pub(super) fn extract_projections(ctx: &SyntaxContext<'_, '_>, rules: &LanguageC
                 outermost_member: &|| {
                     *outermost_member.get_or_init(|| {
                         kind != "member_expression"
-                            || !ctx.node.parent().is_some_and(|parent| {
+                            || !ctx.parent().is_some_and(|parent| {
                                 (parent.kind() == "member_expression"
                                     && parent.child_by_field_name("object") == Some(ctx.node))
                                     || (parent.kind() == "call_expression"
@@ -371,7 +371,6 @@ pub(super) fn extract_projections(ctx: &SyntaxContext<'_, '_>, rules: &LanguageC
                     let callback =
                         projection_argument(ctx.node, &Slot::Argument { index }, &arguments);
                     let binding = ctx
-                        .node
                         .parent()
                         .filter(|node| {
                             node.kind() == "variable_declarator"

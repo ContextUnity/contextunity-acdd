@@ -645,11 +645,10 @@ fn extract_configured(
         let Some(body) = function_scope.child_by_field_name("body") else {
             return;
         };
-        let Some(return_statement) = ctx.node.parent() else {
+        let Some(return_statement) = ctx.parent() else {
             return;
         };
-        if return_statement.kind() != "return_statement" || return_statement.parent() != Some(body)
-        {
+        if return_statement.kind() != "return_statement" || ctx.ancestor(2) != Some(body) {
             return;
         }
     }

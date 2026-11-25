@@ -211,10 +211,8 @@ impl LanguageProfile for Php {
                 &["qualified_name", "namespace_name", "name"],
             );
             if let Some(target) = target {
-                let full_target = if ctx.node.kind() == "namespace_use_group_clause" {
-                    ctx.node
-                        .parent()
-                        .and_then(|group| group.parent())
+                let full_target = if ctx.kind() == "namespace_use_group_clause" {
+                    ctx.ancestor(2)
                         .and_then(|declaration| syntax::named(declaration, ctx.source, &["namespace_name"]))
                         .map(|prefix| format!("{}\\{target}", prefix.trim_end_matches('\\')))
                 } else {
