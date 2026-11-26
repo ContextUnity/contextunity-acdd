@@ -300,6 +300,9 @@ pub fn render_for_operation(
         && operation == OperationKind::Navigation
         && discovery.is_none()
     {
+        if let Some(rendered) = super::analyze::render_if_analyze(value, title) {
+            return rendered;
+        }
         if let Some(kind) = traversal::kind_for(title, value) {
             return traversal::render(value, title, kind);
         }

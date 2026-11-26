@@ -1509,6 +1509,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1539,6 +1542,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1595,6 +1601,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
                 to: missing_to,
                 include_cycles: None,
                 page: &page,
+                root: None,
+                base: None,
+                policy: None,
             },
         )
         .unwrap_err()
@@ -1612,6 +1621,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("central_hub"),
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1630,6 +1642,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("central_hub"),
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1645,6 +1660,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("alt_route"),
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1658,6 +1676,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("leaf_sink"),
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1673,6 +1694,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1702,6 +1726,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1784,6 +1811,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
                 to: None,
                 include_cycles: None,
                 page: &page,
+                root: None,
+                base: None,
+                policy: None,
             },
         )
         .unwrap();
@@ -1802,6 +1832,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1827,6 +1860,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .is_ok());
@@ -1921,6 +1957,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("fn:wide:T"),
             include_cycles: None,
             page: &options(1),
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1935,6 +1974,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: Some("fn:irr:T"),
             include_cycles: None,
             page: &options(1),
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -1951,6 +1993,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
                 to: Some("fn:wide:Teq"),
                 include_cycles: None,
                 page: &options(limit),
+                root: None,
+                base: None,
+                policy: None,
             },
         )
         .unwrap();
@@ -1999,6 +2044,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap_err()
@@ -2015,6 +2063,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -2030,6 +2081,9 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
             to: None,
             include_cycles: None,
             page: &page,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
     .unwrap();
@@ -2037,4 +2091,808 @@ fn analyze_graph_and_pagerank_modes_contract_matrix() {
         test_root["roots"]["total"], 0,
         "is_test=1 public node must not be classified as a production uncalled_public_root"
     );
+}
+
+#[test]
+fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
+    use acdd_core::{config::Adapter, path_policy::WorkspacePathPolicy};
+    use acdd_index::db::{
+        analyze::{analyze_with_mode, AnalyzeMode, AnalyzeRequest},
+        source::check_sensitive_path_with_case,
+    };
+    use contextunity_acdd::format::{render_for_operation, OperationKind, OutputFormat};
+    use serde_json::json;
+
+    // 1. Canonical sensitive-path case-sensitivity parity (shared by reader.rs & Git diagnostics)
+    let adapter = Adapter {
+        sensitive: vec!["secrets.txt".to_owned()],
+        ..Adapter::default()
+    };
+    assert!(check_sensitive_path_with_case(&adapter, "SECRETS.TXT", true).is_err());
+    assert!(check_sensitive_path_with_case(&adapter, "SECRETS.TXT", false).is_ok());
+
+    // 2. Shared Git fixture (single build for diff_impact, cochange, sensitive/policy filtering & Markdown formatting)
+    let page = options(20);
+    let w = Workspace::new();
+    w.write(
+        "pkg/service.py",
+        "def alpha(x):\n    y = x + 1\n    return y\n\n\
+         def beta(z):\n    return alpha(z)\n",
+    );
+    w.write(
+        "pkg/caller.py",
+        "from pkg.service import alpha\n\ndef invoke():\n    return alpha(1)\n",
+    );
+    w.write("pkg/unlinked_a.py", "def ua():\n    return 1\n");
+    w.write(
+        "pkg/unlinked_b_old.py",
+        "def ub():\n    a = 1\n    b = 2\n    c = 3\n    return a + b + c\n",
+    );
+    w.write(
+        "tests/test_service.py",
+        "from pkg.service import alpha\n\ndef test_alpha_verified():\n    return alpha(2)\n",
+    );
+    w.write(
+        "tests/test_via_secret.py",
+        "from managed.secret_caller import hidden_caller\n\n\
+         def test_via_secret():\n    return hidden_caller()\n",
+    );
+    w.write(
+        "tests/test_lexical_only.py",
+        "def test_beta():\n    return 99\n",
+    );
+    w.write(
+        "docs/rules.md",
+        "# Service Rules\n\n\
+         > [!IMPORTANT]\n\
+         > **Invariant: `INV-SERVICE-RULE`** — `alpha` in [service.py](../pkg/service.py) must remain deterministic.\n",
+    );
+    w.write(
+        "acdd.yaml",
+        "sensitive:\n  - \".env\"\n  - \"managed/secret_caller.py\"\n",
+    );
+    w.write(".env", "SECRET_TOKEN=baseline\n");
+    w.write(".acdd/profile.yaml", "version: 2\n");
+    w.write("managed/spec.md", "baseline spec\n");
+    w.write(
+        "managed/secret_caller.py",
+        "from pkg.service import alpha\n\ndef hidden_caller():\n    return alpha(7)\n",
+    );
+    w.write(
+        "managed/test_secret.py",
+        "from pkg.service import alpha\n\ndef test_hidden_alpha():\n    return alpha(8)\n",
+    );
+    w.write(
+        "managed/secret_rule.md",
+        "# Hidden Rule\n\n\
+         > [!IMPORTANT]\n\
+         > **Invariant: `INV-SECRET-RULE`** — `alpha` in [service.py](../pkg/service.py) hidden rule.\n",
+    );
+    w.seed_git().expect("seed Git fixture");
+
+    // Rename pkg/unlinked_b_old.py -> pkg/unlinked_b.py and create cochange history (commit 0 + commit 1 => count 2)
+    w.run_git(&["mv", "pkg/unlinked_b_old.py", "pkg/unlinked_b.py"])
+        .expect("git mv");
+    w.write("pkg/unlinked_a.py", "def ua():\n    return 10\n");
+    w.write(
+        "pkg/unlinked_b.py",
+        "def ub():\n    a = 10\n    b = 2\n    c = 3\n    return a + b + c\n",
+    );
+    w.write("pkg/unlinked_c.py", "def uc():\n    return 30\n");
+    w.write(
+        "pkg/service.py",
+        "def alpha(x):\n    y = x + 2\n    return y\n\n\
+         def beta(z):\n    return alpha(z)\n",
+    );
+    w.write(
+        "pkg/caller.py",
+        "from pkg.service import alpha\n\ndef invoke():\n    return alpha(2)\n",
+    );
+    w.write(".env", "SECRET_TOKEN=commit1\n");
+    w.write(".acdd/profile.yaml", "version: 2 # c1\n");
+    w.write("managed/spec.md", "commit1 spec\n");
+    w.run_git(&["add", "-A"]).expect("stage commit 1");
+    w.commit_git("cochange commit 1", None).expect("commit 1");
+
+    // Uncommitted edits: body-only edit on alpha (line 2 > nodes.line=1) + declaration-line edit on beta (line 5 == nodes.line)
+    w.write(
+        "pkg/service.py",
+        "def alpha(x):\n    y = x + 99\n    return y\n\n\
+         def beta(z, extra=0):\n    return alpha(z) + extra\n",
+    );
+    w.write(".env", "SECRET_TOKEN=dirty\n");
+    w.write(".acdd/profile.yaml", "version: 2 # dirty\n");
+    w.write("managed/spec.md", "dirty managed spec\n");
+    w.build();
+    let conn = w.open();
+
+    // Non-Git standalone root and nested ancestor-only directory both fail closed with GIT_REPO_REQUIRED
+    let non_git_dir = Workspace::new();
+    let nested_dir = w.path("pkg");
+    for bad_root in [non_git_dir.root(), nested_dir.as_path()] {
+        for mode in [AnalyzeMode::DiffImpact, AnalyzeMode::Cochange] {
+            let err = analyze_with_mode(
+                &conn,
+                &AnalyzeRequest {
+                    mode,
+                    target: "",
+                    to: None,
+                    include_cycles: None,
+                    page: &page,
+                    root: Some(bad_root),
+                    base: None,
+                    policy: None,
+                },
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("GIT_REPO_REQUIRED"),
+                "{mode} @ {bad_root:?}: {err}"
+            );
+        }
+    }
+
+    let policy = WorkspacePathPolicy::from_workspace_config(
+        ".acdd/state.sqlite",
+        ".acdd/code-map.sqlite",
+        vec![
+            "managed/spec.md".to_owned(),
+            "managed/secret_caller.py".to_owned(),
+            "managed/test_secret.py".to_owned(),
+            "managed/secret_rule.md".to_owned(),
+        ],
+    );
+
+    // 4. diff_impact assertions (uncommitted against HEAD)
+    let diff = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::DiffImpact,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&policy),
+        },
+    )
+    .expect("diff_impact should succeed");
+    assert_eq!(diff["mode"], "diff_impact");
+    assert_eq!(diff["complete"], true, "{diff}");
+
+    let changed = diff["changed_symbols"]["items"].as_array().unwrap();
+    let alpha_row = changed
+        .iter()
+        .find(|r| r["name"] == "alpha")
+        .expect("alpha changed");
+    let beta_row = changed
+        .iter()
+        .find(|r| r["name"] == "beta")
+        .expect("beta changed");
+    assert_eq!(
+        alpha_row["signature_touched"], false,
+        "body-only edit on line > nodes.line must yield signature_touched=false: {alpha_row}"
+    );
+    assert_eq!(
+        beta_row["signature_touched"], true,
+        "declaration edit overlapping nodes.line must yield signature_touched=true: {beta_row}"
+    );
+
+    // Reaching tests must include verified static calls test_case and exclude lexical-only test_beta
+    let test_names: BTreeSet<&str> = diff["tests"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(test_names.contains("test_alpha_verified"), "{test_names:?}");
+    assert!(
+        !test_names.contains("test_beta"),
+        "lexical fallback must be excluded: {test_names:?}"
+    );
+
+    // Uncovered symbols must include beta (despite lexical test_beta) and exclude verified-covered alpha
+    let uncovered_names: BTreeSet<&str> = diff["uncovered_symbols"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(uncovered_names.contains("beta"), "{uncovered_names:?}");
+    assert!(!uncovered_names.contains("alpha"), "{uncovered_names:?}");
+
+    // Governed INV-* affected_docs must surface docs/rules.md
+    let doc_paths: BTreeSet<&str> = diff["affected_docs"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["path"].as_str())
+        .collect();
+    assert!(doc_paths.contains("docs/rules.md"), "{diff}");
+
+    // Sensitive (.env), internal .acdd/ whitelist, and policy-excluded graph-derived paths must never leak
+    let diff_str = diff.to_string();
+    for forbidden in [
+        ".env",
+        ".acdd/profile.yaml",
+        "managed/spec.md",
+        "managed/secret_caller.py",
+        "managed/test_secret.py",
+        "managed/secret_rule.md",
+    ] {
+        assert!(
+            !diff_str.contains(forbidden),
+            "forbidden path '{forbidden}' leaked in diff_impact: {diff_str}"
+        );
+    }
+    assert_eq!(diff["tests"]["total"], 1, "post-filter test total: {diff}");
+    assert_eq!(
+        diff["affected_docs"]["total"], 1,
+        "post-filter affected_docs total: {diff}"
+    );
+    assert!(
+        !test_names.contains("test_via_secret"),
+        "allowed test reaching via excluded intermediate must be blocked: {test_names:?}"
+    );
+
+    // Same exposure policy applies on canonical changed_impact_with_path_options (code_map_impact)
+    let impact_opts = traversal::TraversalOptions {
+        depth: 4,
+        direction: traversal::ImpactDirection::Inbound,
+        mode: traversal::TraversalMode::Calls,
+        edge_types: None,
+        page: &page,
+    };
+    let impact_head = traversal::impact_with_path_options(
+        &conn,
+        w.root(),
+        None,
+        Some("head"),
+        None,
+        &impact_opts,
+    )
+    .expect("changed_impact_with_path_options");
+    let impact_str = impact_head.to_string();
+    assert!(
+        !impact_str.contains("managed/secret_caller.py") && !impact_str.contains("test_via_secret"),
+        "excluded intermediate leaked in changed_impact tests: {impact_str}"
+    );
+    assert!(impact_str.contains("test_alpha_verified"), "{impact_str}");
+
+    // Direct excluded edge path between allowed test_alpha_verified and allowed alpha is blocked in both surfaces
+    let mem_ex = common::sqlite::PersistedSnapshot::from_connection(&conn).open();
+    mem_ex
+        .execute(
+            "UPDATE edges SET path_id=(SELECT path_id FROM path_dictionary WHERE path='managed/secret_caller.py') \
+             WHERE kind='calls' AND src_hash=(SELECT node_hash FROM nodes WHERE name='test_alpha_verified') \
+               AND dst_hash=(SELECT node_hash FROM nodes WHERE name='alpha')",
+            [],
+        )
+        .expect("tag direct excluded edge in memory");
+    let direct_ex_impact = traversal::impact_with_path_options(
+        &mem_ex,
+        w.root(),
+        None,
+        Some("head"),
+        None,
+        &impact_opts,
+    )
+    .expect("direct excluded edge impact");
+    assert!(
+        !direct_ex_impact["tests"]
+            .to_string()
+            .contains("test_alpha_verified"),
+        "direct excluded edge must block reaching test in changed_impact: {direct_ex_impact}"
+    );
+    let direct_ex_diff = analyze_with_mode(
+        &mem_ex,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::DiffImpact,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&policy),
+        },
+    )
+    .expect("direct excluded edge diff_impact");
+    assert_eq!(
+        direct_ex_diff["tests"]["total"], 0,
+        "direct excluded edge must block reaching test with post-filter total=0: {direct_ex_diff}"
+    );
+
+    // 3-way 10-layer branching calls graph (3^10 > 10,000 states while depth-4 changed_nodes stays small) must fail closed on both entry points
+    {
+        use acdd_index::models::stable_hash64;
+        let alpha_hash: i64 = mem_ex
+            .query_row("SELECT node_hash FROM nodes WHERE name='alpha'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let pid: i64 = mem_ex
+            .query_row(
+                "SELECT path_id FROM path_dictionary WHERE path='pkg/service.py'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut sql = String::from("BEGIN;");
+        let mut prev = vec![alpha_hash];
+        for layer in 1..=10usize {
+            let mut cur = Vec::with_capacity(3);
+            for k in 0..3usize {
+                let id = format!("py:pkg/service.py:1:fan_{layer}_{k}");
+                let h = stable_hash64(&id);
+                let (is_test, details) = if layer == 10 {
+                    (1, r#"{"test_role":"test_case"}"#)
+                } else {
+                    (0, "{}")
+                };
+                sql.push_str(&format!(
+                    "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) \
+                     VALUES('{id}','function','fan_{layer}_{k}','pkg.service.fan_{layer}_{k}',{pid},1,1,{is_test},'python',0,'{details}',{h},{pid});"
+                ));
+                for &dst in &prev {
+                    sql.push_str(&format!(
+                        "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) \
+                         VALUES({h},'calls',{dst},{pid},1,1,1,1);"
+                    ));
+                }
+                cur.push(h);
+            }
+            prev = cur;
+        }
+        sql.push_str("COMMIT;");
+        mem_ex
+            .execute_batch(&sql)
+            .expect("seed 3-way layered calls graph");
+        let diff_budget_err = analyze_with_mode(
+            &mem_ex,
+            &AnalyzeRequest {
+                mode: AnalyzeMode::DiffImpact,
+                target: "",
+                to: None,
+                include_cycles: None,
+                page: &page,
+                root: Some(w.root()),
+                base: None,
+                policy: Some(&policy),
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            diff_budget_err.contains("exceeds the 10000-state work budget"),
+            "diff_impact must fail closed on verified-test state overflow: {diff_budget_err}"
+        );
+        let impact_budget_err = traversal::impact_with_path_options(
+            &mem_ex,
+            w.root(),
+            None,
+            Some("head"),
+            None,
+            &impact_opts,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            impact_budget_err.contains("exceeds the 10000-state work budget"),
+            "changed_impact must fail closed on verified-test state overflow: {impact_budget_err}"
+        );
+    }
+
+    // Invalid base ref fails closed
+    let bad_base = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::DiffImpact,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: Some("--bad-opt"),
+            policy: Some(&policy),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(bad_base.contains("invalid git revision"), "{bad_base}");
+
+    // Optional base ref comparing HEAD~1 -> working tree succeeds after committing changes
+    w.commit_git("commit service edits", Some(&["pkg/service.py"]))
+        .expect("commit service edits");
+    let diff_base = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::DiffImpact,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: Some("HEAD~1"),
+            policy: Some(&policy),
+        },
+    )
+    .expect("diff_impact with base=HEAD~1 should succeed");
+    assert_eq!(diff_base["base"], "HEAD~1");
+    assert_eq!(diff_base["changed_symbols"]["total"], 2, "{diff_base}");
+
+    // Add single-file commits (one alongside policy-excluded .env) so per-file commit totals & confidence include single-file commits
+    w.write("pkg/unlinked_a.py", "def ua():\n    return 11\n");
+    w.write(".env", "SECRET_TOKEN=solo_a\n");
+    w.commit_git(
+        "solo unlinked_a with sensitive",
+        Some(&["pkg/unlinked_a.py", ".env"]),
+    )
+    .expect("commit solo a");
+    w.write(
+        "pkg/unlinked_b.py",
+        "def ub():\n    a = 11\n    b = 2\n    c = 3\n    return a + b + c\n",
+    );
+    w.commit_git("solo unlinked_b", Some(&["pkg/unlinked_b.py"]))
+        .expect("commit solo b");
+
+    // 5. cochange assertions: unlinked pairs surfaced, statically linked pairs subtracted, rename tracked, sensitive/policy excluded, single-file commits counted in confidence
+    let cochange = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&policy),
+        },
+    )
+    .expect("cochange should succeed");
+    assert_eq!(cochange["mode"], "cochange");
+    let pairs = cochange["pairs"]["items"].as_array().unwrap();
+    let pair_set: BTreeSet<(&str, &str)> = pairs
+        .iter()
+        .map(|p| (p["file_a"].as_str().unwrap(), p["file_b"].as_str().unwrap()))
+        .collect();
+    assert!(
+        pair_set.contains(&("pkg/unlinked_a.py", "pkg/unlinked_b.py")),
+        "expected unlinked cochange pair: {pair_set:?}"
+    );
+    assert!(
+        !pair_set.contains(&("pkg/caller.py", "pkg/service.py")),
+        "statically linked pair must be subtracted: {pair_set:?}"
+    );
+    let ab = pairs
+        .iter()
+        .find(|p| p["file_a"] == "pkg/unlinked_a.py" && p["file_b"] == "pkg/unlinked_b.py")
+        .unwrap();
+    assert_eq!(ab["cochange_count"], 2, "{ab}");
+    assert_eq!(
+        ab["commits_a"], 3,
+        "solo commit must be counted in commits_a: {ab}"
+    );
+    assert_eq!(
+        ab["commits_b"], 3,
+        "solo commit must be counted in commits_b: {ab}"
+    );
+    assert_eq!(
+        ab["confidence"], 0.666667,
+        "confidence must reflect solo commits (2/3): {ab}"
+    );
+    assert_eq!(ab["static_edge"], false);
+
+    let cochange_str = cochange.to_string();
+    for forbidden in [
+        ".env",
+        ".acdd/profile.yaml",
+        "managed/spec.md",
+        "code-map.sqlite",
+    ] {
+        assert!(
+            !cochange_str.contains(forbidden),
+            "forbidden path '{forbidden}' leaked in cochange: {cochange_str}"
+        );
+    }
+
+    // Streaming bounded Git stdout terminates and fails closed on overflow
+    let overflow_err = acdd_core::git::collect_bounded_log_name_status(w.root(), None, 200, 16)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        overflow_err.contains("exceeds the 16-byte work budget"),
+        "{overflow_err}"
+    );
+
+    // Moving a mutable base ref while HEAD stays unchanged invalidates cochange continuation
+    w.run_git(&["branch", "-f", "base-track", "HEAD~2"])
+        .expect("create mutable base ref");
+    let base_page1 = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &options(1),
+            root: Some(w.root()),
+            base: Some("base-track"),
+            policy: Some(&policy),
+        },
+    )
+    .expect("cochange with mutable base ref");
+    let mut base_page2_opts = options(1);
+    base_page2_opts.offset = 1;
+    base_page2_opts.generation = Some(base_page1["generation"].as_str().unwrap().to_owned());
+    w.run_git(&["branch", "-f", "base-track", "HEAD~1"])
+        .expect("move mutable base ref without moving HEAD");
+    let base_move_err = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &base_page2_opts,
+            root: Some(w.root()),
+            base: Some("base-track"),
+            policy: Some(&policy),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        base_move_err.contains("history or policy changed"),
+        "moving base ref without moving HEAD must invalidate continuation: {base_move_err}"
+    );
+
+    // Continuation invalidation on policy change AND on HEAD movement (reusing cochange generation)
+    let mut page2_opts = options(1);
+    page2_opts.offset = 1;
+    page2_opts.generation = Some(cochange["generation"].as_str().unwrap().to_owned());
+
+    // Changing policy invalidates continuation
+    let changed_policy = WorkspacePathPolicy::default();
+    let policy_err = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page2_opts,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&changed_policy),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        policy_err.contains("history or policy changed"),
+        "{policy_err}"
+    );
+
+    // Moving HEAD invalidates continuation under the original policy
+    w.run_git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "move HEAD",
+    ])
+    .expect("commit move HEAD");
+    let head_err = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page2_opts,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&policy),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(head_err.contains("history or policy changed"), "{head_err}");
+
+    // Skipped >30-file mass-rename commit must still update rename tracking so historical pairs resolve to current paths and static edges stay subtracted
+    w.run_git(&["mv", "pkg/unlinked_b.py", "pkg/unlinked_b_mass.py"])
+        .expect("mass mv unlinked_b");
+    w.run_git(&["mv", "pkg/caller.py", "pkg/caller_mass.py"])
+        .expect("mass mv caller");
+    for i in 0..30usize {
+        w.write(format!("bulk/f{i:02}.txt"), "bulk\n");
+    }
+    w.run_git(&["add", "-A"]).expect("stage mass rename commit");
+    w.commit_git("mass rename >30 files", None)
+        .expect("commit mass rename");
+    let mem_mass = common::sqlite::PersistedSnapshot::from_connection(&conn).open();
+    mem_mass
+        .execute(
+            "UPDATE path_dictionary SET path='pkg/caller_mass.py' WHERE path='pkg/caller.py'",
+            [],
+        )
+        .expect("update caller path in memory");
+    let cochange_mass = analyze_with_mode(
+        &mem_mass,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Cochange,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: Some(w.root()),
+            base: None,
+            policy: Some(&policy),
+        },
+    )
+    .expect("cochange after >30-file rename");
+    assert!(
+        cochange_mass["summary"]["commits_skipped_large"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{cochange_mass}"
+    );
+    let mass_pairs = cochange_mass["pairs"]["items"].as_array().unwrap();
+    let mass_set: BTreeSet<(&str, &str)> = mass_pairs
+        .iter()
+        .map(|p| (p["file_a"].as_str().unwrap(), p["file_b"].as_str().unwrap()))
+        .collect();
+    assert!(
+        mass_set.contains(&("pkg/unlinked_a.py", "pkg/unlinked_b_mass.py")),
+        "mass-rename historical pair must resolve to current path: {mass_set:?}"
+    );
+    assert!(
+        !mass_set.contains(&("pkg/unlinked_a.py", "pkg/unlinked_b.py")),
+        "stale pre-rename path must not remain after >30-file rename: {mass_set:?}"
+    );
+    assert!(
+        !mass_set.contains(&("pkg/caller_mass.py", "pkg/service.py"))
+            && !mass_set.contains(&("pkg/caller.py", "pkg/service.py")),
+        "statically linked renamed pair must stay subtracted after >30-file rename: {mass_set:?}"
+    );
+
+    // 6. Compact Markdown presentation snapshots across all 6 code_map_analyze modes
+    let hotspots = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Hotspots,
+            target: "pkg",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: None,
+            base: None,
+            policy: None,
+        },
+    )
+    .unwrap();
+    let boundary = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Boundary,
+            target: "pkg/service.py",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: None,
+            base: None,
+            policy: None,
+        },
+    )
+    .unwrap();
+    let path_val = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "invoke",
+            to: Some("alpha"),
+            include_cycles: None,
+            page: &page,
+            root: None,
+            base: None,
+            policy: None,
+        },
+    )
+    .unwrap();
+    let entrypoints = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "alpha",
+            to: None,
+            include_cycles: None,
+            page: &page,
+            root: None,
+            base: None,
+            policy: None,
+        },
+    )
+    .unwrap();
+
+    for (mode, val, needles) in [
+        (
+            "hotspots",
+            &hotspots,
+            vec!["# code_map_analyze (hotspots)", "## Hotspots", "score `"],
+        ),
+        (
+            "boundary",
+            &boundary,
+            vec![
+                "# code_map_analyze (boundary)",
+                "## Inbound external callers",
+            ],
+        ),
+        (
+            "path",
+            &path_val,
+            vec!["# code_map_analyze (path)", "## Paths", "--["],
+        ),
+        (
+            "entrypoints",
+            &entrypoints,
+            vec!["# code_map_analyze (entrypoints)", "## Entrypoint roots"],
+        ),
+        (
+            "diff_impact",
+            &diff,
+            vec![
+                "# code_map_analyze (diff_impact)",
+                "## Changed symbols",
+                "[signature_touched]",
+                "## Uncovered symbols",
+                "## Affected tests",
+                "## Governed documents",
+            ],
+        ),
+        (
+            "cochange",
+            &cochange,
+            vec![
+                "# code_map_analyze (cochange)",
+                "## Unlinked co-change pairs",
+                "<->",
+            ],
+        ),
+    ] {
+        let md = render_for_operation(
+            val,
+            OutputFormat::Markdown,
+            "code_map_analyze",
+            None,
+            OperationKind::Navigation,
+        );
+        for needle in needles {
+            assert!(md.contains(needle), "mode={mode} missing '{needle}':\n{md}");
+        }
+    }
+
+    // Summary mode fallback remains untouched (no diagnostic mode suffix)
+    let summary_md = render_for_operation(
+        &json!({"diagnostics":{"total":0,"offset":0,"limit":10,"items":[]}}),
+        OutputFormat::Markdown,
+        "code_map_analyze",
+        None,
+        OperationKind::Navigation,
+    );
+    assert!(
+        summary_md.starts_with("# code_map_analyze\n"),
+        "{summary_md}"
+    );
+    assert!(summary_md.contains("**diagnostics**"), "{summary_md}");
 }

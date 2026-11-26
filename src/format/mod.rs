@@ -1,5 +1,6 @@
 //! Shared, pure response formatting and presentation compaction.
 
+mod analyze;
 mod coordination;
 mod core;
 mod discovery;

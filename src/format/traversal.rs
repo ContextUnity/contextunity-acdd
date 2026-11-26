@@ -215,7 +215,7 @@ fn render_tests(out: &mut String, value: &Value) {
     render_markdown_fields(out, value, 0, &consumed);
 }
 
-fn format_repo_location(item: &Value) -> Option<String> {
+pub(super) fn format_repo_location(item: &Value) -> Option<String> {
     let path = text_field(item, "path")?;
     let line = u64_field(item, "line");
     let end_line = u64_field(item, "end_line");
@@ -226,7 +226,7 @@ fn format_repo_location(item: &Value) -> Option<String> {
     })
 }
 
-fn page_has_no_display_entries(page: &Value, items: Option<&[Value]>) -> bool {
+pub(super) fn page_has_no_display_entries(page: &Value, items: Option<&[Value]>) -> bool {
     items.is_none_or(<[Value]>::is_empty)
         && u64_field(page, "total") == Some(0)
         && page.get("has_more") != Some(&Value::Bool(true))
@@ -234,7 +234,7 @@ fn page_has_no_display_entries(page: &Value, items: Option<&[Value]>) -> bool {
         && page.get("omitted") != Some(&Value::Bool(true))
 }
 
-fn write_page_stats(out: &mut String, page: &Value, items: Option<&[Value]>) {
+pub(super) fn write_page_stats(out: &mut String, page: &Value, items: Option<&[Value]>) {
     let total = u64_field(page, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
     let has_more = page
         .get("has_more")

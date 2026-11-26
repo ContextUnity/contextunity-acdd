@@ -126,29 +126,9 @@ impl ReadRequest {
     }
 }
 
-fn sensitive_with_case(adapter: &Adapter, path: &str, case_insensitive: bool) -> Result<()> {
-    let mut builder = ignore::gitignore::GitignoreBuilder::new("");
-    builder.case_insensitive(case_insensitive)?;
-    for pattern in &adapter.sensitive {
-        builder.add_line(None, pattern)?;
-    }
-    ensure!(
-        !builder
-            .build()?
-            .matched_path_or_any_parents(path, false)
-            .is_ignore(),
-        "SENSITIVE_FILE: blocked by sensitive policy"
-    );
-    Ok(())
-}
-
-fn sensitive(adapter: &Adapter, root: &Path, path: &str) -> Result<()> {
-    sensitive_with_case(
-        adapter,
-        path,
-        acdd_core::fs::is_case_insensitive_volume(root),
-    )
-}
+use acdd_index::db::source::{
+    check_sensitive_path as sensitive, check_sensitive_path_with_case as sensitive_with_case,
+};
 
 fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path::PathBuf> {
     let stripped = strip_root_path(path, root);
@@ -1370,8 +1350,8 @@ fn render_read_hints(
 
 #[cfg(test)]
 mod tests {
-    use super::sensitive_with_case;
     use acdd_core::config::Adapter;
+    use acdd_index::db::source::check_sensitive_path_with_case as sensitive_with_case;
 
     #[test]
     fn sensitive_policy_honors_case_insensitive_volume_flag() {

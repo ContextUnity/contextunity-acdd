@@ -285,6 +285,17 @@ pub(super) const KNOWN_PAGE_FIELDS: &[&str] = &[
     "phantom_tested",
     "dead_tails",
     "dangling_calls",
+    "hotspots",
+    "inbound_callers",
+    "outbound_dependencies",
+    "internal_only_public",
+    "roots",
+    "changed_symbols",
+    "uncovered_symbols",
+    "affected_docs",
+    "unmapped_changes",
+    "tests",
+    "pairs",
 ];
 
 pub(super) fn is_freshness_envelope(object: &Map<String, Value>, allow_compacted: bool) -> bool {

@@ -1,18 +1,22 @@
-//! Pure read-only graph and PageRank diagnostic analyzers over `code-map.sqlite`.
+//! Pure read-only graph, PageRank, diff-impact, and Git co-change analyzers over `code-map.sqlite`.
 
 mod boundary;
+mod cochange;
 mod common;
 mod entrypoints;
 pub mod hotspots;
 mod path;
 
-use crate::db::{paging::QueryBudget, reader::diagnostics::analyze_summary_paged};
-use acdd_core::response::QueryOptions;
-use anyhow::Result;
+use crate::db::{
+    paging::QueryBudget, reader::diagnostics::analyze_summary_paged,
+    traversal::change_impact::diff_impact_with_options,
+};
+use acdd_core::{path_policy::WorkspacePathPolicy, response::QueryOptions};
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, str::FromStr};
+use std::{fmt, path::Path, str::FromStr};
 
 /// Closed analysis mode enum dispatched by [`analyze_with_mode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,6 +28,8 @@ pub enum AnalyzeMode {
     Boundary,
     Path,
     Entrypoints,
+    DiffImpact,
+    Cochange,
 }
 
 impl AnalyzeMode {
@@ -33,6 +39,8 @@ impl AnalyzeMode {
         Self::Boundary,
         Self::Path,
         Self::Entrypoints,
+        Self::DiffImpact,
+        Self::Cochange,
     ];
 
     pub const fn as_str(&self) -> &'static str {
@@ -42,6 +50,8 @@ impl AnalyzeMode {
             Self::Boundary => "boundary",
             Self::Path => "path",
             Self::Entrypoints => "entrypoints",
+            Self::DiffImpact => "diff_impact",
+            Self::Cochange => "cochange",
         }
     }
 }
@@ -54,7 +64,11 @@ impl FromStr for AnalyzeMode {
             .iter()
             .copied()
             .find(|mode| mode.as_str() == lower)
-            .ok_or_else(|| anyhow::anyhow!("unsupported analyze mode '{lower}'; expected one of: summary, hotspots, boundary, path, entrypoints"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unsupported analyze mode '{lower}'; expected one of: summary, hotspots, boundary, path, entrypoints, diff_impact, cochange"
+                )
+            })
     }
 }
 
@@ -72,9 +86,12 @@ pub struct AnalyzeRequest<'a> {
     pub to: Option<&'a str>,
     pub include_cycles: Option<bool>,
     pub page: &'a QueryOptions,
+    pub root: Option<&'a Path>,
+    pub base: Option<&'a str>,
+    pub policy: Option<&'a WorkspacePathPolicy>,
 }
 
-/// Dispatches a read-only code-map analysis mode over already-indexed SQLite facts.
+/// Dispatches any read-only code-map analysis mode over already-indexed SQLite facts.
 pub fn analyze_with_mode(conn: &Connection, req: &AnalyzeRequest<'_>) -> Result<Value> {
     let budget = QueryBudget::new(conn);
     budget.check()?;
@@ -91,6 +108,22 @@ pub fn analyze_with_mode(conn: &Connection, req: &AnalyzeRequest<'_>) -> Result<
         AnalyzeMode::Path => path::analyze_path(conn, req.target, req.to, req.page, &budget),
         AnalyzeMode::Entrypoints => {
             entrypoints::analyze_entrypoints(conn, req.target, req.page, &budget)
+        }
+        AnalyzeMode::DiffImpact => {
+            let root = req
+                .root
+                .context("diff_impact mode requires a workspace root")?;
+            diff_impact_with_options(
+                conn, root, req.target, req.base, req.policy, req.page, &budget,
+            )
+        }
+        AnalyzeMode::Cochange => {
+            let root = req
+                .root
+                .context("cochange mode requires a workspace root")?;
+            cochange::analyze_cochange(
+                conn, root, req.target, req.base, req.policy, req.page, &budget,
+            )
         }
     }?;
     budget.check()?;

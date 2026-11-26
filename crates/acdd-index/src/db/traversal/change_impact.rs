@@ -1,23 +1,30 @@
 use super::types::{
-    decode_edge_descriptor, edge_endpoints, resolve_traversal_kinds, ImpactDirection,
-    ReachedNodeDto, TraversalMode, TraversalOptions, ViaPredecessorDto,
-    MAX_DEEP_TRAVERSAL_FRONTIER,
+    decode_edge_descriptor, edge_endpoints, predecessor_endpoints, resolve_traversal_kinds,
+    reverse_predecessor_union, ImpactDirection, ReachedNodeDto, TraversalMode, TraversalOptions,
+    ViaPredecessorDto, MAX_DEEP_TRAVERSAL_FRONTIER,
 };
 use crate::db::{
     commitments::{self, read_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES},
-    paging, reader, source, symbols,
+    paging::{self, QueryBudget},
+    reader::{selectors::strip_selector_uri_prefix, sql::rows},
+    source, symbols,
 };
-use crate::models::{stable_hash64, tags::NodeKind};
+use crate::models::{
+    details::NodeDetailKey,
+    stable_hash64,
+    tags::{EdgeKind, NodeKind},
+};
 use acdd_core::{
     config, git,
-    response::{Detail, QueryOptions, MAX_PAGE_SIZE},
+    path_policy::WorkspacePathPolicy,
+    response::{Detail, QueryOptions},
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Component, Path},
 };
 
@@ -61,6 +68,11 @@ struct ChangeSnapshot {
     ranges: Vec<ChangedRange>,
     unmapped: Vec<Value>,
     fingerprint: String,
+    exposure: source::PathExposureFilter,
+}
+
+fn excluded_ids_csv(ids: &[i64]) -> Option<String> {
+    (!ids.is_empty()).then(|| ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))
 }
 
 fn append_fingerprint(hasher: &mut Sha256, bytes: &[u8]) {
@@ -80,8 +92,12 @@ fn git_bytes(root: &Path, args: &[String], context: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn git_diff_prefix(mode: &str) -> Vec<String> {
+fn git_diff_prefix(mode: &str, base_oid: Option<&str>) -> Vec<String> {
     let mut args = vec!["diff".to_owned()];
+    if let Some(oid) = base_oid {
+        args.push(oid.to_owned());
+        return args;
+    }
     match mode {
         "staged" => args.push("--cached".to_owned()),
         "head" => args.push("HEAD".to_owned()),
@@ -267,6 +283,8 @@ fn collect_change_snapshot(
     root: &Path,
     mode: &str,
     path_scope: Option<&str>,
+    base: Option<&str>,
+    policy: Option<&WorkspacePathPolicy>,
 ) -> Result<ChangeSnapshot> {
     anyhow::ensure!(
         matches!(mode, "staged" | "unstaged" | "head"),
@@ -276,12 +294,38 @@ fn collect_change_snapshot(
         let valid = valid_workspace_path(path);
         anyhow::ensure!(valid, "path must be workspace-relative");
     }
-    anyhow::ensure!(
-        root.join(".git").exists(),
-        "Git change views require a Git repository"
+    git::ensure_git_repo(root)?;
+    let base_oid = base
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|rev| git::resolve_git_commit(root, rev))
+        .transpose()?;
+    let adapter = config::load_adapter(root, None)?;
+    let exposure = source::PathExposureFilter::new(root, &adapter, policy)?;
+    let graph_generation = read_metadata(conn, MetadataKey::OutputRoot)?;
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(b"acdd-impact-git-change-view-v2");
+    append_fingerprint(&mut fingerprint, graph_generation.as_bytes());
+    append_fingerprint(&mut fingerprint, mode.as_bytes());
+    append_fingerprint(
+        &mut fingerprint,
+        base_oid.as_deref().unwrap_or("").as_bytes(),
     );
+    append_fingerprint(&mut fingerprint, path_scope.unwrap_or("").as_bytes());
+    append_fingerprint(&mut fingerprint, exposure.fingerprint().as_bytes());
 
-    let mut status_args = git_diff_prefix(mode);
+    if base_oid.is_none() && mode == "head" && git::git_head_oid(root)?.is_none() {
+        return Ok(ChangeSnapshot {
+            mode: mode.to_owned(),
+            files: Vec::new(),
+            ranges: Vec::new(),
+            unmapped: Vec::new(),
+            fingerprint: hex::encode(fingerprint.finalize()),
+            exposure,
+        });
+    }
+
+    let mut status_args = git_diff_prefix(mode, base_oid.as_deref());
     status_args.extend([
         "--name-status".to_owned(),
         "-z".to_owned(),
@@ -292,29 +336,25 @@ fn collect_change_snapshot(
         status_args.push(path.to_owned());
     }
     let status_bytes = git_bytes(root, &status_args, "change status")?;
-    let changes = parse_name_status(&status_bytes)?;
+    let changes: Vec<_> = parse_name_status(&status_bytes)?
+        .into_iter()
+        .filter(|(_, path, _)| path_is_within(path, path_scope) && exposure.is_allowed(path))
+        .map(|(status, path, old_path)| {
+            let safe_old = old_path.filter(|old| exposure.is_allowed(old));
+            (status, path, safe_old)
+        })
+        .collect();
     anyhow::ensure!(
         changes.len() <= MAX_CHANGE_FILES,
         "Git change view exceeds the {MAX_CHANGE_FILES}-file work budget"
     );
-    let graph_generation = read_metadata(conn, MetadataKey::OutputRoot)?;
-    let mut fingerprint = Sha256::new();
-    fingerprint.update(b"acdd-impact-git-change-view-v1");
-    append_fingerprint(&mut fingerprint, graph_generation.as_bytes());
-    append_fingerprint(&mut fingerprint, mode.as_bytes());
-    append_fingerprint(&mut fingerprint, path_scope.unwrap_or("").as_bytes());
-    append_fingerprint(&mut fingerprint, &status_bytes);
 
     let mut files = Vec::with_capacity(changes.len());
     let mut ranges = Vec::new();
     let mut unmapped = Vec::new();
     let mut total_diff_bytes = status_bytes.len();
-    let mut worktree_adapter: Option<Option<config::Adapter>> = None;
     for (status, path, old_path) in changes {
-        if !path_is_within(&path, path_scope) {
-            continue;
-        }
-        let mut patch_args = git_diff_prefix(mode);
+        let mut patch_args = git_diff_prefix(mode, base_oid.as_deref());
         patch_args.extend([
             "--unified=0".to_owned(),
             "--no-ext-diff".to_owned(),
@@ -348,16 +388,12 @@ fn collect_change_snapshot(
                 .any(|window| window == b"Binary files");
         let postimage = if status.starts_with('D') {
             None
-        } else if mode == "staged" {
+        } else if base_oid.is_none() && mode == "staged" {
             let object = format!(":0:{path}");
             let output = git::git_command(root, &["show", &object])?;
             output.status.success().then_some(output.stdout)
         } else {
-            let adapter =
-                worktree_adapter.get_or_insert_with(|| config::load_adapter(root, None).ok());
-            adapter
-                .as_ref()
-                .and_then(|adapter| worktree_postimage(root, adapter, &path).ok())
+            worktree_postimage(root, &adapter, &path).ok()
         };
         append_fingerprint(&mut fingerprint, status.as_bytes());
         append_fingerprint(&mut fingerprint, path.as_bytes());
@@ -429,6 +465,7 @@ fn collect_change_snapshot(
         ranges,
         unmapped,
         fingerprint: hex::encode(fingerprint.finalize()),
+        exposure,
     })
 }
 
@@ -448,12 +485,19 @@ fn changed_range_from_sql() -> String {
     )
 }
 
+struct ChangedSeed {
+    id: String,
+    hash: i64,
+    is_test: bool,
+    record: Value,
+}
+
 fn changed_symbols_page(
     conn: &Connection,
     ranges: &[ChangedRange],
     options: &QueryOptions,
     generation: &str,
-) -> Result<(Value, Vec<String>, Vec<i64>)> {
+) -> Result<(Value, Vec<ChangedSeed>)> {
     let ranges_json = change_ranges_json(ranges)?;
     let from = changed_range_from_sql();
     let total = paging::count(
@@ -464,32 +508,49 @@ fn changed_symbols_page(
     let limit = i64::try_from(options.limit)?;
     let offset = i64::try_from(options.offset)?;
     let columns = paging::nodes_with_path("n", options.detail, "p.path");
-    let page = reader::rows(
+    let sig_expr = "MAX(CASE WHEN n.line>=CAST(json_extract(r.value,'$.start') AS INTEGER) AND n.line<=CAST(json_extract(r.value,'$.end') AS INTEGER) THEN 1 ELSE 0 END) AS signature_touched";
+    let mut page = rows(
         conn,
         &format!(
-            "SELECT DISTINCT {columns} FROM {from} ORDER BY p.path,n.line,n.id LIMIT ?2 OFFSET ?3"
+            "SELECT {columns},{sig_expr} FROM {from} GROUP BY n.node_hash ORDER BY p.path,n.line,n.id LIMIT ?2 OFFSET ?3"
         ),
         &[&ranges_json, &limit, &offset],
         options.limit,
     )?;
+    for row in &mut page {
+        let touched = row["signature_touched"].as_i64() == Some(1);
+        row["signature_touched"] = json!(touched);
+    }
     let seed_limit = i64::try_from(MAX_CHANGE_SEEDS.saturating_add(1))?;
-    let seeds = reader::rows(
+    let seed_rows = rows(
         conn,
-        &format!("SELECT DISTINCT n.id FROM {from} ORDER BY p.path,n.line,n.id LIMIT ?2"),
+        &format!(
+            "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line,n.end_line,n.is_test,{sig_expr} \
+             FROM {from} GROUP BY n.node_hash ORDER BY p.path,n.line,n.id LIMIT ?2"
+        ),
         &[&ranges_json, &seed_limit],
         MAX_CHANGE_SEEDS.saturating_add(1),
     )?;
-    let mut ids = Vec::with_capacity(seeds.len());
-    let mut hashes = Vec::with_capacity(seeds.len());
-    for seed in seeds {
+    let mut seeds = Vec::with_capacity(seed_rows.len());
+    for mut seed in seed_rows {
         let id = seed["id"]
             .as_str()
             .context("changed symbol has no public id")?
             .to_owned();
-        hashes.push(stable_hash64(&id));
-        ids.push(id);
+        let is_test = seed["is_test"].as_i64() == Some(1);
+        let touched = seed["signature_touched"].as_i64() == Some(1);
+        seed["signature_touched"] = json!(touched);
+        if let Some(obj) = seed.as_object_mut() {
+            obj.remove("is_test");
+        }
+        seeds.push(ChangedSeed {
+            hash: stable_hash64(&id),
+            id,
+            is_test,
+            record: seed,
+        });
     }
-    Ok((paging::value(page, total, options, generation), ids, hashes))
+    Ok((paging::value(page, total, options, generation), seeds))
 }
 
 fn changed_first_frontier(
@@ -524,16 +585,32 @@ fn changed_reachability_cte(steps: &str) -> String {
     )
 }
 
-fn changed_dependency_steps(direction: ImpactDirection, forward: &str, reverse: &str) -> String {
+fn changed_dependency_steps(
+    direction: ImpactDirection,
+    forward: &str,
+    reverse: &str,
+    excluded_csv: Option<&str>,
+) -> String {
     let (from, to) = edge_endpoints(direction);
+    let (fwd_ex, rev_ex) = match excluded_csv {
+        Some(ex) => (
+            format!(
+                " AND e.path_id NOT IN({ex}) AND (SELECT path_id FROM nodes WHERE node_hash=e.{to}) NOT IN({ex})"
+            ),
+            format!(
+                " AND e.path_id NOT IN({ex}) AND (SELECT path_id FROM nodes WHERE node_hash=e.{from}) NOT IN({ex})"
+            ),
+        ),
+        None => (String::new(), String::new()),
+    };
     let forward_step = format!(
-        "SELECT e.{to},w.depth+1,w.visited||printf('%lld,',e.{to}) FROM walk w JOIN edges e ON e.{from}=w.id WHERE w.depth<?2 AND e.kind IN({forward}) AND instr(w.visited,printf(',%lld,',e.{to}))=0"
+        "SELECT e.{to},w.depth+1,w.visited||printf('%lld,',e.{to}) FROM walk w JOIN edges e ON e.{from}=w.id WHERE w.depth<?2 AND e.kind IN({forward}) AND instr(w.visited,printf(',%lld,',e.{to}))=0{fwd_ex}"
     );
     if reverse.is_empty() {
         forward_step
     } else {
         format!(
-            "{forward_step} UNION SELECT e.{from},w.depth+1,w.visited||printf('%lld,',e.{from}) FROM walk w JOIN edges e ON e.{to}=w.id WHERE w.depth<?2 AND e.kind IN({reverse}) AND instr(w.visited,printf(',%lld,',e.{from}))=0"
+            "{forward_step} UNION SELECT e.{from},w.depth+1,w.visited||printf('%lld,',e.{from}) FROM walk w JOIN edges e ON e.{to}=w.id WHERE w.depth<?2 AND e.kind IN({reverse}) AND instr(w.visited,printf(',%lld,',e.{from}))=0{rev_ex}"
         )
     }
 }
@@ -543,14 +620,15 @@ fn changed_nodes_page(
     seed_ids: &[String],
     seed_hashes: &[i64],
     request: &TraversalOptions<'_>,
-    direction: ImpactDirection,
-    mode: TraversalMode,
     generation: &str,
+    excluded_csv: Option<&str>,
 ) -> Result<Value> {
     if seed_hashes.is_empty() {
         return Ok(paging::value(Vec::new(), 0, request.page, generation));
     }
     let depth = request.depth;
+    let direction = request.direction;
+    let mode = request.mode;
     let (forward, reverse) = resolve_traversal_kinds(mode, request.edge_types, true);
     if depth > 0 {
         let immediate = changed_first_frontier(conn, seed_hashes, direction, &forward, &reverse)?;
@@ -559,7 +637,7 @@ fn changed_nodes_page(
         }
     }
     let seed_json = serde_json::to_string(seed_hashes)?;
-    let steps = changed_dependency_steps(direction, &forward, &reverse);
+    let steps = changed_dependency_steps(direction, &forward, &reverse, excluded_csv);
     let cte = changed_reachability_cte(&steps);
     let walked = paging::count(
         conn,
@@ -569,9 +647,15 @@ fn changed_nodes_page(
     if walked > MAX_CHANGE_RESULT_NODES {
         bail!("Git change impact exceeds the {MAX_CHANGE_RESULT_NODES}-state work budget; narrow the changed files or reduce depth");
     }
+    let node_ex = excluded_csv
+        .map(|ex| format!(" WHERE n.path_id NOT IN({ex})"))
+        .unwrap_or_default();
+    let edge_ex = excluded_csv
+        .map(|ex| format!(" AND e.path_id NOT IN({ex})"))
+        .unwrap_or_default();
     let total = paging::count(
         conn,
-        &format!("{cte} SELECT count(*) FROM reached"),
+        &format!("{cte} SELECT count(*) FROM reached r JOIN nodes n ON n.node_hash=r.id{node_ex}"),
         &[&seed_json, &depth],
     )?;
     if total > MAX_CHANGE_RESULT_NODES {
@@ -593,11 +677,11 @@ fn changed_nodes_page(
         ""
     };
     let edge = format!(
-        "CASE WHEN r.distance=1 THEN (SELECT json_object('src_public_id',(SELECT id FROM nodes WHERE node_hash=e.src_hash),'dst_public_id',(SELECT id FROM nodes WHERE node_hash=e.dst_hash),'kind',e.kind,'path',(SELECT path FROM path_dictionary WHERE path_id=e.path_id),'line',e.line,'confidence',(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),'occurrence_count',e.occurrence_count,'direction',CASE WHEN e.src_hash IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) THEN 'outbound' ELSE 'inbound' END{evidence}) FROM edges e WHERE ((e.{from} IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) AND e.{to}=n.node_hash AND e.kind IN({forward})){reverse_edge}) ORDER BY e.kind,e.src_hash,e.dst_hash,e.path_id,e.line,e.evidence_id LIMIT 1) END AS __edge"
+        "CASE WHEN r.distance=1 THEN (SELECT json_object('src_public_id',(SELECT id FROM nodes WHERE node_hash=e.src_hash),'dst_public_id',(SELECT id FROM nodes WHERE node_hash=e.dst_hash),'kind',e.kind,'path',(SELECT path FROM path_dictionary WHERE path_id=e.path_id),'line',e.line,'confidence',(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),'occurrence_count',e.occurrence_count,'direction',CASE WHEN e.src_hash IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) THEN 'outbound' ELSE 'inbound' END{evidence}) FROM edges e WHERE (((e.{from} IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) AND e.{to}=n.node_hash AND e.kind IN({forward})){reverse_edge}){edge_ex}) ORDER BY e.kind,e.src_hash,e.dst_hash,e.path_id,e.line,e.evidence_id LIMIT 1) END AS __edge"
     );
     let (forward_current, forward_predecessor, reverse_current, reverse_predecessor) =
-        super::predecessor_endpoints(direction);
-    let reverse_via = super::reverse_predecessor_union(
+        predecessor_endpoints(direction);
+    let reverse_via = reverse_predecessor_union(
         &reverse,
         reverse_current,
         reverse_predecessor,
@@ -605,12 +689,12 @@ fn changed_nodes_page(
         "n.node_hash",
     );
     let via = format!(
-        "CASE WHEN r.distance>1 THEN (SELECT json_array(predecessor,edge_kind) FROM (SELECT prior_node.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_predecessor} AND prior.distance=r.distance-1 JOIN nodes prior_node ON prior_node.node_hash=prior.id WHERE e.{forward_current}=n.node_hash AND e.kind IN({forward}){reverse_via}) ORDER BY predecessor,edge_kind LIMIT 1) END AS __via"
+        "CASE WHEN r.distance>1 THEN (SELECT json_array(predecessor,edge_kind) FROM (SELECT prior_node.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_predecessor} AND prior.distance=r.distance-1 JOIN nodes prior_node ON prior_node.node_hash=prior.id WHERE e.{forward_current}=n.node_hash AND e.kind IN({forward}){edge_ex}{reverse_via}) ORDER BY predecessor,edge_kind LIMIT 1) END AS __via"
     );
     let sql = format!(
-        "{cte} SELECT {columns},r.distance,{edge},{via} FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4"
+        "{cte} SELECT {columns},r.distance,{edge},{via} FROM reached r JOIN nodes n ON n.node_hash=r.id{node_ex} ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4"
     );
-    let raw_items = reader::rows(
+    let raw_items = rows(
         conn,
         &sql,
         &[&seed_json, &depth, &limit, &offset],
@@ -648,127 +732,238 @@ fn changed_nodes_page(
     Ok(paging::value(items, total, options, generation))
 }
 
-fn changed_tests_page(
+fn resolve_call_path_nodes(
     conn: &Connection,
-    seed_ids: &[String],
+    chains: &[Vec<i64>],
+) -> Result<HashMap<i64, (String, String, i64)>> {
+    let unique: Vec<i64> = chains
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if unique.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let hashes_json = serde_json::to_string(&unique)?;
+    let mut stmt = conn.prepare(
+        "SELECT n.node_hash, n.id, p.path, n.line \
+         FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id \
+         WHERE n.node_hash IN (SELECT CAST(value AS INTEGER) FROM json_each(?1))",
+    )?;
+    let mut rows_iter = stmt.query([&hashes_json])?;
+    let mut map = HashMap::with_capacity(unique.len());
+    while let Some(row) = rows_iter.next()? {
+        map.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
+    }
+    Ok(map)
+}
+
+fn verified_reaching_tests_page(
+    conn: &Connection,
+    seed_hashes: &[i64],
+    depth: u32,
+    options: &QueryOptions,
+    generation: &str,
+    excluded_csv: Option<&str>,
+) -> Result<Value> {
+    if seed_hashes.is_empty() {
+        return Ok(paging::value(Vec::new(), 0, options, generation));
+    }
+    let seed_json = serde_json::to_string(seed_hashes)?;
+    let calls = EdgeKind::Calls.as_str();
+    let max_walk = MAX_CHANGE_RESULT_NODES.saturating_add(1);
+    let step_ex = excluded_csv
+        .map(|ex| {
+            format!(
+                " AND e.path_id NOT IN({ex}) AND (SELECT path_id FROM nodes WHERE node_hash=e.src_hash) NOT IN({ex})"
+            )
+        })
+        .unwrap_or_default();
+    let node_ex = excluded_csv
+        .map(|ex| format!(" AND n.path_id NOT IN({ex})"))
+        .unwrap_or_default();
+    let cte = format!(
+        "WITH RECURSIVE walk(id,depth,visited,chain) AS (\
+           SELECT CAST(value AS INTEGER),0,printf(',%lld,',CAST(value AS INTEGER)),printf('%lld',CAST(value AS INTEGER)) FROM json_each(?1) \
+           UNION \
+           SELECT e.src_hash,w.depth+1,w.visited||printf('%lld,',e.src_hash),printf('%lld,',e.src_hash)||w.chain \
+           FROM walk w JOIN edges e ON e.dst_hash=w.id \
+           WHERE w.depth<?2 AND e.kind='{calls}' AND instr(w.visited,printf(',%lld,',e.src_hash))=0{step_ex} \
+           LIMIT {max_walk}\
+         ), reached(id,hops) AS MATERIALIZED (SELECT id,min(depth) FROM walk GROUP BY id)"
+    );
+    let walked = paging::count(
+        conn,
+        &format!("{cte} SELECT count(*) FROM walk"),
+        &[&seed_json, &depth],
+    )?;
+    if walked > MAX_CHANGE_RESULT_NODES {
+        bail!(
+            "Git change test mapping exceeds the {MAX_CHANGE_RESULT_NODES}-state work budget; narrow the changed files or reduce depth"
+        );
+    }
+    let filter = format!(
+        "FROM reached r JOIN nodes n ON n.node_hash=r.id JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case'{node_ex}"
+    );
+    let total = paging::count(
+        conn,
+        &format!("{cte} SELECT count(*) {filter}"),
+        &[&seed_json, &depth],
+    )?;
+    if total > MAX_CHANGE_RESULT_NODES {
+        bail!("Git change test mapping exceeds the {MAX_CHANGE_RESULT_NODES}-test work budget");
+    }
+    let cols = paging::nodes_with_path("n", options.detail, "p.path");
+    let limit = i64::try_from(options.limit)?;
+    let offset = i64::try_from(options.offset)?;
+    let mut items = rows(
+        conn,
+        &format!(
+            "{cte} SELECT {cols},json_extract(n.details,'$.test_role') AS test_role,r.hops,\
+             (SELECT w.chain FROM walk w WHERE w.id=r.id AND w.depth=r.hops ORDER BY w.chain LIMIT 1) AS __chain \
+             {filter} ORDER BY r.hops,p.path,n.line,n.id LIMIT ?3 OFFSET ?4"
+        ),
+        &[&seed_json, &depth, &limit, &offset],
+        options.limit,
+    )?;
+    let chains: Vec<Vec<i64>> = items
+        .iter()
+        .map(|item| {
+            item["__chain"]
+                .as_str()
+                .unwrap_or("")
+                .split(',')
+                .filter_map(|part| part.parse::<i64>().ok())
+                .collect()
+        })
+        .collect();
+    let node_info = resolve_call_path_nodes(conn, &chains)?;
+    for (item, chain) in items.iter_mut().zip(chains) {
+        if let Some(obj) = item.as_object_mut() {
+            obj.remove("__chain");
+            let call_path: Vec<Value> = chain
+                .iter()
+                .filter_map(|h| node_info.get(h).map(|(id, _, _)| json!(id)))
+                .collect();
+            let path_nodes: Vec<Value> = chain
+                .iter()
+                .filter_map(|h| {
+                    node_info
+                        .get(h)
+                        .map(|(id, path, line)| json!({"id": id, "path": path, "line": line}))
+                })
+                .collect();
+            obj.insert(
+                "connection".to_owned(),
+                json!({
+                    "kind": calls,
+                    "call_path": call_path,
+                    "verified_call_path_nodes": path_nodes,
+                }),
+            );
+        }
+    }
+    Ok(paging::value(items, total, options, generation))
+}
+
+fn governed_affected_docs_page(
+    conn: &Connection,
+    seed_hashes: &[i64],
+    options: &QueryOptions,
+    generation: &str,
+    excluded_csv: Option<&str>,
+) -> Result<Value> {
+    if seed_hashes.is_empty() {
+        return Ok(paging::value(Vec::new(), 0, options, generation));
+    }
+    let seed_json = serde_json::to_string(seed_hashes)?;
+    let governs = EdgeKind::Governs.as_str();
+    let refs_doc = EdgeKind::ReferencesDoc.as_str();
+    let rule_key = NodeDetailKey::RULE;
+    let inv_ex = excluded_csv
+        .map(|ex| format!(" AND inv.path_id NOT IN({ex})"))
+        .unwrap_or_default();
+    let dn_ex = excluded_csv
+        .map(|ex| format!(" AND dn.path_id NOT IN({ex})"))
+        .unwrap_or_default();
+    let body = format!(
+        "SELECT COALESCE(d.doc_id,inv.id) AS doc_id,p.path AS path,\
+                COALESCE(d.section_title,inv.name) AS section_title,\
+                COALESCE(d.doc_type,'invariant') AS doc_type,\
+                inv.name AS invariant_id,json_extract(inv.details,'$.{rule_key}') AS rule,\
+                inv.line AS line,target.id AS target_symbol \
+         FROM json_each(?1) s \
+         JOIN edges e ON e.dst_hash=CAST(s.value AS INTEGER) AND e.kind='{governs}' \
+         JOIN nodes inv ON inv.node_hash=e.src_hash \
+         JOIN path_dictionary p ON p.path_id=inv.path_id \
+         JOIN nodes target ON target.node_hash=e.dst_hash \
+         LEFT JOIN doc_sections d ON d.path=p.path AND d.is_invariant=1 AND instr(d.invariants,inv.name)>0 \
+         WHERE p.path NOT LIKE 'archive/%' AND p.path NOT LIKE '%/archive/%'{inv_ex} \
+         UNION \
+         SELECT d.doc_id AS doc_id,d.path AS path,d.section_title AS section_title,\
+                d.doc_type AS doc_type,d.invariants AS invariant_id,NULL AS rule,\
+                e.line AS line,target.id AS target_symbol \
+         FROM json_each(?1) s \
+         JOIN edges e ON e.src_hash=CAST(s.value AS INTEGER) AND e.kind='{refs_doc}' \
+         JOIN nodes target ON target.node_hash=e.src_hash \
+         JOIN nodes dn ON dn.node_hash=e.dst_hash \
+         JOIN doc_sections d ON d.doc_id=dn.id \
+         WHERE d.is_invariant=1 \
+           AND d.path NOT LIKE 'archive/%' AND d.path NOT LIKE '%/archive/%'{dn_ex} \
+           AND NOT EXISTS (\
+             SELECT 1 FROM edges ge JOIN nodes inv ON inv.node_hash=ge.src_hash \
+             JOIN path_dictionary ip ON ip.path_id=inv.path_id \
+             WHERE ge.dst_hash=e.src_hash AND ge.kind='{governs}' AND ip.path=d.path\
+           )"
+    );
+    let total = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM ({body})"),
+        &[&seed_json],
+    )?;
+    let limit = i64::try_from(options.limit)?;
+    let offset = i64::try_from(options.offset)?;
+    let items = rows(
+        conn,
+        &format!(
+            "SELECT * FROM ({body}) ORDER BY path,line,doc_id,invariant_id LIMIT ?2 OFFSET ?3"
+        ),
+        &[&seed_json, &limit, &offset],
+        options.limit,
+    )?;
+    Ok(paging::value(items, total, options, generation))
+}
+
+fn uncovered_symbols_page(
+    conn: &Connection,
+    seeds: &[ChangedSeed],
     options: &QueryOptions,
     generation: &str,
 ) -> Result<Value> {
-    let mut tests = BTreeMap::<String, Value>::new();
-    for seed in seed_ids {
-        let mut offset = 0;
-        let mut index_generation: Option<String> = None;
-        loop {
-            let page_options = QueryOptions {
-                limit: MAX_PAGE_SIZE,
-                offset,
-                detail: options.detail,
-                generation: index_generation.clone(),
-            };
-            let page = symbols::tests_paged_with_path(
-                conn,
-                seed,
-                None,
-                ImpactDirection::Inbound.as_str(),
-                &page_options,
-            )?;
-            let nodes = &page["nodes"];
-            let total = nodes["total"]
-                .as_u64()
-                .context("changed test total is missing")? as usize;
-            if total > MAX_CHANGE_RESULT_NODES {
-                bail!("Git change test mapping exceeds the {MAX_CHANGE_RESULT_NODES}-test work budget");
-            }
-            index_generation = nodes["generation"].as_str().map(str::to_owned);
-            if let Some(items) = nodes["items"].as_array() {
-                for item in items {
-                    let id = item["id"]
-                        .as_str()
-                        .context("changed test result has no id")?
-                        .to_owned();
-                    match tests.entry(id) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(item.clone());
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            let new_depth = item["connection"]["call_path"]
-                                .as_array()
-                                .map_or(usize::MAX, Vec::len);
-                            let old_depth = entry.get()["connection"]["call_path"]
-                                .as_array()
-                                .map_or(usize::MAX, Vec::len);
-                            if new_depth < old_depth {
-                                entry.insert(item.clone());
-                            }
-                        }
-                    }
-                    if tests.len() > MAX_CHANGE_RESULT_NODES {
-                        bail!("Git change test mapping exceeds the {MAX_CHANGE_RESULT_NODES}-test work budget");
-                    }
-                }
-            }
-            if nodes["has_more"] != true {
-                break;
-            }
-            offset = nodes["next_offset"]
-                .as_u64()
-                .context("changed test continuation is missing")? as usize;
-        }
+    let prod_seeds: Vec<&ChangedSeed> = seeds.iter().filter(|s| !s.is_test).collect();
+    if prod_seeds.is_empty() {
+        return Ok(paging::value(Vec::new(), 0, options, generation));
     }
-    let total = tests.len();
-    let items = tests
-        .into_values()
+    let prod_hashes: Vec<i64> = prod_seeds.iter().map(|s| s.hash).collect();
+    let covered: HashSet<i64> = symbols::verified_calls_covered_hashes(conn, Some(&prod_hashes))?;
+    let uncovered: Vec<Value> = prod_seeds
+        .into_iter()
+        .filter(|s| !covered.contains(&s.hash))
+        .map(|s| s.record.clone())
+        .collect();
+    let total = uncovered.len();
+    let items = uncovered
+        .into_iter()
         .skip(options.offset)
         .take(options.limit)
         .collect();
     Ok(paging::value(items, total, options, generation))
 }
 
-pub(super) fn changed_impact_with_path_options(
-    conn: &Connection,
-    root: &Path,
-    mode: &str,
-    path_scope: Option<&str>,
-    request: &TraversalOptions<'_>,
-) -> Result<Value> {
-    if request.depth > 16 {
-        bail!("depth must be <=16");
-    }
-    let direction = request.direction;
-    let traversal_mode = request.mode;
-    let snapshot = collect_change_snapshot(conn, root, mode, path_scope)?;
-    let mut page = request.page.clone();
-    page.generation = Some(read_metadata(conn, MetadataKey::OutputRoot)?);
-    let graph_generation = paging::generation(conn, &page)?;
-    if let Some(previous) = request.page.generation.as_deref() {
-        anyhow::ensure!(
-            previous.len() >= 8 && snapshot.fingerprint.starts_with(previous),
-            "Git change view changed; restart at offset 0 without generation"
-        );
-    }
-    if request.page.offset > 0 && request.page.generation.is_none() {
-        bail!("continuation requires generation from the previous page");
-    }
-    let (changed_symbols, mut seed_ids, mut seed_hashes) =
-        changed_symbols_page(conn, &snapshot.ranges, request.page, &snapshot.fingerprint)?;
-    let seed_overflow = seed_ids.len() > MAX_CHANGE_SEEDS;
-    seed_ids.truncate(MAX_CHANGE_SEEDS);
-    seed_hashes.truncate(MAX_CHANGE_SEEDS);
-    let mut unmapped = snapshot.unmapped.clone();
-    if seed_overflow {
-        unmapped.push(json!({"path":"*","reason":"seed_budget_exceeded","limit":MAX_CHANGE_SEEDS}));
-    }
-    let nodes = changed_nodes_page(
-        conn,
-        &seed_ids,
-        &seed_hashes,
-        request,
-        direction,
-        traversal_mode,
-        &snapshot.fingerprint,
-    )?;
-    let tests = changed_tests_page(conn, &seed_ids, request.page, &snapshot.fingerprint)?;
-    let file_values = snapshot
+fn snapshot_file_values(snapshot: &ChangeSnapshot) -> Vec<Value> {
+    snapshot
         .files
         .iter()
         .map(|file| {
@@ -783,7 +978,72 @@ pub(super) fn changed_impact_with_path_options(
             }
             value
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn validate_snapshot_continuation(
+    conn: &Connection,
+    page_opts: &QueryOptions,
+    fingerprint: &str,
+) -> Result<String> {
+    let mut page = page_opts.clone();
+    page.generation = Some(read_metadata(conn, MetadataKey::OutputRoot)?);
+    let graph_generation = paging::generation(conn, &page)?;
+    if let Some(previous) = page_opts.generation.as_deref() {
+        anyhow::ensure!(
+            previous.len() >= 8 && fingerprint.starts_with(previous),
+            "Git change view changed; restart at offset 0 without generation"
+        );
+    }
+    if page_opts.offset > 0 && page_opts.generation.is_none() {
+        bail!("continuation requires generation from the previous page");
+    }
+    Ok(graph_generation)
+}
+
+struct CoreChangeImpact {
+    snapshot: ChangeSnapshot,
+    excluded_csv: Option<String>,
+    graph_generation: String,
+    changed_symbols: Value,
+    seeds: Vec<ChangedSeed>,
+    seed_hashes: Vec<i64>,
+    nodes: Value,
+    unmapped_changes: Value,
+    complete: bool,
+}
+
+fn compute_core_change_impact(
+    conn: &Connection,
+    root: &Path,
+    mode: &str,
+    path_scope: Option<&str>,
+    base: Option<&str>,
+    policy: Option<&WorkspacePathPolicy>,
+    request: &TraversalOptions<'_>,
+) -> Result<CoreChangeImpact> {
+    let snapshot = collect_change_snapshot(conn, root, mode, path_scope, base, policy)?;
+    let graph_generation =
+        validate_snapshot_continuation(conn, request.page, &snapshot.fingerprint)?;
+    let excluded_csv = excluded_ids_csv(&snapshot.exposure.disallowed_path_ids(conn)?);
+    let (changed_symbols, mut seeds) =
+        changed_symbols_page(conn, &snapshot.ranges, request.page, &snapshot.fingerprint)?;
+    let seed_overflow = seeds.len() > MAX_CHANGE_SEEDS;
+    seeds.truncate(MAX_CHANGE_SEEDS);
+    let seed_ids: Vec<String> = seeds.iter().map(|s| s.id.clone()).collect();
+    let seed_hashes: Vec<i64> = seeds.iter().map(|s| s.hash).collect();
+    let mut unmapped = snapshot.unmapped.clone();
+    if seed_overflow {
+        unmapped.push(json!({"path":"*","reason":"seed_budget_exceeded","limit":MAX_CHANGE_SEEDS}));
+    }
+    let nodes = changed_nodes_page(
+        conn,
+        &seed_ids,
+        &seed_hashes,
+        request,
+        &snapshot.fingerprint,
+        excluded_csv.as_deref(),
+    )?;
     let unmapped_total = unmapped.len();
     let unmapped_items = unmapped
         .into_iter()
@@ -797,24 +1057,116 @@ pub(super) fn changed_impact_with_path_options(
         request.page,
         &snapshot.fingerprint,
     );
-    let final_snapshot = collect_change_snapshot(conn, root, mode, path_scope)?;
+    Ok(CoreChangeImpact {
+        snapshot,
+        excluded_csv,
+        graph_generation,
+        changed_symbols,
+        seeds,
+        seed_hashes,
+        nodes,
+        unmapped_changes,
+        complete,
+    })
+}
+
+fn ensure_snapshot_stable(
+    conn: &Connection,
+    root: &Path,
+    mode: &str,
+    path_scope: Option<&str>,
+    base: Option<&str>,
+    policy: Option<&WorkspacePathPolicy>,
+    expected_fingerprint: &str,
+) -> Result<()> {
+    let final_snapshot = collect_change_snapshot(conn, root, mode, path_scope, base, policy)?;
     anyhow::ensure!(
-        final_snapshot.fingerprint == snapshot.fingerprint,
+        final_snapshot.fingerprint == expected_fingerprint,
         "Git change view changed while computing impact; restart at offset 0"
     );
-    let dir_str = direction.as_str();
+    Ok(())
+}
+
+pub(crate) fn diff_impact_with_options(
+    conn: &Connection,
+    root: &Path,
+    target: &str,
+    base: Option<&str>,
+    policy: Option<&WorkspacePathPolicy>,
+    options: &QueryOptions,
+    budget: &QueryBudget<'_>,
+) -> Result<Value> {
+    budget.check()?;
+    let trimmed = strip_selector_uri_prefix(target.trim()).trim_end_matches('/');
+    let path_scope = (!trimmed.is_empty() && trimmed != ".").then_some(trimmed);
+    let request = TraversalOptions {
+        depth: 4,
+        direction: ImpactDirection::Inbound,
+        mode: TraversalMode::Calls,
+        edge_types: None,
+        page: options,
+    };
+    let core = compute_core_change_impact(conn, root, "head", path_scope, base, policy, &request)?;
+    let fp = &core.snapshot.fingerprint;
+    let ex = core.excluded_csv.as_deref();
+    budget.check()?;
+    let tests = verified_reaching_tests_page(conn, &core.seed_hashes, 12, options, fp, ex)?;
+    budget.check()?;
+    let uncovered_symbols = uncovered_symbols_page(conn, &core.seeds, options, fp)?;
+    budget.check()?;
+    let affected_docs = governed_affected_docs_page(conn, &core.seed_hashes, options, fp, ex)?;
+    ensure_snapshot_stable(conn, root, "head", path_scope, base, policy, fp)?;
     Ok(json!({
-        "selector":{"kind":"git_changes","mode":snapshot.mode},
-        "direction":dir_str,
+        "mode": "diff_impact",
+        "target": path_scope.unwrap_or(""),
+        "base": base,
+        "generation": fp,
+        "graph_generation": core.graph_generation,
+        "changes": {"mode": core.snapshot.mode, "base": base, "files": snapshot_file_values(&core.snapshot)},
+        "changed_symbols": core.changed_symbols,
+        "nodes": core.nodes,
+        "tests": tests,
+        "uncovered_symbols": uncovered_symbols,
+        "affected_docs": affected_docs,
+        "unmapped_changes": core.unmapped_changes,
+        "complete": core.complete,
+    }))
+}
+
+pub(super) fn changed_impact_with_path_options(
+    conn: &Connection,
+    root: &Path,
+    mode: &str,
+    path_scope: Option<&str>,
+    request: &TraversalOptions<'_>,
+) -> Result<Value> {
+    if request.depth > 16 {
+        bail!("depth must be <=16");
+    }
+    let core = compute_core_change_impact(conn, root, mode, path_scope, None, None, request)?;
+    let fp = &core.snapshot.fingerprint;
+    let ex = core.excluded_csv.as_deref();
+    let tests = verified_reaching_tests_page(
+        conn,
+        &core.seed_hashes,
+        request.depth.max(12),
+        request.page,
+        fp,
+        ex,
+    )?;
+    ensure_snapshot_stable(conn, root, mode, path_scope, None, None, fp)?;
+    Ok(json!({
+        "selector":{"kind":"git_changes","mode":core.snapshot.mode},
+        "direction":request.direction.as_str(),
         "depth":request.depth,
-        "mode":traversal_mode.as_str(),
-        "generation":snapshot.fingerprint,
-        "graph_generation":graph_generation,
-        "changes":{"mode":snapshot.mode,"files":file_values},
-        "changed_symbols":changed_symbols,
-        "nodes":nodes,
+        "mode":request.mode.as_str(),
+        "generation":fp,
+        "graph_generation":core.graph_generation,
+        "changes":{"mode":core.snapshot.mode,"files":snapshot_file_values(&core.snapshot)},
+        "changed_symbols":core.changed_symbols,
+        "nodes":core.nodes,
         "tests":tests,
-        "unmapped_changes":unmapped_changes,
-        "complete":complete
+        "unmapped_changes":core.unmapped_changes,
+        "complete":core.complete
     }))
 }

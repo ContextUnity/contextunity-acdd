@@ -25,6 +25,9 @@ pub fn analyze_paged(
             to: None,
             include_cycles,
             page: options,
+            root: None,
+            base: None,
+            policy: None,
         },
     )
 }

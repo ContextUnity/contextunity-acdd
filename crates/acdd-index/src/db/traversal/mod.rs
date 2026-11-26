@@ -1,6 +1,6 @@
 //! Graph traversal, directory slice, Git change impact, duplicate detection, and dead-tail queries.
 
-mod change_impact;
+pub(crate) mod change_impact;
 mod dead_tails;
 mod duplicates;
 /// Graph impact and bounded traversal queries.
@@ -22,33 +22,8 @@ pub use duplicates::duplicates_paged;
 use impact::traverse_with_path_options;
 pub use impact::{impact_with_path_options, removal_paged_with_path};
 use types::GraphQueryOp;
+use types::{predecessor_endpoints, reverse_predecessor_union};
 pub use types::{GraphQueryOptions, ImpactDirection, TraversalMode, TraversalOptions};
-
-pub(super) fn predecessor_endpoints(
-    direction: ImpactDirection,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    if direction.is_inbound() {
-        ("src_hash", "dst_hash", "dst_hash", "src_hash")
-    } else {
-        ("dst_hash", "src_hash", "src_hash", "dst_hash")
-    }
-}
-
-pub(super) fn reverse_predecessor_union(
-    reverse: &str,
-    reverse_current: &str,
-    reverse_predecessor: &str,
-    distance_expr: &str,
-    current_expr: &str,
-) -> String {
-    if reverse.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " UNION ALL SELECT prior_node.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_predecessor} AND prior.distance={distance_expr}-1 JOIN nodes prior_node ON prior_node.node_hash=prior.id WHERE e.{reverse_current}={current_expr} AND e.kind IN({reverse})"
-        )
-    }
-}
 
 fn sql_selector(selector: Option<&str>) -> Result<&str> {
     selector

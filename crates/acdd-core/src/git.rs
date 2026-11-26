@@ -1,7 +1,7 @@
 //! Git execution and repository/worktree root resolution helpers.
 
 use anyhow::{bail, Context, Result};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -282,12 +282,243 @@ pub fn primary_worktree_root(root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Validates a Git revision string against option injection and control characters.
 fn validate_git_rev(rev: &str) -> Result<&str> {
     let trimmed = rev.trim();
-    if trimmed.is_empty() || trimmed.starts_with('-') {
+    if trimmed.is_empty() || trimmed.starts_with('-') || trimmed.contains(['\0', '\n', '\r']) {
         bail!("invalid git revision '{rev}'");
     }
     Ok(trimmed)
+}
+
+/// Verifies that `worktree` is a Git repository or linked worktree root (rejecting nested ancestor-only directories).
+pub fn ensure_git_repo(worktree: &Path) -> Result<()> {
+    let canon_root = worktree
+        .canonicalize()
+        .context("GIT_REPO_REQUIRED: workspace root does not exist")?;
+    let toplevel = git_toplevel_exact(worktree).map_err(|_| {
+        anyhow::anyhow!("GIT_REPO_REQUIRED: Git analysis requires a Git repository")
+    })?;
+    if toplevel != canon_root {
+        bail!("GIT_REPO_REQUIRED: workspace root is nested inside an ancestor Git repository");
+    }
+    Ok(())
+}
+
+/// Resolves `HEAD` to a commit OID, or returns `Ok(None)` for an unborn repository.
+pub fn git_head_oid(worktree: &Path) -> Result<Option<String>> {
+    ensure_git_repo(worktree)?;
+    let output = git_command(worktree, &["rev-parse", "--verify", "-q", "HEAD^{commit}"])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!oid.is_empty()).then_some(oid))
+}
+
+/// Validates and resolves `rev` to a commit OID inside `worktree`.
+pub fn resolve_git_commit(worktree: &Path, rev: &str) -> Result<String> {
+    let rev = validate_git_rev(rev)?;
+    let spec = format!("{rev}^{{commit}}");
+    git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &spec],
+        "GIT_BASE_INVALID",
+    )
+}
+
+/// Single file entry from bounded `git log --name-status -z --find-renames`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitLogFileChange {
+    pub status: String,
+    pub path: String,
+    pub old_path: Option<String>,
+}
+
+/// Single non-merge commit parsed from bounded `git log --name-status -z --find-renames`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitLogCommit {
+    pub oid: String,
+    pub changes: Vec<GitLogFileChange>,
+}
+
+/// Pinned bounded Git history snapshot returned by [`collect_bounded_log_name_status`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitLogSnapshot {
+    pub head_oid: Option<String>,
+    pub base_oid: Option<String>,
+    pub commits: Vec<GitLogCommit>,
+}
+
+fn run_git_stdout_bounded(worktree: &Path, args: &[&str], max_bytes: usize) -> Result<Vec<u8>> {
+    const MAX_STDERR_BYTES: u64 = 64 * 1024;
+    let mut cmd = base_git_command(worktree)?;
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn git {:?} in '{}'", args, worktree.display()))?;
+    let mut stdout = child.stdout.take().context("missing git stdout pipe")?;
+    let stderr = child.stderr.take().context("missing git stderr pipe")?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut overflowed = false;
+    let stderr_bytes = std::thread::scope(|scope| -> Result<Vec<u8>> {
+        let stderr_reader = scope.spawn(move || {
+            let mut err = Vec::new();
+            let _ = stderr.take(MAX_STDERR_BYTES).read_to_end(&mut err);
+            err
+        });
+        loop {
+            let n = stdout.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            if buf.len().saturating_add(n) > max_bytes {
+                overflowed = true;
+                let _ = child.kill();
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        drop(stdout);
+        Ok(stderr_reader.join().unwrap_or_default())
+    })?;
+    let status = child.wait()?;
+    if overflowed {
+        bail!("Git history log exceeds the {max_bytes}-byte work budget");
+    }
+    if !status.success() {
+        let output = Output {
+            status,
+            stdout: buf,
+            stderr: stderr_bytes,
+        };
+        bail!("{}", format_git_failure(args, worktree, &output));
+    }
+    Ok(buf)
+}
+
+/// Collects bounded non-merge commit file changes via `git log --name-status -z --find-renames`.
+///
+/// Pins both `HEAD` and optional `base` commit OIDs, streams stdout up to `max_bytes` (killing
+/// the subprocess immediately on overflow), and fails closed on non-Git or ancestor-only roots.
+pub fn collect_bounded_log_name_status(
+    worktree: &Path,
+    base: Option<&str>,
+    max_commits: usize,
+    max_bytes: usize,
+) -> Result<GitLogSnapshot> {
+    let head_oid = git_head_oid(worktree)?;
+    let base_oid = base
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|rev| resolve_git_commit(worktree, rev))
+        .transpose()?;
+    let Some(ref head) = head_oid else {
+        return Ok(GitLogSnapshot {
+            head_oid,
+            base_oid,
+            commits: Vec::new(),
+        });
+    };
+    if max_commits == 0 {
+        return Ok(GitLogSnapshot {
+            head_oid,
+            base_oid,
+            commits: Vec::new(),
+        });
+    }
+    let range = match base_oid {
+        Some(ref b) => format!("{b}..{head}"),
+        None => head.clone(),
+    };
+    let limit_arg = format!("-n{max_commits}");
+    let args = [
+        "--no-pager",
+        "log",
+        "--no-merges",
+        "--name-status",
+        "-z",
+        "--find-renames",
+        "--format=%x1e%H",
+        &limit_arg,
+        &range,
+    ];
+    let stdout = run_git_stdout_bounded(worktree, &args, max_bytes)?;
+    Ok(GitLogSnapshot {
+        head_oid,
+        base_oid,
+        commits: parse_log_name_status_z(&stdout)?,
+    })
+}
+
+fn parse_log_name_status_z(bytes: &[u8]) -> Result<Vec<GitLogCommit>> {
+    let mut commits = Vec::new();
+    let mut current: Option<GitLogCommit> = None;
+    let mut iter = bytes.split(|&b| b == 0);
+    while let Some(raw) = iter.next() {
+        if raw.is_empty() {
+            continue;
+        }
+        let trimmed = raw.strip_prefix(b"\n").unwrap_or(raw);
+        if let Some(oid_bytes) = trimmed.strip_prefix(b"\x1e") {
+            if let Some(commit) = current.take() {
+                commits.push(commit);
+            }
+            let oid = std::str::from_utf8(oid_bytes)
+                .context("Git log commit OID must be valid UTF-8")?
+                .trim()
+                .to_owned();
+            current = Some(GitLogCommit {
+                oid,
+                changes: Vec::new(),
+            });
+            continue;
+        }
+        let status = std::str::from_utf8(trimmed)
+            .context("Git log status must be valid UTF-8")?
+            .trim();
+        if status.is_empty() {
+            continue;
+        }
+        let first = iter
+            .next()
+            .context("Git log returned an incomplete NUL-delimited path entry")?;
+        let change = if status.starts_with('R') || status.starts_with('C') {
+            let second = iter
+                .next()
+                .context("Git log returned an incomplete NUL-delimited rename entry")?;
+            GitLogFileChange {
+                status: status.to_owned(),
+                old_path: Some(
+                    std::str::from_utf8(first)
+                        .context("Git log path must be valid UTF-8")?
+                        .to_owned(),
+                ),
+                path: std::str::from_utf8(second)
+                    .context("Git log path must be valid UTF-8")?
+                    .to_owned(),
+            }
+        } else {
+            GitLogFileChange {
+                status: status.to_owned(),
+                path: std::str::from_utf8(first)
+                    .context("Git log path must be valid UTF-8")?
+                    .to_owned(),
+                old_path: None,
+            }
+        };
+        if let Some(commit) = current.as_mut() {
+            commit.changes.push(change);
+        }
+    }
+    if let Some(commit) = current {
+        commits.push(commit);
+    }
+    Ok(commits)
 }
 
 /// Reads a Git blob at `{rev}:{rel_path}` as UTF-8 text.
