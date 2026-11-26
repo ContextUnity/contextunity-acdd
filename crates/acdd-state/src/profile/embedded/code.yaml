@@ -179,14 +179,14 @@ guidance:
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "Audit canonical owners (`code_map_*`, `get_doc` / ADRs) first and map every spec `AC-*` in `ac_mapping` and `cited_invariants` before designing task slices (`HOW`)."
-      - "Populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules` naming exact existing upstream producers/stores/types to reuse or extend (forbidding parallel downstream parsers, shadow registries, or uncontracted fallbacks), explicit `negative_boundaries`, realistic `max_net_loc`, narrow `verification_seam` (happy + fail-closed paths), and complete `incoming_seams`/`outgoing_seams` alongside `global_negative_boundaries`."
-      - "Verify disjoint same-wave write scopes, `protected_paths` exclusion, and required doc/ADR deltas, then post the architectural decision via `acdd_blackboard` (`topic: decisions`) and cite its ID in `blackboard_decision_id`."
+      - "Audit canonical owners (`code_map_*`, `get_doc` / ADRs) first and map every spec `AC-*` in `ac_mapping` and `cited_invariants` at the architectural seam level."
+      - "Keep blueprints strictly at architectural seams — canonical owners, layer boundaries, `incoming_seams`/`outgoing_seams`, `negative_boundaries`, realistic `max_net_loc`, and behavioral `verification_seam`s. Do NOT write pseudocode, exact CLI flags, raw SQL queries, or line-by-line implementation recipes in blueprint prose; defer missing upstream capabilities in unrelated subsystems to a separate milestone or escalate instead of expanding task scope."
+      - "Verify disjoint same-wave write scopes, `protected_paths` exclusion, and required doc/ADR deltas, then post a concise architectural decision via `acdd_blackboard` (`topic: decisions`) and cite its ID in `blackboard_decision_id`."
   milestone.blueprint_review:
     description: "INDEPENDENT BLUEPRINT REVIEW"
     criteria:
-      - "Audit Completeness, Correctness, and Coherence across `proof.tasks`: verify 1:1 `AC-*` coverage in `ac_mapping` -> `verification_seam`s, fail-closed edge/concurrency seam specifications, `incoming_seams`/`outgoing_seams` consistency, disjoint same-wave scopes, and realistic `max_net_loc` budgets."
-      - "Verify canonical-owner reuse (`INV-SINGLE-OWNER` — rejecting any design duplicating an existing parser, resolver, or store instead of extending the upstream producer), crate DAG layer boundaries, ADRs, `negative_boundaries`, `protected_paths`, and a valid `blackboard_decision_id`."
+      - "Audit architectural viability only: 1:1 `AC-*` coverage, canonical-owner reuse (`INV-SINGLE-OWNER`, zero duplicate parsers/resolvers/stores), crate DAG layers, `incoming_seams`/`outgoing_seams` consistency, disjoint same-wave scopes, `protected_paths`, realistic `max_net_loc`, and a valid `blackboard_decision_id`."
+      - "Require a clean architectural plan WITHOUT pseudocode: do NOT demand or reject over low-level implementation details (exact CLI flag ordering, internal helper signatures, raw SQL predicates, or micro edge-case recipes) — verify those against live code and tests during `tasks.review`."
   task.code:
     description: "TASK BUILD & SEAM PROOF"
     criteria:

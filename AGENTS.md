@@ -83,9 +83,9 @@ When authoring contracts or testing capabilities:
 ## Architectural Blueprint Synthesis Gate (`blueprint_synthesis`)
 
 `blueprint_synthesis` (`synthesize` (role: `architect`) $\to$ `review` (role: `independent_reviewer`)) runs before tasks. Load [`contract-planning`](skills/contract-planning/SKILL.md) and:
-1. Explore canonical owners via ACDD MCP (`code_map_*`, `ast_grep_search`, `acdd_read`), reconcile `docs/adr/`, `docs/architecture/`, and active invariants (`INV-SINGLE-OWNER`), and apply Occam's razor before decomposing tasks.
+1. Keep blueprints strictly at the **architectural seam level** (canonical owners, layer boundaries, invariants, `incoming_seams`/`outgoing_seams`, `negative_boundaries`, `max_net_loc`, behavioral `verification_seam`s) — zero pseudocode, exact CLI flag recipes, or raw SQL in prose. Apply Occam's razor and escalate/split unrelated upstream gaps rather than inflating task scope.
 2. Keep `protected_paths` (`Cargo.toml`, `crates/*/Cargo.toml`, `.acdd/profile.yaml`) off-limits without explicit authorization.
-3. Post the architectural decision on `acdd_blackboard` (`topic: decisions`) and materialize per-task slices (`proof.tasks[<task_ref>]` with `canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`) before submitting.
+3. Post a concise architectural decision on `acdd_blackboard` (`topic: decisions`) and materialize per-task slices (`proof.tasks[<task_ref>]`) before submitting. Independent blueprint reviewers verify architecture, owners, scopes, and seams — never demand pseudocode or low-level code recipes during `blueprint_synthesis.review`.
 <!-- acdd:contract-synthesis:end -->
 
 ## Documentation scan before handoff

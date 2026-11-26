@@ -5,6 +5,7 @@ doc_type: contract
 status: planned
 depends_on:
   - AC-005-unified-swarm-gates-and-peer-board-coordination
+  - AR-007-host-sqlite-engine-isolation-and-workspace-facade
 guidance:
   hitl: pro
 owners:
