@@ -159,6 +159,18 @@ fn require_subsystem(adapter: &Adapter, id: SubsystemId) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn parse_cli_detail(detail: Option<&str>) -> Result<Option<Detail>> {
+    detail
+        .map(|raw| match raw.trim() {
+            "compact" => Ok(Detail::Compact),
+            "full" => Ok(Detail::Full),
+            other => Err(anyhow::anyhow!(
+                "invalid --detail '{other}'; expected 'compact' or 'full'"
+            )),
+        })
+        .transpose()
+}
+
 pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value, Option<String>)> {
     let val = match command {
         Command::Read {
@@ -177,6 +189,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
             generation,
             max_body_lines,
             leading_lines,
+            detail,
         } => {
             let mode = serde_json::from_value::<acdd_core::model::ReadMode>(json!(mode))?;
             let request = crate::engine::reader::ReadRequest {
@@ -203,7 +216,9 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                 source.has_valid_paging_anchor(generation.as_deref()),
                 "source continuation requires generation"
             );
-            let page = QueryOptions::resolve(&ctx.adapter.response, None, 0, None, generation)?;
+            let parsed_detail = parse_cli_detail(detail.as_deref())?;
+            let page =
+                QueryOptions::resolve(&ctx.adapter.response, None, 0, parsed_detail, generation)?;
             let node_ctx = crate::state_bridge::active_node_context(
                 ctx.root,
                 ctx.adapter,
@@ -430,16 +445,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                 .filter(|s| !s.is_empty())
                 .map(str::parse::<LintSeverity>)
                 .transpose()?;
-            let parsed_detail = detail
-                .as_deref()
-                .map(|raw| match raw.trim() {
-                    "compact" => Ok(Detail::Compact),
-                    "full" => Ok(Detail::Full),
-                    other => Err(anyhow::anyhow!(
-                        "invalid --detail '{other}'; expected 'compact' or 'full'"
-                    )),
-                })
-                .transpose()?;
+            let parsed_detail = parse_cli_detail(detail.as_deref())?;
             let page = QueryOptions::resolve(
                 &ctx.adapter.response,
                 Some(limit),

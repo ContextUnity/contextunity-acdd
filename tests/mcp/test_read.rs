@@ -1181,3 +1181,385 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
     };
     assert!(req_mixed.requires_index(&adapter_both).is_ok());
 }
+
+#[test]
+fn acdd_read_inline_budget_and_next_start_line_continuation_matrix() {
+    let mut big_lines = String::new();
+    for i in 1..=260 {
+        big_lines.push_str(&format!(
+            "pub fn generated_item_{i:03}() -> &'static str {{ \"{}\"; }}\n",
+            "payload_".repeat(12)
+        ));
+    }
+    let single_long = format!(
+        "pub fn oversized() -> &'static str {{ \"{}\" }}\n",
+        "z".repeat(10_000)
+    );
+    let w = Workspace::with_files(&[
+        ("acdd.yaml", "profile: minimal\nroots: [.]\n"),
+        ("src/big.rs", &big_lines),
+        ("src/long_line.rs", &single_long),
+    ]);
+    let mut client = McpTestHarness::new(&w).expect("MCP initialize");
+
+    // 1. Default inline read (`line_count: 300`) stays <= 9,000 bytes in both Markdown and JSON,
+    // emits exact `next_start_line`, and paginates losslessly across the entire file.
+    let mut start_line = 1usize;
+    let mut reconstructed = String::new();
+    let mut pages = 0usize;
+    loop {
+        let (md_bytes, md_resp) = client
+            .call(
+                "acdd_read",
+                json!({
+                    "path": "src/big.rs",
+                    "mode": "raw",
+                    "start_line": start_line,
+                    "line_count": 300
+                }),
+            )
+            .expect("MCP markdown read");
+        assert_ne!(md_resp["result"]["isError"], true, "{md_resp}");
+        assert!(md_bytes <= 9_000, "markdown frame was {md_bytes} bytes");
+        let md_text = md_resp["result"]["content"][0]["text"].as_str().unwrap();
+
+        let (json_bytes, json_resp) = client
+            .call(
+                "acdd_read",
+                json!({
+                    "path": "src/big.rs",
+                    "mode": "raw",
+                    "start_line": start_line,
+                    "line_count": 300,
+                    "format": "json"
+                }),
+            )
+            .expect("MCP json read");
+        assert_ne!(json_resp["result"]["isError"], true, "{json_resp}");
+        assert!(json_bytes <= 9_000, "json frame was {json_bytes} bytes");
+        let payload = crate::common::assertions::mcp_payload(&json_resp);
+        reconstructed.push_str(payload["content"].as_str().unwrap());
+        pages += 1;
+
+        if payload["truncated"] == true {
+            let next = payload["next_start_line"]
+                .as_u64()
+                .expect("truncated line read must emit next_start_line")
+                as usize;
+            assert_eq!(
+                next,
+                start_line + payload["content"].as_str().unwrap().lines().count()
+            );
+            assert!(
+                md_text.contains(&format!("next_start_line={next}")),
+                "markdown must surface next_start_line={next}: {md_text}"
+            );
+            start_line = next;
+        } else {
+            assert!(payload.get("next_start_line").is_none());
+            break;
+        }
+    }
+    assert!(
+        pages >= 3,
+        "expected multiple <= 9,000-byte pages, got {pages}"
+    );
+    assert_eq!(reconstructed, big_lines);
+
+    // 2. `detail="full"` and `output_file` exports preserve > 9,000-byte slices.
+    let full = read_tool(
+        &mut client,
+        json!({"path": "src/big.rs", "mode": "raw", "line_count": 300, "detail": "full"}),
+    );
+    assert_eq!(full["truncated"], false, "{full}");
+    assert_eq!(full["content"], big_lines);
+
+    let exported = read_tool(
+        &mut client,
+        json!({
+            "path": "src/big.rs",
+            "mode": "raw",
+            "line_count": 300,
+            "output_file": "exports/big.rs"
+        }),
+    );
+    assert_eq!(exported["truncated"], false, "{exported}");
+    assert_eq!(
+        std::fs::read_to_string(w.path("exports/big.rs")).unwrap(),
+        big_lines
+    );
+
+    // 3. Oversized single line fails closed on default inline read (no stuck next_start_line loop),
+    // while `detail="full"` succeeds.
+    let (_, long_err) = client
+        .call(
+            "acdd_read",
+            json!({"path": "src/long_line.rs", "mode": "raw"}),
+        )
+        .expect("MCP transport");
+    assert_eq!(long_err["result"]["isError"], true, "{long_err}");
+    let long_ok = read_tool(
+        &mut client,
+        json!({"path": "src/long_line.rs", "mode": "raw", "detail": "full"}),
+    );
+    assert_eq!(long_ok["content"], single_long);
+
+    // 4. Exact JSON-escape byte accounting (tabs/quotes/backslashes/control chars) + CLI `--detail` parity:
+    let tabs_long = format!("{}\n", "\t".repeat(8_000));
+    let mut tabs_multi = String::new();
+    for i in 1..=120 {
+        tabs_multi.push_str(&format!("\"\\\x07{i:03}{}\n", "\t".repeat(75)));
+    }
+    let batch_body: Vec<String> = (1..=3)
+        .map(|b| {
+            (1..=45)
+                .map(|l| {
+                    format!(
+                        "pub fn batch_{b}_{l:02}() -> &'static str {{ \"{}\"; }}\n",
+                        "seg_".repeat(14)
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    std::fs::write(w.path("src/tabs_long.txt"), &tabs_long).unwrap();
+    std::fs::write(w.path("src/tabs_multi.txt"), &tabs_multi).unwrap();
+    std::fs::write(w.path("src/b1.rs"), &batch_body[0]).unwrap();
+    std::fs::write(w.path("src/b2.rs"), &batch_body[1]).unwrap();
+    std::fs::write(w.path("src/b3.rs"), &batch_body[2]).unwrap();
+
+    let (_, tabs_err) = client
+        .call(
+            "acdd_read",
+            json!({"path": "src/tabs_long.txt", "mode": "raw"}),
+        )
+        .expect("MCP transport");
+    assert_eq!(tabs_err["result"]["isError"], true, "{tabs_err}");
+    let (tabs_multi_json_bytes, tabs_multi_json) = client
+        .call(
+            "acdd_read",
+            json!({"path": "src/tabs_multi.txt", "mode": "raw", "line_count": 150, "format": "json"}),
+        )
+        .expect("MCP json read");
+    assert_ne!(
+        tabs_multi_json["result"]["isError"], true,
+        "{tabs_multi_json}"
+    );
+    assert!(
+        tabs_multi_json_bytes <= 9_000,
+        "escaped tabs JSON frame exceeded 9,000: {tabs_multi_json_bytes}"
+    );
+    let tabs_multi_payload = crate::common::assertions::mcp_payload(&tabs_multi_json);
+    assert_eq!(
+        tabs_multi_payload["truncated"], true,
+        "{tabs_multi_payload}"
+    );
+    assert!(tabs_multi_payload["next_start_line"].as_u64().is_some());
+
+    // CLI parity: `acdd read` enforces exact escaped JSON byte cap and exposes `--detail compact|full`.
+    let cli_tabs_err =
+        crate::common::cli::run_cli_json(&w, &["read", "src/tabs_long.txt", "--mode", "raw"]);
+    assert!(
+        !cli_tabs_err.status.success(),
+        "8,000-tab line must fail closed on default CLI read, got stdout len {}",
+        cli_tabs_err.stdout.len()
+    );
+    let cli_tabs_full = crate::common::cli::run_cli_json(
+        &w,
+        &[
+            "read",
+            "src/tabs_long.txt",
+            "--mode",
+            "raw",
+            "--detail",
+            "full",
+        ],
+    );
+    assert!(
+        cli_tabs_full.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_tabs_full.stderr)
+    );
+    let cli_tabs_val: Value = serde_json::from_slice(&cli_tabs_full.stdout).unwrap();
+    assert_eq!(cli_tabs_val["content"], tabs_long);
+
+    let cli_multi_compact = crate::common::cli::run_cli_json(
+        &w,
+        &[
+            "read",
+            "src/tabs_multi.txt",
+            "--mode",
+            "raw",
+            "--line-count",
+            "150",
+            "--detail",
+            "compact",
+        ],
+    );
+    assert!(cli_multi_compact.status.success());
+    assert!(
+        cli_multi_compact.stdout.len() <= 9_000,
+        "CLI compact JSON read was {} bytes",
+        cli_multi_compact.stdout.len()
+    );
+    let cli_multi_val: Value = serde_json::from_slice(&cli_multi_compact.stdout).unwrap();
+    assert_eq!(cli_multi_val["truncated"], true, "{cli_multi_val}");
+
+    let cli_big_full = crate::common::cli::run_cli_json(
+        &w,
+        &[
+            "read",
+            "src/big.rs",
+            "--mode",
+            "raw",
+            "--line-count",
+            "300",
+            "--detail",
+            "full",
+        ],
+    );
+    assert!(cli_big_full.status.success());
+    assert!(cli_big_full.stdout.len() > 9_000);
+    let cli_big_full_val: Value = serde_json::from_slice(&cli_big_full.stdout).unwrap();
+    assert_eq!(cli_big_full_val["content"], big_lines);
+
+    let cli_invalid_detail =
+        crate::common::cli::run_cli_json(&w, &["read", "src/big.rs", "--detail", "invalid"]);
+    assert!(!cli_invalid_detail.status.success());
+
+    // 5. Batch reads (`paths`) enforce <= 9,000-byte aggregate cap with continuation metadata,
+    // resume losslessly, fail closed when first item cannot fit, and expand with `detail="full"`.
+    let batch_paths = ["src/b1.rs", "src/b2.rs", "src/b3.rs"];
+    let (batch_md_bytes, batch_md) = client
+        .call(
+            "acdd_read",
+            json!({"paths": batch_paths, "mode": "raw", "line_count": 100}),
+        )
+        .expect("MCP batch markdown");
+    assert_ne!(batch_md["result"]["isError"], true, "{batch_md}");
+    assert!(
+        batch_md_bytes <= 9_000,
+        "batch markdown frame was {batch_md_bytes} bytes"
+    );
+    let batch_md_text = batch_md["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(batch_md_text.contains("truncated=true"), "{batch_md_text}");
+    assert!(
+        batch_md_text.contains("next_path_index="),
+        "{batch_md_text}"
+    );
+
+    let (batch_json_bytes, batch_json) = client
+        .call(
+            "acdd_read",
+            json!({"paths": batch_paths, "mode": "raw", "line_count": 100, "format": "json"}),
+        )
+        .expect("MCP batch json");
+    assert_ne!(batch_json["result"]["isError"], true, "{batch_json}");
+    assert!(
+        batch_json_bytes <= 9_000,
+        "batch json frame was {batch_json_bytes} bytes"
+    );
+    let batch_payload = crate::common::assertions::mcp_payload(&batch_json);
+    assert_eq!(batch_payload["truncated"], true, "{batch_payload}");
+    let next_idx = batch_payload["next_path_index"]
+        .as_u64()
+        .expect("batch must emit next_path_index") as usize;
+    let remaining: Vec<String> = batch_payload["remaining_paths"]
+        .as_array()
+        .expect("batch must emit remaining_paths")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(remaining, batch_paths[next_idx..]);
+    assert!(!remaining.is_empty());
+
+    let batch_full = read_tool(
+        &mut client,
+        json!({"paths": batch_paths, "mode": "raw", "line_count": 100, "detail": "full"}),
+    );
+    assert!(batch_full.get("truncated").is_none(), "{batch_full}");
+    assert_eq!(batch_full["batch"].as_array().unwrap().len(), 3);
+
+    let (_, batch_oversized_err) = client
+        .call(
+            "acdd_read",
+            json!({"paths": ["src/long_line.rs", "src/b1.rs"], "mode": "raw"}),
+        )
+        .expect("MCP transport");
+    assert_eq!(
+        batch_oversized_err["result"]["isError"], true,
+        "{batch_oversized_err}"
+    );
+
+    // 6. Metadata-oversized batch (700 paths) stays <= 9,000 bytes with forward continuation,
+    // and 30,001-byte tabbed `output_file` export preserves the 48 KiB raw slice ceiling.
+    std::fs::write(w.path("src/tiny.txt"), "ok\n").unwrap();
+    let many_paths: Vec<&str> = vec!["src/tiny.txt"; 700];
+    let (many_md_bytes, many_md) = client
+        .call("acdd_read", json!({"paths": many_paths, "mode": "raw"}))
+        .expect("MCP 700-path markdown");
+    assert_ne!(many_md["result"]["isError"], true, "{many_md}");
+    assert!(
+        many_md_bytes <= 9_000,
+        "700-path compact batch markdown frame was {many_md_bytes} bytes"
+    );
+
+    let (many_json_bytes, many_json) = client
+        .call(
+            "acdd_read",
+            json!({"paths": many_paths, "mode": "raw", "format": "json"}),
+        )
+        .expect("MCP 700-path json");
+    assert_ne!(many_json["result"]["isError"], true, "{many_json}");
+    assert!(
+        many_json_bytes <= 9_000,
+        "700-path compact batch json frame was {many_json_bytes} bytes"
+    );
+    let many_payload = crate::common::assertions::mcp_payload(&many_json);
+    assert_eq!(many_payload["truncated"], true, "{many_payload}");
+    assert_eq!(many_payload["total_paths"], 700);
+    let many_next = many_payload["next_path_index"].as_u64().unwrap();
+    assert!(
+        many_next > 0,
+        "batch must make forward progress: {many_payload}"
+    );
+    assert_eq!(many_payload["remaining_count"], 700 - many_next);
+
+    let tabs_30k = format!("{}\n", "\t".repeat(30_001));
+    std::fs::write(w.path("src/tabs_30k.txt"), &tabs_30k).unwrap();
+    let cli_export_30k = crate::common::cli::run_cli_json(
+        &w,
+        &[
+            "read",
+            "src/tabs_30k.txt",
+            "--mode",
+            "raw",
+            "--output-file",
+            "exports/tabs_30k_cli.txt",
+        ],
+    );
+    assert!(
+        cli_export_30k.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_export_30k.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.path("exports/tabs_30k_cli.txt")).unwrap(),
+        tabs_30k
+    );
+    let mcp_export_30k = read_tool(
+        &mut client,
+        json!({
+            "path": "src/tabs_30k.txt",
+            "mode": "raw",
+            "output_file": "exports/tabs_30k_mcp.txt"
+        }),
+    );
+    assert_eq!(mcp_export_30k["output_file"], "exports/tabs_30k_mcp.txt");
+    assert_eq!(
+        std::fs::read_to_string(w.path("exports/tabs_30k_mcp.txt")).unwrap(),
+        tabs_30k
+    );
+
+    client.finish().expect("server must finish successfully");
+}

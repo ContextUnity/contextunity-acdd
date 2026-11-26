@@ -713,12 +713,12 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
             }
             "code.external_callers" => {
                 out.push_str("\n## External Callers\n\n");
-                for item in val
+                let items = val
                     .get("items")
                     .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                for item in items {
                     let sym = item
                         .get("symbol")
                         .and_then(Value::as_str)
@@ -729,8 +729,31 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
                     let callers = join_json_str_list(item.get("external_callers"));
+                    let shown_callers = item
+                        .get("external_callers")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len);
+                    let total_callers =
+                        item.get("external_callers_total")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(shown_callers as u64) as usize;
+                    let caller_overflow = total_callers.saturating_sub(shown_callers);
                     let flag = if sig_chg { " [SIG CHANGED]" } else { "" };
-                    out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
+                    if caller_overflow > 0 {
+                        out.push_str(&format!(
+                            "- `{sym}` (`{path}`{flag}) -> {callers} (+{caller_overflow} more)\n"
+                        ));
+                    } else {
+                        out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
+                    }
+                }
+                let total = val
+                    .get("total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(items.len() as u64) as usize;
+                let overflow = total.saturating_sub(items.len());
+                if overflow > 0 {
+                    out.push_str(&format!("- ... (+{overflow} more)\n"));
                 }
             }
             other => {

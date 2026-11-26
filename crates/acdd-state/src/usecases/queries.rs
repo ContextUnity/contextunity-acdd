@@ -261,6 +261,7 @@ fn build_node_context_request(
         candidate_tree,
         path_policy,
         primary: &primary,
+        detail: acdd_core::response::Detail::Compact,
     })
     .map(Some)
 }

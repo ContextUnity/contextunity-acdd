@@ -6,7 +6,7 @@ pub(crate) mod slices;
 pub mod tiers;
 pub mod types;
 
-pub(crate) use budget::CLAIM_DEFAULT_MAX_BYTES;
+pub(crate) use budget::{CLAIM_DEFAULT_MAX_BYTES, CLAIM_FULL_MAX_BYTES};
 pub use markdown::render_claim_prompt_markdown;
 #[cfg(test)]
 mod tests;
@@ -49,6 +49,7 @@ impl GateContextAssembler {
             candidate_tree,
             path_policy,
             primary,
+            detail,
         } = input;
         let spec = read_spec_readonly(config, &snapshot.run);
         let skip_enrichment = matches!(gate.proof, ProofDef::Kind(ProofKind::None)) && gate.receipt;
@@ -136,10 +137,10 @@ impl GateContextAssembler {
             dependency_receipts,
             blackboard_items,
             context_reset_required,
-            response_max_bytes: config
-                .response_policy
-                .max_output_bytes
-                .min(CLAIM_DEFAULT_MAX_BYTES),
+            response_max_bytes: config.response_policy.max_output_bytes.min(match detail {
+                acdd_core::response::Detail::Compact => CLAIM_DEFAULT_MAX_BYTES,
+                acdd_core::response::Detail::Full => CLAIM_FULL_MAX_BYTES,
+            }),
         })
     }
 
@@ -158,7 +159,7 @@ impl GateContextAssembler {
         let (mut resp, node_cursor, mut running_bytes) = Self::preflight_mandatory(req)?;
 
         // Tier 2: Unresolved findings + tail of failed trace log.
-        tiers::apply_tier2_findings(&mut resp, &mut running_bytes, req);
+        tiers::apply_tier2_findings(&mut resp, &mut running_bytes, req)?;
 
         // Tier 3: Pre-task architectural slice.
         tiers::apply_tier3_pre_task_slice(&mut resp, &mut running_bytes, req);
@@ -166,7 +167,7 @@ impl GateContextAssembler {
         // Tier 4: Completed dependency receipts.
         tiers::apply_tier4_receipts(&mut resp, &mut running_bytes, req)?;
 
-        // Tier 5: Blackboard items (up to 15 x 500 chars).
+        // Tier 5: Blackboard items (up to 6 x 220 chars).
         tiers::apply_tier5_blackboard(&mut resp, &mut running_bytes, req);
 
         // Tier 6: Dynamic DomainProvider context lenses in YAML declaration order.

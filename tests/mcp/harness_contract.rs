@@ -220,9 +220,39 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
                 item.get("uri").is_none()
                     && item.get("title").is_none()
                     && item.get("content").is_none()
+                    && item.get("headings").is_none()
             );
-            assert!(item["headings"].as_array().is_some_and(|h| !h.is_empty()));
         }
+        let (compact_bytes, compact_resp) = builder
+            .call(
+                "acdd_claim",
+                json!({
+                    "node": "first.build",
+                    "worker_id": "builder",
+                    "worktree": workspace.root(),
+                    "format": "json"
+                }),
+            )
+            .expect("compact idempotent MCP claim should succeed");
+        let compact_payload = mcp_payload(&compact_resp);
+        assert!(
+            compact_bytes <= 9_500 && compact_payload["total_bytes"].as_u64().unwrap() <= 9_500,
+            "default acdd_claim exceeded 9,500 bytes: frame={compact_bytes}, payload={compact_payload}"
+        );
+        let full_claim = builder
+            .payload(
+                "acdd_claim",
+                json!({
+                    "node": "first.build",
+                    "worker_id": "builder",
+                    "worktree": workspace.root(),
+                    "detail": "full",
+                    "format": "json"
+                }),
+            )
+            .expect("detail=full MCP claim should succeed");
+        assert!(full_claim["total_bytes"].as_u64().unwrap() <= 32_768);
+
         workspace.write("acdd.yaml", &config(4096));
         builder
             .payload(

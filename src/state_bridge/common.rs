@@ -36,8 +36,6 @@ pub struct InvocationSettings {
 /// Mandatory instruction banner emitted in `docs.instructions` to direct workers to scoped `AGENTS.md` files.
 pub(super) const DOCS_INSTRUCTIONS_DIRECTIVE: &str =
     "MANDATORY: read repository rules for respective scope.";
-/// Maximum top-level Markdown headings extracted per instruction file in `docs.instructions`.
-pub(super) const DOCS_INSTRUCTION_MAX_HEADINGS: usize = 10;
 /// Maximum fallback invariants returned when `code-map.sqlite` has no scope-matched `governs` edges or `admitted_scope` is empty.
 pub(super) const DOCS_INVARIANT_FALLBACK_ITEM_LIMIT: usize = 8;
 /// Maximum rule summary characters kept per entry in `docs.invariants` so full rules stay readable without mid-word clipping.
@@ -54,10 +52,10 @@ pub(super) const CODE_TESTS_LENS_SCOPED_FILE_LIMIT: usize = 10;
 pub(super) const CODE_TESTS_LENS_PAGE_SIZE: usize = 25;
 /// Maximum inbound graph test entries retained per scoped file before interleaving sibling files in `code.tests`.
 pub(super) const CODE_TESTS_PER_FILE_GRAPH_LIMIT: usize = 8;
-/// Maximum total test entries retained in `code.tests` per claim context.
-pub(super) const CODE_TESTS_MAX_ITEMS: usize = 12;
-/// Maximum external-caller symbol entries retained in `code.external_callers` per claim context.
-pub(super) const CODE_EXTERNAL_CALLERS_MAX_ITEMS: usize = 12;
+/// Maximum total unique-path test entries retained in `code.tests` per claim context.
+pub(super) const CODE_TESTS_MAX_ITEMS: usize = 8;
+/// Maximum external-caller symbol entries (and callers per entry) retained in `code.external_callers` per claim context.
+pub(super) const CODE_EXTERNAL_CALLERS_MAX_ITEMS: usize = 5;
 /// Maximum candidate call edges rendered in `code.seam` reachability failure diagnostics.
 pub(super) const CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT: usize = 10;
 
@@ -66,7 +64,7 @@ pub(super) const CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT: usize = 10;
 pub(super) const TEST_DEFAULT_CONTEXT_MAX_BYTES: usize = 8_192;
 /// Tight byte budget asserting deterministic `truncated: true` capping on `docs.instructions`.
 #[cfg(test)]
-pub(super) const TEST_TIGHT_INSTRUCTIONS_MAX_BYTES: usize = 220;
+pub(super) const TEST_TIGHT_INSTRUCTIONS_MAX_BYTES: usize = 145;
 /// Full 32 KiB context budget used in `code_domain` external-caller unit tests.
 #[cfg(test)]
 pub(super) const TEST_LARGE_CONTEXT_MAX_BYTES: usize = 32_768;

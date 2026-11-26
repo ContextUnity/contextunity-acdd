@@ -929,6 +929,9 @@ pub struct ClaimInput {
     pub steal_remote: bool,
     /// Worktree selector.
     pub worktree: Option<String>,
+    /// Context detail budget (`compact` default <= 9,500 bytes, or `full` up to 32 KiB).
+    #[serde(default)]
+    pub detail: Option<Detail>,
     /// Output format: markdown (default) or json.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]

@@ -189,6 +189,7 @@ fn claim_holding_repo_lock(
                         candidate_tree: existing.claim_tree,
                         path_policy: policy,
                         primary,
+                        detail: req.detail,
                     })?;
                 GateContextAssembler::assemble(&ctx_req, provider)
             }
@@ -220,6 +221,7 @@ fn claim_holding_repo_lock(
                         candidate_tree: claim.claim_tree.clone(),
                         path_policy: policy,
                         primary,
+                        detail: req.detail,
                     })?;
                 let claim_resp = GateContextAssembler::assemble(&ctx_req, provider)?;
 

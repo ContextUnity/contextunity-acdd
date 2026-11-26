@@ -388,6 +388,7 @@ pub(crate) fn execute_gate_node(
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: acdd_core::response::Detail::Compact,
             },
         )?;
 
@@ -479,6 +480,7 @@ pub(crate) fn execute_gate_node(
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: acdd_core::response::Detail::Compact,
         },
     )?;
 

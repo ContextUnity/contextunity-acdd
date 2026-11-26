@@ -106,6 +106,7 @@ fn exec_claim(eng: &StateEngine, rid: &str, node: &str, worker: &str) -> u32 {
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: acdd_core::response::Detail::Compact,
         }))
         .unwrap()
     {

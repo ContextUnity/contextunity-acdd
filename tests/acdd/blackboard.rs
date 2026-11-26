@@ -137,6 +137,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
                     force: false,
                     steal_remote: false,
                     worktree: None,
+                    detail: Default::default(),
                 }),
             )
             .unwrap();

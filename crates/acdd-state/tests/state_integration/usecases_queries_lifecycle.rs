@@ -2296,6 +2296,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                             force: false,
                             steal_remote: false,
                             worktree: None,
+                            detail: acdd_core::response::Detail::Compact,
                         }))
                         .expect(name);
                     let StateCommandOutput::Claim(claim) = claimed else {
@@ -2766,6 +2767,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: acdd_core::response::Detail::Compact,
             }))
             .unwrap() else {
                 panic!("expected Claim output");

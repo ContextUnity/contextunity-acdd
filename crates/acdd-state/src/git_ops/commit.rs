@@ -165,6 +165,7 @@ pub fn create_scoped_commit_with_expected(
     temp_index.read_tree(req.base_head.as_str())?;
 
     let staged = list_stage_entries(&req.worktree, Some(&temp_index.index_path))?;
+    let worktree_staged = list_stage_entries(&req.worktree, None)?;
     let untracked = list_untracked_entries(&req.worktree)?;
 
     let mut candidates: BTreeMap<String, Option<String>> = BTreeMap::new();
@@ -178,6 +179,9 @@ pub fn create_scoped_commit_with_expected(
         }
     }
     for (path, (mode, _oid)) in staged {
+        candidates.insert(path, Some(mode));
+    }
+    for (path, (mode, _oid)) in worktree_staged {
         candidates.insert(path, Some(mode));
     }
     for raw in untracked {

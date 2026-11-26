@@ -118,6 +118,9 @@ pub struct ClaimReq {
     /// Explicit worktree path override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<PathBuf>,
+    /// Context detail budget (`compact` = 9,500 bytes default, `full` = 32 KiB).
+    #[serde(default)]
+    pub detail: acdd_core::response::Detail,
 }
 
 /// Request payload for running gate verification (`command`, `call`, `checks`, scope barrier).

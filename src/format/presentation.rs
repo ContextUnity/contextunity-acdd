@@ -444,6 +444,12 @@ fn render_acdd_read(value: &Value) -> String {
     if obj.get("truncated") == Some(&Value::Bool(true)) {
         meta.push("truncated=true".to_owned());
     }
+    if let Some(next_start) = obj.get("next_start_line").and_then(Value::as_u64) {
+        meta.push(format!("next_start_line={next_start}"));
+    }
+    if let Some(next_path) = obj.get("next_path_index").and_then(Value::as_u64) {
+        meta.push(format!("next_path_index={next_path}"));
+    }
     if let Some(p) = obj.get("source_preview").and_then(Value::as_object) {
         if let (Some(s), Some(e)) = (
             p.get("start_line").and_then(Value::as_u64),
@@ -485,6 +491,8 @@ fn render_acdd_read(value: &Value) -> String {
         "content_digest",
         "graph_pulse",
         "truncated",
+        "next_start_line",
+        "next_path_index",
         "source_preview",
         "node",
         "generation",

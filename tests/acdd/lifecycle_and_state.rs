@@ -805,6 +805,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }),
         )
         .unwrap_err();
@@ -830,6 +831,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }),
         )
         .unwrap();
@@ -922,6 +924,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }),
         )
         .unwrap()

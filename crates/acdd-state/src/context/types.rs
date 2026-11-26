@@ -46,7 +46,7 @@ pub struct ClaimContextRequest {
     pub pre_task_slice: Option<Value>,
     /// Receipts of completed dependency tasks.
     pub dependency_receipts: Vec<Receipt>,
-    /// Relevant blackboard messages (capped to 15 x 500 chars per `ADR-0006`).
+    /// Relevant blackboard messages (capped to 6 x 220 chars per `ADR-0006`).
     pub blackboard_items: Vec<BlackboardRecord>,
     /// True when prior `architectural_drift` findings require discarding cached builder context.
     pub context_reset_required: bool,
@@ -89,7 +89,7 @@ pub struct ClaimResp {
     /// Tier 4: Completed dependency task receipts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_receipts: Vec<Value>,
-    /// Tier 5: Blackboard notes/blockers/decisions (up to 15 x 500 chars).
+    /// Tier 5: Blackboard notes/blockers/decisions (up to 6 x 220 chars).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blackboard: Vec<Value>,
     /// Tier 6: Dynamic `DomainProvider` context lenses in YAML declaration order.
@@ -132,4 +132,5 @@ pub(crate) struct SnapshotContextInput<'a> {
     pub candidate_tree: TreeOid,
     pub path_policy: WorkspacePathPolicy,
     pub primary: &'a Path,
+    pub detail: acdd_core::response::Detail,
 }

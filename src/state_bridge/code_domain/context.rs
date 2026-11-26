@@ -32,7 +32,7 @@ fn collect_graph_test_items(
     worktree: &Path,
     conn: &Connection,
     snapshot: &ScopedCodeSnapshot,
-    seen: &mut BTreeSet<(String, String)>,
+    seen_paths: &mut BTreeSet<String>,
     ranked_items: &mut Vec<(u8, usize, usize, Value)>,
 ) -> Result<()> {
     let page = QueryOptions::resolve(
@@ -64,7 +64,7 @@ fn collect_graph_test_items(
                 continue;
             }
             let qualname = item["qualname"].as_str().unwrap_or_default().to_owned();
-            if seen.insert((path.clone(), qualname.clone())) {
+            if seen_paths.insert(path.clone()) {
                 ranked_items.push((
                     0u8,
                     per_file_rank,
@@ -86,7 +86,7 @@ fn collect_graph_test_items(
 
 fn collect_live_test_items(
     snapshot: &ScopedCodeSnapshot,
-    seen: &mut BTreeSet<(String, String)>,
+    seen_paths: &mut BTreeSet<String>,
     ranked_items: &mut Vec<(u8, usize, usize, Value)>,
 ) {
     for (file_idx, rel) in snapshot.files.iter().enumerate() {
@@ -97,7 +97,7 @@ fn collect_live_test_items(
         for node in &parsed.facts.nodes {
             let is_test_case =
                 node.details.get("test_role").and_then(Value::as_str) == Some("test_case");
-            if is_test_case && seen.insert((node.path.clone(), node.qualname.clone())) {
+            if is_test_case && seen_paths.insert(node.path.clone()) {
                 ranked_items.push((
                     1u8,
                     per_file_rank,
@@ -210,7 +210,7 @@ impl CodeDomainProvider {
                 .facts
                 .nodes
                 .iter()
-                .filter(|n| !is_non_symbol_container(n.kind.as_str()) && !n.is_test)
+                .filter(|n| !is_non_symbol_container(n.kind.as_str()) && !n.is_test && !n.generated)
                 .collect();
             let keep_private = file_nodes.len() <= CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD;
             let mut file_candidates = Vec::new();
@@ -375,24 +375,41 @@ impl CodeDomainProvider {
             if is_deleted || !callers.is_empty() || signature_changed {
                 let caller_bonus = u64::try_from(callers.len().min(100)).unwrap_or(100) * 50;
                 let score = if signature_changed { 5_000 } else { 500 } + caller_bonus;
-                items.push((
-                    score,
-                    json!({
-                        "path": node.path,
-                        "symbol": node.qualname,
-                        "signature_changed": signature_changed,
-                        "external_callers": callers.into_iter().collect::<Vec<_>>(),
-                    }),
-                ));
+                let callers_total = callers.len();
+                let shown_callers: Vec<String> = callers
+                    .into_iter()
+                    .take(CODE_EXTERNAL_CALLERS_MAX_ITEMS)
+                    .collect();
+                let mut entry = json!({
+                    "path": node.path,
+                    "symbol": node.qualname,
+                    "signature_changed": signature_changed,
+                    "external_callers": shown_callers,
+                });
+                if callers_total > CODE_EXTERNAL_CALLERS_MAX_ITEMS {
+                    entry["external_callers_total"] = json!(callers_total);
+                }
+                items.push((score, entry));
             }
         }
 
+        items.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1["path"].as_str().cmp(&b.1["path"].as_str()))
+                .then_with(|| a.1["symbol"].as_str().cmp(&b.1["symbol"].as_str()))
+        });
+        let total_items = items.len();
         items.truncate(CODE_EXTERNAL_CALLERS_MAX_ITEMS);
-        Ok(budget_scored_items(
-            "external_callers",
-            items,
-            req.max_bytes,
-        ))
+        let mut envelope = serde_json::Map::new();
+        envelope.insert("kind".to_owned(), json!("external_callers"));
+        if total_items > items.len() {
+            envelope.insert("total".to_owned(), json!(total_items));
+            envelope.insert("truncated".to_owned(), json!(true));
+        }
+        Ok(
+            acdd_state::context::budget::pack_json_lens(envelope, items.into_iter(), req.max_bytes)
+                .0,
+        )
     }
 }
 

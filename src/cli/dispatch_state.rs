@@ -243,8 +243,11 @@ pub(super) fn dispatch(
             force,
             steal_remote,
             worktree,
+            detail,
         } => {
             let worker_id = WorkerId::new(&worker)?;
+            let parsed_detail =
+                super::dispatch_code::parse_cli_detail(detail.as_deref())?.unwrap_or_default();
             state_ctx.command(StateCommand::Claim(ClaimReq {
                 run,
                 node,
@@ -253,6 +256,7 @@ pub(super) fn dispatch(
                 force,
                 steal_remote,
                 worktree,
+                detail: parsed_detail,
             }))
         }
         Command::Verify {

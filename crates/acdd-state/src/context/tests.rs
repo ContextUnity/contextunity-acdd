@@ -219,7 +219,7 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     assert_eq!(err.code, ErrorCode::GuidanceBudgetExceeded);
 
     // Case 2: Tier priority ordering drops lower-priority context lenses first, keeps higher tiers,
-    // caps blackboard at 15 x 500 chars, and preserves YAML lens declaration order.
+    // caps blackboard at 6 x 220 chars, and preserves YAML lens declaration order.
     let mut tiered_req = base_request();
     tiered_req.unresolved_findings = Some(RejectionFindings {
         kind: RejectionKind::Defect,
@@ -284,9 +284,9 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     ];
 
     let full = build_claim_context(&tiered_req, &provider).unwrap();
-    assert_eq!(full.blackboard.len(), 15);
+    assert_eq!(full.blackboard.len(), 6);
     for item in &full.blackboard {
-        assert!(item["payload"].as_str().unwrap().chars().count() <= 500);
+        assert!(item["payload"].as_str().unwrap().chars().count() <= 220);
     }
     let lens_keys: Vec<&str> = full.context_lenses.keys().map(String::as_str).collect();
     assert_eq!(lens_keys, vec!["code.zebra", "code.symbols", "code.tests"]);
@@ -467,6 +467,58 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     );
     assert!(pred_md.contains("#### Task Slice: `t1`"), "{pred_md}");
     assert!(pred_md.contains("Batch reader"), "{pred_md}");
+
+    // Tier 2: oversized `unresolved_findings` drops `failed_trace_log_tail` first to stay complete,
+    // and fails closed with GuidanceBudgetExceeded (never omits `findings`) if Tier 1 + findings overflow.
+    let mut findings_req = base_request();
+    findings_req.gate.context.clear();
+    findings_req.unresolved_findings = Some(RejectionFindings {
+        kind: RejectionKind::Defect,
+        summary: "Preserve all remediation findings".to_owned(),
+        blackboard_message_id: Some(584),
+        items: (1..=6)
+            .map(|i| FindingItem {
+                severity: FindingSeverity::High,
+                path: Some(format!("src/module_{i}.rs")),
+                message: format!("Finding {i}: {}", "defect_detail_".repeat(12)),
+                remediation: format!("Fix {i}: {}", "remediation_step_".repeat(12)),
+            })
+            .collect(),
+    });
+    findings_req.failed_trace_log_tail = Some("trace_stderr_line\n".repeat(300));
+
+    let without_tail = build_claim_context(
+        &ClaimContextRequest {
+            failed_trace_log_tail: None,
+            response_max_bytes: CLAIM_FULL_MAX_BYTES,
+            ..findings_req.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap();
+    // Budget fits complete Tier 1 + findings, NOT the 4 KiB trace tail -> tail dropped, findings complete.
+    findings_req.response_max_bytes = without_tail.total_bytes + 32;
+    let kept_findings = build_claim_context(&findings_req, &empty_provider).unwrap();
+    assert!(kept_findings.total_bytes <= findings_req.response_max_bytes);
+    let kept_payload = kept_findings.unresolved_findings.as_ref().unwrap();
+    assert_eq!(
+        kept_payload["findings"]["items"].as_array().unwrap().len(),
+        6
+    );
+    assert!(kept_payload.get("failed_trace_log_tail").is_none());
+
+    // Budget smaller than Tier 1 + complete findings -> must fail closed (never omit findings).
+    findings_req.response_max_bytes = kept_findings.total_bytes - 1;
+    let err_findings = build_claim_context(&findings_req, &empty_provider).unwrap_err();
+    assert_eq!(err_findings.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // Retrying with `CLAIM_FULL_MAX_BYTES` (detail="full") succeeds with both findings and trace tail.
+    findings_req.response_max_bytes = CLAIM_FULL_MAX_BYTES;
+    let full_findings = build_claim_context(&findings_req, &empty_provider).unwrap();
+    assert!(full_findings.total_bytes <= CLAIM_FULL_MAX_BYTES);
+    assert!(
+        full_findings.unresolved_findings.as_ref().unwrap()["failed_trace_log_tail"].is_string()
+    );
 }
 
 #[test]

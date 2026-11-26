@@ -642,3 +642,409 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
         );
     }
 }
+
+#[test]
+fn compact_claim_budget_detail_and_lens_compaction_matrix() {
+    use acdd_core::response::Detail;
+    use acdd_state::context::budget::{MAX_BLACKBOARD_CHARS, MAX_BLACKBOARD_ITEMS};
+    use acdd_state::context::render_claim_prompt_markdown;
+    use acdd_state::types::{
+        BlackboardRecord, BlackboardStatus, BlackboardTopic, FindingItem, FindingSeverity,
+        RejectionFindings, RejectionKind,
+    };
+    use acdd_state::usecases::{ClaimReq, StartReq, StateCommand, StateCommandOutput, StateEngine};
+    const COMPACT_CLAIM_MAX_BYTES: usize = 9_500;
+
+    let ws = crate::common::Workspace::new();
+    let root = ws.root();
+    let run_git = |args: &[&str]| {
+        let out = acdd_core::git::git_command(root, args).unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    run_git(&["config", "user.name", "Test"]);
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::create_dir_all(root.join("docs/milestones")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"compact_demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("AGENTS.md"),
+        "# Workspace Rules\n## Authority\n## Routes\n## Workflows\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/AGENTS.md"),
+        "# Source Rules\n## Modules\n## Tests\n",
+    )
+    .unwrap();
+
+    // Rust derive struct + 7 public functions called from 7 external callers.
+    let mut api_src = String::from(
+        "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]\npub struct DerivedModel {\n    pub id: u64,\n}\n\npub fn hot_api() -> u64 { 1 }\n",
+    );
+    for i in 0..6 {
+        api_src.push_str(&format!("pub fn ext_api_{i}() -> u64 {{ {i} }}\n"));
+    }
+    std::fs::write(root.join("src/api.rs"), &api_src).unwrap();
+    let mut lib_src = String::from("pub mod api;\n");
+    for i in 0..7 {
+        lib_src.push_str(&format!("pub mod caller_{i};\n"));
+    }
+    std::fs::write(root.join("src/lib.rs"), &lib_src).unwrap();
+
+    for i in 0..7 {
+        let mut caller_src = String::from("use crate::api::hot_api;\n");
+        if i < 6 {
+            caller_src.push_str(&format!("use crate::api::ext_api_{i};\n"));
+        }
+        caller_src.push_str(&format!("pub fn caller_{i}() -> u64 {{ hot_api()"));
+        if i < 6 {
+            caller_src.push_str(&format!(" + ext_api_{i}()"));
+        }
+        caller_src.push_str(" }\n");
+        std::fs::write(root.join(format!("src/caller_{i}.rs")), caller_src).unwrap();
+    }
+
+    // 10 test files, with multiple tests in test_00.rs to verify path deduplication + top-8 cap.
+    std::fs::write(
+        root.join("tests/test_00.rs"),
+        "use compact_demo::api::hot_api;\n#[test]\nfn t_a() { assert_eq!(hot_api(), 1); }\n#[test]\nfn t_b() { assert_eq!(hot_api(), 1); }\n#[test]\nfn t_c() { assert_eq!(hot_api(), 1); }\n",
+    )
+    .unwrap();
+    for i in 1..10 {
+        std::fs::write(
+            root.join(format!("tests/test_{i:02}.rs")),
+            format!(
+                "use compact_demo::api::hot_api;\n#[test]\nfn t_{i}() {{ assert_eq!(hot_api(), 1); }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    std::fs::write(
+        root.join("docs/milestones/AC-900.md"),
+        "---\nid: AC-900\ntitle: Compact Claim\ndoc_type: contract\nstatus: planned\n---\n\n### task: t1\n\n```yaml\ntask_ref: t1\ntarget: \"Verify compact claim\"\nscope:\n  - src/api.rs\nstatus: planned\n```\n",
+    )
+    .unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "init"]);
+
+    contextunity_acdd::engine::pipeline::build(root, &root.join(".acdd/code-map.sqlite"), None)
+        .unwrap();
+    let adapter = Adapter::default();
+    let provider = build_domain_providers(root, &adapter, None, Vec::new()).unwrap();
+
+    // 1. Direct context lenses: no derive noise, no headings TOC, deduped top-8 tests, top-5 external callers + overflow.
+    let mut direct_req = sample_claim_request(
+        root.to_path_buf(),
+        vec![
+            "docs.instructions".to_owned(),
+            "code.symbols".to_owned(),
+            "code.external_callers".to_owned(),
+        ],
+        vec!["src/api.rs".to_owned()],
+        "Verify compact claim",
+        32_768,
+    );
+    direct_req.unresolved_findings = Some(RejectionFindings {
+        kind: RejectionKind::Defect,
+        summary: "Preserve unresolved findings".to_owned(),
+        blackboard_message_id: Some(11),
+        items: vec![FindingItem {
+            severity: FindingSeverity::High,
+            path: Some("src/lib.rs".to_owned()),
+            message: "Must remain intact".to_owned(),
+            remediation: "Keep Tier 2 intact".to_owned(),
+        }],
+    });
+    direct_req.blackboard_items = (1..=10)
+        .map(|i| BlackboardRecord {
+            id: Some(i),
+            run_id: RunId::new("run-1").unwrap(),
+            node_id: Some("task:t1".to_owned()),
+            recipient_node_id: None,
+            subtask_ref: None,
+            gate: Some("build".to_owned()),
+            author: "builder".to_owned(),
+            topic: BlackboardTopic::Notes,
+            status: BlackboardStatus::Open,
+            payload: format!("bb-{i}: {}", "x".repeat(300)),
+            created_at: "2026-11-26T10:00:00.000Z".to_owned(),
+        })
+        .collect();
+
+    let assembled = GateContextAssembler::assemble(&direct_req, &provider).unwrap();
+    let md = render_claim_prompt_markdown(&assembled, None);
+
+    // docs.instructions omits headings TOC.
+    for item in assembled.context_lenses["docs.instructions"]["items"]
+        .as_array()
+        .unwrap()
+    {
+        assert!(
+            item.get("headings").is_none(),
+            "headings must be stripped: {item}"
+        );
+    }
+    assert!(!md.contains("headings:"), "{md}");
+
+    // code.symbols filters generated derive methods (.ne, .le, .ge, .eq, .clone, .fmt).
+    let symbol_qns: Vec<&str> = assembled.context_lenses["code.symbols"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["qualname"].as_str())
+        .collect();
+    assert!(
+        symbol_qns.iter().any(|q| q.ends_with("hot_api")),
+        "{symbol_qns:?}"
+    );
+    for noise in [
+        ".ne",
+        ".le",
+        ".ge",
+        ".eq",
+        ".clone",
+        ".fmt",
+        ".cmp",
+        ".partial_cmp",
+    ] {
+        assert!(
+            !symbol_qns.iter().any(|q| q.ends_with(noise)),
+            "generated derive noise '{noise}' leaked into code.symbols: {symbol_qns:?}"
+        );
+    }
+
+    // code.tests deduplicates paths and caps at top 8.
+    let tests_req = sample_claim_request(
+        root.to_path_buf(),
+        vec!["code.tests".to_owned()],
+        vec!["src/api.rs".to_owned(), "tests/**".to_owned()],
+        "Verify compact claim",
+        32_768,
+    );
+    let tests_assembled = GateContextAssembler::assemble(&tests_req, &provider).unwrap();
+    let test_items = tests_assembled.context_lenses["code.tests"]["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(test_items.len(), 8, "{}", test_items.len());
+    let test_paths: std::collections::BTreeSet<&str> = test_items
+        .iter()
+        .filter_map(|v| v["path"].as_str())
+        .collect();
+    assert_eq!(test_paths.len(), test_items.len(), "{test_items:?}");
+
+    // code.external_callers caps at top-5 items + top-5 callers per item with overflow count.
+    let ext_lens = &assembled.context_lenses["code.external_callers"];
+    let ext_items = ext_lens["items"].as_array().unwrap();
+    assert_eq!(ext_items.len(), 5, "{ext_lens}");
+    assert_eq!(ext_lens["total"], 7, "{ext_lens}");
+    let hot_entry = ext_items
+        .iter()
+        .find(|v| v["symbol"].as_str().is_some_and(|s| s.ends_with("hot_api")))
+        .expect("hot_api ranked first by caller count");
+    assert_eq!(hot_entry["external_callers"].as_array().unwrap().len(), 5);
+    assert_eq!(hot_entry["external_callers_total"], 7);
+    assert!(md.contains("(+2 more)"), "{md}");
+    assert!(md.contains("... (+2 more)"), "{md}");
+
+    // Blackboard bounded at 6 x 220 chars while keeping Tier 2 findings intact.
+    assert_eq!(assembled.blackboard.len(), MAX_BLACKBOARD_ITEMS);
+    for item in &assembled.blackboard {
+        assert!(
+            item["payload"].as_str().unwrap().chars().count() <= MAX_BLACKBOARD_CHARS,
+            "{item}"
+        );
+    }
+    assert!(assembled.unresolved_findings.is_some());
+
+    // 2. StateEngine ClaimReq::detail: default Compact <= 9,500 bytes vs opt-in Full <= 32,768 bytes.
+    let repo_profile_src =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".acdd/profile.yaml");
+    let profile_text = std::fs::read_to_string(&repo_profile_src).unwrap();
+    assert!(
+        !profile_text.contains("code.tools:"),
+        "duplicate code.tools override must be removed from .acdd/profile.yaml"
+    );
+    std::fs::create_dir_all(root.join(".acdd/profiles")).unwrap();
+    std::fs::write(root.join(".acdd/profile.yaml"), &profile_text).unwrap();
+    let resolved_repo_profile = acdd_state::profile::resolve_profile_ref_with_dirs(
+        ".acdd/profile.yaml",
+        Some(root),
+        None,
+        Some(&[".acdd/profiles".to_owned()]),
+    )
+    .expect("repo .acdd/profile.yaml must resolve cleanly after code.tools dedup");
+    assert!(resolved_repo_profile.guidance.contains_key("code.tools"));
+    assert!(resolved_repo_profile
+        .guidance
+        .contains_key("code.principles"));
+    assert!(resolved_repo_profile.guidance.contains_key("repo.tests"));
+
+    std::fs::write(
+        root.join(".acdd/profiles/compact_test.yaml"),
+        "version: 2\ninherit: code\ngit:\n  isolation: in_place\n  worktrees: manual\ncommands:\n  build_check:\n    command: \"true\"\n  verify_all:\n    command: \"true\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n          proof: command\n          guidance: [task.code, core.execution, code.principles, code.tools, hitl.pro]\n          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols, code.tests, code.external_callers]\n          pass: review\n        - id: review\n          role: independent_reviewer\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: independent_reviewer\n          independent_from: [build]\n          need: [build, review]\n          receipt: true\n",
+    )
+    .unwrap();
+    let mut cfg = crate::acdd::support::base_engine_config(root);
+    cfg.code_db_path = Some(root.join(".acdd/code-map.sqlite"));
+    let engine = StateEngine::open(cfg, provider).unwrap();
+    let started = match engine
+        .execute(StateCommand::Start(StartReq {
+            spec_path: Some("docs/milestones/AC-900.md".to_owned()),
+            profile: Some(".acdd/profiles/compact_test.yaml".to_owned()),
+            in_place: true,
+            ..StartReq::default()
+        }))
+        .unwrap()
+    {
+        StateCommandOutput::Start(resp) => *resp,
+        other => panic!("unexpected start: {other:?}"),
+    };
+    let rid = started.run.run_id.to_string();
+    for i in 1..=8 {
+        engine
+            .execute(StateCommand::BlackboardPost(
+                acdd_state::usecases::BlackboardPostReq {
+                    run: Some(rid.clone()),
+                    node: Some("t1.build".to_owned()),
+                    recipient_node: None,
+                    subtask_ref: None,
+                    gate: Some("build".to_owned()),
+                    author: "coord".to_owned(),
+                    topic: BlackboardTopic::Decisions,
+                    payload: format!("decision-{i}: {}", "d".repeat(260)),
+                },
+            ))
+            .unwrap();
+    }
+    let compact_claim = match engine
+        .execute(StateCommand::Claim(ClaimReq {
+            run: Some(rid.clone()),
+            node: Some("t1.build".to_owned()),
+            worker_id: WorkerId::new("w-compact").unwrap(),
+            session_fingerprint: None,
+            force: false,
+            steal_remote: false,
+            worktree: None,
+            detail: Detail::Compact,
+        }))
+        .unwrap()
+    {
+        StateCommandOutput::Claim(resp) => *resp,
+        other => panic!("unexpected compact claim: {other:?}"),
+    };
+    assert!(
+        compact_claim.total_bytes <= COMPACT_CLAIM_MAX_BYTES,
+        "compact claim exceeded {COMPACT_CLAIM_MAX_BYTES}: {}",
+        compact_claim.total_bytes
+    );
+    let compact_md = render_claim_prompt_markdown(&compact_claim, None);
+    assert!(
+        compact_md.len() <= COMPACT_CLAIM_MAX_BYTES,
+        "compact claim markdown exceeded {COMPACT_CLAIM_MAX_BYTES}: {}",
+        compact_md.len()
+    );
+
+    let rid_cli = rid.clone();
+    let full_claim = match engine
+        .execute(StateCommand::Claim(ClaimReq {
+            run: Some(rid),
+            node: Some("t1.build".to_owned()),
+            worker_id: WorkerId::new("w-compact").unwrap(),
+            session_fingerprint: None,
+            force: false,
+            steal_remote: false,
+            worktree: None,
+            detail: Detail::Full,
+        }))
+        .unwrap()
+    {
+        StateCommandOutput::Claim(resp) => *resp,
+        other => panic!("unexpected full claim: {other:?}"),
+    };
+    assert!(full_claim.total_bytes <= 32_768);
+    assert!(full_claim.total_bytes >= compact_claim.total_bytes);
+    drop(engine);
+
+    // 3. CLI `acdd claim` parity: default (`compact`) <= 9,500 bytes, explicit `--detail compact|full`,
+    // and invalid `--detail` rejected.
+    let cli_default = crate::common::cli::run_cli_json(
+        &ws,
+        &[
+            "claim",
+            "t1.build",
+            "--run",
+            &rid_cli,
+            "--worker",
+            "w-cli",
+            "--force",
+            "--steal-remote",
+        ],
+    );
+    assert!(
+        cli_default.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_default.stderr)
+    );
+    let cli_default_val: Value = serde_json::from_slice(&cli_default.stdout).unwrap();
+    let cli_default_bytes = cli_default_val["Claim"]["total_bytes"]
+        .as_u64()
+        .expect("CLI claim payload must contain Claim.total_bytes")
+        as usize;
+    assert!(cli_default_bytes <= COMPACT_CLAIM_MAX_BYTES);
+
+    let cli_compact = crate::common::cli::run_cli_json(
+        &ws,
+        &[
+            "claim", "t1.build", "--run", &rid_cli, "--worker", "w-cli", "--force", "--detail",
+            "compact",
+        ],
+    );
+    assert!(cli_compact.status.success());
+    let cli_compact_val: Value = serde_json::from_slice(&cli_compact.stdout).unwrap();
+    assert_eq!(
+        cli_compact_val["Claim"]["total_bytes"],
+        cli_default_val["Claim"]["total_bytes"]
+    );
+
+    let cli_full = crate::common::cli::run_cli_json(
+        &ws,
+        &[
+            "claim", "t1.build", "--run", &rid_cli, "--worker", "w-cli", "--force", "--detail",
+            "full",
+        ],
+    );
+    assert!(
+        cli_full.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_full.stderr)
+    );
+    let cli_full_val: Value = serde_json::from_slice(&cli_full.stdout).unwrap();
+    let cli_full_bytes = cli_full_val["Claim"]["total_bytes"]
+        .as_u64()
+        .expect("CLI full claim payload must contain Claim.total_bytes")
+        as usize;
+    assert!(cli_full_bytes <= 32_768);
+    assert!(cli_full_bytes >= cli_default_bytes);
+
+    let cli_bad_detail = crate::common::cli::run_cli_json(
+        &ws,
+        &[
+            "claim", "t1.build", "--run", &rid_cli, "--worker", "w-cli", "--force", "--detail",
+            "bogus",
+        ],
+    );
+    assert!(!cli_bad_detail.status.success());
+}

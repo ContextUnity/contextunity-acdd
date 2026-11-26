@@ -424,6 +424,7 @@ gates:
                             force: false,
                             steal_remote: false,
                             worktree: None,
+                            detail: Default::default(),
                         }),
                     )
                     .expect_err(&format!("{} must fail Claim", item.relpath));
@@ -464,6 +465,7 @@ gates:
                             force: false,
                             steal_remote: false,
                             worktree: None,
+                            detail: Default::default(),
                         }),
                     )
                     .unwrap();
@@ -500,6 +502,7 @@ gates:
                             force: false,
                             steal_remote: false,
                             worktree: None,
+                            detail: Default::default(),
                         }),
                     )
                     .unwrap();

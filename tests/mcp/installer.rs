@@ -1394,7 +1394,7 @@ fn update_reexecutes_default_configured_server_without_signaling_other_commands(
         let child_output: OwnedFd = child_output.into();
         let mut nonserver = CommandCleanup(
             Command::new(&binary)
-                .args(["--format", "json", "read", "serve", "--mode", "raw"])
+                .args(["--format", "json", "read", "serve", "--mode", "raw", "--detail", "full"])
                 .current_dir(&installer.project)
                 .env_clear()
                 .env("HOME", &installer.home)
@@ -1753,7 +1753,7 @@ fn macos_update_executes_default_and_explicit_servers_with_confined_discovery() 
     let child_output: OwnedFd = child_output.into();
     let mut nonserver = CommandCleanup(
         Command::new(&binary)
-            .args(["--format", "json", "read", "serve", "--mode", "raw"])
+            .args(["--format", "json", "read", "serve", "--mode", "raw", "--detail", "full"])
             .current_dir(&installer.project)
             .env_clear()
             .env("HOME", &installer.home)

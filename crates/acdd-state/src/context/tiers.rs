@@ -150,9 +150,9 @@ pub(super) fn apply_tier2_findings(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
-) {
+) -> Result<(), StateError> {
     if req.unresolved_findings.is_none() && req.failed_trace_log_tail.is_none() {
-        return;
+        return Ok(());
     }
     let tail = req
         .failed_trace_log_tail
@@ -164,12 +164,43 @@ pub(super) fn apply_tier2_findings(
         (req.unresolved_findings.is_some() && tail.is_some())
             .then(|| json!({ "findings": req.unresolved_findings })),
     ];
+    let mut last_delta = 0;
     for payload in candidates.into_iter().flatten() {
         let delta = 23 + estimate_json_bytes(&payload);
+        last_delta = delta;
         if *running_bytes + delta <= req.response_max_bytes {
             resp.unresolved_findings = Some(payload);
             *running_bytes += delta;
-            return;
+            return Ok(());
+        }
+    }
+    if req.unresolved_findings.is_some() {
+        return Err(StateError::new(
+            ErrorCode::GuidanceBudgetExceeded,
+            format!(
+                "mandatory claim context + unresolved_findings ({} bytes) exceeds response_max_bytes ({} bytes); retry with detail=\"full\"",
+                *running_bytes + last_delta,
+                req.response_max_bytes
+            ),
+        ));
+    }
+    if let Some(full_tail) = req.failed_trace_log_tail.as_deref() {
+        let overhead =
+            23 + estimate_json_bytes(&json!({ "findings": null, "failed_trace_log_tail": "" }));
+        let available = req
+            .response_max_bytes
+            .saturating_sub(*running_bytes + overhead);
+        if available >= 64 {
+            let payload = json!({
+                "findings": Value::Null,
+                "failed_trace_log_tail": utf8_tail(full_tail, available),
+            });
+            let delta = 23 + estimate_json_bytes(&payload);
+            if *running_bytes + delta <= req.response_max_bytes {
+                resp.unresolved_findings = Some(payload);
+                *running_bytes += delta;
+                return Ok(());
+            }
         }
     }
     add_omitted_section(
@@ -178,6 +209,7 @@ pub(super) fn apply_tier2_findings(
         "unresolved_findings",
         req.response_max_bytes,
     );
+    Ok(())
 }
 
 pub(super) fn apply_tier3_pre_task_slice(

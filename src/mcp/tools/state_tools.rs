@@ -317,6 +317,7 @@ pub(super) async fn acdd_claim(server: &Server, p: ClaimInput) -> CallToolResult
             force: p.force,
             steal_remote: p.steal_remote,
             worktree: explicit_wt_nonempty.then(|| ctx.target_root.to_path_buf()),
+            detail: p.detail.unwrap_or_default(),
         };
         let out = ctx.execute_command(StateCommand::Claim(req))?;
         let StateCommandOutput::Claim(claim) = out else {

@@ -219,6 +219,9 @@ pub enum Command {
         /// Explicit worktree path override.
         #[arg(long)]
         worktree: Option<PathBuf>,
+        /// Context detail budget (`compact` default <= 9,500 bytes, or `full` up to 32 KiB).
+        #[arg(long)]
+        detail: Option<String>,
     },
     /// Run gate verification (`command:`, `call:`, `checks:`, scope barrier) without advancing state.
     Verify {
@@ -468,6 +471,9 @@ pub enum Command {
         /// Symbol leading context lines.
         #[arg(long)]
         leading_lines: Option<usize>,
+        /// Response detail (`compact` default <= 9,000 bytes inline, or `full`).
+        #[arg(long)]
+        detail: Option<String>,
     },
     /// Validate `acdd.yaml`, `.acdd/profile.yaml`, `DomainProvider` capabilities, and specs fail-closed.
     Validate {

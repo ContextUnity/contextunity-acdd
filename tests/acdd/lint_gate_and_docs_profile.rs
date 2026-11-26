@@ -59,6 +59,7 @@ fn claim_node(
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -281,6 +282,7 @@ scope: [src/core/scoped.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap_err();
 

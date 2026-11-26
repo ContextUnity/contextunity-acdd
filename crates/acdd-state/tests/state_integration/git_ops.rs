@@ -453,7 +453,47 @@ fn scoped_commit_plumbing_and_archive_matrix() {
         broad_oid
     );
 
-    // 4. Archive commit moves spec to archive/ cleanly even with pre-commit hook present.
+    // 4. Staged `git mv` rename + staged addition inside admitted scope commits identically to unstaged move,
+    // while ignoring out-of-scope staged entries (`README.md`).
+    git_ok(&repo, &["checkout", "--", "src/broad.rs"]);
+    git_ok(&repo, &["mv", "src/broad.rs", "src/renamed.rs"]);
+    fs::write(repo.join("src/staged_new.rs"), "pub fn staged_new() {}\n").expect("staged_new");
+    git_ok(&repo, &["add", "src/staged_new.rs"]);
+    fs::write(repo.join("README.md"), "# Staged Out Of Scope\n").expect("staged readme");
+    git_ok(&repo, &["add", "README.md"]);
+    let staged_scope_tree = current_scope_tree(&repo, Some(&["src/**".to_owned()]), &policy)
+        .expect("staged scope tree");
+    let mv_commit = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:git-mv".to_owned(),
+            claim_revision: 6,
+            base_head: broad_oid.clone(),
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy.clone(),
+            message: "commit git mv rename".to_owned(),
+            allow_main: false,
+        },
+        Some(&staged_scope_tree),
+    )
+    .expect("git mv staged rename must commit cleanly");
+    let mv_oid = mv_commit.committed_oid.expect("mv oid");
+    assert!(blob_oid_at(&repo, mv_oid.as_str(), "src/renamed.rs")
+        .unwrap()
+        .is_some());
+    assert!(blob_oid_at(&repo, mv_oid.as_str(), "src/staged_new.rs")
+        .unwrap()
+        .is_some());
+    assert!(blob_oid_at(&repo, mv_oid.as_str(), "src/broad.rs")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        git_ok(&repo, &["show", &format!("{mv_oid}:README.md")]),
+        "# Dirty Out Of Scope"
+    );
+
+    // 5. Archive commit moves spec to archive/ cleanly even with pre-commit hook present.
     let archive_md = "# Archived Spec\n";
     let arch_resp = archive_spec_with_git(&ArchiveCommitReq {
         worktree: repo.clone(),

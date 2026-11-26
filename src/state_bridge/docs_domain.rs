@@ -3,8 +3,8 @@
 use super::common::{
     budget_items, budget_scored_items, build_composite_providers, combine_file_hashes,
     open_code_db_readonly, resolve_worktree_adapter, truncate_single_line,
-    unsupported_domain_action, DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INSTRUCTION_MAX_HEADINGS,
-    DOCS_INVARIANT_FALLBACK_ITEM_LIMIT, DOCS_INVARIANT_MAX_RULE_CHARS,
+    unsupported_domain_action, DOCS_INSTRUCTIONS_DIRECTIVE, DOCS_INVARIANT_FALLBACK_ITEM_LIMIT,
+    DOCS_INVARIANT_MAX_RULE_CHARS,
 };
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -282,10 +282,6 @@ impl DocsDomainProvider {
             if !fs::symlink_metadata(&abs).is_ok_and(|metadata| metadata.is_file()) {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&abs) else {
-                continue;
-            };
-            let headings = extract_markdown_headings(&text, DOCS_INSTRUCTION_MAX_HEADINGS);
             let tier = match (rel.as_str(), is_owner) {
                 ("AGENTS.md", _) => 10_000,
                 (_, true) => 5_000,
@@ -293,11 +289,7 @@ impl DocsDomainProvider {
                 _ => 1_000,
             };
             let score = tier + u64::try_from(total_paths - idx).unwrap_or(1);
-            let mut item = json!({ "path": rel });
-            if !headings.is_empty() {
-                item["headings"] = json!(headings);
-            }
-            items.push((score, item));
+            items.push((score, json!({ "path": rel })));
         }
 
         let directive = DOCS_INSTRUCTIONS_DIRECTIVE;
@@ -1113,40 +1105,6 @@ fn collect_walk_rel_doc_paths(
     out
 }
 
-fn extract_markdown_headings(markdown: &str, max_headings: usize) -> Vec<String> {
-    let mut headings = Vec::new();
-    let mut lines = markdown.lines().peekable();
-    if lines.peek().is_some_and(|l| l.trim() == "---") {
-        lines.next();
-        for line in lines.by_ref() {
-            if line.trim() == "---" {
-                break;
-            }
-        }
-    }
-    let mut in_fence = false;
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        if trimmed.starts_with("# ") || trimmed.starts_with("## ") || trimmed.starts_with("### ") {
-            let text = trimmed.trim_start_matches('#').trim();
-            if !text.is_empty() {
-                headings.push(text.to_owned());
-                if headings.len() >= max_headings {
-                    break;
-                }
-            }
-        }
-    }
-    headings
-}
-
 fn extract_invariant_id(line: &str) -> Option<String> {
     let idx = line.find("INV-")?;
     let tail = &line[idx..];
@@ -1387,10 +1345,7 @@ mod tests {
         assert!(src_inst["items"][0].get("uri").is_none());
         assert!(src_inst["items"][0].get("title").is_none());
         assert!(src_inst["items"][0].get("content").is_none());
-        assert_eq!(
-            src_inst["items"][0]["headings"],
-            serde_json::json!(["Root Agent Rules", "Routes"])
-        );
+        assert!(src_inst["items"][0].get("headings").is_none());
         assert_eq!(
             src_inst["directive"],
             "MANDATORY: read repository rules for respective scope."

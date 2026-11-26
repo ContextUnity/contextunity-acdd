@@ -486,6 +486,7 @@ mod tests {
                 force: false,
                 steal_remote: false,
                 worktree: Some(root.clone()),
+                detail: acdd_core::response::Detail::Compact,
             }))
             .unwrap();
         let claim_tree = match claim_resp {
@@ -687,6 +688,7 @@ mod tests {
                 force: false,
                 steal_remote: false,
                 worktree: Some(root.clone()),
+                detail: acdd_core::response::Detail::Compact,
             }))
             .unwrap();
         let root_protected = read(&ReadRequest {

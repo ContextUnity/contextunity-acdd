@@ -1,6 +1,6 @@
 //! Layered reader shared by the CLI and MCP transports.
 
-use acdd_core::response::{QueryOptions, SourceOptions};
+use acdd_core::response::{Detail, QueryOptions, SourceOptions};
 use acdd_core::{
     config::{resolve_file_path, Adapter},
     model::{ReadBounds, ReadMode, ReadResult},
@@ -192,6 +192,114 @@ pub struct ActiveNodeContext {
     pub has_command: bool,
 }
 
+const MAX_SLICE_BYTES: usize = 48 * 1024;
+const READ_DEFAULT_MAX_INLINE_BYTES: usize = 9_000;
+const READ_INLINE_FRAMING_RESERVE: usize = 512;
+const MCP_JSONRPC_TEXT_ENVELOPE_BYTES: usize = 104;
+
+fn json_escaped_len(s: &str) -> usize {
+    s.bytes()
+        .map(|b| match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+fn inline_budget_cap(adapter: &Adapter, detail: Detail) -> usize {
+    let limit = if detail == Detail::Full {
+        MAX_SLICE_BYTES
+    } else {
+        READ_DEFAULT_MAX_INLINE_BYTES
+    };
+    adapter.response.max_output_bytes.min(limit)
+}
+
+fn strip_oversized_export_content(value: &mut Value, adapter: &Adapter, exported_bytes: usize) {
+    if serialized_pretty_json_len(value) > inline_budget_cap(adapter, Detail::Full) {
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("content");
+            obj.remove("source");
+            obj.insert("exported_bytes".to_owned(), json!(exported_bytes));
+        }
+    }
+}
+
+fn build_batch_response(
+    paths: &[String],
+    results: &[Value],
+    markdown_sections: &[String],
+    truncated: bool,
+    next_path_index: Option<usize>,
+    inline_cap: Option<usize>,
+) -> Value {
+    let mut response = json!({
+        "mode": "batch",
+        "total_paths": paths.len(),
+        "batch": results,
+        "content": markdown_sections.join("\n\n---\n\n"),
+    });
+    if truncated {
+        response["truncated"] = json!(true);
+    }
+    let next_idx = next_path_index.filter(|&i| i < paths.len());
+    if let Some(idx) = next_idx {
+        response["next_path_index"] = json!(idx);
+        response["remaining_count"] = json!(paths.len() - idx);
+    }
+    for (key, val) in [
+        ("remaining_paths", next_idx.map(|idx| json!(&paths[idx..]))),
+        ("paths", Some(json!(paths))),
+    ] {
+        if let Some(v) = val {
+            response[key] = v;
+            let len = serialized_pretty_json_len(&response);
+            if !inline_cap.is_none_or(|cap| len <= cap && (len <= cap / 4 || !results.is_empty())) {
+                response.as_object_mut().and_then(|o| o.remove(key));
+            }
+        }
+    }
+    response
+}
+
+fn serialized_pretty_json_len(value: &Value) -> usize {
+    serde_json::to_string_pretty(value)
+        .and_then(|pretty| {
+            serde_json::to_string(&pretty).map(|wire| wire.len() + MCP_JSONRPC_TEXT_ENVELOPE_BYTES)
+        })
+        .unwrap_or(usize::MAX)
+}
+
+fn trim_lines_to_inline_cap(value: &mut Value, start_line: usize, cap: usize) -> Result<()> {
+    let Some(mut content) = value
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    while serialized_pretty_json_len(value) > cap {
+        let kept = content
+            .trim_end_matches(['\n', '\r'])
+            .rfind('\n')
+            .map(|pos| {
+                content.truncate(pos + 1);
+                content.lines().count()
+            })
+            .unwrap_or(0);
+        if kept == 0 {
+            bail!(
+                "LINE_TOO_LONG: line {start_line} exceeds inline serialized byte limit ({cap} bytes); use output_file or detail=\"full\""
+            );
+        }
+        value["content"] = json!(content);
+        value["truncated"] = json!(true);
+        value["next_start_line"] = json!(start_line + kept);
+    }
+    Ok(())
+}
+
 /// Read a file or symbol using already admitted graph state and optional pre-resolved active-node scope context.
 #[allow(clippy::too_many_arguments)]
 pub fn acdd_read_tool(
@@ -234,47 +342,151 @@ pub fn acdd_read_tool(
                     }
                 }
             }
+            let aggregate_cap = request
+                .output_file
+                .is_none()
+                .then(|| inline_budget_cap(adapter, page.detail));
+            let make_resp = |res: &[Value], secs: &[String], trunc: bool, next_i: Option<usize>| {
+                build_batch_response(paths, res, secs, trunc, next_i, aggregate_cap)
+            };
             let mut results = Vec::new();
             let mut markdown_sections = Vec::new();
-            for p in paths {
-                let mut single_req = request.clone();
-                single_req.path = Some(p.clone());
-                single_req.paths = None;
-                single_req.output_file = None;
-                match acdd_read_single(root, adapter, &single_req, page, source, conn, node_ctx) {
-                    Ok(mut val) => {
-                        let content = exportable_content(&val).unwrap_or("");
-                        markdown_sections.push(format!("### {p}\n\n{content}"));
-                        if let Some(obj) = val.as_object_mut() {
-                            obj.remove("content");
-                        }
-                        results.push(val);
+            let mut batch_truncated = false;
+            for (idx, p) in paths.iter().enumerate() {
+                let item_budget = if let Some(cap) = aggregate_cap {
+                    let probe = make_resp(&results, &markdown_sections, true, Some(idx));
+                    let remaining = cap.saturating_sub(serialized_pretty_json_len(&probe));
+                    if remaining < 160 {
+                        batch_truncated = true;
+                        break;
                     }
-                    Err(e) => {
-                        markdown_sections.push(format!("### {p}\n\n*Error reading file: {e}*"));
-                        results.push(json!({
-                            "path": p,
-                            "error": e.to_string(),
-                        }));
+                    Some(remaining)
+                } else {
+                    None
+                };
+
+                let single_req = ReadRequest {
+                    path: Some(p.clone()),
+                    paths: None,
+                    output_file: None,
+                    ..request.clone()
+                };
+                let read_entry = |budget: Option<usize>| -> Result<Option<(String, Value)>> {
+                    match acdd_read_single(
+                        root,
+                        adapter,
+                        &single_req,
+                        page,
+                        source,
+                        conn,
+                        node_ctx,
+                        budget,
+                    ) {
+                        Ok(mut val) => {
+                            let content = exportable_content(&val).unwrap_or("").to_owned();
+                            val.as_object_mut().and_then(|obj| obj.remove("content"));
+                            Ok(Some((format!("### {p}\n\n{content}"), val)))
+                        }
+                        Err(e) if budget.is_some() && e.to_string().contains("LINE_TOO_LONG") => {
+                            if idx == 0 {
+                                Err(e)
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(e) => Ok(Some((
+                            format!("### {p}\n\n*Error reading file: {e}*"),
+                            json!({ "path": p, "error": e.to_string() }),
+                        ))),
+                    }
+                };
+                let Some((mut section, mut entry)) = read_entry(item_budget)? else {
+                    batch_truncated = true;
+                    break;
+                };
+                if let Some(cap) = aggregate_cap {
+                    let mut measure = |sec: &str, ent: &Value| {
+                        results.push(ent.clone());
+                        markdown_sections.push(sec.to_owned());
+                        let trunc = ent["truncated"] == true || idx + 1 < paths.len();
+                        let next_i = (idx + 1 < paths.len()).then_some(idx + 1);
+                        let len = serialized_pretty_json_len(&make_resp(
+                            &results,
+                            &markdown_sections,
+                            trunc,
+                            next_i,
+                        ));
+                        results.pop();
+                        markdown_sections.pop();
+                        len
+                    };
+                    let mut len = measure(&section, &entry);
+                    if len > cap {
+                        if let Some(excess) =
+                            item_budget.and_then(|b| b.checked_sub(len - cap + 64))
+                        {
+                            if let Some((sec2, ent2)) = read_entry(Some(excess))? {
+                                let len2 = measure(&sec2, &ent2);
+                                if len2 <= cap {
+                                    (section, entry, len) = (sec2, ent2, len2);
+                                }
+                            }
+                        }
+                    }
+                    if len > cap {
+                        ensure!(
+                            idx > 0,
+                            "BATCH_ITEM_EXCEEDS_BUDGET: batch read for '{p}' exceeds inline byte limit ({cap} bytes); use detail=\"full\" or output_file"
+                        );
+                        batch_truncated = true;
+                        break;
                     }
                 }
+                let item_truncated = entry["truncated"] == true;
+                markdown_sections.push(section);
+                results.push(entry);
+                if aggregate_cap.is_some() && item_truncated {
+                    batch_truncated = true;
+                    break;
+                }
             }
-            let aggregate_content = markdown_sections.join("\n\n---\n\n");
-            let mut response = json!({
-                "mode": "batch",
-                "paths": paths,
-                "batch": results,
-                "content": aggregate_content,
-            });
+            let next_path_index =
+                (batch_truncated && results.len() < paths.len()).then_some(results.len());
+            let mut response = make_resp(
+                &results,
+                &markdown_sections,
+                batch_truncated,
+                next_path_index,
+            );
             if let Some(output) = &request.output_file {
+                let aggregate_content = markdown_sections.join("\n\n---\n\n");
                 let destination = acdd_core::fs::checked_child(root, Path::new(output))?;
                 acdd_core::fs::atomic_write(&destination, aggregate_content.as_bytes(), false)?;
                 response["output_file"] = json!(output);
+                strip_oversized_export_content(&mut response, adapter, aggregate_content.len());
+            } else if let Some(cap) = aggregate_cap {
+                ensure!(
+                    serialized_pretty_json_len(&response) <= cap,
+                    "BATCH_EXCEEDS_BUDGET: batch response exceeds inline byte limit ({cap} bytes); pass fewer paths or use detail=\"full\" or output_file"
+                );
             }
             return Ok(response);
         }
     }
-    acdd_read_single(root, adapter, request, page, source, conn, node_ctx)
+    let single_budget = request
+        .output_file
+        .is_none()
+        .then(|| inline_budget_cap(adapter, page.detail));
+    acdd_read_single(
+        root,
+        adapter,
+        request,
+        page,
+        source,
+        conn,
+        node_ctx,
+        single_budget,
+    )
 }
 
 fn line_coordinates(start: usize, count: Option<usize>) -> Result<(i64, Option<i64>)> {
@@ -470,6 +682,7 @@ fn read_non_snippet_value(
     mode: ReadMode,
     markdown: bool,
     node_ctx: Option<&ActiveNodeContext>,
+    inline_budget: Option<usize>,
 ) -> Result<(Value, bool)> {
     let path = request
         .path
@@ -488,35 +701,54 @@ fn read_non_snippet_value(
             Ok(acdd_core::fs::checked_child(root, Path::new(output))?)
         })
         .transpose()?;
-    let (content, truncated, single_file) =
-        if mode == ReadMode::Search && is_directory_or_glob_search(root, adapter, path)? {
-            let (content, truncated) = search_directory_or_glob(
-                root,
-                adapter,
-                path,
+    let max_slice_bytes = match inline_budget {
+        None => MAX_SLICE_BYTES,
+        Some(cap) => cap.saturating_sub(READ_INLINE_FRAMING_RESERVE).max(cap / 2),
+    };
+    let (content, truncated, next_start_line, single_file) = if mode == ReadMode::Search
+        && is_directory_or_glob_search(root, adapter, path)?
+    {
+        let (content, truncated) = search_directory_or_glob(
+            root,
+            adapter,
+            path,
+            &bounds,
+            request,
+            export_dest.as_deref(),
+        )?;
+        (content, truncated, None, false)
+    } else {
+        let file = admitted_file(root, adapter, path)?;
+        let (content, truncated, next_start_line) = match mode {
+            ReadMode::Delta => (
+                compute_file_delta(root, &file, request.baseline.as_deref(), node_ctx)?,
+                false,
+                None,
+            ),
+            ReadMode::Outline => {
+                let (content, truncated) = read_outline_content(adapter, &file, path, markdown)?;
+                (content, truncated, None)
+            }
+            _ => extract_file_slice(
+                &file,
+                mode,
                 &bounds,
                 request,
-                export_dest.as_deref(),
-            )?;
-            (content, truncated, false)
-        } else {
-            let file = admitted_file(root, adapter, path)?;
-            let (content, truncated) = match mode {
-                ReadMode::Delta => (
-                    compute_file_delta(root, &file, request.baseline.as_deref(), node_ctx)?,
-                    false,
-                ),
-                ReadMode::Outline => read_outline_content(adapter, &file, path, markdown)?,
-                _ => extract_file_slice(&file, mode, &bounds, request)?,
-            };
-            (content, truncated, true)
+                max_slice_bytes,
+                request.output_file.is_none(),
+            )?,
         };
+        (content, truncated, next_start_line, true)
+    };
     let mut val = serde_json::to_value(ReadResult {
         path: path.into(),
         mode,
         content,
         truncated,
     })?;
+    if let Some(next_line) = next_start_line {
+        val["next_start_line"] = json!(next_line);
+    }
     if mode == ReadMode::Delta {
         if let Some(ctx) = node_ctx {
             if let Some(ref baseline) = ctx.baseline_commit {
@@ -547,6 +779,7 @@ fn acdd_read_single(
     source: &SourceOptions,
     conn: Option<&Connection>,
     node_ctx: Option<&ActiveNodeContext>,
+    inline_budget: Option<usize>,
 ) -> Result<Value> {
     let normalized_req = with_stripped_root_path(request, root);
     let request = normalized_req.as_ref().unwrap_or(request);
@@ -559,8 +792,18 @@ fn acdd_read_single(
     let mut value = if mode == ReadMode::Snippet {
         read_snippet_value(root, adapter, request, page, source, conn)?
     } else {
-        let (val, returned) =
-            read_non_snippet_value(root, adapter, request, mode, markdown, node_ctx)?;
+        let effective_budget = (request.output_file.is_none())
+            .then_some(inline_budget)
+            .flatten();
+        let (val, returned) = read_non_snippet_value(
+            root,
+            adapter,
+            request,
+            mode,
+            markdown,
+            node_ctx,
+            effective_budget,
+        )?;
         if returned {
             return Ok(val);
         }
@@ -647,8 +890,14 @@ fn acdd_read_single(
             "output_file must differ from input"
         );
         let content = exportable_content(&value).context("read has no exportable content")?;
+        let content_len = content.len();
         acdd_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
         value["output_file"] = json!(output);
+        strip_oversized_export_content(&mut value, adapter, content_len);
+    } else if let Some(cap) = inline_budget {
+        if matches!(mode, ReadMode::Lines | ReadMode::Raw) {
+            trim_lines_to_inline_cap(&mut value, request.start_line.unwrap_or(1), cap)?;
+        }
     }
     Ok(value)
 }
@@ -1084,8 +1333,9 @@ fn extract_file_slice(
     mode: ReadMode,
     bounds: &ReadBounds,
     request: &ReadRequest,
-) -> Result<(String, bool)> {
-    const MAX_SLICE_BYTES: usize = 48 * 1024;
+    max_slice_bytes: usize,
+    enforce_json_escaped: bool,
+) -> Result<(String, bool, Option<usize>)> {
     let start = bounds.start_line.unwrap_or(1);
     let count = bounds.line_count.unwrap_or(100);
     ensure!(
@@ -1104,18 +1354,21 @@ fn extract_file_slice(
             start,
             count,
             context,
-            MAX_SLICE_BYTES,
+            max_slice_bytes,
             None,
             matcher,
             &mut output,
             &mut kept,
         )?;
-        return Ok((output, truncated));
+        return Ok((output, truncated, None));
     }
     let mut truncated = false;
+    let mut next_start_line = None;
     let mut reader = BufReader::new(File::open(file)?);
     let mut line = String::new();
     let mut number = 0;
+    let mut escaped_bytes = 0usize;
+    let mut raw_bytes = 0usize;
     loop {
         line.clear();
         // Bound even a single physical line before allocating it in memory.
@@ -1128,8 +1381,32 @@ fn extract_file_slice(
         if number < start {
             continue;
         }
-        if kept >= count || output.len() + line.len() + 32 > MAX_SLICE_BYTES {
+        let prefix_len = if mode == ReadMode::Raw {
+            0
+        } else {
+            number.ilog10() as usize + 3
+        };
+        let line_raw = prefix_len + line.len();
+        let line_escaped = if enforce_json_escaped {
+            prefix_len + json_escaped_len(&line)
+        } else {
+            line_raw
+        };
+        if kept >= count
+            || escaped_bytes + line_escaped > max_slice_bytes
+            || raw_bytes + line_raw > max_slice_bytes
+        {
+            if kept == 0
+                && (escaped_bytes + line_escaped > max_slice_bytes
+                    || raw_bytes + line_raw > max_slice_bytes)
+            {
+                bail!(
+                    "LINE_TOO_LONG: line {number} exceeds inline byte limit ({} > {max_slice_bytes}); use output_file or detail=\"full\"",
+                    line_escaped.max(line_raw)
+                );
+            }
             truncated = true;
+            next_start_line = Some(number);
             break;
         }
         if mode == ReadMode::Raw {
@@ -1137,9 +1414,11 @@ fn extract_file_slice(
         } else {
             output.push_str(&format!("{number}: {line}"));
         }
+        escaped_bytes += line_escaped;
+        raw_bytes += line_raw;
         kept += 1;
     }
-    Ok((output, truncated))
+    Ok((output, truncated, next_start_line))
 }
 
 /// Compute a path-confined unified diff against HEAD or the active node baseline/claim_tree.

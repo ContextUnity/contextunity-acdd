@@ -455,6 +455,7 @@ pub fn claim_node(
         force,
         steal_remote,
         worktree: wt,
+        detail: acdd_core::response::Detail::Compact,
     }))? {
         StateCommandOutput::Claim(resp) => Ok(*resp),
         other => panic!("expected ClaimResp, got {other:?}"),

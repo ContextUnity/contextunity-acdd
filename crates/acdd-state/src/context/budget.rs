@@ -11,9 +11,9 @@ use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use serde_json::{json, Map, Value};
 
 /// Maximum blackboard messages included in Tier 5 (`ADR-0006`).
-pub const MAX_BLACKBOARD_ITEMS: usize = 15;
+pub const MAX_BLACKBOARD_ITEMS: usize = 6;
 /// Maximum character length per blackboard payload in Tier 5 (`ADR-0006`).
-pub const MAX_BLACKBOARD_CHARS: usize = 500;
+pub const MAX_BLACKBOARD_CHARS: usize = 220;
 /// Minimum byte budget floor offered to each Tier 6 context lens when remaining response space permits.
 pub const MIN_LENS_BUDGET_BYTES: usize = 4_096;
 /// Maximum byte slice of Tier 1 remaining budget allocated to live subtask checklist rows.
@@ -22,8 +22,10 @@ const SUBTASK_PROJECTION_BUDGET_CAP_BYTES: usize = 1_024;
 const MAX_PROJECTED_SUBTASKS: usize = 16;
 /// Maximum byte cap for inline completed/cancelled subtask evidence inside `contract.subtasks`.
 const SUBTASK_EVIDENCE_BUDGET_CAP_BYTES: usize = 512;
-/// Default soft byte ceiling for `ClaimResp` envelopes (`32 KiB`) so claim context stays lean without starving Tier 6 lenses on busy live runs.
-pub(crate) const CLAIM_DEFAULT_MAX_BYTES: usize = 32_768;
+/// Default soft byte ceiling for compact `ClaimResp` envelopes (`9,500` bytes).
+pub(crate) const CLAIM_DEFAULT_MAX_BYTES: usize = 9_500;
+/// Opt-in `detail="full"` byte ceiling for `ClaimResp` envelopes (`32 KiB`).
+pub(crate) const CLAIM_FULL_MAX_BYTES: usize = 32_768;
 
 /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
 pub(super) fn preflight_mandatory(

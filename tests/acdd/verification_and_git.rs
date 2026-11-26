@@ -128,6 +128,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -158,6 +159,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -203,6 +205,7 @@ scope: [src/lib.rs]
             force: true,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -246,6 +249,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -292,6 +296,7 @@ scope: [src/lib.rs]
             force: true,
             steal_remote: true,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -335,6 +340,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -377,6 +383,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -418,6 +425,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -451,6 +459,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap_err();
     assert_eq!(not_int_err.code, ErrorCode::TaskNotIntegrated);
@@ -469,6 +478,7 @@ scope: [src/lib.rs]
             force: false,
             steal_remote: false,
             worktree: None,
+            detail: Default::default(),
         }))
         .unwrap()
     else {
@@ -619,6 +629,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
@@ -668,6 +679,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
@@ -709,6 +721,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
@@ -858,6 +871,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
@@ -900,6 +914,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
@@ -932,6 +947,7 @@ gates:
                 force: false,
                 steal_remote: false,
                 worktree: None,
+                detail: Default::default(),
             }))
             .unwrap()
         else {
