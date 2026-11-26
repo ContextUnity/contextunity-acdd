@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "tool-attribute"
+language = "rust"
+activation = [{ kind = "package", name = "rmcp" }]
+operation = { kind = "attribute_registration", modules = ["rmcp"], attributes = { tool = "tool" }, provider = "rmcp", category = "tool", name_key = "name" }

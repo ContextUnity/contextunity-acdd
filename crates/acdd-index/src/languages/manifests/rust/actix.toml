@@ -1,0 +1,11 @@
+[[syntax_rules]]
+id = "route-attribute"
+language = "rust"
+activation = [{ kind = "package", name = "actix_web" }]
+operation = { kind = "attribute_registration", modules = ["actix_web"], attributes = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", route = "ANY" }, provider = "actix-web", category = "route", path_argument = 0, method_key = "method" }
+
+[[syntax_rules]]
+id = "app-route"
+language = "rust"
+activation = [{ kind = "package", name = "actix_web" }]
+operation = { kind = "route_builder_call", module = "actix_web", builders = ["App", "Scope", "ServiceConfig"], builder_constructors = ["new", "default"], builder_factories = ["actix_web::web::scope"], chain_methods = ["service", "configure", "wrap", "wrap_fn", "app_data", "default_service", "guard"], route_method = "route", path_argument = 0, handler_argument = 1, handler_modules = ["actix_web::web", "actix_web"], handler_methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", route = "ANY" }, to_method = "to", provider = "actix-web" }

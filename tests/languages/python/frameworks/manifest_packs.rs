@@ -10,7 +10,7 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
         ),
         (
             ".acdd/frameworks/starlette.toml",
-            include_str!("../../../../crates/acdd-index/src/languages/manifests/starlette.toml"),
+            include_str!("../../../../crates/acdd-index/src/languages/manifests/python/starlette.toml"),
         ),
         (
             "models.py",
@@ -186,7 +186,7 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
 
     let manifest = ".acdd/frameworks/fastapi.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/acdd-index/src/languages/manifests/fastapi.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/python/fastapi.toml"
     ))
     .unwrap();
     pack.as_table_mut()

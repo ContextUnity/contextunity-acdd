@@ -174,7 +174,7 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
 
     let manifest = ".acdd/frameworks/django.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/acdd-index/src/languages/manifests/django.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/python/django.toml"
     ))
     .unwrap();
     pack.as_table_mut()

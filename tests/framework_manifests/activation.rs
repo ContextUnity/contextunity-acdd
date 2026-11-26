@@ -1,5 +1,9 @@
 use super::*;
 
+#[allow(dead_code)]
+#[path = "../../crates/acdd-index/build_manifests.rs"]
+mod build_manifests;
+
 mod user_manifests;
 
 const STARLETTE_OVERLAY_FILES: &[(&str, &str)] = &[
@@ -142,6 +146,27 @@ const CASES: &[Case] = &[
         edge: ("app.js", "run", "calls", "app.js", "checkout"),
         gated: false,
     },
+    Case {
+        pack: "rmcp", manifest: "Cargo.toml",
+        declaration: "[package]\nname='rmcp-app'\nversion='0.1.0'\n[dependencies]\nrmcp='0.1'\n",
+        empty: "[package]\nname='plain'\nversion='0.1.0'\n",
+        files: &[("src/mcp.rs", "use rmcp::tool;\nstruct S;\nimpl S { #[tool(name = \"ping_tool\")] fn ping(&self) {} }\n")],
+        edge: ("src/mcp.rs", "ping_tool", "handles", "src/mcp.rs", "ping"), gated: true,
+    },
+    Case {
+        pack: "axum", manifest: "Cargo.toml",
+        declaration: "[package]\nname='axum-app'\nversion='0.1.0'\n[dependencies]\naxum='0.7'\n",
+        empty: "[package]\nname='plain'\nversion='0.1.0'\n",
+        files: &[("src/api.rs", "use axum::{Router, routing::get};\nfn list_items() {}\nfn router() -> Router { Router::new().route(\"/items\", get(list_items)) }\n")],
+        edge: ("src/api.rs", "GET /items", "handles", "src/api.rs", "list_items"), gated: true,
+    },
+    Case {
+        pack: "actix", manifest: "Cargo.toml",
+        declaration: "[package]\nname='actix-app'\nversion='0.1.0'\n[dependencies]\nactix-web='4'\n",
+        empty: "[package]\nname='plain'\nversion='0.1.0'\n",
+        files: &[("src/web.rs", "use actix_web::get;\n#[get(\"/items\")]\nfn list_items() {}\n")],
+        edge: ("src/web.rs", "GET /items", "handles", "src/web.rs", "list_items"), gated: true,
+    },
 ];
 
 fn sources_for(
@@ -255,18 +280,35 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
     };
     let inventory_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("crates/acdd-index/src/languages/manifests");
-    let inventory = std::fs::read_dir(inventory_directory)
-        .unwrap()
-        .map(Result::unwrap)
-        .filter(|entry| entry.file_type().unwrap().is_file())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            matches!(
-                path.extension().and_then(|value| value.to_str()),
-                Some("toml" | "yaml" | "yml")
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut inventory = Vec::new();
+    let mut pending_dirs = vec![inventory_directory.clone()];
+    while let Some(dir) = pending_dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().map(Result::unwrap) {
+            let file_type = entry.file_type().unwrap();
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending_dirs.push(path);
+            } else if file_type.is_file()
+                && matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("toml" | "yaml" | "yml")
+                )
+            {
+                assert_ne!(
+                    path.parent(),
+                    Some(inventory_directory.as_path()),
+                    "bundled manifest must live in a language subfolder: {}",
+                    path.display()
+                );
+                inventory.push(path);
+            }
+        }
+    }
+    assert!(
+        inventory.len() >= 30,
+        "expected >= 30 bundled manifests across language subfolders, got {}",
+        inventory.len()
+    );
     let mut identities = std::collections::BTreeSet::new();
     for path in inventory {
         let id = path.file_stem().unwrap().to_str().unwrap();
@@ -274,6 +316,100 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
             identities.insert(id.to_owned()),
             "duplicate source inventory identity {id}"
         );
+    }
+
+    let disc_tmp = acdd_core::fs::ScopedTempDir::create("acdd-manifest-discovery").unwrap();
+    let (real_root, out_dir) = (
+        disc_tmp.path().join("manifests"),
+        disc_tmp.path().join("out"),
+    );
+    for dir in [
+        real_root.join("rust"),
+        real_root.join("python"),
+        out_dir.clone(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(real_root.join("rust/b_pack.toml"), "").unwrap();
+    std::fs::write(real_root.join("python/a_pack.toml"), "").unwrap();
+    let stems: Vec<_> = build_manifests::generate_framework_manifests_to(&real_root, &out_dir)
+        .into_iter()
+        .map(|p| p.file_stem().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(stems, ["a_pack", "b_pack"]);
+    #[cfg(unix)]
+    {
+        let root_link = disc_tmp.path().join("root_link");
+        std::os::unix::fs::symlink(&real_root, &root_link).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| build_manifests::generate_framework_manifests_to(
+                &root_link, &out_dir
+            ))
+            .is_err()
+        );
+        let child_link = real_root.join("rust/linked.toml");
+        std::os::unix::fs::symlink(real_root.join("python/a_pack.toml"), &child_link).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| build_manifests::generate_framework_manifests_to(
+                &real_root, &out_dir
+            ))
+            .is_err()
+        );
+        std::fs::remove_file(&child_link).unwrap();
+    }
+    std::fs::write(real_root.join("rust/a_pack.toml"), "").unwrap();
+    assert!(
+        std::panic::catch_unwind(|| build_manifests::generate_framework_manifests_to(
+            &real_root, &out_dir
+        ))
+        .is_err()
+    );
+
+    let overlap_manifest = "\
+[[syntax_rules]]
+id = \"pref-al\"
+language = \"rust\"
+activation = [{ kind = \"syntax_attribute_prefix\", prefix = \"al\" }]
+operation = { kind = \"attribute_registration\", modules = [\"sig\"], attributes = { al_tag = \"al_tag\" }, provider = \"sig\", category = \"tool\" }
+[[syntax_rules]]
+id = \"pref-allo\"
+language = \"rust\"
+activation = [{ kind = \"syntax_attribute_prefix\", prefix = \"allo\" }]
+operation = { kind = \"attribute_registration\", modules = [\"sig\"], attributes = { allo_tag = \"allo_tag\" }, provider = \"sig\", category = \"tool\" }
+[[syntax_rules]]
+id = \"exact-allow\"
+language = \"rust\"
+activation = [{ kind = \"syntax_attribute\", name = \"allow\" }]
+operation = { kind = \"attribute_registration\", modules = [\"sig\"], attributes = { exact_tag = \"exact_tag\" }, provider = \"sig\", category = \"tool\" }
+[[syntax_rules]]
+id = \"pref-miss\"
+language = \"rust\"
+activation = [{ kind = \"syntax_attribute_prefix\", prefix = \"zzz\" }]
+operation = { kind = \"attribute_registration\", modules = [\"sig\"], attributes = { miss_tag = \"miss_tag\" }, provider = \"sig\", category = \"tool\" }
+";
+    let overlap_ws = VirtualWorkspace::from_map(BTreeMap::from([
+        (".acdd/frameworks/rust_signals.toml".to_owned(), overlap_manifest.to_owned()),
+        ("src/with_allow.rs".to_owned(), "#[allow(dead_code)]\nfn marker() {}\n#[sig::al_tag]\nfn fn_al() {}\n#[sig::allo_tag]\nfn fn_allo() {}\n#[sig::exact_tag]\nfn fn_exact() {}\n#[sig::miss_tag]\nfn fn_miss() {}\n".to_owned()),
+        ("src/without_allow.rs".to_owned(), "#[sig::al_tag]\nfn plain_al() {}\n#[sig::allo_tag]\nfn plain_allo() {}\n".to_owned()),
+    ]));
+    let overlap_idx = overlap_ws.index().unwrap();
+    for (name, expected) in [
+        ("fn_al", Some("mcp_tool")),
+        ("fn_allo", Some("mcp_tool")),
+        ("fn_exact", Some("mcp_tool")),
+        ("fn_miss", None),
+        ("plain_al", None),
+        ("plain_allo", None),
+    ] {
+        let actual: Option<String> = overlap_idx
+            .conn
+            .query_row(
+                "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual.as_deref(), expected, "overlapping signal {name}");
     }
 
     for case in cases {

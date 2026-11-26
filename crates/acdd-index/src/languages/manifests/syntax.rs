@@ -106,6 +106,37 @@ pub enum SyntaxOperation {
         subcommand_derive: String,
         parse_method: String,
     },
+    AttributeRegistration {
+        modules: Vec<String>,
+        attributes: std::collections::BTreeMap<String, String>,
+        provider: String,
+        #[serde(default)]
+        category: AttributeRegistrationKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_argument: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        method_key: Option<String>,
+    },
+    RouteBuilderCall {
+        module: String,
+        builders: Vec<String>,
+        #[serde(default = "default_builder_constructors")]
+        builder_constructors: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        builder_factories: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        chain_methods: Vec<String>,
+        route_method: String,
+        path_argument: usize,
+        handler_argument: usize,
+        handler_modules: Vec<String>,
+        handler_methods: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_method: Option<String>,
+        provider: String,
+    },
     TestRunner {
         modules: Vec<String>,
         members: Vec<String>,
@@ -226,6 +257,17 @@ pub enum RegistrationCategory {
     EventHandler,
 }
 
+/// Semantic category of a declarative Rust attribute registration.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributeRegistrationKind {
+    #[default]
+    Tool,
+    Route,
+    CliCommand,
+    EventHandler,
+}
+
 /// HTTP target context configuration for framework operations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -269,6 +311,18 @@ fn uppercase_methods<'a>(methods: impl IntoIterator<Item = &'a str>) -> bool {
 
 fn key_identifier(value: &str) -> bool {
     super::projections::identifier(value, false)
+}
+
+fn default_builder_constructors() -> Vec<String> {
+    vec!["new".to_owned(), "default".to_owned()]
+}
+
+fn valid_rust_mod(m: &str) -> bool {
+    !m.is_empty() && m.split("::").all(key_identifier)
+}
+
+fn valid_rust_mods(mods: &[String], max: usize) -> bool {
+    !mods.is_empty() && mods.len() <= max && mods.iter().all(|m| valid_rust_mod(m))
 }
 
 fn is_ident_like(value: &str) -> bool {
@@ -1178,6 +1232,97 @@ impl SyntaxRule {
                     subcommand_derive,
                     parse_method,
                 ])
+            })(),
+            SyntaxOperation::AttributeRegistration {
+                modules,
+                attributes,
+                provider,
+                category,
+                name_key,
+                path_argument,
+                method_key,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Rust
+                        && valid_rust_mods(modules, 32)
+                        && !attributes.is_empty()
+                        && attributes.len() <= 64
+                        && attributes.keys().all(|k| key_identifier(k))
+                        && (*category != AttributeRegistrationKind::Route
+                            || uppercase_methods(attributes.values().map(String::as_str)))
+                        && name_key.as_deref().is_none_or(key_identifier)
+                        && method_key.as_deref().is_none_or(key_identifier)
+                        && path_argument.is_none_or(|arg| arg <= 8),
+                    "invalid attribute registration operation"
+                );
+                Ok(std::iter::once(provider.as_str())
+                    .chain(
+                        modules
+                            .iter()
+                            .chain(attributes.keys())
+                            .chain(attributes.values())
+                            .map(String::as_str),
+                    )
+                    .chain(name_key.as_deref())
+                    .chain(method_key.as_deref())
+                    .collect())
+            })(),
+            SyntaxOperation::RouteBuilderCall {
+                module,
+                builders,
+                builder_constructors,
+                builder_factories,
+                chain_methods,
+                route_method,
+                path_argument,
+                handler_argument,
+                handler_modules,
+                handler_methods,
+                to_method,
+                provider,
+            } => (|| {
+                ensure!(
+                    lang == LanguageId::Rust
+                        && valid_rust_mod(module)
+                        && !builders.is_empty()
+                        && builders.len() <= 32
+                        && builders.iter().all(|b| key_identifier(b))
+                        && !builder_constructors.is_empty()
+                        && builder_constructors.len() <= 32
+                        && builder_constructors.iter().all(|c| key_identifier(c))
+                        && builder_factories.len() <= 32
+                        && builder_factories
+                            .iter()
+                            .all(|f| f.contains("::") && valid_rust_mod(f))
+                        && chain_methods.len() <= 64
+                        && chain_methods.iter().all(|c| key_identifier(c))
+                        && key_identifier(route_method)
+                        && *path_argument <= 8
+                        && *handler_argument <= 8
+                        && path_argument != handler_argument
+                        && valid_rust_mods(handler_modules, 32)
+                        && !handler_methods.is_empty()
+                        && handler_methods.len() <= 64
+                        && handler_methods.keys().all(|k| key_identifier(k))
+                        && uppercase_methods(handler_methods.values().map(String::as_str))
+                        && to_method.as_deref().is_none_or(key_identifier),
+                    "invalid route builder call operation"
+                );
+                Ok([module.as_str(), route_method.as_str(), provider.as_str()]
+                    .into_iter()
+                    .chain(
+                        builders
+                            .iter()
+                            .chain(builder_constructors.iter())
+                            .chain(builder_factories.iter())
+                            .chain(chain_methods.iter())
+                            .chain(handler_modules.iter())
+                            .chain(handler_methods.keys())
+                            .chain(handler_methods.values())
+                            .map(String::as_str),
+                    )
+                    .chain(to_method.as_deref())
+                    .collect())
             })(),
             SyntaxOperation::TemplateLoader {
                 package,

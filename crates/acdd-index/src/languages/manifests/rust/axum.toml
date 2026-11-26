@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "router-route"
+language = "rust"
+activation = [{ kind = "package", name = "axum" }]
+operation = { kind = "route_builder_call", module = "axum", builders = ["Router"], builder_constructors = ["new", "default"], chain_methods = ["nest", "nest_service", "merge", "fallback", "fallback_service", "layer", "route_layer", "with_state"], route_method = "route", path_argument = 0, handler_argument = 1, handler_modules = ["axum::routing", "axum"], handler_methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", any = "ANY" }, provider = "axum" }

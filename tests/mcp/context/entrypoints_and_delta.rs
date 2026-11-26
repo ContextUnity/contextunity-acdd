@@ -14,10 +14,18 @@ const UNTESTED_FILES: &[(&str, &str)] = &[
 const ENTRYPOINT_FILES: &[(&str, &str)] = &[
     (
         "src/main.rs",
-        "fn main() { helper(); }\nfn helper() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n",
+        "fn main() { helper(); }\nfn helper() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\nmod axum_handlers;\n",
     ),
     ("requirements.txt", "fastapi\nclick\ncelery\nmcp\ntyper\ndjango\n"),
-    ("Cargo.toml", "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nclap='4'\n"),
+    ("Cargo.toml", "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nclap='4'\nrmcp='0.1'\naxum='0.7'\nactix-web='4'\n"),
+    ("src/rmcp_tools.rs", "use rmcp::tool;\nstruct Srv;\nimpl Srv {\n    #[tool(description = \"ping\")]\n    async fn rmcp_ping(&self) {}\n    #[tool(name = \"custom_mcp\")]\n    async fn rmcp_custom(&self) {}\n}\n#[rmcp::tool]\nfn rmcp_qual() {}\n"),
+    ("src/rmcp_shadow.rs", "use fake::tool;\n#[tool]\nfn rmcp_fake_tool() {}\n"),
+    ("src/rmcp_local.rs", "mod rmcp {}\nuse rmcp::tool;\n#[tool]\nfn rmcp_local_tool() {}\n"),
+    ("src/axum_handlers.rs", "pub fn axum_create() {}\n"),
+    ("src/axum_api.rs", "use axum::{Router, routing::get};\nfn axum_list() {}\nfn axum_delete() {}\nfn app() -> Router {\n    let r = Router::new().route(\"/items\", get(axum_list).post(crate::axum_handlers::axum_create));\n    r.route(\"/items\", axum::routing::delete(axum_delete))\n}\n"),
+    ("src/axum_shadow.rs", "struct Router;\nimpl Router { fn new() -> Self { Self } fn route(self, _: &str, _: ()) -> Self { self } }\nfn get(_: fn()) {}\nfn axum_shadow_handler() {}\nfn fake_app() -> Router { Router::new().route(\"/items\", get(axum_shadow_handler)) }\n"),
+    ("src/actix_api.rs", "use actix_web::{App, get, route, web};\n#[get(\"/actix\")]\nasync fn actix_get() {}\n#[actix_web::post(\"/actix_post\")]\nasync fn actix_post() {}\n#[route(\"/actix_custom\", method = \"PUT\")]\nasync fn actix_custom() {}\nasync fn actix_app_delete() {}\nfn configure() { App::new().route(\"/actix_app\", web::delete().to(actix_app_delete)); }\n"),
+    ("src/actix_shadow.rs", "use fake::get;\n#[get(\"/fake\")]\nasync fn actix_fake() {}\n"),
     (
         "src/clap_tool.rs",
         "use clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn run_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => run_job() } }\n",
@@ -523,6 +531,26 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
             ][..],
         ),
         (
+            Some("mcp_tool"),
+            &[
+                "src/rmcp_tools.rs:method:rmcp_ping",
+                "src/rmcp_tools.rs:method:rmcp_custom",
+                "src/rmcp_tools.rs:function:rmcp_qual",
+            ][..],
+        ),
+        (
+            Some("http_route"),
+            &[
+                "src/axum_api.rs:function:axum_list",
+                "src/axum_handlers.rs:function:axum_create",
+                "src/axum_api.rs:function:axum_delete",
+                "src/actix_api.rs:function:actix_get",
+                "src/actix_api.rs:function:actix_post",
+                "src/actix_api.rs:function:actix_custom",
+                "src/actix_api.rs:function:actix_app_delete",
+            ][..],
+        ),
+        (
             None,
             &[
                 "package.py:function:not_guarded",
@@ -534,6 +562,10 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
                 "src/clap_shadow.rs:function:fake_job",
                 "src/clap_local.rs:function:local_job",
                 "src/clap_override.rs:function:override_job",
+                "src/rmcp_shadow.rs:function:rmcp_fake_tool",
+                "src/rmcp_local.rs:function:rmcp_local_tool",
+                "src/axum_shadow.rs:function:axum_shadow_handler",
+                "src/actix_shadow.rs:function:actix_fake",
                 "tests/node.test.ts:function:node_shadow",
                 "tests/vitest.test.ts:function:vitest_shadow",
                 "tests/vitest.test.ts:function:destructured_shadow",
@@ -659,4 +691,117 @@ fn inactive_adapter_does_not_claim_decorated_functions() {
     unactivated_client
         .finish()
         .expect("server must finish successfully");
+}
+
+#[test]
+fn rust_framework_entrypoints_delta_and_package_gating() {
+    let active_cargo = "[package]\nname='rust-fw'\nversion='0.1.0'\n[dependencies]\nrmcp='0.1'\naxum='0.7'\nactix-web='4'\n";
+    let empty_cargo = "[package]\nname='rust-fw'\nversion='0.1.0'\n";
+    let mut custom_rules = String::from("[[syntax_rules]]\nid = \"txt-only\"\nlanguage = \"rust\"\nactivation = [{ kind = \"file_extension\", extension = \"txt\" }]\noperation = { kind = \"attribute_registration\", modules = [\"other\"], attributes = { tag = \"tag\" }, provider = \"other\", category = \"tool\" }\n");
+    for i in 0..65 {
+        custom_rules.push_str(&format!(
+            "[[syntax_rules]]\nid = \"txt-route-{i}\"\nlanguage = \"rust\"\nactivation = [{{ kind = \"file_extension\", extension = \"txt\" }}]\noperation = {{ kind = \"route_builder_call\", module = \"other\", builders = [\"CustomRouter\"], route_method = \"route\", path_argument = 0, handler_argument = 1, handler_modules = [\"other\"], handler_methods = {{ get = \"GET\" }}, provider = \"other\" }}\n"
+        ));
+    }
+    custom_rules.push_str("[[syntax_rules]]\nid = \"late-rs-route\"\nlanguage = \"rust\"\nactivation = [{ kind = \"file_extension\", extension = \"rs\" }]\noperation = { kind = \"route_builder_call\", module = \"late_pkg\", builders = [\"LateRouter\"], route_method = \"route\", path_argument = 0, handler_argument = 1, handler_modules = [\"late_pkg\"], handler_methods = { get = \"GET\" }, provider = \"late\" }\n");
+    let active_src = "use rmcp::tool;\nuse axum::{Router, routing::get};\nuse actix_web::{get as actix_get, web};\nstruct FakeRouter;\nimpl FakeRouter { fn route(&self, _: &str, _: ()) {} }\nfn fake_get(_: fn()) {}\n#[tool]\nfn mcp_fn() {}\nfn axum_fn() {}\nfn shadow_r_fn() {}\nfn shadow_get_fn() {}\nfn restored_fn() {}\nfn param_shadow_fn() {}\nfn if_shadow_fn() {}\nfn else_ok_fn() {}\nfn foreign_ext_fn() {}\nfn foreign_ctor_fn() {}\nfn default_ctor_fn() {}\nfn shadowed_closure_fn() {}\nfn actix_scope_fn() {}\nfn late_rule_fn() {}\nfn txt_route_fn() {}\n#[other::tag]\nfn txt_attr_fn() {}\nfn build(r: Router, opt: Option<fn(fn())>) -> Router {\n    { let r = FakeRouter; r.route(\"/sr\", get(shadow_r_fn)); }\n    { let get = fake_get; r.route(\"/sg\", get(shadow_get_fn)); }\n    if let Some(get) = opt { r.route(\"/if\", get(if_shadow_fn)); } else { r.route(\"/else\", get(else_ok_fn)); }\n    r.as_foreign().route(\"/ext\", get(foreign_ext_fn));\n    Router::foreign().route(\"/fctor\", get(foreign_ctor_fn));\n    let _ = Router::default().route(\"/def\", get(default_ctor_fn));\n    { let shadowed_closure_fn = || {}; r.route(\"/cl\", get(shadowed_closure_fn)); }\n    let _ = web::scope(\"/v1\").wrap(mw).route(\"/scoped\", web::get().to(actix_scope_fn));\n    let _ = late_pkg::LateRouter::new().route(\"/late\", late_pkg::get(late_rule_fn));\n    r.route(\"/restored\", get(restored_fn));\n    let _ = other::CustomRouter::new().route(\"/txt\", other::get(txt_route_fn));\n    Router::new().route(\"/a\", get(axum_fn))\n}\nfn param_shadow(r: Router) { let r = FakeRouter; r.route(\"/ps\", get(param_shadow_fn)); }\n#[actix_get(\"/b\")]\nfn actix_fn() {}\nmod foreign_mod {\n    use fake::{tool, get};\n    #[tool]\n    fn mod_foreign_tool() {}\n    #[get(\"/fx\")]\n    fn mod_foreign_route() {}\n}\nmod bare_mod {\n    #[tool]\n    fn mod_bare_tool() {}\n}\n";
+    let nested_only_src = "mod inner_valid {\n    use rmcp::tool;\n    use actix_web::get;\n    #[tool]\n    fn mod_valid_tool() {}\n    #[get(\"/ok\")]\n    fn mod_valid_route() {}\n}\n";
+    let abs_root_src = "mod axum {}\nfn abs_fn() {}\nfn make() { ::axum::Router::new().route(\"/abs\", ::axum::routing::get(abs_fn)); }\n";
+    let stripped_src = "fn mcp_fn() {}\nfn axum_fn() {}\nfn actix_fn() {}\nfn shadow_r_fn() {}\nfn shadow_get_fn() {}\nfn restored_fn() {}\nfn param_shadow_fn() {}\nfn if_shadow_fn() {}\nfn else_ok_fn() {}\nfn foreign_ext_fn() {}\nfn foreign_ctor_fn() {}\nfn default_ctor_fn() {}\nfn shadowed_closure_fn() {}\nfn actix_scope_fn() {}\nfn late_rule_fn() {}\nfn txt_attr_fn() {}\nfn txt_route_fn() {}\nmod foreign_mod { fn mod_foreign_tool() {} fn mod_foreign_route() {} }\nmod bare_mod { fn mod_bare_tool() {} }\n";
+    let ws = Workspace::with_files(&[
+        ("Cargo.toml", empty_cargo),
+        (".acdd/frameworks/custom_rust.toml", custom_rules.as_str()),
+        ("src/lib.rs", active_src),
+        ("src/nested_only.rs", nested_only_src),
+        ("src/abs_root.rs", abs_root_src),
+    ]);
+    ws.build();
+    let check = |expected: &[(&str, Option<&str>)]| {
+        let conn = ws.open();
+        acdd_index::db::commitments::verify(&conn).unwrap();
+        for &(name, exp) in expected {
+            let actual: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual.as_deref(), exp, "{name}");
+        }
+    };
+    let negatives = [
+        "shadow_r_fn",
+        "shadow_get_fn",
+        "param_shadow_fn",
+        "if_shadow_fn",
+        "foreign_ext_fn",
+        "foreign_ctor_fn",
+        "shadowed_closure_fn",
+        "txt_attr_fn",
+        "txt_route_fn",
+        "mod_foreign_tool",
+        "mod_foreign_route",
+        "mod_bare_tool",
+    ];
+    let check_state = |positives: &[(&str, Option<&str>)]| {
+        let mut expected: Vec<(&str, Option<&str>)> = positives.to_vec();
+        expected.extend(negatives.iter().map(|&n| (n, None)));
+        check(&expected);
+    };
+    let inactive_expected = &[
+        ("mcp_fn", None),
+        ("axum_fn", None),
+        ("actix_fn", None),
+        ("restored_fn", None),
+        ("else_ok_fn", None),
+        ("default_ctor_fn", None),
+        ("actix_scope_fn", None),
+        ("abs_fn", None),
+        ("late_rule_fn", Some("http_route")),
+        ("mod_valid_tool", None),
+        ("mod_valid_route", None),
+    ][..];
+    let active_expected = &[
+        ("mcp_fn", Some("mcp_tool")),
+        ("axum_fn", Some("http_route")),
+        ("actix_fn", Some("http_route")),
+        ("restored_fn", Some("http_route")),
+        ("else_ok_fn", Some("http_route")),
+        ("default_ctor_fn", Some("http_route")),
+        ("actix_scope_fn", Some("http_route")),
+        ("abs_fn", Some("http_route")),
+        ("late_rule_fn", Some("http_route")),
+        ("mod_valid_tool", Some("mcp_tool")),
+        ("mod_valid_route", Some("http_route")),
+    ][..];
+    check_state(inactive_expected);
+    for (file, content, expected) in [
+        ("Cargo.toml", active_cargo, active_expected),
+        (
+            "src/lib.rs",
+            stripped_src,
+            &[
+                ("mcp_fn", None),
+                ("axum_fn", None),
+                ("actix_fn", None),
+                ("restored_fn", None),
+                ("else_ok_fn", None),
+                ("default_ctor_fn", None),
+                ("actix_scope_fn", None),
+                ("late_rule_fn", None),
+                ("abs_fn", Some("http_route")),
+                ("mod_valid_tool", Some("mcp_tool")),
+                ("mod_valid_route", Some("http_route")),
+            ][..],
+        ),
+        ("src/lib.rs", active_src, active_expected),
+        ("Cargo.toml", empty_cargo, inactive_expected),
+    ] {
+        ws.write(file, content);
+        let delta = ws.delta(&[file]);
+        let cold = ws.build_to(ws.path(".acdd/cold.sqlite"));
+        assert_eq!(delta["output_root"], cold["output_root"], "{file}: {delta}");
+        check_state(expected);
+    }
 }

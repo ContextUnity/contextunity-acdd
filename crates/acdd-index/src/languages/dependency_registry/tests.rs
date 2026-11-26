@@ -448,7 +448,7 @@ semantic_rules:
     let gridviewspec = FrameworkManifest::parse(
         "gridviewspec".to_owned(),
         "toml",
-        include_str!("../manifests/gridviewspec.toml"),
+        include_str!("../manifests/python/gridviewspec.toml"),
     )
     .unwrap_or_else(|error| panic!("invalid bundled GridViewSpec manifest: {error:#}"));
     assert_eq!(gridviewspec.class_hierarchy_receivers.len(), 28);

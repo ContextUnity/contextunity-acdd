@@ -199,11 +199,11 @@ fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
     let packs = [
         (
             "htmx",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/web/htmx.toml"),
         ),
         (
             "alpinejs",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/alpinejs.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/web/alpinejs.toml"),
         ),
     ];
     {
@@ -578,7 +578,7 @@ urlpatterns = [
 
     // HTMX framework pack override with replace=true and empty syntax rules
     let htmx_pack_src =
-        include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml");
+        include_str!("../../../crates/acdd-index/src/languages/manifests/web/htmx.toml");
     let override_path = ".acdd/frameworks/htmx.toml";
     let mut pack: toml::Value = toml::from_str(htmx_pack_src).unwrap();
     pack.as_table_mut()

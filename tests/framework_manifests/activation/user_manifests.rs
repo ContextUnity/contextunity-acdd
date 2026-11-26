@@ -8,42 +8,63 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
         (
             "django",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/django.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/python/django.toml"),
         ),
         (
             "starlette",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/starlette.toml"),
+            include_str!(
+                "../../../crates/acdd-index/src/languages/manifests/python/starlette.toml"
+            ),
         ),
         (
             "fastapi",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/fastapi.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/python/fastapi.toml"),
         ),
         (
             "nuxt",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/nuxt.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/typescript/nuxt.toml"),
         ),
         (
             "vue-runtime",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/vue-runtime.toml"),
+            include_str!(
+                "../../../crates/acdd-index/src/languages/manifests/typescript/vue-runtime.toml"
+            ),
         ),
         (
             "htmx",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/web/htmx.toml"),
         ),
         (
             "alpinejs",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/alpinejs.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/web/alpinejs.toml"),
         ),
         (
             "gridviewspec",
             "toml",
-            include_str!("../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"),
+            include_str!(
+                "../../../crates/acdd-index/src/languages/manifests/python/gridviewspec.toml"
+            ),
+        ),
+        (
+            "rmcp",
+            "toml",
+            include_str!("../../../crates/acdd-index/src/languages/manifests/rust/rmcp.toml"),
+        ),
+        (
+            "axum",
+            "toml",
+            include_str!("../../../crates/acdd-index/src/languages/manifests/rust/axum.toml"),
+        ),
+        (
+            "actix",
+            "toml",
+            include_str!("../../../crates/acdd-index/src/languages/manifests/rust/actix.toml"),
         ),
         (
             "declarative-rules",

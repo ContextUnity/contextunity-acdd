@@ -63,7 +63,7 @@ fn target_context_resolves_only_routes_in_declared_workspace_scope() {
     };
     check_scope("ambiguous", None);
     let web: Value = toml::from_str::<toml::Value>(include_str!(
-        "../../../crates/acdd-index/src/languages/manifests/web.toml"
+        "../../../crates/acdd-index/src/languages/manifests/web/web.toml"
     ))
     .unwrap()
     .try_into()

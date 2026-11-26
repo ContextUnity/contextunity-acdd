@@ -128,7 +128,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
                 &format!(
                     "enabled = false\n{}",
                     include_str!(
-                        "../../../../../crates/acdd-index/src/languages/manifests/nuxt.toml"
+                        "../../../../../crates/acdd-index/src/languages/manifests/typescript/nuxt.toml"
                     )
                 ),
             );

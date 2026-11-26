@@ -15,6 +15,7 @@ use std::path::Path;
 mod cli_registration;
 mod macros;
 pub(crate) mod patterns;
+mod registrations;
 pub(crate) mod value_flow;
 pub(crate) mod visibility;
 use patterns::collect_use;
@@ -570,7 +571,7 @@ fn rust_cargo_types() -> &'static std::collections::HashSet<String> {
         let cargo_manifest = super::manifests::FrameworkManifest::parse(
             "rust-cargo".to_owned(),
             "toml",
-            include_str!("../manifests/rust-cargo.toml"),
+            include_str!("../manifests/rust/rust-cargo.toml"),
         )
         .expect("rust-cargo.toml must be valid");
         let mut types = std::collections::HashSet::new();
@@ -598,7 +599,7 @@ fn rust_std_members(
         let manifest = super::manifests::FrameworkManifest::parse(
             "rust-std".to_owned(),
             "toml",
-            include_str!("../manifests/rust-std.toml"),
+            include_str!("../manifests/rust/rust-std.toml"),
         )
         .expect("rust-std.toml must be valid");
         let mut members: std::collections::HashMap<String, std::collections::HashSet<String>> =
@@ -835,6 +836,7 @@ impl LanguageProfile for Rust {
         rules: &std::sync::Arc<LanguageContext>,
     ) -> FileContext {
         cli_registration::prepare(root, source, rules);
+        registrations::prepare(root, source, rules);
         macros::prepare(root, source);
         value_flow::clear_file_macro_facts();
         FileContext {
@@ -845,8 +847,9 @@ impl LanguageProfile for Rust {
             ..FileContext::default()
         }
     }
-    fn finish(&self, _facts: &mut Facts) {
+    fn finish(&self, facts: &mut Facts) {
         cli_registration::clear();
+        registrations::clear(facts);
         macros::clear();
         value_flow::clear_file_macro_facts();
     }
@@ -983,6 +986,7 @@ impl LanguageProfile for Rust {
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         super::sql::extract_literal(ctx, facts);
         if ctx.node.kind() == "call_expression" {
+            registrations::extract_route_builder_calls(ctx, facts);
             if let Some(callee) = ctx
                 .node
                 .child_by_field_name("function")
@@ -1626,6 +1630,9 @@ fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 }
 
 fn relate_function_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.kind() == "function_item" {
+        registrations::extract_attribute_registrations(ctx, facts);
+    }
     let unproven = has_unproven_bounds(ctx.node, ctx.source)
         && !path_reference_parameters(ctx.node, ctx.source, facts);
     let conversion_bounds_only =

@@ -8,12 +8,12 @@ fn persisted_nuxt_vue_pinia_contract() {
     let packs = [
         (
             "nuxt",
-            include_str!("../../../../../crates/acdd-index/src/languages/manifests/nuxt.toml"),
+            include_str!("../../../../../crates/acdd-index/src/languages/manifests/typescript/nuxt.toml"),
         ),
         (
             "vue-runtime",
             include_str!(
-                "../../../../../crates/acdd-index/src/languages/manifests/vue-runtime.toml"
+                "../../../../../crates/acdd-index/src/languages/manifests/typescript/vue-runtime.toml"
             ),
         ),
     ];

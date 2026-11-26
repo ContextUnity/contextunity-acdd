@@ -228,7 +228,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
     // A workspace extension adds a project API without replacing the verified catalogue.
     let bundled: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/python/gridviewspec.toml"
     ))
     .unwrap();
     assert_eq!(
@@ -289,7 +289,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
     let manifest = ".acdd/frameworks/gridviewspec.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/python/gridviewspec.toml"
     ))
     .unwrap();
     pack.as_table_mut()
@@ -409,7 +409,7 @@ fn gridviewspec_runtime_provider_scope() {
     // Observed built-in runtime registrations live in a separately indexed
     // frontend project. Their installation-specific workspace identity is local data.
     let bundled: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/python/gridviewspec.toml"
     ))
     .unwrap();
     let mut runtime_policy = bundled;
