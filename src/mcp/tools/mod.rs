@@ -6,8 +6,7 @@ mod state_tools;
 
 use inputs::{
     Analyze, Ast, BlackboardInput, ClaimInput, Explain, GetDoc, Guide, Impact, Inspect, Lint,
-    OverviewInput, Query, SearchDocs, SearchSymbols, Selector, Snippet, StateInput, SubmitInput,
-    Tests, VerifyInput,
+    OverviewInput, Query, SearchDocs, SearchSymbols, Snippet, StateInput, SubmitInput, VerifyInput,
 };
 
 use super::server::Server;
@@ -19,7 +18,7 @@ use rmcp::{
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical active-run state lifecycle command (`start`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`) or read-only active-run query (`status`, `list`, `show`, `next`, `context`, `observability`). Use CLI `acdd roadmap` or `acdd draft` for spec planning/authoring. Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         state_tools::acdd_state(self, p).await
@@ -82,13 +81,6 @@ impl Server {
     }
 
     #[tool(
-        description = "Test relationships for a narrow selector. Inbound returns verified test cases connected by exact calls paths and keeps the bounded lexical fallback when no call path exists; outbound returns production dependencies reached through exact calls. Results include test roles and shortest call paths where graph evidence exists. Possible calls do not establish coverage. Broad scopes are rejected."
-    )]
-    async fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
-        code_tools::code_map_tests(self, p).await
-    }
-
-    #[tool(
         description = "Transitive reachability from one selector or a Git change view (staged, unstaged, or head). Provide exactly one of selector or changes. inbound (default) lists dependents; outbound lists dependencies. Each reached depth-one node includes the persisted edge endpoints, kind, path, line, direction, confidence, and occurrence count; full detail adds edge evidence. Change views bind every page to the graph, selected diff, and verified postimages, and report unmapped changes explicitly."
     )]
     async fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
@@ -103,24 +95,17 @@ impl Server {
     }
 
     #[tool(
-        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors; duplicates lists duplicate functions/methods or identical files; dead_tails detects phantom_tested prod functions (only reachable from tests), dead_tails (0 prod & 0 test reachability), and dangling_calls (unresolved internal crate/super/self references). unwired is not a dead-code proof."
+        description = "Bounded graph operation or one read-only SELECT/WITH. Supports tests (covering test cases or tested dependencies), prove_removal (indexed removal check for a symbol or file), untested, implementations, slice, unwired, duplicates, and dead_tails (phantom_tested, dead_tails, dangling_calls)."
     )]
     async fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         code_tools::code_map_query(self, p).await
     }
 
     #[tool(
-        description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. Exact-file resolution and external-import rows include an evidence-based reason when known and a verified source-line snippet; full detail retains resolver evidence. lint=true cannot combine with include_cycles=true."
+        description = "Read-only diagnostics over indexed facts. Default mode='summary' reports workspace/path diagnostics, untested public surface, stored syntax diagnostics (lint=true), cycles (include_cycles=true), or read-only SQL. Optional mode='hotspots'|'boundary'|'path'|'entrypoints'|'diff_impact'|'cochange' runs PageRank hotspots, module boundary, shortest path (with to), entrypoints, Git diff impact, or co-change analysis (with optional base)."
     )]
     async fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         code_tools::code_map_analyze(self, p).await
-    }
-
-    #[tool(
-        description = "Indexed removal check for one symbol or file. Returns incoming dependency edges, candidate-scoped unresolved references and parse errors, and safe_to_remove. That verdict excludes workspace-wide diagnostics and is not a runtime-safety proof. More than 10000 nodes is rejected."
-    )]
-    async fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
-        code_tools::code_map_prove_removal(self, p).await
     }
 
     #[tool(
@@ -298,8 +283,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_20_builtin_tools_and_plugin_tool_contract() {
-        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-20tools").unwrap();
+    async fn mcp_18_builtin_tools_and_plugin_tool_contract() {
+        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-18tools").unwrap();
         std::fs::write(
             ws.path().join("acdd.yaml"),
             "roots: [.]\nmodules:\n  domains:\n    http: true\n",
@@ -315,8 +300,8 @@ mod tests {
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
         let instructions = info.instructions.as_deref().unwrap_or("");
         assert!(
-            instructions.contains("21 tools"),
-            "expected dynamic 20+1=21 tools in instructions: {instructions}"
+            instructions.contains("19 tools"),
+            "expected dynamic 18+1=19 tools in instructions: {instructions}"
         );
 
         let (_running, _client, ctx) = make_peer_ctx(1).await;
@@ -326,16 +311,18 @@ mod tests {
             .iter()
             .map(|t| t.name.as_ref().to_owned())
             .collect();
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 19);
         assert!(names.contains("http_probe"));
         assert_eq!(
             names
                 .iter()
                 .filter(|name| name.as_str() != "http_probe" && is_builtin_mcp_tool(name))
                 .count(),
-            20
+            18
         );
         for legacy in [
+            "code_map_tests",
+            "code_map_prove_removal",
             "task_list",
             "task_claim",
             "task_submit",
@@ -460,10 +447,6 @@ mod tests {
             (
                 "acdd_state",
                 serde_json::json!({"action": "context", "format": "json"}),
-            ),
-            (
-                "acdd_state",
-                serde_json::json!({"action": "roadmap", "format": "json"}),
             ),
             (
                 "acdd_blackboard",

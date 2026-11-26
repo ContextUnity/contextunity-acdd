@@ -225,7 +225,10 @@ fn mcp_rejects_removal_scope_over_ten_thousand_nodes() {
     let mut m =
         crate::harness::McpTestHarness::indexed(&[("scope.py", &code)]).expect("MCP initialize");
     let rejection = m
-        .text("code_map_prove_removal", json!({"selector":"scope.py"}))
+        .text(
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"scope.py"}),
+        )
         .expect_err("tool should reject input");
     let expected: &str = "removal scope exceeds 10000 nodes";
     assert!(

@@ -78,8 +78,13 @@ message: "avoid direct connect calls"
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(tool_names.len(), 20);
+    assert_eq!(tool_names.len(), 18);
+    assert!(tool_names
+        .iter()
+        .all(|name| acdd_core::ports::is_builtin_mcp_tool(name)));
     assert!(tool_names.contains(&"code_map_lint"));
+    assert!(!tool_names.contains(&"code_map_tests"));
+    assert!(!tool_names.contains(&"code_map_prove_removal"));
 
     // Table-driven CLI vs MCP JSON parity & exit code matrix.
     struct Case<'a> {

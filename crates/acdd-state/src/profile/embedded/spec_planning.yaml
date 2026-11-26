@@ -19,8 +19,6 @@ default_tools:
   - code_map_impact
   - code_map_analyze
   - code_map_explain
-  - code_map_tests
-  - code_map_prove_removal
   - code_map_query
   - code_map_lint
   - ast_grep_search
@@ -105,7 +103,7 @@ guidance:
     description: "MANDATORY ACDD GRAPH & CONFIG DISCOVERY PROTOCOL"
     criteria:
       - "Inspect `context_lenses[\"docs.workspace_config\"]` (and `acdd.yaml`) first to honor configured `specs.<collection>` paths, `prefixes`, `digits`, `profile`, `docs` roots, `profiles_dirs`, `architecture.zones`, and `limits.max_metadata_bytes`."
-      - "Use `acdd draft <collection> <slug> [--prefix <TAG>]` (or `acdd_state`) to allocate collision-free sequential IDs across active and `archive/` directories rather than guessing numbers."
+      - "Use CLI `acdd draft <collection> <slug> [--prefix <TAG>]` to allocate collision-free sequential IDs across active and `archive/` directories rather than guessing numbers."
       - "Ground every cited symbol, owner, and seam via `code_map_overview`, `code_map_search(detail: \"compact\")`, `code_map_inspect`, `code_map_impact`, and `acdd_read(selector: ...)`; ground ADRs and `INV-*` rules via `search_docs`/`get_doc`."
   plan.principles:
     description: "ARCHITECTURAL VIABILITY, SPECIFICATION DISCIPLINE & WAVE HYGIENE"

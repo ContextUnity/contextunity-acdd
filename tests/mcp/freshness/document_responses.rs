@@ -6,8 +6,8 @@ fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let mcp_text = response_text(
         &mut client,
-        "code_map_tests",
-        json!({"selector":"main.py:target","direction":"inbound","format":"markdown"}),
+        "code_map_query",
+        json!({"operation":"tests","selector":"main.py:target","direction":"inbound","format":"markdown"}),
     );
     let cli_text = ws
         .cli_text(&["query", "tests", "main.py:target"])
@@ -34,8 +34,8 @@ fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
     }
     let full_mcp_text = response_text(
         &mut client,
-        "code_map_tests",
-        json!({"selector":"main.py:target","direction":"inbound","file_uris":true,"format":"markdown"}),
+        "code_map_query",
+        json!({"operation":"tests","selector":"main.py:target","direction":"inbound","file_uris":true,"format":"markdown"}),
     );
     assert!(full_mcp_text.contains("file://") && full_mcp_text.contains("#L"));
     let cli = ws
@@ -43,8 +43,8 @@ fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
         .expect("CLI should succeed");
     let mcp = client
         .payload(
-            "code_map_tests",
-            json!({"selector":"main.py:target","direction":"inbound"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"main.py:target","direction":"inbound"}),
         )
         .expect("MCP tool should succeed");
     for pointer in [

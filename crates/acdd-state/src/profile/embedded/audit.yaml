@@ -18,8 +18,6 @@ default_tools:
   - code_map_impact
   - code_map_analyze
   - code_map_explain
-  - code_map_tests
-  - code_map_prove_removal
   - code_map_query
   - code_map_lint
   - ast_grep_search

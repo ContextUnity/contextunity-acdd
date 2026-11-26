@@ -30,7 +30,10 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
             "code_map_search",
             json!({"pattern":"current","detail":"compact","limit":10}),
         ),
-        ("code_map_tests", json!({"selector":"main.rs:current"})),
+        (
+            "code_map_query",
+            json!({"operation":"tests","selector":"main.rs:current"}),
+        ),
         (
             "code_map_impact",
             json!({"selector":"main.rs:current","depth":1}),
@@ -39,8 +42,8 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         ("code_map_query", json!({"operation":"overview"})),
         ("code_map_analyze", json!({"target":""})),
         (
-            "code_map_prove_removal",
-            json!({"selector":"main.rs:current"}),
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"main.rs:current"}),
         ),
         (
             "ast_grep_search",

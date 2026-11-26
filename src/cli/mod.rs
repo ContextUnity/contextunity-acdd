@@ -65,9 +65,9 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             None,
         ),
         Command::Query {
-            command: QueryCommand::Analyze { target },
+            command: QueryCommand::Analyze { target, mode, .. },
         } => (
-            if dispatch_code::looks_like_sql(target) {
+            if mode.is_none() && dispatch_code::looks_like_sql(target) {
                 OperationKind::Sql
             } else {
                 OperationKind::Navigation

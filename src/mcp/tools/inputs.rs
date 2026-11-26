@@ -73,6 +73,24 @@ fn output_format_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schema.into()
 }
 
+fn analyze_mode_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".into(), Value::String("string".into()));
+    schema.insert(
+        "enum".into(),
+        serde_json::json!([
+            "summary",
+            "hotspots",
+            "boundary",
+            "path",
+            "entrypoints",
+            "diff_impact",
+            "cochange"
+        ]),
+    );
+    schema.into()
+}
+
 #[derive(Default, Deserialize, JsonSchema)]
 /// Shared pagination, detail, worktree, and format parameters.
 pub struct PageInput {
@@ -152,31 +170,6 @@ pub struct OverviewInput {
     pub page: PageInput,
 }
 impl OverviewInput {
-    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
-        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
-    }
-}
-#[derive(Deserialize, JsonSchema)]
-/// Target symbol selector with optional workspace-relative path scope.
-pub struct Selector {
-    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
-    #[serde(default)]
-    pub selector: Option<String>,
-    /// Alias for selector.
-    pub symbol: Option<String>,
-    /// Relative file or directory scope (alias: file_path).
-    pub path: Option<String>,
-    /// Alias for path.
-    pub file_path: Option<String>,
-    #[serde(flatten)]
-    /// Pagination, detail, worktree, and output format options.
-    pub page: PageInput,
-}
-impl Selector {
-    pub(super) fn selector(&self) -> anyhow::Result<&str> {
-        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
-    }
-
     pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
         resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
     }
@@ -474,34 +467,6 @@ impl SearchSymbols {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Test discovery request finding tests covering or called by a target symbol.
-pub struct Tests {
-    /// Symbol ID/name or path:name, path:known_kind:name, path:line, path#Lline (alias: symbol).
-    #[serde(default)]
-    pub selector: Option<String>,
-    /// Alias for selector.
-    pub symbol: Option<String>,
-    /// Relative file or directory scope (alias: file_path).
-    pub path: Option<String>,
-    /// Alias for path.
-    pub file_path: Option<String>,
-    #[serde(default = "inbound")]
-    /// Traversal direction: `'inbound'` (covering tests) or `'outbound'` (tested targets).
-    pub direction: String,
-    #[serde(flatten)]
-    /// Pagination, detail, worktree, and output format options.
-    pub page: PageInput,
-}
-impl Tests {
-    pub(super) fn selector(&self) -> anyhow::Result<&str> {
-        resolve_selector_alias(self.selector.as_deref(), self.symbol.as_deref())
-    }
-
-    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
-        resolve_path_alias(self.path.as_deref(), self.file_path.as_deref())
-    }
-}
-#[derive(Deserialize, JsonSchema)]
 /// Impact traversal request for a symbol selector or Git change view.
 pub struct Impact {
     /// Symbol ID or name (alias: symbol); provide one of selector or changes.
@@ -545,7 +510,7 @@ impl Impact {
 /// Bounded graph or read-only SQL query. SQL uses the compact canonical tables;
 /// join nodes to path_dictionary on path_id and edges to nodes on node_hash.
 pub struct Query {
-    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or 'dead_tails'.
+    /// Query operation: 'sql' (default when 'sql' is provided), 'tests', 'prove_removal', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or 'dead_tails'.
     #[serde(default)]
     pub operation: String,
     /// Symbol selector or SQL statement when operation='sql' (aliases: symbol, query).
@@ -599,7 +564,7 @@ impl Query {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Workspace or directory diagnostic analysis request covering syntax, resolution, and cycles.
+/// Workspace or directory diagnostic analysis request covering summary, hotspots, boundary, path, entrypoints, diff_impact, and cochange.
 pub struct Analyze {
     /// Relative file/directory target or SQL statement (aliases: path, file_path, selector); omit for workspace totals.
     #[serde(default)]
@@ -610,6 +575,13 @@ pub struct Analyze {
     pub file_path: Option<String>,
     /// Alias for target.
     pub selector: Option<String>,
+    /// Analysis mode: 'summary' (default), 'hotspots', 'boundary', 'path', 'entrypoints', 'diff_impact', or 'cochange'.
+    #[schemars(schema_with = "analyze_mode_schema")]
+    pub mode: Option<String>,
+    /// Destination symbol selector for mode='path'.
+    pub to: Option<String>,
+    /// Optional Git base ref for mode='diff_impact' or 'cochange'.
+    pub base: Option<String>,
     /// Compute cross-module and cross-symbol dependency cycles in the selected scope.
     pub include_cycles: Option<bool>,
     /// Read stored syntax diagnostics only; does not run a linter or reparse source.
@@ -803,7 +775,7 @@ impl WorktreeInput {
     }
 }
 
-/// Supported actions for the canonical `acdd_state` MCP tool.
+/// Supported active-run actions for the canonical `acdd_state` MCP tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpStateAction {
@@ -821,12 +793,8 @@ pub enum McpStateAction {
     Observability,
     /// Read-only budgeted gate context refresh (`StateQuery::Context`).
     Context,
-    /// Read-only cross-collection roadmap waves and drill-down (`StateQuery::Roadmap`).
-    Roadmap,
     /// Start a new `Run` from a spec file or ephemeral `--goal` (`StateCommand::Start`).
     Start,
-    /// Draft the next sequentially numbered spec document in a configured collection (`StateCommand::Draft`).
-    Draft,
     /// Extend a task's admitted write scope (`StateCommand::ExtendScope`).
     ExtendScope,
     /// Reopen a gate or task container (`StateCommand::Reopen`).
@@ -851,16 +819,15 @@ impl McpStateAction {
                 | Self::Next
                 | Self::Observability
                 | Self::Context
-                | Self::Roadmap
         )
     }
 }
 
-/// Canonical `acdd_state` MCP tool input covering 9 `StateCommand` actions and 7 read-only `StateQuery` actions.
+/// Canonical `acdd_state` MCP tool input covering 8 active-run `StateCommand` actions and 6 read-only `StateQuery` actions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateInput {
-    /// State action (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`).
+    /// State action (`status`, `list`, `show`, `next`, `context`, `observability`, `start`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`).
     pub action: McpStateAction,
     /// Snapshot operation: save, restore, or clear.
     pub snapshot_action: Option<acdd_state::usecases::SnapshotAction>,
@@ -884,7 +851,7 @@ pub struct StateInput {
     pub goal: Option<String>,
     /// Optional explicit run name override (`start`).
     pub run_name: Option<RunName>,
-    /// Optional profile override (`start`, `draft`).
+    /// Optional profile override (`start`).
     pub profile: Option<String>,
     /// Optional initial scope globs for ephemeral `goal` runs (`start`).
     pub scope: Option<Vec<String>>,
@@ -896,14 +863,6 @@ pub struct StateInput {
     pub in_place: Option<bool>,
     /// Explicit worktree path override (`start`).
     pub worktree_path: Option<PathBuf>,
-    /// Target spec collection key from `acdd.yaml` `specs:` (`draft`, e.g. `milestones`, `plans`).
-    pub collection: Option<String>,
-    /// URL/file slug for the drafted spec document (`draft`).
-    pub slug: Option<String>,
-    /// Optional ID prefix override within the collection (`draft`).
-    pub prefix: Option<String>,
-    /// Optional human-readable title (`draft`).
-    pub title: Option<String>,
     /// Additional repository-relative paths or globs to admit (`extend_scope`).
     pub paths: Option<Vec<String>>,
     /// Justification/cancellation reason (`extend_scope`, `reopen`, `clear`).
@@ -932,14 +891,6 @@ pub struct StateInput {
     pub jobs: Option<usize>,
     /// Dry-run mode computing waves without mutating state (`run`).
     pub dry_run: Option<bool>,
-    /// Optional spec ID filter for `roadmap` drill-down.
-    pub spec_id: Option<String>,
-    /// Limit `roadmap` output to Wave 0 ready specs.
-    pub ready_only: Option<bool>,
-    /// Limit `roadmap` output to in-progress specs.
-    pub active_only: Option<bool>,
-    /// Include intra-spec task drill-down in `roadmap` responses.
-    pub include_tasks: Option<bool>,
     /// Optional workspace filter (`list`).
     pub workspace: Option<String>,
     /// Include closed `run_tombstones` (`list`).

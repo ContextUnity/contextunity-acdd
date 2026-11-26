@@ -672,11 +672,35 @@ pub enum QueryCommand {
         #[arg(long)]
         path: Option<String>,
     },
-    /// Analyze parse errors, unresolved references, untested surface, and cycles.
+    /// Analyze diagnostics, hotspots, boundary, path, entrypoints, diff_impact, or cochange.
     Analyze {
         #[arg(default_value = "")]
         /// Workspace-relative file or directory scope (empty analyzes the whole workspace).
         target: String,
+        /// Analysis mode: summary (default), hotspots, boundary, path, entrypoints, diff_impact, or cochange.
+        #[arg(long)]
+        mode: Option<String>,
+        /// Destination symbol selector for `--mode path`.
+        #[arg(long)]
+        to: Option<String>,
+        /// Optional Git base ref for `--mode diff_impact` or `--mode cochange`.
+        #[arg(long)]
+        base: Option<String>,
+        /// Compute cross-module and cross-symbol dependency cycles (`--mode summary`).
+        #[arg(long)]
+        include_cycles: Option<bool>,
+        /// Read stored syntax diagnostics only (`--mode summary`).
+        #[arg(long, default_value_t = false)]
+        lint: bool,
+        #[arg(long, default_value_t = 100)]
+        /// Maximum number of items per result page (1..=100).
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        /// Result page offset.
+        offset: usize,
+        #[arg(long)]
+        /// Continuation generation from the preceding result page.
+        generation: Option<String>,
     },
     /// Execute a read-only SELECT/WITH SQL statement against the code graph.
     Sql {
@@ -686,9 +710,9 @@ pub enum QueryCommand {
         /// Maximum number of result rows to return.
         limit: usize,
     },
-    /// Execute a named graph query (`slice`, `duplicates`, `dead_tails`, etc.) or SQL query.
+    /// Execute a named graph query (`tests`, `prove_removal`, `slice`, `duplicates`, `dead_tails`, etc.) or SQL query.
     Run {
-        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', 'dead_tails', or a direct SELECT/WITH statement).
+        /// The operation value ('sql', 'tests', 'prove_removal', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', 'dead_tails', or a direct SELECT/WITH statement).
         operation: String,
         /// Optional symbol/path selector or SQL query when `operation == "sql"`.
         selector: Option<String>,

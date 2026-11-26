@@ -147,6 +147,16 @@ pub fn query_with_path_options(
             )
         }
         GraphQueryOp::DeadTails => dead_tails_paged(conn, selector, path, options),
+        GraphQueryOp::Tests => symbols::tests_paged_with_path(
+            conn,
+            selector.unwrap_or(""),
+            path,
+            direction.as_str(),
+            options,
+        ),
+        GraphQueryOp::ProveRemoval => {
+            removal_paged_with_path(conn, selector.unwrap_or(""), path, options)
+        }
     }
 }
 
@@ -182,6 +192,14 @@ mod traversal_seam_tests {
         assert!(matches!(
             "dead_tails".parse::<GraphQueryOp>(),
             Ok(GraphQueryOp::DeadTails)
+        ));
+        assert!(matches!(
+            "tests".parse::<GraphQueryOp>(),
+            Ok(GraphQueryOp::Tests)
+        ));
+        assert!(matches!(
+            "prove_removal".parse::<GraphQueryOp>(),
+            Ok(GraphQueryOp::ProveRemoval)
         ));
         assert!("cypher".parse::<GraphQueryOp>().is_err());
     }

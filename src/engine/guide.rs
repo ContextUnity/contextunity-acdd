@@ -363,14 +363,14 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
         })),
         "acdd" => Ok(json!({
-            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 20 static + external DomainProvider plugin tools.",
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 18 static + external DomainProvider plugin tools.",
             "steps": [
                 "Initialize with `acdd init` (selects `inherit: code | base | audit | spec_planning`, writes canonical `.gitignore`).",
                 "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
                 "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--profile spec_planning]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
             ],
             "mcp_tools": {
-                "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_tests", "code_map_prove_removal", "code_map_query", "ast_grep_search"],
+                "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_query", "code_map_lint", "ast_grep_search"],
                 "docs": ["get_doc", "search_docs"],
                 "core": ["acdd_read", "acdd_guide"],
                 "state": ["acdd_state", "acdd_claim", "acdd_verify", "acdd_submit", "acdd_blackboard"],
@@ -394,9 +394,9 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash.",
             "symbols": "Use code_map_search with FTS terms or prefix* pattern. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees.",
             "snippets": "Use acdd_read(selector=...) for digest-verified symbol bodies, or acdd_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: acdd read <path> --mode <mode>.",
-            "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
-            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql, untested, implementations, slice, unwired, duplicates, and dead_tails; pages use limit, offset, and generation.",
-            "diagnostics": "Call code_map_analyze with target='' for workspace totals; cycles require include_cycles=true.",
+            "tests": "Call code_map_query(operation=\"tests\", selector=...) on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
+            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics (mode=summary|hotspots|boundary|path|entrypoints|diff_impact|cochange), and code_map_impact for traversal. Use code_map_query for sql, untested, implementations, slice, unwired, duplicates, dead_tails, tests, and prove_removal; pages use limit, offset, and generation.",
+            "diagnostics": "Call code_map_analyze with target='' for workspace totals (default mode='summary'); cycles require include_cycles=true, and mode='hotspots'|'boundary'|'path'|'entrypoints'|'diff_impact'|'cochange' run read-only graph/Git diagnostics.",
             "documents": "Use search_docs with include_excerpt=true to find sections, get_doc with detail='compact' for section outlines, and get_doc with section='...' to read a specific section.",
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters.",
             "recovery": "On a computation budget error, narrow the selector or path and reduce depth."

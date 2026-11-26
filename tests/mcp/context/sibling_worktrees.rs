@@ -297,8 +297,8 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         ),
         (
             "test edge",
-            "code_map_tests",
-            json!({"selector":"sibling_only","direction":"inbound","worktree":"external","file_uris":true,"format":"markdown"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"sibling_only","direction":"inbound","worktree":"external","file_uris":true,"format":"markdown"}),
             crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(11)),
         ),
         (

@@ -32,8 +32,23 @@ fn mcp_budget_and_query_errors_explain_how_to_retry() {
         ),
         (
             "code_map_tests",
-            json!({"target":"README.md"}),
-            "for 'target', try 'selector'",
+            json!({"selector":"README.md"}),
+            "code_map_query(operation=\"tests\"",
+        ),
+        (
+            "code_map_prove_removal",
+            json!({"selector":"README.md"}),
+            "code_map_query(operation=\"prove_removal\"",
+        ),
+        (
+            "acdd_state",
+            json!({"action":"roadmap","ready_only":true}),
+            "acdd roadmap",
+        ),
+        (
+            "acdd_state",
+            json!({"action":"draft","collection":"milestones","slug":"sample"}),
+            "acdd draft",
         ),
         (
             "acdd_blackboard",

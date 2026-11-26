@@ -22,6 +22,11 @@ pub(super) fn kind_for(title: &str, value: &Value) -> Option<TraversalKind> {
             Some(TraversalKind::Explain)
         }
         "code_map_query"
+            if value.get("discovery_method").is_some() && value.get("nodes").is_some() =>
+        {
+            Some(TraversalKind::Tests)
+        }
+        "code_map_query"
             if value.get("direction").is_some()
                 && value.get("depth").is_some()
                 && value.get("nodes").is_some() =>

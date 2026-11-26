@@ -1,7 +1,7 @@
 use super::super::{response, server::Server};
 use super::inputs::{
     Analyze, Ast, Explain, GetDoc, Guide, Impact, Inspect, Lint, OverviewInput, PageUriOptions,
-    Query, SearchDocs, SearchSymbols, Selector, Snippet, Tests,
+    Query, SearchDocs, SearchSymbols, Snippet,
 };
 use crate::{
     engine::{ast, guide},
@@ -125,7 +125,6 @@ fn responding_with_presentation(
                             title,
                             "code_map_impact"
                                 | "code_map_explain"
-                                | "code_map_tests"
                                 | "code_map_analyze"
                                 | "code_map_query"
                         )
@@ -341,34 +340,6 @@ pub(super) async fn code_map_search(server: &Server, p: SearchSymbols) -> CallTo
     .await
 }
 
-pub(super) async fn code_map_tests(server: &Server, p: Tests) -> CallToolResult {
-    let format = p.page.output_format();
-    let uri_options = p.page.uri_options(None);
-    responding_blocking(
-        server,
-        format,
-        uri_options,
-        OperationKind::Navigation,
-        "code_map_tests",
-        None,
-        None,
-        move |server, adapter, policy| {
-            let selector = p.selector()?;
-            let path = p.path()?;
-            server.read_with_adapter(adapter, |c| {
-                symbols::tests_paged_with_path(
-                    c,
-                    selector,
-                    path,
-                    &p.direction,
-                    &p.page.resolve(policy)?,
-                )
-            })
-        },
-    )
-    .await
-}
-
 pub(super) async fn code_map_impact(server: &Server, p: Impact) -> CallToolResult {
     let format = p.page.output_format();
     let uri_options = p.page.uri_options(None);
@@ -538,7 +509,7 @@ pub(super) async fn code_map_query(server: &Server, p: Query) -> CallToolResult 
 
 pub(super) async fn code_map_analyze(server: &Server, p: Analyze) -> CallToolResult {
     let format = p.page.output_format();
-    let operation = if p.target().as_deref().is_ok_and(looks_like_sql) {
+    let operation = if p.mode.is_none() && p.target().as_deref().is_ok_and(looks_like_sql) {
         OperationKind::Sql
     } else {
         OperationKind::Navigation
@@ -554,39 +525,24 @@ pub(super) async fn code_map_analyze(server: &Server, p: Analyze) -> CallToolRes
         None,
         move |server, adapter, policy| {
             let target = p.target()?;
-            anyhow::ensure!(
-                !p.lint || p.include_cycles != Some(true),
-                "lint=true cannot be combined with include_cycles=true"
-            );
             server.read_with_adapter(adapter, |c| {
                 let options = p.page.resolve(policy)?;
-                if p.lint {
-                    acdd_index::db::lint::syntax_paged(c, target, &options)
-                } else {
-                    reader::analyze_paged(c, target, p.include_cycles, &options)
-                }
-            })
-        },
-    )
-    .await
-}
-
-pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> CallToolResult {
-    let format = p.page.output_format();
-    let uri_options = p.page.uri_options(None);
-    responding_blocking(
-        server,
-        format,
-        uri_options,
-        OperationKind::Navigation,
-        "code_map_prove_removal",
-        None,
-        None,
-        move |server, adapter, policy| {
-            let selector = p.selector()?;
-            let path = p.path()?;
-            server.read_with_adapter(adapter, |c| {
-                traversal::removal_paged_with_path(c, selector, path, &p.page.resolve(policy)?)
+                state_bridge::dispatch_analyze(
+                    c,
+                    &server.root,
+                    adapter,
+                    server.state_db(),
+                    Some(&server.db),
+                    &state_bridge::AnalyzeDispatchInput {
+                        target,
+                        mode: p.mode.as_deref(),
+                        to: p.to.as_deref(),
+                        base: p.base.as_deref(),
+                        include_cycles: p.include_cycles,
+                        lint: p.lint,
+                        page: &options,
+                    },
+                )
             })
         },
     )

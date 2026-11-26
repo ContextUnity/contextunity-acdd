@@ -44,8 +44,8 @@ fn compact_markdown_envelopes_stay_under_4kib_with_json_parity_and_opt_ins() {
             json!({"path": "src/service.rs", "start_line": 1, "line_count": 20}),
         ),
         (
-            "code_map_tests",
-            json!({"selector": "src/service.rs:core_target", "direction": "inbound"}),
+            "code_map_query",
+            json!({"operation": "tests", "selector": "src/service.rs:core_target", "direction": "inbound"}),
         ),
         (
             "code_map_impact",
@@ -181,22 +181,22 @@ fn compact_markdown_envelopes_stay_under_4kib_with_json_parity_and_opt_ins() {
         "detail=full must emit file:// URIs: {full_md}"
     );
 
-    // 4. code_map_tests compact breadcrumbs omit per-hop rs: IDs while preserving JSON parity.
+    // 4. code_map_query(operation="tests") compact breadcrumbs omit per-hop rs: IDs while preserving JSON parity.
     let tests_md = client
         .text(
-            "code_map_tests",
-            json!({"selector": "src/service.rs:core_target", "direction": "inbound"}),
+            "code_map_query",
+            json!({"operation": "tests", "selector": "src/service.rs:core_target", "direction": "inbound"}),
         )
         .unwrap();
     let tests_json = client
         .payload(
-            "code_map_tests",
-            json!({"selector": "src/service.rs:core_target", "direction": "inbound"}),
+            "code_map_query",
+            json!({"operation": "tests", "selector": "src/service.rs:core_target", "direction": "inbound"}),
         )
         .unwrap();
     assert!(
         !tests_md.contains("rs:src/"),
-        "compact code_map_tests must omit per-hop rs: IDs: {tests_md}"
+        "compact code_map_query(tests) must omit per-hop rs: IDs: {tests_md}"
     );
     assert!(tests_json["nodes"]["items"][0]["connection"]["verified_call_path_nodes"].is_array());
 

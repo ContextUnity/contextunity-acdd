@@ -273,13 +273,16 @@ fn guide_content_and_surfaces_matrix() {
             }
             "acdd" => {
                 let text = value.to_string().to_lowercase();
-                for term in ["gateprofile", "20 static", "domainprovider", "acdd start"] {
+                for term in ["gateprofile", "18 static", "domainprovider", "acdd start"] {
                     assert!(
                         text.contains(term),
                         "acdd guide must explain {term}: {text}"
                     );
                 }
                 assert!(value["mcp_tools"].is_object());
+                assert!(
+                    !text.contains("code_map_tests") && !text.contains("code_map_prove_removal")
+                );
                 assert!(value["blackboard_topics"].is_object());
                 assert!(value["review_contours"].is_array());
             }
@@ -407,7 +410,7 @@ fn guide_content_and_surfaces_matrix() {
                 "acdd_read",
                 "code_map_explain",
                 "code_map_impact",
-                "code_map_tests",
+                "code_map_query",
                 "ast_grep_search",
                 "candidate",
                 "lexical",

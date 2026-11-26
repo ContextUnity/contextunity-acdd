@@ -653,8 +653,34 @@ fn dispatch_query(
         QueryCommand::Remove { selector, path } => {
             traversal::removal_paged_with_path(conn, &selector, path.as_deref(), &cli_page(100)?)
         }
-        QueryCommand::Analyze { target } => {
-            reader::analyze_paged(conn, &target, None, &cli_page(100)?)
+        QueryCommand::Analyze {
+            target,
+            mode,
+            to,
+            base,
+            include_cycles,
+            lint,
+            limit,
+            offset,
+            generation,
+        } => {
+            let page = cli_page_with_offset(limit, offset, generation)?;
+            crate::state_bridge::dispatch_analyze(
+                conn,
+                ctx.root,
+                ctx.adapter,
+                ctx.state_db,
+                Some(ctx.db),
+                &crate::state_bridge::AnalyzeDispatchInput {
+                    target: &target,
+                    mode: mode.as_deref(),
+                    to: to.as_deref(),
+                    base: base.as_deref(),
+                    include_cycles,
+                    lint,
+                    page: &page,
+                },
+            )
         }
         QueryCommand::Sql { sql, limit } => traversal::query_with_path_options(
             conn,

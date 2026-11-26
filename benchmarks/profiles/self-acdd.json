@@ -50,16 +50,16 @@
       "id": "test_relationships",
       "scenario": "Find test nodes connected to StateEngine",
       "acdd": {
-        "tool": "code_map_tests",
-        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "direction": "inbound", "limit": 30}
+        "tool": "code_map_query",
+        "arguments": {"operation": "tests", "selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "direction": "inbound", "limit": 30}
       }
     },
     {
       "id": "removal_safety",
       "scenario": "Evaluate indexed removal safety for StateEngine",
       "acdd": {
-        "tool": "code_map_prove_removal",
-        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "detail": "compact", "limit": 30}
+        "tool": "code_map_query",
+        "arguments": {"operation": "prove_removal", "selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "detail": "compact", "limit": 30}
       }
     },
     {

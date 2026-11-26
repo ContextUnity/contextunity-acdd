@@ -895,7 +895,8 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     assert_eq!(snippet["source"], "def compute():\n    return 42\n");
     let hints = snippet["Hints"].as_str().unwrap();
     assert!(
-        hints.contains("code_map_explain(") && hints.contains("code_map_tests("),
+        hints.contains("code_map_explain(")
+            && hints.contains("code_map_query(operation: \"tests\""),
         "{snippet}"
     );
     assert!(

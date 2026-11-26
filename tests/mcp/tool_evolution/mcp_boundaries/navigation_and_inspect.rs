@@ -254,16 +254,21 @@ fn mcp_selector_and_source_boundaries() {
     ]);
     let mut m = m.expect("MCP initialize");
 
-    for tool in [
-        "code_map_inspect",
-        "code_map_explain",
-        "code_map_impact",
-        "code_map_tests",
-        "code_map_prove_removal",
-        "acdd_read",
+    for (tool, extra) in [
+        ("code_map_inspect", json!({})),
+        ("code_map_explain", json!({})),
+        ("code_map_impact", json!({})),
+        ("code_map_query", json!({"operation": "tests"})),
+        ("code_map_query", json!({"operation": "prove_removal"})),
+        ("acdd_read", json!({})),
     ] {
+        let with_selector = |sel: &str| {
+            let mut obj = extra.as_object().unwrap().clone();
+            obj.insert("selector".into(), json!(sel));
+            serde_json::Value::Object(obj)
+        };
         let rejection = m
-            .text(tool, json!({"selector":"scanner"}))
+            .text(tool, with_selector("scanner"))
             .expect_err("tool should reject input");
         let expected: &str = "ambiguous selector";
         assert!(
@@ -275,7 +280,7 @@ fn mcp_selector_and_source_boundaries() {
         );
         for selector in ["", "   "] {
             let rejection = m
-                .text(tool, json!({"selector":selector}))
+                .text(tool, with_selector(selector))
                 .expect_err("tool should reject input");
             assert!(
                 rejection
@@ -286,7 +291,7 @@ fn mcp_selector_and_source_boundaries() {
             );
         }
         let rejection = m
-            .text(tool, json!({"selector":"docs/contract.md"}))
+            .text(tool, with_selector("docs/contract.md"))
             .expect_err("tool should reject input");
         let expected: &str = "get_doc or search_docs";
         assert!(
@@ -410,8 +415,8 @@ fn removal_proof_normalizes_file_selector_aliases_before_scoping() {
     .expect("MCP initialize");
     let full = m
         .payload(
-            "code_map_prove_removal",
-            json!({"selector":"target.py","limit":100}),
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"target.py","limit":100}),
         )
         .expect("MCP tool should succeed");
     let expected_selected = crate::json_array(&full["selected_ids"]["items"]).clone();
@@ -430,8 +435,8 @@ fn removal_proof_normalizes_file_selector_aliases_before_scoping() {
     ] {
         let first = m
             .payload(
-                "code_map_prove_removal",
-                json!({"selector":selector,"limit":1,"offset":0}),
+                "code_map_query",
+                json!({"operation":"prove_removal","selector":selector,"limit":1,"offset":0}),
             )
             .expect("MCP tool should succeed");
         let generation = first["selected_ids"]["generation"]
@@ -446,8 +451,8 @@ fn removal_proof_normalizes_file_selector_aliases_before_scoping() {
                 first.clone()
             } else {
                 m.payload(
-                    "code_map_prove_removal",
-                    json!({"selector":selector,"limit":1,"offset":offset,"generation":generation}),
+                    "code_map_query",
+                    json!({"operation":"prove_removal","selector":selector,"limit":1,"offset":offset,"generation":generation}),
                 )
                 .expect("MCP tool should succeed")
             };

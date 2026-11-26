@@ -9,17 +9,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Canonical list of the 20 built-in static MCP tools that plugin tools must never collide with.
-const BUILTIN_MCP_TOOLS: [&str; 20] = [
-    // 11 code tools
+/// Canonical list of the 18 built-in static MCP tools that plugin tools must never collide with.
+const BUILTIN_MCP_TOOLS: [&str; 18] = [
+    // 9 code tools
     "code_map_overview",
     "code_map_search",
     "code_map_inspect",
     "code_map_impact",
     "code_map_analyze",
     "code_map_explain",
-    "code_map_tests",
-    "code_map_prove_removal",
     "code_map_query",
     "code_map_lint",
     "ast_grep_search",
@@ -37,7 +35,10 @@ const BUILTIN_MCP_TOOLS: [&str; 20] = [
     "acdd_blackboard",
 ];
 
-/// Return `true` if `name` matches one of the 20 built-in static MCP tools.
+/// Retired static MCP tool names kept permanently reserved against external plugin registration.
+const RETIRED_MCP_TOOLS: [&str; 2] = ["code_map_tests", "code_map_prove_removal"];
+
+/// Return `true` if `name` matches one of the 18 built-in static MCP tools.
 pub fn is_builtin_mcp_tool(name: &str) -> bool {
     BUILTIN_MCP_TOOLS.contains(&name)
 }
@@ -451,6 +452,14 @@ impl CompositeDomainProvider {
                         ErrorCode::ProfileSchemaInvalid,
                         format!(
                             "plugin tool '{full_name}' from domain '{domain_id}' collides with built-in MCP tool"
+                        ),
+                    ));
+                }
+                if RETIRED_MCP_TOOLS.contains(&full_name.as_str()) {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "plugin tool '{full_name}' from domain '{domain_id}' collides with reserved retired MCP tool"
                         ),
                     ));
                 }
@@ -946,10 +955,14 @@ mod tests {
 
     #[test]
     fn composite_registration_rejects_duplicates_and_builtin_collisions() {
-        assert_eq!(BUILTIN_MCP_TOOLS.len(), 20);
+        assert_eq!(BUILTIN_MCP_TOOLS.len(), 18);
+        assert!(!is_builtin_mcp_tool("code_map_tests"));
+        assert!(!is_builtin_mcp_tool("code_map_prove_removal"));
 
         let collision_provider = sample_provider("acdd", &["read"]);
         let lint_collision_provider = sample_provider("code", &["map_lint"]);
+        let retired_tests_provider = sample_provider("code", &["map_tests"]);
+        let retired_removal_provider = sample_provider("code", &["map_prove_removal"]);
         let dup_domain_a = sample_provider("http", &["request"]);
         let dup_domain_b = sample_provider("http", &["inspect"]);
         let cross_tool_a = sample_provider("foo", &["bar_baz"]);
@@ -973,6 +986,16 @@ mod tests {
             (
                 "collides_with_builtin_code_map_lint",
                 vec![lint_collision_provider],
+                Some(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "collides_with_retired_code_map_tests",
+                vec![retired_tests_provider],
+                Some(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "collides_with_retired_code_map_prove_removal",
+                vec![retired_removal_provider],
                 Some(ErrorCode::ProfileSchemaInvalid),
             ),
             (

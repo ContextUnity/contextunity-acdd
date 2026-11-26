@@ -26,8 +26,8 @@ fn mcp_and_cli_expose_evolution_tools_and_selector_errors() {
             serde_json::json!({"pattern":"comp*","kind":"function","format":"json"}),
         ),
         (
-            "code_map_tests",
-            serde_json::json!({"selector":"compute","format":"json"}),
+            "code_map_query",
+            serde_json::json!({"operation":"tests","selector":"compute","format":"json"}),
         ),
     ];
     for (i, (name, arguments)) in cases.into_iter().enumerate() {
@@ -224,15 +224,18 @@ fn transitive_tests_exclude_unrelated_and_support_reverse_direction() {
     ])
     .expect("MCP initialize");
     let tests = client
-        .payload("code_map_tests", serde_json::json!({"selector":"target"}))
+        .payload(
+            "code_map_query",
+            serde_json::json!({"operation":"tests","selector":"target"}),
+        )
         .expect("MCP tool should succeed");
     let nodes = tests["nodes"]["items"].as_array().unwrap();
     assert!(nodes.iter().any(|n| n["name"] == "test_target"));
     assert!(!nodes.iter().any(|n| n["name"] == "test_unrelated"));
     let production = client
         .payload(
-            "code_map_tests",
-            serde_json::json!({"selector":"test_target","direction":"outbound"}),
+            "code_map_query",
+            serde_json::json!({"operation":"tests","selector":"test_target","direction":"outbound"}),
         )
         .expect("MCP tool should succeed");
     assert!(production["nodes"]["items"]
@@ -364,7 +367,10 @@ fn rust_test_attributes_and_cyclic_python_dependencies() {
     ])
     .expect("MCP initialize");
     let tests = client
-        .payload("code_map_tests", serde_json::json!({"selector":"compute"}))
+        .payload(
+            "code_map_query",
+            serde_json::json!({"operation":"tests","selector":"compute"}),
+        )
         .expect("MCP tool should succeed");
     assert!(tests["nodes"]["items"]
         .as_array()
@@ -372,7 +378,10 @@ fn rust_test_attributes_and_cyclic_python_dependencies() {
         .iter()
         .any(|n| n["name"] == "checks_compute"));
     let tests = client
-        .payload("code_map_tests", serde_json::json!({"selector":"a"}))
+        .payload(
+            "code_map_query",
+            serde_json::json!({"operation":"tests","selector":"a"}),
+        )
         .expect("MCP tool should succeed");
     assert_eq!(tests["nodes"]["items"].as_array().unwrap().len(), 1);
     client.finish().expect("server must finish successfully");

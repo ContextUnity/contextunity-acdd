@@ -8,10 +8,10 @@ use acdd_core::response::ResponsePolicy;
 use acdd_index::scanner;
 use acdd_state::types::{BlackboardStatus, BlackboardTopic, RunStatus, SubtaskStatus};
 use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, ContextReq, DraftReq, ExtendScopeReq,
-    ListReq, NextReq, ObservabilityReq, ReopenReq, RoadmapReq, RunReq, ShowReq, SnapshotReq,
-    StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq,
-    SubtaskReq, SyncReq, VerifyReq,
+    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, ContextReq, ExtendScopeReq, ListReq,
+    NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, SnapshotReq, StartReq, StateCommand,
+    StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq, SubtaskReq, SyncReq,
+    VerifyReq,
 };
 use rmcp::model::CallToolResult;
 use serde_json::Value;
@@ -115,17 +115,6 @@ fn build_state_command_from_input(
                 worktree_path,
             }))
         }
-        McpStateAction::Draft => {
-            let collection = require_field(p.collection, "collection", "draft")?;
-            let slug = require_field(p.slug, "slug", "draft")?;
-            Ok(StateCommand::Draft(DraftReq {
-                collection,
-                slug,
-                prefix: p.prefix,
-                title: p.title,
-                profile: p.profile,
-            }))
-        }
         McpStateAction::ExtendScope => {
             let node = require_field(p.node, "node", "extend_scope")?;
             let paths = p.paths.unwrap_or_default();
@@ -186,8 +175,7 @@ fn build_state_command_from_input(
         | McpStateAction::Show
         | McpStateAction::Next
         | McpStateAction::Observability
-        | McpStateAction::Context
-        | McpStateAction::Roadmap => unreachable!("read-only actions route via StateQuery"),
+        | McpStateAction::Context => unreachable!("read-only actions route via StateQuery"),
     }
 }
 
@@ -218,14 +206,6 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
             run,
             node: p.node,
             worker_id: p.worker_id,
-        })),
-        McpStateAction::Roadmap => Ok(StateQuery::Roadmap(RoadmapReq {
-            spec_id: p.spec_id,
-            collection: p.collection.clone(),
-            ready_only: p.ready_only.unwrap_or(false),
-            active_only: p.active_only.unwrap_or(false),
-            include_tasks: p.include_tasks.unwrap_or(false),
-            ..Default::default()
         })),
         _ => unreachable!("mutating actions route via StateCommand"),
     }
@@ -309,12 +289,8 @@ pub(super) async fn acdd_state(server: &Server, p: StateInput) -> CallToolResult
     run_state_blocking(server, format, "acdd_state", move |ctx| {
         if p.action.is_read_only() {
             let query = build_state_query_from_input(p)?;
-            let roadmap_detail = matches!(
-                &query,
-                StateQuery::Roadmap(req) if req.spec_id.is_some()
-            );
             let out = ctx.execute_query(query)?;
-            let md = crate::format::render_state_query_markdown(&out, "acdd_state", roadmap_detail);
+            let md = crate::format::render_state_query_markdown(&out, "acdd_state", false);
             let val = out.into_untagged_json()?;
             Ok((md, val))
         } else {
@@ -492,15 +468,15 @@ pub(super) fn operation_kind(
             OperationKind::Sql
         }
         "code_map_analyze"
-            if arguments
-                .and_then(|arguments| {
-                    arguments
+            if arguments.is_some_and(|arguments| {
+                arguments.get("mode").is_none()
+                    && arguments
                         .get("target")
                         .or(arguments.get("path"))
                         .or(arguments.get("selector"))
-                })
-                .and_then(Value::as_str)
-                .is_some_and(super::code_tools::looks_like_sql) =>
+                        .and_then(Value::as_str)
+                        .is_some_and(super::code_tools::looks_like_sql)
+            }) =>
         {
             OperationKind::Sql
         }

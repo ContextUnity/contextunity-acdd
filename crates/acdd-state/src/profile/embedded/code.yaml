@@ -12,8 +12,6 @@ default_tools:
   - code_map_impact
   - code_map_analyze
   - code_map_explain
-  - code_map_tests
-  - code_map_prove_removal
   - code_map_query
   - code_map_lint
   - ast_grep_search
@@ -174,7 +172,7 @@ guidance:
     description: "ACDD NAVIGATION & HYGIENE PROTOCOL"
     criteria:
       - "Use `code_map_*`, `ast_grep_search`, `acdd_read(selector: ...)`, `search_docs`, `get_doc` (`rg` only for literals/config); if MCP is unavailable, use `acdd` CLI (`skills/acdd/SKILL.md`)."
-      - "Run `code_map_lint` for arch/syntax/docs rules, `code_map_impact`/`tests`/`prove_removal` before deleting/changing public symbols, and `code_map_query(duplicates, dead_tails)` before submit."
+      - "Run `code_map_lint` for arch/syntax/docs rules, `code_map_impact` and `code_map_query(operation=\"tests\"|\"prove_removal\")` before deleting/changing public symbols, and `code_map_query(duplicates, dead_tails)` before submit."
       - "Do NOT run inline Python (`python -c` / heredocs) or write ad-hoc `.py` verification scripts — use native tests or `acdd` CLI."
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"

@@ -24,12 +24,6 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         ("code_map_inspect", "selector", vec!["symbol", "file_path"]),
         ("code_map_explain", "selector", vec!["symbol", "file_path"]),
         ("code_map_impact", "selector", vec!["symbol", "file_path"]),
-        ("code_map_tests", "selector", vec!["symbol", "file_path"]),
-        (
-            "code_map_prove_removal",
-            "selector",
-            vec!["symbol", "file_path"],
-        ),
         (
             "code_map_analyze",
             "target",
@@ -91,12 +85,12 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             ],
         ),
         (
-            "code_map_tests",
-            json!({"selector":"first","path":"src/app.py"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"first","path":"src/app.py"}),
             vec![
-                json!({"symbol":"first","file_path":"src/app.py"}),
-                json!({"symbol":"first","path":"src/app.py"}),
-                json!({"selector":"first","file_path":"src/app.py"}),
+                json!({"operation":"tests","symbol":"first","file_path":"src/app.py"}),
+                json!({"operation":"tests","symbol":"first","path":"src/app.py"}),
+                json!({"operation":"tests","selector":"first","file_path":"src/app.py"}),
             ],
         ),
         (
@@ -109,12 +103,12 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             ],
         ),
         (
-            "code_map_prove_removal",
-            json!({"selector":"first","path":"src/app.py"}),
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"first","path":"src/app.py"}),
             vec![
-                json!({"symbol":"first","file_path":"src/app.py"}),
-                json!({"symbol":"first","path":"src/app.py"}),
-                json!({"selector":"first","file_path":"src/app.py"}),
+                json!({"operation":"prove_removal","symbol":"first","file_path":"src/app.py"}),
+                json!({"operation":"prove_removal","symbol":"first","path":"src/app.py"}),
+                json!({"operation":"prove_removal","selector":"first","file_path":"src/app.py"}),
             ],
         ),
         (
@@ -224,16 +218,16 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
             json!({"selector":"first","symbol":"other"}),
         ),
         (
-            "code_map_tests",
-            json!({"selector":"first","symbol":"other"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"first","symbol":"other"}),
         ),
         (
             "code_map_impact",
             json!({"selector":"first","symbol":"other"}),
         ),
         (
-            "code_map_prove_removal",
-            json!({"selector":"first","symbol":"other"}),
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"first","symbol":"other"}),
         ),
         (
             "code_map_inspect",
@@ -871,5 +865,381 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
         )
         .expect("blackboard read");
     assert_eq!(entries["items"][0]["payload"], "sqlite note");
+    m.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn ux004_mcp_surface_consolidation_and_analyze_cli_parity_contract() {
+    use std::collections::BTreeSet;
+
+    let (w, m) = McpTestHarness::with_files(&[
+        (
+            "acdd.yaml",
+            "roots: [.]\nstate_db: var/custom-state.sqlite\nsensitive: [\".env\"]\nmodules: {code: true, docs: true, state: true, blackboard: true}\n",
+        ),
+        (".gitignore", ".acdd/\n"),
+        (
+            "src/core.py",
+            "def leaf():\n    return 1\n\ndef compute():\n    return leaf()\n",
+        ),
+        (
+            "src/entry.py",
+            "from src.core import compute\n\ndef run_entry():\n    return compute()\n",
+        ),
+        (
+            "tests/test_core.py",
+            "from src.core import compute\n\ndef test_compute():\n    assert compute() == 1\n",
+        ),
+    ]);
+    w.seed_git().expect("seed git repo");
+    w.write(".env", "SECRET=do-not-leak\n");
+    w.write("var/custom-state.sqlite-wal", "wal-sidecar-must-not-leak\n");
+    w.write(
+        "src/core.py",
+        "def leaf():\n    return 2\n\ndef compute():\n    return leaf()\n",
+    );
+    w.write(
+        "src/entry.py",
+        "from src.core import compute\n\ndef run_entry():\n    return compute() + 1\n",
+    );
+    w.stage_git_files(&[
+        ".env",
+        "var/custom-state.sqlite-wal",
+        "src/core.py",
+        "src/entry.py",
+    ])
+    .expect("stage cochange");
+    w.commit_git("cochange core and entry", None)
+        .expect("commit cochange");
+    // Leave unstaged edits (including non-default state DB sidecar) for diff_impact + rebuild index.
+    w.write("var/custom-state.sqlite-wal", "wal-sidecar-edited\n");
+    w.write(
+        "src/core.py",
+        "def leaf(delta=0):\n    return 2 + delta\n\ndef compute():\n    return leaf()\n",
+    );
+    w.build();
+
+    let mut m = m.expect("MCP initialize");
+    let listed = m
+        .request_value("tools/list", json!({}))
+        .expect("tools/list");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let tool_names: BTreeSet<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(
+        tool_names.len(),
+        18,
+        "expected 18 static tools: {tool_names:?}"
+    );
+    assert!(tool_names
+        .iter()
+        .all(|name| acdd_core::ports::is_builtin_mcp_tool(name)));
+    assert!(!tool_names.contains("code_map_tests"));
+    assert!(!tool_names.contains("code_map_prove_removal"));
+
+    // Verify zero new fields on code_map_query.
+    let query_schema = &tools
+        .iter()
+        .find(|t| t["name"] == "code_map_query")
+        .unwrap()["inputSchema"]["properties"];
+    let query_props: BTreeSet<&str> = query_schema
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let expected_query_props: BTreeSet<&str> = [
+        "operation",
+        "selector",
+        "symbol",
+        "sql",
+        "query",
+        "target",
+        "level",
+        "min_lines",
+        "path",
+        "file_path",
+        "direction",
+        "include_coverage",
+        "depth",
+        "limit",
+        "offset",
+        "detail",
+        "file_uris",
+        "generation",
+        "worktree",
+        "format",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(query_props, expected_query_props);
+
+    // Verify strictly 3 new optional fields (mode, to, base) on code_map_analyze.
+    let analyze_props = tools
+        .iter()
+        .find(|t| t["name"] == "code_map_analyze")
+        .unwrap()["inputSchema"]["properties"]
+        .as_object()
+        .unwrap();
+    for field in ["mode", "to", "base", "target", "include_cycles", "lint"] {
+        assert!(analyze_props.contains_key(field), "missing {field}");
+    }
+    let mode_enum: BTreeSet<&str> = analyze_props["mode"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(
+        mode_enum,
+        BTreeSet::from([
+            "summary",
+            "hotspots",
+            "boundary",
+            "path",
+            "entrypoints",
+            "diff_impact",
+            "cochange",
+        ])
+    );
+
+    // Verify active-run-only acdd_state omits roadmap/draft and their 8 dead fields.
+    let state_schema = &tools.iter().find(|t| t["name"] == "acdd_state").unwrap()["inputSchema"];
+    let state_props = state_schema["properties"].as_object().unwrap();
+    for removed_field in [
+        "collection",
+        "slug",
+        "prefix",
+        "title",
+        "spec_id",
+        "ready_only",
+        "active_only",
+        "include_tasks",
+    ] {
+        assert!(
+            !state_props.contains_key(removed_field),
+            "removed state field '{removed_field}' still exposed"
+        );
+    }
+    let state_schema_str = serde_json::to_string(state_schema).unwrap();
+    assert!(!state_schema_str.contains("\"roadmap\""));
+    assert!(!state_schema_str.contains("\"draft\""));
+
+    // Net tools/list JSON schema byte shrinkage vs pre-UX-004 20-tool baseline (~58.4 KiB -> ~53.8 KiB).
+    let schema_bytes = serde_json::to_vec(&listed["result"]["tools"])
+        .unwrap()
+        .len();
+    assert!(
+        schema_bytes < 56_000,
+        "tools/list schema bytes must remain strictly compacted below 20-tool baseline (~58.4 KiB): {schema_bytes}"
+    );
+
+    // Fail-closed redirects for retired tools and removed acdd_state actions without creating state.sqlite.
+    for (tool, args, expected_needles) in [
+        (
+            "code_map_prove_removal",
+            json!({"selector": "src/core.py:compute"}),
+            &[
+                "RETIRED_TOOL",
+                "code_map_query(operation=\"prove_removal\"",
+                "acdd query remove",
+            ][..],
+        ),
+        (
+            "code_map_tests",
+            json!({"selector": "src/core.py:compute"}),
+            &[
+                "RETIRED_TOOL",
+                "code_map_query(operation=\"tests\"",
+                "acdd query tests",
+            ][..],
+        ),
+        (
+            "acdd_state",
+            json!({"action": "roadmap", "ready_only": true}),
+            &["UNSUPPORTED_ACTION", "acdd roadmap"][..],
+        ),
+        (
+            "acdd_state",
+            json!({"action": "draft", "collection": "milestones", "slug": "demo"}),
+            &["UNSUPPORTED_ACTION", "acdd draft"][..],
+        ),
+    ] {
+        let (_, resp) = m.call(tool, args).expect("MCP transport");
+        assert_eq!(resp["result"]["isError"], true, "{tool}: {resp}");
+        let msg = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
+        for needle in expected_needles {
+            assert!(msg.contains(needle), "{tool} missing '{needle}': {msg}");
+        }
+    }
+    assert!(
+        !w.path("var/custom-state.sqlite").exists() && !w.path(".acdd/state.sqlite").exists(),
+        "fail-closed roadmap/draft redirects must not create state.sqlite"
+    );
+
+    // 1:1 parity between folded code_map_query operations and CLI acdd query tests / remove.
+    let mcp_tests = m
+        .payload(
+            "code_map_query",
+            json!({"operation": "tests", "selector": "src/core.py:compute"}),
+        )
+        .expect("mcp tests");
+    let cli_tests = w
+        .query(&["query", "tests", "src/core.py:compute"])
+        .expect("cli tests");
+    assert_eq!(mcp_tests["nodes"]["total"], cli_tests["nodes"]["total"]);
+    assert_eq!(mcp_tests["discovery_method"], cli_tests["discovery_method"]);
+
+    let mcp_remove = m
+        .payload(
+            "code_map_query",
+            json!({"operation": "prove_removal", "selector": "src/core.py:compute"}),
+        )
+        .expect("mcp prove_removal");
+    let cli_remove = w
+        .query(&["query", "remove", "src/core.py:compute"])
+        .expect("cli remove");
+    assert_eq!(mcp_remove["safe_to_remove"], cli_remove["safe_to_remove"]);
+    assert_eq!(
+        mcp_remove["incoming_dependencies"]["total"],
+        cli_remove["incoming_dependencies"]["total"]
+    );
+
+    // All 6 code_map_analyze modes + CLI acdd query analyze --mode parity + fail-closed conflicts.
+    for (mcp_args, cli_args, expected_mode) in [
+        (
+            json!({"mode": "hotspots", "target": "src"}),
+            vec!["query", "analyze", "src", "--mode", "hotspots"],
+            "hotspots",
+        ),
+        (
+            json!({"mode": "boundary", "target": "src/core.py"}),
+            vec!["query", "analyze", "src/core.py", "--mode", "boundary"],
+            "boundary",
+        ),
+        (
+            json!({"mode": "path", "target": "src/entry.py:run_entry", "to": "src/core.py:leaf"}),
+            vec![
+                "query",
+                "analyze",
+                "src/entry.py:run_entry",
+                "--mode",
+                "path",
+                "--to",
+                "src/core.py:leaf",
+            ],
+            "path",
+        ),
+        (
+            json!({"mode": "entrypoints", "target": "src/core.py:leaf"}),
+            vec![
+                "query",
+                "analyze",
+                "src/core.py:leaf",
+                "--mode",
+                "entrypoints",
+            ],
+            "entrypoints",
+        ),
+        (
+            json!({"mode": "diff_impact"}),
+            vec!["query", "analyze", "--mode", "diff_impact"],
+            "diff_impact",
+        ),
+        (
+            json!({"mode": "cochange", "target": "src/core.py"}),
+            vec!["query", "analyze", "src/core.py", "--mode", "cochange"],
+            "cochange",
+        ),
+    ] {
+        let mcp_val = m
+            .payload("code_map_analyze", mcp_args.clone())
+            .unwrap_or_else(|e| panic!("MCP analyze {expected_mode} failed: {e}"));
+        let cli_val = w
+            .query(&cli_args)
+            .unwrap_or_else(|e| panic!("CLI analyze {expected_mode} failed: {e}"));
+        assert_eq!(mcp_val["mode"], expected_mode);
+        assert_eq!(cli_val["mode"], expected_mode);
+        // Verify Markdown rendering also succeeds without error.
+        let mut md_args = mcp_args;
+        md_args["format"] = json!("markdown");
+        let md = m
+            .text("code_map_analyze", md_args)
+            .expect("markdown analyze");
+        assert!(md.contains(expected_mode), "{expected_mode}: {md}");
+        if matches!(expected_mode, "diff_impact" | "cochange") {
+            let mcp_json = serde_json::to_string(&mcp_val).unwrap();
+            let cli_json = serde_json::to_string(&cli_val).unwrap();
+            for excluded in [".env", "custom-state.sqlite-wal"] {
+                assert!(
+                    !md.contains(excluded)
+                        && !mcp_json.contains(excluded)
+                        && !cli_json.contains(excluded),
+                    "excluded path '{excluded}' leaked in {expected_mode}: md={md}"
+                );
+            }
+        }
+    }
+    assert!(
+        !w.path("var/custom-state.sqlite").exists() && !w.path(".acdd/state.sqlite").exists(),
+        "read-only analyze must succeed without creating missing state DB"
+    );
+
+    // Corrupt existing state DB must fail closed for both MCP and CLI diff_impact/cochange (zero policy fallback).
+    w.write("var/custom-state.sqlite", "not-a-valid-sqlite-database");
+    for (mcp_args, cli_args) in [
+        (
+            json!({"mode": "diff_impact"}),
+            vec!["query", "analyze", "--mode", "diff_impact"],
+        ),
+        (
+            json!({"mode": "cochange", "target": "src/core.py"}),
+            vec!["query", "analyze", "src/core.py", "--mode", "cochange"],
+        ),
+    ] {
+        let mcp_err = m
+            .text("code_map_analyze", mcp_args)
+            .expect_err("corrupt state DB must fail closed over MCP");
+        assert!(
+            mcp_err.tool_message().is_some(),
+            "expected MCP tool error on corrupt state DB: {mcp_err}"
+        );
+        let cli_err = w
+            .query(&cli_args)
+            .expect_err("corrupt state DB must fail closed over CLI");
+        assert!(
+            !cli_err.to_string().contains("custom-state.sqlite-wal"),
+            "CLI error must not leak excluded paths: {cli_err}"
+        );
+    }
+
+    // Incompatible analyze parameter combinations fail closed.
+    for (bad_args, expected_err) in [
+        (
+            json!({"mode": "hotspots", "lint": true}),
+            "lint=true cannot be combined with mode='hotspots'",
+        ),
+        (
+            json!({"mode": "hotspots", "to": "src/core.py:leaf"}),
+            "'to' is only supported for mode='path'",
+        ),
+        (
+            json!({"mode": "boundary", "base": "HEAD~1"}),
+            "'base' is only supported for mode='diff_impact' or 'cochange'",
+        ),
+        (
+            json!({"mode": "hotspots", "include_cycles": true}),
+            "include_cycles=true is only supported for mode='summary'",
+        ),
+    ] {
+        let err = m
+            .text("code_map_analyze", bad_args)
+            .expect_err("incompatible analyze args must fail closed");
+        assert!(
+            err.tool_message()
+                .is_some_and(|msg| msg.contains(expected_err)),
+            "expected '{expected_err}': {err}"
+        );
+    }
+
     m.finish().expect("server must finish successfully");
 }

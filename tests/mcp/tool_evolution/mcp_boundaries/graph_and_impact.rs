@@ -47,8 +47,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     );
     let inbound = m
         .payload(
-            "code_map_tests",
-            json!({"selector":"cycle.py:a","direction":"inbound"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"cycle.py:a","direction":"inbound"}),
         )
         .expect("MCP tool should succeed");
     assert!(crate::json_array(&inbound["nodes"]["items"])
@@ -62,8 +62,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     assert_eq!(test["connection"]["edge_kind"], "calls");
     let outbound = m
         .payload(
-            "code_map_tests",
-            json!({"selector":"tests/test_cycle.py:test_a","direction":"outbound"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"tests/test_cycle.py:test_a","direction":"outbound"}),
         )
         .expect("MCP tool should succeed");
     assert!(crate::json_array(&outbound["nodes"]["items"])
@@ -71,8 +71,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         .any(|node| node["name"] == "a"));
     let rejection = m
         .text(
-            "code_map_tests",
-            json!({"selector":"cycle.py:a","direction":"sideways"}),
+            "code_map_query",
+            json!({"operation":"tests","selector":"cycle.py:a","direction":"sideways"}),
         )
         .expect_err("tool should reject input");
     let expected: &str = "direction must be inbound or outbound";
@@ -88,7 +88,10 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         .expect("MCP tool should succeed");
     assert_eq!(explained["node"]["kind"], "function");
     let removal = m
-        .payload("code_map_prove_removal", json!({"selector":"cycle.py:a"}))
+        .payload(
+            "code_map_query",
+            json!({"operation":"prove_removal","selector":"cycle.py:a"}),
+        )
         .expect("MCP tool should succeed");
     assert_eq!(removal["safe_to_remove"], false);
 

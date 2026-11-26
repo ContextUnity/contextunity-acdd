@@ -164,9 +164,6 @@ const ARGUMENT_REDIRECTS: &[(&str, &str, &str)] = &[
         "'pattern' (or code_map_inspect(selector=...))",
     ),
     ("code_map_search", "target", "'path'"),
-    ("code_map_tests", "target", "'selector'"),
-    ("code_map_tests", "query", "'selector'"),
-    ("code_map_tests", "name", "'selector'"),
     ("code_map_inspect", "target", "'selector' or 'path'"),
     (
         "code_map_inspect",
@@ -175,7 +172,6 @@ const ARGUMENT_REDIRECTS: &[(&str, &str, &str)] = &[
     ),
     ("code_map_explain", "target", "'selector' or 'path'"),
     ("code_map_impact", "target", "'selector' or 'changes'"),
-    ("code_map_prove_removal", "target", "'selector'"),
     (
         "code_map_analyze",
         "sql",
@@ -722,6 +718,39 @@ async fn execute_plugin_tool_route(
     }
 }
 
+fn retired_tool_redirect(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "code_map_prove_removal" => Some(
+            "RETIRED_TOOL: 'code_map_prove_removal' was consolidated into code_map_query. Use code_map_query(operation=\"prove_removal\", selector=...) (or CLI `acdd query remove <selector>`).",
+        ),
+        "code_map_tests" => Some(
+            "RETIRED_TOOL: 'code_map_tests' was consolidated into code_map_query. Use code_map_query(operation=\"tests\", selector=...) (or CLI `acdd query tests <selector>`).",
+        ),
+        _ => None,
+    }
+}
+
+fn removed_state_action_redirect(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Option<&'static str> {
+    if tool_name != "acdd_state" {
+        return None;
+    }
+    match arguments
+        .and_then(|args| args.get("action"))
+        .and_then(Value::as_str)
+    {
+        Some("roadmap") => Some(
+            "UNSUPPORTED_ACTION: MCP acdd_state focuses on active-run lifecycle operations; action 'roadmap' was removed from MCP. Use CLI `acdd roadmap` instead.",
+        ),
+        Some("draft") => Some(
+            "UNSUPPORTED_ACTION: MCP acdd_state focuses on active-run lifecycle operations; action 'draft' was removed from MCP. Use CLI `acdd draft <collection> <slug>` instead.",
+        ),
+        _ => None,
+    }
+}
+
 pub(super) async fn call_tool(
     server: &Server,
     request: rmcp::model::CallToolRequestParams,
@@ -751,6 +780,19 @@ pub(super) async fn call_tool(
     };
     let tool_name = request.name.clone();
     let operation = operation_kind(&tool_name, request.arguments.as_ref());
+    if let Some(redirect) = retired_tool_redirect(&tool_name)
+        .or_else(|| removed_state_action_redirect(&tool_name, request.arguments.as_ref()))
+    {
+        return Ok(response::result_for(
+            Err(anyhow::anyhow!(redirect)),
+            &ResponsePolicy::default(),
+            output_format,
+            operation,
+            &tool_name,
+            None,
+        )
+        .into());
+    }
     let rejected = rejected_selector_fields(&request.name, request.arguments.as_ref());
     if !rejected.is_empty() {
         let allowed: Vec<&str> = allowed_fields_for_tool(&request.name)

@@ -136,6 +136,148 @@ fn find_gate_in_profile<'a>(
     }
 }
 
+fn build_state_engine_config(
+    primary: std::path::PathBuf,
+    root: &Path,
+    state_db: &Path,
+    code_db: Option<&Path>,
+    adapter: &Adapter,
+) -> StateEngineConfig {
+    let default_state_db = primary.join(".acdd/state.sqlite");
+    let state_db_override = (state_db != default_state_db).then(|| state_db.to_path_buf());
+    let code_db_path = (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
+        .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
+    StateEngineConfig {
+        workspace_root: primary,
+        worktree: root.to_path_buf(),
+        state_db_override,
+        code_db_path,
+        spec_collections: adapter.specs.clone(),
+        profiles_dirs: adapter.profiles_dirs.clone(),
+        linked_workspaces: adapter
+            .linked_workspaces
+            .iter()
+            .map(|lw| (lw.name.clone(), lw.path.clone()))
+            .collect(),
+        modules: adapter.modules.clone(),
+        response_policy: adapter.response.clone(),
+        retain_traces: adapter.retain_traces,
+        max_snapshot_file_bytes: adapter.limits.max_snapshot_file_bytes,
+        allowed_binary_extensions: adapter
+            .limits
+            .normalized_allowed_binary_extensions()
+            .ok()
+            .flatten(),
+    }
+}
+
+/// Resolve the canonical [`acdd_core::path_policy::WorkspacePathPolicy`] for `root`
+/// in read-only mode (never creating `state.sqlite` when absent; failing closed on unreadable
+/// or corrupt existing state databases).
+fn resolve_workspace_path_policy(
+    root: &Path,
+    adapter: &Adapter,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
+) -> anyhow::Result<acdd_core::path_policy::WorkspacePathPolicy> {
+    let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    let resolved_state_db =
+        acdd_core::config::resolve_effective_state_db_path(&primary, state_db, adapter);
+    let engine_cfg = build_state_engine_config(primary, root, &resolved_state_db, code_db, adapter);
+    let reader = acdd_state::store::sqlite::SqliteStateReader::new(resolved_state_db);
+    acdd_state::usecases::lifecycle::build_path_policy(
+        &engine_cfg,
+        &reader,
+        &[],
+        None,
+        Some(&engine_cfg.worktree),
+    )
+    .map_err(anyhow::Error::from)
+}
+
+/// Shared MCP/CLI input for canonical `code_map_analyze` / `acdd query analyze` dispatch.
+pub(crate) struct AnalyzeDispatchInput<'a> {
+    /// Relative file/directory target or read-only SQL statement (empty for workspace scope).
+    pub(crate) target: &'a str,
+    /// Optional analysis mode (`summary`, `hotspots`, `boundary`, `path`, `entrypoints`, `diff_impact`, `cochange`).
+    pub(crate) mode: Option<&'a str>,
+    /// Optional destination selector for `mode="path"`.
+    pub(crate) to: Option<&'a str>,
+    /// Optional Git base ref for `mode="diff_impact"` or `mode="cochange"`.
+    pub(crate) base: Option<&'a str>,
+    /// Optional cycle detection flag (`mode="summary"`).
+    pub(crate) include_cycles: Option<bool>,
+    /// Stored syntax diagnostics only (`mode="summary"`).
+    pub(crate) lint: bool,
+    /// Resolved pagination and detail policy.
+    pub(crate) page: &'a acdd_core::response::QueryOptions,
+}
+
+/// Canonical shared owner dispatching `code_map_analyze` and CLI `acdd query analyze`.
+pub(crate) fn dispatch_analyze(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    adapter: &Adapter,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
+    input: &AnalyzeDispatchInput<'_>,
+) -> anyhow::Result<serde_json::Value> {
+    use acdd_index::db::analyze::{analyze_with_mode, AnalyzeMode, AnalyzeRequest};
+    let mode = input
+        .mode
+        .map(str::parse::<AnalyzeMode>)
+        .transpose()?
+        .unwrap_or_default();
+    if input.lint {
+        anyhow::ensure!(
+            mode == AnalyzeMode::Summary,
+            "lint=true cannot be combined with mode='{}'",
+            mode.as_str()
+        );
+        anyhow::ensure!(
+            input.include_cycles != Some(true),
+            "lint=true cannot be combined with include_cycles=true"
+        );
+        anyhow::ensure!(
+            input.to.is_none() && input.base.is_none(),
+            "lint=true cannot be combined with 'to' or 'base'"
+        );
+        return acdd_index::db::lint::syntax_paged(conn, input.target, input.page);
+    }
+    anyhow::ensure!(
+        input.include_cycles != Some(true) || mode == AnalyzeMode::Summary,
+        "include_cycles=true is only supported for mode='summary'"
+    );
+    anyhow::ensure!(
+        input.to.is_none() || mode == AnalyzeMode::Path,
+        "'to' is only supported for mode='path'"
+    );
+    anyhow::ensure!(
+        input.base.is_none() || matches!(mode, AnalyzeMode::DiffImpact | AnalyzeMode::Cochange),
+        "'base' is only supported for mode='diff_impact' or 'cochange'"
+    );
+    let policy = if matches!(mode, AnalyzeMode::DiffImpact | AnalyzeMode::Cochange) {
+        Some(resolve_workspace_path_policy(
+            root, adapter, state_db, code_db,
+        )?)
+    } else {
+        None
+    };
+    analyze_with_mode(
+        conn,
+        &AnalyzeRequest {
+            mode,
+            target: input.target,
+            to: input.to,
+            include_cycles: input.include_cycles,
+            page: input.page,
+            root: Some(root),
+            base: input.base,
+            policy: policy.as_ref(),
+        },
+    )
+}
+
 /// Resolve read-only active `in_progress` node scope/policy context for `acdd_read`.
 pub fn active_node_context(
     root: &Path,
@@ -180,32 +322,7 @@ pub fn active_node_context(
         })
         .unwrap_or(false);
 
-    let default_state_db = primary.join(".acdd/state.sqlite");
-    let state_db_override = (state_db != default_state_db).then(|| state_db.clone());
-    let code_db_path = (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
-        .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
-    let engine_cfg = StateEngineConfig {
-        workspace_root: primary,
-        worktree: root.to_path_buf(),
-        state_db_override,
-        code_db_path,
-        spec_collections: adapter.specs.clone(),
-        profiles_dirs: adapter.profiles_dirs.clone(),
-        linked_workspaces: adapter
-            .linked_workspaces
-            .iter()
-            .map(|lw| (lw.name.clone(), lw.path.clone()))
-            .collect(),
-        modules: adapter.modules.clone(),
-        response_policy: adapter.response.clone(),
-        retain_traces: adapter.retain_traces,
-        max_snapshot_file_bytes: adapter.limits.max_snapshot_file_bytes,
-        allowed_binary_extensions: adapter
-            .limits
-            .normalized_allowed_binary_extensions()
-            .ok()
-            .flatten(),
-    };
+    let engine_cfg = build_state_engine_config(primary, root, &state_db, code_db, adapter);
     let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db);
     let path_policy = acdd_state::usecases::lifecycle::build_path_policy(
         &engine_cfg,
@@ -213,8 +330,7 @@ pub fn active_node_context(
         &[],
         Some(&run),
         Some(&engine_cfg.worktree),
-    )
-    .unwrap_or_default();
+    )?;
 
     Ok(Some(crate::engine::reader::ActiveNodeContext {
         run_id: run.run_id,

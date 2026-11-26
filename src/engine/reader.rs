@@ -1247,8 +1247,11 @@ fn render_read_hints(
             }
             if signals["covering_tests"].as_u64().unwrap_or(0) > 0 {
                 calls.push((
-                    "code_map_tests",
-                    format!("code_map_tests(selector: {})", json!(selector)),
+                    "code_map_query",
+                    format!(
+                        "code_map_query(operation: \"tests\", selector: {})",
+                        json!(selector)
+                    ),
                 ));
             }
             if value["node"]["id"].is_string()

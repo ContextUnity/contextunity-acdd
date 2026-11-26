@@ -50,8 +50,9 @@
       "id": "test_relationships",
       "scenario": "Find tests connected to run_matcher_pipeline",
       "acdd": {
-        "tool": "code_map_tests",
+        "tool": "code_map_query",
         "arguments": {
+          "operation": "tests",
           "selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline",
           "direction": "inbound",
           "limit": 30
@@ -121,8 +122,9 @@
       "id": "removal_safety",
       "scenario": "Assess whether run_matcher_pipeline can be removed safely",
       "acdd": {
-        "tool": "code_map_prove_removal",
+        "tool": "code_map_query",
         "arguments": {
+          "operation": "prove_removal",
           "selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline",
           "detail": "compact",
           "limit": 30

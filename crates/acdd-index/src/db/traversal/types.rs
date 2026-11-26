@@ -148,6 +148,8 @@ pub enum GraphQueryOp {
     Search,
     Duplicates,
     DeadTails,
+    Tests,
+    ProveRemoval,
 }
 
 impl FromStr for GraphQueryOp {
@@ -168,7 +170,9 @@ impl FromStr for GraphQueryOp {
             "search" | "discover" | "find" => Ok(Self::Search),
             "duplicates" => Ok(Self::Duplicates),
             "dead_tails" => Ok(Self::DeadTails),
-            _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates,dead_tails"),
+            "tests" => Ok(Self::Tests),
+            "prove_removal" => Ok(Self::ProveRemoval),
+            _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates,dead_tails,tests,prove_removal"),
         }
     }
 }

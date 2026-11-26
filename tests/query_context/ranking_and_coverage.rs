@@ -844,10 +844,22 @@ function shadowed(test: Function) {
                         assert!(breadcrumb.contains("test_helper"), "{breadcrumb}");
                         assert!(breadcrumb.contains("(target)"), "{breadcrumb}");
 
+                        let query_md = contextunity_acdd::format::render_for_operation(
+                            &found,
+                            contextunity_acdd::format::OutputFormat::Markdown,
+                            "code_map_query",
+                            None,
+                            contextunity_acdd::format::OperationKind::Navigation,
+                        );
+                        assert_eq!(
+                            query_md.replacen("# code_map_query", "# code_map_tests", 1),
+                            markdown,
+                            "code_map_query(tests) must match code_map_tests Markdown 1:1"
+                        );
                         let json = contextunity_acdd::format::render_for_operation(
                             &found,
                             contextunity_acdd::format::OutputFormat::Json,
-                            "code_map_tests",
+                            "code_map_query",
                             None,
                             contextunity_acdd::format::OperationKind::Navigation,
                         );
@@ -1142,7 +1154,7 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     let markdown = contextunity_acdd::format::render_for_operation(
         &inbound,
         contextunity_acdd::format::OutputFormat::Markdown,
-        "code_map_tests",
+        "code_map_query",
         None,
         contextunity_acdd::format::OperationKind::Navigation,
     );
