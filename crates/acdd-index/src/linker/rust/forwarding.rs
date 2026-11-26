@@ -13,6 +13,63 @@ use hashbrown::{HashMap, HashSet};
 
 const RUST_ALIAS_DEPTH: usize = 64;
 
+pub(in crate::linker::rust) fn is_inline_module_declaration(node: &Node) -> bool {
+    node.kind == crate::models::tags::NodeKind::ModuleDeclaration
+        && node.detail_entry(crate::models::details::NodeDetailKey::INLINE_MODULE) == true
+}
+
+pub(in crate::linker::rust) fn is_module_scope(node: &Node) -> bool {
+    node.kind == crate::models::tags::NodeKind::Module || is_inline_module_declaration(node)
+}
+
+enum ModuleImport<'a> {
+    Borrowed(&'a ImportPath),
+    Owned(ImportPath),
+}
+
+impl std::ops::Deref for ModuleImport<'_> {
+    type Target = ImportPath;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(path) => path,
+            Self::Owned(path) => path,
+        }
+    }
+}
+
+fn normalize_module_import<'a, 'b>(
+    module: &'a Node,
+    raw: &'a str,
+    normalized_imports: &'b HashMap<(&'a str, &'a str), Option<ImportPath>>,
+) -> Option<ModuleImport<'b>> {
+    if is_inline_module_declaration(module)
+        && (raw == "self"
+            || raw.starts_with("self::")
+            || raw == "super"
+            || raw.starts_with("super::"))
+    {
+        let crate_root = crate_namespace(&module.path);
+        let canon = canonical_namespace(&module.qualname, &crate_root);
+        let expr = if raw == "self" {
+            "self::"
+        } else if raw == "super" {
+            "super::"
+        } else {
+            raw
+        };
+        let namespace = resolve_relative_module_prefix(&module.path, &canon, expr)?;
+        return Some(ModuleImport::Owned(ImportPath {
+            namespace,
+            relative: true,
+            symbol_path: true,
+        }));
+    }
+    normalized_imports
+        .get(&(module.path.as_str(), raw))
+        .and_then(Option::as_ref)
+        .map(ModuleImport::Borrowed)
+}
+
 pub(crate) enum WorkspaceCrateMatch {
     Resolved(String, String),
     Isolated,
@@ -231,16 +288,27 @@ pub(crate) fn resolve_crate_namespace<'a>(
 }
 
 fn canonical_namespace<'n>(name: &'n str, crate_root: &str) -> std::borrow::Cow<'n, str> {
-    if let Some(tail) = name.strip_prefix(crate_root) {
+    let base: std::borrow::Cow<'n, str> = if let Some(tail) = name.strip_prefix(crate_root) {
+        let mut stripped = None;
         for entry in [".lib", ".main"] {
             if let Some(tail) = tail.strip_prefix(entry) {
                 if tail.is_empty() || tail.starts_with('.') {
-                    return format!("{crate_root}{tail}").into();
+                    stripped = Some(format!("{crate_root}{tail}").into());
+                    break;
                 }
             }
         }
+        stripped.unwrap_or(std::borrow::Cow::Borrowed(name))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    };
+    if base.contains(".mod.") {
+        base.replace(".mod.", ".").into()
+    } else if let Some(prefix) = base.strip_suffix(".mod") {
+        prefix.to_owned().into()
+    } else {
+        base
     }
-    name.into()
 }
 
 struct ModuleDomain {
@@ -540,10 +608,14 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         public_only: bool,
     ) -> Option<(Option<AliasTargets<'a>>, bool)> {
         let mut direct = direct_members(self.all, module, name);
-        let module_declaration = direct
-            .iter()
-            .any(|node| node.kind == crate::models::tags::NodeKind::ModuleDeclaration);
-        direct.retain(|node| node.kind != crate::models::tags::NodeKind::ModuleDeclaration);
+        let module_declaration = direct.iter().any(|node| {
+            node.kind == crate::models::tags::NodeKind::ModuleDeclaration
+                && !is_inline_module_declaration(node)
+        });
+        direct.retain(|node| {
+            node.kind != crate::models::tags::NodeKind::ModuleDeclaration
+                || is_inline_module_declaration(node)
+        });
         if direct.is_empty() {
             return Some((None, module_declaration));
         }
@@ -590,7 +662,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                 && self
                     .visiting
                     .iter()
-                    .any(|(path, alias, _)| *path == target_module.path && alias == step.name)
+                    .any(|(id, alias, _)| *id == target_module.id && alias == step.name)
             {
                 return true;
             }
@@ -696,7 +768,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         }
         let mut ok = false;
         for mid in mid_candidates {
-            if mid.kind == crate::models::tags::NodeKind::Module {
+            if is_module_scope(mid) {
                 let mid_public = step.public_only
                     || (step.module.qualname != mid.qualname
                         && !is_descendant_module(&step.module.qualname, mid));
@@ -809,7 +881,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                 scope: None,
             });
         }
-        let memo_key = ((module.path.as_str(), name.to_owned(), public_only), depth);
+        let memo_key = ((module.id.as_str(), name.to_owned(), public_only), depth);
         if let Some(candidates) = self.memo.get(&memo_key) {
             return Some(candidates.clone());
         }
@@ -845,10 +917,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
         }) {
             let glob = reference.alias.as_deref() == Some("*");
             let raw = reference.module.as_deref().unwrap_or(&reference.expression);
-            let Some(normalized) = self
-                .normalized_imports
-                .get(&(module.path.as_str(), raw))
-                .and_then(Option::as_ref)
+            let Some(normalized) = normalize_module_import(module, raw, self.normalized_imports)
             else {
                 if !glob {
                     complete = false;
@@ -859,7 +928,7 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
             let modules = modules_at_import(
                 self.modules_by_namespace,
                 LanguageFamily("rust"),
-                normalized,
+                &normalized,
                 workspace,
                 |namespace| self.module_visibility.visible(namespace, &module.qualname),
             );
@@ -1011,8 +1080,9 @@ impl<'a> RustForwarding<'a> {
             .values_facts()
             .flat_map(|facts| {
                 facts.nodes.iter().filter(|node| {
-                    matches!(node.kind.as_str(), "module" | "module_declaration")
-                        && node.language == crate::models::tags::LanguageId::Rust
+                    node.language == crate::models::tags::LanguageId::Rust
+                        && (node.kind == crate::models::tags::NodeKind::Module
+                            || (is_inline_module_declaration(node) && !node.is_test))
                 })
             })
             .collect();
@@ -1021,7 +1091,7 @@ impl<'a> RustForwarding<'a> {
             let Some(facts) = all.get_facts(module.path.as_str()) else {
                 continue;
             };
-            let names = names_by_module.entry(module.path.as_str()).or_default();
+            let names = names_by_module.entry(module.id.as_str()).or_default();
             names.extend(["std", "core"]);
             names.extend(
                 facts
@@ -1057,16 +1127,14 @@ impl<'a> RustForwarding<'a> {
                         && reference.alias.as_deref() == Some("*")
                 }) {
                     let raw = reference.module.as_deref().unwrap_or(&reference.expression);
-                    let Some(normalized) = normalized_imports
-                        .get(&(module.path.as_str(), raw))
-                        .and_then(Option::as_ref)
+                    let Some(normalized) = normalize_module_import(module, raw, normalized_imports)
                     else {
                         continue;
                     };
                     let targets = modules_at_import(
                         modules_by_namespace,
                         LanguageFamily("rust"),
-                        normalized,
+                        &normalized,
                         types::workspace_path(&module.path).0,
                         |namespace| module_visibility.visible(namespace, &module.qualname),
                     );
@@ -1074,40 +1142,34 @@ impl<'a> RustForwarding<'a> {
                         if matches!(tail.as_str(), "" | "*") {
                             additions.extend(
                                 names_by_module
-                                    .get(target.path.as_str())
+                                    .get(target.id.as_str())
                                     .into_iter()
                                     .flatten()
-                                    .map(|name| (module.path.as_str(), *name)),
+                                    .map(|name| (module.id.as_str(), *name)),
                             );
                         }
                     }
                 }
             }
             let mut changed = false;
-            for (path, name) in additions {
-                changed |= names_by_module.entry(path).or_default().insert(name);
+            for (module_id, name) in additions {
+                changed |= names_by_module.entry(module_id).or_default().insert(name);
             }
             if !changed {
                 break;
             }
         }
 
-        for facts in all.values_facts() {
-            let Some(module) = facts.nodes.iter().find(|node| {
-                node.kind == crate::models::tags::NodeKind::Module
-                    && node.language == crate::models::tags::LanguageId::Rust
-            }) else {
-                continue;
-            };
+        for &module in &modules {
             for name in names_by_module
-                .get(module.path.as_str())
+                .get(module.id.as_str())
                 .into_iter()
                 .flatten()
                 .copied()
             {
                 let private_result = resolver.resolve(module, name, false, 0);
                 if !matches!(&private_result, Some(targets) if targets.nodes.is_empty()) {
-                    private.entry(module.path.as_str()).or_default().insert(
+                    private.entry(module.id.as_str()).or_default().insert(
                         name,
                         private_result.map_or_else(Vec::new, |targets| targets.nodes),
                     );
@@ -1119,22 +1181,24 @@ impl<'a> RustForwarding<'a> {
                         .filter(|targets| targets.scope.is_some())
                     {
                         restricted_bindings
-                            .entry(module.path.as_str())
+                            .entry(module.id.as_str())
                             .or_default()
                             .insert(name, targets.clone());
                         continue;
                     }
                     let public_targets =
                         public_result.map_or_else(Vec::new, |targets| targets.nodes);
-                    insert_package_export(
-                        &mut exports,
-                        interner,
-                        module.path.as_str(),
-                        name,
-                        (public_targets.len() == 1).then(|| public_targets[0]),
-                    );
+                    if module.kind == crate::models::tags::NodeKind::Module {
+                        insert_package_export(
+                            &mut exports,
+                            interner,
+                            module.path.as_str(),
+                            name,
+                            (public_targets.len() == 1).then(|| public_targets[0]),
+                        );
+                    }
                     public
-                        .entry(module.path.as_str())
+                        .entry(module.id.as_str())
                         .or_default()
                         .insert(name, public_targets);
                 }
@@ -1217,7 +1281,7 @@ impl<'a> RustForwarding<'a> {
     ) -> &'forwarding [&'a Node] {
         if let Some(targets) = self
             .restricted
-            .get(module.path.as_str())
+            .get(module.id.as_str())
             .and_then(|bindings| bindings.get(name))
         {
             return if targets
@@ -1232,7 +1296,7 @@ impl<'a> RustForwarding<'a> {
         }
         if let Some(targets) = self
             .public
-            .get(module.path.as_str())
+            .get(module.id.as_str())
             .and_then(|aliases| aliases.get(name))
         {
             return targets;
@@ -1240,7 +1304,7 @@ impl<'a> RustForwarding<'a> {
         if requester == module.qualname || is_descendant_module(requester, module) {
             return self
                 .private
-                .get(module.path.as_str())
+                .get(module.id.as_str())
                 .and_then(|aliases| aliases.get(name))
                 .map(Vec::as_slice)
                 .unwrap_or_default();
@@ -1273,7 +1337,7 @@ impl<'a> RustForwarding<'a> {
             let rest = &segments[idx..];
             let mut next = Vec::new();
             for candidate in current {
-                if candidate.kind == crate::models::tags::NodeKind::Module {
+                if is_module_scope(candidate) {
                     let hits = if via_reexport {
                         self.targets_in_accessible_module(candidate, segment, requester)
                     } else {
@@ -1281,9 +1345,9 @@ impl<'a> RustForwarding<'a> {
                     };
                     next.extend_from_slice(hits);
                 }
-                if let Some(by_qual) = by_qual.filter(|_| {
-                    via_reexport || candidate.kind != crate::models::tags::NodeKind::Module
-                }) {
+                if let Some(by_qual) =
+                    by_qual.filter(|_| via_reexport || !is_module_scope(candidate))
+                {
                     let qual = format!("{}.{}", candidate.qualname, rest.join("."));
                     if let Some(nodes) = by_qual.get(qual.as_str()) {
                         resolved.extend(nodes.iter().copied().filter(|node| {
@@ -1355,9 +1419,9 @@ impl<'a> RustForwarding<'a> {
         } else {
             &self.public
         };
-        let restricted = self.restricted.get(module.path.as_str());
+        let restricted = self.restricted.get(module.id.as_str());
         let ordinary = bindings
-            .get(module.path.as_str())
+            .get(module.id.as_str())
             .into_iter()
             .flat_map(|bindings| bindings.iter())
             .filter(move |(name, _)| {

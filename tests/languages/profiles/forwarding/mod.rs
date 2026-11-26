@@ -329,3 +329,118 @@ fn named_glob_lexical_and_module_forwarding_have_exact_persisted_targets() {
     let _ = cold.execute_batch("COMMIT");
     assert_eq!(snapshot(&conn), snapshot(&cold));
 }
+
+#[test]
+fn inline_rust_mod_exports_forward_from_crate_root_without_unused_public_api_regressions() {
+    let ws = crate::common::Workspace::with_files(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='inline-exports'\nversion='0.1.0'\nedition='2021'\n[lib]\nname='inline_exports'\npath='src/lib.rs'\n",
+        ),
+        (
+            "src/real.rs",
+            "pub struct Alpha;\npub fn beta() {}\npub fn secret_fn() {}\npub fn orphan_unused() {}\n",
+        ),
+        (
+            "src/sub.rs",
+            "mod isolated_inline {\n    pub use crate::real::Alpha;\n}\npub fn use_local_inline() {\n    let _ = isolated_inline::Alpha;\n}\n",
+        ),
+        (
+            "src/lib.rs",
+            "mod real;\nmod sub;\npub mod consumer;\npub mod pub_inline {\n    pub use crate::real::Alpha;\n    pub use crate::real::*;\n    use crate::real::secret_fn as private_only;\n}\nmod priv_inline {\n    pub use crate::real::Alpha as HiddenAlpha;\n    pub use crate::real::*;\n}\npub use priv_inline::HiddenAlpha;\npub use priv_inline::*;\n#[cfg(test)]\nmod tests {\n    pub use crate::real::secret_fn;\n}\n",
+        ),
+        (
+            "src/consumer.rs",
+            "use crate::pub_inline::Alpha;\nuse crate::pub_inline::beta as pub_beta;\nuse crate::HiddenAlpha;\nuse crate::beta as root_beta;\nuse crate::sub::isolated_inline::Alpha as LeakedAlpha;\nuse crate::pub_inline::private_only;\npub fn run() {\n    let _ = Alpha;\n    let _ = HiddenAlpha;\n    let _ = LeakedAlpha;\n    pub_beta();\n    root_beta();\n    private_only();\n}\n",
+        ),
+    ]);
+    ws.build();
+    let conn = ws.open();
+    commitments::verify(&conn).unwrap();
+
+    let exports_for = |mod_name: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT json_extract(n.details, '$.exports') FROM nodes n JOIN path_dictionary p ON p.path_id = n.path_id WHERE n.kind='module_declaration' AND p.path='src/lib.rs' AND n.name=?1",
+            [mod_name],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let pub_exports = exports_for("pub_inline").expect("pub_inline should publish exports");
+    assert!(pub_exports.contains("\"Alpha\"") && pub_exports.contains("\"crate::real::*\""));
+    assert!(!pub_exports.contains("private_only"));
+    let priv_exports = exports_for("priv_inline").expect("priv_inline should publish exports");
+    assert!(
+        priv_exports.contains("\"HiddenAlpha\"") && priv_exports.contains("\"crate::real::*\"")
+    );
+    assert!(
+        exports_for("tests").is_none(),
+        "#[cfg(test)] mod should not publish exports"
+    );
+
+    for probe in [
+        exact("src/consumer.rs", "pub_beta", "src/real.rs", "beta"),
+        exact("src/consumer.rs", "root_beta", "src/real.rs", "beta"),
+        unresolved("src/consumer.rs", "private_only"),
+    ] {
+        let actual = observe(&conn, &probe);
+        assert!(
+            !actual.statuses.is_empty() && actual.statuses.iter().all(|s| s == probe.3),
+            "{probe:?}: {:?}",
+            actual.statuses
+        );
+        assert_eq!(actual.targets, actual.canonical, "{probe:?}");
+    }
+    let leaked_status: String = conn
+        .query_row(
+            "SELECT r.status FROM resolution_coverage r
+             JOIN path_dictionary p ON p.path_id = r.path_id
+             JOIN coverage_expressions x ON x.expression_id = r.expression_id
+             WHERE p.path='src/consumer.rs' AND x.expression='crate::sub::isolated_inline::Alpha' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked_status, "unresolved");
+
+    let arch = acdd_core::lint::ArchitectureConfig {
+        unused_public_api: true,
+        ..Default::default()
+    };
+    let opts = acdd_core::response::QueryOptions {
+        limit: 100,
+        offset: 0,
+        detail: acdd_core::response::Detail::Compact,
+        generation: None,
+    };
+    let lint = acdd_index::db::lint::run_lint(
+        &conn,
+        &acdd_index::db::lint::LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[acdd_core::lint::LintCategory::DeadTails]),
+            rule_ids: Some(&["dead_tails.unused_public_api".to_owned()]),
+            minimum_severity: Some(acdd_core::lint::LintSeverity::Error),
+            architecture: Some(&arch),
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = lint["items"].as_array().unwrap();
+    assert!(
+        !items.iter().any(|v| {
+            matches!(
+                v["symbol"].as_str().and_then(|s| s.rsplit('.').next()),
+                Some("pub_inline" | "priv_inline" | "isolated_inline" | "Alpha" | "beta")
+            )
+        }),
+        "inline mod exports must not regress unused_public_api: {items:?}"
+    );
+    assert!(
+        items.iter().any(|v| {
+            v["symbol"].as_str().and_then(|s| s.rsplit('.').next()) == Some("orphan_unused")
+        }),
+        "unused_public_api must still detect truly unused public items: {items:?}"
+    );
+}

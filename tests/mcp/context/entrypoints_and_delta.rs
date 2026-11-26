@@ -805,3 +805,118 @@ fn rust_framework_entrypoints_delta_and_package_gating() {
         check_state(expected);
     }
 }
+
+#[test]
+fn rust_crossfile_clap_dispatch_cold_and_delta_transitions() {
+    let active_cargo = "[package]\nname='clap-split'\nversion='0.1.0'\n[dependencies]\nclap='4'\n";
+    let empty_cargo = "[package]\nname='clap-split'\nversion='0.1.0'\n";
+    let valid_args = "use clap::{Parser, Subcommand};\n#[derive(Parser)]\npub struct Cli {\n    #[command(subcommand)]\n    pub command: Commands,\n}\n#[derive(Subcommand)]\npub enum Commands {\n    Run,\n    Status { verbose: bool },\n}\n";
+    let no_derive_args = "use clap::Subcommand;\npub struct Cli {\n    pub command: Commands,\n}\n#[derive(Subcommand)]\npub enum Commands {\n    Run,\n    Status { verbose: bool },\n}\n";
+    let shadow_args = "mod clap {}\nuse clap::{Parser, Subcommand};\n#[derive(Parser)]\npub struct Cli {\n    #[command(subcommand)]\n    pub command: Commands,\n}\n#[derive(Subcommand)]\npub enum Commands {\n    Run,\n    Status { verbose: bool },\n}\n";
+    let override_args =
+        format!("{valid_args}impl Cli {{ pub fn parse() -> Self {{ todo!() }} }}\n");
+    let valid_mod = "use crate::args::{Cli, Commands};\nuse crate::handlers;\npub fn dispatch() {\n    let cli = Cli::parse();\n    match cli.command {\n        Commands::Run => handlers::run_job(),\n        Commands::Status { .. } => handlers::status_job(),\n    }\n}\n";
+    let shadow_mod = format!("use fake::Parser;\n{valid_mod}");
+    let ws = Workspace::with_files(&[
+        ("Cargo.toml", active_cargo),
+        ("src/lib.rs", "mod args;\nmod cli;\nmod handlers;\n"),
+        ("src/args.rs", valid_args),
+        ("src/cli/mod.rs", valid_mod),
+        (
+            "src/handlers.rs",
+            "pub fn run_job() {}\npub fn status_job() {}\n",
+        ),
+    ]);
+    ws.build();
+    let assert_handlers = |expected: Option<&str>, ctx: &str| {
+        let conn = ws.open();
+        acdd_index::db::commitments::verify(&conn).unwrap();
+        for name in ["run_job", "status_job"] {
+            let actual: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual.as_deref(), expected, "{ctx}: {name}");
+            let exact_handles: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM edge_occurrences eo
+                     JOIN nodes s ON s.node_hash = eo.src_hash
+                     JOIN nodes d ON d.node_hash = eo.dst_hash
+                     JOIN coverage_evidence cv ON cv.evidence_id = eo.confidence_id
+                     WHERE eo.kind='handles' AND s.kind='cli_command_registration' AND d.name=?1 AND cv.evidence='exact'",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                exact_handles,
+                i64::from(expected.is_some()),
+                "{ctx}: exact handles count for {name}"
+            );
+        }
+    };
+    assert_handlers(Some("cli_command"), "cold");
+    for (file, content, expected, label) in [
+        ("src/args.rs", no_derive_args, None, "remove derive(Parser)"),
+        (
+            "src/args.rs",
+            valid_args,
+            Some("cli_command"),
+            "restore derive(Parser)",
+        ),
+        (
+            "src/args.rs",
+            shadow_args,
+            None,
+            "shadow mod clap in args.rs",
+        ),
+        (
+            "src/args.rs",
+            valid_args,
+            Some("cli_command"),
+            "restore args.rs after shadow",
+        ),
+        (
+            "src/cli/mod.rs",
+            shadow_mod.as_str(),
+            None,
+            "shadow Parser in mod.rs",
+        ),
+        (
+            "src/cli/mod.rs",
+            valid_mod,
+            Some("cli_command"),
+            "restore mod.rs after shadow",
+        ),
+        (
+            "src/args.rs",
+            override_args.as_str(),
+            None,
+            "impl Cli parse override",
+        ),
+        (
+            "src/args.rs",
+            valid_args,
+            Some("cli_command"),
+            "restore args.rs after override",
+        ),
+        (
+            "Cargo.toml",
+            empty_cargo,
+            None,
+            "remove clap from Cargo.toml",
+        ),
+    ] {
+        ws.write(file, content);
+        let delta = ws.delta(&[file]);
+        let cold = ws.build_to(ws.path(".acdd/cold.sqlite"));
+        assert_eq!(
+            delta["output_root"], cold["output_root"],
+            "{label}: {delta}"
+        );
+        assert_handlers(expected, label);
+    }
+}

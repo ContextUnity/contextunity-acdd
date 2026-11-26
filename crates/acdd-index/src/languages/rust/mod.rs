@@ -12,7 +12,7 @@ use crate::models::{Facts, ReceiverHint, Reference};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-mod cli_registration;
+pub(crate) mod cli_registration;
 mod macros;
 pub(crate) mod patterns;
 mod registrations;
@@ -160,8 +160,7 @@ fn has_unproven_bounds_with(node: Syntax<'_>, source: &str, check: fn(&str) -> b
         child.kind() == "where_clause"
             && child.named_children(&mut child.walk()).any(|predicate| {
                 let raw = text(predicate, source).trim_start();
-                !raw.starts_with('\'')
-                    && !raw.split_once(':').is_some_and(|(_, rhs)| check(rhs))
+                !raw.starts_with('\'') && !raw.split_once(':').is_some_and(|(_, rhs)| check(rhs))
             })
     }) || node
         .child_by_field_name("type_parameters")
@@ -356,12 +355,20 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<(ReceiverHint, boo
         || matches!(&value, crate::semantic::ValueExpr::Call { callee, site: None } if callee.contains("::"))
         || matches!(
             &value,
-            crate::semantic::ValueExpr::RustProject { operation:
-                crate::semantic::types::RustProjection::RangeSlice
-                | crate::semantic::types::RustProjection::ElementIndex
-                | crate::semantic::types::RustProjection::Index, .. }
+            crate::semantic::ValueExpr::RustProject {
+                operation: crate::semantic::types::RustProjection::RangeSlice
+                    | crate::semantic::types::RustProjection::ElementIndex
+                    | crate::semantic::types::RustProjection::Index,
+                ..
+            }
         );
-    let non_opaque = clear_dynamic || matches!(value, crate::semantic::ValueExpr::Project { .. } | crate::semantic::ValueExpr::RustField { .. } | crate::semantic::ValueExpr::RustProject { .. });
+    let non_opaque = clear_dynamic
+        || matches!(
+            value,
+            crate::semantic::ValueExpr::Project { .. }
+                | crate::semantic::ValueExpr::RustField { .. }
+                | crate::semantic::ValueExpr::RustProject { .. }
+        );
     if non_opaque {
         if let Ok(serialized) = serde_json::to_string(&value) {
             return Some((
@@ -835,7 +842,6 @@ impl LanguageProfile for Rust {
         source: &str,
         rules: &std::sync::Arc<LanguageContext>,
     ) -> FileContext {
-        cli_registration::prepare(root, source, rules);
         registrations::prepare(root, source, rules);
         macros::prepare(root, source);
         value_flow::clear_file_macro_facts();
@@ -848,7 +854,6 @@ impl LanguageProfile for Rust {
         }
     }
     fn finish(&self, facts: &mut Facts) {
-        cli_registration::clear();
         registrations::clear(facts);
         macros::clear();
         value_flow::clear_file_macro_facts();
@@ -859,9 +864,20 @@ impl LanguageProfile for Rust {
         source: &str,
         _bindings: &ScopeBindings,
     ) -> Option<Vec<crate::semantic::ExportBinding>> {
+        let container = if root.kind() == "mod_item" {
+            if has_cfg_test(root, source) {
+                return Some(Vec::new());
+            }
+            let Some(body) = root.child_by_field_name("body") else {
+                return Some(Vec::new());
+            };
+            body
+        } else {
+            root
+        };
         let mut exports = Vec::new();
-        let mut cursor = root.walk();
-        for declaration in root
+        let mut cursor = container.walk();
+        for declaration in container
             .named_children(&mut cursor)
             .filter(|node| matches!(node.kind(), "use_declaration" | "mod_item"))
         {
@@ -869,10 +885,10 @@ impl LanguageProfile for Rust {
                 continue;
             }
             if declaration.kind() == "mod_item" {
+                let is_inline = declaration.child_by_field_name("body").is_some();
                 if unrestricted_public(declaration, source)
-                    && declaration.child_by_field_name("body").is_none()
                     && !declaration.has_error()
-                    && static_module_path(declaration, source).is_some()
+                    && (is_inline || static_module_path(declaration, source).is_some())
                 {
                     if let Some(name) = declaration.child_by_field_name("name") {
                         let name = text(name, source).to_owned();
@@ -935,7 +951,13 @@ impl LanguageProfile for Rust {
                 .nodes
                 .iter()
                 .find(|node| node.id == ctx.owner)
-                .is_some_and(|owner| owner.kind == crate::models::tags::NodeKind::Module && !owner.is_test)
+                .is_some_and(|owner| {
+                    matches!(
+                        owner.kind,
+                        crate::models::tags::NodeKind::Module
+                            | crate::models::tags::NodeKind::ModuleDeclaration
+                    ) && !owner.is_test
+                })
         {
             return;
         }
@@ -959,8 +981,9 @@ impl LanguageProfile for Rust {
                             scope: scope.clone(),
                         }
                     }));
-                    *owner.detail_entry_mut(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS) = serde_json::to_value(exports)
-                        .expect("Rust export visibility serializes");
+                    *owner.detail_entry_mut(
+                        crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS,
+                    ) = serde_json::to_value(exports).expect("Rust export visibility serializes");
                 }
             }
         }
@@ -1030,7 +1053,11 @@ impl LanguageProfile for Rust {
         } else if ctx.kind() == "macro_invocation" {
             super::sql::extract_macro_type(ctx, facts);
             macros::project_macro_invocation(ctx, facts);
-            if let Some(tree) = ctx.node.named_children(&mut ctx.node.walk()).find(|c| c.kind() == "token_tree") {
+            if let Some(tree) = ctx
+                .node
+                .named_children(&mut ctx.node.walk())
+                .find(|c| c.kind() == "token_tree")
+            {
                 extract_macro_invocation_paths(tree, ctx.source, ctx.owner, facts);
             }
             let previous = facts.references.len();
@@ -1324,7 +1351,10 @@ impl LanguageProfile for Rust {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 if let Some(owner) = facts.nodes.iter().find(|owner| owner.id == ctx.owner) {
                     let qualified = format!("{}.{}", owner.qualname, text(name, ctx.source));
-                    if let Some(field) = facts.nodes.iter_mut().find(|field| field.kind == crate::models::tags::NodeKind::Field && field.qualname == qualified) {
+                    if let Some(field) = facts.nodes.iter_mut().find(|field| {
+                        field.kind == crate::models::tags::NodeKind::Field
+                            && field.qualname == qualified
+                    }) {
                         field.details = serde_json::json!({
                             "signature": text(ctx.node, ctx.source),
                             "is_public": unrestricted_public(ctx.node, ctx.source),
@@ -1370,8 +1400,6 @@ impl LanguageProfile for Rust {
             .is_some_and(|parent| parent.kind() == "source_file");
         if (root && name == "main") || has_main_attribute(node, source) {
             Some("main")
-        } else if root && cli_registration::contains(name) {
-            Some("cli_command")
         } else {
             None
         }
@@ -1493,7 +1521,8 @@ fn is_local_child_module(root: Option<&Path>, local: &str, first: &str) -> bool 
         owner_path.with_extension("")
     };
     let directory = root.join(directory);
-    directory.join(format!("{first}.rs")).is_file() || directory.join(first).join("mod.rs").is_file()
+    directory.join(format!("{first}.rs")).is_file()
+        || directory.join(first).join("mod.rs").is_file()
 }
 
 fn normalize_bare_or_crate_import(
@@ -1517,7 +1546,10 @@ fn normalize_bare_or_crate_import(
             .or_else(|| owner_module.strip_suffix(".main"))
             .unwrap_or(&owner_module);
         let module = module.strip_suffix("::*").unwrap_or(module);
-        (format!("{owner_module}.{}", module.replace("::", ".")), true)
+        (
+            format!("{owner_module}.{}", module.replace("::", ".")),
+            true,
+        )
     } else if rust.is_stdlib(first) || rust.external_import(first).is_some() {
         (module.replace("::", "."), false)
     } else if root.is_none() && !local.contains('/') {
@@ -1531,16 +1563,28 @@ fn normalize_bare_or_crate_import(
 }
 
 fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    if ctx.node.child_by_field_name("body").is_some()
-        || !ctx
-            .parent()
-            .is_some_and(|parent| parent.kind() == "source_file")
+    if ctx.node.child_by_field_name("body").is_some() {
+        set_owner_flag(
+            facts,
+            ctx.owner,
+            crate::models::details::NodeDetailKey::INLINE_MODULE,
+        );
+        return;
+    }
+    if !ctx
+        .parent()
+        .is_some_and(|parent| parent.kind() == "source_file")
         || ctx.node.has_error()
         || static_module_path(ctx.node, ctx.source).is_none()
     {
         return;
     }
-    let Some(declaration) = facts.nodes.iter().find(|node| node.id == ctx.owner).cloned() else {
+    let Some(declaration) = facts
+        .nodes
+        .iter()
+        .find(|node| node.id == ctx.owner)
+        .cloned()
+    else {
         return;
     };
     let Some(parent_id) = facts
@@ -1566,7 +1610,8 @@ fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                 name: declaration.name.clone(),
                 scope,
             });
-            *parent_node.detail_entry_mut(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS) =
+            *parent_node
+                .detail_entry_mut(crate::models::details::NodeDetailKey::RUST_RESTRICTED_EXPORTS) =
                 serde_json::to_value(exports).expect("Rust export visibility serializes");
         }
     }
@@ -1596,10 +1641,16 @@ fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         *owner.detail_entry_mut(crate::models::details::NodeDetailKey::GENERIC_IMPL) =
             serde_json::json!(has_non_lifetime_type_params(ctx.node, ctx.source));
         if uniform_generic_impl(ctx.node, ctx.source) {
-            owner.set_detail(crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL, serde_json::json!(true));
+            owner.set_detail(
+                crate::models::details::NodeDetailKey::UNIFORM_GENERIC_IMPL,
+                serde_json::json!(true),
+            );
         }
         if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
-            owner.set_detail(crate::models::details::NodeDetailKey::IMPL_TRAIT, serde_json::json!(trait_name));
+            owner.set_detail(
+                crate::models::details::NodeDetailKey::IMPL_TRAIT,
+                serde_json::json!(trait_name),
+            );
             if matches!(
                 trait_name.trim_start_matches("::"),
                 "std::ops::Deref" | "core::ops::Deref"
@@ -1614,12 +1665,18 @@ fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                     ancestor = node.parent();
                 }
                 if attributed || ctx.node.has_error() || has_unproven_bounds(ctx.node, ctx.source) {
-                    owner.set_detail(crate::models::details::NodeDetailKey::DEREF_UNPROVEN, serde_json::json!(true));
+                    owner.set_detail(
+                        crate::models::details::NodeDetailKey::DEREF_UNPROVEN,
+                        serde_json::json!(true),
+                    );
                 }
             }
         }
         if let Some(receiver) = field(ctx.node, ctx.source, "type") {
-            owner.set_detail(crate::models::details::NodeDetailKey::RECEIVER_TYPE, serde_json::json!(receiver));
+            owner.set_detail(
+                crate::models::details::NodeDetailKey::RECEIVER_TYPE,
+                serde_json::json!(receiver),
+            );
         }
     }
     if let Some(tr) = ctx.node.child_by_field_name("trait") {
@@ -1632,6 +1689,7 @@ fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 fn relate_function_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if ctx.node.kind() == "function_item" {
         registrations::extract_attribute_registrations(ctx, facts);
+        cli_registration::extract_dispatch_registrations(ctx, facts);
     }
     let unproven = has_unproven_bounds(ctx.node, ctx.source)
         && !path_reference_parameters(ctx.node, ctx.source, facts);
@@ -1642,13 +1700,22 @@ fn relate_function_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if unproven || trait_default {
         if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
             if unproven {
-                method.set_detail(crate::models::details::NodeDetailKey::UNPROVEN_BOUNDS, serde_json::json!(true));
+                method.set_detail(
+                    crate::models::details::NodeDetailKey::UNPROVEN_BOUNDS,
+                    serde_json::json!(true),
+                );
             }
             if conversion_bounds_only {
-                method.set_detail(crate::models::details::NodeDetailKey::CONVERSION_BOUNDS_ONLY, serde_json::json!(true));
+                method.set_detail(
+                    crate::models::details::NodeDetailKey::CONVERSION_BOUNDS_ONLY,
+                    serde_json::json!(true),
+                );
             }
             if trait_default {
-                method.set_detail(crate::models::details::NodeDetailKey::TRAIT_DEFAULT, serde_json::json!(true));
+                method.set_detail(
+                    crate::models::details::NodeDetailKey::TRAIT_DEFAULT,
+                    serde_json::json!(true),
+                );
             }
         }
     }
@@ -1681,13 +1748,17 @@ fn relate_macro_definition(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     }
     if !impl_traits.is_empty() {
         let macro_line = ctx.line();
-        if let Some(macro_node) = facts
-            .nodes
-            .iter_mut()
-            .find(|node| node.kind == crate::models::tags::NodeKind::Macro && node.line == macro_line)
-        {
-            macro_node.set_detail(crate::models::details::NodeDetailKey::RUST_MACRO_IMPL_TRAITS, serde_json::json!(impl_traits));
-            macro_node.set_detail(crate::models::details::NodeDetailKey::RUST_MACRO_PROJECTED, serde_json::json!(true));
+        if let Some(macro_node) = facts.nodes.iter_mut().find(|node| {
+            node.kind == crate::models::tags::NodeKind::Macro && node.line == macro_line
+        }) {
+            macro_node.set_detail(
+                crate::models::details::NodeDetailKey::RUST_MACRO_IMPL_TRAITS,
+                serde_json::json!(impl_traits),
+            );
+            macro_node.set_detail(
+                crate::models::details::NodeDetailKey::RUST_MACRO_PROJECTED,
+                serde_json::json!(true),
+            );
         }
     }
 }
@@ -1704,7 +1775,10 @@ fn relate_type_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     }
     if let Some(ty) = ctx.node.child_by_field_name("type") {
         if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-            owner.set_detail(crate::models::details::NodeDetailKey::ALIAS_TARGET, serde_json::json!(text(ty, ctx.source).trim()));
+            owner.set_detail(
+                crate::models::details::NodeDetailKey::ALIAS_TARGET,
+                serde_json::json!(text(ty, ctx.source).trim()),
+            );
         }
         value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
     }
@@ -1880,11 +1954,7 @@ fn emit_callable_arg(
     }
 }
 
-fn extract_combinator_callback_args(
-    ctx: &SyntaxContext<'_, '_>,
-    callee: &str,
-    facts: &mut Facts,
-) {
+fn extract_combinator_callback_args(ctx: &SyntaxContext<'_, '_>, callee: &str, facts: &mut Facts) {
     let tail = callee
         .rsplit("::")
         .next()
@@ -1964,6 +2034,7 @@ fn extract_serde_callable_references(
 }
 
 fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    cli_registration::extract_nominal_metadata(ctx, facts);
     if ctx.node.kind() == "struct_item" && has_non_lifetime_type_params(ctx.node, ctx.source) {
         set_owner_flag(facts, ctx.owner, "deref_unproven");
     }
@@ -1977,7 +2048,13 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                 extract_serde_callable_references(child, ctx.source, ctx.owner, facts);
             } else if child.kind() == "field_declaration" {
                 if let Some(ty) = child.child_by_field_name("type") {
-                    value_flow::type_references(facts, ctx.owner, ty, ctx.source, child.start_position().row + 1);
+                    value_flow::type_references(
+                        facts,
+                        ctx.owner,
+                        ty,
+                        ctx.source,
+                        child.start_position().row + 1,
+                    );
                 }
             } else if child.kind() == "enum_variant" {
                 if let Some(vbody) = child.child_by_field_name("body") {
@@ -1997,8 +2074,17 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                         {
                             extract_serde_callable_references(attr, ctx.source, ctx.owner, facts);
                         }
-                        if let Some(ty) = vchild.child_by_field_name("type").or_else(|| (vchild.kind() != "field_declaration").then_some(vchild)) {
-                            value_flow::type_references(facts, ctx.owner, ty, ctx.source, vchild.start_position().row + 1);
+                        if let Some(ty) = vchild
+                            .child_by_field_name("type")
+                            .or_else(|| (vchild.kind() != "field_declaration").then_some(vchild))
+                        {
+                            value_flow::type_references(
+                                facts,
+                                ctx.owner,
+                                ty,
+                                ctx.source,
+                                vchild.start_position().row + 1,
+                            );
                         }
                     }
                 }
@@ -2022,7 +2108,8 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
             path: &owner.path,
             line: ctx.line(),
             end_line: ctx.line(),
-            is_public: *owner.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC) == true,
+            is_public: *owner.detail_entry(crate::models::details::NodeDetailKey::IS_PUBLIC)
+                == true,
             is_test: owner.is_test,
         };
         macros::synthesize_derive_methods(&synth_owner, &derives, facts);
@@ -2031,11 +2118,13 @@ fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 
 fn extract_scoped_identifier_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if let Some(parent) = ctx.parent() {
-        if matches!(parent.kind(), "scoped_identifier" | "scoped_type_identifier")
-            || (parent.kind() == "call_expression"
-                && parent
-                    .child_by_field_name("function")
-                    .is_some_and(|f| f.id() == ctx.node.id()))
+        if matches!(
+            parent.kind(),
+            "scoped_identifier" | "scoped_type_identifier"
+        ) || (parent.kind() == "call_expression"
+            && parent
+                .child_by_field_name("function")
+                .is_some_and(|f| f.id() == ctx.node.id()))
             || (parent.kind() == "generic_function"
                 && parent
                     .child_by_field_name("function")
@@ -2080,7 +2169,10 @@ fn read_scoped_token_path(tokens: &[Syntax<'_>], start: usize, source: &str) -> 
     let (mut end, mut path) = (start, text(tokens[start], source).to_owned());
     while end + 2 < tokens.len()
         && text(tokens[end + 1], source) == "::"
-        && matches!(tokens[end + 2].kind(), "identifier" | "type_identifier" | "super" | "self")
+        && matches!(
+            tokens[end + 2].kind(),
+            "identifier" | "type_identifier" | "super" | "self"
+        )
     {
         path.push_str("::");
         path.push_str(text(tokens[end + 2], source));
@@ -2089,12 +2181,20 @@ fn read_scoped_token_path(tokens: &[Syntax<'_>], start: usize, source: &str) -> 
     (path, end)
 }
 
-fn emit_macro_combinator_callbacks(args_tree: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
+fn emit_macro_combinator_callbacks(
+    args_tree: Syntax<'_>,
+    source: &str,
+    owner: &str,
+    facts: &mut Facts,
+) {
     let tokens: Vec<_> = args_tree.children(&mut args_tree.walk()).collect();
     let mut i = 0;
     while i < tokens.len() {
         let tok = tokens[i];
-        if !matches!(tok.kind(), "identifier" | "type_identifier" | "crate" | "super" | "self") {
+        if !matches!(
+            tok.kind(),
+            "identifier" | "type_identifier" | "crate" | "super" | "self"
+        ) {
             i += 1;
             continue;
         }
@@ -2124,7 +2224,10 @@ fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, f
                 i += 1;
                 continue;
             }
-            if !matches!(children[i].kind(), "identifier" | "crate" | "super" | "self") {
+            if !matches!(
+                children[i].kind(),
+                "identifier" | "crate" | "super" | "self"
+            ) {
                 i += 1;
                 continue;
             }
@@ -2137,7 +2240,11 @@ fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, f
                 next.kind() == "token_tree" && text(*next, source).trim_start().starts_with('(')
             });
             if end > i && !matches!(first, "std" | "core" | "alloc") {
-                let kind = if next_call_tree.is_some() { "calls" } else { "references" };
+                let kind = if next_call_tree.is_some() {
+                    "calls"
+                } else {
+                    "references"
+                };
                 relations::reference(facts, owner, &path, kind, line);
             } else if end == i && prev_tok == Some(".") && next_call_tree.is_some() {
                 if is_combinator_callback_name(first) {
@@ -2162,19 +2269,35 @@ fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, f
                 }
             } else if end == i
                 && first.starts_with(|ch: char| ch.is_ascii_lowercase())
-                && ((prev_tok == Some("=>") && next_tok.is_none_or(|n| matches!(text(n, source), "," | ")")))
-                    || (prev_tok == Some(",") && next_tok.is_some_and(|n| {
-                        n.kind() == "token_tree" && text(n, source).trim_start().starts_with('{')
-                    })))
+                && ((prev_tok == Some("=>")
+                    && next_tok.is_none_or(|n| matches!(text(n, source), "," | ")")))
+                    || (prev_tok == Some(",")
+                        && next_tok.is_some_and(|n| {
+                            n.kind() == "token_tree"
+                                && text(n, source).trim_start().starts_with('{')
+                        })))
             {
                 relations::reference(facts, owner, first, "calls", line);
             } else if end == i
-                && matches!(first, "default" | "skip_serializing_if" | "serialize_with" | "deserialize_with" | "with")
+                && matches!(
+                    first,
+                    "default"
+                        | "skip_serializing_if"
+                        | "serialize_with"
+                        | "deserialize_with"
+                        | "with"
+                )
                 && i + 2 < children.len()
                 && text(children[i + 1], source) == "="
-                && matches!(children[i + 2].kind(), "string_literal" | "raw_string_literal")
+                && matches!(
+                    children[i + 2].kind(),
+                    "string_literal" | "raw_string_literal"
+                )
             {
-                if let Some(trimmed) = unquote_rust_string(children[i + 2], source).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+                if let Some(trimmed) = unquote_rust_string(children[i + 2], source)
+                    .map(|t| t.trim().to_owned())
+                    .filter(|t| !t.is_empty())
+                {
                     relations::reference(facts, owner, &trimmed, "calls", line);
                 }
             } else if end == i
@@ -2182,9 +2305,28 @@ fn extract_macro_invocation_paths(tree: Syntax<'_>, source: &str, owner: &str, f
                 && next_call_tree.is_some()
                 && !matches!(
                     first,
-                    "Some" | "Ok" | "Err" | "None" | "Box" | "Vec" | "if" | "while" | "for"
-                        | "match" | "return" | "let" | "mut" | "ref" | "pub" | "fn"
-                        | "crate" | "super" | "self" | "Self" | "true" | "false"
+                    "Some"
+                        | "Ok"
+                        | "Err"
+                        | "None"
+                        | "Box"
+                        | "Vec"
+                        | "if"
+                        | "while"
+                        | "for"
+                        | "match"
+                        | "return"
+                        | "let"
+                        | "mut"
+                        | "ref"
+                        | "pub"
+                        | "fn"
+                        | "crate"
+                        | "super"
+                        | "self"
+                        | "Self"
+                        | "true"
+                        | "false"
                 )
             {
                 relations::reference(facts, owner, first, "calls", line);

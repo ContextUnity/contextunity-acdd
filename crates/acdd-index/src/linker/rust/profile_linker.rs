@@ -285,23 +285,21 @@ fn resolve_type<'a>(
 
     if let Some((head, tail)) = name.split_once("::") {
         let tail_dotted = tail.replace("::", ".");
-        if !is_inline_submodule {
-            let mut forwarded = Vec::new();
-            for provider in forwarding.targets(module, head, &module.qualname) {
-                if provider.kind == crate::models::tags::NodeKind::Module {
-                    forwarded.extend(forwarding.resolve_path(
-                        provider,
-                        &tail_dotted,
-                        &module.qualname,
-                        Some(&tables.by_qual),
-                    ));
-                }
+        let mut forwarded = Vec::new();
+        for provider in forwarding.targets(module, head, &module.qualname) {
+            if super::forwarding::is_module_scope(provider) {
+                forwarded.extend(forwarding.resolve_path(
+                    provider,
+                    &tail_dotted,
+                    &module.qualname,
+                    Some(&tables.by_qual),
+                ));
             }
-            forwarded.sort_by_key(|node| node.id.as_str());
-            forwarded.dedup_by_key(|node| node.id.as_str());
-            if let Some(found) = pick_unique_slice(&forwarded, workspace) {
-                return Some(found);
-            }
+        }
+        forwarded.sort_by_key(|node| node.id.as_str());
+        forwarded.dedup_by_key(|node| node.id.as_str());
+        if let Some(found) = pick_unique_slice(&forwarded, workspace) {
+            return Some(found);
         }
         let local_imports: Vec<_> = if !is_inline_submodule && scope.id == module.id {
             Vec::new()

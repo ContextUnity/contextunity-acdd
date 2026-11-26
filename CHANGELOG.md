@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Declarative Rust Entrypoint Packs, Cross-File `clap` Dispatch & Inline `mod` Exports (`LS-004`)**:
+  - Reorganized built-in framework manifests under `crates/acdd-index/src/languages/manifests/{rust,python,typescript,web}/` with deterministic recursive discovery in `build_manifests.rs` and added declarative Rust packs (`rmcp.toml`, `axum.toml`, `actix.toml`) backed by generic `AttributeRegistration` and `RouteBuilderCall` syntax operations projecting `mcp_tool` and `http_route` entrypoints via `db/writer/entrypoints.rs`.
+  - Replaced single-file thread-local `clap` detection with persisted declarative `CommandDispatch` metadata (`NodeDetailKey::{CLI_COMMAND_PARSER, CLI_COMMAND_SUBCOMMAND, CLI_COMMAND_DISPATCH}`) and cross-file linker resolution (`crates/acdd-index/src/linker/rust/cli_dispatch.rs` + `framework_relations.rs`) emitting exact `cli_command_registration -> handles` edges across split files on cold and delta builds while preserving shadow and inherent-override rejection.
+  - Published visibility-aware named and wildcard `pub use` `EXPORTS` facts on scoped inline Rust `ModuleDeclaration` nodes (`ast/visitor.rs`, `languages/rust/mod.rs`, `NodeDetailKey::INLINE_MODULE`) and extended `RustForwarding` to resolve inline module re-exports from crate roots without regressing `dead_tails.unused_public_api`.
+  - Added production vs. test Resolution Health splits in `code_map_overview` (`crates/acdd-index/src/db/reader/search.rs`, `src/format/discovery.rs`).
+
+### Fixed
+
+- **Language-Agnostic Local-Binding Mutation Resolution (`LS-004`)**:
+  - Isolated local variable and parameter `EdgeKind::Mutates` references from callable `Calls`/`Handles` diagnostics in `crates/acdd-index/src/linker/resolution/value_flow_phase/dispatch.rs` across all languages, eliminating false unresolved `shadowed_binding` rows while preserving shadowed callable diagnostics and cross-symbol `Mutates` edges.
+
 ## [0.7.1] - 2026-11-26
 
 ### Added

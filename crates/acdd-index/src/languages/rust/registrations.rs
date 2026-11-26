@@ -13,18 +13,18 @@ use crate::languages::types::SyntaxContext;
 use crate::models::{tags::LanguageId, tags::NodeKind, Edge, Facts, Node};
 use crate::semantic::{ExtractionRuleOrigin, FrameworkFact, FrameworkScopeFacts, ValueFlowFacts};
 
-const NS_MOD: u8 = 1;
-const NS_MACRO: u8 = 2;
-const NS_TYPE: u8 = 4;
-const NS_VALUE: u8 = 8;
+pub(super) const NS_MOD: u8 = 1;
+pub(super) const NS_MACRO: u8 = 2;
+pub(super) const NS_TYPE: u8 = 4;
+pub(super) const NS_VALUE: u8 = 8;
 
 #[derive(Default)]
-struct RegistrationScopeFrame {
-    is_mod: bool,
-    imports: HashMap<String, Vec<String>>,
-    wildcards: Vec<String>,
-    locals: HashMap<String, u8>,
-    bindings: HashMap<String, Vec<usize>>,
+pub(super) struct RegistrationScopeFrame {
+    pub(super) is_mod: bool,
+    pub(super) imports: HashMap<String, Vec<String>>,
+    pub(super) wildcards: Vec<String>,
+    pub(super) locals: HashMap<String, u8>,
+    pub(super) bindings: HashMap<String, Vec<usize>>,
 }
 
 enum PendingKind {
@@ -57,7 +57,7 @@ thread_local! {
 }
 
 pub(super) fn prepare(root: Syntax<'_>, source: &str, rules: &Arc<LanguageContext>) {
-    let (mut attr_rules, mut builder_rules) = (Vec::new(), Vec::new());
+    let (mut attr_rules, mut builder_rules, mut has_cmd_rules) = (Vec::new(), Vec::new(), false);
     for (idx, rule) in rules.syntax_rules.iter().enumerate() {
         if rule.language != "rust" {
             continue;
@@ -65,13 +65,20 @@ pub(super) fn prepare(root: Syntax<'_>, source: &str, rules: &Arc<LanguageContex
         match &rule.operation {
             SyntaxOperation::AttributeRegistration { .. } => attr_rules.push(idx),
             SyntaxOperation::RouteBuilderCall { .. } => builder_rules.push(idx),
+            SyntaxOperation::CommandDispatch { .. } => has_cmd_rules = true,
             _ => {}
         }
     }
     let collect_signals =
         rules.has_syntax_gated_rules() && !rules.syntax_activation_keys().is_empty();
     if attr_rules.is_empty() && builder_rules.is_empty() && !collect_signals {
-        STATE.with(|c| *c.borrow_mut() = None);
+        STATE.with(|c| {
+            *c.borrow_mut() = has_cmd_rules.then(|| PreparedState {
+                rules: Arc::clone(rules),
+                signals: BTreeSet::new(),
+                pending: HashMap::new(),
+            });
+        });
         return;
     }
     let mut a = FileAnalyzer {
@@ -94,6 +101,10 @@ pub(super) fn prepare(root: Syntax<'_>, source: &str, rules: &Arc<LanguageContex
     });
 }
 
+pub(super) fn with_rules<R>(f: impl FnOnce(&LanguageContext) -> R) -> Option<R> {
+    STATE.with(|c| c.borrow().as_ref().map(|s| f(&s.rules)))
+}
+
 pub(super) fn clear(facts: &mut Facts) {
     STATE.with(|c| {
         if let Some(s) = c.borrow_mut().take() {
@@ -113,76 +124,147 @@ struct FileAnalyzer<'a> {
     pending: HashMap<usize, Vec<PendingReg>>,
 }
 
+pub(super) fn scope_active(frames: &[RegistrationScopeFrame]) -> &[RegistrationScopeFrame] {
+    let start = frames.iter().rposition(|f| f.is_mod).unwrap_or(0);
+    &frames[start..]
+}
+
+pub(super) fn populate_scope_items(
+    frame: &mut RegistrationScopeFrame,
+    node: Syntax<'_>,
+    src: &str,
+) {
+    let mut c = node.walk();
+    for item in node.named_children(&mut c) {
+        if item.kind() == "use_declaration" {
+            let Some(arg) = item.child_by_field_name("argument") else {
+                continue;
+            };
+            let mut pairs = Vec::new();
+            super::patterns::collect_use(arg, src, "", &mut pairs);
+            for (full, alias) in pairs {
+                if alias == "*" {
+                    if let Some(p) = full.strip_suffix("::*") {
+                        frame.wildcards.push(p.to_owned());
+                    }
+                } else {
+                    frame.imports.entry(alias).or_default().push(full);
+                }
+            }
+            continue;
+        }
+        let Some(name) = field(item, src, "name") else {
+            continue;
+        };
+        let bit = match item.kind() {
+            "mod_item" => NS_MOD,
+            "macro_definition" => NS_MACRO,
+            "struct_item" | "enum_item" | "type_item" | "trait_item" => NS_TYPE,
+            "function_item" | "const_item" | "static_item" => NS_VALUE,
+            _ => continue,
+        };
+        *frame.locals.entry(name.to_owned()).or_default() |= bit;
+    }
+}
+
+pub(super) fn frame_has_local(frame: &RegistrationScopeFrame, name: &str, bit: u8) -> bool {
+    frame.locals.get(name).is_some_and(|m| m & bit != 0)
+}
+
+pub(super) fn scope_crate_shadowed(frames: &[RegistrationScopeFrame], path: &str) -> bool {
+    path.split("::").next().is_some_and(|r| {
+        scope_active(frames)
+            .iter()
+            .any(|f| frame_has_local(f, r, NS_MOD))
+    })
+}
+
+pub(super) fn frame_unique_import<'f>(
+    frame: &'f RegistrationScopeFrame,
+    alias: &str,
+) -> Option<&'f str> {
+    let targets = frame.imports.get(alias)?;
+    let first = targets.first()?.as_str();
+    targets.iter().all(|t| t == first).then_some(first)
+}
+
+pub(super) fn resolve_scope_member<'b>(
+    frames: &[RegistrationScopeFrame],
+    raw: &str,
+    mods: &[String],
+    ns: u8,
+    allowed: impl Fn(&str) -> Option<&'b str>,
+) -> Option<&'b str> {
+    let match_path = |full: &str| {
+        let (clean, abs) = full.strip_prefix("::").map_or((full, false), |s| (s, true));
+        let (prefix, member) = clean.rsplit_once("::")?;
+        (mods.iter().any(|m| m == prefix) && (abs || !scope_crate_shadowed(frames, clean)))
+            .then(|| allowed(member))
+            .flatten()
+    };
+    let s = raw.trim();
+    if s.starts_with("::") {
+        return match_path(s);
+    }
+    let active = scope_active(frames);
+    if let Some((head, rest)) = s.split_once("::") {
+        let mut base = None;
+        for f in active.iter().rev() {
+            if frame_has_local(f, head, NS_MOD) {
+                return None;
+            }
+            if f.imports.contains_key(head) {
+                let target = frame_unique_import(f, head)?;
+                if !target.starts_with("::") && scope_crate_shadowed(frames, target) {
+                    return None;
+                }
+                base = Some(target);
+                break;
+            }
+        }
+        let exp = base.map_or_else(|| s.to_owned(), |b| format!("{b}::{rest}"));
+        return match_path(&exp);
+    }
+    for f in active.iter().rev() {
+        let shadowed = frame_has_local(f, s, ns) || (ns == NS_VALUE && f.bindings.contains_key(s));
+        if shadowed {
+            return None;
+        }
+        if f.imports.contains_key(s) {
+            return match_path(frame_unique_import(f, s)?);
+        }
+    }
+    let mut saw_wc = false;
+    for f in active.iter().rev().filter(|f| !f.wildcards.is_empty()) {
+        saw_wc = true;
+        let ok = f.wildcards.iter().all(|w| {
+            let (c, abs) = w
+                .strip_prefix("::")
+                .map_or((w.as_str(), false), |x| (x, true));
+            mods.iter().any(|m| m == c) && (abs || !scope_crate_shadowed(frames, c))
+        });
+        if !ok {
+            return None;
+        }
+    }
+    saw_wc.then(|| allowed(s)).flatten()
+}
+
 impl<'a> FileAnalyzer<'a> {
     fn active_start(&self) -> usize {
         self.frames.iter().rposition(|f| f.is_mod).unwrap_or(0)
     }
 
     fn active(&self) -> &[RegistrationScopeFrame] {
-        &self.frames[self.active_start()..]
+        scope_active(&self.frames)
     }
 
     fn populate_items(frame: &mut RegistrationScopeFrame, node: Syntax<'_>, src: &str) {
-        let mut c = node.walk();
-        for item in node.named_children(&mut c) {
-            if item.kind() == "use_declaration" {
-                let Some(arg) = item.child_by_field_name("argument") else {
-                    continue;
-                };
-                let mut pairs = Vec::new();
-                super::patterns::collect_use(arg, src, "", &mut pairs);
-                for (full, alias) in pairs {
-                    if alias == "*" {
-                        if let Some(p) = full.strip_suffix("::*") {
-                            frame.wildcards.push(p.to_owned());
-                        }
-                    } else {
-                        frame.imports.entry(alias).or_default().push(full);
-                    }
-                }
-                continue;
-            }
-            let Some(name) = field(item, src, "name") else {
-                continue;
-            };
-            let bit = match item.kind() {
-                "mod_item" => NS_MOD,
-                "macro_definition" => NS_MACRO,
-                "struct_item" | "enum_item" | "type_item" | "trait_item" => NS_TYPE,
-                "function_item" | "const_item" | "static_item" => NS_VALUE,
-                _ => continue,
-            };
-            *frame.locals.entry(name.to_owned()).or_default() |= bit;
-        }
+        populate_scope_items(frame, node, src);
     }
 
     fn has_local(frame: &RegistrationScopeFrame, name: &str, bit: u8) -> bool {
-        frame.locals.get(name).is_some_and(|m| m & bit != 0)
-    }
-
-    fn crate_shadowed(&self, path: &str) -> bool {
-        path.split("::")
-            .next()
-            .is_some_and(|r| self.active().iter().any(|f| Self::has_local(f, r, NS_MOD)))
-    }
-
-    fn unique_import<'f>(frame: &'f RegistrationScopeFrame, alias: &str) -> Option<&'f str> {
-        let targets = frame.imports.get(alias)?;
-        let first = targets.first()?.as_str();
-        targets.iter().all(|t| t == first).then_some(first)
-    }
-
-    fn match_path<'b>(
-        &self,
-        full: &str,
-        mods: &[String],
-        allowed: &impl Fn(&str) -> Option<&'b str>,
-    ) -> Option<&'b str> {
-        let (clean, abs) = full.strip_prefix("::").map_or((full, false), |s| (s, true));
-        let (prefix, member) = clean.rsplit_once("::")?;
-        (mods.iter().any(|m| m == prefix) && (abs || !self.crate_shadowed(clean)))
-            .then(|| allowed(member))
-            .flatten()
+        frame_has_local(frame, name, bit)
     }
 
     fn resolve_member<'b>(
@@ -192,53 +274,7 @@ impl<'a> FileAnalyzer<'a> {
         ns: u8,
         allowed: impl Fn(&str) -> Option<&'b str>,
     ) -> Option<&'b str> {
-        let s = raw.trim();
-        if s.starts_with("::") {
-            return self.match_path(s, mods, &allowed);
-        }
-        if let Some((head, rest)) = s.split_once("::") {
-            let mut base = None;
-            for f in self.active().iter().rev() {
-                if Self::has_local(f, head, NS_MOD) {
-                    return None;
-                }
-                if f.imports.contains_key(head) {
-                    let target = Self::unique_import(f, head)?;
-                    if !target.starts_with("::") && self.crate_shadowed(target) {
-                        return None;
-                    }
-                    base = Some(target);
-                    break;
-                }
-            }
-            let exp = base.map_or_else(|| s.to_owned(), |b| format!("{b}::{rest}"));
-            return self.match_path(&exp, mods, &allowed);
-        }
-        let frames = self.active();
-        for f in frames.iter().rev() {
-            let shadowed =
-                Self::has_local(f, s, ns) || (ns == NS_VALUE && f.bindings.contains_key(s));
-            if shadowed {
-                return None;
-            }
-            if f.imports.contains_key(s) {
-                return self.match_path(Self::unique_import(f, s)?, mods, &allowed);
-            }
-        }
-        let mut saw_wc = false;
-        for f in frames.iter().rev().filter(|f| !f.wildcards.is_empty()) {
-            saw_wc = true;
-            let ok = f.wildcards.iter().all(|w| {
-                let (c, abs) = w
-                    .strip_prefix("::")
-                    .map_or((w.as_str(), false), |x| (x, true));
-                mods.iter().any(|m| m == c) && (abs || !self.crate_shadowed(c))
-            });
-            if !ok {
-                return None;
-            }
-        }
-        saw_wc.then(|| allowed(s)).flatten()
+        resolve_scope_member(&self.frames, raw, mods, ns, allowed)
     }
 
     fn is_local_handler(&self, id: &str) -> bool {

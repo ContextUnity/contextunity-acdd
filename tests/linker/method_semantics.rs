@@ -2155,3 +2155,55 @@ pub fn tuple_option_join_and_monotonic_loop(
         "expected element-wise Tuple BranchJoin, got {joined:?}"
     );
 }
+
+#[test]
+fn rust_inline_mod_relative_reexports_and_split_clap_handles_resolve_exactly() {
+    let ws = Workspace::with_files(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='linker-ls004'\nversion='0.1.0'\nedition='2021'\n[dependencies]\nclap='4'\n",
+        ),
+        (
+            "src/lib.rs",
+            "mod args;\npub struct RootSvc;\nimpl RootSvc { pub fn ping(&self) -> bool { true } }\npub mod facade {\n    pub use super::RootSvc;\n}\nfn run_cmd(s: facade::RootSvc) -> bool { s.ping() }\nfn main_dispatch() {\n    let cli = args::Cli::parse();\n    match cli.command {\n        args::Commands::Run => { run_cmd(facade::RootSvc); }\n    }\n}\n",
+        ),
+        (
+            "src/args.rs",
+            "use clap::{Parser, Subcommand};\n#[derive(Parser)]\npub struct Cli { #[command(subcommand)] pub command: Commands }\n#[derive(Subcommand)]\npub enum Commands { Run }\n",
+        ),
+    ]);
+    ws.build();
+    let conn = ws.open();
+    let ping_status: String = conn
+        .query_row(
+            "SELECT r.status FROM resolution_coverage r
+             JOIN path_dictionary p ON p.path_id = r.path_id
+             JOIN coverage_expressions x ON x.expression_id = r.expression_id
+             WHERE p.path='src/lib.rs' AND x.expression='s.ping' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ping_status, "resolved");
+    let facade_exports: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(details,'$.exports') FROM nodes WHERE kind='module_declaration' AND name='facade'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        facade_exports
+            .as_deref()
+            .is_some_and(|e| e.contains("super::RootSvc")),
+        "expected super::RootSvc in inline mod exports: {facade_exports:?}"
+    );
+    let clap_entry: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name='run_cmd' AND kind='function'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(clap_entry.as_deref(), Some("cli_command"));
+}

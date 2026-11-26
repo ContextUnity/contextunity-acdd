@@ -36,6 +36,27 @@ fn normalize_declared_child_module(
 ) -> Option<ImportPath> {
     let local_import = module.strip_prefix("self::").unwrap_or(module);
     let (first, tail) = local_import.split_once("::").unwrap_or((local_import, ""));
+    if let Some(root_mod) = facts
+        .nodes
+        .iter()
+        .find(|n| n.kind == crate::models::tags::NodeKind::Module)
+    {
+        let expected = format!("{}.{}", root_mod.qualname, first);
+        if facts
+            .nodes
+            .iter()
+            .any(|n| super::forwarding::is_inline_module_declaration(n) && n.qualname == expected)
+        {
+            let mut namespace = rust_module_name(languages::workspace_path(path).1);
+            namespace.push('.');
+            namespace.push_str(first);
+            if !tail.is_empty() && tail != "*" {
+                namespace.push('.');
+                namespace.push_str(&tail.replace("::", "."));
+            }
+            return relative_import(namespace);
+        }
+    }
     let declared = facts.references.iter().any(|reference| {
         reference.kind == EdgeKind::Imports.as_str()
             && reference.alias.as_deref() == Some(first)
@@ -931,11 +952,33 @@ impl LanguageLinker for RustLinker {
 
     fn module_namespaces(
         &self,
-        _profile: &dyn LanguageProfile,
+        profile: &dyn LanguageProfile,
         node: &Node,
         dependency_registry: &DependencyRegistry,
         out: &mut Vec<String>,
     ) {
+        if node.kind == crate::models::tags::NodeKind::ModuleDeclaration {
+            let file_module = profile.module_name(&node.path);
+            let file_stem = crate::languages::module_stem(&node.path).replace('/', ".");
+            if let Some(canonical) = node.qualname.strip_prefix(&file_stem).and_then(|rest| {
+                rest.starts_with('.')
+                    .then(|| format!("{file_module}{rest}"))
+            }) {
+                if !out.iter().any(|existing| existing == &canonical) {
+                    out.push(canonical.clone());
+                }
+                let (workspace, _) = languages::workspace_path(&node.path);
+                if !workspace.is_empty() {
+                    let prefix = format!("{}.", workspace.replace('/', "."));
+                    if let Some(local) = canonical.strip_prefix(&prefix) {
+                        if !out.iter().any(|existing| existing == local) {
+                            out.push(local.to_owned());
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let (workspace, local_path) = languages::workspace_path(&node.path);
         if local_path == "src/lib.rs" {
             let is_workspace_lib = dependency_registry
@@ -1099,8 +1142,11 @@ impl LanguageLinker for RustLinker {
         if module.language != crate::models::tags::LanguageId::Rust {
             return resolution;
         }
-        let requester =
-            requester_node.map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
+        let requester = if requester.is_empty() {
+            requester_node.map_or(module.qualname.as_str(), |owner| owner.qualname.as_str())
+        } else {
+            requester
+        };
         context.candidates.extend(forwarding.resolve_path(
             module,
             &name,

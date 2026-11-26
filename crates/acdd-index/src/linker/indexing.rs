@@ -26,18 +26,26 @@ impl<'a> NamespaceIndexes<'a> {
         dependency_registry: &'a DependencyRegistry,
     ) -> ModulesByNamespace<'a> {
         let mut modules_by_namespace: ModulesByNamespace<'a> = HashMap::new();
-        for node in nodes.iter().filter(|node| node.kind == NodeKind::Module) {
+        for node in nodes.iter().filter(|node| {
+            node.kind == NodeKind::Module
+                || (node.kind == NodeKind::ModuleDeclaration
+                    && !node.is_test
+                    && node.detail_entry(crate::models::details::NodeDetailKey::INLINE_MODULE)
+                        == true)
+        }) {
             let Some(profile) = profiles.get(node.path.as_str()) else {
                 continue;
             };
             let (workspace, local_path) = languages::workspace_path(&node.path);
-            let local_module = profile.module_name(local_path);
             let mut namespaces = vec![node.qualname.clone()];
             if !workspace.is_empty() && node.qualname.starts_with(&format!("{workspace}.")) {
                 namespaces.push(node.qualname[workspace.len() + 1..].to_string());
             }
-            if !namespaces.contains(&local_module) {
-                namespaces.push(local_module);
+            if node.kind == NodeKind::Module {
+                let local_module = profile.module_name(local_path);
+                if !namespaces.contains(&local_module) {
+                    namespaces.push(local_module);
+                }
             }
             profile.linker().module_namespaces(
                 *profile,
@@ -45,15 +53,17 @@ impl<'a> NamespaceIndexes<'a> {
                 dependency_registry,
                 &mut namespaces,
             );
-            if let Some((_, source_relative)) = local_path.split_once("/src/") {
-                let source_module = profile.module_name(source_relative);
-                if !namespaces.contains(&source_module) {
-                    namespaces.push(source_module);
-                }
-            } else if let Some(source_relative) = local_path.strip_prefix("src/") {
-                let source_module = profile.module_name(source_relative);
-                if !namespaces.contains(&source_module) {
-                    namespaces.push(source_module);
+            if node.kind == NodeKind::Module {
+                if let Some((_, source_relative)) = local_path.split_once("/src/") {
+                    let source_module = profile.module_name(source_relative);
+                    if !namespaces.contains(&source_module) {
+                        namespaces.push(source_module);
+                    }
+                } else if let Some(source_relative) = local_path.strip_prefix("src/") {
+                    let source_module = profile.module_name(source_relative);
+                    if !namespaces.contains(&source_module) {
+                        namespaces.push(source_module);
+                    }
                 }
             }
             for namespace in namespaces {

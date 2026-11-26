@@ -1599,6 +1599,16 @@ impl ScopePublication<'_> {
             bindings.rebindings.sort();
             bindings.rebindings.dedup();
             preserve_invalid = merge_previous_scope_flow(context, state, node, flow);
+        } else if node.kind == crate::models::tags::NodeKind::ModuleDeclaration {
+            let exports =
+                context
+                    .profile
+                    .module_exports_with_bindings(root, context.source, &bindings);
+            set_optional_json_detail(
+                node,
+                NodeDetailKey::EXPORTS,
+                exports.filter(|e| !e.is_empty()).map(|e| json!(e)),
+            );
         }
 
         let flow_is_empty = flow.is_empty();

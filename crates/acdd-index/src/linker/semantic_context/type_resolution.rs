@@ -1399,10 +1399,30 @@ impl<'a> Context<'a> {
                     };
                     let mut nested_key = String::with_capacity(64);
                     for module in submodules.iter().copied().filter(|node| {
-                        node.kind == crate::models::tags::NodeKind::Module
+                        (node.kind == crate::models::tags::NodeKind::Module
+                            || (node.kind == crate::models::tags::NodeKind::ModuleDeclaration
+                                && node.detail_entry(
+                                    crate::models::details::NodeDetailKey::INLINE_MODULE,
+                                ) == true))
                             && node.language == owner.language
                             && languages::workspace_path(&node.path).0 == owner_ws
                     }) {
+                        if module.kind == crate::models::tags::NodeKind::ModuleDeclaration {
+                            if let Some(state) = self.import_state(owner.language.as_str()) {
+                                let hits = state.resolve_path(
+                                    module,
+                                    member,
+                                    &owner.qualname,
+                                    Some(self.by_qual),
+                                );
+                                if !hits.is_empty() {
+                                    let symbol = self.classify(hits.into_iter(), role);
+                                    if !matches!(symbol, Symbol::Unknown) {
+                                        return symbol;
+                                    }
+                                }
+                            }
+                        }
                         let (sub_head, sub_tail) = member.split_once('.').unwrap_or((member, ""));
                         if let Some(symbol) = self.resolve_symbol_in_node(
                             module,

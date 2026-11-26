@@ -248,7 +248,7 @@ impl<'a> Context<'a> {
         if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
             if imported
                 .iter()
-                .all(|node| node.kind == crate::models::tags::NodeKind::Module)
+                .all(|node| super::forwarding::is_module_scope(node))
             {
                 next.extend(imported.iter().copied().filter(|node| {
                     self.import_state("rust").is_none_or(|state| {
@@ -263,7 +263,7 @@ impl<'a> Context<'a> {
         if let Some(candidates) = self.by_qual.get(sub_qual.as_str()) {
             next.extend(candidates.iter().copied().filter(|node| {
                 node.language == crate::models::tags::LanguageId::Rust
-                    && node.kind == crate::models::tags::NodeKind::Module
+                    && super::forwarding::is_module_scope(node)
                     && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
                     && self.import_state("rust").is_none_or(|state| {
                         state.module_path_visible(&node.qualname, &owner.qualname)
@@ -289,7 +289,7 @@ impl<'a> Context<'a> {
             }
             let mut next = Vec::new();
             for target in &current {
-                if target.kind == crate::models::tags::NodeKind::Module {
+                if super::forwarding::is_module_scope(target) {
                     self.step_rust_module_member(owner, target, segment, &mut next);
                 } else if segment_count == index + 1 && matches!(role, SymbolRole::Callable) {
                     if target.kind == crate::models::tags::NodeKind::Constant {
@@ -816,7 +816,7 @@ fn resolve_single_glob_provider<'a>(
         .rust_forwarding
         .resolve_path(provider, prefix, &module.qualname, None)
         .into_iter()
-        .filter(|node| node.kind == crate::models::tags::NodeKind::Module)
+        .filter(|node| super::forwarding::is_module_scope(node))
         .collect();
     match mods.as_slice() {
         [target_mod] => Some((*target_mod, resolved_tail.to_owned())),

@@ -206,6 +206,16 @@ fn compose_file_framework_relations<'a>(
         semantic_targets,
         &mut graph,
     );
+    #[cfg(feature = "lang-rust")]
+    super::rust::cli_dispatch::compose_file_relations(
+        path,
+        facts,
+        dependencies,
+        semantic_context,
+        interner,
+        by_id,
+        &mut graph,
+    );
     #[cfg(feature = "lang-html")]
     super::html::relations::emit_render_targets(path, render_contexts, &mut graph);
     emit_file_endpoint_and_route_relations(

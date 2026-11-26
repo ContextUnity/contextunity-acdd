@@ -113,6 +113,10 @@ impl NodeDetailKey {
     pub(crate) const IS_ABSTRACT: &'static str = "is_abstract";
     pub(crate) const IS_METHOD: &'static str = "is_method";
     pub(crate) const SYMBOL_CLAIMS: &'static str = "symbol_claims";
+    pub const INLINE_MODULE: &'static str = "inline_module";
+    pub const CLI_COMMAND_PARSER: &'static str = "cli_command_parser";
+    pub const CLI_COMMAND_SUBCOMMAND: &'static str = "cli_command_subcommand";
+    pub const CLI_COMMAND_DISPATCH: &'static str = "cli_command_dispatch";
 }
 
 /// Boolean properties projected from node details.
