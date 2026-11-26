@@ -23,7 +23,7 @@ The workspace is structured as **three library crates** plus **one root host bin
 
 ```text
   src/cli (clap) ─────────┐
-  src/mcp (20 static      ├──► src/state_bridge/ (CodeDomainProvider, DocsDomainProvider)
+  src/mcp (18 static      ├──► src/state_bridge/ (CodeDomainProvider, DocsDomainProvider)
        + plugin tools)    │        │                          │
   src/format/ (Markdown)  │        ▼                          ▼
                           └──► crates/acdd-state          crates/acdd-index

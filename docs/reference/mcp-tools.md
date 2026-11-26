@@ -5,8 +5,8 @@ title: MCP tool reference
 
 # MCP tool reference
 
-The server exposes **20 built-in static tools** over standard input and output
-(11 code tools, 2 docs tools, 2 core tools, 5 state tools), plus any dynamic
+The server exposes **18 built-in static tools** over standard input and output
+(9 code tools, 2 docs tools, 2 core tools, 5 state tools), plus any dynamic
 `<domain>_<name>` plugin tools registered by active `DomainProvider`
 implementations. Start with `code_map_overview` to identify the indexed
 workspace. Search for a symbol, inspect its exact identifier, then use graph
@@ -36,15 +36,13 @@ MCP navigation accepts unified parameter spellings alongside the canonical field
 | `code_map_inspect` | `selector`, `path` | `symbol`, `file_path` respectively |
 | `code_map_explain` | `selector`, `path` | `symbol`, `file_path` respectively |
 | `code_map_impact` | `selector`, `path` | `symbol`, `file_path` respectively |
-| `code_map_tests` | `selector`, `path` | `symbol`, `file_path` respectively |
-| `code_map_prove_removal` | `selector`, `path` | `symbol`, `file_path` respectively |
 | `acdd_read` | `path`, `selector`, `pattern`, `line_count` | `file_path`, `symbol`, `query`, `max_lines` (`lines`) respectively |
 | `ast_grep_search` | `pattern`, `path` | `query`, `file_path` respectively |
 | `search_docs` | `query`, `component` | `pattern`, `path` / `file_path` respectively |
 | `get_doc` | `path_or_id` | `path`, `file_path`, `doc_id`, `selector` |
-| `code_map_analyze` | `target` | `path`, `file_path`, `selector`; omission selects workspace totals |
+| `code_map_analyze` | `target`, `mode` | `path`, `file_path`, `selector` alias `target`; optional `mode`, `to`, `base` |
 | `code_map_lint` | `target` | `path`, `file_path`; omission lints the full workspace |
-| `code_map_query` | `selector`, `path` | `symbol` / `query`, `file_path`; `sql` selects read-only SQL mode |
+| `code_map_query` | `operation`, `selector`, `path` | `symbol` / `query` (`selector`), `file_path` (`path`); `sql` selects read-only SQL mode |
 
 Aliases are explicit optional properties in the published `tools/list` schemas;
 the canonical field is not required when an alias supplies the value. Handlers
@@ -63,8 +61,8 @@ Recommended navigation sequence:
 - **`code_map_inspect` / `code_map_explain`**: inspect one declaration's summary (`inspect`) or direct incoming/outgoing edges (`explain`).
 - **`acdd_read`**: read complete digest-verified symbol bodies (`max_body_lines` optional) instead of slicing files manually.
 - **`search_docs` / `get_doc`**: triage sections with `search_docs(include_excerpt=true)`, view outlines with `get_doc(detail="compact")`, and read one section with `get_doc(section="...")`.
-- **`code_map_tests` & `code_map_prove_removal`**: trace verified `calls` paths from `test_case` nodes and assess static incoming dependencies before deleting symbols.
-- **`code_map_lint` & `code_map_analyze`**: run unified architectural/hygiene rules (`code_map_lint`), syntax checks (`lint=true`), or cycle detection (`include_cycles=true`).
+- **`code_map_query(operation="tests" | "prove_removal")`**: trace verified `calls` paths from `test_case` nodes and assess static incoming dependencies before deleting symbols.
+- **`code_map_lint` & `code_map_analyze`**: run unified architectural/hygiene rules (`code_map_lint`), summary diagnostics/cycles/syntax (`mode="summary"`), or read-only `hotspots`, `boundary`, `path`, `entrypoints`, `diff_impact`, and `cochange` analysis (`code_map_analyze`).
 - **`worktree` selector**: pass optional `worktree` on any tool call when targeting a secondary Git worktree (see [worktree selection](#worktree-selection)).
 
 ## Output format
@@ -112,7 +110,7 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
   - **Workspace-prefix stripping**: absolute paths inside the workspace automatically normalize to relative paths.
   - **Enclosing symbol footer**: reading raw lines inside an indexed function/struct appends a compact `Enclosing: \`<kind> <name>\` — acdd_read(...)` hint with its exact `selector`.
 - **Safety & bounds**:
-  - **Text cap**: `lines`, `raw`, and `search` cap output at `48 KiB` (`truncated: true`); lines above `1 MiB` error cleanly.
+  - **Inline budget & 48 KiB cap**: `lines` and `raw` default to `<= 9,000` bytes inline (`detail="compact"`), returning `truncated: true` with `next_start_line` (single-file) or `next_path_index` and `remaining_count` (batch `paths`); `detail="full"` and `output_file` exports retain the `48 KiB` slice ceiling (`49,152` bytes), and lines above `1 MiB` error cleanly.
   - **Binary & secret guards**: NUL bytes in the first `8 KiB` return `BINARY_FILE`; symlinks, path traversal, and `sensitive` patterns are blocked on both reads and `output_file` exports (see [sensitive paths](configuration.md#sensitive-reader-paths)).
   - **Active gate hints**: when a task gate is claimed in the selected worktree, responses include `write_scope: ALLOWED|OUT_OF_SCOPE` and copy-ready graph/verify/blackboard hints.
 
@@ -128,22 +126,20 @@ Every static capability runs over identical index and state engines on both surf
 | `acdd_read` | `acdd read` | Read line slices, search matches, Git deltas, outlines, or digest-verified symbol bodies (plus `output_file` export). |
 | `code_map_explain` | `acdd query explain` | List direct `incoming`, `outgoing`, or `both` relationship edges and analysis gaps for a symbol. |
 | `code_map_impact` | `acdd query impact` | Trace multi-hop blast radius (`inbound` / `outbound`) for a symbol or `--changes staged\|unstaged\|head`. |
-| `code_map_tests` | `acdd query tests` | Trace exact `calls` paths between `test_case` roots and production targets (`inbound` / `outbound`). |
-| `code_map_prove_removal` | `acdd query remove` | Assess static incoming dependencies and target-scoped diagnostics before deleting a symbol. |
-| `code_map_query` | `acdd query run` / `sql` | Execute named graph operations (`slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, `sql`). |
+| `code_map_query` | `acdd query tests\|remove\|run\|sql` | Execute named graph operations (`tests`, `prove_removal`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, `sql`). |
 | `code_map_lint` | `acdd lint` | Evaluate architectural (`acdd-rule` / `acdd.yaml`), `docs`, `syntax`, `duplicates`, `dead_tails`, and `cycles` rules. |
-| `code_map_analyze` | `acdd query analyze` | Aggregate workspace/file resolver gaps, `untested_public_surface`, `doc_diagnostics`, stored syntax lint, and cycles. |
+| `code_map_analyze` | `acdd query analyze` | Read-only diagnostics (`summary`, PageRank `hotspots`, `boundary`, `path` with `to`, `entrypoints`, `diff_impact`, `cochange` with optional `base`), stored syntax lint, cycles, and read-only SQL. |
 | `ast_grep_search` | `acdd ast grep` | Match structural Tree-sitter patterns (`$NAME`, `$$$SEQ`) narrowed by indexed file candidates. |
 | `search_docs` | `acdd docs search` | Search indexed Markdown/MDX heading sections with BM25 ranking and optional `include_excerpt`. |
 | `get_doc` | `acdd docs get` | Read a document outline, specific heading section, citations, verified symbol references, and opt-in ambiguous candidates (`include_candidates: true`). |
 | `acdd_guide` | `acdd guide` | Return capability-filtered usage guidance across 11 built-in topics (`query`, `code`, `ast`, `docs`, `acdd`, ...). |
-| `acdd_state` | `acdd start\|draft\|status\|...` | Drive run lifecycle actions (`start`, `draft`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `sync`, `clear`, `run`). |
-| `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` context envelope. |
+| `acdd_state` | `acdd start\|status\|...` | Drive active-run lifecycle actions (`start`, `status`, `list`, `show`, `next`, `context`, `observability`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`; `roadmap`/`draft` redirect to CLI). |
+| `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` envelope (`<= 9,500` bytes default, `32 KiB` with `detail="full"`). |
 | `acdd_verify` | `acdd verify` | Run gate shell `commands:`, `call:`, `checks:` (`code.seam`, `code.lint`), and write-scope barrier without advancing state. |
 | `acdd_submit` | `acdd submit` | Submit `pass` or `reject` (`review_evidence`, structured `findings`, commits, reports, archive/prune). |
 | `acdd_blackboard` | `acdd blackboard` | Read or post scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`). |
 
-In addition to the 20 built-in static tools above, active `DomainProvider` plugins
+In addition to the 18 built-in static tools above (with retired `code_map_tests` and `code_map_prove_removal` permanently reserved and redirecting callers to `code_map_query`), active `DomainProvider` plugins
 can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
 `src/mcp/tools/dispatch.rs` when `modules.domains.<domain>` is enabled). See
 [state, tasks & lifecycle](tasks.md) for action schemas, receipts, and recovery,
@@ -199,7 +195,7 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
   - **Prefixes & ambiguity**: relative paths accept `./`, `file:`, or `file://`. Add the path when a bare name matches both a module and a symbol. Markdown belongs in `get_doc` / `search_docs`.
 
 - **`code_map_query` operations & aliases**:
-  - **Supported operations**: `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, and `sql` (aliases: `doctor` -> `overview`; `search` / `discover` / `find` -> symbol search).
+  - **Supported operations**: `overview`, `inspect`, `explain`, `impact`, `tests`, `prove_removal`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, `dead_tails`, and `sql` (aliases: `doctor` -> `overview`; `search` / `discover` / `find` -> symbol search).
   - **`impact` & direction**: `code_map_query(operation="impact")` defaults to depth `2`, while `code_map_impact` defaults to depth `1`. Direction defaults to `inbound` (`outbound` follows outgoing dependencies).
   - **`unwired`**: lists functions/methods with no static caller, excluding classified entrypoints (`summary.excluded_entrypoints_count` reports excluded entries; not a dead-code proof).
   - **`dead_tails`**: evaluates workspace-wide production liveness first and returns scoped `phantom_tested` (tests-only), `dead_tails` (zero prod/test reachability), and `dangling_calls` (unresolved `crate::`/`super::`/`self::` refs).
@@ -218,9 +214,9 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
 - **Impact, slice, tests & removal details**:
   - **`code_map_impact` & `slice`**: mark the seed node with `is_seed=true` and annotate multi-hop nodes with `via` (shortest path predecessor + edge kind). A directory selector in `slice` lists internal nodes (`graph_depth_applied=0`) plus a `boundary_contract`; unique directory suffixes are accepted.
-  - **`code_map_tests`**: traces exact `calls` edges from `test_case` roots (`call_path` IDs). Helpers/fixtures stay intermediate, `possible_calls` / imports do not count as coverage, and bounded lexical suggestions appear only when no graph path exists. Exceeded traversal budgets fail instead of returning partial coverage.
-  - **`code_map_analyze` (`untested_public_surface`)**: pages declared-public production symbols lacking exact `calls` paths from `test_case` nodes (visibility follows language syntax, not transitive crate/package re-exports).
-  - **`code_map_prove_removal`**: `assessment` returns a candidate-scoped verdict and blocking dependencies without mixing in unrelated workspace diagnostics.
+  - **`code_map_query(operation="tests")`**: traces exact `calls` edges from `test_case` roots (`call_path` IDs; `direction: "inbound" | "outbound"`). Helpers/fixtures stay intermediate, `possible_calls` / imports do not count as coverage, and bounded lexical suggestions appear only when no graph path exists. Exceeded traversal budgets fail instead of returning partial coverage.
+  - **`code_map_analyze` (`untested_public_surface` & read-only modes)**: `mode="summary"` (default) pages declared-public production symbols lacking exact `calls` paths from `test_case` nodes (visibility follows language syntax, not transitive crate/package re-exports). Optional read-only modes inspect `hotspots` (deterministic PageRank centrality, `damping: 0.85`), `boundary` (module inbound/outbound crossings and internal-only public symbols), `path` (shortest paths from `target` to `to`), `entrypoints` (explicit/public roots), `diff_impact` (changed symbols, declaration-header `signature_touched`, `uncovered_symbols`, governed `affected_docs`, optional `base`), and `cochange` (bounded Git co-change pairs filtered by `WorkspacePathPolicy`, optional `base`).
+  - **`code_map_query(operation="prove_removal")`**: `assessment` returns a candidate-scoped verdict and blocking dependencies without mixing in unrelated workspace diagnostics.
 
 - **`code_map_explain`**:
   - **Direction**: `incoming`, `outgoing`, or `both` (aliases `inbound` / `outbound`).
@@ -310,7 +306,7 @@ Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples.
 
 ## SQL queries
 
-- **`code_map_query` operations**: `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, and `dead_tails`.
+- **`code_map_query` operations**: `overview`, `inspect`, `explain`, `impact`, `tests`, `prove_removal`, `slice`, `unwired`, `sql`, `untested`, `implementations`, `duplicates`, and `dead_tails`.
 - **SQL dispatch**: select SQL explicitly (`sql="SELECT ..."` or `operation="sql", selector="SELECT ..."`), or pass a `SELECT`/`WITH` query in `operation` / `query` (resolves `sql` -> `query` -> `selector` -> `operation`). Explicitly named non-SQL operations resolve from `target` -> `selector` -> `query` (`target` applies to `untested`, `duplicates`, `dead_tails`).
 - **Read-only guard**: allows one `SELECT` or `WITH` statement under SQLite query & pagination budgets; use `code_map_analyze(include_cycles=true)` for structural cycle detection.
 

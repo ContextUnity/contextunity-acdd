@@ -42,7 +42,7 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
      built-in code-delivery baseline inheriting `base`, adding the three-phase
      milestone lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` ->
      `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]` so
-     `docs`-tagged tasks skip `code.seam`, all 20 `default_tools` (including
+     `docs`-tagged tasks skip `code.seam`, all 18 `default_tools` (including
      `code_map_lint`), additional contours (`architecture`, `concurrency`,
      `project_isolation`), 4-layer clean guidance (`milestone.*` / `task.*`,
      `core.*`, `code.principles`, `code.tools`, `hitl.pro`), `code.seam` +
@@ -52,7 +52,7 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
    - `audit` ([`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml)):
      built-in read-only code review and security/taint scanning pipeline
      inheriting `base` with `git.isolation: in_place`, `git.worktrees: manual`,
-     `save: none`, all 20 `default_tools` (automatically stripped when
+     `save: none`, all 18 `default_tools` (automatically stripped when
      `modules.code: false` or `modules.docs: false`), roles (`auditor`,
      `independent_reviewer`), structured schemas (`recon_map`,
      `candidate_findings`, `audit_report`), review contours (`correctness`,

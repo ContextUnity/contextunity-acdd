@@ -8,14 +8,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- **Read-Only `code_map_analyze` Graph, PageRank, Diff-Impact & Co-Change Modes (`UX-004`)**:
+  - Extended `code_map_analyze` (`mode`, `to`, `base`) and CLI `acdd query analyze [--mode] [--to] [--base]` strictly over indexed SQLite facts (`crates/acdd-index/src/db/analyze/`): deterministic PageRank `hotspots` (`damping: 0.85`, bounded 2s budget), module `boundary`, shortest `path` (to destination selector `to`), `entrypoints`, Git `diff_impact` (delegating to canonical `change_impact.rs` with declaration-header `signature_touched`, verified `calls`-edge `uncovered_symbols`, governed `INV-*` `affected_docs`, and optional `base`), and bounded Git `cochange` (history via `crates/acdd-core/src/git.rs` filtered by `WorkspacePathPolicy`).
+  - Added compact Markdown presentation for all 6 new `code_map_analyze` modes in `src/format/analyze.rs`.
 - **Declarative Rust Entrypoint Packs, Cross-File `clap` Dispatch & Inline `mod` Exports (`LS-004`)**:
   - Reorganized built-in framework manifests under `crates/acdd-index/src/languages/manifests/{rust,python,typescript,web}/` with deterministic recursive discovery in `build_manifests.rs` and added declarative Rust packs (`rmcp.toml`, `axum.toml`, `actix.toml`) backed by generic `AttributeRegistration` and `RouteBuilderCall` syntax operations projecting `mcp_tool` and `http_route` entrypoints via `db/writer/entrypoints.rs`.
   - Replaced single-file thread-local `clap` detection with persisted declarative `CommandDispatch` metadata (`NodeDetailKey::{CLI_COMMAND_PARSER, CLI_COMMAND_SUBCOMMAND, CLI_COMMAND_DISPATCH}`) and cross-file linker resolution (`crates/acdd-index/src/linker/rust/cli_dispatch.rs` + `framework_relations.rs`) emitting exact `cli_command_registration -> handles` edges across split files on cold and delta builds while preserving shadow and inherent-override rejection.
   - Published visibility-aware named and wildcard `pub use` `EXPORTS` facts on scoped inline Rust `ModuleDeclaration` nodes (`ast/visitor.rs`, `languages/rust/mod.rs`, `NodeDetailKey::INLINE_MODULE`) and extended `RustForwarding` to resolve inline module re-exports from crate roots without regressing `dead_tails.unused_public_api`.
   - Added production vs. test Resolution Health splits in `code_map_overview` (`crates/acdd-index/src/db/reader/search.rs`, `src/format/discovery.rs`).
 
+### Changed
+
+- **Lean 18-Tool Static MCP Surface & Active-Run-Only `acdd_state` (`UX-004`)**:
+  - Folded `code_map_tests` and `code_map_prove_removal` into `code_map_query(operation="tests" | "prove_removal")` (`20 -> 18` static built-in MCP tools synced across `Server::tool_router()` and `BUILTIN_MCP_TOOLS` in `crates/acdd-core/src/ports.rs`, keeping retired names reserved in `RETIRED_MCP_TOOLS` against plugin registration), while keeping CLI `acdd query tests` and `acdd query remove` unchanged.
+  - Narrowed MCP `acdd_state` (`McpStateAction` / `StateInput`) to active-run lifecycle operations by removing `roadmap` and `draft` from MCP with fail-closed redirect hints to CLI `acdd roadmap` and `acdd draft`.
+- **Compact Inline `acdd_claim` & `acdd_read` Budgets (`UX-004`)**:
+  - Lowered default `ClaimResp` budget (`CLAIM_DEFAULT_MAX_BYTES`) to `9,500` bytes with opt-in `detail="full"` up to `32 KiB` (`CLAIM_FULL_MAX_BYTES = 32_768`) across `acdd_claim` and `acdd claim --detail`, bounded Tier 5 blackboard to `MAX_BLACKBOARD_ITEMS = 6` / `MAX_BLACKBOARD_CHARS = 220`, stripped headings TOC bloat from `docs.instructions`, filtered derived/generated methods from `code.symbols`, deduplicated `code.tests` paths (top 8), and capped `code.external_callers` to top-5 plus overflow count.
+  - Lowered default `acdd_read` / `acdd read` inline line-window ceiling (`READ_DEFAULT_MAX_INLINE_BYTES`) to `9,000` bytes with exact `next_start_line` and batch `next_path_index` / `remaining_count` continuation metadata (`detail="full"` or `output_file` retains the `48 KiB` slice ceiling).
+- **Pragmatic ACDD-First Navigation Guidance**:
+  - Removed the hard `.agents/read_file_guard.py` and `.agents/hooks.json` `read_file` block and updated `AGENTS.md`, `skills/acdd/`, ADRs, architecture docs, and references to recommend ACDD-first graph/symbol/doc navigation while keeping native reads available for unadmitted or large files.
+
 ### Fixed
 
+- **Scoped Commit Staged-Rename Preservation (`UX-004`)**:
+  - Included real worktree index entries (`list_stage_entries`) alongside `base_head` and untracked paths in `crates/acdd-state/src/git_ops/commit.rs::create_scoped_commit_with_expected` so `git mv`-staged renames commit cleanly without `TASK_CANDIDATE_MISMATCH`.
 - **Language-Agnostic Local-Binding Mutation Resolution (`LS-004`)**:
   - Isolated local variable and parameter `EdgeKind::Mutates` references from callable `Calls`/`Handles` diagnostics in `crates/acdd-index/src/linker/resolution/value_flow_phase/dispatch.rs` across all languages, eliminating false unresolved `shadowed_binding` rows while preserving shadowed callable diagnostics and cross-symbol `Mutates` edges.
 

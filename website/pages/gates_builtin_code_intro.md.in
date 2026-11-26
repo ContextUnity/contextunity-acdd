@@ -6,7 +6,7 @@ The embedded **`code`** profile (`crates/acdd-state/src/profile/embedded/code.ya
 
 ## How `ClaimResp` assembles agent context
 
-When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6-tier budgeted `ClaimResp`** envelope (default soft ceiling `32 KiB`) and renders it as structured Markdown:
+When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6-tier budgeted `ClaimResp`** envelope (`<= 9,500` bytes default, or `detail="full"` up to `32 KiB`) and renders it as structured Markdown:
 
 | Tier | Field | Contents |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
 | **2 (Rework)** | `unresolved_findings` | Latest rejection `findings` and `failed_trace_log_tail` (up to `diagnostic_inline_bytes`, 4,096 bytes) when returning after `fail` or `rearchitect`. |
 | **3 (Architect Slice)** | `pre_task_slice` | Per-task blueprint slice materialized during `blueprint_synthesis` (`canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`). |
 | **4 (Dependencies)** | `dependency_receipts` | Completed receipts from upstream dependency tasks (`need:`). |
-| **5 (Coordination)** | `blackboard` | Recent `notes`, `blockers`, and `decisions` posted on `acdd_blackboard` (up to 15 items × 500 chars). |
+| **5 (Coordination)** | `blackboard` | Recent `notes`, `blockers`, and `decisions` posted on `acdd_blackboard` (up to 6 items × 220 chars). |
 | **6 (Domain Lenses)** | `context_lenses` | Dynamic `docs.*` and `code.*` context lenses declared on the gate's `context:` list, in YAML declaration order. |
 
 ---

@@ -39,7 +39,7 @@ ACDD separates *what* must be built from *how* work is governed and verified:
 ### Stage-Tailored Context Injection (`ClaimResp`)
 
 Claiming a gate returns the budgeted `ClaimResp` bundle ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [`crates/acdd-state/src/context/mod.rs`](../../crates/acdd-state/src/context/mod.rs))
-ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
+ordered across 6 priority tiers inside a default `<= 9,500`-byte inline budget (or `detail="full"` up to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`):
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed task/gate specification
    and resolved gate guidance entries (reserved inside `max_guidance_bytes`,
@@ -50,13 +50,13 @@ ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
    emitted by `blueprint_synthesis`, and `predecessor_proofs` from completed
    upstream sibling gates in the same container (e.g., `audit` `recon -> analyze -> triage`).
 4. **Tier 4 (`dependency_receipts`)**: Receipts from completed dependency tasks.
-5. **Tier 5 (`blackboard`)**: Up to 15 relevant blackboard `notes`, `blockers`,
-   and `decisions` entries capped at 500 characters each (excludes `findings`,
+5. **Tier 5 (`blackboard`)**: Up to 6 relevant blackboard `notes`, `blockers`,
+   and `decisions` entries capped at 220 characters each (excludes `findings`,
    which arrive in Tier 2 `unresolved_findings`).
 6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared on the
-   gate's `context:` list (e.g., `docs.adrs`, `docs.invariants`, `code.symbols`,
-   `code.tests`, `code.external_callers`), trimmed cleanly by section if needed
-   and reported in `omitted_sections`.
+   gate's `context:` list (e.g., `docs.instructions`, `docs.adrs`, `docs.invariants`,
+   `code.symbols`, `code.tests`, `code.external_callers`), compacted upfront at
+   the producer and trimmed cleanly by section if needed and reported in `omitted_sections`.
 
 MCP state tools and flat CLI commands share `src/format/lifecycle.rs` Markdown
 rendering (delegating `ClaimResp` prompt formatting to
@@ -64,7 +64,7 @@ rendering (delegating `ClaimResp` prompt formatting to
 default, or structured JSON via `format: "json"` / `--format json`;
 see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
-Read-only **`StateQuery::Roadmap`** (`acdd roadmap`, `acdd_state(action: "roadmap")`)
+Read-only **`StateQuery::Roadmap`** (CLI `acdd roadmap`)
 aggregates specs across configured `specs:` collections with active runs, dependency
 waves, critical-path ordering, scope-overlap markers, and optional per-spec task
 drill-down. Formatting lives in `src/format/roadmap.rs`; the query opens

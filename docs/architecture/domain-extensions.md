@@ -174,7 +174,7 @@ gates_patch:
 - **`checks:`**: Executed automatically during `acdd verify` / `acdd_verify`; `acdd submit` / `acdd_submit` validates live freshness via `observe_freshness` against the recorded `execution_digest` without re-running `run_check`. Any `execution_digest_salt` folds into the claim-bound `execution_digest`, bound to the active `TreeOid`.
 - **`context:`**: Materialized into Tier 6 `ClaimResp.context_lenses` in YAML declaration order during `acdd claim` / `acdd_claim`, trimmed cleanly if the `ResponsePolicy.max_output_bytes` budget is tight.
 - **`call:` + `with:`**: Runs an in-process action gate (`proof: call`), validating `with:` against `ActionCapability.input_schema` and recording `DomainActionResult` in `gate_artifacts`.
-- **`tools_add:` / `default_tools:`**: Admits `<domain>_<name>` plugin tools on specific gates. `CompositeDomainProvider` rejects any `<domain>_<name>` colliding with the 20 built-in tools checked by [`is_builtin_mcp_tool`](../../crates/acdd-core/src/ports.rs) (`BUILTIN_MCP_TOOLS`) fail-closed (`ProfileSchemaInvalid`).
+- **`tools_add:` / `default_tools:`**: Admits `<domain>_<name>` plugin tools on specific gates. `CompositeDomainProvider` rejects any `<domain>_<name>` colliding with the 18 built-in tools or reserved retired names (`RETIRED_MCP_TOOLS`) checked by [`is_builtin_mcp_tool`](../../crates/acdd-core/src/ports.rs) (`BUILTIN_MCP_TOOLS`) fail-closed (`ProfileSchemaInvalid`).
 
 ## 4. Wiring, Module Toggles, and Fail-Closed Validation
 

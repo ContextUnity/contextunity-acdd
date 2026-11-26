@@ -27,7 +27,7 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Keeping the index current
 
-- **`worktree` selector**: supported across all 20 built-in MCP tools and `<domain>_<name>` plugin tools (omission keeps the server root; explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git worktrees share `<primary_worktree>/.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`).
+- **`worktree` selector**: supported across all 18 built-in MCP tools and `<domain>_<name>` plugin tools (omission keeps the server root; explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git worktrees share `<primary_worktree>/.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`).
 - **`--db` / `ACDD_DB`**: overrides the default code index path (`<root>/.acdd/code-map.sqlite`).
 - **`--state-db` / `ACDD_STATE_DB` / `state_db`**: overrides the default state DB (`<primary_worktree>/.acdd/state.sqlite`).
 - **`--root` / `ACDD_WORKSPACE_ROOT`**: selects the target repository root (defaults to `.`).
@@ -37,14 +37,15 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Query and source safety
 
-- **Read-only SQL (`code_map_analyze`)**: accepts one read-only `SELECT` or `WITH` statement (`include_cycles=true` computes structural cycles separately). Structural results reflect indexed syntax, not runtime behavior.
+- **Read-only diagnostics (`code_map_analyze`)**: defaults to `mode="summary"` (accepts one read-only `SELECT` or `WITH` statement, `lint=true`, or `include_cycles=true`), or selects read-only `hotspots` (deterministic PageRank within the 2-second query budget), `boundary`, `path` (with `to`), `entrypoints`, `diff_impact`, or `cochange` (with optional `base`). Structural results reflect indexed syntax, not runtime behavior.
 - **Inspect/explain source previews**: omitted by default; when enabled, default to `5` leading lines and configured `max_body_lines` (default `100`, valid `1..=500`).
+- **`acdd_claim` inline budget**: defaults to `<= 9,500` bytes (`detail="compact"`), expanding up to `32 KiB` when `detail="full"` is passed.
 - **`acdd_read` symbol paging**: returns the entire symbol when serialized output fits `max_output_bytes` (`1,024–98,304`); otherwise pages cleanly at complete line boundaries requiring `generation` on continuations (an explicit `max_body_lines` is normalized to `>= 1`; an oversized single line returns a budget error + recovery hint).
 - **Read-only state reads**: `acdd status|list|show|next|blackboard --action read`, `acdd_state` reads, and `acdd_blackboard(action="read")` open `state.sqlite` strictly via `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` without creating missing DB files (`list` and `blackboard` bind `runs.generation`). See [MCP tools](../reference/mcp-tools.md).
 
 ## Reader layer admission
 
 - **Text modes**: `mode="lines"` (index-free), `mode="raw"` (preserves line endings), and `mode="search"` (`pattern`, `regex`, bounded `context`).
-- **48 KiB text cap**: core text reads cap responses at `48 KiB` and mark `truncated: true` when narrowed windows or `start_line` continuations are needed.
+- **Inline 9,000-byte default & 48 KiB full/export cap**: `acdd_read` and `acdd read` default to `<= 9,000` bytes inline (`detail="compact"`), setting `truncated: true` plus `next_start_line` (single-file `lines`/`raw`) or `next_path_index` and `remaining_count` (batch `paths`); pass `detail="full"` or `output_file` for the `48 KiB` slice ceiling (`49,152` bytes).
 - **Layer fallback**: core text reads still succeed even if the optional code index is absent; graph hints appear only when an index is admitted.
 - **`sensitive` & `output_file`**: `sensitive` glob/regex rules block protected files before reading/exporting; `output_file` writes only to plain workspace-relative paths (see [layered reader inputs](../reference/mcp-tools.md#layered-file-reader)).

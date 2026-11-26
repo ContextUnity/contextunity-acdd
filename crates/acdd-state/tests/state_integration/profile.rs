@@ -221,7 +221,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     let code_p = resolve_profile_ref_with_dirs("code", None, None, None).unwrap();
     assert!(!code_p.roles["independent_reviewer"].reuse_on_reject);
     assert!(code_p.roles["builder"].reuse_on_reject);
-    assert_eq!(code_p.default_tools.len(), 20);
+    assert_eq!(code_p.default_tools.len(), 18);
     assert!(code_p.default_tools.contains(&"code_map_lint".to_owned()));
     assert!(code_p.tags.contains("docs"));
     assert!(code_p.roles["independent_reviewer"]
@@ -274,7 +274,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         code_build.tools.is_none(),
         "inherited tools must stay deduplicated as None"
     );
-    assert_eq!(code_p.effective_tools(code_build).len(), 20);
+    assert_eq!(code_p.effective_tools(code_build).len(), 18);
     assert_eq!(
         code_build.context.first().map(String::as_str),
         Some("docs.instructions")
@@ -363,7 +363,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(audit_p.git.isolation, IsolationMode::InPlace);
     assert_eq!(audit_p.git.worktrees, WorktreeLifecycle::Manual);
     assert_eq!(audit_p.save, SaveAction::None);
-    assert_eq!(audit_p.default_tools.len(), 20);
+    assert_eq!(audit_p.default_tools.len(), 18);
     assert!(audit_p.default_tools.contains(&"code_map_lint".to_owned()));
     let audit_gate_ids: Vec<&str> = audit_p.gates.iter().map(|g| g.id.as_str()).collect();
     assert_eq!(audit_gate_ids, vec!["recon", "analyze", "triage"]);
@@ -1426,7 +1426,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     .unwrap();
     assert_eq!(default_no_ws.profile_id, "code");
     assert_eq!(default_no_ws.git.isolation, IsolationMode::Worktree);
-    assert_eq!(default_no_ws.default_tools.len(), 20);
+    assert_eq!(default_no_ws.default_tools.len(), 18);
 
     let default_no_domains = resolve_optional_profile_ref_with_dirs(
         None,

@@ -7,7 +7,7 @@
 
 **Augmented Context & Durable Dispatch (ACDD)** is a local-first, zero-daemon **meta-harness** for AI coding agents (Claude Code, Codex CLI, Antigravity, Cursor) and CI pipelines — packaged into a single pure-Rust binary.
 
-One executable (`acdd`) serves both as a **stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server** (20 built-in tools + plugin SPI) and as a **flat CLI**, giving agents an incremental Tree-sitter code & documentation graph, a machine-enforced architectural linter, and a deterministic gate state machine.
+One executable (`acdd`) serves both as a **stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server** (18 built-in tools + plugin SPI) and as a **flat CLI**, giving agents an incremental Tree-sitter code & documentation graph, a machine-enforced architectural linter, and a deterministic gate state machine.
 
 **[Website & Docs](https://acdd.contextunity.com)** · **[5-Minute Quickstart](https://acdd.contextunity.com/docs/getting-started/quickstart/)** · **[Install Guide](INSTALL.md)** · **[Architecture](docs/architecture/README.md)** · **[Roadmap](ROADMAP.md)**
 
@@ -27,7 +27,7 @@ Unguided coding agents waste tokens in blind `grep` loops, erode module boundari
 
 1. **AST Code & Living Docs Graph (`.acdd/code-map.sqlite`)**
    - Single-shot, SHA-256 verified symbol reads (`acdd_read(selector="...")`) instead of multi-step file scanning.
-   - Multi-hop caller/callee blast radius (`code_map_impact`), covering-test discovery (`code_map_tests`), and Tree-sitter pattern search (`ast_grep_search`).
+   - Multi-hop caller/callee blast radius (`code_map_impact`), covering-test and removal-safety queries (`code_map_query(operation="tests" | "prove_removal")`), read-only diagnostics (`code_map_analyze`), and Tree-sitter pattern search (`ast_grep_search`).
    - Bidirectional linking between code symbols, BM25-searchable Markdown sections (`search_docs`), and `INV-*` architectural invariants — across single repos or federated `linked_workspaces`.
 2. **Architectural & Graph Linter (`acdd lint` / `code_map_lint`)**
    - Enforces zone dependency rules (`acdd.yaml`), executable `acdd-rule` blocks embedded directly inside Markdown docs, Tree-sitter syntax health, doc-link/symbol integrity, duplicate clones, dead code, and import/call cycles.
@@ -124,11 +124,11 @@ Every capability runs over the exact same Rust engine whether called by an AI ag
 | Area | MCP Tools (`acdd serve`) | CLI Commands (`acdd ...`) |
 | --- | --- | --- |
 | **Index & Refresh** | Auto `delta` / `build` on file changes | `scan`, `build`, `delta` |
-| **Symbol & Graph Navigation** | `code_map_overview`, `search`, `inspect`, `explain`, `impact`, `tests`, `prove_removal` | `query overview \| search \| inspect \| explain \| impact \| tests \| remove` |
-| **Hygiene, SQL & AST Search** | `code_map_query` (`duplicates`, `dead_tails`, `untested`, `slice`, `sql`), `code_map_analyze`, `ast_grep_search` | `query run <op>`, `query sql`, `query analyze`, `ast grep` |
+| **Symbol & Graph Navigation** | `code_map_overview`, `search`, `inspect`, `explain`, `impact` | `query overview \| search \| inspect \| explain \| impact` |
+| **Hygiene, Diagnostics & AST** | `code_map_query` (`tests`, `prove_removal`, `duplicates`, `dead_tails`, `untested`, `slice`, `sql`), `code_map_analyze` (`summary`, `hotspots`, `boundary`, `path`, `entrypoints`, `diff_impact`, `cochange`), `ast_grep_search` | `query tests \| remove`, `query run <op>`, `query sql`, `query analyze [--mode]`, `ast grep` |
 | **Lint & Living Docs** | `code_map_lint`, `search_docs`, `get_doc` | `lint`, `docs search \| get \| check` |
 | **Layered File & Symbol Reader** | `acdd_read` (`snippet`, `lines`, `search`, `delta`, `outline`) | `read` |
-| **Run Queue, Roadmap & Snapshots** | `acdd_state` (`start`, `draft`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `run`, ...) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `run` |
+| **Run Queue, Roadmap & Snapshots** | `acdd_state` (active runs: `start`, `status`, `list`, `show`, `next`, `context`, `snapshot`, `run`, ...) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `run` |
 | **Gate Execution & Blackboard** | `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard` | `claim`, `verify`, `submit`, `blackboard` |
 | **Guide, Validation & Plugins** | `acdd_guide`, `<domain>_<name>` | `guide`, `validate`, `tool <domain>_<name>` |
 

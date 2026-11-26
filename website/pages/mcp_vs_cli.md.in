@@ -8,7 +8,7 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 
 ---
 
-## 1. Code Graph & AST Navigation (11 MCP tools)
+## 1. Code Graph & AST Navigation (9 MCP tools)
 
 | Capability | MCP Tool | CLI Equivalent | Typical Input |
 | --- | --- | --- | --- |
@@ -17,10 +17,8 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 | **Inspect declaration** | `code_map_inspect` | `acdd query inspect <selector>` | `"src/auth.rs:verify_token"`, `show_source: true` |
 | **Direct edges** | `code_map_explain` | `acdd query explain <selector>` | `direction: "incoming" \| "outgoing" \| "both"` |
 | **Blast radius / Git diff** | `code_map_impact` | `acdd query impact <selector>` | `selector` or `changes: "staged" \| "unstaged" \| "head"` |
-| **Covering tests** | `code_map_tests` | `acdd query tests <selector>` | `direction: "inbound"` (tests) or `"outbound"` (targets) |
-| **Safe removal check** | `code_map_prove_removal` | `acdd query remove <selector>` | Target symbol or module selector |
-| **Clones, dead code & SQL** | `code_map_query` | `acdd query run <op>` / `sql` | `operation: "duplicates" \| "dead_tails" \| "untested" \| "slice" \| "sql"` |
-| **Diagnostics & cycles** | `code_map_analyze` | `acdd query analyze [target]` | Path target, `lint: true`, `include_cycles: true`, or `SELECT ...` |
+| **Tests, removal, clones & SQL** | `code_map_query` | `acdd query tests \| remove \| run <op> \| sql` | `operation: "tests" \| "prove_removal" \| "duplicates" \| "dead_tails" \| "untested" \| "slice" \| "sql"` |
+| **Diagnostics, hotspots & diff** | `code_map_analyze` | `acdd query analyze [target] [--mode ...]` | `mode: "summary" \| "hotspots" \| "boundary" \| "path" \| "entrypoints" \| "diff_impact" \| "cochange"`, `to`, `base`, `lint: true`, `include_cycles: true` |
 | **Unified arch & docs lint** | `code_map_lint` | `acdd lint [target]` | `categories: ["arch", "docs", "syntax", "duplicates", "dead_tails", "cycles"]` |
 | **Structural AST match** | `ast_grep_search` | `acdd ast grep <pattern>` | `'fn $NAME($$$) -> Result<$T>'`, `--lang rust` |
 
@@ -30,7 +28,7 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 
 | Capability | MCP Tool | CLI Equivalent | Typical Input |
 | --- | --- | --- | --- |
-| **Single-shot symbol / file read** | `acdd_read` | `acdd read <path>` | `selector: "SymbolName"` or `start_line` / `end_line` / `mode: "search" \| "delta" \| "outline"` |
+| **Single-shot symbol / file read** | `acdd_read` | `acdd read <path>` | `selector: "SymbolName"`, `detail: "compact" \| "full"` (`<= 9,000` B inline / `48 KiB` full), or `mode: "search" \| "delta" \| "outline"` |
 | **Search Markdown sections** | `search_docs` | `acdd docs search <query>` | `doc_type: "architecture" \| "adr" \| "guide"`, `include_excerpt: true` |
 | **Read doc section & links** | `get_doc` | `acdd docs get <path>` | `section: "Heading Title"`, `detail: "compact" \| "full"` |
 | **Verify all doc links** | *(via `code_map_lint`)* | `acdd docs check` | Checks relative Markdown links and `#heading` anchors |
@@ -44,9 +42,9 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 | --- | --- | --- | --- |
 | **Scaffold workspace** | `acdd_guide(topic="init")` | `acdd init [--force]` | Create starter `acdd.yaml`, `.acdd/profile.yaml`, and `.gitignore` rules |
 | **Validate config & specs** | *(via `docs.specs` / CLI)* | `acdd validate [path]` | Fail-closed check of `acdd.yaml`, profiles, and spec DAGs |
-| **Draft next spec file** | `acdd_state(action="draft")` | `acdd draft <col> <slug>` | Create next numbered spec (e.g. `AC-010-feature.md`) |
+| **Draft next spec file** | *(CLI only; `acdd_state` redirects)* | `acdd draft <col> <slug>` | Create next numbered spec (e.g. `AC-010-feature.md`) |
 | **Start a run** | `acdd_state(action="start")` | `acdd start <spec \| --goal>` | Materialize run DAG & isolated worktrees |
-| **Inspect status & queue** | `acdd_state(action="status" \| "list" \| "show" \| "next" \| "roadmap")` | `acdd status \| list \| show \| next \| roadmap` | Read-only run progress, ready cursors, and dependency waves |
+| **Inspect status, queue & roadmap** | `acdd_state(action="status" \| "list" \| "show" \| "next")` | `acdd status \| list \| show \| next \| roadmap` | Active-run progress and ready cursors (`roadmap` is CLI-only) |
 | **Reload context (read-only)** | `acdd_state(action="context")` | `acdd context [node]` | Re-render 6-tier `ClaimResp` after compaction without mutating claims |
 | **Git checkpoints** | `acdd_state(action="snapshot")` | `acdd snapshot save\|restore\|list\|clear` | Save or restore scoped Git refs (`refs/acdd/snapshots/...`) |
 | **Scope, sync & reopen** | `acdd_state(action="extend_scope" \| "sync" \| "reopen" \| "subtask" \| "clear")` | `acdd extend-scope \| sync \| reopen \| subtask \| clear` | Expand task scope, sync spec edits, reopen gates, update subtasks, or clear run |

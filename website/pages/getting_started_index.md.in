@@ -5,4 +5,4 @@ Start using ContextUnity ACDD in minutes — whether you only want fast AST code
 - **[5-Minute Quickstart](/docs/getting-started/quickstart/)** — Install `acdd` + the 5 companion agent skills, initialize `acdd.yaml`, run AST queries and `acdd lint`, and start ad-hoc `--goal` runs or multi-task specs.
 - **[Installation](/docs/getting-started/install/)** — One-line installer (`install.sh`), `latest` vs. `--nightly`, building from source (`cargo install`), and companion skills.
 - **[Connect MCP & CLI](/docs/getting-started/mcp-cli-setup/)** — Wire `acdd` into Claude Code, Codex CLI, Antigravity, Cursor, or VS Code via `.mcp.json`.
-- **[MCP Tools vs. CLI Cheat Sheet](/docs/getting-started/mcp-vs-cli/)** — Complete side-by-side mapping of all 20 built-in MCP tools, `<domain>_<name>` plugins, and flat CLI commands.
+- **[MCP Tools vs. CLI Cheat Sheet](/docs/getting-started/mcp-vs-cli/)** — Complete side-by-side mapping of all 18 built-in MCP tools, `<domain>_<name>` plugins, and flat CLI commands.

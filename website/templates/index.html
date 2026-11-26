@@ -40,7 +40,7 @@
 
       <div class="arch-connector" aria-hidden="true">
         <span class="arch-line"></span>
-        <span class="arch-proto">stdio MCP · 20 built-in tools &nbsp;|&nbsp; 5 companion skills &nbsp;|&nbsp; flat <code>acdd</code> CLI</span>
+        <span class="arch-proto">stdio MCP · 18 built-in tools &nbsp;|&nbsp; 5 companion skills &nbsp;|&nbsp; flat <code>acdd</code> CLI</span>
         <span class="arch-line"></span>
       </div>
 
@@ -928,11 +928,11 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
           </tr>
           <tr>
             <td><strong>Blast Radius, Tests &amp; Safe Delete</strong></td>
-            <td><code>code_map_explain</code> · <code>code_map_impact</code> · <code>code_map_tests</code> · <code>code_map_prove_removal</code></td>
+            <td><code>code_map_explain</code> · <code>code_map_impact</code> · <code>code_map_query(tests | prove_removal)</code></td>
             <td><code>acdd query explain | impact | tests | remove</code></td>
           </tr>
           <tr>
-            <td><strong>Clones, Dead Code, AST &amp; SQL</strong></td>
+            <td><strong>Clones, Dead Code, Diagnostics &amp; AST</strong></td>
             <td><code>code_map_query</code> · <code>code_map_analyze</code> · <code>ast_grep_search</code></td>
             <td><code>acdd query run &lt;op&gt;</code> · <code>query analyze</code> · <code>ast grep</code></td>
           </tr>
@@ -943,7 +943,7 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
           </tr>
           <tr>
             <td><strong>Start, Queue, Roadmap &amp; Snapshots</strong></td>
-            <td><code>acdd_state(action="start" | "next" | "roadmap" | "snapshot" | ...)</code></td>
+            <td><code>acdd_state(action="start" | "next" | "snapshot" | ...)</code></td>
             <td><code>acdd init | draft | start | next | roadmap | snapshot | run</code></td>
           </tr>
           <tr>

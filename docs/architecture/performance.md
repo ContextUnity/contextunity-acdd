@@ -59,8 +59,8 @@ These values are recommendations for profiling and product planning, not reposit
 | **Tool Response Baseline** | about 10 / 30 ms | Inventory admission caching and connection reuse |
 | **`code_map_search`** | about 30 / 30 ms | SQLite FTS5 BM25 index + exact prefix matching |
 | **`ast_grep_search`** | about 30 / 30 ms | Indexed selection for declaration-name queries; bounded source scans for general structural patterns |
-| **`code_map_tests`** | about 50 / 50 ms | Bounded graph traversal + lexical fallback |
-| **`code_map_prove_removal`** | about 30 / 30 ms | Target-scoped dependency evaluation |
+| **`code_map_query(operation="tests")`** | about 50 / 50 ms | Bounded graph traversal + lexical fallback |
+| **`code_map_query(operation="prove_removal")`** | about 30 / 30 ms | Target-scoped dependency evaluation |
 
 ## Cold Build Streaming and Memory Budget
 
@@ -88,7 +88,7 @@ By default, ACDD verifies workspace freshness before executing tool requests. Fu
 `tests_paged_with_path` bounds graph traversal at depth four and uses lexical test-name matching when the graph has no inbound tests. `ast_grep_search` parses declaration names through the extraction language profile and selects matching symbols through the name index and `files`. Other structural patterns scan the bounded set of indexed files for the requested language and path; `node_search` omits arbitrary function-body literals, so it cannot safely exclude files from general AST searches. The matcher verifies each source digest before matching with tree-sitter and reports its computation limit explicitly.
 
 ### 3. Localized Removal Proof
-`code_map_prove_removal` evaluates safety strictly within the target's dependency subgraph:
+`code_map_query(operation="prove_removal")` evaluates safety strictly within the target's dependency subgraph:
 - **Target-Scoped Evaluation**: Checks unresolved calls and references only where the referenced expression matches the target or exists within modules directly depending on the target.
 - **Independent Safety Flag**: Returns `safe_to_remove: bool` from the selected nodes' incoming dependencies and target-scoped unresolved references and parse errors. It does not include unrelated workspace-wide diagnostics.
 

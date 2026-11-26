@@ -66,16 +66,17 @@ State operations map symmetrically across the flat CLI and five state MCP tools 
 | Operation | MCP tool / action | CLI command | Purpose |
 | --- | --- | --- | --- |
 | Status / List / Show / Next | `acdd_state(action: "status \| list \| show \| next \| observability")` | `acdd status`, `list`, `show`, `next` | Read-only run/node inspection, ready waves, and telemetry |
-| Start / Draft | `acdd_state(action: "start \| draft")` | `acdd start`, `acdd draft` | Initialize a new `Run` or draft numbered spec |
+| Start / Draft | `acdd_state(action: "start")` | `acdd start`, `acdd draft` | Initialize a new `Run` (MCP/CLI) or draft numbered spec (CLI `acdd draft`) |
+| Roadmap | *(CLI only; `acdd_state` redirects)* | `acdd roadmap` | Inspect cross-collection runs, dependency waves, and critical path |
 | Scope / Reopen / Sync / Subtask | `acdd_state(action: "extend_scope \| reopen \| sync \| subtask")` | `acdd extend-scope`, `reopen`, `sync`, `subtask` | Manage scope extensions, cascades, spec sync, and subtasks |
 | Clear / Run | `acdd_state(action: "clear \| run")` | `acdd clear`, `acdd run` | Clear tombstones and execute DAG waves (with internal `rebase-ff` landing) |
-| Claim | `acdd_claim` | `acdd claim [<node>]` | Atomically claim a ready/active node and return `ClaimResp` |
+| Claim | `acdd_claim` | `acdd claim [<node>] [--detail compact\|full]` | Atomically claim a ready/active node and return `ClaimResp` (`<= 9,500` B default, `32 KiB` full) |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
 | Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear \| list")` | `acdd snapshot save\|restore\|list\|clear` | Save, restore, list, or delete task and standalone Git checkpoints |
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
-- **Optional `worktree` selector**: supported across all 20 built-in MCP tools and `<domain>_<name>` plugin tools (see [CLI reference](cli.md) and [MCP tools](mcp-tools.md)).
+- **Optional `worktree` selector**: supported across all 18 built-in MCP tools and `<domain>_<name>` plugin tools (see [CLI reference](cli.md) and [MCP tools](mcp-tools.md)). Out-of-workflow `roadmap` and `draft` actions are excluded from MCP `acdd_state` and fail closed with redirect hints to CLI `acdd roadmap` and `acdd draft`.
 - **Enforced invariants (`[ENFORCED]`)**: in Tier 6 `ClaimResp.context_lenses`, `docs.invariants` marks invariants backed by `acdd.yaml` `architecture.rules` or `acdd-rule` blocks with `[ENFORCED]`.
 - **Scoped vs. workspace lint checks**: `code.lint` runs scoped to the task's files on task gates and workspace-wide on root gates, binding `index_generation` and `live_files_digest` into `execution_digest`.
 
@@ -112,7 +113,8 @@ required before `submit` whenever the gate declares `command:`, `call:`,
 
 [`GateContextAssembler`](../../crates/acdd-state/src/context/mod.rs) (exposed via
 `build_claim_context`) builds `ClaimResp` identically for `claim`, `show`, and
-`run` within `ResponsePolicy.max_output_bytes` across six ordered tiers:
+`run` within a default `<= 9,500`-byte inline budget (`detail: "full"` expands
+to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`) across six ordered tiers:
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting
    empty `invariants` and default `tools` matching `profile.default_tools`,
@@ -133,12 +135,15 @@ required before `submit` whenever the gate declares `command:`, `call:`,
 4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency
    tasks, deduplicated to the latest `claim_revision` per dependency with compact
    coordinates (`node_cursor`, `candidate_tree`, `committed_oid?`, `accepted_at`).
-5. **Tier 5 (`blackboard`)**: Up to 15 open messages (`Open` only, excluding
-   `Findings` and `Deferred`; 500 characters per payload), prioritizing
+5. **Tier 5 (`blackboard`)**: Up to 6 open messages (`Open` only, excluding
+   `Findings` and `Deferred`; 220 characters per payload), prioritizing
    `Decisions` and `Blockers` before filling remaining slots with newest `Notes`.
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
    (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
-   receive proportional per-lens budgets. Providers and Tier 6 fallback share compact JSON
+   receive proportional per-lens budgets. Producers compact lens payloads upfront
+   (`docs.instructions` omits heading TOC spam, `code.symbols` filters generated/derive
+   methods, `code.tests` deduplicates paths capped at top 8, and `code.external_callers`
+   caps at top 5 plus overflow count). Providers and Tier 6 fallback share compact JSON
    accounting for complete and truncated envelopes, including array separators. Bounded 0-1
    knapsack selection preserves original candidate order across equal-score subsets. Empty
    lenses are skipped, and budget-exhausted lenses are recorded in `omitted_sections`.

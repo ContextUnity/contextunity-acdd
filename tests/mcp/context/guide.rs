@@ -232,6 +232,11 @@ fn guide_content_and_surfaces_matrix() {
                         "missing lifecycle operation {operation}"
                     );
                 }
+                assert!(
+                    !text.contains("acdd_state(action: \"roadmap\")")
+                        && !text.contains("acdd_state(action: \"draft\")"),
+                    "lifecycle guide must not instruct retired MCP acdd_state actions: {text}"
+                );
                 let authority = value["authority"].to_string().to_lowercase();
                 for source in ["gateprofile", "acdd_claim", "authoritative"] {
                     assert!(

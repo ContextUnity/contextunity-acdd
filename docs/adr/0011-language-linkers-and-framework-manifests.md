@@ -53,7 +53,7 @@ Supporting multi-language imports, third-party package classification, template 
 
 - Adding or overriding framework conventions (Django, HTMX, Nuxt, GridViewSpec, custom internal packs) requires zero Rust code changes in extractors or linkers.
 - Invalid workspace manifests fail closed prior to SQLite publication.
-- Third-party dependencies never pollute project-internal `unresolved` or `code_map_prove_removal` diagnostics.
+- Third-party dependencies never pollute project-internal `unresolved` or `code_map_query(operation="prove_removal")` diagnostics.
 
 ## Executable Manifest and Parser Rules
 

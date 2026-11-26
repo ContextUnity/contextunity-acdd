@@ -26,7 +26,7 @@
 
 ## Connecting agents & tools
 
-- **Over MCP (`acdd serve`)**: Connect Antigravity, Claude Code, Codex, or Cursor to the 20 built-in MCP tools. Coordinators spawn workers with thin prompts `(run, node_cursor, worker_id, worktree)` and each worker self-claims via `acdd_claim`.
+- **Over MCP (`acdd serve`)**: Connect Antigravity, Claude Code, Codex, or Cursor to the 18 built-in MCP tools. Coordinators spawn workers with thin prompts `(run, node_cursor, worker_id, worktree)` and each worker self-claims via `acdd_claim`.
 - **Headless CLI runners (`acdd run`)**: Configure `roles.<name>.runner` shell commands to automatically spawn any CLI agent across topological waves.
 - **Compaction recovery (`acdd context`)**: Read-only command that reloads the current `ClaimResp` contract and blackboard without mutating claim state.
 
@@ -37,11 +37,11 @@ Both surfaces invoke the same Rust core, index reader, and state machine (`acdd 
 | Area | MCP Tool (`acdd serve`) | CLI Command (`acdd ...`) | Notes |
 | --- | --- | --- | --- |
 | **Index & Refresh** | Auto `delta` / `build` on change | `scan`, `build`, `delta` | MCP auto-checks inventory (5s TTL); CLI uses on-disk index |
-| **Symbol Navigation** | `code_map_overview`, `search`, `inspect`, `explain`, `impact`, `tests`, `prove_removal` | `query overview\|search\|inspect\|explain\|impact\|tests\|remove` | Shared pagination (`limit`, `offset`, `generation`) |
-| **Graph Queries & SQL** | `code_map_query`, `code_map_analyze`, `ast_grep_search` | `query run <op>`, `query sql`, `query analyze`, `ast grep` | Identical read-only SQL & Tree-sitter budgets |
+| **Symbol Navigation** | `code_map_overview`, `search`, `inspect`, `explain`, `impact` | `query overview\|search\|inspect\|explain\|impact` | Shared pagination (`limit`, `offset`, `generation`) |
+| **Graph Queries & Diagnostics** | `code_map_query` (`tests`, `prove_removal`, `duplicates`, `dead_tails`, ...), `code_map_analyze`, `ast_grep_search` | `query tests\|remove`, `query run <op>`, `query sql`, `query analyze`, `ast grep` | Identical read-only SQL, analyze modes, & Tree-sitter budgets |
 | **Lint & Docs Checks** | `code_map_lint`, `search_docs`, `get_doc` | `lint`, `docs search`, `docs get`, `docs check` | Same 6 lint categories and `INV-*` governance |
-| **File & Symbol Read** | `acdd_read` | `read` | Layered text modes + digest-checked symbol slices |
-| **Run & Wave Queue** | `acdd_state` (`start`, `draft`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `sync`, `clear`, `run`) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `extend-scope`, `reopen`, `sync`, `subtask`, `clear`, `run` | CLI offers flat subcommands; MCP groups under `acdd_state` |
+| **File & Symbol Read** | `acdd_read` | `read` | Layered text modes (`<= 9,000` B inline / `48 KiB` full) + digest-checked symbol slices |
+| **Run & Wave Queue** | `acdd_state` (active runs: `start`, `status`, `list`, `show`, `next`, `context`, `snapshot`, `sync`, `clear`, `run`) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `extend-scope`, `reopen`, `sync`, `subtask`, `clear`, `run` | CLI owns `draft`/`roadmap`; MCP `acdd_state` handles active runs |
 | **Gate Execution** | `acdd_claim`, `acdd_verify`, `acdd_submit` | `claim`, `verify`, `submit` | Shared 6-tier `ClaimResp` Markdown & CAS locking |
 | **Coordination & Guides** | `acdd_blackboard`, `acdd_guide`, `<domain>_<name>` | `blackboard`, `guide`, `tool <domain>_<name>`, `validate` | `validate` checks `acdd.yaml`, profiles, and specs |
 
@@ -49,5 +49,5 @@ Both surfaces invoke the same Rust core, index reader, and state machine (`acdd 
 
 - **[State Machine, Tasks & Receipts](/docs/state/state-machine/)** — `Run`, `GateNode`, optimistic locking, Git snapshots (`acdd snapshot`), linear `rebase-ff`, and error codes.
 - **[CLI Reference](/docs/state/cli/)** — Complete flat `acdd` command reference.
-- **[MCP Tools Reference](/docs/state/mcp-tools/)** — All 20 built-in MCP tools, plugin `<domain>_<name>` tools, selectors, and pagination.
+- **[MCP Tools Reference](/docs/state/mcp-tools/)** — All 18 built-in MCP tools, plugin `<domain>_<name>` tools, selectors, and pagination.
 - **[MCP vs. CLI Cheat Sheet](/docs/getting-started/mcp-vs-cli/)** — Full side-by-side mapping across every tool and CLI subcommand.

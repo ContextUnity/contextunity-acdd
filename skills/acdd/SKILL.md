@@ -45,29 +45,30 @@ acdd claim <node_cursor> --run <run> --worker <worker_id> --worktree .worktrees/
 acdd submit <node_cursor> --action pass --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
 ```
 
-## Discovery & read protocol (Graph-First)
+## Discovery & read protocol (ACDD-First)
 
-Always investigate codebases and documentation using ACDD's structural graph and docs tools **first**. Do **not** use `acdd_read(mode="search")` or sequential `acdd_read(start_line=...)` slices as a replacement for `grep` or blind file browsing.
+Investigate codebases and documentation using ACDD's structural graph and docs tools **first**. Prefer targeted symbol, graph, and slice queries before broad local scans, and reserve native file reads or `rg -n` for unadmitted/gitignored paths or multi-hundred-line files when ACDD is unavailable or less practical.
 
-1. **Discover symbols, implementations & syntax (`code_map_search`, `ast_grep_search`, `code_map_query`)**:
+1. **Discover symbols, implementations & syntax (`code_map_search`, `ast_grep_search`, `code_map_query`, `code_map_analyze`)**:
    - Locate definitions by name, prefix, FTS5 tokens, or type signature with `code_map_search(pattern=..., detail="compact")` (`takes:Type`, `returns:Type`, `prefix*`; filter with `kind:`, `classification: "production" | "test" | "documentation"`, `path:` / `file_path:`). Reuse returned `signature`, `inspect_selector`, and automatic previews instead of re-reading files.
    - Match structural syntax with `ast_grep_search` (`$NAME`, `$$$SEQ` over `complete_syntax`, `declaration_without_body`, `fragment_probe`).
-   - Query architectural slices, trait/class implementors, untested surfaces, or custom relations with `code_map_query(operation="slice" | "implementations" | "untested" | "unwired" | "sql")`.
-2. **Trace relationships, callers & blast radius (`code_map_inspect`, `code_map_explain`, `code_map_impact`, `code_map_tests`)**:
+   - Query covering tests, removal safety, architectural slices, trait/class implementors, untested surfaces, or custom relations with `code_map_query(operation="tests" | "prove_removal" | "slice" | "implementations" | "untested" | "unwired" | "sql")`.
+   - Run read-only architecture and change diagnostics with `code_map_analyze(mode="summary" | "hotspots" | "boundary" | "path" | "entrypoints" | "diff_impact" | "cochange", target=..., to=..., base=...)`.
+2. **Trace relationships, callers & blast radius (`code_map_inspect`, `code_map_explain`, `code_map_impact`)**:
    - Call `code_map_inspect` for one declaration's summary, up to 5 direct callers/callees, linked docs, and governing `INV-*` invariants (pass `show_source: true` only when source is missing from previews).
    - Call `code_map_explain` for full paged `incoming`/`outgoing` edges of every kind (`calls`, `imports`, `implements`, `inherits`, `mutates`, `queries_table`, ...).
-   - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) before modifying or removing interfaces. `code_map_prove_removal` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
-   - Call `code_map_tests` to traverse verified `calls` paths from `test_case` nodes (`possible_calls` and lexical suggestions remain hints, not verified coverage).
-   - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `tests`, `prove_removal`, `query`, and `acdd_read`.)*
+   - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) before modifying or removing interfaces. `code_map_query(operation="prove_removal")` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
+   - Call `code_map_query(operation="tests")` to traverse verified `calls` paths from `test_case` nodes (`possible_calls` and lexical suggestions remain hints, not verified coverage).
+   - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `query`, and `acdd_read`.)*
 3. **Discover & read documentation (`search_docs`, `get_doc`)**:
    - Search guides, ADRs, and architecture docs with `search_docs(query=..., include_excerpt=true)`.
    - Inspect structure with `get_doc(path_or_id=..., detail="compact")` (accepts `path`, `file_path`, `doc_id`, or `selector`), then read only the needed section via `get_doc(path_or_id=..., section="...")` (pass `include_candidates=true` only when ambiguous symbol candidates are needed). Archived `*/archive/` docs are excluded from default search and emit no graph edges.
-4. **Targeted `acdd_read` — ONLY for concrete scenarios**:
-   - **Full symbol body (`selector=` / `symbol=`)**: Use `acdd_read(selector="SymbolName")` (optionally `path="..."`) ONLY after locating the symbol via `code_map_*` when its full body is needed beyond `search`/`inspect` previews; follow `source_offset` + `generation`.
-   - **File outline (`mode="outline"`)**: Use `acdd_read(path=..., mode="outline")` when you need a quick declaration/heading map of one known file.
+4. **Targeted `acdd_read` (`<= 9,000` bytes default; `detail="full"` up to `48 KiB`)**:
+   - **Full symbol body (`selector=` / `symbol=`)**: Use `acdd_read(selector="SymbolName")` (optionally `path="..."`) after locating a symbol when its full body is needed beyond `search`/`inspect` previews; follow `source_offset` + `generation`.
+   - **File outline (`mode="outline"`)**: Use `acdd_read(path=..., mode="outline")` for a declaration/heading map of a known file (`paths: [...]` batches multiple files with `next_path_index` / `remaining_count` continuation).
    - **Git diff (`mode="delta"`)**: Use `acdd_read(path=..., mode="delta")` to inspect uncommitted/baseline diffs on a known file.
-   - **Targeted lines (`mode="lines"`)**: Use ONLY for narrow known line coordinates (e.g. a compiler/test error line or `code_map_impact` edge line, keeping `line_count <= 80` so metadata stays within compact client inline caps) — NEVER scan files sequentially from line 1.
-   - **Literal text search (`mode="search"`)**: Use ONLY for literal config values, YAML/TOML keys, or string constants that symbol/AST search cannot index, and always scope with a specific `path:` rather than scanning `.` (`regex=true|false`); reserve `rg -n` strictly for gitignored or unadmitted paths.
+   - **Targeted lines (`mode="lines"`)**: Read bounded coordinates (default `<= 9,000` bytes inline with `next_start_line` continuation; pass `detail="full"` or `output_file` up to `48 KiB`).
+   - **Literal text search (`mode="search"`)**: Use for literal config values, YAML/TOML keys, or string constants scoped with `path:` (`regex=true|false`); use `rg -n` for gitignored or unadmitted paths.
 - **Graph hygiene & unified lint (`duplicates`, `dead_tails`, `code_map_lint`)**: Before submitting `build`,
   `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
   `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
@@ -104,8 +105,8 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
 | `spec_planning` | Read-only `in_place` synthesis & review (`synthesize -> review`) aware of `acdd.yaml` `specs.*` collections | `acdd start --goal "..." --profile spec_planning` |
 | Custom (`.acdd/profiles/<name>.yaml`, e.g. `hotfix`) | Repo-local workflow overlays (`gates_patch:` / `inherit:`), e.g. `hotfix` (`goal.build -> goal.review -> goal.deliver -> run_tests -> handoff`, skipping `blueprint_synthesis` & `integration_review`) | `acdd start --goal "..." --profile hotfix --scope <path>...` |
 
-1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with one of the profile commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
-2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (omitting `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then indexes/syncs `ClaimResp.worktree` via `acdd --root <ClaimResp.worktree> build` or MCP `worktree` before reading/querying code and works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
+1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers via CLI `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` (MCP `acdd_state` is active-run-only and redirects `roadmap`/`draft` to CLI), then start a run with one of the profile commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
+2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (default `<= 9,500` bytes; pass `detail="full"` for up to `32 KiB`; omit `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then indexes/syncs `ClaimResp.worktree` via `acdd --root <ClaimResp.worktree> build` or MCP `worktree` before reading/querying code and works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
    including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within
    admitted write scope (`in_write_scope: ALLOWED`); extend autonomously via

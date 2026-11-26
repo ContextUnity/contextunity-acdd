@@ -11,7 +11,7 @@
    - Materializes top-level `gates:` and `- tasks:` blocks into `GateNode` rows inside `.acdd/state.sqlite`.
    - Addresses every node via dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `run_tests`, `handoff`).
 3. **Claim & 6-tier `ClaimResp` context**:
-   - `acdd_claim` locks the node and assembles a budgeted Markdown prompt (default 32 KiB) in strict tier order:
+   - `acdd_claim` locks the node and assembles a budgeted Markdown prompt (`<= 9,500` bytes default, `detail="full"` up to `32 KiB`) in strict tier order:
    - `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → `context_lenses` (`docs.*`, `code.*`).
 4. **Verify & submit**:
    - `acdd_verify` runs bound shell `commands:` and `DomainProvider` `checks:` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`), recording signed traces.

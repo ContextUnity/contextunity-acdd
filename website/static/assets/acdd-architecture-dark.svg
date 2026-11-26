@@ -96,7 +96,7 @@
 
   <!-- Protocol Pill -->
   <rect x="255" y="121" width="690" height="32" rx="16" fill="#0b1322" stroke="#00f0ff" stroke-opacity="0.45" stroke-width="1.2"/>
-  <text x="600" y="141" text-anchor="middle" class="mono" font-size="12" font-weight="600" fill="#b8f7ff">stdio MCP (20 built-in tools + plugins)  ·  5 Companion Skills  ·  Flat acdd CLI</text>
+  <text x="600" y="141" text-anchor="middle" class="mono" font-size="12" font-weight="600" fill="#b8f7ff">stdio MCP (18 built-in tools + plugins)  ·  5 Companion Skills  ·  Flat acdd CLI</text>
 
   <!-- TIER 2: Main Meta-Harness Shell -->
   <rect x="40" y="168" width="1120" height="284" rx="16" fill="#0c111d" fill-opacity="0.9" stroke="#24344d" stroke-width="1.5"/>

@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.7.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.7.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (18 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
@@ -348,7 +348,7 @@ If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`),
 ACDD embeds five `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
 
 - **`base`**: domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
-- **`code`**: full engineering lifecycle inheriting `base` (`blueprint_synthesis` -> per-task `build`/`review`/`deliver`/`rearchitect` -> `run_tests`/`polish`/`integration_review`/`handoff`), 20 tools, `code.seam` + `code.lint` checks, and `docs.*`/`code.*` context lenses.
+- **`code`**: full engineering lifecycle inheriting `base` (`blueprint_synthesis` -> per-task `build`/`review`/`deliver`/`rearchitect` -> `run_tests`/`polish`/`integration_review`/`handoff`), 18 tools, `code.seam` + `code.lint` checks, and `docs.*`/`code.*` context lenses.
 - **`audit`**: read-only code review and SAST workflow (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured JSON Schema findings, and `save.report: ".acdd/reports/{run_name}.md"`.
 - **`documentation`**: compiler-free living docs & invariant authoring pipeline inheriting `base` (`modules.required: [docs, code]`) gated on `docs.links` and `code.lint` (`[arch, docs]`).
 - **`spec_planning`**: specification and wave planning pipeline (`synthesize -> review`) inheriting `base` (`git.isolation: in_place`, `save: none`), deriving planning scope from `acdd.yaml` `specs.*`/`docs` and gating on `docs.specs`, `docs.links`, and `code.lint`.
@@ -473,9 +473,9 @@ When working in this repository:
 ```markdown
 # Mandatory Code Navigation via ContextUnity ACDD
 
-- Use ACDD MCP tools (`code_map_search` with `detail: "compact"`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_overview`) and `ast_grep_search` for symbol lookup, structural AST patterns, and graph queries.
-- Use `acdd_read(selector="SymbolName")` for digest-verified symbol bodies (with optional `path="..."`).
-- Use `read_file` for reading large file slices (`>120` lines), and `rg -n` (or `acdd_read(mode="search", path=...)`) for searching substrings, error messages, or config files across directories.
+- Use ACDD MCP tools (`code_map_search` with `detail: "compact"`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_analyze`, `code_map_overview`) and `ast_grep_search` first for symbol lookup, structural AST patterns, and graph queries.
+- Use `acdd_read(selector="SymbolName")` for digest-verified symbol bodies (with optional `path="..."`) and `acdd_read(path=..., start_line=..., line_count=...)` for bounded line slices (`<= 9,000` bytes default with `next_start_line` continuation; pass `detail="full"` up to `48 KiB`).
+- Use `rg -n` (or `acdd_read(mode="search", path=...)`) for directory substring/config searches, and native file reads for unadmitted paths or large multi-hundred-line files when ACDD is unavailable or less practical.
 ```
 
 ---

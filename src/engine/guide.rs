@@ -251,7 +251,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "purpose": "Advance admitted work through its active GateProfile (`version: 2`) and observed proof gates.",
             "authority": "The resolved GateProfile and `acdd_claim` contract + guidance are authoritative. Gate names and transitions are profile data, not hardcoded stages.",
             "steps": [
-                "Use `acdd roadmap` / `acdd_state(action: \"roadmap\")` for cross-collection planning, `acdd context [<node>]` / `acdd_state(action: \"context\")` to refresh budgeted gate contract/guidance over SQLITE_OPEN_READ_ONLY without mutating claims.",
+                "Use CLI `acdd roadmap` for cross-collection planning (and CLI `acdd draft` to scaffold specs), and `acdd context [<node>]` / `acdd_state(action: \"context\")` to refresh budgeted gate contract/guidance over SQLITE_OPEN_READ_ONLY without mutating claims.",
                 "Use `acdd next` / `acdd_state(action: \"next\")` or `acdd status` to discover ready cursors, then `acdd claim` / `acdd_claim` with `node`, `worker_id`, and `worktree`.",
                 "Implement strictly inside admitted write scope (`in_write_scope: ALLOWED` in `acdd_read`). Call `acdd verify <cursor> [--test <target>]` / `acdd_verify` to observe fresh trace evidence.",
                 "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`, and optional `kind`: `defect | architectural_drift`).",

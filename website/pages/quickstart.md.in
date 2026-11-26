@@ -135,7 +135,7 @@ acdd lint --categories all
 
 How the two pieces work together inside your agent session:
 
-- **MCP Server (`acdd serve`)**: exposes 20 built-in tools and auto-refreshes `.acdd/code-map.sqlite` whenever files change.
+- **MCP Server (`acdd serve`)**: exposes 18 built-in tools and auto-refreshes `.acdd/code-map.sqlite` whenever files change.
 - **Companion Skills (`~/.agents/skills/`)**: guide your agent to call `code_map_search`, `acdd_read`, `code_map_impact`, and `code_map_lint` automatically instead of reading whole files line-by-line.
 
 ---
