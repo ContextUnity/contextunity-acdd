@@ -112,7 +112,7 @@ allowlists layered over `default_tools` in the active v2 `GateProfile`.
 - **Safety & bounds**:
   - **Inline budget & 48 KiB cap**: `lines` and `raw` default to `<= 9,000` bytes inline (`detail="compact"`), returning `truncated: true` with `next_start_line` (single-file) or `next_path_index` and `remaining_count` (batch `paths`); `detail="full"` and `output_file` exports retain the `48 KiB` slice ceiling (`49,152` bytes), and lines above `1 MiB` error cleanly.
   - **Binary & secret guards**: NUL bytes in the first `8 KiB` return `BINARY_FILE`; symlinks, path traversal, and `sensitive` patterns are blocked on both reads and `output_file` exports (see [sensitive paths](configuration.md#sensitive-reader-paths)).
-  - **Active gate hints**: when a task gate is claimed in the selected worktree, responses include `write_scope: ALLOWED|OUT_OF_SCOPE` and copy-ready graph/verify/blackboard hints.
+  - **Active gate hints**: when a task gate is claimed in the selected worktree, responses include `in_write_scope: ALLOWED|OUT_OF_SCOPE` and copy-ready graph/verify/blackboard hints.
 
 ### Built-in MCP tools & CLI parity
 

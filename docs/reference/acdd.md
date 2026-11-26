@@ -204,7 +204,7 @@ core contours `paths`, `claims`, and `administration`). Embedded
 built-in code-delivery fallback when `.acdd/profile.yaml` is absent) inherits `base`, adds the three-phase
 milestone lifecycle (`commands: build_check` and `verify_all` are marked
 `unbound: true`), sets `tags: [default, docs]` (`docs`-tagged tasks skip
-`code.seam`), binds the 20 `default_tools`, attaches `code.seam` and `code.lint` checks and
+`code.seam`), binds the 18 `default_tools`, attaches `code.seam` and `code.lint` checks and
 `docs.*` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
 automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
 `modules.code: false` or `modules.docs: false`. Embedded

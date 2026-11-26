@@ -41,7 +41,7 @@ Agent-supplied diagnostic SQL queries execute inside a strict read-only sandbox:
 
 - Connections enforce `PRAGMA query_only = ON;` inside read-only transactions.
 - AST/statement validation admits strictly a single `SELECT` or `WITH` statement, rejecting mutation/DDL keywords (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `ATTACH`, `DETACH`, `VACUUM`, `REINDEX`) and semicolons separating stacked statements.
-- A two-second SQLite progress-handler budget interrupts runaway queries, and result pages cap at 100 rows (default 30).
+- A two-second SQLite progress-handler budget interrupts runaway queries, and result pages cap at 100 rows (default 12).
 
 ## Consequences
 

@@ -129,7 +129,7 @@ closure:
 
 **Non-goals.**
 - Speculative `dyn Trait` implementation fan-out (honest `trait_object_dispatch` analysis gaps remain preserved).
-- Adding new MCP tools or modifying `code_map_analyze` presentation (already handled by [UX-004](../UX-004-mcp-tool-surface-consolidation.md)).
+- Adding new MCP tools or modifying `code_map_analyze` presentation (already handled by [UX-004](UX-004-mcp-tool-surface-consolidation.md)).
 - Adding framework packs for Tier-2 languages (Go/Java/C#/Kotlin/PHP/Ruby).
 
 ## Tasks in this milestone
@@ -288,4 +288,4 @@ receipt:
 
 - **Completeness**: `AC-01`..`AC-05` map 1:1 across Wave 0 (parallel disjoint: language-agnostic local `Mutates` + `overview` health vs. manifest subfolders + declarative Rust packs) and Wave 1 (cross-file `clap` + inline `mod` exports).
 - **Correctness**: Preserves real `Mutates` edges and shadowed callable diagnostics, enforces deterministic recursive manifest discovery, package-gated shadow safety, cold + delta consistency, and non-regression of `unused_public_api`.
-- **Coherence**: Fully independent of [UX-004](../UX-004-mcp-tool-surface-consolidation.md) (`depends_on: []`), lifting multi-language resolution accuracy and automatically enriching `code_map_analyze(mode="entrypoints")`, `code_map_overview`, and `AC-007` `GET /api/map`.
+- **Coherence**: Fully independent of [UX-004](UX-004-mcp-tool-surface-consolidation.md) (`depends_on: []`), lifting multi-language resolution accuracy and automatically enriching `code_map_analyze(mode="entrypoints")`, `code_map_overview`, and `AC-007` `GET /api/map`.

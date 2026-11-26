@@ -12,7 +12,7 @@ ACDD bounds file admission, graph traversal, queries, and tool responses. A reje
 | Area | Limit | How to proceed |
 | --- | --- | --- |
 | Scan inventory | 100,000 files; 5 MiB per file; 500 MiB total | Reduce configured roots or ignore generated files. |
-| MCP page size | Default 30; range 1–100 | Use `offset` or the returned continuation. |
+| MCP page size | Default 12; range 1–100 | Use `offset` or the returned continuation. |
 | MCP response bytes | Configurable 1,024–98,304; default 98,304 | Request fewer rows or less detail; complete collection records are trimmed from the page tail with accurate continuation metadata. |
 | Graph depth | At most 16 | Start at depth 1 and expand only where needed. |
 | Deep graph frontier | More than 1,000 immediate links blocks depth above 1 | Narrow the selector or retry with depth 1. |
