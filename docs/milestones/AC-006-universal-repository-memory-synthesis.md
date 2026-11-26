@@ -1,165 +1,96 @@
 ---
 id: AC-006-universal-repository-memory-synthesis
-title: Universal spec schemas, named path sets, and repository memory as a spec-driven gate
+title: Universal specs in acdd.yaml, named items, explicit spec/path lenses, multi-spec runs, roadmap customization, and repository memory
 doc_type: contract
 status: planned
-depends_on: []
+depends_on:
+  - AR-006-acdd-spec-crate-and-workflow-cutover
 guidance:
   hitl: pro
 owners:
-- crates/acdd-core/src/ports.rs
-- crates/acdd-state/src/spec.rs
-- crates/acdd-state/src/profile/
-- crates/acdd-state/src/validate.rs
-- crates/acdd-state/src/usecases/
-- crates/acdd-state/src/context/
-- src/state_bridge/
-- src/engine/
-- src/format/
-- docs/adr/
-- docs/architecture/
-- docs/reference/
-- skills/acdd/
-- ROADMAP.md
-- CHANGELOG.md
+  - acdd.yaml
+  - .gitignore
+  - crates/acdd-core/src/
+  - crates/acdd-spec/src/
+  - crates/acdd-index/src/docs.rs
+  - crates/acdd-state/src/
+  - src/state_bridge/
+  - src/format/
+  - src/cli/
+  - src/mcp/
+  - tests/acdd/
+  - docs/adr/0006-budgeted-gate-context-and-dual-surface-parity.md
+  - docs/adr/0014-declarative-spec-schemas-and-items.md
+  - docs/reference/
+  - docs/architecture/
+  - skills/acdd/
+  - ROADMAP.md
+  - CHANGELOG.md
+  - docs/milestones/AC-006-universal-repository-memory-synthesis.md
 invariants:
-- 'INV-SPEC-UNIVERSAL: Every specification document is a Spec whose shape comes from a profile-declared schema named by frontmatter `spec:`; the Rust core owns only the fields the state machine and DAG need.'
-- 'INV-SPEC-CONTRACT-COMPAT: `spec:` defaults to the embedded `contract` schema, which reproduces the current milestone and `### task:` shape so existing manifests parse and run unchanged.'
-- 'INV-SPEC-SINGLE-RESOLVER: Schema references resolve through the existing profile reference resolver (`<name> | <path>[:<sha256_prefix>]`, `profiles_dirs`, confinement); no second lookup path.'
-- 'INV-SPEC-NO-PROMPTS-IN-SPECS: Specs carry data only; agent instructions stay in profile guidance and gates.'
-- 'INV-PATHS-NO-LAYOUT-LITERALS: Repository layout (docs, ADR, instruction, memory locations, and gate write scopes) comes from the profile `paths:` section; Rust context code and embedded gate scopes contain no repository layout literals.'
-- 'INV-PATHS-EXPLICIT-REFERENCE: Path sets are referenced only as `paths.<name>`; an unknown name fails validation.'
-- 'INV-MEMORY-IS-A-SPEC: Repository memory is Specs of the embedded `memory` schema, written by an ordinary single-role gate and delivered through `paths.memories`; no memory-specific parser, registry, lens, CLI, or MCP tool exists.'
-- 'INV-MINIMAL-INTERVENTION: Reuse SchemaDef, profile inherit merging, the profile reference resolver, docs extraction, code-map doc edges, ClaimResp budgets, and blackboard evidence; add no dependency, vector store, model client, or parallel registry.'
-- 'INV-SCOPE-INTEGRITY: Cargo.toml, member Cargo.toml files, build.rs, and .acdd/** stay outside every task write scope.'
+  - 'INV-SINGLE-OWNER: SchemaDef validation, confined ref resolution for specs_dirs:/workflows_dirs:, spec parsing, named item extraction, spec_deltas verification, 4-tier context relevance ranking, and roadmap filtering each live in one canonical module with zero duplicate validators or parallel registries.'
+  - 'INV-CORE-LEAF: Pure spec-schema, roadmap-display, and shared confined ref-resolver types in crates/acdd-core stay free of SQLite, Git, HTTP, or direct filesystem traversal.'
+  - 'INV-SPEC-CRATE-BOUNDARY: Spec parsing, SchemaDef field/item validation, spec_deltas checking, and static roadmap filtering live in crates/acdd-spec (depending only on acdd-core); acdd-state owns live Run attachment and gate execution.'
+  - 'INV-STATE-NO-INDEX: crates/acdd-state never imports crates/acdd-index; specs.<name> and paths.<name> lenses read code-map doc edges strictly through host DocsDomainProvider in src/state_bridge/docs_domain.rs.'
+  - 'INV-SPEC-UNIVERSAL: Every specification document is a Spec whose shape, path, numbering, default workflow:, and roadmap: true|false membership live strictly in acdd.yaml specs: (inline, base: contract|memory, or external .acdd/specs/*.yaml ref:); workflow files contain zero specs: or roadmap: keys.'
+  - 'INV-EXPLICIT-CONTEXT-RANKING: Gates reference specs directly as specs.<name> and non-spec doc globs as paths.<name> (zero hidden specs->paths bridging, replacing docs.instructions and docs.adrs); Tier 6 context relevance ranks deterministically (1. direct ID/title citation -> 2. scope/owners overlap -> 3. code-map doc_edges -> 4. global ** fallback) bounded by max_bytes.'
+  - 'INV-MULTI-SPEC-SINGLE-WORKFLOW: One Run always executes one workflow and accepts 0..N attached input specs (acdd start [SPEC ...]) surfaced in ClaimResp.contract.attached_specs[] while validating 0..M output specs via docs.specs (with optional spec/required parameters).'
+  - 'INV-MEMORY-IS-A-SPEC: Repository memory is the built-in memory Spec (items.rules) written by a single-role memory_synthesis gate (scope: [specs.memories], checks: [docs.specs]) and delivered via context: [specs.memories] with zero memory-specific parser, status axis, or MCP tool.'
+  - 'INV-SCOPE-INTEGRITY: Cargo.toml, member Cargo.toml files, build.rs, and engine runtime files (.acdd/*.sqlite*) remain off-limits.'
 acceptance_criteria:
-- 'AC-01: A Spec without `spec:` parses as `contract`; every manifest under docs/milestones/ and docs/plans/ validates and starts exactly as before.'
-- 'AC-02: Frontmatter `spec:` selects a schema from the merged profile `specs:` map; schema fields at Spec and item level are validated by SchemaDef with unknown, mistyped, and missing fields rejected (`SPEC_FIELD_UNKNOWN` with edit-distance hint).'
-- 'AC-03: `specs:` merges key-wise through `inherit`; an entry may be an inline schema or a reference resolved by the profile reference resolver; an unresolvable reference fails closed.'
-- 'AC-04: A schema declares item collections (`items: {<collection>: {item?: <item>, fields}}`; `item` defaults to `<collection>`; embedded contract: `tasks: {item: task}`); `### <item>: <ref>` blocks parse into the collection with core `ref`, `depends_on`, `tags`, `status`, `receipt`; unknown item headings fail (`SPEC_ITEM_UNKNOWN`).'
-- 'AC-05: Parsed items are exposed as `spec.<collection>` (for example `spec.tasks`) in `SpecDocument` and `ClaimResp.contract`; the existing `- tasks:` block executes `contract` tasks unchanged; no new gate block is added.'
-- 'AC-06: `depends_on` resolves across Specs of any schema, including item references `<spec_id>#<ref>`; `acdd validate` and `acdd roadmap` report one closed DAG.'
-- 'AC-07: The ephemeral `--goal` narrative is stored in `goal:`; `spec:` is no longer a narrative field.'
-- 'AC-08: `spec_deltas` entries name `target`, `field`, and `added` / `modified` / `removed` ids; the check `spec.deltas_applied` passes only when every added id exists in the target field, every removed id is absent, and every modified id carries its `now` text.'
-- 'AC-09: The profile `paths:` section merges key-wise through `inherit`; embedded `base` declares `docs`, `adrs`, `instructions`, and `memories` reproducing current behavior; `paths.<name>` expands to globs in `scope:` and delivers related files in `context:` (code-map doc edges to the task scope, instruction files on the ancestor path, files named in the target; whole set when the set has no links), ordered by path and cut by the ClaimResp byte budget.'
-- 'AC-10: `docs.instructions` and `docs.adrs` are replaced by `paths.instructions` and `paths.adrs` in embedded profiles and examples; the old names fail validation with a redirect hint; `docs.invariants` reads from `paths.docs`; an unknown `paths.<name>` fails validation and an empty set warns.'
-- 'AC-11: The embedded `memory` schema (`topic` field, `### rule:` items with `evidence`) and the single-role `memory_synthesis` gate template let any profile write rules into `paths.memories` from rejections and decisions already in ClaimResp; `acdd.yaml` admits `docs/memories` in `docs:`; ACDD validates the edited Specs (schema fields; every `evidence` entry names a blackboard message of the current run); zero changes is a clean pass; a later gate listing `paths.memories` receives the memory Specs that link to its task files.'
-- 'AC-12: Code branches on `doc_type == "contract"` and repository layout literals in docs context code and embedded gate scopes are removed; ADR 0014 is accepted; docs/reference (including a context table listing every `paths.*` and `code.*` entry with its source, selection rule, and budget), docs/architecture, skills/acdd, ROADMAP.md, and CHANGELOG.md pass `acdd docs check` and `acdd validate`.'
+  - 'AC-01: GIVEN ADR 0014 admitted and ADR 0006 updated with the 4-tier context relevance policy, WHEN checked alongside the workspace, THEN both ADRs and the retrospectives .gitignore decision are recorded before implementation begins and tests/acdd/spec_schemas/ compiles cleanly.'
+  - 'AC-02: GIVEN any Spec document validated against built-in contract (default when frontmatter spec: is omitted), WHEN parsed by crates/acdd-spec, THEN existing milestones, plans, tasks, and workflows run identically with zero doc_type == "contract" branches; ephemeral --goal text lives under goal: rather than spec:.'
+  - 'AC-03: GIVEN acdd.yaml specs: entries using inline definitions, base: contract|memory, or external ref: files under specs_dirs: [.acdd/specs], WHEN loaded through the shared confined ref resolver, THEN specs.<name> resolves fields, items, workflow:, and roadmap: true|false deterministically while rejecting path traversal, multi-hop inheritance, or duplicate specs:/roadmap: keys inside .acdd/workflows/*.yaml with ACDD_WORKFLOW_SCHEMA_INVALID.'
+  - 'AC-04: GIVEN a Spec declaring named items: collections (with optional singular item: token), WHEN validated in 3-step order (core shape -> SchemaDef fields/items -> closed DAG including cross-Spec refs RES-001#probe-a), THEN valid Specs pass and unknown fields fail closed with SPEC_FIELD_UNKNOWN (+ edit-distance hint), undeclared headings with SPEC_ITEM_UNKNOWN, and unresolved refs with ITEM_DEPENDENCY_UNKNOWN.'
+  - 'AC-05: GIVEN acdd start [SPEC ...] [--workflow <name>] [--goal "..."] with 0, 1, or N registered specs, WHEN the run starts and a worker claims a gate, THEN one resolved workflow executes and all attached specs appear in ClaimResp.contract.attached_specs[] within byte budgets; WHEN a gate runs docs.specs with { spec: <name>, required: true }, THEN verify fails closed if no valid file of that spec type was created or modified in gate scope.'
+  - 'AC-06: GIVEN gates referencing specs.<name> and workflow paths.<name> in scope: and context:, WHEN evaluated by DocsDomainProvider and workflow validation, THEN specs.<name> and paths.<name> expand scope globs and rank context items in strict 4-tier order (1. direct citation -> 2. scope/owners overlap -> 3. code-map edges -> 4. global ** fallback) bounded by max_bytes; legacy docs.instructions/docs.adrs and unknown names fail validation with redirect hints while empty globs emit a warning.'
+  - 'AC-07: GIVEN a Spec declaring spec_deltas against another Spec id-keyed list field, WHEN spec.deltas_applied runs in acdd verify, THEN every added id present, every removed id absent, and every modified id carrying its now text passes; omitting an addition, leaving a removal, or mismatching modified text fails closed.'
+  - 'AC-08: GIVEN acdd.yaml roadmap: display config (badges, group_by, color: auto|always|never) and Specs with explicit roadmap: true|false, WHEN acdd roadmap runs with --spec, --all, --tag, --field key=value, --group-by, or --color (respecting NO_COLOR), THEN only roadmap: true specs appear by default, configured badges/grouping render in CLI/MCP, and ANSI colors suppress cleanly under NO_COLOR or --color=never.'
+  - 'AC-09: GIVEN a milestone run with a rejected review and a single-role memory_synthesis gate targeting scope: [specs.memories], WHEN the builder emits a spec: memory file citing the real blackboard finding ID and runs acdd verify, THEN docs.specs passes, a subsequent task receives the relevant rule via context: [specs.memories], zero edits pass cleanly, and fabricating a non-existent blackboard evidence ID fails closed.'
+  - 'AC-10: GIVEN the completed AC-006 tree, WHEN tests/acdd/spec_schemas/acceptance.rs, acdd docs check, acdd validate, and acdd lint --categories arch,docs run, THEN ADR 0006, ADR 0014, docs/reference/workflows.md (including the complete specs.*/paths.*/code.* context table), docs/architecture/, skills/acdd/references/acdd-spec-examples/, ROADMAP.md, and CHANGELOG.md pass with zero errors.'
 required_skills:
-- acdd
-- contract-planning
-- agent-instructions
-- test-suite-rules
+  - acdd
+  - contract-planning
+  - code-quality
+  - test-suite-rules
+  - agent-instructions
 ---
 
-# AC-006: Universal spec schemas, named path sets, and repository memory
+# AC-006: Universal specs in `acdd.yaml`, named items, explicit spec/path lenses, multi-spec runs, roadmap customization, and repository memory
 
-## Outcome
+## Goal & Non-goals
 
-ACDD stops hardcoding the shape of a specification and the layout of a
-repository. A profile declares spec schemas and named path sets the same way it
-already declares roles, proofs, and gates. Repository memory is the first
-consumer: memory is a `memory` Spec written by an ordinary gate and delivered
-through an ordinary path set.
+**Goal.** Build on [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md) (`crates/acdd-spec`, `preset:`, `.acdd/workflows/`) to implement [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md): universal schema-validated Specs in `acdd.yaml` `specs:` (inline, `base: contract|memory`, or `.acdd/specs/*.yaml` `ref:`), named `items:` collections, `0..N` attached input specs per run (`acdd start [SPEC ...]`) and `0..M` validated output specs (`docs.specs`), explicit `specs.<name>` and `paths.<name>` context/scope lenses with documented 4-tier deterministic relevance ranking, `spec_deltas` verified by `spec.deltas_applied`, customizable ANSI CLI/MCP `acdd roadmap`, and repository memory as the built-in `memory` Spec.
 
-The design is recorded in
-[ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md); Task 0 accepts it.
+**Non-goals.**
+- Crate extraction (`crates/acdd-spec`) and `profile`→`workflow` / `collection`→`spec` cutover (already completed in [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md)).
+- Generalized `mode: swarm` / `with: spec.<collection>` execution over arbitrary item collections or extended `when:` field predicates (owned by [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md)).
+- Pause-and-call child runs (`parent_run_id` / `waiting_on_run_id`) across workflows (owned by [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
+- Vector stores, embeddings, fuzzy retrieval, model clients, or new `Cargo.toml` dependencies.
 
-## Agreed mechanisms
+## Target architecture & decisions
 
-### Spec and schema
+### 1. Single `acdd.yaml` `specs:` registry & `roadmap:` display config
+- `acdd.yaml` `specs:` (`SpecConfig`) owns `path`/`paths`, `prefixes`, `digits`, `base: contract|memory`, external `ref:` (resolved in `specs_dirs: [.acdd/specs]` via one shared confined `<name> | <path>[:<sha256_prefix>]` helper in `crates/acdd-core/src/config/`), `workflow:`, `roadmap: true|false`, `fields`, and `items`.
+- `acdd.yaml` `roadmap:` (alongside `response:`) owns CLI presentation (`badges`, `group_by: wave|<field>|spec`, `color: auto|always|never` with `NO_COLOR`).
+- Workflow files (`.acdd/workflows/*.yaml`) reject `specs:` and `roadmap:` keys fail-closed (`ACDD_WORKFLOW_SCHEMA_INVALID`).
 
-- Every document is a **Spec**. Frontmatter `spec: <schema>` names its schema;
-  the default is `contract` (today's milestone).
-- A schema declares Spec-level `fields`, item collections (`items:`), and an
-  optional `workflow` (`acdd start` requires one unless `--profile` is passed).
-- Fields are validated by the existing `SchemaDef` engine that already
-  validates proof evidence.
+### 2. Explicit `specs.<name>` & `paths.<name>` + 4-tier deterministic relevance ranking
+- `scope: [specs.<name>]` and `context: [specs.<name>]` reference `acdd.yaml` `specs:` directly (zero hidden `specs → paths` magic).
+- `paths:` inside workflows defines strictly non-spec doc globs (`paths.docs`, `paths.adrs`, `paths.instructions`), replacing hardcoded `docs.instructions` and `docs.adrs`.
+- Tier 6 `ClaimResp.context_lenses` ranks candidate items/documents deterministically (documented in `ADR 0006`, `ADR 0014`, and `docs/reference/workflows.md`) and trims by `max_bytes`:
+  1. Direct ID/title citation in task `target` or owning Spec body (highest priority).
+  2. Explicit `scope`/`owners` overlap (`scopes_overlap` against task `admitted_scope`).
+  3. Indexed `code-map.sqlite` edges (`documents`, `references_doc`, `cites_doc`, `governs`, `governed_by`) to symbols/paths in `admitted_scope`.
+  4. Global fallback rules (`scope: ["**"]` / unlinked repo-wide docs — dropped first under budget pressure).
 
-### Fixed core
+### 3. `0..N` attached input specs & `0..M` validated output specs
+- `acdd start [SPEC ...] [--workflow <name>] [--goal "..."]` binds `0..N` registered Specs to one `Run` executing one resolved workflow; attached specs persist on the run and render in `ClaimResp.contract.attached_specs[]` within byte budgets.
+- `checks: [{ check: docs.specs, with: { spec: <name>, required: true } }]` enforces that a gate creates/updates at least one valid document of that Spec type in its admitted scope; plain `checks: [docs.specs]` keeps zero-edit tolerance.
 
-| Level | Core (Rust) | Schema-defined |
-|---|---|---|
-| Spec | `id`, `title`, `spec`, `status`, `cancellation_reason`, `depends_on`, `linked_to`, `profile`, `closure`, `spec_deltas`, `goal` | everything else |
-| Item | `ref`, `depends_on`, `tags`, `status`, `receipt` | everything else |
-
-### Item collections
-
-```yaml
-items:
-  tasks:          # collection: spec.tasks
-    item: task    # optional; defaults to collection name ("### tasks: <ref>")
-    fields: {...}
-```
-
-Parsed items are exposed as `spec.<collection>`. `- tasks:` keeps
-executing `contract` tasks; running other items through gates arrives with
-AC-005 (`mode: swarm` + `with: spec.<collection>`).
-
-### Where schemas live
-
-One mechanism: the `specs:` map of the resolved profile. Embedded profiles
-carry `contract` and `memory`; workspace profiles add or patch entries through
-`inherit`; an entry may reference a schema file with the same grammar and
-resolver as `inherit` and frontmatter `profile:`. Schemas do not extend each
-other.
-
-### Validation order
-
-`acdd validate <spec>`: core shape → schema fields → closed cross-Spec DAG.
-
-### Spec deltas
-
-`spec_deltas` in frontmatter declares an edit of an id-keyed list in another
-Spec. An agent applies it in an ordinary gate; `spec.deltas_applied` verifies
-the result.
-
-### Named path sets
-
-```yaml
-paths:                                   # embedded base defaults
-  docs:         ["docs/**", "AGENTS.md", "README.md"]
-  adrs:         ["docs/adr/**"]
-  instructions: ["**/AGENTS.md", "TESTS.md"]
-  memories:     ["docs/memories/**"]
-
-gates:
-  - id: build
-    context: [paths.instructions, paths.adrs, paths.memories, code.symbols]
-  - id: polish
-    scope: [paths.docs]
-```
-
-- Declared in `paths:`, referenced as `paths.<name>`; same form as `code.symbols`.
-- `acdd.yaml` still owns what is indexed and discovered (`docs:`, `specs:` directories); profile `paths:` and `specs:` own gate scopes, context sets, and Spec schemas. Directories used by `context: [paths.<name>]` for link matching (such as `docs/memories`) belong in `acdd.yaml` `docs:`.
-- In `scope:` a reference expands to globs.
-- In `context:` the claim delivers related files: linked to the task scope by
-  code-map doc edges, instruction files on the ancestor path, or named in the
-  target. A set with no links at all is delivered whole. Ordered by path, cut
-  by the ClaimResp byte budget.
-- Projects with another layout override entries, for example
-  `paths: {adrs: ["architecture/decisions/**"]}`.
-
-### Memory
-
-1. `memory_synthesis` is an embedded gate template at the end of a workflow,
-   executed by one role.
-2. The role reads rejections and decisions from the ordinary `ClaimResp`
-   (`unresolved_findings`, `blackboard`).
-3. The role edits `memory` Specs under `paths.memories`: one Spec per topic,
-   one `### rule: <ref>` item per rule with `evidence` (blackboard message ids)
-   and prose that links the code it applies to.
-4. ACDD validates the edited Specs like any Spec. Zero changes is a clean pass.
-5. Later gates listing `paths.memories` in `context:` receive the memory Specs
-   whose links point at their task files.
-
-Batch consolidation is an ordinary `--goal` run under an example
-`memory-dream` profile reading `run_tombstones` summaries and archived specs.
-
-> [!IMPORTANT]
-> `docs/memories/` already holds free-form run retrospectives without
-> `spec: memory`. Task 0 records the owner decision to move them out of
-> `paths.memories` or convert them before the memory gate ships.
+### 4. Repository memory as built-in `memory` Spec
+- Built-in `memory` base (`roadmap: false`, `items.rules` → `### rule: <ref>` with `scope`, `statement`, `evidence`, `status`) lives in `crates/acdd-spec`.
+- A single-role `memory_synthesis` gate template (`scope: [specs.memories]`, `checks: [docs.specs]`) verifies that every cited `evidence` blackboard ID exists in the run's SQLite blackboard; subsequent tasks consume relevant rules via `context: [specs.memories]`.
 
 ## Tasks in this milestone
 
@@ -167,223 +98,257 @@ Batch consolidation is an ordinary `--goal` run under an example
 
 ```yaml
 task_ref: bootstrap-adr-and-seams
-target: Accept ADR 0014, record the decision on existing docs/memories retrospectives, register the spec_schemas seam modules once, and freeze disjoint downstream scopes
-subtasks:
-- subtask_ref: accept-adr
-  title: Mark ADR 0014 accepted and list it in the ADR index
-- subtask_ref: memories-decision
-  title: Record the owner decision for existing docs/memories retrospectives on the blackboard
-- subtask_ref: seam-registration
-  title: Register tests/acdd/spec_schemas/ with one module per downstream task and shared fixtures
+target: "Admit ADR 0014, document the 4-tier context relevance policy in ADR 0006, record the docs/memories/ .gitignore decision, and register tests/acdd/spec_schemas/ harness modules"
 contract_revision: 1
 depends_on: []
+tags:
+  - docs
+  - default
 scope:
-- docs/adr/0014-declarative-spec-schemas-and-items.md
-- docs/adr/README.md
-- tests/acdd/mod.rs
-- tests/acdd/spec_schemas/
-- tests/acdd/fixtures/spec_schemas/
+  - docs/adr/0006-budgeted-gate-context-and-dual-surface-parity.md
+  - docs/adr/0014-declarative-spec-schemas-and-items.md
+  - docs/adr/README.md
+  - tests/acdd/mod.rs
+  - tests/acdd/spec_schemas/
 status: planned
+subtasks:
+  - subtask_ref: admit-adr0014-and-update-adr0006
+    title: "Move ADR 0014 to accepted in docs/adr/README.md, document the 4-tier deterministic relevance ranking in ADR 0006, and record docs/memories/ tracking decision"
+  - subtask_ref: register-spec-schema-seams
+    title: "Register tests/acdd/spec_schemas/ submodules in tests/acdd/mod.rs compiling cleanly against existing crates/acdd-spec"
 ```
+
+- **Wave**: `0` | **Budget**: `~220` net LOC.
+- **Seam & mutation proof (`AC-01`)**: `acdd docs check` and `cargo test --test acdd spec_schemas` pass cleanly.
 
 ### task: spec-core-and-contract-schema
 
 ```yaml
 task_ref: spec-core-and-contract-schema
-target: Split SpecDocument into the fixed core plus schema-validated fields, embed the contract schema, move the goal narrative to `goal:`, and replace doc_type == "contract" branches
-subtasks:
-- subtask_ref: core-split
-  title: Core Spec and item structs with fields as validated values; TaskSpecYaml becomes the embedded contract task schema
-- subtask_ref: goal-rename
-  title: Store ephemeral --goal narrative in `goal:`
-- subtask_ref: contract-branches
-  title: Replace doc_type == "contract" checks with schema properties
+target: "Split SpecDocument into fixed core fields plus SchemaDef-validated fields, embed built-in contract and memory bases in crates/acdd-spec, move ephemeral --goal narrative from frontmatter spec: to goal:, and remove doc_type == contract branches"
 contract_revision: 1
 depends_on:
-- bootstrap-adr-and-seams
+  - bootstrap-adr-and-seams
+tags:
+  - default
 scope:
-- crates/acdd-state/src/spec.rs
-- crates/acdd-state/src/usecases/
-- src/state_bridge/docs_domain.rs
-- src/engine/pipeline/
-- src/format/roadmap.rs
-- tests/acdd/spec_schemas/core.rs
+  - crates/acdd-core/src/schema.rs
+  - crates/acdd-spec/src/
+  - crates/acdd-state/src/usecases/lifecycle/
+  - tests/acdd/spec_schemas/core.rs
 status: planned
+subtasks:
+  - subtask_ref: fixed-core-and-embedded-bases
+    title: "Split SpecDocument into core fields + SchemaDef-validated extra fields in crates/acdd-spec, embed built-in contract and memory bases, and preserve default contract compatibility when spec: is omitted"
+  - subtask_ref: goal-frontmatter-and-doctype-cleanup
+    title: "Move ephemeral --goal narrative text to frontmatter goal: so spec: selects Spec type cleanly, and eliminate remaining doc_type == contract branches"
 ```
 
-Seam: `tests/acdd/spec_schemas/core.rs` — every live manifest in the repository
-parses and validates identically (AC-01, AC-07).
+- **Wave**: `1` | **Budget**: `~480` net LOC.
+- **Seam & mutation proof (`AC-02`)**: `tests/acdd/spec_schemas/core.rs` proves existing milestones without `spec:` parse under built-in `contract`, `--goal` writes `goal:` rather than `spec:`, and unknown core/schema fields fail closed.
 
-### task: profile-specs-section
+### task: acdd-yaml-specs-and-refs
 
 ```yaml
-task_ref: profile-specs-section
-target: Add the `specs:` profile section with key-wise inherit merging and schema references through the existing profile reference resolver
-subtasks:
-- subtask_ref: specs-section
-  title: Parse and merge `specs:` like roles and proofs
-- subtask_ref: schema-references
-  title: Resolve string entries via the profile reference resolver; fail closed when unresolved
+task_ref: acdd-yaml-specs-and-refs
+target: "Extend SpecConfig in acdd.yaml with base, ref, roadmap, fields, and items, add specs_dirs and shared confined ref resolution in crates/acdd-core/src/config/, parse acdd.yaml roadmap display config, and reject specs/roadmap keys inside workflows"
 contract_revision: 1
 depends_on:
-- bootstrap-adr-and-seams
+  - bootstrap-adr-and-seams
+tags:
+  - default
 scope:
-- crates/acdd-state/src/profile/
-- tests/acdd/spec_schemas/profile.rs
+  - crates/acdd-core/src/config/
+  - crates/acdd-index/src/docs.rs
+  - crates/acdd-state/src/workflow/schema.rs
+  - crates/acdd-state/src/workflow/validate.rs
+  - tests/acdd/spec_schemas/config.rs
 status: planned
+subtasks:
+  - subtask_ref: shared-ref-resolver-and-specs-config
+    title: "Add shared confined <name> | <path>[:<sha256_prefix>] resolver in crates/acdd-core/src/config/ for both specs_dirs: [.acdd/specs] and workflows_dirs:, extend SpecConfig with base/ref/roadmap/fields/items (single-hop only), and add RoadmapDisplayConfig"
+  - subtask_ref: reject-duplicate-workflow-keys
+    title: "Ensure .acdd/workflows/*.yaml rejects duplicate specs: or roadmap: keys fail-closed with ACDD_WORKFLOW_SCHEMA_INVALID and acdd-index reads spec_paths cleanly without acdd-state coupling"
 ```
 
-Seam: `tests/acdd/spec_schemas/profile.rs` (AC-02, AC-03).
+- **Wave**: `1` | **Budget**: `~440` net LOC.
+- **Seam & mutation proof (`AC-03`)**: `tests/acdd/spec_schemas/config.rs` proves inline, `base: contract|memory`, and `.acdd/specs/*.yaml` `ref:` entries load deterministically, while path traversal, multi-hop `base:`, or `specs:`/`roadmap:` inside `.acdd/workflows/*.yaml` fail closed.
 
-### task: named-path-sets
+### task: named-items-and-attached-specs
 
 ```yaml
-task_ref: named-path-sets
-target: Add the `paths:` profile section, resolve `paths.<name>` in gate scope and context, replace docs.instructions and docs.adrs, and remove layout literals from docs context code and embedded gate scopes
-subtasks:
-- subtask_ref: paths-section
-  title: Parse and merge `paths:`; embedded base defaults reproduce current behavior
-- subtask_ref: scope-expansion
-  title: Expand `paths.<name>` in gate `scope:`; embedded polish and documentation scopes use path sets
-- subtask_ref: context-delivery
-  title: Deliver related files of a path set in `context:` using existing doc-edge, ancestor, and target matching and ClaimResp budgets
-- subtask_ref: lens-migration
-  title: Replace docs.instructions and docs.adrs with redirect-hint validation errors; docs.invariants reads paths.docs
+task_ref: named-items-and-attached-specs
+target: "Implement named items: collections (### <item>: <ref>), 3-step validation (SPEC_FIELD_UNKNOWN, SPEC_ITEM_UNKNOWN, ITEM_DEPENDENCY_UNKNOWN), multi-spec acdd start [SPEC ...] with ClaimResp.contract.attached_specs[], and docs.specs required-spec check parameters"
 contract_revision: 1
 depends_on:
-- spec-core-and-contract-schema
-- profile-specs-section
+  - spec-core-and-contract-schema
+  - acdd-yaml-specs-and-refs
+tags:
+  - default
 scope:
-- crates/acdd-state/src/profile/
-- crates/acdd-state/src/context/
-- src/state_bridge/
-- src/engine/guide.rs
-- skills/acdd/references/acdd-profile-examples/
-- tests/acdd/spec_schemas/paths.rs
+  - crates/acdd-spec/src/
+  - crates/acdd-state/src/context/
+  - crates/acdd-state/src/store/
+  - crates/acdd-state/src/usecases/
+  - src/state_bridge/docs_domain.rs
+  - src/cli/
+  - src/mcp/
+  - tests/acdd/spec_schemas/items.rs
 status: planned
+subtasks:
+  - subtask_ref: named-items-and-three-step-validation
+    title: "Parse ### <item>: <ref> blocks across declared items: collections, enforce 3-step validation (core -> SchemaDef -> closed cross-Spec DAG RES-001#probe-a), and emit SPEC_FIELD_UNKNOWN (+ edit-distance hint), SPEC_ITEM_UNKNOWN, and ITEM_DEPENDENCY_UNKNOWN"
+  - subtask_ref: multi-spec-start-and-docs-specs-required
+    title: "Support acdd start [SPEC ...] (0..N specs) persisted as attached_specs and rendered in ClaimResp.contract.attached_specs[] within byte budgets, plus docs.specs with: { spec/specs, required } verification"
 ```
 
-Seam: `tests/acdd/spec_schemas/paths.rs` — the repository's own runs receive the
-same instructions and ADRs as before; an overridden `paths.adrs` in a fixture
-workspace delivers ADRs from the new location (AC-09, AC-10).
+- **Wave**: `2` | **Budget**: `~620` net LOC.
+- **Seam & mutation proof (`AC-04`, `AC-05`)**: `tests/acdd/spec_schemas/items.rs` proves custom `### probe:` / `### rule:` items validate with cross-Spec DAG refs, `acdd start AUD-001 AC-006` surfaces both specs in `ClaimResp.contract.attached_specs[]`, and `docs.specs` with `required: true` fails closed when the target spec file is missing.
 
-### task: named-items-and-validation
+### task: spec-and-path-context-lenses
 
 ```yaml
-task_ref: named-items-and-validation
-target: Parse schema-declared item headings into spec collections and validate core, fields, and the cross-Spec DAG
-subtasks:
-- subtask_ref: item-parsing
-  title: "Parse `### <item>: <ref>` blocks per schema"
-- subtask_ref: item-collections
-  title: "Expose parsed items as `spec.<collection>`; keep `- tasks:` for contract tasks"
-- subtask_ref: validation-order
-  title: Three-step validation with SPEC_FIELD_UNKNOWN and SPEC_ITEM_UNKNOWN
+task_ref: spec-and-path-context-lenses
+target: "Wire explicit specs.<name> and workflow paths.<name> into scope: and context: with 4-tier deterministic relevance ranking (direct citation -> scope/owners overlap -> code-map edges -> global **), replacing hardcoded docs.instructions and docs.adrs"
 contract_revision: 1
 depends_on:
-- named-path-sets
+  - named-items-and-attached-specs
+tags:
+  - default
 scope:
-- crates/acdd-state/src/spec.rs
-- crates/acdd-state/src/profile/
-- crates/acdd-state/src/validate.rs
-- crates/acdd-state/src/usecases/
-- tests/acdd/spec_schemas/items.rs
+  - crates/acdd-state/src/workflow/
+  - src/state_bridge/docs_domain.rs
+  - tests/acdd/spec_schemas/paths.rs
 status: planned
+subtasks:
+  - subtask_ref: workflow-paths-and-specs-scope-expansion
+    title: "Add paths: to WorkflowDef (with defaults in embedded base), resolve specs.<name> and paths.<name> in gate scope: and context:, reject unknown names and legacy docs.instructions/docs.adrs with redirect hints, and warn on empty glob matches"
+  - subtask_ref: four-tier-relevance-ranking
+    title: "Implement deterministic 4-tier relevance ranking in DocsDomainProvider (1. direct ID/title citation -> 2. scope/owners overlap -> 3. code-map doc edges -> 4. global ** fallback) bounded by max_bytes for both specs.<name> and paths.<name>"
 ```
 
-Seam: `tests/acdd/spec_schemas/items.rs` (AC-04, AC-05, AC-06).
+- **Wave**: `3` | **Budget**: `~460` net LOC.
+- **Seam & mutation proof (`AC-06`)**: `tests/acdd/spec_schemas/paths.rs` proves direct ID citations outrank `scope` overlaps, which outrank `code-map` edges, which outrank `**` globals under a tight byte budget; legacy `docs.instructions` / `docs.adrs` fail closed with redirect hints.
 
 ### task: spec-deltas
 
 ```yaml
 task_ref: spec-deltas
-target: Add frontmatter `spec_deltas` and the deterministic `spec.deltas_applied` check
-subtasks:
-- subtask_ref: deltas-field
-  title: Core `spec_deltas` field with target, field, added, modified, removed
-- subtask_ref: deltas-check
-  title: Verify added, modified, and removed ids in the target field
+target: "Add spec_deltas core parsing in crates/acdd-spec and built-in spec.deltas_applied verification check confirming added, modified, and removed id-keyed entries in target Specs"
 contract_revision: 1
 depends_on:
-- named-items-and-validation
+  - spec-and-path-context-lenses
+tags:
+  - default
 scope:
-- crates/acdd-state/src/spec.rs
-- crates/acdd-state/src/profile/validate.rs
-- crates/acdd-state/src/usecases/verify.rs
-- src/state_bridge/
-- tests/acdd/spec_schemas/deltas.rs
+  - crates/acdd-spec/src/deltas.rs
+  - crates/acdd-spec/src/lib.rs
+  - src/state_bridge/docs_domain.rs
+  - tests/acdd/spec_schemas/deltas.rs
 status: planned
+subtasks:
+  - subtask_ref: deltas-parser-and-check
+    title: "Parse spec_deltas (target, field, added, modified, removed) and register spec.deltas_applied verifying target list membership and modified now text deterministically"
 ```
 
-Seam: `tests/acdd/spec_schemas/deltas.rs` (AC-08).
+- **Wave**: `4` | **Budget**: `~260` net LOC.
+- **Seam & mutation proof (`AC-07`)**: `tests/acdd/spec_schemas/deltas.rs` proves `spec.deltas_applied` passes when all target edits match and fails closed if any `added` entry is missing, `removed` entry remains, or `modified.now` diverges.
+
+### task: roadmap-display-and-schema-filters
+
+```yaml
+task_ref: roadmap-display-and-schema-filters
+target: "Wire acdd.yaml roadmap: display config (badges, group_by, color with NO_COLOR/--color), explicit roadmap: true|false default filtering, and --spec/--all/--tag/--field/--group-by filters across CLI and MCP"
+contract_revision: 1
+depends_on:
+  - spec-and-path-context-lenses
+tags:
+  - default
+scope:
+  - crates/acdd-spec/src/roadmap.rs
+  - src/format/roadmap.rs
+  - src/cli/dispatch_state.rs
+  - src/cli/args.rs
+  - src/mcp/tools/state_tools.rs
+  - tests/acdd/spec_schemas/roadmap.rs
+status: planned
+subtasks:
+  - subtask_ref: roadmap-filtering-and-badges
+    title: "Filter acdd roadmap by specs.<name>.roadmap: true by default, add --spec/--all/--tag/--field key=value/--group-by across CLI and MCP, and project configured badges"
+  - subtask_ref: ansi-color-and-no-color
+    title: "Add ANSI color rendering in src/format/roadmap.rs honoring acdd.yaml roadmap.color, --color=auto|always|never, TTY detection, and NO_COLOR"
+```
+
+- **Wave**: `4` | **Budget**: `~380` net LOC.
+- **Seam & mutation proof (`AC-08`)**: `tests/acdd/spec_schemas/roadmap.rs` proves `roadmap: false` specs hide by default unless `--spec` or `--all` is passed, `--field priority=high` and `--group-by` render configured badges, and `NO_COLOR=1` / `--color=never` emit zero ANSI escape sequences.
 
 ### task: memory-schema-and-gate
 
 ```yaml
 task_ref: memory-schema-and-gate
-target: Embed the memory schema, the single-role memory_synthesis gate template, admit docs/memories in acdd.yaml, and ship the memory-dream example profile
-subtasks:
-- subtask_ref: memory-schema
-  title: Embedded memory schema with topic and rule items carrying evidence
-- subtask_ref: synthesis-gate
-  title: memory_synthesis template reading ClaimResp findings; evidence ids validated against the run blackboard
-- subtask_ref: acdd-yaml-memories
-  title: Admit docs/memories in acdd.yaml docs so acdd-index builds code-map links for paths.memories
-- subtask_ref: dream-profile
-  title: memory-dream example profile over run tombstones and archived specs
+target: "Wire built-in memory Spec (docs/memories/), single-role memory_synthesis gate template with blackboard evidence verification, specs.memories delivery, and reusable spec examples (audit_brief, audit_report, proposal)"
 contract_revision: 1
 depends_on:
-- spec-deltas
+  - spec-deltas
+tags:
+  - default
 scope:
-- acdd.yaml
-- crates/acdd-core/src/ports.rs
-- crates/acdd-state/src/profile/embedded/
-- crates/acdd-state/src/usecases/verify.rs
-- src/state_bridge/
-- skills/acdd/references/acdd-profile-examples/
-- tests/acdd/spec_schemas/memory.rs
+  - acdd.yaml
+  - .gitignore
+  - crates/acdd-state/src/workflow/embedded/
+  - crates/acdd-state/src/usecases/verify.rs
+  - skills/acdd/references/acdd-spec-examples/
+  - tests/acdd/spec_schemas/memory.rs
 status: planned
+subtasks:
+  - subtask_ref: memory-synthesis-gate-and-evidence-check
+    title: "Add single-role memory_synthesis gate template (scope: [specs.memories], checks: [docs.specs]), verify every cited evidence blackboard ID exists in run SQLite blackboard, and update acdd.yaml/.gitignore per Wave 0 decision"
+  - subtask_ref: reusable-spec-examples
+    title: "Add ready-to-copy spec templates (audit_brief.yaml, audit_report.yaml, proposal.yaml) under skills/acdd/references/acdd-spec-examples/ paired with acdd-workflow-examples/"
 ```
 
-Seam: `tests/acdd/spec_schemas/memory.rs` — a rejected review yields a memory
-rule that the next gate touching the linked files receives through
-`paths.memories`; zero findings is a clean pass (AC-11).
+- **Wave**: `5` | **Budget**: `~340` net LOC.
+- **Seam & mutation proof (`AC-09`)**: `tests/acdd/spec_schemas/memory.rs` proves a rejected review produces a linked `spec: memory` rule delivered to a later task via `context: [specs.memories]`, zero edits pass cleanly, and a fabricated blackboard `evidence` ID fails closed.
 
 ### task: docs-and-acceptance
 
 ```yaml
 task_ref: docs-and-acceptance
-target: Reconcile reference, architecture, skills, roadmap, and changelog with the delivered mechanisms, add the context table, and run the cross-surface acceptance seam
-subtasks:
-- subtask_ref: context-table
-  title: Table in docs/reference/profiles.md listing every paths.* and code.* context entry with source, selection rule, and budget
-- subtask_ref: docs
-  title: Update profiles, tasks, cli references and architecture pages
-- subtask_ref: acceptance
-  title: End-to-end seam across contract, custom schema, overridden paths, and memory Specs
+target: "Reconcile docs/reference/workflows.md (with complete specs.*/paths.*/code.* context and 4-tier relevance table), docs/architecture/, skills/acdd/, ROADMAP.md, and CHANGELOG.md, and execute end-to-end acceptance seam"
 contract_revision: 1
 depends_on:
-- memory-schema-and-gate
+  - memory-schema-and-gate
+  - roadmap-display-and-schema-filters
+tags:
+  - docs
 scope:
-- docs/reference/
-- docs/architecture/
-- skills/acdd/
-- ROADMAP.md
-- CHANGELOG.md
-- tests/acdd/spec_schemas/acceptance.rs
+  - docs/reference/
+  - docs/architecture/
+  - skills/acdd/
+  - ROADMAP.md
+  - CHANGELOG.md
+  - tests/acdd/spec_schemas/acceptance.rs
 status: planned
+subtasks:
+  - subtask_ref: context-table-and-reference-docs
+    title: "Document complete specs.*, paths.*, and code.* context table + 4-tier relevance ranking in docs/reference/workflows.md, reconcile configuration/cli/tasks/acdd references, skills/acdd/, ROADMAP.md, and CHANGELOG.md"
+  - subtask_ref: end-to-end-acceptance
+    title: "Execute tests/acdd/spec_schemas/acceptance.rs across contract, external .acdd/specs/*.yaml ref, multi-spec start, specs.*/paths.* ranking, roadmap filters, spec_deltas, and memory Specs; pass acdd docs check, acdd validate, and acdd lint"
 ```
 
-Seam: `tests/acdd/spec_schemas/acceptance.rs` (AC-12).
+- **Wave**: `6` | **Budget**: `~400` net LOC.
+- **Seam & mutation proof (`AC-10`)**: `tests/acdd/spec_schemas/acceptance.rs` + `acdd docs check` + `acdd validate` + `acdd lint --categories arch,docs` pass with zero errors.
 
 ## Negative boundaries
 
-- No memory-specific parser, registry, status axis, evidence collector,
-  reviewer gate, context lens, CLI command, or MCP tool.
-- No schema-to-schema inheritance; no prompts inside Specs.
-- No aliases for `docs.instructions` / `docs.adrs`; the old names fail with a
-  redirect hint.
-- No new spec schemas beyond `contract` and `memory` are embedded; projects
-  declare their own.
-- No vector store, embeddings, fuzzy retrieval, or model client.
-- No change to proof authority, independent review, or Git delivery rules.
+- No duplicate `specs:` or `roadmap:` keys inside `.acdd/workflows/*.yaml`, and no hidden `specs → paths` magic bridging.
+- No separate `inputs:` workflow/milestone DSL and no nested `GateDef.workflow:` YAML merging (multi-workflow chaining uses pause-and-call child runs in [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
+- No memory-specific parser, registry, status axis, evidence collector, reviewer gate, context lens, CLI command, or MCP tool.
+- No second schema validator or file resolver outside `SchemaDef` and the shared `acdd-core` confined reference resolver.
+- No multi-level spec inheritance trees, no vector store/embeddings, and no `Cargo.toml` modifications in `AC-006`.
+
+## Three-axis audit (Completeness, Correctness, Coherence)
+
+- **Completeness**: Every criterion (`AC-01`..`AC-10`) maps 1:1 to a bounded task across Waves 0–6, dedicated seams in `tests/acdd/spec_schemas/`, and co-evolved ADRs/docs/examples.
+- **Correctness**: Every `AC-*` names trigger, expected behavior, fail-closed rejection (`SPEC_FIELD_UNKNOWN`, `SPEC_ITEM_UNKNOWN`, `ITEM_DEPENDENCY_UNKNOWN`, `ACDD_WORKFLOW_SCHEMA_INVALID`), and seam mutation proof.
+- **Coherence**: Builds cleanly on [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md), reconciles [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md) and [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md), preserves `INV-SINGLE-OWNER`, `INV-CORE-LEAF`, `INV-SPEC-CRATE-BOUNDARY`, and `INV-STATE-NO-INDEX`, and keeps all concurrent same-wave `scope:` globs strictly disjoint (Wave 1: `spec-core-and-contract-schema` vs. `acdd-yaml-specs-and-refs`; Wave 4: `spec-deltas` vs. `roadmap-display-and-schema-filters`).
