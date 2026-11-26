@@ -32,14 +32,14 @@ crates/acdd-index/src/
 │   │   ├── dependencies.rs # Python package dependency extraction
 │   │   ├── logging_factories.rs # Finite logging.getLogger factory eligibility
 │   │   └── value_flow.rs
-│   ├── manifests/          # Typed framework rule data & ActivationCondition
+│   ├── manifests/          # Typed framework rule data, ActivationCondition & manifests/{rust,python,typescript,web}/
 │   ├── dependency_registry/ # Modular ManifestParser plugins, Ecosystem, & framework rules
 │   │   ├── mod.rs
 │   │   ├── parser.rs       # ManifestParser trait, MANIFEST_PARSERS, ModulePrefix
 │   │   ├── framework_packs.rs
 │   │   └── parsers/        # Per-ecosystem parsers (cargo, npm, python, go, jvm, php, csharp, ruby, c_cpp)
 │   ├── registries/         # JavaScript package and TypeScript path registries
-│   ├── rust/               # Rust profile extraction, value_flow.rs, macros.rs
+│   ├── rust/               # Rust profile extraction, registrations.rs, cli_registration.rs, value_flow.rs, macros.rs
 │   ├── typescript/         # TypeScript/JavaScript profile extraction
 │   ├── bash.rs, css.rs, json.rs # Default shell/style/JSON profiles on SyntaxGrammarSpec
 │   ├── go.rs, java.rs, kotlin.rs, csharp.rs, php.rs, ruby.rs, c.rs, cpp.rs # Tier-2 declarative profiles
@@ -58,7 +58,7 @@ crates/acdd-index/src/
     ├── value_flow/
     ├── value_flow/initialize.rs
     ├── python/             # Python receiver, resolution, semantic context, and flow
-    ├── rust/               # Rust resolution support, semantic context, and flow
+    ├── rust/               # Rust resolution support, forwarding, cli_dispatch, semantic context, and flow
     ├── javascript/         # JavaScript-family CommonJS bindings and resolution
     ├── typescript/         # TypeScript resolution and semantic context
     ├── vue/                # Vue resolution, semantic context, and value flow
@@ -86,7 +86,7 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
-- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `crates/acdd-index/src/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `crates/acdd-index/src/languages/manifests/{rust,python,typescript,web}/`, discovered recursively at build time by `build_manifests.rs`, and embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` (`crates/acdd-index/src/languages/dependency_registry/`) owns workspace dependency discovery via `ManifestParser` (`MANIFEST_PARSERS`), `ModulePrefix` extraction, and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs. `ProfileLinker::linker(&self)` binds each `LanguageProfile` to its crate-private `LanguageLinker` (defaulting to `GENERIC_LINKER`), and `FileContext.state` stores typed `LanguageFileState`.
 
 ### 4. Three-Tier Language Architecture
@@ -312,9 +312,9 @@ enum, class and same-object resolution is preserved in embedded Vue grammar.
 
 `semantic_context::LanguageMemberLookup` gives the shared resolver borrowed, read-only access to prebuilt `LanguageMemberIndex` state for Python, Rust, and TypeScript alongside shared class-member and inheritance indexing for Tier-2 object-oriented profiles. Each language index retains its own lookup rules; the shared resolution input does not carry one field per language, and reference linking does not rebuild indexes or perform per-reference database reads.
 
-Rust namespace indexing also prepares one bounded forwarding index from existing `use` references and public export facts. Import resolution, package exports, and Rust member lookup share that index. Private parent bindings remain descendant-only, while public named bindings follow the existing export contract; conflicting candidates, cycles, and exhausted alias walks do not produce guessed exact targets. Root crate imports use the root manifest's normalized package or explicit library name only when the conventional `src/lib.rs` is indexed in that same manifest scope.
+Rust namespace indexing also prepares one bounded forwarding index from existing `use` references and public export facts (covering file modules and scoped inline `ModuleDeclaration` nodes). Import resolution, package exports, and Rust member lookup share that index. Private parent bindings remain descendant-only, while public named bindings follow the existing export contract; conflicting candidates, cycles, and exhausted alias walks do not produce guessed exact targets. Root crate imports use the root manifest's normalized package or explicit library name only when the conventional `src/lib.rs` is indexed in that same manifest scope.
 
-`framework_relations::compose` joins configured route, HTTP request-attribute, and HTML template facts after ordinary reference resolution. It consumes indexed facts, owner sets, flow state, the dependency registry, language profiles, semantic context, and route nodes, then returns graph edges and coverage. The linker merges those results and applies its existing deterministic graph ordering.
+`framework_relations::compose` joins configured route, HTTP request-attribute, cross-file Rust `cli_dispatch`, and HTML template facts after ordinary reference resolution. It consumes indexed facts, owner sets, flow state, the dependency registry, language profiles, semantic context, and route nodes, then returns graph edges and coverage. The linker merges those results and applies its existing deterministic graph ordering.
 
 ## Bounded semantic resolution ownership
 

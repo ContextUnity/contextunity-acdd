@@ -11,10 +11,15 @@ Framework manifests supply declarative linking rules (routes, dependency injecti
 
 ## Bundled manifests
 
-Built-in packs live in [`crates/acdd-index/src/languages/manifests/`](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests) and are embedded into the `acdd` binary at compile time (using each file stem as the pack ID):
+Built-in packs live under per-language subdirectories in [`crates/acdd-index/src/languages/manifests/`](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests) (`rust/`, `python/`, `typescript/`, `web/`) and are discovered recursively at compile time by `build_manifests.rs` (using each unique file stem as the pack ID, rejecting symlinks including the root and failing on duplicate file-stem identities):
 
-- **Included packs**: FastAPI, Starlette, Django, SQLAlchemy, HTMX, Alpine, Vue/Pinia (`vue-runtime`), Nuxt, Playwright, WebIDL/DOM (`web`), Rust stdlib/Cargo, Python `unittest`, and GridViewSpec.
+- **Included packs**:
+  - **Rust (`manifests/rust/`)**: `rust-std`, `rust-cargo`, `sqlx`, `clap`, `rmcp`, `axum`, `actix`.
+  - **Python (`manifests/python/`)**: `fastapi`, `starlette`, `django`, `sqlalchemy`, `celery`, `click`, `typer`, `fastmcp`, `jinja2`, `psycopg`, `pydantic`, `unittest`, `gridviewspec`.
+  - **TypeScript / JavaScript (`manifests/typescript/`)**: `h3`, `jest`, `nestjs`, `nuxt`, `playwright`, `vitest`, `vue-runtime`.
+  - **Web / HTML (`manifests/web/`)**: `alpinejs`, `htmx`, `web`.
 - **FastAPI & Starlette**: resolves imported `Depends`, HTTP route decorators (`response_model` `uses_model`, `exception_handler`), `Route(methods=[...])`, `Mount`, `WebSocketRoute`, and `BaseHTTPMiddleware`.
+- **Rust entrypoints**: `rmcp` (`#[tool]`), `axum` (`Router::route(...)`), `actix` (`#[get]`..`#[route]`, `App`/`Scope`/`ServiceConfig::route(...)`), and cross-file `clap` (`CommandDispatch`) project `mcp_tool`, `http_route`, and `cli_command` entrypoints.
 - **GridViewSpec**: maps `GridViewSpec`, `GridViewBlockBase` dataclass fields, host adapters, and `GridViewActionBase` action subclasses.
 
 ## Project manifests (`.acdd/frameworks/`)
@@ -149,7 +154,9 @@ Each `[[syntax_rules]]` entry declares `id`, `language`, optional `package_famil
 | `receiver_registration` | Verify lexical router/app construction (`FastAPI()`, `APIRouter()`) for guarded route rules. |
 | `decorated_registration` | Register decorated callables (`tool`, `cli_command`, or `event_handler`) on proven receivers or imported decorators. |
 | `class_method_registration` | Register overridden methods on proven local subclasses of an imported framework base class. |
-| `command_dispatch` | Link Rust CLI subcommand enums and match arms to their handler functions. |
+| `command_dispatch` | Link Rust CLI parser/subcommand types and match arms to their handler functions across same-file or split-file modules (`cli_dispatch`). |
+| `attribute_registration` | Register Rust attribute-macro entrypoints (`tool`, `route`, `cli_command`, `event_handler`) from imported modules (`rmcp`, `actix`). |
+| `route_builder_call` | Extract Rust router-builder HTTP routes via `builder_constructors`, `builder_factories`, `chain_methods`, `route_method`, and `handler_modules`/`handler_methods` (`axum`, `actix`). |
 | `template_loader` / `template_library` | Record static template roots and custom tag/filter libraries within project scope. |
 | `template_symbols` / `template_dialect` | Declare built-in template tags/filters/routes and custom block/include/extends directives. |
 | `object_factory` / `receiver_type` | Bind factory return members, nominal types, callback parameter types, and optional `argument_factories` / `member_returns` / `call_returns` (`ReturnTypeSpec` compound generic wrappers) for chained return-type resolution. |

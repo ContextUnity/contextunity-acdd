@@ -169,6 +169,12 @@ configured admitted documentation roots for hubs.
 Resolution health is `resolved / (resolved + unresolved + ambiguous) * 100`.
 Aggregate the matching coverage scope consistently; exclude external imports.
 Use unavailable when the denominator is zero, not an invented 100%.
+Workspace coverage also includes `resolution_health.prod` and `resolution_health.tests`
+partitions (split by test-context path) with per-context `availability`,
+`resolved`/`denominator`/`percent`, and `unresolved`, `ambiguous`, and `external_imports`
+counts (unavailable partitions omit `denominator` and `percent` and include `cause`
+while keeping `resolved`, `unresolved`, `ambiguous`, and `external_imports`); Markdown
+renders `- Prod: ...` and `- Tests: ...` lines when present.
 Do not describe all nodes as code symbols or combine an aggregate unresolved
 count that already includes ambiguity with ambiguous counts a second time.
 
