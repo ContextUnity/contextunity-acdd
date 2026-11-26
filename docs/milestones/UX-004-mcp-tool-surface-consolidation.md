@@ -66,7 +66,7 @@ required_skills:
 2. **Read-only `code_map_analyze` modes:** Extend existing `code_map_analyze` with 3 compact optional fields (`mode`, `to`, `base`) delivering deterministic PageRank `hotspots` (reusable by [AC-007](AC-007-unified-observability-board-otlp-and-metrics.md) `GET /api/map`), `boundary`, `path`, `entrypoints`, canonical `diff_impact` (reusing `change_impact.rs` with header-line `signature_touched` and zero `cat-file` blob reparsing), and bounded Git `cochange`.
 
 **Non-goals.**
-- Modifying Rust/language AST extractors, cross-file Clap/rmcp linkers, or inline `mod` export publication (owned by [LS-004](LS-004-rust-entrypoints-and-inline-module-exports.md)).
+- Modifying Rust/language AST extractors, cross-file Clap/rmcp linkers, or inline `mod` export publication (owned by [LS-004](archive/LS-004-rust-entrypoints-and-inline-module-exports.md)).
 - Adding OID-pinned `git cat-file` blob streaming or quadratic `--find-copies-harder` scans.
 - Adding any `acdd_spec` MCP tool or new third-party dependencies in `Cargo.toml`.
 - Changing SQLite `code-map.sqlite` schema version or altering CLI `acdd query remove` / `acdd query tests` / `acdd roadmap` / `acdd draft`.
@@ -225,7 +225,7 @@ subtasks:
 ## Negative boundaries
 
 - No new static MCP tools (`acdd_spec` excluded; net count drops `20 -> 18`) and no new third-party dependencies in `Cargo.toml`.
-- No edits to language extractors (`languages/`), `ast/visitor.rs`, `linker/`, or `db/lint/unused_public_api.rs` inside `UX-004` (owned by [LS-004](LS-004-rust-entrypoints-and-inline-module-exports.md)).
+- No edits to language extractors (`languages/`), `ast/visitor.rs`, `linker/`, or `db/lint/unused_public_api.rs` inside `UX-004` (owned by [LS-004](archive/LS-004-rust-entrypoints-and-inline-module-exports.md)).
 - No `git cat-file` blob reparsing or `--find-copies-harder` scans inside `UX-004`.
 - No new schema properties on `code_map_query` (`Query` input struct) and no SQLite schema version bump.
 - No raw `Command::new("git")` outside `crates/acdd-core/src/git.rs` (`INV-GIT-SINGLE-OWNER`).
@@ -235,4 +235,4 @@ subtasks:
 
 - **Completeness**: `AC-01`..`AC-05` map 1:1 across Waves 0–3 covering read-only graph/PageRank analyzers, canonical `change_impact.rs` + bounded Git `cochange`, `20 -> 18` MCP tool/action consolidation synced with `ports.rs`, and full active doc/router reconciliation.
 - **Correctness**: Enforces deterministic PageRank within 2-second budgets, `INV-READONLY-OVER-INDEX`, `INV-SINGLE-OWNER-DIFF-IMPACT`, `INV-GIT-SINGLE-OWNER`, `WorkspacePathPolicy` filtering, and fail-closed redirect hints.
-- **Coherence**: Ready immediately in Wave 0 (`depends_on: []`), cleanly separated from Rust extractor/linker upgrades in [LS-004](LS-004-rust-entrypoints-and-inline-module-exports.md), ahead of [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md), and sharing deterministic PageRank `hotspots` with [AC-007](AC-007-unified-observability-board-otlp-and-metrics.md).
+- **Coherence**: Ready immediately in Wave 0 (`depends_on: []`), cleanly separated from Rust extractor/linker upgrades in [LS-004](archive/LS-004-rust-entrypoints-and-inline-module-exports.md), ahead of [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md), and sharing deterministic PageRank `hotspots` with [AC-007](AC-007-unified-observability-board-otlp-and-metrics.md).

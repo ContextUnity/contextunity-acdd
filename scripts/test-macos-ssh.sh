@@ -200,7 +200,7 @@ cleanup_remote_lock() {
 trap cleanup_remote_lock EXIT
 
 # Serialize concurrent local runs sharing the same warm remote `target/` cache.
-ssh -n -o BatchMode=yes "$SSH_HOST" bash -s -- "$LOCK_DIR" "$REMOTE_ABS" <<'EOF'
+ssh -T -o BatchMode=yes "$SSH_HOST" bash -s -- "$LOCK_DIR" "$REMOTE_ABS" <<'EOF'
 set -euo pipefail
 lock_dir="$1"
 remote_abs="$2"
@@ -224,20 +224,27 @@ if [ ! -d "$remote_abs/.git" ]; then
         git init -b main "$remote_abs"
     fi
 fi
+if git -C "$remote_abs" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$remote_abs" checkout -q --detach HEAD
+    git -C "$remote_abs" reset -q --hard
+    git -C "$remote_abs" clean -q -fd
+fi
 EOF
 
 # Push local HEAD objects cleanly (works from primary checkout or linked `.worktrees/<run>`),
 # reset remote working tree before overlaying local uncommitted edits via `rsync`.
 git push -q -f "${SSH_HOST}:${REMOTE_ABS}" +HEAD:refs/heads/ci-target
 
-ssh -n -o BatchMode=yes "$SSH_HOST" bash -s -- "$REMOTE_ABS" <<'EOF'
+ssh -T -o BatchMode=yes "$SSH_HOST" bash -s -- "$REMOTE_ABS" <<'EOF'
 set -euo pipefail
 cd "$1"
 git checkout -q -f ci-target
 git clean -q -fd
 EOF
 
-rsync -az --delete \
+# Content-checksum sync without preserving cross-branch mtimes so older Linux worktree
+# timestamps never look fresher/older incorrectly against warm remote `target/` fingerprints.
+rsync -rlpcDz --delete \
     --exclude '/.git' \
     --exclude '/target' \
     --exclude '/benchmarks/target' \

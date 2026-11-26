@@ -187,7 +187,7 @@ gates:
 
 - **SQLite migration continuity**: Live `crates/acdd-state/src/store/sqlite/migrations.rs` is already at `v2` (`apply_v2`); `AC-005` MUST add idempotent `apply_v3` (`v2 -> v3`) without rewriting `v1`/`v2` steps.
 - **Zero busy-polling & bounded `wait`**: Blocking `wait` wakes on SQLite commit/notify or bounded polling with mandatory timeout ceiling; `save: none` shards never acquire `.git/acdd/repo.lock`.
-- **Fail-closed Git `repack` & `handoff`**: `repack` executes strictly inside isolated worktrees (refusing dirty/main primary checkouts without `--allow-main`) and preserves tree equivalence (`T_final`) or aborts cleanly without history corruption.
+- **Fail-closed Git `repack` & `handoff`**: `repack` executes strictly inside isolated worktrees (refusing dirty/main primary checkouts without `--allow-main`) and preserves tree equivalence (`T_final`) or aborts cleanly without history corruption. When `save: handoff` archives a spec (`archive_spec_with_git`), it MUST atomically rewrite outgoing relative links inside the archived spec (`foo.md` → `../foo.md`, `../...` → `../../...`) and incoming milestone links in `ROADMAP.md` / active `docs/milestones/*.md` in the same handoff commit, and fail closed if post-archive `docs check` detects any broken links.
 
 ## Tasks in this milestone
 
@@ -223,7 +223,7 @@ subtasks:
   - subtask_ref: replace-tasks-block-and-sqlite-v3
     title: "Remove TasksBlock (- tasks:) from GateDef and embedded profiles in favor of mode/with/when/max_concurrency, add optional GateDef.coordinator, rename roles/role -> agents/agent (adding coordinator inline agent), group SavePolicy/receipt into mutually exclusive save variants including save: handoff, lift root-gate when: restriction, and add SQLite v2->v3 blackboard @mentions/thread_id/seq migration"
   - subtask_ref: align-acdd-profile-and-handoff-scope
-    title: "Update .acdd/workflows/default.yaml, .acdd/workflows/hotfix.yaml, embedded workflows, and state_boundaries.rs to agents:/agent: + grouped save: handoff; simplify verify_tasks_integrated / archive_spec_with_git via scope_mode (lazy | strict | off) + Acdd-Integrated trailers + non-blocking pre-handoff polish + fail-closed worktree repack modes (none | linear | by_task | last | squash)"
+    title: "Update .acdd/workflows/default.yaml, .acdd/workflows/hotfix.yaml, embedded workflows, and state_boundaries.rs to agents:/agent: + grouped save: handoff; simplify verify_tasks_integrated / archive_spec_with_git via scope_mode (lazy | strict | off) + Acdd-Integrated trailers + non-blocking pre-handoff polish + automatic post-archive relative link rewriting (archived spec + ROADMAP.md + active docs/milestones/*.md) with post-archive docs check invariant + fail-closed worktree repack modes (none | linear | by_task | last | squash)"
   - subtask_ref: swarm-seam-registration
     title: "Register tests/acdd/swarm.rs in tests/acdd/mod.rs with compiling schema and migration seam matrices"
 ```
