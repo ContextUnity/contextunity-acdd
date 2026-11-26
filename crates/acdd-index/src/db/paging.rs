@@ -48,10 +48,12 @@ pub fn value(items: Vec<Value>, total: usize, options: &QueryOptions, generation
 
 /// Executes a read-only count query.
 pub fn count(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<usize> {
-    let _budget = QueryBudget::new(conn);
+    let budget = QueryBudget::new(conn);
+    budget.check()?;
     let mut statement = conn.prepare(sql)?;
     ensure!(statement.readonly(), "query must be read-only");
     let total: i64 = statement.query_row(params, |r| r.get(0))?;
+    budget.check()?;
     Ok(usize::try_from(total)?)
 }
 
@@ -222,32 +224,140 @@ fn columns(alias: &str, detail: Detail, names: &[&str]) -> String {
     }
 }
 
+struct WatchdogState {
+    next_id: u64,
+    entries: std::collections::BTreeMap<(std::time::Instant, u64), rusqlite::InterruptHandle>,
+}
+
+struct BudgetWatchdog {
+    state: std::sync::Mutex<WatchdogState>,
+    cv: std::sync::Condvar,
+}
+
+fn budget_watchdog() -> &'static std::sync::Arc<BudgetWatchdog> {
+    static WATCHDOG: std::sync::OnceLock<std::sync::Arc<BudgetWatchdog>> =
+        std::sync::OnceLock::new();
+    WATCHDOG.get_or_init(|| {
+        let wd = std::sync::Arc::new(BudgetWatchdog {
+            state: std::sync::Mutex::new(WatchdogState {
+                next_id: 1,
+                entries: std::collections::BTreeMap::new(),
+            }),
+            cv: std::sync::Condvar::new(),
+        });
+        let bg = std::sync::Arc::clone(&wd);
+        std::thread::Builder::new()
+            .name("acdd-query-budget".into())
+            .spawn(move || {
+                let mut guard = bg.state.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    let now = std::time::Instant::now();
+                    let Some((&(deadline, id), _)) = guard.entries.iter().next() else {
+                        guard = bg.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+                        continue;
+                    };
+                    if deadline <= now {
+                        if let Some(handle) = guard.entries.remove(&(deadline, id)) {
+                            handle.interrupt();
+                        }
+                    } else {
+                        let (next, _) = bg
+                            .cv
+                            .wait_timeout(guard, deadline.saturating_duration_since(now))
+                            .unwrap_or_else(|e| e.into_inner());
+                        guard = next;
+                    }
+                }
+            })
+            .expect("spawn query budget watchdog");
+        wd
+    })
+}
+
+thread_local! {
+    static ACTIVE_BUDGETS: std::cell::RefCell<std::collections::HashMap<usize, std::time::Instant>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub(crate) struct QueryBudget<'a> {
-    conn: &'a Connection,
-    started: std::time::Instant,
+    _conn: &'a Connection,
+    conn_key: usize,
+    pub(crate) deadline: std::time::Instant,
+    prev_deadline: Option<std::time::Instant>,
+    watch_key: Option<(std::time::Instant, u64)>,
 }
 
 impl<'a> QueryBudget<'a> {
     pub(crate) fn new(conn: &'a Connection) -> Self {
-        let started = std::time::Instant::now();
-        conn.progress_handler(
-            1000,
-            Some(move || started.elapsed() > std::time::Duration::from_secs(2)),
-        );
-        Self { conn, started }
+        Self::with_duration(conn, std::time::Duration::from_secs(2))
+    }
+
+    pub(crate) fn with_duration(conn: &'a Connection, duration: std::time::Duration) -> Self {
+        let now = std::time::Instant::now();
+        let req = now.checked_add(duration).unwrap_or(now);
+        let conn_key = std::ptr::from_ref(conn) as usize;
+        let prev_deadline = ACTIVE_BUDGETS.with(|m| m.borrow().get(&conn_key).copied());
+        let deadline = prev_deadline.map_or(req, |outer| outer.min(req));
+        ACTIVE_BUDGETS.with(|m| m.borrow_mut().insert(conn_key, deadline));
+        let watch_key = if prev_deadline.is_none_or(|outer| deadline < outer) {
+            let wd = budget_watchdog();
+            let mut guard = wd.state.lock().unwrap_or_else(|e| e.into_inner());
+            let id = guard.next_id;
+            guard.next_id = id.wrapping_add(1);
+            let earlier = guard
+                .entries
+                .keys()
+                .next()
+                .is_none_or(|&(first, _)| deadline < first);
+            guard
+                .entries
+                .insert((deadline, id), conn.get_interrupt_handle());
+            if earlier {
+                wd.cv.notify_one();
+            }
+            Some((deadline, id))
+        } else {
+            None
+        };
+        Self {
+            _conn: conn,
+            conn_key,
+            deadline,
+            prev_deadline,
+            watch_key,
+        }
     }
 
     pub(crate) fn check(&self) -> Result<()> {
-        if self.started.elapsed() > std::time::Duration::from_secs(2) {
-            bail!("graph query exceeds two second budget");
-        }
+        ensure!(
+            std::time::Instant::now() < self.deadline,
+            "graph query exceeds two second budget"
+        );
         Ok(())
     }
 }
 
 impl Drop for QueryBudget<'_> {
     fn drop(&mut self) {
-        self.conn.progress_handler(0, None::<fn() -> bool>);
+        ACTIVE_BUDGETS.with(|m| {
+            let mut map = m.borrow_mut();
+            match self.prev_deadline {
+                Some(prev) => {
+                    map.insert(self.conn_key, prev);
+                }
+                None => {
+                    map.remove(&self.conn_key);
+                }
+            }
+        });
+        if let Some(key) = self.watch_key {
+            let wd = budget_watchdog();
+            wd.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entries
+                .remove(&key);
+        }
     }
 }
 
@@ -333,7 +443,8 @@ fn collect_rows(
     if sql.len() > 64 * 1024 {
         bail!("SQL exceeds64KiB");
     }
-    let _budget = QueryBudget::new(conn);
+    let budget = QueryBudget::new(conn);
+    budget.check()?;
     let mut statement = conn.prepare(sql)?;
     if !statement.readonly() {
         bail!("query must be read-only");
@@ -435,6 +546,7 @@ fn collect_rows(
             break;
         }
     }
+    budget.check()?;
     Ok((result, window_total, total_bytes))
 }
 

@@ -317,6 +317,38 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
     Ok(())
 }
 
+/// SQL `WITH RECURSIVE` CTE defining `covered(node_hash)` via static `calls` edges from `test_case` nodes.
+pub(crate) fn verified_calls_covered_cte() -> String {
+    format!(
+        "WITH RECURSIVE covered(node_hash) AS (\
+         SELECT n.node_hash FROM nodes n WHERE n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' \
+         UNION SELECT e.dst_hash FROM edges e JOIN covered c ON c.node_hash=e.src_hash WHERE e.kind='{}')",
+        EdgeKind::Calls.as_str(),
+    )
+}
+
+/// Returns `node_hash`es transitively reached from verified `test_case` nodes via static `calls` edges (no lexical fallback).
+pub fn verified_calls_covered_hashes(
+    conn: &Connection,
+    candidates: Option<&[i64]>,
+) -> Result<HashSet<i64>> {
+    if candidates.is_some_and(<[i64]>::is_empty) {
+        return Ok(HashSet::new());
+    }
+    let _budget = paging::QueryBudget::new(conn);
+    let cte = verified_calls_covered_cte();
+    let (sql, param) = match candidates {
+        Some(h) => (format!("{cte} SELECT c.node_hash FROM covered c JOIN json_each(?1) cand ON c.node_hash=CAST(cand.value AS INTEGER)"), Some(serde_json::to_string(h)?)),
+        None => (format!("{cte} SELECT node_hash FROM covered"), None),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(param.iter()), |r| {
+        r.get::<_, i64>(0)
+    })?;
+    rows.collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(Into::into)
+}
+
 /// Discovers test cases covering or covered by symbols matching selector.
 pub fn tests_paged_with_path(
     conn: &Connection,

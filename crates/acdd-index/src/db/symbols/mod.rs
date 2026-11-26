@@ -14,7 +14,8 @@ pub use inspect::{
 };
 pub(crate) use inspect::{explain_paged_response, inspect_paged_response};
 pub use search::{search_results_with_navigation, search_with_options};
-pub use test_discovery::tests_paged_with_path;
+pub(crate) use test_discovery::verified_calls_covered_cte;
+pub use test_discovery::{tests_paged_with_path, verified_calls_covered_hashes};
 pub use types::{InspectOptions, SearchOptions, SymbolExplainOptions};
 
 #[cfg(test)]

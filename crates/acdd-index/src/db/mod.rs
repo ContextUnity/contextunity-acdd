@@ -1,5 +1,6 @@
 //! SQLite index database storage, schema management, and query helpers.
 
+pub mod analyze;
 pub mod cache;
 pub mod commitments;
 pub mod cycles;

@@ -1367,3 +1367,674 @@ fn overview_splits_prod_and_tests_resolution_health() {
     assert_eq!(prod_only_health["tests"]["availability"], "unavailable");
     assert!(render(&prod_only_overview).contains("- Tests: unavailable"));
 }
+
+#[test]
+fn analyze_graph_and_pagerank_modes_contract_matrix() {
+    use acdd_index::db::analyze::{
+        analyze_with_mode,
+        hotspots::{pagerank_centrality, PageRankConfig},
+        AnalyzeMode, AnalyzeRequest,
+    };
+    use acdd_index::models::stable_hash64;
+    use std::time::Duration;
+
+    // 1. AnalyzeMode parsing and closed-enum round-trip
+    assert_eq!(AnalyzeMode::default(), AnalyzeMode::Summary);
+    for mode in AnalyzeMode::ALL {
+        assert_eq!(mode.as_str().parse::<AnalyzeMode>().unwrap(), *mode);
+        assert_eq!(mode.to_string(), mode.as_str());
+    }
+    let bad_mode = "bogus".parse::<AnalyzeMode>().unwrap_err().to_string();
+    assert!(
+        bad_mode.contains("unsupported analyze mode 'bogus'"),
+        "{bad_mode}"
+    );
+
+    // 2. Shared indexed workspace fixture (Python with Click entrypoint + uncalled public roots)
+    let workspace = Workspace::new();
+    workspace.write("requirements.txt", "click>=8.0\n");
+    workspace.write("pkg/util.py", "def leaf_sink():\n    return 1\n");
+    workspace.write(
+        "pkg/core.py",
+        "import json\n\
+         from pkg.util import leaf_sink\n\n\
+         def _private_helper():\n    return 1\n\n\
+         def internal_only_pub():\n    return _private_helper()\n\n\
+         def imported_only_pub():\n    return 2\n\n\
+         def central_hub():\n    a = internal_only_pub()\n    b = leaf_sink()\n    return json.dumps([a, b])\n\n\
+         def tested_leaf():\n    return 7\n\n\
+         def tested_service():\n    return tested_leaf()\n",
+    );
+    workspace.write(
+        "pkg/api.py",
+        "import click\n\
+         from pkg.core import central_hub, imported_only_pub\n\n\
+         def caller_a():\n    return central_hub()\n\n\
+         def caller_b():\n    return central_hub()\n\n\
+         def caller_c():\n    return central_hub()\n\n\
+         def hop3():\n    return central_hub()\n\n\
+         def hop2():\n    return hop3()\n\n\
+         def hop1():\n    return hop2()\n\n\
+         def direct_and_long():\n    return central_hub() + hop1()\n\n\
+         def alt_route():\n    return caller_a() + caller_b()\n\n\
+         @click.command()\n\
+         def cli_entry():\n    return caller_c()\n",
+    );
+    workspace.write(
+        "tests/test_app.py",
+        "from pkg.core import tested_service\n\n\
+         def test_tested_service():\n    return tested_service()\n",
+    );
+    workspace.write(
+        "tests/test_lexical.py",
+        "def test_central_hub():\n    return 1\n",
+    );
+    workspace.build();
+
+    let conn = workspace.open();
+    let before = persisted_state(&conn);
+    let page = options(50);
+
+    // 3. Verified calls-edge test coverage strictly excludes lexical fallback
+    let hash_for = |name: &str| -> i64 {
+        let id: String = conn
+            .query_row(
+                "SELECT id FROM nodes WHERE name=?1 AND is_test=0 LIMIT 1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        stable_hash64(&id)
+    };
+    let h_hub = hash_for("central_hub");
+    let h_tested = hash_for("tested_service");
+    let h_tested_leaf = hash_for("tested_leaf");
+    let covered =
+        symbols::verified_calls_covered_hashes(&conn, Some(&[h_hub, h_tested, h_tested_leaf]))
+            .unwrap();
+    assert!(
+        covered.contains(&h_tested),
+        "direct calls-edge test target must be covered"
+    );
+    assert!(
+        covered.contains(&h_tested_leaf),
+        "transitive calls-edge target must be covered"
+    );
+    assert!(
+        !covered.contains(&h_hub),
+        "lexical-only test_central_hub must not count as verified coverage"
+    );
+
+    // 4. Deterministic PageRank + hotspots + budget enforcement
+    let db_pr = pagerank_centrality(&conn, &PageRankConfig::default()).unwrap();
+    let db_pr_repeat = pagerank_centrality(&conn, &PageRankConfig::default()).unwrap();
+    assert_eq!(db_pr.scores, db_pr_repeat.scores);
+    assert_eq!(db_pr.iterations, db_pr_repeat.iterations);
+    assert!(db_pr.converged && db_pr.scores[&h_hub] > db_pr.scores[&h_tested]);
+    for (cfg, expected_err) in [
+        (
+            PageRankConfig {
+                max_nodes: 2,
+                ..Default::default()
+            },
+            "node budget",
+        ),
+        (
+            PageRankConfig {
+                max_edges: 1,
+                ..Default::default()
+            },
+            "edge budget",
+        ),
+        (
+            PageRankConfig {
+                budget: Duration::ZERO,
+                ..Default::default()
+            },
+            "two second budget",
+        ),
+    ] {
+        let err = pagerank_centrality(&conn, &cfg).unwrap_err().to_string();
+        assert!(
+            err.contains(expected_err),
+            "expected {expected_err}, got: {err}"
+        );
+    }
+
+    let hotspots = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Hotspots,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(hotspots["mode"], "hotspots");
+    assert_eq!(hotspots["pagerank"]["damping"], 0.85);
+    let hs_items = hotspots["hotspots"]["items"].as_array().unwrap();
+    let hub_row = hs_items
+        .iter()
+        .find(|r| r["name"] == "central_hub")
+        .unwrap();
+    let tested_row = hs_items
+        .iter()
+        .find(|r| r["name"] == "tested_service")
+        .unwrap();
+    assert_eq!(hub_row["test_covered"], false);
+    assert_eq!(hub_row["test_gap"], true);
+    assert!(hub_row["fan_in"].as_u64().unwrap() >= 3);
+    assert_eq!(tested_row["test_covered"], true);
+    assert_eq!(tested_row["test_gap"], false);
+    assert!(hub_row["pagerank"].as_f64().unwrap() > tested_row["pagerank"].as_f64().unwrap());
+
+    // 5. Boundary: inbound external callers, grouped outbound deps, internal-only pub symbols
+    let boundary = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Boundary,
+            target: "pkg/core.py",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(boundary["mode"], "boundary");
+    let inbound_callers = boundary["inbound_callers"]["items"].as_array().unwrap();
+    assert_eq!(
+        boundary["summary"]["inbound_external_callers"].as_u64().unwrap(),
+        5,
+        "only canonical calls edges (caller_a/b/c, hop3, direct_and_long) count as inbound callers, never imports: {inbound_callers:?}"
+    );
+    assert!(inbound_callers
+        .iter()
+        .all(|c| c["caller_path"] == "pkg/api.py" && c["edge_kind"] == "calls"));
+    let outbound = boundary["outbound_dependencies"]["items"]
+        .as_array()
+        .unwrap();
+    assert!(outbound
+        .iter()
+        .any(|g| g["scope"] == "internal" && g["target"] == "pkg/util.py"));
+    assert!(outbound
+        .iter()
+        .any(|g| g["scope"] == "external" && g["target"] == "json"));
+    let internal_pub = boundary["internal_only_public"]["items"]
+        .as_array()
+        .unwrap();
+    let internal_pub_names: BTreeSet<&str> = internal_pub
+        .iter()
+        .filter_map(|n| n["name"].as_str())
+        .collect();
+    assert!(
+        internal_pub_names.contains("internal_only_pub"),
+        "{internal_pub_names:?}"
+    );
+    assert!(
+        internal_pub_names.contains("imported_only_pub"),
+        "import-only reference must not remove pub symbol from zero-external-callers: {internal_pub_names:?}"
+    );
+    assert!(
+        !internal_pub_names.contains("central_hub"),
+        "externally called hub must not be internal-only"
+    );
+    assert!(
+        !internal_pub_names.contains("_private_helper"),
+        "private symbol must not be in internal_only_public"
+    );
+
+    // 6. Path: fail-closed missing `to`, shortest + top-K (including 1-hop + 4-hop), self-path, unreachable
+    for missing_to in [None, Some("   ")] {
+        let err = analyze_with_mode(
+            &conn,
+            &AnalyzeRequest {
+                mode: AnalyzeMode::Path,
+                target: "alt_route",
+                to: missing_to,
+                include_cycles: None,
+                page: &page,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("requires a destination selector in 'to'"),
+            "{err}"
+        );
+    }
+    let path_res = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "alt_route",
+            to: Some("central_hub"),
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(path_res["reachable"], true);
+    assert_eq!(path_res["shortest_hops"], 2);
+    assert_eq!(path_res["total_paths"], 2);
+    let paths = path_res["paths"].as_array().unwrap();
+    assert!(paths
+        .iter()
+        .all(|p| p["hops"] == 2 && p["edges"][0]["kind"] == "calls"));
+    let mixed_len = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "direct_and_long",
+            to: Some("central_hub"),
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(mixed_len["shortest_hops"], 1);
+    assert_eq!(mixed_len["total_paths"], 2);
+    assert_eq!(mixed_len["paths"][0]["hops"], 1);
+    assert_eq!(mixed_len["paths"][1]["hops"], 4);
+    let unreachable = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "leaf_sink",
+            to: Some("alt_route"),
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(unreachable["reachable"], false);
+    assert_eq!(unreachable["total_paths"], 0);
+    let self_path = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "leaf_sink",
+            to: Some("leaf_sink"),
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(self_path["reachable"], true);
+    assert_eq!(self_path["shortest_hops"], 0);
+
+    // 7. Entrypoints: reverse tracing to stored entrypoint + uncalled public roots + workspace mode
+    let ep_res = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "leaf_sink",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    let roots = ep_res["roots"]["items"].as_array().unwrap();
+    let explicit = roots
+        .iter()
+        .find(|r| r["name"] == "cli_entry")
+        .expect("explicit cli_command entrypoint");
+    assert_eq!(explicit["root_kind"], "entrypoint");
+    assert_eq!(explicit["category"], "cli_command");
+    assert_eq!(explicit["hops"], 3);
+    let pub_root = roots
+        .iter()
+        .find(|r| r["name"] == "alt_route")
+        .expect("uncalled public root");
+    assert_eq!(pub_root["root_kind"], "uncalled_public_root");
+    assert_eq!(pub_root["category"], "public_root");
+    assert!(
+        !roots.iter().any(|r| r["name"] == "caller_a"),
+        "called intermediate must not be uncalled root"
+    );
+    let ws_ep = analyze_with_mode(
+        &conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    let ws_roots = ws_ep["roots"]["items"].as_array().unwrap();
+    assert_eq!(ws_roots[0]["root_kind"], "entrypoint");
+    assert_eq!(ws_roots[0]["name"], "cli_entry");
+
+    // 8. Pure read-only guarantee (INV-READONLY-OVER-INDEX)
+    assert_eq!(persisted_state(&conn), before);
+
+    // 9. In-memory adversarial graph contract checks:
+    //    (a) eligible-only PageRank node/edge budgets (no silent truncation from ineligible rows),
+    //    (b) 150x150 wide converging graph finds depth-4 shortest path without state explosion,
+    //    (c) possible_calls does not mask uncalled_public_root, and unresolved deps stay distinct from external.
+    let mem = Connection::open_in_memory().unwrap();
+    mem.execute_batch(acdd_index::db::schema::SCHEMA_DDL)
+        .unwrap();
+    mem.execute(
+        "INSERT INTO metadata(key,value) VALUES('output_root','mem-gen')",
+        [],
+    )
+    .unwrap();
+    let (h_a, h_b, h_c, h_t1) = (
+        stable_hash64("fn:src:a"),
+        stable_hash64("fn:src:b"),
+        stable_hash64("fn:src:c"),
+        stable_hash64("fn:tests:t1"),
+    );
+    mem.execute_batch(&format!(
+        "INSERT INTO path_dictionary(path_id,path) VALUES(1,'archive/old.rs'),(2,'src/lib.rs'),(3,'tests/t.rs');
+         INSERT INTO files(path,status,digest,size,language,is_test,generated,path_hash) VALUES
+           ('archive/old.rs','indexed','d1',10,'rust',0,0,1),
+           ('src/lib.rs','indexed','d2',10,'rust',0,0,2),
+           ('tests/t.rs','indexed','d3',10,'rust',1,0,3);
+         INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'exact');
+         INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details) VALUES
+           ({},'fn:archive:old','function','old','old',1,1,1,2,0,'rust',0,'{{}}'),
+           ({h_a},'fn:src:a','function','a','a',2,2,1,2,0,'rust',0,'{{\"is_public\":true}}'),
+           ({h_b},'fn:src:b','function','b','b',2,2,3,4,0,'rust',0,'{{\"is_public\":true}}'),
+           ({h_c},'fn:src:c','function','c','c',2,2,5,6,0,'rust',0,'{{\"is_public\":true}}'),
+           ({h_t1},'fn:tests:t1','function','t1','t1',3,3,1,2,1,'rust',0,'{{\"test_role\":\"test_case\"}}');
+         INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES
+           ({h_a},'calls',{h_b},2,2,1,1,1),
+           ({h_a},'possible_calls',{h_c},2,2,1,1,1),
+           ({h_t1},'calls',{h_a},3,2,1,1,1),
+           ({h_t1},'calls',{h_b},3,2,1,1,1);
+         INSERT INTO dependencies(owner_id,ordinal,target_hash,kind,symbol,resolution) VALUES
+           (2,0,NULL,'import','serde','external'),
+           (2,1,NULL,'import','missing_mod','unresolved');",
+        i64::MIN
+    ))
+    .unwrap();
+    // (a) max_nodes=2 must fail closed even though low-hash archive/old.rs sorts first
+    let node_cap_err = pagerank_centrality(
+        &mem,
+        &PageRankConfig {
+            max_nodes: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(node_cap_err.contains("node budget"), "{node_cap_err}");
+    // Test edges must not consume production edge budget (2 prod edges: 1->2 calls, 1->3 possible_calls)
+    assert!(pagerank_centrality(
+        &mem,
+        &PageRankConfig {
+            max_edges: 2,
+            ..Default::default()
+        }
+    )
+    .is_ok());
+    // (c) possible_calls to `c` must NOT suppress uncalled_public_root in either workspace or targeted mode
+    for ep_target in ["", "fn:src:c"] {
+        let ep = analyze_with_mode(
+            &mem,
+            &AnalyzeRequest {
+                mode: AnalyzeMode::Entrypoints,
+                target: ep_target,
+                to: None,
+                include_cycles: None,
+                page: &page,
+            },
+        )
+        .unwrap();
+        let items = ep["roots"]["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|r| r["name"] == "c" && r["root_kind"] == "uncalled_public_root"),
+            "target={ep_target:?} must classify possible_calls-only public symbol as uncalled_public_root: {items:?}"
+        );
+    }
+    // Unresolved dependency must stay distinct from external dependency in boundary
+    let mem_boundary = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Boundary,
+            target: "src/lib.rs",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(mem_boundary["summary"]["outbound_external_groups"], 1);
+    assert_eq!(mem_boundary["summary"]["outbound_unresolved_groups"], 1);
+
+    // (e) QueryBudget preserves caller-installed SQLite progress_handler AND PageRank never returns Ok past deadline
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let cancel_cb = std::sync::Arc::clone(&cancel);
+    mem.progress_handler(
+        1,
+        Some(move || cancel_cb.load(std::sync::atomic::Ordering::SeqCst)),
+    );
+    assert!(mem
+        .query_row("SELECT count(*) FROM edges", [], |r| r.get::<_, i64>(0))
+        .is_err());
+    cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Boundary,
+            target: "src/lib.rs",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .is_ok());
+    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        mem.query_row("SELECT count(*) FROM edges", [], |r| r.get::<_, i64>(0))
+            .is_err(),
+        "QueryBudget must preserve caller-installed SQLite progress_handler"
+    );
+    mem.progress_handler(0, None::<fn() -> bool>);
+
+    let empty_slow = Connection::open_in_memory().unwrap();
+    empty_slow
+        .execute_batch(acdd_index::db::schema::SCHEMA_DDL)
+        .unwrap();
+    let slept = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let slept_cb = std::sync::Arc::clone(&slept);
+    empty_slow.progress_handler(
+        1,
+        Some(move || {
+            if !slept_cb.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        }),
+    );
+    let late_err = pagerank_centrality(
+        &empty_slow,
+        &PageRankConfig {
+            budget: Duration::from_millis(20),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        late_err.contains("two second budget")
+            || late_err.to_ascii_lowercase().contains("interrupt"),
+        "empty graph past deadline must fail closed, got: {late_err}"
+    );
+
+    // (b) Dense converging graphs + irrelevant-branch direct shortest-path check (set-oriented SQL):
+    //     (i) equal-length 3-hop routes (S -> 150 L -> 150 R -> Teq) with limit=1 and limit=5,
+    //     (ii) single depth-4 winning branch (S -> 150 L -> 150 R, R0 -> mid -> T),
+    //     (iii) irrelevant huge sibling branch (S2 -> T2 and S2 -> B -> 20,000 leaves) with limit=1.
+    let (h_ws, h_wmid, h_wt, h_weq, h_s2, h_t2, h_b2) = (
+        stable_hash64("fn:wide:S"),
+        stable_hash64("fn:wide:mid"),
+        stable_hash64("fn:wide:T"),
+        stable_hash64("fn:wide:Teq"),
+        stable_hash64("fn:irr:S"),
+        stable_hash64("fn:irr:T"),
+        stable_hash64("fn:irr:B"),
+    );
+    mem.execute_batch(&format!(
+        "BEGIN;
+         INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details) VALUES
+           ({h_ws},'fn:wide:S','function','wide_s','wide_s',2,2,10,11,0,'rust',0,'{{}}'),
+           ({h_wmid},'fn:wide:mid','function','wide_mid','wide_mid',2,2,12,13,0,'rust',0,'{{}}'),
+           ({h_wt},'fn:wide:T','function','wide_t','wide_t',2,2,14,15,0,'rust',0,'{{}}'),
+           ({h_weq},'fn:wide:Teq','function','wide_teq','wide_teq',2,2,16,17,0,'rust',0,'{{}}'),
+           ({h_s2},'fn:irr:S','function','irr_s','irr_s',2,2,18,19,0,'rust',0,'{{}}'),
+           ({h_t2},'fn:irr:T','function','irr_t','irr_t',2,2,20,21,0,'rust',0,'{{}}'),
+           ({h_b2},'fn:irr:B','function','irr_b','irr_b',2,2,22,23,0,'rust',0,'{{}}');
+         WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM seq WHERE i < 149)
+         INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details)
+         SELECT 2000+i,'fn:wide:l1_'||i,'function','l1_'||i,'l1_'||i,2,2,20,21,0,'rust',0,'{{}}' FROM seq
+         UNION ALL
+         SELECT 3000+i,'fn:wide:l2_'||i,'function','l2_'||i,'l2_'||i,2,2,30,31,0,'rust',0,'{{}}' FROM seq;
+         WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM seq WHERE i < 149)
+         INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count)
+         SELECT {h_ws},'calls',2000+i,2,20,1,1,1 FROM seq
+         UNION ALL SELECT 3000+i,'calls',{h_weq},2,31,1,1,1 FROM seq
+         UNION ALL SELECT 2000+a.i,'calls',3000+b.i,2,25,1,1,1 FROM seq a CROSS JOIN seq b;
+         INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES
+           (3000,'calls',{h_wmid},2,35,1,1,1),({h_wmid},'calls',{h_wt},2,36,1,1,1),
+           ({h_s2},'calls',{h_t2},2,18,1,1,1),({h_s2},'calls',{h_b2},2,19,1,1,1);
+         WITH RECURSIVE leaves(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM leaves WHERE i < 19999)
+         INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details)
+         SELECT 100000+i,'fn:irr:leaf_'||i,'function','leaf_'||i,'leaf_'||i,2,2,40,41,0,'rust',0,'{{}}' FROM leaves;
+         WITH RECURSIVE leaves(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM leaves WHERE i < 19999)
+         INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count)
+         SELECT {h_b2},'calls',100000+i,2,40,1,1,1 FROM leaves;
+         COMMIT;"
+    ))
+    .unwrap();
+    let wide_path = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "fn:wide:S",
+            to: Some("fn:wide:T"),
+            include_cycles: None,
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(wide_path["reachable"], true);
+    assert_eq!(wide_path["shortest_hops"], 4);
+    assert_eq!(wide_path["total_paths"], 1);
+    let irr_path = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Path,
+            target: "fn:irr:S",
+            to: Some("fn:irr:T"),
+            include_cycles: None,
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(irr_path["reachable"], true);
+    assert_eq!(irr_path["shortest_hops"], 1);
+    assert_eq!(irr_path["total_paths"], 1);
+    assert_eq!(irr_path["paths"][0]["edges"][0]["kind"], "calls");
+    for limit in [1, 5] {
+        let eq_path = analyze_with_mode(
+            &mem,
+            &AnalyzeRequest {
+                mode: AnalyzeMode::Path,
+                target: "fn:wide:S",
+                to: Some("fn:wide:Teq"),
+                include_cycles: None,
+                page: &options(limit),
+            },
+        )
+        .unwrap();
+        assert_eq!(eq_path["reachable"], true);
+        assert_eq!(eq_path["shortest_hops"], 3);
+        assert_eq!(eq_path["total_paths"], limit);
+    }
+
+    // (d) Entrypoints: 33-edge chain fails closed (no silent omission), 32-edge chain returns explicit root,
+    //     and targeted mode never reports an is_test=1 public node as a production uncalled_public_root.
+    let h_tpub = stable_hash64("fn:tests:t_pub");
+    let mut deep_sql = format!(
+        "BEGIN; INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details) VALUES \
+         ({h_tpub},'fn:tests:t_pub','function','t_pub','t_pub',2,2,40,41,1,'rust',0,'{{\"is_public\":true}}');"
+    );
+    let chain_ids: Vec<String> = (0..=33).map(|i| format!("fn:deep:n{i}")).collect();
+    for (i, id) in chain_ids.iter().enumerate() {
+        let h = stable_hash64(id);
+        let details = if i == 0 {
+            "{\"entrypoint\":\"cli_command\"}"
+        } else {
+            "{}"
+        };
+        deep_sql.push_str(&format!(
+            "INSERT INTO nodes(node_hash,id,kind,name,qualname,path_id,owner_path_id,line,end_line,is_test,language,generated,details) VALUES \
+             ({h},'{id}','function','deep_n{i}','deep_n{i}',2,2,{}, {},0,'rust',0,'{details}');",
+            50 + i,
+            51 + i
+        ));
+        if i > 0 {
+            let prev_h = stable_hash64(&chain_ids[i - 1]);
+            deep_sql.push_str(&format!(
+                "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES ({prev_h},'calls',{h},2,{},1,1,1);",
+                50 + i
+            ));
+        }
+    }
+    deep_sql.push_str("COMMIT;");
+    mem.execute_batch(&deep_sql).unwrap();
+
+    let deep_33_err = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "fn:deep:n33",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        deep_33_err.contains("exceeds depth budget"),
+        "{deep_33_err}"
+    );
+    let deep_32 = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "fn:deep:n32",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(deep_32["roots"]["total"], 1);
+    assert_eq!(deep_32["roots"]["items"][0]["id"], "fn:deep:n0");
+    assert_eq!(deep_32["roots"]["items"][0]["hops"], 32);
+
+    let test_root = analyze_with_mode(
+        &mem,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Entrypoints,
+            target: "fn:tests:t_pub",
+            to: None,
+            include_cycles: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        test_root["roots"]["total"], 0,
+        "is_test=1 public node must not be classified as a production uncalled_public_root"
+    );
+}

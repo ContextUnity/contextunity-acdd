@@ -1,6 +1,6 @@
 //! Read-only code-map SQLite admission, query execution, selectors, and projections.
 
-mod diagnostics;
+pub(crate) mod diagnostics;
 pub(crate) mod docs;
 pub(crate) mod inspect;
 mod open;
@@ -9,7 +9,25 @@ pub(crate) mod selectors;
 pub(crate) mod sql;
 pub(crate) mod types;
 
-pub use diagnostics::analyze_paged;
+/// Runs a bounded read-only analysis query with generation-aware pagination.
+pub fn analyze_paged(
+    conn: &rusqlite::Connection,
+    target: &str,
+    include_cycles: Option<bool>,
+    options: &acdd_core::response::QueryOptions,
+) -> anyhow::Result<serde_json::Value> {
+    use crate::db::analyze::{analyze_with_mode, AnalyzeMode, AnalyzeRequest};
+    analyze_with_mode(
+        conn,
+        &AnalyzeRequest {
+            mode: AnalyzeMode::Summary,
+            target,
+            to: None,
+            include_cycles,
+            page: options,
+        },
+    )
+}
 pub use docs::{get_doc_paged, search_docs_with_options};
 pub use inspect::{governing_invariants, governing_invariants_for_scope, inspect_paged_with_path};
 pub use open::{

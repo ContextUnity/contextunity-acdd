@@ -1,8 +1,8 @@
 use super::super::commitments::{read_metadata, MetadataKey};
-use super::super::{cycles, paging, source};
+use super::super::{cycles, paging, source, symbols};
 use super::selectors::path_bounds;
 use super::sql::rows;
-use crate::models::tags::{CoverageStatus, EdgeKind};
+use crate::models::tags::CoverageStatus;
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, ensure, Result};
 use rusqlite::{Connection, ToSql};
@@ -42,7 +42,7 @@ fn sql_schema_hint(error: anyhow::Error) -> anyhow::Error {
 /// # Errors
 ///
 /// Rejects unsupported SQL, stale generations, and result budget violations.
-pub fn analyze_paged(
+pub(crate) fn analyze_summary_paged(
     conn: &Connection,
     target: &str,
     include_cycles: Option<bool>,
@@ -118,8 +118,8 @@ pub fn analyze_paged(
     )?;
     let mut result = json!({"target":target,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
     let public_surface_sql = format!(
-        "WITH RECURSIVE covered(node_hash) AS (SELECT n.node_hash FROM nodes n WHERE n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' UNION SELECT e.dst_hash FROM edges e JOIN covered c ON c.node_hash=e.src_hash WHERE e.kind='{}') SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?1='' OR p.path=?1 OR (p.path>=?2 AND p.path<?3)) AND n.is_test=0 AND json_extract(n.details,'$.is_public')=1 AND NOT EXISTS(SELECT 1 FROM covered c WHERE c.node_hash=n.node_hash) ORDER BY p.path,n.line,n.id",
-        EdgeKind::Calls.as_str(),
+        "{} SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?1='' OR p.path=?1 OR (p.path>=?2 AND p.path<?3)) AND n.is_test=0 AND json_extract(n.details,'$.is_public')=1 AND NOT EXISTS(SELECT 1 FROM covered c WHERE c.node_hash=n.node_hash) ORDER BY p.path,n.line,n.id",
+        symbols::verified_calls_covered_cte(),
         paging::nodes_with_path("n", options.detail, "p.path")
     );
     result["untested_public_surface"] = paging::query(conn, &public_surface_sql, params, options)?;
