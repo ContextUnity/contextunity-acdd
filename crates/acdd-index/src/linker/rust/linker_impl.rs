@@ -151,26 +151,6 @@ fn normalize_single_rust_import(
     profile.normalize_import_with_root(ctx.root, path, module)
 }
 
-fn value_expr_mentions(expr: &crate::semantic::ValueExpr, name: &str) -> bool {
-    use crate::semantic::ValueExpr;
-    match expr {
-        ValueExpr::Alias { name: n } => n == name,
-        ValueExpr::Call { callee, site } => {
-            callee == name
-                || site
-                    .as_ref()
-                    .and_then(|s| s.receiver.as_deref())
-                    .is_some_and(|r| value_expr_mentions(r, name))
-        }
-        ValueExpr::Await { value }
-        | ValueExpr::Scoped { value, .. }
-        | ValueExpr::Project { value, .. }
-        | ValueExpr::RustField { value, .. }
-        | ValueExpr::RustProject { value, .. } => value_expr_mentions(value, name),
-        _ => false,
-    }
-}
-
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
@@ -411,6 +391,12 @@ impl LanguageLinker for RustLinker {
                 }),
         }
     }
+    fn collects_flow_bindings(&self, node: &Node) -> bool {
+        matches!(
+            node.kind,
+            crate::models::tags::NodeKind::Function | crate::models::tags::NodeKind::Method
+        )
+    }
     fn lexical_binding_active(
         &self,
         reference: &crate::models::Reference,
@@ -421,22 +407,28 @@ impl LanguageLinker for RustLinker {
         if binding_owner
             .parameter_types()
             .any(|(param, _)| param == first)
+            || (binding_owner.binding_names().any(|name| name == first)
+                && !binding_owner.rebinding_names().any(|name| name == first))
         {
             return true;
         }
         let Some(crate::typed_facts::FlowState::Valid { facts, .. }) = flow else {
             return true;
         };
+        let ref_pos = reference.position();
         let mut has_fact = false;
         for binding in &facts.bindings {
             if binding.name != first {
                 continue;
             }
             has_fact = true;
-            if binding.position.line < reference.line
-                || (binding.position.line == reference.line
-                    && !value_expr_mentions(&binding.value, first))
-            {
+            let active = match &binding.value {
+                crate::semantic::ValueExpr::Scoped { body_end, .. } => {
+                    binding.position <= ref_pos && ref_pos < *body_end
+                }
+                _ => binding.position <= ref_pos,
+            };
+            if active {
                 return true;
             }
         }

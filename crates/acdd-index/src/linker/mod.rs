@@ -855,23 +855,36 @@ fn build_node_binding_indexes(
                     .collect(),
             );
         }
-        if languages::by_id(n.language.as_str())
-            .is_some_and(|profile| profile.linker().collects_module_flow_rebindings(n))
-        {
-            if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
-                flows.and_then(|states| states.get(&node_id))
-            {
-                let rebindings = node_rebindings.entry(node_id).or_default();
-                rebindings.extend(facts.bindings.iter().map(|binding| {
-                    interner
-                        .lookup_symbol(&binding.name)
-                        .expect("flow binding name is interned")
-                }));
-                rebindings.extend(facts.branch_joins.iter().map(|join| {
-                    interner
-                        .lookup_symbol(&join.name)
-                        .expect("branch join name is interned")
-                }));
+        if let Some(profile) = languages::by_id(n.language.as_str()) {
+            let linker = profile.linker();
+            let collect_rebindings = linker.collects_module_flow_rebindings(n);
+            let collect_bindings = linker.collects_flow_bindings(n);
+            if collect_rebindings || collect_bindings {
+                if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
+                    flows.and_then(|states| states.get(&node_id))
+                {
+                    if collect_rebindings {
+                        let rebindings = node_rebindings.entry(node_id).or_default();
+                        rebindings.extend(facts.bindings.iter().map(|binding| {
+                            interner
+                                .lookup_symbol(&binding.name)
+                                .expect("flow binding name is interned")
+                        }));
+                        rebindings.extend(facts.branch_joins.iter().map(|join| {
+                            interner
+                                .lookup_symbol(&join.name)
+                                .expect("branch join name is interned")
+                        }));
+                    }
+                    if collect_bindings {
+                        node_bindings.entry(node_id).or_default().extend(
+                            facts
+                                .bindings
+                                .iter()
+                                .filter_map(|binding| interner.lookup_symbol(&binding.name)),
+                        );
+                    }
+                }
             }
         }
     }

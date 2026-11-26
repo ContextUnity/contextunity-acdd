@@ -447,7 +447,11 @@ fn ordinary_typescript_class_call_is_not_a_constructor() {
 }
 
 #[test]
-#[cfg(all(feature = "lang-rust", feature = "lang-python", feature = "lang-typescript"))]
+#[cfg(all(
+    feature = "lang-rust",
+    feature = "lang-python",
+    feature = "lang-typescript"
+))]
 fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
     use acdd_index::{ast, models::Reference};
 
@@ -480,7 +484,12 @@ fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
     for (path, lang, source, real_field_expr, extracted_local_member) in cases {
         let mut facts = ast::extract(path, lang, source).unwrap();
         assert!(facts.errors.is_empty(), "{lang}: {:?}", facts.errors);
-        let driver = facts.nodes.iter().find(|n| n.name == "driver").unwrap().clone();
+        let driver = facts
+            .nodes
+            .iter()
+            .find(|n| n.name == "driver")
+            .unwrap()
+            .clone();
         facts.references.push(Reference {
             source: driver.id.clone(),
             expression: "local".into(),
@@ -499,7 +508,10 @@ fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
             graph.edges.iter().any(|e| {
                 e.kind == "mutates"
                     && e.evidence == real_field_expr
-                    && all[path].nodes.iter().any(|n| n.id == e.dst && n.name == "count")
+                    && all[path]
+                        .nodes
+                        .iter()
+                        .any(|n| n.id == e.dst && n.name == "count")
             }),
             "{lang}: missing real field mutates edge: {:#?}",
             graph.edges
@@ -515,7 +527,12 @@ fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
             graph.coverage
         );
         if let Some((owner_name, expr)) = extracted_local_member {
-            let line = all[path].nodes.iter().find(|n| n.name == owner_name).unwrap().line;
+            let line = all[path]
+                .nodes
+                .iter()
+                .find(|n| n.name == owner_name)
+                .unwrap()
+                .line;
             assert!(
                 !graph
                     .coverage
@@ -525,5 +542,158 @@ fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
                 graph.coverage
             );
         }
+    }
+
+    let ref_source = r#"
+mod sub {
+    pub fn mod_helper(_v: &i32) -> i32 { 1 }
+}
+struct Holder<'a> { item: &'a i32 }
+struct FnHolder { cb: &'static fn(&i32) -> i32 }
+struct FnMutHolder<'a> { cb: &'a mut fn(&i32) -> i32 }
+fn helper(v: &i32) -> i32 { *v }
+fn shadow() {}
+fn mut_shadow() {}
+fn let_shadow() {}
+fn same_line_shadow() -> i32 { 1 }
+fn block_shadow(_v: &i32) -> i32 { 1 }
+fn if_shadow(_v: &i32) -> i32 { 1 }
+fn while_shadow(_v: &i32) -> i32 { 1 }
+fn for_shadow(_v: &i32) -> i32 { 1 }
+fn match_shadow(_v: &i32) -> i32 { 1 }
+fn closure_shadow(_v: &i32) -> i32 { 1 }
+fn take(_a: &i32, _b: &mut i32, _h: Holder<'_>, _s: &[&i32]) {}
+fn apply(f: fn(&i32) -> i32, x: &i32) -> i32 { f(x) }
+fn apply_mut(f: &mut fn(&i32) -> i32, x: &i32) -> i32 { f(x) }
+fn driver(
+    param: i32,
+    mut local: i32,
+    shadow: i32,
+    mut mut_shadow: i32,
+    items: Vec<i32>,
+    opt: Option<i32>,
+    mut iter_opts: Vec<Option<i32>>,
+) {
+    let let_shadow = 42;
+    let same_line_shadow = same_line_shadow(); take(&same_line_shadow, &mut local, Holder { item: &same_line_shadow }, &[&same_line_shadow]);
+    take(&param, &mut local, Holder { item: &local }, &[&param]);
+    take(&shadow, &mut mut_shadow, Holder { item: &shadow }, &[&mut mut_shadow]);
+    take(&let_shadow, &mut local, Holder { item: &let_shadow }, &[&let_shadow]);
+    {
+        let block_shadow = 1;
+        take(&block_shadow, &mut local, Holder { item: &block_shadow }, &[&block_shadow]);
+    }
+    let _ = apply(&block_shadow, &param);
+    if let Some(if_shadow) = opt {
+        take(&if_shadow, &mut local, Holder { item: &if_shadow }, &[&if_shadow]);
+    }
+    let _ = apply(&if_shadow, &param);
+    while let Some(Some(while_shadow)) = iter_opts.pop() {
+        take(&while_shadow, &mut local, Holder { item: &while_shadow }, &[&while_shadow]);
+    }
+    let _ = apply_mut(&mut while_shadow, &param);
+    for for_shadow in &items {
+        take(for_shadow, &mut local, Holder { item: for_shadow }, &[for_shadow]);
+    }
+    let _ = apply(&for_shadow, &param);
+    match opt {
+        Some(match_shadow) => take(&match_shadow, &mut local, Holder { item: &match_shadow }, &[&match_shadow]),
+        None => {}
+    }
+    let _ = apply(&match_shadow, &param);
+    items.iter().for_each(|closure_shadow| {
+        take(closure_shadow, &mut local, Holder { item: closure_shadow }, &[closure_shadow]);
+    });
+    let _ = apply(&closure_shadow, &param);
+    let _ = items.iter().map(helper);
+    let _ = items.iter().map(&helper);
+    let _ = items.iter().map(&mut helper);
+    let _ = apply(helper, &param);
+    let _ = apply(&helper, &local);
+    let _ = apply_mut(&mut helper, &local);
+    let _ = FnHolder { cb: &helper };
+    let _ = FnMutHolder { cb: &mut helper };
+    let _ = [&helper];
+    let _ = [&mut helper];
+    let _ = apply(sub::mod_helper, &param);
+    let _ = apply(&sub::mod_helper, &local);
+    let _ = apply_mut(&mut sub::mod_helper, &local);
+    let _ = FnHolder { cb: &sub::mod_helper };
+    let _ = FnMutHolder { cb: &mut sub::mod_helper };
+    let _ = [&sub::mod_helper];
+    let _ = [&mut sub::mod_helper];
+}
+"#;
+    let ref_facts = ast::extract("refs.rs", "rust", ref_source).unwrap();
+    assert!(ref_facts.errors.is_empty(), "{:?}", ref_facts.errors);
+    for non_declared in ["param", "local"] {
+        assert!(
+            !ref_facts
+                .references
+                .iter()
+                .any(|r| r.kind == "calls" && r.expression == non_declared),
+            "non-declared `{non_declared}` must not emit a calls reference: {:#?}",
+            ref_facts.references
+        );
+    }
+    let node_id = |name: &str| {
+        ref_facts
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("missing node `{name}`"))
+            .id
+            .clone()
+    };
+    let expected_call_counts: Vec<(&str, usize)> = vec![
+        ("shadow", 0),
+        ("mut_shadow", 0),
+        ("let_shadow", 0),
+        ("same_line_shadow", 1),
+        ("block_shadow", 1),
+        ("if_shadow", 1),
+        ("while_shadow", 1),
+        ("for_shadow", 1),
+        ("match_shadow", 1),
+        ("closure_shadow", 1),
+        ("helper", 10),
+        ("mod_helper", 7),
+    ];
+    let expected_ids: Vec<_> = expected_call_counts
+        .iter()
+        .map(|(name, expected)| (*name, node_id(name), *expected))
+        .collect();
+    let ref_graph = crate::common::link_facts(&BTreeMap::from([("refs.rs".to_owned(), ref_facts)]));
+    assert!(
+        !ref_graph.coverage.iter().any(|r| {
+            matches!(
+                r.expression.as_str(),
+                "param" | "local" | "shadow" | "mut_shadow" | "let_shadow"
+            ) || (r.status == "unresolved"
+                && matches!(
+                    r.expression.as_str(),
+                    "same_line_shadow"
+                        | "block_shadow"
+                        | "if_shadow"
+                        | "while_shadow"
+                        | "for_shadow"
+                        | "match_shadow"
+                        | "closure_shadow"
+                ))
+        }),
+        "shadowed data refs must not produce call coverage rows: {:#?}",
+        ref_graph.coverage
+    );
+    for (name, id, expected) in expected_ids {
+        let count = ref_graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == "calls" && e.dst == id)
+            .count();
+        assert_eq!(
+            count, expected,
+            "unexpected calls edge count for `{name}`: {:#?}",
+            ref_graph.edges
+        );
     }
 }

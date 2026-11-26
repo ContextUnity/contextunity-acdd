@@ -407,6 +407,7 @@ enum_codec!(ReceiverHint, validate_receiver_hint {
     7 => VueSetupMacroCallable, 8 => VueSetupRuntimeCallable, 9 => TypeOnlyImport, 10 => HtmlClassicScriptSource,
     11 => ConfiguredTypedMember { origin, field_id }, 12 => ConfiguredMacroCallable { origin, producer },
     13 => ConfiguredReference { origin }, 14 => NamedRoute { origin, key }, 15 => TypedCallResult { value, member },
+    16 => CallableArg,
 });
 
 struct_codecs! {

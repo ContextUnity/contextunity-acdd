@@ -593,7 +593,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
                 body_end: Some(body_end),
                 conditional: false,
                 skip_uppercase_ident: false,
-                wrap_unknown: false,
+                wrap_unknown: true,
             },
         );
     }
@@ -647,7 +647,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
                     body_end: Some(body_end),
                     conditional: false,
                     skip_uppercase_ident: false,
-                    wrap_unknown: false,
+                    wrap_unknown: true,
                 },
             );
         }
@@ -929,7 +929,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
             body_end,
             conditional: is_conditional,
             skip_uppercase_ident: true,
-            wrap_unknown: false,
+            wrap_unknown: body_end.is_some(),
         };
         if pattern.kind() == "tuple_pattern" && val_node.kind() == "tuple_expression" {
             let mut p_cursor = pattern.walk();
@@ -981,7 +981,7 @@ impl<'source, 'tree> RustValueFlowCollector<'source, 'tree> {
                 body_end: Some(body_end),
                 conditional: true,
                 skip_uppercase_ident: true,
-                wrap_unknown: false,
+                wrap_unknown: true,
             },
         );
     }

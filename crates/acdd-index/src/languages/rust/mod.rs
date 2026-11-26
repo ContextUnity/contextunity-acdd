@@ -1929,9 +1929,7 @@ fn emit_callable_arg(
     facts: &mut Facts,
     combinator: bool,
 ) {
-    let mut is_ref = false;
     while arg.kind() == "reference_expression" {
-        is_ref = true;
         let Some(inner) = arg
             .child_by_field_name("value")
             .or_else(|| arg.named_child(0))
@@ -1944,13 +1942,23 @@ fn emit_callable_arg(
     let is_callable_arg = match arg.kind() {
         "identifier" => {
             !matches!(raw, "self" | "true" | "false" | "_")
-                && (combinator || is_ref || is_file_declared_callable(ctx, facts, raw))
+                && (combinator || is_file_declared_callable(ctx, facts, raw))
         }
         "scoped_identifier" => is_lowercase_scoped_callable(raw, combinator),
         _ => false,
     };
     if is_callable_arg && !raw.is_empty() {
-        relations::reference(facts, ctx.owner, raw, "calls", arg.start_position().row + 1);
+        facts.references.push(Reference {
+            source: ctx.owner.into(),
+            expression: raw.into(),
+            kind: "calls".into(),
+            line: arg.start_position().row + 1 + ctx.offset,
+            column: arg.start_position().column,
+            alias: None,
+            module: None,
+            dynamic: false,
+            receiver_hint: (!combinator).then_some(ReceiverHint::CallableArg),
+        });
     }
 }
 

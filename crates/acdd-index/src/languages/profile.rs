@@ -1667,6 +1667,9 @@ pub(crate) trait LanguageLinker: Send + Sync {
     fn collects_module_flow_rebindings(&self, _node: &Node) -> bool {
         false
     }
+    fn collects_flow_bindings(&self, _node: &Node) -> bool {
+        false
+    }
     fn strips_component_macro_raw_details(&self, _node: &Node) -> bool {
         false
     }

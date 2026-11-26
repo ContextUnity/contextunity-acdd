@@ -253,6 +253,9 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
             if resolve_language_reference(ctx, graph, r, owner, true) {
                 return;
             }
+            if matches!(r.receiver_hint, Some(ReceiverHint::CallableArg)) {
+                return;
+            }
             graph.reference_coverage(
                 ctx.path,
                 r,

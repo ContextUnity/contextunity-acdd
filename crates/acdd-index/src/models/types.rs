@@ -807,6 +807,8 @@ pub enum ReceiverHint {
     TypeOnlyImport,
     /// Exact synchronous classic script source declared by an HTML script tag.
     HtmlClassicScriptSource,
+    /// Rust call, struct-field, or array-element argument checked for lexical shadowing.
+    CallableArg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
