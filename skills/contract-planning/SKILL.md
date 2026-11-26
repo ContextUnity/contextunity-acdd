@@ -5,11 +5,14 @@ description: Build, audit, or amend implementation contracts, tasks, and milesto
 
 # Contract Planning and Architectural Audit
 
-Specify the goal, non-goals, ambiguities, and numbered `AC-*` criteria before
-design. Map criteria to bounded task slices and proof seams. Use before
-creating, reopening, materially amending, or admitting an implementation task
-or milestone plan, or whenever review shows an omitted owner, consumer, failure
-mode, or proof obligation.
+Specify the goal, non-goals, ambiguities, and numbered testable `AC-*`
+behavioral scenarios before design. Separate **WHAT / WHY** (spec contract,
+invariants, observable behavior, scope, negative boundaries) from **HOW**
+(architecture/ADRs and `blueprint_synthesis` `pre_task_slice`), map criteria to
+bounded task slices and proof seams, and audit against durable repository truth.
+Use before creating, reopening, materially amending, or admitting an
+implementation task or milestone plan, or whenever review shows an omitted owner,
+consumer, failure mode, or proof obligation.
 
 Before a review repair, compare unresolved findings against the frozen contract
 and limit edits to those findings; do not invent uncontracted scope from a
@@ -20,7 +23,11 @@ generic summary.
 1. Read root `AGENTS.md`, `architecture`/`decisions` docs, and `.agents/skills/contract-planning/ADDON.md`
    if the consuming repository defines one. An add-on may add local authority
    paths, invariants, or stricter checks; it never weakens this procedure.
-2. Read the active task, parent plan/phase, prerequisites, and successors before
+2. Separate durable system truth (`docs/architecture/`, `docs/reference/`,
+   accepted ADRs) from active change specs (`docs/milestones/`, `docs/plans/`);
+   ground every spec or blueprint edit as a delta against that truth and admit
+   affected doc/ADR updates into scope.
+3. Read the active task, parent plan/phase, prerequisites, and successors before
    drafting or amending any slice.
 
 ## 2. Audit Viability & Simplicity (Occam's Razor)
@@ -41,10 +48,13 @@ generic summary.
    explicit `AUTHORITY_GAP` decision candidate rather than burying assumptions in
    implementation tasks.
 
-## 4. Probe Ambiguities, Risks & Recovery
+## 4. Probe Ambiguities, Risks & Testable Scenarios
 
-1. **Eliminate ambiguity**: Replace vague wording with observable, testable
-   acceptance criteria.
+1. **Behavioral `AC-*` criteria (`Trigger / Precondition -> Action -> Outcome`)**:
+   Replace vague capability wishes with observable, falsifiable behavioral
+   scenarios naming inputs/conditions, action, and expected result or fail-closed
+   `ErrorCode`/rejection. Keep internal implementation choices (`HOW`) out of spec
+   task blocks unless they are external compatibility or boundary contracts.
 2. **Operational & platform bounds**: Check algorithmic complexity, I/O
    amplification, concurrency/lock ordering, byte limits, and OS path/symlink
    edge cases.
@@ -52,12 +62,13 @@ generic summary.
    restarts; require fail-closed diagnostics, clear error codes, and idempotent
    recovery.
 
-## 5. Synthesize Constructive Simplifications
+## 5. Negative Boundaries, Wave Disjointness & Simplifications
 
 Never stop at listing flaws: propose a cleaner alternative reusing proven
-patterns, and record explicit **negative boundaries** (traps, forbidden
-shortcuts, and paths not to touch) alongside realistic diff budgets so builders
-stay on the simplest viable seam.
+patterns, record explicit **`negative_boundaries`** (forbidden shortcuts,
+duplicate parsers/registries, uncontracted dependencies, off-limits
+`protected_paths`), set realistic `max_net_loc` budgets, and enforce strictly
+disjoint write `scope:` globs within every concurrent DAG wave.
 
 ## 6. Map Consumers & Freeze Execution Paths
 
@@ -86,3 +97,17 @@ Whenever a contract promises latency, throughput, size, or query-count bounds,
 specify the exact production operation, warmup policy, fixture cardinality,
 measurement interval, sample method, target bound, and regression mutation.
 Microbenchmarks on isolated helpers do not prove caller-path budgets.
+
+## 8. Three-Axis Spec & Blueprint Audit (Completeness, Correctness, Coherence)
+
+Audit every new or amended spec and `blueprint_synthesis` slice along three axes:
+
+1. **Completeness**: Every goal and `AC-*` maps 1:1 to bounded tasks/subtasks,
+   `verification_seam`s, and co-evolved documentation/ADR/roadmap scope without
+   unmapped requirements.
+2. **Correctness**: `AC-*` scenarios and seams verify happy paths, boundary
+   conditions, concurrency/confinement guards, and fail-closed rejections rather
+   than permissive fallbacks.
+3. **Coherence**: Changes reconcile cleanly with accepted ADRs, active `INV-*`
+   invariants, `INV-SINGLE-OWNER` canonical owners, crate DAG layers, and
+   disjoint same-wave write scopes.

@@ -42,7 +42,7 @@ roles:
   independent_reviewer:
     mode: subagent
     reuse_on_reject: false
-    guidance: "Spawn a fresh independent_reviewer distinct from the architect to audit architectural simplicity (Occam's razor), ADR/invariant alignment, acyclic wave disjointness, negative boundaries, and proportional seam proofs."
+    guidance: "Spawn a fresh independent_reviewer distinct from the architect to audit Completeness, Correctness, and Coherence: behavioral AC-* testability, Occam's razor, ADR/invariant alignment, acyclic wave disjointness, negative boundaries, and proportional seam proofs."
 
 proofs:
   spec_plan:
@@ -108,21 +108,23 @@ guidance:
       - "Use `acdd draft <collection> <slug> [--prefix <TAG>]` (or `acdd_state`) to allocate collision-free sequential IDs across active and `archive/` directories rather than guessing numbers."
       - "Ground every cited symbol, owner, and seam via `code_map_overview`, `code_map_search(detail: \"compact\")`, `code_map_inspect`, `code_map_impact`, and `acdd_read(selector: ...)`; ground ADRs and `INV-*` rules via `search_docs`/`get_doc`."
   plan.principles:
-    description: "ARCHITECTURAL VIABILITY, OCCAM'S RAZOR & WAVE HYGIENE"
+    description: "ARCHITECTURAL VIABILITY, SPECIFICATION DISCIPLINE & WAVE HYGIENE"
     criteria:
-      - "Specify `Goal`, `Non-goals`, edge cases, and numbered testable `AC-*` acceptance criteria before slicing tasks (`contract-planning`)."
-      - "Apply Occam's razor: reuse canonical single owners (`INV-SINGLE-OWNER`) and declarative config/profiles rather than introducing parallel helpers, shims, or shadow subsystems."
-      - "Partition tasks into acyclic waves (`depends_on`) with strictly disjoint write `scope` globs within every concurrent wave, realistic `max_net_loc` budgets, explicit negative boundaries, and narrow production seam tests; co-evolve affected `docs/` and `ROADMAP.md` in admitted scope."
+      - "Separate WHAT/WHY in the spec (`Goal`, `Non-goals`, `invariants`, `acceptance_criteria`, `scope`, `negative_boundaries`) from HOW (`ADRs` / `blueprint_synthesis`): keep task YAML free of internal helper recipes while anchoring deltas against durable `docs/architecture/` and `docs/reference/` truth."
+      - "Author every `AC-*` before slicing tasks (`contract-planning`) as a testable behavioral scenario (`Condition/Trigger -> Action -> Observable Outcome or Fail-Closed Rejection/ErrorCode`), avoiding vague capability statements."
+      - "Apply Occam's razor: reuse canonical single owners (`INV-SINGLE-OWNER`) and declarative config/profiles rather than introducing parallel helpers, shims, shadow subsystems, or forbidden dependencies (`negative_boundaries`)."
+      - "Partition tasks into acyclic waves (`depends_on`) with strictly disjoint write `scope` globs within every concurrent wave, realistic `max_net_loc` budgets, and narrow production seam tests; co-evolve affected `docs/` and `ROADMAP.md` in admitted scope."
   plan.synthesize:
     description: "PHASE 1: SPECIFICATION / MILESTONE / PLAN SYNTHESIS & STRUCTURAL PROOF"
     criteria:
-      - "Author or amend the target spec/plan/milestone inside the configured `acdd.yaml` `specs.<collection>` directory (and update `ROADMAP.md` when milestone scope or sequencing changes), keeping spec YAML concise and within claim context budgets."
+      - "Author or amend the target spec/plan/milestone inside the configured `acdd.yaml` `specs.<collection>` directory as a concise behavioral delta (updating `ROADMAP.md` when milestone scope or sequencing changes) within claim context budgets."
+      - "Bind every `AC-*` in `ac_mapping`, cite only verified symbols/invariants (`code_map_*`, `search_docs`), record explicit `negative_boundaries`, exclude `protected_paths`, and keep same-wave `scope:` globs disjoint."
       - "Run `acdd_verify` (`docs.specs`, `docs.links`, and `code.lint` `[arch, docs]`) and resolve any schema, prefix/digit, scope-overlap, broken-link, or lint diagnostics before submitting `spec_plan` proof."
   plan.review:
     description: "PHASE 2: INDEPENDENT ARCHITECTURAL & CONTRACT AUDIT"
     criteria:
-      - "Verify 1:1 that every user requirement and `AC-*` criterion is unambiguous, testable through a real production seam, and mapped to canonical layer owners without violating ADRs, `INV-*` rules, or `protected_paths`."
-      - "Verify `acdd.yaml` collection fit (`prefixes`, `digits`, `profile`), wave acyclicity, same-wave write-scope disjointness, and authentic symbol/invariant citations; reject to `synthesize` with actionable findings if over-engineered or underspecified."
+      - "Audit Completeness, Correctness, and Coherence: confirm 1:1 `Goal`/`AC-*` -> task/subtask -> seam mapping, falsifiable `Trigger -> Outcome / Fail-Closed` testability across edge/concurrency/error boundaries, and alignment with ADRs, `INV-*`, and `protected_paths`."
+      - "Audit `acdd.yaml` collection fit (`prefixes`, `digits`, `profile`), wave acyclicity, strict same-wave write-scope disjointness, explicit `negative_boundaries`, and authentic symbol/invariant citations; reject to `synthesize` with actionable findings if over-engineered or underspecified."
 
 contours:
   architecture:

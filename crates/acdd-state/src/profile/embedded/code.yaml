@@ -179,12 +179,14 @@ guidance:
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "Audit canonical owners first; populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules` naming the exact existing upstream producers/stores/types to reuse (forbidding parallel downstream parsers or resolvers), `max_net_loc`, `verification_seam`, and cross-task seams."
-      - "Post the decision via `acdd_blackboard` and cite its ID in `blackboard_decision_id`."
+      - "Audit canonical owners (`code_map_*`, `get_doc` / ADRs) first and map every spec `AC-*` in `ac_mapping` and `cited_invariants` before designing task slices (`HOW`)."
+      - "Populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules` naming exact existing upstream producers/stores/types to reuse or extend (forbidding parallel downstream parsers, shadow registries, or uncontracted fallbacks), explicit `negative_boundaries`, realistic `max_net_loc`, narrow `verification_seam` (happy + fail-closed paths), and complete `incoming_seams`/`outgoing_seams` alongside `global_negative_boundaries`."
+      - "Verify disjoint same-wave write scopes, `protected_paths` exclusion, and required doc/ADR deltas, then post the architectural decision via `acdd_blackboard` (`topic: decisions`) and cite its ID in `blackboard_decision_id`."
   milestone.blueprint_review:
     description: "INDEPENDENT BLUEPRINT REVIEW"
     criteria:
-      - "Verify invariants, canonical-owner reuse (rejecting any task design that duplicates an existing parser, resolver, or store instead of extending the upstream producer), layer boundaries, realistic `max_net_loc`, proportional verification, and a valid `blackboard_decision_id` across `proof.tasks`."
+      - "Audit Completeness, Correctness, and Coherence across `proof.tasks`: verify 1:1 `AC-*` coverage in `ac_mapping` -> `verification_seam`s, fail-closed edge/concurrency seam specifications, `incoming_seams`/`outgoing_seams` consistency, disjoint same-wave scopes, and realistic `max_net_loc` budgets."
+      - "Verify canonical-owner reuse (`INV-SINGLE-OWNER` — rejecting any design duplicating an existing parser, resolver, or store instead of extending the upstream producer), crate DAG layer boundaries, ADRs, `negative_boundaries`, `protected_paths`, and a valid `blackboard_decision_id`."
   task.code:
     description: "TASK BUILD & SEAM PROOF"
     criteria:
