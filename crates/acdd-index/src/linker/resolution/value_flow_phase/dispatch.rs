@@ -239,24 +239,29 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
         && !state
             .typed_receiver
             .is_some_and(|receiver| !matches!(receiver, ReceiverType::Unknown))
-        && matches!(
-            r.kind.as_str(),
-            k if k == EdgeKind::Calls.as_str()
-                || k == EdgeKind::Handles.as_str()
-                || k == EdgeKind::Mutates.as_str()
-        )
     {
-        if resolve_language_reference(ctx, graph, r, owner, true) {
+        if r.kind == EdgeKind::Mutates.as_str() {
+            // Mutating a local binding or untyped parameter is not a shadowed callable;
+            // allow language-specific dynamic hooks, otherwise skip unresolved callee coverage.
+            let _ = resolve_language_reference(ctx, graph, r, owner, true);
             return;
         }
-        graph.reference_coverage(
-            ctx.path,
-            r,
-            CoverageStatus::Unresolved.as_str(),
-            "callee is shadowed by a parameter or local binding of unknown callable identity"
-                .into(),
-        );
-        return;
+        if matches!(
+            r.kind.as_str(),
+            k if k == EdgeKind::Calls.as_str() || k == EdgeKind::Handles.as_str()
+        ) {
+            if resolve_language_reference(ctx, graph, r, owner, true) {
+                return;
+            }
+            graph.reference_coverage(
+                ctx.path,
+                r,
+                CoverageStatus::Unresolved.as_str(),
+                "callee is shadowed by a parameter or local binding of unknown callable identity"
+                    .into(),
+            );
+            return;
+        }
     }
 
     if inferred::resolve_lexical_or_imported_candidates(

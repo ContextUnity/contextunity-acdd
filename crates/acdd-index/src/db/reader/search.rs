@@ -320,49 +320,29 @@ fn workspace_coverage(
     let total = scopes.len();
     let linked_json = serde_json::to_string(&linked)?;
     let mut items = Vec::with_capacity(options.limit.min(total.saturating_sub(options.offset)));
-    let sum_statuses = format!(
-        "coalesce(sum(CASE WHEN c.status='{resolved}' THEN c.records ELSE 0 END),0) resolved,\
-         coalesce(sum(CASE WHEN c.status='{ambiguous}' THEN c.records ELSE 0 END),0) ambiguous,\
-         coalesce(sum(CASE WHEN c.status='{unresolved}' THEN c.records ELSE 0 END),0) unresolved,\
-         coalesce(sum(CASE WHEN c.status='{external}' THEN c.records ELSE 0 END),0) external_imports",
-        resolved = CoverageStatus::Resolved.as_str(),
-        ambiguous = CoverageStatus::Ambiguous.as_str(),
-        unresolved = CoverageStatus::Unresolved.as_str(),
-        external = CoverageStatus::External.as_str(),
-    );
     for scope in scopes.into_iter().skip(options.offset).take(options.limit) {
         let prefix = scope["path_prefix"].as_str().unwrap_or_default();
-        let counts = if prefix.is_empty() {
-            rows(
-                conn,
-                &format!(
-                    "SELECT {sum_statuses} FROM coverage_language_counts c JOIN path_dictionary p ON p.path_id=c.path_id WHERE NOT EXISTS(SELECT 1 FROM json_each(?1) linked WHERE substr(p.path,1,length('['||json_extract(linked.value,'$.name')||']/'))='['||json_extract(linked.value,'$.name')||']/')"
-                ),
-                &[&linked_json],
-                1,
-            )?
-            .remove(0)
-        } else {
-            rows(
-                conn,
-                &format!(
-                    "SELECT {sum_statuses} FROM coverage_language_counts c JOIN path_dictionary p ON p.path_id=c.path_id WHERE substr(p.path,1,length(?1))=?1"
-                ),
-                &[&prefix],
-                1,
-            )?
-            .remove(0)
-        };
+        let (overall, prod, tests) = workspace_coverage_totals(conn, prefix, &linked_json)?;
         let mut item = scope.as_object().cloned().unwrap_or_default();
-        for field in [
-            CoverageStatus::Resolved.as_str(),
-            CoverageStatus::Ambiguous.as_str(),
-            CoverageStatus::Unresolved.as_str(),
-            "external_imports",
-        ] {
-            item.insert(field.into(), counts[field].clone());
+        item.insert(
+            CoverageStatus::Resolved.as_str().into(),
+            json!(overall.resolved),
+        );
+        item.insert(
+            CoverageStatus::Ambiguous.as_str().into(),
+            json!(overall.ambiguous),
+        );
+        item.insert(
+            CoverageStatus::Unresolved.as_str().into(),
+            json!(overall.unresolved),
+        );
+        item.insert("external_imports".into(), json!(overall.external_imports));
+        let mut health = overall.health();
+        if let Some(map) = health.as_object_mut() {
+            map.insert("prod".into(), prod.context_health());
+            map.insert("tests".into(), tests.context_health());
         }
-        item.insert("resolution_health".into(), resolution_health(&counts));
+        item.insert("resolution_health".into(), health);
         let reasons = match workspace_diagnostic_reason_counts(conn, prefix, &linked_json) {
             Ok(counts) => json!({"availability":"available","counts":counts}),
             Err(error) if is_query_budget_exhaustion(&error) => json!({
@@ -377,32 +357,137 @@ fn workspace_coverage(
     Ok(paging::value(items, total, options, generation))
 }
 
-fn resolution_health(counts: &Value) -> Value {
-    let status_count = |status: &str| counts[status].as_u64();
-    let Some(resolved) = status_count(CoverageStatus::Resolved.as_str()) else {
-        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
-    };
-    let Some(unresolved) = status_count(CoverageStatus::Unresolved.as_str()) else {
-        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
-    };
-    let Some(ambiguous) = status_count(CoverageStatus::Ambiguous.as_str()) else {
-        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
-    };
-    let Some(denominator) = resolved
-        .checked_add(unresolved)
-        .and_then(|total| total.checked_add(ambiguous))
-    else {
-        return json!({"availability":"unavailable","cause":"resolution status counts exceed the supported integer range"});
-    };
-    if denominator == 0 {
-        return json!({"availability":"unavailable","cause":"no in-scope resolution references"});
+#[derive(Default)]
+struct CoverageTotals {
+    resolved: u64,
+    ambiguous: u64,
+    unresolved: u64,
+    external_imports: u64,
+    overflow: bool,
+}
+
+impl CoverageTotals {
+    fn add(&mut self, status: &str, records: i64) {
+        let Ok(records) = u64::try_from(records) else {
+            self.overflow = true;
+            return;
+        };
+        let slot = match status {
+            s if s == CoverageStatus::Resolved.as_str() => &mut self.resolved,
+            s if s == CoverageStatus::Ambiguous.as_str() => &mut self.ambiguous,
+            s if s == CoverageStatus::Unresolved.as_str() => &mut self.unresolved,
+            s if s == CoverageStatus::External.as_str() => &mut self.external_imports,
+            _ => return,
+        };
+        match slot.checked_add(records) {
+            Some(sum) => *slot = sum,
+            None => self.overflow = true,
+        }
     }
-    json!({
-        "availability":"available",
-        "resolved":resolved,
-        "denominator":denominator,
-        "percent":resolved as f64 * 100.0 / denominator as f64
-    })
+
+    fn health(&self) -> Value {
+        if self.overflow {
+            return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
+        }
+        let Some(denominator) = self
+            .resolved
+            .checked_add(self.unresolved)
+            .and_then(|total| total.checked_add(self.ambiguous))
+        else {
+            return json!({"availability":"unavailable","cause":"resolution status counts exceed the supported integer range"});
+        };
+        if denominator == 0 {
+            return json!({"availability":"unavailable","cause":"no in-scope resolution references"});
+        }
+        json!({
+            "availability":"available",
+            "resolved":self.resolved,
+            "denominator":denominator,
+            "percent":self.resolved as f64 * 100.0 / denominator as f64
+        })
+    }
+
+    fn context_health(&self) -> Value {
+        let mut health = self.health();
+        if let Some(map) = health.as_object_mut() {
+            map.entry("resolved")
+                .or_insert_with(|| json!(self.resolved));
+            map.insert("unresolved".into(), json!(self.unresolved));
+            map.insert("ambiguous".into(), json!(self.ambiguous));
+            map.insert("external_imports".into(), json!(self.external_imports));
+        }
+        health
+    }
+}
+
+fn for_each_workspace_row(
+    conn: &Connection,
+    select_from: &str,
+    suffix: &str,
+    prefix: &str,
+    linked_json: &str,
+    on_row: &mut dyn FnMut(&rusqlite::Row<'_>) -> Result<()>,
+) -> Result<()> {
+    let (filter, parameter) = if prefix.is_empty() {
+        (
+            "NOT EXISTS(SELECT 1 FROM json_each(?1) linked WHERE substr(p.path,1,length('['||json_extract(linked.value,'$.name')||']/'))='['||json_extract(linked.value,'$.name')||']/')",
+            linked_json,
+        )
+    } else {
+        ("substr(p.path,1,length(?1))=?1", prefix)
+    };
+    let sql = if suffix.is_empty() {
+        format!("{select_from} WHERE {filter}")
+    } else {
+        format!("{select_from} WHERE {filter} {suffix}")
+    };
+    let budget = super::sql::QueryBudget::new(conn);
+    let mut statement = conn.prepare(&sql)?;
+    if !statement.readonly() {
+        anyhow::bail!("query must be read-only");
+    }
+    let mut query = statement.query([parameter])?;
+    while let Some(row) = query.next()? {
+        budget.check()?;
+        on_row(row)?;
+    }
+    budget.check()?;
+    Ok(())
+}
+
+fn workspace_coverage_totals(
+    conn: &Connection,
+    prefix: &str,
+    linked_json: &str,
+) -> Result<(CoverageTotals, CoverageTotals, CoverageTotals)> {
+    let mut overall = CoverageTotals::default();
+    let mut prod = CoverageTotals::default();
+    let mut tests = CoverageTotals::default();
+    for_each_workspace_row(
+        conn,
+        "SELECT p.path,c.status,sum(c.records) FROM coverage_language_counts c JOIN path_dictionary p ON p.path_id=c.path_id",
+        "GROUP BY p.path,c.status",
+        prefix,
+        linked_json,
+        &mut |row| {
+            let path = row.get_ref(0)?.as_str()?;
+            let status = row.get_ref(1)?.as_str()?;
+            let records = row.get::<_, i64>(2)?;
+            let relative_path = if prefix.is_empty() {
+                path
+            } else {
+                path.strip_prefix(prefix).unwrap_or(path)
+            };
+            overall.add(status, records);
+            if cycles::is_test_context_path(relative_path) {
+                tests.add(status, records);
+            } else {
+                prod.add(status, records);
+            }
+            Ok(())
+        },
+    )?;
+    Ok((overall, prod, tests))
 }
 
 fn workspace_diagnostic_reason_counts(
@@ -411,21 +496,9 @@ fn workspace_diagnostic_reason_counts(
     linked_json: &str,
 ) -> Result<Value> {
     let cause = resolution_cause_sql();
-    let (sql, parameter) = if prefix.is_empty() {
-        (
-            format!(
-                "SELECT c.status,{cause} cause,x.expression,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE NOT EXISTS(SELECT 1 FROM json_each(?1) linked WHERE substr(p.path,1,length('['||json_extract(linked.value,'$.name')||']/'))='['||json_extract(linked.value,'$.name')||']/')"
-            ),
-            linked_json,
-        )
-    } else {
-        (
-            format!(
-                "SELECT c.status,{cause} cause,x.expression,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE substr(p.path,1,length(?1))=?1"
-            ),
-            prefix,
-        )
-    };
+    let select_from = format!(
+        "SELECT c.status,{cause} cause,x.expression,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id"
+    );
 
     const REASONS: &[&str] = &[
         "dynamic_callback",
@@ -449,14 +522,7 @@ fn workspace_diagnostic_reason_counts(
         })
         .collect();
 
-    let budget = super::sql::QueryBudget::new(conn);
-    let mut statement = conn.prepare(&sql)?;
-    if !statement.readonly() {
-        anyhow::bail!("query must be read-only");
-    }
-    let mut query = statement.query([parameter])?;
-    while let Some(row) = query.next()? {
-        budget.check()?;
+    for_each_workspace_row(conn, &select_from, "", prefix, linked_json, &mut |row| {
         let status = row.get_ref(0)?.as_str()?;
         let cause = row.get_ref(1)?.as_str()?;
         let expression = row.get_ref(2)?.as_str()?;
@@ -475,7 +541,7 @@ fn workspace_diagnostic_reason_counts(
                 )
             })?;
         }
-    }
-    budget.check()?;
+        Ok(())
+    })?;
     Ok(json!(counts))
 }

@@ -445,3 +445,85 @@ fn ordinary_typescript_class_call_is_not_a_constructor() {
         matches!(index.resolve_value(class, &ValueExpr::Construct { callee: "Worker".into() }, at, &resolver), TypeTarget::Local(node) if node.id == "Worker")
     );
 }
+
+#[test]
+#[cfg(all(feature = "lang-rust", feature = "lang-python", feature = "lang-typescript"))]
+fn local_binding_mutates_stay_distinct_from_shadowed_calls_across_languages() {
+    use acdd_index::{ast, models::Reference};
+
+    const SHADOWED_CALLEE: &str =
+        "callee is shadowed by a parameter or local binding of unknown callable identity";
+    let cases = [
+        (
+            "lib.rs",
+            "rust",
+            "struct Counter { count: i32 }\nimpl Counter { fn inc(&mut self) { self.count += 1; } }\nfn run() {}\nfn driver(run: usize, mut local: i32) { local += 1; run(); }\n",
+            "self.count",
+            None,
+        ),
+        (
+            "service.py",
+            "python",
+            "class Counter:\n    count = 0\n    def inc(self): self.count += 1\ndef run(): pass\ndef driver(run, local):\n    local = 1\n    run()\ndef free_mut(self): self.count = 2\n",
+            "self.count",
+            Some(("free_mut", "self.count")),
+        ),
+        (
+            "service.ts",
+            "typescript",
+            "class Counter { count = 0; inc() { this.count += 1; } }\nfunction run() {}\nfunction driver(run: unknown, local: number) { local = 1; run(); }\nfunction free_mut() { const self = { count: 0 }; self.count = 2; }\n",
+            "this.count",
+            Some(("free_mut", "self.count")),
+        ),
+    ];
+
+    for (path, lang, source, real_field_expr, extracted_local_member) in cases {
+        let mut facts = ast::extract(path, lang, source).unwrap();
+        assert!(facts.errors.is_empty(), "{lang}: {:?}", facts.errors);
+        let driver = facts.nodes.iter().find(|n| n.name == "driver").unwrap().clone();
+        facts.references.push(Reference {
+            source: driver.id.clone(),
+            expression: "local".into(),
+            kind: "mutates".into(),
+            line: driver.line,
+            column: 4,
+            dynamic: false,
+            alias: None,
+            module: None,
+            receiver_hint: None,
+        });
+        let all = BTreeMap::from([(path.to_owned(), facts)]);
+        let graph = crate::common::link_facts(&all);
+
+        assert!(
+            graph.edges.iter().any(|e| {
+                e.kind == "mutates"
+                    && e.evidence == real_field_expr
+                    && all[path].nodes.iter().any(|n| n.id == e.dst && n.name == "count")
+            }),
+            "{lang}: missing real field mutates edge: {:#?}",
+            graph.edges
+        );
+        assert!(
+            graph.coverage.iter().any(|r| {
+                r.expression == "run" && r.status == "unresolved" && r.evidence == SHADOWED_CALLEE
+            }) && !graph
+                .coverage
+                .iter()
+                .any(|r| r.expression == "local" && r.status == "unresolved"),
+            "{lang}: shadowed call vs local Mutates coverage mismatch: {:#?}",
+            graph.coverage
+        );
+        if let Some((owner_name, expr)) = extracted_local_member {
+            let line = all[path].nodes.iter().find(|n| n.name == owner_name).unwrap().line;
+            assert!(
+                !graph
+                    .coverage
+                    .iter()
+                    .any(|r| r.expression == expr && r.line >= line && r.status == "unresolved"),
+                "{lang}: extracted local {expr} Mutates unresolved: {:#?}",
+                graph.coverage
+            );
+        }
+    }
+}

@@ -1296,3 +1296,74 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         missing.join("\n")
     );
 }
+
+#[test]
+#[cfg(feature = "lang-python")]
+fn overview_splits_prod_and_tests_resolution_health() {
+    use contextunity_acdd::format::{self, OutputFormat};
+
+    let render = |overview: &Value| {
+        format::render_for_operation(
+            overview,
+            OutputFormat::Markdown,
+            "code_map_overview",
+            None,
+            format::OperationKind::Navigation,
+        )
+    };
+    let overview_for = |ws: &Workspace| {
+        reader::overview_with_options(
+            &ws.open(),
+            &reader::OverviewOptions { aspects: None, page: &options(100) },
+        )
+        .unwrap()
+    };
+    let mixed = Workspace::new();
+    mixed.write("src/service.py", "def helper(): return 1\ndef run():\n    helper()\n    helper()\n    missing_prod()\n");
+    mixed.write("tests/test_service.py", "from src.service import helper\ndef test_ok():\n    helper()\n    missing_test_a()\n");
+    mixed.write("benchmarks/bench_service.py", "def bench():\n    missing_bench()\n");
+    mixed.build();
+    let overview = overview_for(&mixed);
+    let scope = &overview["coverage_by_workspace"]["items"][0];
+    let (health, prod, tests) = (
+        &scope["resolution_health"],
+        &scope["resolution_health"]["prod"],
+        &scope["resolution_health"]["tests"],
+    );
+    assert_eq!(health["availability"], "available", "{scope}");
+    assert_eq!(prod["availability"], "available", "{scope}");
+    assert_eq!(tests["availability"], "available", "{scope}");
+    assert_eq!(prod["unresolved"], 1, "{prod}");
+    assert_eq!(tests["unresolved"], 2, "{tests}");
+    assert!(prod["percent"].as_f64().unwrap() > tests["percent"].as_f64().unwrap(), "{health}");
+    for field in ["resolved", "unresolved", "ambiguous", "external_imports"] {
+        assert_eq!(
+            prod[field].as_u64().unwrap() + tests[field].as_u64().unwrap(),
+            scope[field].as_u64().unwrap(),
+            "{field}: {scope}"
+        );
+    }
+    let markdown = render(&overview);
+    let prod_bullet = format!("\n\n- Prod: {:.1}%", prod["percent"].as_f64().unwrap());
+    let tests_bullet = format!("\n- Tests: {:.1}%", tests["percent"].as_f64().unwrap());
+    let prod_pos = markdown.find(&prod_bullet).expect(&markdown);
+    let after_list = markdown[prod_pos + 2..].find("\n\n").map_or(markdown.len(), |i| prod_pos + 2 + i);
+    let list_block = &markdown[prod_pos + 2..after_list];
+    assert!(
+        markdown.find("Resolved: ").unwrap() < markdown.find("External references: ").unwrap()
+            && markdown.find("External references: ").unwrap() < prod_pos
+            && list_block.contains(&tests_bullet)
+            && !list_block.contains("Resolved:")
+            && !list_block.contains("External references:"),
+        "aggregate counts must remain outside the Prod/Tests Markdown list:\n{markdown}"
+    );
+
+    let prod_only = Workspace::new();
+    prod_only.write("src/only.py", "def helper(): return 1\ndef run(): return helper()\n");
+    prod_only.build();
+    let prod_only_overview = overview_for(&prod_only);
+    let prod_only_health = &prod_only_overview["coverage_by_workspace"]["items"][0]["resolution_health"];
+    assert_eq!(prod_only_health["prod"]["availability"], "available");
+    assert_eq!(prod_only_health["tests"]["availability"], "unavailable");
+    assert!(render(&prod_only_overview).contains("- Tests: unavailable"));
+}

@@ -391,25 +391,32 @@ fn render_json_section(out: &mut String, title: &str, value: &Value) {
     );
 }
 
-fn render_resolution_health(out: &mut String, scope: &Value) {
-    let health = &scope["resolution_health"];
+fn format_health_metric(health: &Value) -> String {
     if text_field(health, "availability") == Some("available") {
         let pct = health
             .get("percent")
             .and_then(Value::as_f64)
             .map(|v| format!("{v:.1}%"))
             .unwrap_or_else(|| "unavailable".into());
-        out.push_str(&format!(
-            "Resolution Health: {pct} ({} / {} non-external references)\n",
+        format!(
+            "{pct} ({} / {} non-external references)",
             u64_field(health, "resolved").unwrap_or(0),
             u64_field(health, "denominator").unwrap_or(0)
-        ));
+        )
     } else {
-        out.push_str(&format!(
-            "Resolution Health: unavailable ({})\n",
+        format!(
+            "unavailable ({})",
             escape_text(text_field(health, "cause").unwrap_or("insufficient indexed evidence"))
-        ));
+        )
     }
+}
+
+fn render_resolution_health(out: &mut String, scope: &Value) {
+    let health = &scope["resolution_health"];
+    out.push_str(&format!(
+        "Resolution Health: {}\n",
+        format_health_metric(health)
+    ));
     if let (Some(r), Some(u), Some(a)) = (
         u64_field(scope, "resolved"),
         u64_field(scope, "unresolved"),
@@ -424,16 +431,39 @@ fn render_resolution_health(out: &mut String, scope: &Value) {
             .map(scalar_text)
             .unwrap_or_else(|| "unavailable".into())
     ));
+    let mut has_partition = false;
+    for (key, label) in [("prod", "Prod"), ("tests", "Tests")] {
+        if let Some(bucket) = health.get(key).filter(|v| v.is_object()) {
+            if !has_partition {
+                out.push('\n');
+                has_partition = true;
+            }
+            out.push_str(&format!("- {label}: {}", format_health_metric(bucket)));
+            if let (Some(u), Some(a), Some(ext)) = (
+                u64_field(bucket, "unresolved"),
+                u64_field(bucket, "ambiguous"),
+                u64_field(bucket, "external_imports"),
+            ) {
+                out.push_str(&format!(
+                    " — unresolved: {u}; ambiguous: {a}; external: {ext}"
+                ));
+            }
+            out.push('\n');
+        }
+    }
     let reasons = &scope["diagnostic_reasons"];
+    let sep = if has_partition { "\n" } else { "" };
     if text_field(reasons, "availability") != Some("available") {
         out.push_str(&format!(
-            "Diagnostic reasons: unavailable ({})\n",
+            "{sep}Diagnostic reasons: unavailable ({})\n",
             escape_text(text_field(reasons, "cause").unwrap_or("diagnostic aggregate unavailable"))
         ));
         return;
     }
     let Some(counts) = reasons.get("counts").and_then(Value::as_object) else {
-        out.push_str("Diagnostic reasons: unavailable (reason matrix not supplied)\n");
+        out.push_str(&format!(
+            "{sep}Diagnostic reasons: unavailable (reason matrix not supplied)\n"
+        ));
         return;
     };
     let reason_label = |r: &str| match r {
@@ -478,11 +508,14 @@ fn render_resolution_health(out: &mut String, scope: &Value) {
     }
     if !non_ext_lines.is_empty() {
         out.push_str("\nNon-external diagnostic references:\n");
-        for line in non_ext_lines {
-            out.push_str(&line);
+        for line in &non_ext_lines {
+            out.push_str(line);
         }
     }
     if !external_rows.is_empty() {
+        if non_ext_lines.is_empty() {
+            out.push_str(sep);
+        }
         out.push_str("External-status diagnostic references:\n");
         for (reason, n) in external_rows {
             out.push_str(&format!(
