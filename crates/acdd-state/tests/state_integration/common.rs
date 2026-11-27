@@ -519,6 +519,7 @@ pub fn clear_run(eng: &StateEngine, rid: &str) {
         run: Some(rid.to_owned()),
         reason: None,
         force: true,
+        purge: false,
     }))
     .unwrap();
 }

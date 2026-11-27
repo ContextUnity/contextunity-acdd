@@ -2012,6 +2012,7 @@ gates:
                 run: Some(w1_rid.to_owned()),
                 reason: Some("try non-force".to_owned()),
                 force: false,
+                purge: false,
             }))
             .unwrap_err()
             .code,

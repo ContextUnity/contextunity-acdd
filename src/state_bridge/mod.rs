@@ -968,6 +968,7 @@ mod tests {
                 run: Some(run_id),
                 reason: Some("reset for unscoped root gate check".into()),
                 force: true,
+                purge: false,
             }))
             .unwrap();
         fs::write(

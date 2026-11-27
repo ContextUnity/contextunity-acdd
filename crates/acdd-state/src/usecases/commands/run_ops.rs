@@ -16,9 +16,9 @@ use crate::usecases::dto::{ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, Sy
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
     cleanup_tombstone, effective_spec_collections, ensure_state_enabled, is_managed_run_branch,
-    load_active_run_graph, primary_workspace_root, read_confined_utf8, resolve_active_run,
-    resolve_source_checkout, to_machine_profile, validate_profile_fail_closed,
-    with_repo_lock_and_maintenance,
+    list_all_runs, list_all_tombstones, load_active_run_graph, primary_workspace_root,
+    read_confined_utf8, resolve_active_run, resolve_source_checkout, to_machine_profile,
+    validate_profile_fail_closed, with_repo_lock_and_maintenance,
 };
 use acdd_core::config::{Adapter, ACDD_DIR};
 use acdd_core::errors::{ErrorCode, AcddError};
@@ -169,6 +169,9 @@ pub(crate) fn handle_clear_dyn(
     req: ClearReq,
 ) -> Result<ClearResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |primary, layout| {
+        if req.purge {
+            return handle_clear_purge(backend, req.run.as_deref());
+        }
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
@@ -288,5 +291,79 @@ pub(crate) fn handle_clear_dyn(
             tombstone: final_tombstone,
             cleaned_items,
         })
+    })
+}
+
+fn handle_clear_purge(
+    backend: &dyn StateBackend,
+    selector: Option<&str>,
+) -> Result<ClearResp, AcddError> {
+    let sel = selector
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AcddError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                "acdd clear --purge requires an explicit run ID, run name, or spec ID selector",
+            )
+        })?;
+    if let Some(active) = list_all_runs(backend, None)?.into_iter().find(|r| {
+        r.run_id.as_str() == sel
+            || r.run_name.as_str() == sel
+            || r.spec_id.as_deref() == Some(sel)
+    }) {
+        return Err(AcddError::new(
+            ErrorCode::BackendConflict,
+            format!(
+                "cannot purge active run '{}'; clear it first without --purge",
+                active.run_id
+            ),
+        ));
+    }
+    let matches: Vec<_> = list_all_tombstones(backend)?
+        .into_iter()
+        .filter(|t| {
+            t.run_id.as_str() == sel
+                || t.run_name.as_str() == sel
+                || t.spec_id.as_deref() == Some(sel)
+        })
+        .collect();
+    if matches.is_empty() {
+        return Err(AcddError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!("no tombstone matches selector '{sel}'"),
+        ));
+    }
+    let cleared: Vec<_> = matches
+        .iter()
+        .filter(|t| t.terminal_status == TerminalStatus::Cleared)
+        .cloned()
+        .collect();
+    if cleared.is_empty() {
+        let first = &matches[0];
+        return Err(AcddError::new(
+            ErrorCode::BackendConflict,
+            format!(
+                "cannot purge tombstone '{}' with terminal_status '{:?}'; only cleared tombstones can be purged",
+                first.run_id, first.terminal_status
+            ),
+        ));
+    }
+    if cleared.len() > 1 {
+        let ids: Vec<_> = cleared.iter().map(|t| t.run_id.as_str()).collect();
+        return Err(AcddError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!(
+                "selector '{sel}' matches {} cleared tombstones ({}); pass exact run_id",
+                cleared.len(),
+                ids.join(", ")
+            ),
+        ));
+    }
+    let tombstone = cleared.into_iter().next().expect("checked len == 1");
+    exec_tx_with(backend, |tx| tx.purge_cleared_tombstone(&tombstone.run_id))?;
+    Ok(ClearResp {
+        cleaned_items: vec![format!("tombstone:{}", tombstone.run_id)],
+        tombstone,
     })
 }

@@ -623,6 +623,7 @@ pub(super) fn dispatch(
             run,
             reason,
             force,
+            purge,
         } => {
             let flag_or_env_run = effective_run_selector(state_ctx, run, false);
             let selected_run = if state_ctx.run_from_cli {
@@ -634,6 +635,7 @@ pub(super) fn dispatch(
                 run: selected_run,
                 reason,
                 force,
+                purge,
             }))
         }
         Command::Run {

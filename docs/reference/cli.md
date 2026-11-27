@@ -200,10 +200,10 @@ acdd blackboard [--action read|post] [--run RUN] [--node CURSOR] [--recipient-no
 ### Run cleanup and integration
 
 ```sh
-acdd clear [<run_id>] [--run RUN] [--reason TEXT] [--force]
+acdd clear [<run_id>] [--run RUN] [--reason TEXT] [--force] [--purge]
 ```
 
-- `clear`: Cancels/clears a run into `run_tombstones(terminal_status = 'cleared')` and cleans managed worktrees (`--force` overrides dirty worktree checks).
+- `clear`: Cancels/clears a run into `run_tombstones(terminal_status = 'cleared')` and cleans managed worktrees (`--force` overrides dirty worktree checks); `--purge` deletes a single matching already-cleared (`terminal_status = 'cleared'`) tombstone row after manual completion/archival while refusing active runs and `completed`/`cancelled` tombstones.
 - Task branch integration: Headless `acdd run` waves land completed task branches internally via `rebase-ff` (`integrate_task_branch`); manual worktree runs integrate via standard `git merge` or `git rebase`, and terminal verification confirms content equivalence by Git `TreeOid` (`TASK_NOT_INTEGRATED`).
 
 ### Headless run execution

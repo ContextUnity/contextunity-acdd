@@ -643,6 +643,7 @@ scope: [src/lib.rs]
             run: Some(rid.to_string()),
             reason: None,
             force: false,
+            purge: false,
         }))
         .unwrap();
     let StateCommandOutput::Clear(cleared) = cleared else {
@@ -2672,6 +2673,25 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         StateCommandOutput::Sync(s) => assert!(s.added_nodes >= 2),
         other => panic!("unexpected Sync output: {other:?}"),
     }
+    let mut done_graph = harness
+        .load_run_graph(&RunId::new("run-life-001").unwrap())
+        .unwrap()
+        .unwrap();
+    let done_id = RunId::new("run-life-done").unwrap();
+    done_graph.run.run_id = done_id.clone();
+    done_graph.run.run_name = RunName::new("done-run").unwrap();
+    done_graph.run.spec_id = Some("AC-DONE".to_owned());
+    done_graph.run.worktree = None;
+    done_graph.run.branch = None;
+    for node in &mut done_graph.nodes {
+        node.run_id = done_id.clone();
+    }
+    done_graph.dependencies.clear();
+    done_graph.subtasks.clear();
+    done_graph.claims.clear();
+    done_graph.traces.clear();
+    done_graph.artifacts.clear();
+
     match harness
         .execute(
             &cfg,
@@ -2680,6 +2700,7 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
                 run: Some("run-life-001".to_owned()),
                 reason: Some("cancelled".to_owned()),
                 force: true,
+                purge: false,
             }),
         )
         .unwrap()
@@ -2692,6 +2713,73 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
                 .is_none());
         }
         other => panic!("unexpected Clear output: {other:?}"),
+    }
+
+    // Purging a cleared tombstone removes only terminal_status='cleared' while rejecting non-cleared or missing selectors.
+    let err_missing = harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Clear(ClearReq {
+                run: Some("does-not-exist".to_owned()),
+                purge: true,
+                ..ClearReq::default()
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err_missing.code, ErrorCode::RunSelectorAmbiguous);
+
+    let done_tomb = sample_tombstone(
+        "run-life-done",
+        "done-run",
+        Some("AC-DONE"),
+        TerminalStatus::Completed,
+        None,
+    );
+    harness
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&done_graph)?;
+            tx.archive_and_prune_run(&empty_preconditions(done_graph.run.generation), &done_tomb)
+        })
+        .unwrap();
+    let err_completed = harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Clear(ClearReq {
+                run: Some("run-life-done".to_owned()),
+                purge: true,
+                ..ClearReq::default()
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err_completed.code, ErrorCode::BackendConflict);
+
+    match harness
+        .execute(
+            &cfg,
+            &provider,
+            StateCommand::Clear(ClearReq {
+                run: Some("run-life-001".to_owned()),
+                purge: true,
+                ..ClearReq::default()
+            }),
+        )
+        .unwrap()
+    {
+        StateCommandOutput::Clear(c) => {
+            assert_eq!(c.tombstone.run_id.as_str(), "run-life-001");
+            assert_eq!(c.cleaned_items, vec!["tombstone:run-life-001".to_owned()]);
+            assert!(harness
+                .load_tombstone(&RunId::new("run-life-001").unwrap())
+                .unwrap()
+                .is_none());
+            assert!(harness
+                .load_tombstone(&done_id)
+                .unwrap()
+                .is_some());
+        }
+        other => panic!("unexpected purge Clear output: {other:?}"),
     }
 }
 

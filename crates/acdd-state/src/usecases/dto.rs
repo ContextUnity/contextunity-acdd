@@ -372,6 +372,9 @@ pub struct ClearReq {
     /// Force cleanup of dirty managed worktrees.
     #[serde(default)]
     pub force: bool,
+    /// Purge an already-cleared tombstone (`terminal_status = 'cleared'`) instead of clearing an active run.
+    #[serde(default)]
+    pub purge: bool,
 }
 
 /// Response payload returned by `StateCommand::Clear`.

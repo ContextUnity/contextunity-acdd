@@ -392,6 +392,9 @@ pub enum Command {
         /// Force cleanup of dirty managed worktrees.
         #[arg(long)]
         force: bool,
+        /// Purge an already-cleared tombstone (`terminal_status = 'cleared'`) after manual completion/archival.
+        #[arg(long)]
+        purge: bool,
     },
     /// Execute automated DAG waves (`--jobs N`, `--dry-run`, `--allow-main`).
     Run {

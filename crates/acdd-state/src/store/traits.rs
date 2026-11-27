@@ -169,6 +169,9 @@ pub trait StateTx {
 
     /// Clear `cleanup_pending = 0` on `run_tombstones` once post-commit file/ref/worktree cleanup completes.
     fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), AcddError>;
+
+    /// Delete a single cleared tombstone (`terminal_status = 'cleared'`) from `run_tombstones`.
+    fn purge_cleared_tombstone(&mut self, run_id: &RunId) -> Result<(), AcddError>;
 }
 
 /// Execute `f` inside an atomic database transaction via an object-safe `&dyn StateBackend`

@@ -1555,4 +1555,23 @@ impl StateTx for SqliteTx<'_> {
         bump_write_seq(self.conn)?;
         Ok(())
     }
+
+    fn purge_cleared_tombstone(&mut self, run_id: &RunId) -> Result<(), AcddError> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM run_tombstones WHERE run_id = ?1 AND terminal_status = 'cleared'",
+                params![run_id.as_str()],
+            )
+            .map_err(|err| map_write_err(err, "purge_cleared_tombstone"))?;
+        if changed != 1 {
+            return Err(AcddError::new(
+                ErrorCode::BackendConflict,
+                format!("cleared run_tombstone '{run_id}' does not exist"),
+            ));
+        }
+        self.significant_dirty = true;
+        bump_write_seq(self.conn)?;
+        Ok(())
+    }
 }

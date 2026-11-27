@@ -164,6 +164,7 @@ fn build_state_command_from_input(
             run,
             reason: p.reason,
             force: p.force.unwrap_or(false),
+            purge: false,
         })),
         McpStateAction::Run => Ok(StateCommand::Run(RunReq {
             run,
