@@ -23,6 +23,14 @@ use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
 
+fn guide_title(mcp: bool) -> &'static str {
+    if mcp {
+        "acdd_guide"
+    } else {
+        "acdd guide"
+    }
+}
+
 fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
     match command {
         Command::Init { .. } => (OperationKind::General, "acdd_init", None),
@@ -47,7 +55,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Submit { .. } => (OperationKind::Task, "acdd_submit", None),
         Command::Blackboard { .. } => (OperationKind::Task, "acdd_blackboard", None),
         Command::Read { .. } => (OperationKind::Navigation, "acdd_read", None),
-        Command::Guide { .. } => (OperationKind::Guide, "acdd_guide", None),
+        Command::Guide { mcp, .. } => (OperationKind::Guide, guide_title(*mcp), None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
         Command::Lint { .. } => (OperationKind::Navigation, "code_map_lint", None),
         Command::Query {
@@ -355,13 +363,13 @@ impl Cli {
             writeln!(output, "{formatted}")?;
             return Ok(None);
         }
-        if let Some(Command::Guide { topic, force }) = self.command.as_ref() {
+        if let Some(Command::Guide { topic, force, mcp }) = self.command.as_ref() {
             if topic.trim() == "init" {
                 let result = guide::run(&root, topic, *force)?;
                 let formatted = format::render_for_operation(
                     &result,
                     OutputFormat::from(self.format),
-                    "acdd_guide",
+                    guide_title(*mcp),
                     None,
                     OperationKind::Guide,
                 );
@@ -573,8 +581,8 @@ impl Cli {
                     Ok((Value::Null, Some(String::new())))
                 }
                 Command::Reload => Ok((reload::run()?, None)),
-                Command::Guide { topic, force } => Ok((
-                    guide::run_with_adapter(&root, &topic, force, &adapter)?,
+                Command::Guide { topic, force, mcp } => Ok((
+                    guide::run_with_adapter_mode(&root, &topic, force, !mcp, &adapter)?,
                     None,
                 )),
                 cmd @ (Command::Read { .. }

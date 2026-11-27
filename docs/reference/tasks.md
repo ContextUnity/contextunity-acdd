@@ -113,19 +113,33 @@ required before `submit` whenever the gate declares `command:`, `call:`,
 
 [`GateContextAssembler`](../../crates/acdd-state/src/context/mod.rs) (exposed via
 `build_claim_context`) builds `ClaimResp` identically for `claim`, `show`, and
-`run` within a default `<= 9,500`-byte inline budget (`detail: "full"` expands
-to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`) across six ordered tiers:
+`run` with `optional_target_cap = response_max_bytes.min(response_hard_cap)`
+(default `10,000`-byte compact soft ceiling; `detail: "full"` expands to `32 KiB`)
+and `response_hard_cap` (`ResponsePolicy.max_output_bytes`, bounded by `32 KiB`
+in full mode, capping the entire `ClaimResp` across Tiers 1–6 and
+`omitted_sections`) across six ordered tiers:
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting
    empty `invariants` and default `tools` matching `profile.default_tools`,
    sending the full spec body on `blueprint_synthesis` or taskless specs and
-   `spec_path` on post-task root gates) plus resolved gate guidance inside
-   `limits.max_guidance_bytes` (never truncated; fails closed with
-   `GUIDANCE_BUDGET_EXCEEDED`).
+   `spec_path` on post-task root gates) plus resolved gate guidance (never
+   truncated; settled at its exact `total_bytes` fixpoint and failing closed with
+   `GUIDANCE_BUDGET_EXCEEDED` only when Tier 1 exceeds
+   `tier1_cap = limits.max_guidance_bytes.min(response_hard_cap)`, or when
+   mandatory Tier 1 plus required omission notices still exceeds
+   `response_hard_cap` after reclaiming optional items). When compact Tier 1
+   fits within `tier1_cap` but exceeds `optional_target_cap` (`10,000` bytes),
+   `ClaimResp` succeeds with zero optional budget and records omitted Tiers 2–6
+   in `omitted_sections` within `response_hard_cap` (reclaiming lower-priority
+   optional items when needed so omission notices are never silently dropped).
+   When `limits.max_guidance_bytes < optional_target_cap`, `tier1_cap` bounds
+   only Tier 1 while optional Tiers 2–6 may fill up to
+   `optional_target_cap <= response_hard_cap`.
 2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Container-sibling
    (`parent_id == node.parent_id`) rework findings and latest failed trace
    excerpt, cleared automatically once the rejecting node passes or the latest
-   container trace passes/runs.
+   container trace passes/runs; drops trace tail first and omits
+   `unresolved_findings` into `omitted_sections` when compact budget is exceeded.
 3. **Tier 3 (`pre_task_slice`)**: Per-task slice (`proof.tasks[<task_ref>]`)
    with global negative boundaries and cited invariants, or the global
    blueprint slice on post-task root gates, plus `predecessor_proofs` from
@@ -137,7 +151,8 @@ to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`) across six ordered ti
    coordinates (`node_cursor`, `candidate_tree`, `committed_oid?`, `accepted_at`).
 5. **Tier 5 (`blackboard`)**: Up to 6 open messages (`Open` only, excluding
    `Findings` and `Deferred`; 220 characters per payload), prioritizing
-   `Decisions` and `Blockers` before filling remaining slots with newest `Notes`.
+   `Decisions` and `Blockers` before filling remaining slots with newest `Notes`;
+   records omitted counts in `omitted_sections` whenever `shown < relevant_total`.
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
    (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
    receive proportional per-lens budgets. Producers compact lens payloads upfront

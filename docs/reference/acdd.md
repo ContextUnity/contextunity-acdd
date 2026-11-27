@@ -39,24 +39,30 @@ ACDD separates *what* must be built from *how* work is governed and verified:
 ### Stage-Tailored Context Injection (`ClaimResp`)
 
 Claiming a gate returns the budgeted `ClaimResp` bundle ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [`crates/acdd-state/src/context/mod.rs`](../../crates/acdd-state/src/context/mod.rs))
-ordered across 6 priority tiers inside a default `<= 9,500`-byte inline budget (or `detail="full"` up to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`):
+ordered across 6 priority tiers inside a default `<= 10,000`-byte (`10 KiB`) compact soft inline budget (or `detail="full"` up to `32 KiB`, bounded by `ResponsePolicy.max_output_bytes`):
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed task/gate specification
-   and resolved gate guidance entries (reserved inside `max_guidance_bytes`,
-   never truncated; fails with `GUIDANCE_BUDGET_EXCEEDED` if oversized).
+   and resolved gate guidance entries (never truncated; settled at its exact
+   `total_bytes` fixpoint and fails with `GUIDANCE_BUDGET_EXCEEDED` only when
+   mandatory Tier 1 plus required omission notices exceeds
+   `max_guidance_bytes.min(ResponsePolicy.max_output_bytes)`, degrading
+   gracefully when compact Tier 1 exceeds `10,000` bytes within that hard cap).
 2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Structured findings and
-   the tail of the latest failed trace log after a reject/fail rewind.
+   the tail of the latest failed trace log after a reject/fail rewind (omitted
+   into `omitted_sections` when exceeding compact budget).
 3. **Tier 3 (`pre_task_slice`)**: Pre-task blueprint slice (`proof.tasks[<task_ref>]`)
    emitted by `blueprint_synthesis`, and `predecessor_proofs` from completed
    upstream sibling gates in the same container (e.g., `audit` `recon -> analyze -> triage`).
 4. **Tier 4 (`dependency_receipts`)**: Receipts from completed dependency tasks.
 5. **Tier 5 (`blackboard`)**: Up to 6 relevant blackboard `notes`, `blockers`,
    and `decisions` entries capped at 220 characters each (excludes `findings`,
-   which arrive in Tier 2 `unresolved_findings`).
+   which arrive in Tier 2 `unresolved_findings`), recording omitted counts in
+   `omitted_sections` whenever `shown < relevant_total`.
 6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared on the
    gate's `context:` list (e.g., `docs.instructions`, `docs.adrs`, `docs.invariants`,
    `code.symbols`, `code.tests`, `code.external_callers`), compacted upfront at
-   the producer and trimmed cleanly by section if needed and reported in `omitted_sections`.
+   the producer and trimmed cleanly by section if needed and reported in `omitted_sections`
+   with actionable CLI/MCP inspection hints in Markdown.
 
 MCP state tools and flat CLI commands share `src/format/lifecycle.rs` Markdown
 rendering (delegating `ClaimResp` prompt formatting to

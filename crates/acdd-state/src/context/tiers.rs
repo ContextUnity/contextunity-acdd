@@ -1,7 +1,7 @@
 //! Tier 2–6 `ClaimResp` section assembly, rework diagnostics, blackboard filtering, and context lenses.
 
 use super::budget::{
-    add_omitted_section, is_pre_task_root_in_profile, pack_json_lens, MAX_BLACKBOARD_CHARS,
+    is_pre_task_root_in_profile, pack_json_lens, record_omitted_section, MAX_BLACKBOARD_CHARS,
     MAX_BLACKBOARD_ITEMS, MIN_LENS_BUDGET_BYTES,
 };
 use super::types::{baseline_ref_for_node, ClaimContextRequest, ClaimResp};
@@ -150,65 +150,60 @@ pub(super) fn apply_tier2_findings(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
+    target_cap: usize,
+    hard_cap: usize,
 ) -> Result<(), StateError> {
     if req.unresolved_findings.is_none() && req.failed_trace_log_tail.is_none() {
         return Ok(());
     }
+    let optional_target_cap = req.optional_target_cap();
     let tail = req
         .failed_trace_log_tail
         .as_deref()
         .map(|s| utf8_tail(s, req.profile.limits.diagnostic_inline_bytes));
+    let base_bytes = *running_bytes;
     // `,"unresolved_findings":` = 23 bytes
     let candidates = [
         Some(json!({ "findings": req.unresolved_findings, "failed_trace_log_tail": tail })),
         (req.unresolved_findings.is_some() && tail.is_some())
             .then(|| json!({ "findings": req.unresolved_findings })),
-    ];
-    let mut last_delta = 0;
-    for payload in candidates.into_iter().flatten() {
+    ]
+    .into_iter()
+    .flatten()
+    .chain(
+        std::iter::once_with(move || {
+            if req.unresolved_findings.is_some() {
+                return None;
+            }
+            let full_tail = req.failed_trace_log_tail.as_deref()?;
+            let overhead = 23
+                + estimate_json_bytes(&json!({ "findings": null, "failed_trace_log_tail": "" }));
+            let available = optional_target_cap.saturating_sub(base_bytes + overhead);
+            (available >= 64).then(|| {
+                json!({
+                    "findings": Value::Null,
+                    "failed_trace_log_tail": utf8_tail(full_tail, available),
+                })
+            })
+        })
+        .flatten(),
+    );
+    for payload in candidates {
         let delta = 23 + estimate_json_bytes(&payload);
-        last_delta = delta;
-        if *running_bytes + delta <= req.response_max_bytes {
+        if *running_bytes + delta <= optional_target_cap {
             resp.unresolved_findings = Some(payload);
             *running_bytes += delta;
             return Ok(());
         }
     }
-    if req.unresolved_findings.is_some() {
-        return Err(StateError::new(
-            ErrorCode::GuidanceBudgetExceeded,
-            format!(
-                "mandatory claim context + unresolved_findings ({} bytes) exceeds response_max_bytes ({} bytes); retry with detail=\"full\"",
-                *running_bytes + last_delta,
-                req.response_max_bytes
-            ),
-        ));
-    }
-    if let Some(full_tail) = req.failed_trace_log_tail.as_deref() {
-        let overhead =
-            23 + estimate_json_bytes(&json!({ "findings": null, "failed_trace_log_tail": "" }));
-        let available = req
-            .response_max_bytes
-            .saturating_sub(*running_bytes + overhead);
-        if available >= 64 {
-            let payload = json!({
-                "findings": Value::Null,
-                "failed_trace_log_tail": utf8_tail(full_tail, available),
-            });
-            let delta = 23 + estimate_json_bytes(&payload);
-            if *running_bytes + delta <= req.response_max_bytes {
-                resp.unresolved_findings = Some(payload);
-                *running_bytes += delta;
-                return Ok(());
-            }
-        }
-    }
-    add_omitted_section(
+    record_omitted_section(
         resp,
         running_bytes,
         "unresolved_findings",
-        req.response_max_bytes,
-    );
+        target_cap,
+        hard_cap,
+        None,
+    )?;
     Ok(())
 }
 
@@ -216,32 +211,41 @@ pub(super) fn apply_tier3_pre_task_slice(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
-) {
+    target_cap: usize,
+    hard_cap: usize,
+) -> Result<(), StateError> {
+    let optional_target_cap = req.optional_target_cap();
     if let Some(slice) = &req.pre_task_slice {
         // `,"pre_task_slice":` = 18 bytes
         let slice_delta = 18 + estimate_json_bytes(slice);
-        if *running_bytes + slice_delta <= req.response_max_bytes {
+        if *running_bytes + slice_delta <= optional_target_cap {
             resp.pre_task_slice = Some(slice.clone());
             *running_bytes += slice_delta;
         } else {
-            add_omitted_section(
+            record_omitted_section(
                 resp,
                 running_bytes,
                 "pre_task_slice",
-                req.response_max_bytes,
-            );
+                target_cap,
+                hard_cap,
+                None,
+            )?;
         }
     }
+    Ok(())
 }
 
 pub(super) fn apply_tier4_receipts(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
+    target_cap: usize,
+    hard_cap: usize,
 ) -> Result<(), StateError> {
     if req.dependency_receipts.is_empty() {
         return Ok(());
     }
+    let optional_target_cap = req.optional_target_cap();
     let mut omitted = false;
     for receipt in &req.dependency_receipts {
         let mut obj = Map::new();
@@ -259,7 +263,7 @@ pub(super) fn apply_tier4_receipts(
             1
         };
         let delta = overhead + estimate_json_bytes(&val);
-        if *running_bytes + delta <= req.response_max_bytes {
+        if *running_bytes + delta <= optional_target_cap {
             resp.dependency_receipts.push(val);
             *running_bytes += delta;
         } else {
@@ -268,12 +272,14 @@ pub(super) fn apply_tier4_receipts(
         }
     }
     if omitted {
-        add_omitted_section(
+        record_omitted_section(
             resp,
             running_bytes,
             "dependency_receipts",
-            req.response_max_bytes,
-        );
+            target_cap,
+            hard_cap,
+            None,
+        )?;
     }
     Ok(())
 }
@@ -327,7 +333,9 @@ pub(super) fn apply_tier5_blackboard(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
-) {
+    target_cap: usize,
+    hard_cap: usize,
+) -> Result<usize, StateError> {
     let mut priority: Vec<&BlackboardRecord> = Vec::new();
     let mut notes: Vec<&BlackboardRecord> = Vec::new();
     for item in &req.blackboard_items {
@@ -350,7 +358,7 @@ pub(super) fn apply_tier5_blackboard(
         }
     }
     if priority.is_empty() && notes.is_empty() {
-        return;
+        return Ok(0);
     }
 
     let mut deduped: Vec<&BlackboardRecord> = Vec::new();
@@ -375,6 +383,7 @@ pub(super) fn apply_tier5_blackboard(
         }
     }
 
+    let relevant_total = priority_dedup.len() + notes_dedup.len();
     let selected: Vec<&BlackboardRecord> = if priority_dedup.len() >= MAX_BLACKBOARD_ITEMS {
         let start = priority_dedup.len().saturating_sub(MAX_BLACKBOARD_ITEMS);
         priority_dedup[start..].to_vec()
@@ -385,7 +394,7 @@ pub(super) fn apply_tier5_blackboard(
         combined.extend(&notes_dedup[notes_start..]);
         combined
     };
-    let mut omitted = false;
+    let optional_target_cap = req.optional_target_cap();
     for item in selected {
         let truncated_payload: String = item.payload.chars().take(MAX_BLACKBOARD_CHARS).collect();
         let entry = json!({
@@ -400,17 +409,25 @@ pub(super) fn apply_tier5_blackboard(
         // `,"blackboard":[]` = 16 bytes on first element, `,` = 1 byte thereafter.
         let overhead = if resp.blackboard.is_empty() { 16 } else { 1 };
         let delta = overhead + estimate_json_bytes(&entry);
-        if *running_bytes + delta <= req.response_max_bytes {
+        if *running_bytes + delta <= optional_target_cap {
             resp.blackboard.push(entry);
             *running_bytes += delta;
         } else {
-            omitted = true;
             break;
         }
     }
-    if omitted {
-        add_omitted_section(resp, running_bytes, "blackboard", req.response_max_bytes);
+    let shown = resp.blackboard.len();
+    if shown < relevant_total {
+        record_omitted_section(
+            resp,
+            running_bytes,
+            "blackboard",
+            target_cap,
+            hard_cap,
+            Some(relevant_total),
+        )?;
     }
+    Ok(relevant_total)
 }
 
 fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
@@ -477,8 +494,10 @@ fn omit_context_lens(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     qualified_lens: &str,
-    max_bytes: usize,
-) {
+    target_cap: usize,
+    hard_cap: usize,
+    bb_relevant_total: usize,
+) -> Result<bool, StateError> {
     if let Some(old_val) = resp.context_lenses.shift_remove(qualified_lens) {
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
         let sep = if resp.context_lenses.is_empty() {
@@ -488,20 +507,26 @@ fn omit_context_lens(
         };
         *running_bytes -= estimate_json_bytes(&old_val) + key_bytes + sep;
     }
-    add_omitted_section(
+    record_omitted_section(
         resp,
         running_bytes,
         &format!("context:{qualified_lens}"),
-        max_bytes,
-    );
+        target_cap,
+        hard_cap,
+        (bb_relevant_total > 0).then_some(bb_relevant_total),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_tier6_context_lenses(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
     provider: &CompositeDomainProvider,
     node_cursor: &NodeCursor,
+    target_cap: usize,
+    hard_cap: usize,
+    bb_relevant_total: usize,
 ) -> Result<(), StateError> {
     if req.gate.context.is_empty() {
         return Ok(());
@@ -515,7 +540,20 @@ pub(super) fn apply_tier6_context_lenses(
             .and_then(|t| t.target.clone())
     });
 
+    let optional_target_cap = req.optional_target_cap();
+    let mut budget_exhausted = false;
     for (idx, qualified_lens) in req.gate.context.iter().enumerate() {
+        if budget_exhausted {
+            omit_context_lens(
+                resp,
+                running_bytes,
+                qualified_lens,
+                target_cap,
+                hard_cap,
+                bb_relevant_total,
+            )?;
+            continue;
+        }
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
         let effective_base = resp.context_lenses.get(qualified_lens).map_or_else(
             || {
@@ -528,9 +566,18 @@ pub(super) fn apply_tier6_context_lenses(
             },
             |old_val| *running_bytes - estimate_json_bytes(old_val),
         );
-        let remaining = req.response_max_bytes.saturating_sub(effective_base);
+        let remaining = optional_target_cap.saturating_sub(effective_base);
         if remaining == 0 {
-            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
+            if omit_context_lens(
+                resp,
+                running_bytes,
+                qualified_lens,
+                target_cap,
+                hard_cap,
+                bb_relevant_total,
+            )? {
+                budget_exhausted = true;
+            }
             continue;
         }
 
@@ -586,7 +633,16 @@ pub(super) fn apply_tier6_context_lenses(
             continue;
         }
         if is_exhausted_items_lens(&val) {
-            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
+            if omit_context_lens(
+                resp,
+                running_bytes,
+                qualified_lens,
+                target_cap,
+                hard_cap,
+                bb_relevant_total,
+            )? {
+                budget_exhausted = true;
+            }
             continue;
         }
 
@@ -600,8 +656,15 @@ pub(super) fn apply_tier6_context_lenses(
             resp.context_lenses
                 .insert(qualified_lens.clone(), accepted_val);
             *running_bytes = effective_base + accepted_bytes;
-        } else {
-            omit_context_lens(resp, running_bytes, qualified_lens, req.response_max_bytes);
+        } else if omit_context_lens(
+            resp,
+            running_bytes,
+            qualified_lens,
+            target_cap,
+            hard_cap,
+            bb_relevant_total,
+        )? {
+            budget_exhausted = true;
         }
     }
 

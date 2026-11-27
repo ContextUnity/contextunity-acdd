@@ -54,7 +54,7 @@ fn guide_configuration_matrix() {
     );
     let output = run_cli_json(
         &workspace,
-        &["--config", "configs/guide.yaml", "guide", "query"],
+        &["--config", "configs/guide.yaml", "guide", "query", "--mcp"],
     );
     assert!(
         output.status.success(),
@@ -71,7 +71,9 @@ fn guide_configuration_matrix() {
         &["--config", "configs/guide.yaml", "guide", "lifecycle"],
     );
     assert!(output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("task_blackboard"));
+    let disabled_bb_lifecycle = String::from_utf8_lossy(&output.stdout);
+    assert!(!disabled_bb_lifecycle.contains("task_blackboard"));
+    assert!(!disabled_bb_lifecycle.contains("acdd_blackboard"));
     let default = guide::run(workspace.root(), "query", false).unwrap();
     assert!(default["topics"]
         .as_array()
@@ -97,7 +99,7 @@ fn guide_configuration_matrix() {
             query,
             harness.payload("acdd_guide", json!({"topic":" "})).unwrap()
         );
-        let cli = run_cli_json(&workspace, &["guide", "query"]);
+        let cli = run_cli_json(&workspace, &["guide", "query", "--mcp"]);
         assert!(cli.status.success());
         assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), query);
         let topics = query["topics"].as_array();
@@ -123,10 +125,17 @@ fn guide_configuration_matrix() {
             let value = harness
                 .payload("acdd_guide", json!({"topic":topic}))
                 .expect("known topic");
-            let cli = run_cli_json(&workspace, &["guide", topic]);
+            let cli = run_cli_json(&workspace, &["guide", topic, "--mcp"]);
             assert!(cli.status.success());
             assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), value);
             assert_eq!(value == json!({}), !enabled, "{bits}: {topic}");
+            let cli_default = run_cli_json(&workspace, &["guide", topic]);
+            assert!(cli_default.status.success());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&cli_default.stdout).unwrap() == json!({}),
+                !enabled,
+                "{bits}: default cli {topic}"
+            );
             if topic == "acdd" && acdd {
                 assert_eq!(
                     value.get("blackboard_topics").is_some(),
@@ -183,7 +192,10 @@ fn guide_content_and_surfaces_matrix() {
     let query = guide::run(workspace.root(), "query", false).unwrap();
     assert_eq!(guide::run(workspace.root(), " ", false).unwrap(), query);
     assert_eq!(
-        serde_json::from_slice::<Value>(&run_cli_json(&workspace, &["guide", " "]).stdout).unwrap(),
+        serde_json::from_slice::<Value>(
+            &run_cli_json(&workspace, &["guide", " ", "--mcp"]).stdout
+        )
+        .unwrap(),
         query
     );
 
@@ -205,7 +217,7 @@ fn guide_content_and_surfaces_matrix() {
             .expect("supported guide");
         let shared = guide::run(workspace.root(), topic, false).unwrap();
         assert_eq!(value, shared);
-        let cli = run_cli_json(&workspace, &["guide", topic]);
+        let cli = run_cli_json(&workspace, &["guide", topic, "--mcp"]);
         assert!(
             cli.status.success(),
             "{}",
@@ -475,11 +487,19 @@ fn guide_content_and_surfaces_matrix() {
         assert!(serde_json::from_slice::<Value>(&output.stdout).is_ok());
     }
 
-    for topic in GUIDANCE_TOPICS.into_iter().chain(["query"]) {
+    for topic in GUIDANCE_TOPICS
+        .into_iter()
+        .chain(["query", "ast", "adapter", "validate", "init"])
+    {
         let mut markdown = None;
         for format in [None, Some("markdown"), Some("json")] {
             let mut args = json!({"topic":topic});
             let mut cli_args = vec!["guide", topic];
+            if topic == "init" {
+                args["force"] = json!(true);
+                cli_args.push("--force");
+            }
+            cli_args.push("--mcp");
             if let Some(format) = format {
                 args["format"] = json!(format);
                 cli_args.extend(["--format", format]);
@@ -498,18 +518,29 @@ fn guide_content_and_surfaces_matrix() {
             );
             let cli = String::from_utf8(cli.stdout).unwrap();
             if format == Some("json") {
-                let mcp: Value = serde_json::from_str(mcp).expect("structured JSON");
-                assert_eq!(serde_json::from_str::<Value>(&cli).unwrap(), mcp);
-                if topic != "query" {
-                    assert!(mcp["purpose"]
+                let mcp_val: Value = serde_json::from_str(mcp).expect("structured JSON");
+                assert_eq!(serde_json::from_str::<Value>(&cli).unwrap(), mcp_val);
+                if GUIDANCE_TOPICS.contains(&topic) {
+                    assert!(mcp_val["purpose"]
                         .as_str()
                         .is_some_and(|s| !s.trim().is_empty()));
-                    assert!(mcp["steps"].as_array().is_some_and(|s| !s.is_empty()));
-                    assert!(mcp["references"].as_array().is_some_and(|s| !s.is_empty()));
+                    assert!(mcp_val["steps"].as_array().is_some_and(|s| !s.is_empty()));
+                    assert!(mcp_val["references"]
+                        .as_array()
+                        .is_some_and(|s| !s.is_empty()));
+                }
+                if topic == "code" {
+                    assert!(
+                        mcp_val.get("cli_commands").is_none(),
+                        "MCP guide code must stay MCP-focused without cli_commands dump: {mcp_val}"
+                    );
                 }
             } else {
                 assert_eq!(cli.trim_end_matches('\n'), mcp.trim_end_matches('\n'));
-                assert!(mcp.starts_with('#'), "readable Markdown, not JSON");
+                assert!(
+                    mcp.starts_with("# acdd_guide\n"),
+                    "MCP guide '{topic}' must render Markdown heading # acdd_guide: {mcp}"
+                );
                 if let Some(default) = &markdown {
                     assert_eq!(default, mcp);
                 } else {
@@ -518,6 +549,113 @@ fn guide_content_and_surfaces_matrix() {
             }
         }
     }
+
+    // Default CLI `acdd guide [topic]` (without `--mcp`) omits MCP tool names across ALL topics
+    // in both JSON and default Markdown output, and uses `# acdd guide` Markdown heading.
+    let forbidden_mcp = [
+        "acdd_",
+        "code_map_",
+        "acdd_read",
+        "ast_grep_search",
+        "search_docs",
+        "get_doc",
+        "acdd_guide",
+        "acdd_state",
+        "acdd_claim",
+        "acdd_verify",
+        "acdd_submit",
+        "acdd_blackboard",
+        "mcp_tools",
+        "\"mcp\":",
+    ];
+    for topic in [
+        "code",
+        "query",
+        "ast",
+        "docs",
+        "lifecycle",
+        "acdd",
+        "gates",
+        "subtasks",
+        "adapter",
+        "validate",
+        "init",
+    ] {
+        let mut base_args = vec!["guide", topic];
+        if topic == "init" {
+            base_args.push("--force");
+        }
+        let cli_json = run_cli_json(&workspace, &base_args);
+        assert!(
+            cli_json.status.success(),
+            "guide {topic} json: {}",
+            String::from_utf8_lossy(&cli_json.stderr)
+        );
+        let json_text = String::from_utf8(cli_json.stdout).unwrap();
+        let cli_md = run_cli(&workspace, &base_args);
+        assert!(
+            cli_md.status.success(),
+            "guide {topic} markdown: {}",
+            String::from_utf8_lossy(&cli_md.stderr)
+        );
+        let md_text = String::from_utf8(cli_md.stdout).unwrap();
+        assert!(
+            md_text.starts_with("# acdd guide\n"),
+            "default CLI guide '{topic}' must have '# acdd guide' heading: {md_text}"
+        );
+        for (surface, text) in [("json", &json_text), ("markdown", &md_text)] {
+            for forbidden in forbidden_mcp {
+                assert!(
+                    !text.contains(forbidden),
+                    "default CLI guide '{topic}' ({surface}) must omit MCP reference '{forbidden}': {text}"
+                );
+            }
+        }
+        if topic == "code" {
+            for required in [
+                "acdd read",
+                "--selector",
+                "--mode",
+                "acdd query overview",
+                "acdd query search",
+                "acdd query inspect",
+                "acdd query impact",
+                "acdd query explain",
+                "acdd query analyze",
+                "acdd query run",
+                "duplicates",
+                "dead_tails",
+                "tests",
+                "prove_removal",
+                "slice",
+                "untested",
+                "implementations",
+                "acdd ast grep",
+                "acdd lint",
+                "acdd docs search",
+                "acdd docs get",
+                "acdd exec",
+            ] {
+                assert!(
+                    json_text.contains(required),
+                    "default CLI guide code missing '{required}': {json_text}"
+                );
+            }
+            assert!(
+                md_text.contains("acdd query run"),
+                "default CLI guide code markdown missing 'acdd query run': {md_text}"
+            );
+        }
+    }
+    let cli_default_topic_json = run_cli_json(&workspace, &["guide"]);
+    assert!(cli_default_topic_json.status.success());
+    assert!(!String::from_utf8_lossy(&cli_default_topic_json.stdout).contains("code_map_"));
+    let cli_default_topic_md = run_cli(&workspace, &["guide"]);
+    assert!(cli_default_topic_md.status.success());
+    let cli_default_topic_md_text = String::from_utf8(cli_default_topic_md.stdout).unwrap();
+    assert!(cli_default_topic_md_text.starts_with("# acdd guide\n"));
+    assert!(!cli_default_topic_md_text.contains("acdd_"));
+    assert!(!cli_default_topic_md_text.contains("code_map_"));
 
     harness.finish().expect("guide cleanup");
 }

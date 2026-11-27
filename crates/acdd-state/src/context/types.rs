@@ -50,8 +50,43 @@ pub struct ClaimContextRequest {
     pub blackboard_items: Vec<BlackboardRecord>,
     /// True when prior `architectural_drift` findings require discarding cached builder context.
     pub context_reset_required: bool,
-    /// Total byte ceiling from `ResponsePolicy.max_output_bytes`.
+    /// Target response byte ceiling (`10,000` compact soft ceiling, `32,768` full ceiling, or explicit test cap).
     pub response_max_bytes: usize,
+    /// Optional hard response envelope byte cap (`ResponsePolicy.max_output_bytes` when `response_max_bytes` is a soft ceiling).
+    pub hard_max_bytes: Option<usize>,
+}
+
+impl ClaimContextRequest {
+    /// Hard response envelope ceiling for the entire `ClaimResp` (`hard_max_bytes` override or `response_max_bytes`).
+    pub(crate) fn effective_hard_max_bytes(&self) -> usize {
+        self.hard_max_bytes.unwrap_or(self.response_max_bytes)
+    }
+
+    /// Hard Tier 1 cap on mandatory metadata, `contract`, and `guidance` (`limits.max_guidance_bytes.min(response_hard_cap)`).
+    pub(crate) fn tier1_cap(&self) -> usize {
+        self.profile
+            .limits
+            .max_guidance_bytes
+            .min(self.effective_hard_max_bytes())
+    }
+
+    /// Soft target ceiling for optional Tiers 2–6, never exceeding `effective_hard_max_bytes()`.
+    pub(crate) fn optional_target_cap(&self) -> usize {
+        self.response_max_bytes
+            .min(self.effective_hard_max_bytes())
+    }
+
+    /// Byte ceiling for recording `omitted_sections`: uses `optional_target_cap()` when Tier 1 fits,
+    /// and expands to `effective_hard_max_bytes()` when mandatory Tier 1 exceeds `optional_target_cap()`.
+    pub(crate) fn omitted_budget_cap(&self, tier1_bytes: usize) -> usize {
+        let response_hard_cap = self.effective_hard_max_bytes();
+        let optional_target_cap = self.optional_target_cap();
+        if tier1_bytes > optional_target_cap {
+            response_hard_cap
+        } else {
+            optional_target_cap
+        }
+    }
 }
 
 /// Budgeted response payload returned by `claim` and rendered for role runner `stdin`.
@@ -78,7 +113,7 @@ pub struct ClaimResp {
     pub context_reset_required: bool,
     /// Tier 1: Mandatory contract/task specification excerpt.
     pub contract: Value,
-    /// Tier 1: Mandatory resolved guidance entries (never truncated; fails with `GuidanceBudgetExceeded`).
+    /// Tier 1: Mandatory resolved guidance entries (never truncated; fails with `GuidanceBudgetExceeded` on hard-cap overflow).
     pub guidance: Vec<Value>,
     /// Tier 2: Unresolved findings and failed trace log tail.
     #[serde(default, skip_serializing_if = "Option::is_none")]

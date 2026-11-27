@@ -199,6 +199,7 @@ fn sample_claim_request(
         blackboard_items: Vec::new(),
         context_reset_required: false,
         response_max_bytes,
+        hard_max_bytes: None,
     }
 }
 
@@ -653,7 +654,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
         RejectionFindings, RejectionKind,
     };
     use acdd_state::usecases::{ClaimReq, StartReq, StateCommand, StateCommandOutput, StateEngine};
-    const COMPACT_CLAIM_MAX_BYTES: usize = 9_500;
+    const COMPACT_CLAIM_MAX_BYTES: usize = 10_000;
 
     let ws = crate::common::Workspace::new();
     let root = ws.root();
@@ -859,7 +860,8 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     assert!(md.contains("(+2 more)"), "{md}");
     assert!(md.contains("... (+2 more)"), "{md}");
 
-    // Blackboard bounded at 6 x 220 chars while keeping Tier 2 findings intact.
+    // Blackboard bounded at 6 x 220 chars while keeping Tier 2 findings intact,
+    // and omission count recorded when shown < relevant_total.
     assert_eq!(assembled.blackboard.len(), MAX_BLACKBOARD_ITEMS);
     for item in &assembled.blackboard {
         assert!(
@@ -867,9 +869,12 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
             "{item}"
         );
     }
+    assert!(assembled
+        .omitted_sections
+        .contains(&"blackboard (4 of 10 omitted)".to_owned()));
     assert!(assembled.unresolved_findings.is_some());
 
-    // 2. StateEngine ClaimReq::detail: default Compact <= 9,500 bytes vs opt-in Full <= 32,768 bytes.
+    // 2. StateEngine ClaimReq::detail: default Compact <= 10,000 bytes vs opt-in Full <= 32,768 bytes.
     let repo_profile_src =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".acdd/profile.yaml");
     let profile_text = std::fs::read_to_string(&repo_profile_src).unwrap();
@@ -899,7 +904,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     .unwrap();
     let mut cfg = crate::acdd::support::base_engine_config(root);
     cfg.code_db_path = Some(root.join(".acdd/code-map.sqlite"));
-    let engine = StateEngine::open(cfg, provider).unwrap();
+    let engine = StateEngine::open(cfg, provider.clone()).unwrap();
     let started = match engine
         .execute(StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/AC-900.md".to_owned()),
@@ -956,6 +961,39 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
         "compact claim markdown exceeded {COMPACT_CLAIM_MAX_BYTES}: {}",
         compact_md.len()
     );
+    assert!(
+        compact_claim
+            .omitted_sections
+            .contains(&"blackboard (2 of 8 omitted)".to_owned()),
+        "{:?}",
+        compact_claim.omitted_sections
+    );
+    assert!(
+        compact_md.contains("acdd blackboard --action read --limit 20"),
+        "{compact_md}"
+    );
+
+    // Oversized compact Tier 1 (> 10,000, within 32,768 hard cap) degrades gracefully instead of GuidanceBudgetExceeded.
+    let mut soft_req = direct_req.clone();
+    soft_req.response_max_bytes = COMPACT_CLAIM_MAX_BYTES;
+    soft_req.hard_max_bytes = Some(32_768);
+    soft_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(acdd_state::profile::schema::InlineGuidance {
+            inline: "x".repeat(10_400),
+        }));
+    let degraded = GateContextAssembler::assemble(&soft_req, &provider).unwrap();
+    assert!(degraded.total_bytes > COMPACT_CLAIM_MAX_BYTES && degraded.total_bytes <= 32_768);
+    assert!(degraded
+        .omitted_sections
+        .contains(&"unresolved_findings".to_owned()));
+    let degraded_md = render_claim_prompt_markdown(&degraded, None);
+    assert!(
+        degraded_md.contains("acdd show t1.build")
+            && degraded_md.contains("acdd claim t1.build --detail full"),
+        "{degraded_md}"
+    );
 
     let rid_cli = rid.clone();
     let full_claim = match engine
@@ -978,7 +1016,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     assert!(full_claim.total_bytes >= compact_claim.total_bytes);
     drop(engine);
 
-    // 3. CLI `acdd claim` parity: default (`compact`) <= 9,500 bytes, explicit `--detail compact|full`,
+    // 3. CLI `acdd claim` parity: default (`compact`) <= 10,000 bytes, explicit `--detail compact|full`,
     // and invalid `--detail` rejected.
     let cli_default = crate::common::cli::run_cli_json(
         &ws,

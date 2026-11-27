@@ -565,11 +565,15 @@ pub enum Command {
     },
     /// Display built-in ACDD guidance topics (`init | adapter | docs | acdd | query | ast | validate | lifecycle | gates | subtasks | code`).
     Guide {
-        /// Topic name.
+        /// Topic name (defaults to `query`).
+        #[arg(default_value = "query")]
         topic: String,
         #[arg(long)]
         /// Force overwrite when `topic == "init"`.
         force: bool,
+        #[arg(long)]
+        /// Emit MCP-tool guidance matching `acdd_guide` instead of the default CLI-focused guide.
+        mcp: bool,
     },
     /// Execute a command inside the resolved active run or worktree checkout.
     Exec {

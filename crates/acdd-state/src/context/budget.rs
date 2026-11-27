@@ -22,10 +22,24 @@ const SUBTASK_PROJECTION_BUDGET_CAP_BYTES: usize = 1_024;
 const MAX_PROJECTED_SUBTASKS: usize = 16;
 /// Maximum byte cap for inline completed/cancelled subtask evidence inside `contract.subtasks`.
 const SUBTASK_EVIDENCE_BUDGET_CAP_BYTES: usize = 512;
-/// Default soft byte ceiling for compact `ClaimResp` envelopes (`9,500` bytes).
-pub(crate) const CLAIM_DEFAULT_MAX_BYTES: usize = 9_500;
+/// Default soft byte ceiling for compact `ClaimResp` envelopes (`10,000` bytes).
+pub(crate) const CLAIM_DEFAULT_MAX_BYTES: usize = 10_000;
 /// Opt-in `detail="full"` byte ceiling for `ClaimResp` envelopes (`32 KiB`).
 pub(crate) const CLAIM_FULL_MAX_BYTES: usize = 32_768;
+
+/// Converge `resp.total_bytes` to its exact minimal serialized JSON byte length fixpoint.
+pub(super) fn settle_total_bytes(resp: &mut ClaimResp) -> usize {
+    resp.total_bytes = 0;
+    for _ in 0..4 {
+        let len = estimate_json_bytes(resp);
+        if resp.total_bytes == len {
+            return len;
+        }
+        resp.total_bytes = len;
+    }
+    resp.total_bytes = estimate_json_bytes(resp);
+    resp.total_bytes
+}
 
 /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
 pub(super) fn preflight_mandatory(
@@ -33,24 +47,23 @@ pub(super) fn preflight_mandatory(
 ) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
     let node_cursor = NodeCursor::from_node_id(&req.node.node_id)?;
     let inspect_cmd = format!("acdd show {} --run {}", node_cursor, req.run.run_id);
+    let response_hard_cap = req.effective_hard_max_bytes();
+    let tier1_cap = req.tier1_cap();
+    let optional_target_cap = req.optional_target_cap();
 
-    // Tier 1: Mandatory contract + guidance (fail-closed, never silently truncated).
+    // Tier 1: Mandatory contract + guidance (fail-closed against `tier1_cap`, never silently truncated).
     let contract = build_contract_value(req);
     let contract_bytes = estimate_json_bytes(&contract);
 
-    let guidance_texts = resolve_and_budget_guidance(
-        &req.profile,
-        &req.gate,
-        contract_bytes,
-        req.response_max_bytes,
-    )?;
+    let guidance_texts =
+        resolve_and_budget_guidance(&req.profile, &req.gate, contract_bytes, response_hard_cap)?;
     let guidance: Vec<Value> = guidance_texts.into_iter().map(Value::String).collect();
     let guidance_bytes = estimate_json_bytes(&guidance);
     check_guidance_budget(
         contract_bytes,
         guidance_bytes,
         &req.profile.limits,
-        req.response_max_bytes,
+        response_hard_cap,
     )?;
 
     let mut resp = ClaimResp {
@@ -71,24 +84,27 @@ pub(super) fn preflight_mandatory(
         blackboard: Vec::new(),
         context_lenses: serde_json::Map::new(),
         omitted_sections: Vec::new(),
-        total_bytes: req.response_max_bytes,
+        total_bytes: 0,
     };
 
-    let running_bytes = estimate_json_bytes(&resp);
-    if running_bytes > req.response_max_bytes {
+    let tier1_bytes = settle_total_bytes(&mut resp);
+    if tier1_bytes > tier1_cap {
         return Err(StateError::new(
             ErrorCode::GuidanceBudgetExceeded,
             format!(
-                "mandatory claim metadata + contract + guidance ({running_bytes} bytes) exceeds response_max_bytes ({} bytes)",
-                req.response_max_bytes
+                "mandatory claim metadata + contract + guidance ({tier1_bytes} bytes) exceeds Tier 1 cap ({tier1_cap} bytes)"
             ),
         ));
     }
 
+    let working_cap = req.omitted_budget_cap(tier1_bytes);
+    resp.total_bytes = working_cap.max(tier1_bytes);
+    let running_bytes = estimate_json_bytes(&resp);
+
     project_live_subtasks(
         &mut resp.contract,
         &req.live_subtasks,
-        (req.response_max_bytes - running_bytes) / 2,
+        optional_target_cap.saturating_sub(running_bytes) / 2,
     );
     let running_bytes = estimate_json_bytes(&resp);
     Ok((resp, node_cursor, running_bytes))
@@ -144,23 +160,148 @@ pub(super) fn add_live_subtask_evidence(
     used
 }
 
-pub(super) fn add_omitted_section(
+fn push_unique_omitted(resp: &mut ClaimResp, section: &str) {
+    if !resp.omitted_sections.iter().any(|s| s == section) {
+        resp.omitted_sections.push(section.to_owned());
+    }
+}
+
+fn upsert_blackboard_omission(resp: &mut ClaimResp, relevant_total: usize) {
+    let omitted = relevant_total.saturating_sub(resp.blackboard.len());
+    if omitted == 0 {
+        return;
+    }
+    let entry = format!("blackboard ({omitted} of {relevant_total} omitted)");
+    if let Some(slot) = resp
+        .omitted_sections
+        .iter_mut()
+        .find(|s| *s == "blackboard" || s.starts_with("blackboard "))
+    {
+        *slot = entry;
+    } else {
+        resp.omitted_sections.push(entry);
+    }
+}
+
+fn pop_projected_subtask(contract: &mut Value) -> bool {
+    let Some(obj) = contract.as_object_mut() else {
+        return false;
+    };
+    let Some(Value::Array(rows)) = obj.get_mut("subtasks") else {
+        return false;
+    };
+    if rows.pop().is_none() {
+        return false;
+    }
+    if rows.is_empty() {
+        obj.remove("subtasks");
+    }
+    let prev_omitted = obj
+        .get("subtasks_omitted")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    obj.insert("subtasks_omitted".into(), json!(prev_omitted + 1));
+    true
+}
+
+fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: usize) -> bool {
+    if let Some(lens_key) = resp.context_lenses.keys().next_back().cloned() {
+        resp.context_lenses.shift_remove(&lens_key);
+        push_unique_omitted(resp, &format!("context:{lens_key}"));
+        return true;
+    }
+    if resp.blackboard.pop().is_some() {
+        let total = relevant_blackboard_total.max(resp.blackboard.len() + 1);
+        upsert_blackboard_omission(resp, total);
+        return true;
+    }
+    if resp.dependency_receipts.pop().is_some() {
+        push_unique_omitted(resp, "dependency_receipts");
+        return true;
+    }
+    if resp.pre_task_slice.take().is_some() {
+        push_unique_omitted(resp, "pre_task_slice");
+        return true;
+    }
+    if let Some(ref mut findings) = resp.unresolved_findings {
+        if let Some(obj) = findings.as_object_mut() {
+            if obj.remove("failed_trace_log_tail").is_some()
+                && obj.get("findings").is_some_and(|v| !v.is_null())
+            {
+                return true;
+            }
+        }
+        resp.unresolved_findings = None;
+        push_unique_omitted(resp, "unresolved_findings");
+        return true;
+    }
+    pop_projected_subtask(&mut resp.contract)
+}
+
+/// Settle `resp.total_bytes` and unconditionally enforce `response_hard_cap` by reclaiming optional items first.
+pub(super) fn enforce_hard_cap_with_reclaim(
+    resp: &mut ClaimResp,
+    response_hard_cap: usize,
+    relevant_blackboard_total: usize,
+) -> Result<(usize, bool), StateError> {
+    let mut reclaimed = false;
+    let mut settled = settle_total_bytes(resp);
+    while settled > response_hard_cap {
+        let bb_total = relevant_blackboard_total.max(resp.blackboard.len());
+        if !reclaim_one_optional_item(resp, bb_total) {
+            break;
+        }
+        reclaimed = true;
+        settled = settle_total_bytes(resp);
+    }
+    if settled > response_hard_cap {
+        return Err(StateError::new(
+            ErrorCode::GuidanceBudgetExceeded,
+            format!(
+                "mandatory claim context + required omission notices ({settled} bytes) exceeds hard cap ({response_hard_cap} bytes)"
+            ),
+        ));
+    }
+    Ok((settled, reclaimed))
+}
+
+/// Record an omitted section notice, reclaiming optional items if needed so omissions are never silently dropped
+/// while honoring `response_hard_cap`. Returns whether earlier optional items were reclaimed.
+pub(super) fn record_omitted_section(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
     section: &str,
-    max_bytes: usize,
-) {
-    // `,"omitted_sections":[]` = 22 bytes on first element, `,` = 1 byte thereafter.
-    let overhead = if resp.omitted_sections.is_empty() {
-        22
+    target_cap: usize,
+    response_hard_cap: usize,
+    relevant_blackboard_total: Option<usize>,
+) -> Result<bool, StateError> {
+    let effective_target_cap = target_cap.min(response_hard_cap);
+    if section == "blackboard" {
+        if let Some(total) = relevant_blackboard_total {
+            upsert_blackboard_omission(resp, total);
+        }
     } else {
-        1
-    };
-    let delta = overhead + estimate_json_bytes(&section);
-    if *running_bytes + delta <= max_bytes {
-        *running_bytes += delta;
-        resp.omitted_sections.push(section.to_owned());
+        push_unique_omitted(resp, section);
     }
+    let mut reclaimed = false;
+    let mut current_bytes = estimate_json_bytes(resp);
+    while current_bytes > effective_target_cap {
+        let bb_total = relevant_blackboard_total.unwrap_or(resp.blackboard.len());
+        if !reclaim_one_optional_item(resp, bb_total) {
+            break;
+        }
+        reclaimed = true;
+        current_bytes = estimate_json_bytes(resp);
+    }
+    if current_bytes > effective_target_cap {
+        let bb_total = relevant_blackboard_total.unwrap_or(resp.blackboard.len());
+        let (settled, extra_reclaimed) =
+            enforce_hard_cap_with_reclaim(resp, response_hard_cap, bb_total)?;
+        reclaimed |= extra_reclaimed;
+        current_bytes = settled;
+    }
+    *running_bytes = current_bytes;
+    Ok(reclaimed)
 }
 
 /// Packs scored items into a JSON lens, preserving any prior truncation and

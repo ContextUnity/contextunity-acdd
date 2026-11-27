@@ -237,18 +237,20 @@ acdd -C <WORKTREE> exec -- <PROGRAM> [ARGS...]
 acdd --root /path/to/repository serve
 acdd reload
 acdd guide init [--force]
+acdd guide [topic] [--mcp]
 acdd guide query
 acdd guide lifecycle --format json
 acdd guide acdd
 acdd guide gates
 acdd guide subtasks
 acdd guide code
+acdd guide code --mcp
 acdd guide docs
 acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree PATH]
 ```
 
 - `serve` / `reload`: Starts the stdio MCP server (18 built-in tools + active `DomainProvider` `<domain>_<name>` plugin tools) or reloads running MCP server processes via `SIGHUP`.
-- `guide`: Returns capability-filtered guidance across the 11 topics (`query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks`).
+- `guide`: Returns capability-filtered CLI-focused guidance across the 11 topics (`query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks`), or pass `--mcp` for MCP-tool guidance matching `acdd_guide`.
 - `tool`: Invokes a `<domain>_<name>` plugin tool exposed by an active `DomainProvider` with JSON arguments validated against `DomainToolDef.input_schema`.
 
 ## Validation

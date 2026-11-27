@@ -851,13 +851,49 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
     if !claim.context_lenses.is_empty() {
         render_context_lenses_markdown(&mut out, &claim.context_lenses);
     }
+    let has_truncated_lens = claim
+        .context_lenses
+        .values()
+        .any(|v| v.get("truncated").and_then(Value::as_bool) == Some(true));
+    let mut emitted_expand_hint = false;
     if !claim.omitted_sections.is_empty() {
         out.push_str("\n## Omitted Sections\n\n");
+        let mut needs_expand_hint = false;
         for section in &claim.omitted_sections {
-            out.push_str("- ");
-            out.push_str(section);
-            out.push('\n');
+            if section == "blackboard" || section.starts_with("blackboard ") {
+                out.push_str(&format!(
+                    "- {section} — inspect via `acdd blackboard --action read --limit 20 --run {}` / `acdd_blackboard`\n",
+                    claim.run_id
+                ));
+            } else if section == "unresolved_findings" {
+                out.push_str(&format!(
+                    "- {section} — inspect via `{}` / `acdd blackboard --action read --topic findings --run {}`\n",
+                    claim.inspect_cmd, claim.run_id
+                ));
+            } else {
+                out.push_str("- ");
+                out.push_str(section);
+                out.push('\n');
+                if matches!(section.as_str(), "pre_task_slice" | "dependency_receipts")
+                    || section.starts_with("context:")
+                {
+                    needs_expand_hint = true;
+                }
+            }
         }
+        if needs_expand_hint || has_truncated_lens {
+            emitted_expand_hint = true;
+            out.push_str(&format!(
+                "- Expand omitted/truncated sections via `acdd claim {} --detail full --run {}` or `acdd context {} --run {}` (`acdd_claim` with `detail=\"full\"`).\n",
+                claim.node_cursor, claim.run_id, claim.node_cursor, claim.run_id
+            ));
+        }
+    }
+    if has_truncated_lens && !emitted_expand_hint {
+        out.push_str(&format!(
+            "\n> [!NOTE]\n> Truncated context lenses can be inspected via `acdd claim {} --detail full --run {}` or `acdd context {} --run {}` (`acdd_claim` with `detail=\"full\"`).\n",
+            claim.node_cursor, claim.run_id, claim.node_cursor, claim.run_id
+        ));
     }
     out
 }

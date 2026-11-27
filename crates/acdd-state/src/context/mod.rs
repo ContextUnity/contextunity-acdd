@@ -141,6 +141,13 @@ impl GateContextAssembler {
                 acdd_core::response::Detail::Compact => CLAIM_DEFAULT_MAX_BYTES,
                 acdd_core::response::Detail::Full => CLAIM_FULL_MAX_BYTES,
             }),
+            hard_max_bytes: Some(match detail {
+                acdd_core::response::Detail::Compact => config.response_policy.max_output_bytes,
+                acdd_core::response::Detail::Full => config
+                    .response_policy
+                    .max_output_bytes
+                    .min(CLAIM_FULL_MAX_BYTES),
+            }),
         })
     }
 
@@ -151,24 +158,51 @@ impl GateContextAssembler {
         budget::preflight_mandatory(req)
     }
 
-    /// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 overflow).
+    /// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 or response hard-cap overflow).
     pub fn assemble(
         req: &ClaimContextRequest,
         provider: &CompositeDomainProvider,
     ) -> Result<ClaimResp, StateError> {
         let (mut resp, node_cursor, mut running_bytes) = Self::preflight_mandatory(req)?;
+        let response_hard_cap = req.effective_hard_max_bytes();
+        let optional_target_cap = req.optional_target_cap();
+        let target_cap = req.omitted_budget_cap(running_bytes);
 
         // Tier 2: Unresolved findings + tail of failed trace log.
-        tiers::apply_tier2_findings(&mut resp, &mut running_bytes, req)?;
+        tiers::apply_tier2_findings(
+            &mut resp,
+            &mut running_bytes,
+            req,
+            target_cap,
+            response_hard_cap,
+        )?;
 
         // Tier 3: Pre-task architectural slice.
-        tiers::apply_tier3_pre_task_slice(&mut resp, &mut running_bytes, req);
+        tiers::apply_tier3_pre_task_slice(
+            &mut resp,
+            &mut running_bytes,
+            req,
+            target_cap,
+            response_hard_cap,
+        )?;
 
         // Tier 4: Completed dependency receipts.
-        tiers::apply_tier4_receipts(&mut resp, &mut running_bytes, req)?;
+        tiers::apply_tier4_receipts(
+            &mut resp,
+            &mut running_bytes,
+            req,
+            target_cap,
+            response_hard_cap,
+        )?;
 
         // Tier 5: Blackboard items (up to 6 x 220 chars).
-        tiers::apply_tier5_blackboard(&mut resp, &mut running_bytes, req);
+        let bb_relevant_total = tiers::apply_tier5_blackboard(
+            &mut resp,
+            &mut running_bytes,
+            req,
+            target_cap,
+            response_hard_cap,
+        )?;
 
         // Tier 6: Dynamic DomainProvider context lenses in YAML declaration order.
         tiers::apply_tier6_context_lenses(
@@ -177,18 +211,22 @@ impl GateContextAssembler {
             req,
             provider,
             &node_cursor,
+            target_cap,
+            response_hard_cap,
+            bb_relevant_total,
         )?;
         running_bytes += budget::add_live_subtask_evidence(
             &mut resp.contract,
             &req.live_subtasks,
-            req.response_max_bytes - running_bytes,
+            optional_target_cap.saturating_sub(running_bytes),
         );
 
         debug_assert_eq!(running_bytes, estimate_json_bytes(&resp));
 
-        // Exact serialized total_bytes fixpoint.
-        resp.total_bytes = estimate_json_bytes(&resp);
-        resp.total_bytes = estimate_json_bytes(&resp);
+        // Exact serialized total_bytes fixpoint, unconditionally enforcing `response_hard_cap`.
+        let (settled, _) =
+            budget::enforce_hard_cap_with_reclaim(&mut resp, response_hard_cap, bb_relevant_total)?;
+        debug_assert!(settled <= response_hard_cap);
 
         Ok(resp)
     }

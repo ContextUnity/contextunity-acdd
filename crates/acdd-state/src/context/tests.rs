@@ -199,6 +199,7 @@ fn base_request() -> ClaimContextRequest {
         blackboard_items: Vec::new(),
         context_reset_required: false,
         response_max_bytes: CLAIM_DEFAULT_MAX_BYTES,
+        hard_max_bytes: None,
     }
 }
 
@@ -288,6 +289,18 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     for item in &full.blackboard {
         assert!(item["payload"].as_str().unwrap().chars().count() <= 220);
     }
+    assert!(
+        full.omitted_sections
+            .contains(&"blackboard (14 of 20 omitted)".to_owned()),
+        "{:?}",
+        full.omitted_sections
+    );
+    let full_md = render_claim_prompt_markdown(&full, None);
+    assert!(
+        full_md.contains("acdd blackboard --action read --limit 20 --run run-1"),
+        "{full_md}"
+    );
+    assert!(full_md.contains("acdd_blackboard"), "{full_md}");
     let lens_keys: Vec<&str> = full.context_lenses.keys().map(String::as_str).collect();
     assert_eq!(lens_keys, vec!["code.zebra", "code.symbols", "code.tests"]);
 
@@ -305,7 +318,8 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
         .omitted_sections
         .contains(&"context:code.tests".to_owned()));
 
-    // Razor-tight budget where `omitted_sections` itself cannot fit: total_bytes MUST still not overflow!
+    // Optional item reclaim & razor-tight hard-cap enforcement:
+    // 1) Reclaims earlier optional `pre_task_slice` so later `blackboard` omission notice fits inside budget.
     let mut tiny_req = base_request();
     tiny_req.pre_task_slice = Some(json!({ "big": "x".repeat(400) }));
     tiny_req.gate.context.clear();
@@ -317,14 +331,44 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
         &empty_provider,
     )
     .unwrap();
+    let mut reclaim_req = tiny_req.clone();
+    reclaim_req.blackboard_items = vec![BlackboardRecord {
+        id: Some(99),
+        run_id: RunId::new("run-1").unwrap(),
+        node_id: Some("task:t1".to_owned()),
+        recipient_node_id: None,
+        subtask_ref: None,
+        gate: Some("build".to_owned()),
+        author: "arch".to_owned(),
+        topic: BlackboardTopic::Notes,
+        status: BlackboardStatus::Open,
+        payload: "y".repeat(120),
+        created_at: "2026-11-17T10:00:00.000Z".to_owned(),
+    }];
+    let with_slice = build_claim_context(
+        &ClaimContextRequest {
+            blackboard_items: Vec::new(),
+            response_max_bytes: CLAIM_FULL_MAX_BYTES,
+            ..reclaim_req.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap();
+    reclaim_req.response_max_bytes = with_slice.total_bytes + 10;
+    let reclaimed = build_claim_context(&reclaim_req, &empty_provider).unwrap();
+    assert!(reclaimed.total_bytes <= reclaim_req.response_max_bytes);
+    assert!(reclaimed.pre_task_slice.is_none());
+    assert!(reclaimed
+        .omitted_sections
+        .contains(&"blackboard (1 of 1 omitted)".to_owned()));
+    assert!(reclaimed
+        .omitted_sections
+        .contains(&"pre_task_slice".to_owned()));
+
+    // 2) Custom small hard cap that cannot fit Tier 1 + required omission notice fails closed with GuidanceBudgetExceeded.
     tiny_req.response_max_bytes = bare.total_bytes + 5;
-    let bounded = build_claim_context(&tiny_req, &empty_provider).unwrap();
-    assert!(
-        bounded.total_bytes <= tiny_req.response_max_bytes,
-        "omitted_sections must never overflow response_max_bytes: {} > {}",
-        bounded.total_bytes,
-        tiny_req.response_max_bytes
-    );
+    let tiny_err = build_claim_context(&tiny_req, &empty_provider).unwrap_err();
+    assert_eq!(tiny_err.code, ErrorCode::GuidanceBudgetExceeded);
 
     // Disabled/missing provider lens fails closed with DomainCapabilityUnavailable.
     let err_missing = build_claim_context(&tiered_req, &empty_provider).unwrap_err();
@@ -444,6 +488,11 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     assert!(bb_payloads.contains(&"directed handoff note"));
     assert!(bb_payloads.contains(&"global arch decision"));
     assert!(bb_payloads.contains(&"BUDGET_OVERRIDE: latest limit 300"));
+    assert!(
+        bb_resp.omitted_sections.is_empty(),
+        "deduped relevant items all shown must not record omission: {:?}",
+        bb_resp.omitted_sections
+    );
 
     // `predecessor_proofs` inside `pre_task_slice` renders blueprint tasks cleanly in Markdown.
     let mut pred_resp = base_request();
@@ -469,7 +518,7 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     assert!(pred_md.contains("Batch reader"), "{pred_md}");
 
     // Tier 2: oversized `unresolved_findings` drops `failed_trace_log_tail` first to stay complete,
-    // and fails closed with GuidanceBudgetExceeded (never omits `findings`) if Tier 1 + findings overflow.
+    // and omits gracefully into `omitted_sections` (without GuidanceBudgetExceeded) if findings exceed compact budget.
     let mut findings_req = base_request();
     findings_req.gate.context.clear();
     findings_req.unresolved_findings = Some(RejectionFindings {
@@ -507,10 +556,20 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     );
     assert!(kept_payload.get("failed_trace_log_tail").is_none());
 
-    // Budget smaller than Tier 1 + complete findings -> must fail closed (never omit findings).
+    // Budget smaller than Tier 1 + complete findings -> gracefully omits `unresolved_findings`.
     findings_req.response_max_bytes = kept_findings.total_bytes - 1;
-    let err_findings = build_claim_context(&findings_req, &empty_provider).unwrap_err();
-    assert_eq!(err_findings.code, ErrorCode::GuidanceBudgetExceeded);
+    let omitted_findings = build_claim_context(&findings_req, &empty_provider).unwrap();
+    assert!(omitted_findings.total_bytes <= findings_req.response_max_bytes);
+    assert!(omitted_findings.unresolved_findings.is_none());
+    assert!(omitted_findings
+        .omitted_sections
+        .contains(&"unresolved_findings".to_owned()));
+    let omitted_findings_md = render_claim_prompt_markdown(&omitted_findings, None);
+    assert!(
+        omitted_findings_md.contains("acdd show t1.build --run run-1")
+            && omitted_findings_md.contains("acdd blackboard --action read --topic findings --run run-1"),
+        "{omitted_findings_md}"
+    );
 
     // Retrying with `CLAIM_FULL_MAX_BYTES` (detail="full") succeeds with both findings and trace tail.
     findings_req.response_max_bytes = CLAIM_FULL_MAX_BYTES;
@@ -519,6 +578,235 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     assert!(
         full_findings.unresolved_findings.as_ref().unwrap()["failed_trace_log_tail"].is_string()
     );
+
+    // Compact Tier 1 exceeding `CLAIM_DEFAULT_MAX_BYTES` (10,000) within `hard_max_bytes` degrades gracefully
+    // with 0 optional budget and omits Tiers 2-6 into `omitted_sections` with actionable hints.
+    let mut soft_over_req = tiered_req.clone();
+    soft_over_req.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+    soft_over_req.hard_max_bytes = Some(CLAIM_FULL_MAX_BYTES);
+    soft_over_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "g".repeat(10_500),
+        }));
+    let soft_over = build_claim_context(&soft_over_req, &empty_provider).unwrap();
+    assert!(soft_over.total_bytes > CLAIM_DEFAULT_MAX_BYTES);
+    assert!(soft_over.total_bytes <= CLAIM_FULL_MAX_BYTES);
+    assert!(soft_over.unresolved_findings.is_none());
+    assert!(soft_over.pre_task_slice.is_none());
+    assert!(soft_over.dependency_receipts.is_empty());
+    assert!(soft_over.blackboard.is_empty());
+    assert!(soft_over.context_lenses.is_empty());
+    for expected in [
+        "unresolved_findings",
+        "pre_task_slice",
+        "dependency_receipts",
+        "blackboard (20 of 20 omitted)",
+        "context:code.zebra",
+        "context:code.symbols",
+        "context:code.tests",
+    ] {
+        assert!(
+            soft_over.omitted_sections.contains(&expected.to_owned()),
+            "missing {expected} in {:?}",
+            soft_over.omitted_sections
+        );
+    }
+    let soft_over_md = render_claim_prompt_markdown(&soft_over, None);
+    for hint in [
+        "acdd blackboard --action read --limit 20 --run run-1",
+        "acdd_blackboard",
+        "acdd show t1.build --run run-1",
+        "acdd blackboard --action read --topic findings --run run-1",
+        "acdd claim t1.build --detail full --run run-1",
+        "acdd context t1.build --run run-1",
+    ] {
+        assert!(soft_over_md.contains(hint), "missing hint {hint} in {soft_over_md}");
+    }
+
+    // Tier 1 exceeding hard_max_bytes still fails closed with GuidanceBudgetExceeded.
+    soft_over_req.hard_max_bytes = Some(10_200);
+    let hard_err = build_claim_context(&soft_over_req, &empty_provider).unwrap_err();
+    assert_eq!(hard_err.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // Tier 1 just below soft ceiling (10,000) with larger hard_max_bytes still records all omissions cleanly.
+    let mut just_below_soft = tiered_req.clone();
+    just_below_soft.gate.context.clear();
+    just_below_soft.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+    just_below_soft.hard_max_bytes = Some(CLAIM_FULL_MAX_BYTES);
+    let base_len = build_claim_context(
+        &ClaimContextRequest {
+            unresolved_findings: None,
+            failed_trace_log_tail: None,
+            pre_task_slice: None,
+            dependency_receipts: Vec::new(),
+            blackboard_items: Vec::new(),
+            ..just_below_soft.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap()
+    .total_bytes;
+    let pad = CLAIM_DEFAULT_MAX_BYTES - base_len - 18;
+    just_below_soft
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "p".repeat(pad),
+        }));
+    let below_soft_resp = build_claim_context(&just_below_soft, &empty_provider).unwrap();
+    assert!(below_soft_resp.total_bytes <= CLAIM_FULL_MAX_BYTES);
+    assert!(below_soft_resp
+        .omitted_sections
+        .contains(&"unresolved_findings".to_owned()));
+    assert!(below_soft_resp
+        .omitted_sections
+        .contains(&"blackboard (20 of 20 omitted)".to_owned()));
+
+    // Tier 1 near hard cap (insufficient room for required omission notice) fails closed without dropping notice.
+    let near_hard_len = build_claim_context(
+        &ClaimContextRequest {
+            unresolved_findings: None,
+            failed_trace_log_tail: None,
+            pre_task_slice: None,
+            dependency_receipts: Vec::new(),
+            blackboard_items: Vec::new(),
+            ..just_below_soft.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap()
+    .total_bytes;
+    just_below_soft.hard_max_bytes = Some(near_hard_len + 8);
+    let near_hard_err = build_claim_context(&just_below_soft, &empty_provider).unwrap_err();
+    assert_eq!(near_hard_err.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // Decimal-digit transition (9,999 vs 10,000): placeholder width 10,000 must NOT reject a 9,999-byte fixpoint.
+    let mut decimal_req = base_request();
+    decimal_req.gate.context.clear();
+    decimal_req.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+    decimal_req.hard_max_bytes = Some(CLAIM_DEFAULT_MAX_BYTES);
+    let base_decimal = build_claim_context(&decimal_req, &empty_provider)
+        .unwrap()
+        .total_bytes;
+    // `base_decimal` has 4 digits; grow inline guidance so settled fixpoint is exactly 9,999 bytes.
+    let mut target_pad = 9_999 - base_decimal - 12;
+    let mut converged = false;
+    let mut trace = Vec::new();
+    for _ in 0..8 {
+        let mut probe = decimal_req.clone();
+        probe
+            .gate
+            .guidance
+            .push(GateGuidanceRef::Inline(InlineGuidance {
+                inline: "d".repeat(target_pad),
+            }));
+        let len = build_claim_context(&probe, &empty_provider)
+            .unwrap()
+            .total_bytes;
+        trace.push((target_pad, len));
+        if len == 9_999 {
+            converged = true;
+            break;
+        }
+        target_pad = target_pad + 9_999 - len;
+    }
+    assert!(
+        converged,
+        "failed to calibrate 9,999-byte test payload: base={base_decimal}, trace={trace:?}"
+    );
+    decimal_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "d".repeat(target_pad),
+        }));
+    decimal_req.profile.limits.max_guidance_bytes = 9_999;
+    let exact_9999 = build_claim_context(&decimal_req, &empty_provider).unwrap();
+    assert_eq!(exact_9999.total_bytes, 9_999);
+    decimal_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "x".to_owned(),
+        }));
+    let over_9999 = build_claim_context(&decimal_req, &empty_provider).unwrap_err();
+    assert_eq!(over_9999.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // Tier 1 cap (`max_guidance_bytes < response_max_bytes`) vs response cap separation:
+    // Tier 1 is bounded by `tier1_cap = max_guidance_bytes`, while optional Tiers 2-6 legitimately pack up to
+    // `optional_target_cap <= response_hard_cap` (including omission notices) without failing at `max_guidance_bytes`.
+    let mut sep_req = tiered_req.clone();
+    sep_req.gate.context.clear();
+    let sep_tier1_only = build_claim_context(
+        &ClaimContextRequest {
+            unresolved_findings: None,
+            failed_trace_log_tail: None,
+            pre_task_slice: None,
+            dependency_receipts: Vec::new(),
+            blackboard_items: Vec::new(),
+            ..sep_req.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap()
+    .total_bytes;
+    let small_tier1_cap = sep_tier1_only + 200;
+    assert!(small_tier1_cap < CLAIM_DEFAULT_MAX_BYTES);
+    sep_req.profile.limits.max_guidance_bytes = small_tier1_cap;
+    sep_req.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+    sep_req.hard_max_bytes = Some(CLAIM_FULL_MAX_BYTES);
+    let sep_resp = build_claim_context(&sep_req, &empty_provider).unwrap();
+    assert!(
+        sep_resp.total_bytes > small_tier1_cap && sep_resp.total_bytes <= CLAIM_DEFAULT_MAX_BYTES,
+        "optional tiers should pack above max_guidance_bytes ({small_tier1_cap}) up to optional_target_cap: {}",
+        sep_resp.total_bytes
+    );
+    assert!(sep_resp
+        .omitted_sections
+        .contains(&"blackboard (14 of 20 omitted)".to_owned()));
+    assert_eq!(
+        sep_resp.total_bytes,
+        serde_json::to_vec(&sep_resp).unwrap().len()
+    );
+    sep_req
+        .gate
+        .guidance
+        .push(GateGuidanceRef::Inline(InlineGuidance {
+            inline: "t".repeat(250),
+        }));
+    let sep_tier1_err = build_claim_context(&sep_req, &empty_provider).unwrap_err();
+    assert_eq!(sep_tier1_err.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // `hard_max_bytes < response_max_bytes`: optional packing, subtask evidence, and omission notices stay <= response_hard_cap.
+    let mut hard_lt_soft = tiered_req.clone();
+    hard_lt_soft.gate.context.clear();
+    hard_lt_soft.live_subtasks = vec![crate::spec::Subtask {
+        subtask_ref: acdd_core::ids::SubtaskRef::new("s1").unwrap(),
+        title: "Subtask with evidence".to_owned(),
+        status: crate::types::SubtaskStatus::Completed,
+        evidence: Some("e".repeat(120)),
+    }];
+    let hard_cap = sep_tier1_only + 700;
+    assert!(hard_cap < CLAIM_DEFAULT_MAX_BYTES);
+    hard_lt_soft.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+    hard_lt_soft.hard_max_bytes = Some(hard_cap);
+    hard_lt_soft.profile.limits.max_guidance_bytes = CLAIM_FULL_MAX_BYTES;
+    let hard_lt_soft_resp = build_claim_context(&hard_lt_soft, &empty_provider).unwrap();
+    assert!(
+        hard_lt_soft_resp.total_bytes <= hard_cap,
+        "settled response ({}) exceeded response_hard_cap ({hard_cap})",
+        hard_lt_soft_resp.total_bytes
+    );
+    assert_eq!(
+        hard_lt_soft_resp.total_bytes,
+        serde_json::to_vec(&hard_lt_soft_resp).unwrap().len()
+    );
+    assert!(!hard_lt_soft_resp.omitted_sections.is_empty());
+    hard_lt_soft.hard_max_bytes = Some(sep_tier1_only - 1);
+    let hard_lt_soft_err = build_claim_context(&hard_lt_soft, &empty_provider).unwrap_err();
+    assert_eq!(hard_lt_soft_err.code, ErrorCode::GuidanceBudgetExceeded);
 }
 
 #[test]
