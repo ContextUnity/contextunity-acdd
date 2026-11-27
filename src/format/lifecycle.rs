@@ -1,7 +1,7 @@
 //! Pure Markdown presentation for task lifecycle responses.
 
 use acdd_state::context::{render_claim_prompt_markdown, ClaimResp};
-use acdd_state::profile::{GateDispatchInfo, RoleExecutionMode};
+use acdd_state::workflow::{GateDispatchInfo, RoleExecutionMode};
 use acdd_state::types::{GateNodeRecord, RunRecord};
 use acdd_state::usecases::{
     ListResp, NextResp, ShowResp, StartResp, StateCommandOutput, StateQueryOutput, StatusResp,
@@ -91,7 +91,7 @@ fn push_run_summary(out: &mut String, run: &RunRecord) {
         run.run_id, run.run_name
     ));
     out.push_str(&format!(
-        "- **Status**: `{:?}` | **Profile**: `{}` | **Isolation**: `{:?}` | **Generation**: `{}`\n",
+        "- **Status**: `{:?}` | **Workflow**: `{}` | **Isolation**: `{:?}` | **Generation**: `{}`\n",
         run.status, run.profile_id, run.isolation, run.generation
     ));
     if let Some(ref sid) = run.spec_id {
@@ -276,7 +276,7 @@ fn render_list_markdown(resp: &ListResp) -> String {
         page.total_runs, page.total_tombstones, page.limit, page.offset
     );
     if !page.runs.is_empty() {
-        out.push_str("\n## Active / Persisted Runs\n\n| Run ID | Name | Status | Spec | Profile | Isolation | Gen |\n|---|---|---|---|---|---|---:|\n");
+        out.push_str("\n## Active / Persisted Runs\n\n| Run ID | Name | Status | Spec | Workflow | Isolation | Gen |\n|---|---|---|---|---|---|---:|\n");
         for run in &page.runs {
             let spec = run
                 .spec_id
@@ -411,7 +411,7 @@ fn render_tagged_enum_markdown<T: Serialize>(value: &T, title: &str) -> String {
 mod tests {
     use super::*;
     use acdd_core::ids::{RunId, RunName};
-    use acdd_state::profile::schema::ModelSpec;
+    use acdd_state::workflow::schema::ModelSpec;
     use acdd_state::types::{IsolationMode, RunStatus};
 
     #[test]

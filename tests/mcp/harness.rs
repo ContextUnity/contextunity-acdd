@@ -57,7 +57,7 @@ pub fn session_workspace() -> anyhow::Result<Workspace> {
             "---\nid: m-session\ntitle: Sessions\ndoc_type: milestone\nstatus: active\n---\n# Sessions\n\n### task: first\n```yaml\ntask_ref: first\ntarget: Session independence\nscope: [src/]\n```\n",
         ),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ncommands:\n  check:\n    command: \"printf 'test result: ok. 1 passed; 0 failed;\\\\n'\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n          context: [docs.instructions]\n          pass: review\n        - id: review\n          role: worker\n          proof: command\n          command: check\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: none\n",
         ),
     ]);

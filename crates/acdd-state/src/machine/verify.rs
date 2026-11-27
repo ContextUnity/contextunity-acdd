@@ -12,7 +12,7 @@ use crate::types::{
     ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus, NodeStatusPatch, RunGraphSnapshot,
     TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::canonical_json_sha256;
 use acdd_core::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Value};
@@ -42,7 +42,7 @@ pub struct ExecutionDigestInput {
 }
 
 /// Compute the deterministic RFC-8785 SHA-256 `execution_digest`.
-pub fn compute_execution_digest(input: &ExecutionDigestInput) -> Result<String, StateError> {
+pub fn compute_execution_digest(input: &ExecutionDigestInput) -> Result<String, AcddError> {
     let payload = json!({
         "contract_revision": input.contract_revision,
         "gate_def_digest": input.gate_def_digest,
@@ -63,7 +63,7 @@ pub fn evaluate_verify(
     profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &VerifyInput,
-) -> Result<VerifyEvaluation, StateError> {
+) -> Result<VerifyEvaluation, AcddError> {
     let node = crate::machine::require_claimed_in_progress(
         snapshot,
         &input.node_cursor,
@@ -212,12 +212,12 @@ fn classify_verify_outcome(
     gate: &MachineGateDef,
     admitted_scope: &[String],
     input: &VerifyInput,
-) -> (TraceStatus, Result<(), StateError>) {
+) -> (TraceStatus, Result<(), AcddError>) {
     let exec = &input.exec_obs;
     if let Some(ActionExecutionOutcome::UncertainCrash) = exec.action_outcome {
         return (
             TraceStatus::Aborted,
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::MutatingActionUncertainOutcome,
                 format!(
                     "mutating domain action crashed mid-execution on '{}' without recoverable lookup result",
@@ -234,7 +234,7 @@ fn classify_verify_outcome(
     if !scope_violations.is_empty() {
         return (
             TraceStatus::ScopeViolation,
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!(
                     "working tree changes outside admitted scope for '{}': {}",
@@ -248,7 +248,7 @@ fn classify_verify_outcome(
     if exec.aborted {
         return (
             TraceStatus::Aborted,
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("verification aborted on '{}'", node.node_id),
             )),
@@ -257,7 +257,7 @@ fn classify_verify_outcome(
     if exec.timed_out {
         return (
             TraceStatus::TimedOut,
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("verification timed out on '{}'", node.node_id),
             )),
@@ -267,7 +267,7 @@ fn classify_verify_outcome(
     if let Some(ActionExecutionOutcome::Failed(ref msg)) = exec.action_outcome {
         return (
             TraceStatus::Failed,
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("domain action failed on '{}': {msg}", node.node_id),
             )),
@@ -290,7 +290,7 @@ fn classify_verify_outcome(
             {
                 return (
                     TraceStatus::Failed,
-                    Err(StateError::new(
+                    Err(AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!("gate '{}' requires successful call execution", node.node_id),
                     )),
@@ -304,10 +304,10 @@ fn classify_verify_outcome(
     }
 }
 
-fn verify_command_success(node: &GateNodeRecord, input: &VerifyInput) -> Result<(), StateError> {
+fn verify_command_success(node: &GateNodeRecord, input: &VerifyInput) -> Result<(), AcddError> {
     let exec = &input.exec_obs;
     if exec.exit_code != Some(0) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "command on '{}' exited with {:?} (expected 0)",
@@ -322,12 +322,12 @@ fn verify_command_success(node: &GateNodeRecord, input: &VerifyInput) -> Result<
 fn verify_required_checks(
     gate: &MachineGateDef,
     observed: &[crate::types::CheckResultRecord],
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let mut used = vec![false; observed.len()];
     for req in &gate.checks {
         let Some((domain, check)) = req.qualified_name.split_once('.') else {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid check identifier '{}'", req.qualified_name),
             ));
         };
@@ -336,7 +336,7 @@ fn verify_required_checks(
             .enumerate()
             .position(|(idx, r)| !used[idx] && r.domain == domain && r.check == check)
         else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
                     "required domain check '{}' was not executed",
@@ -347,7 +347,7 @@ fn verify_required_checks(
         used[pos] = true;
         let rec = &observed[pos];
         if !rec.passed {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
                     "domain check '{}' failed: {}",
@@ -366,14 +366,14 @@ pub(super) fn reset_fail_target_and_intermediates<'a>(
     clear_mid_claims: bool,
     watch_ids: &mut Vec<&'a str>,
     node_patches: &mut Vec<NodeStatusPatch>,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     let target = snapshot
         .nodes
         .iter()
         .find(|n| n.parent_id == node.parent_id && n.gate_id == fail_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "fail target '{fail_id}' not found in container of '{}'",
                     node.node_id
@@ -415,10 +415,10 @@ fn build_mechanical_failure_transition(
     node: &GateNodeRecord,
     gate: &MachineGateDef,
     obs: &ValidatedObservations,
-) -> Result<TransitionPlan, StateError> {
+) -> Result<TransitionPlan, AcddError> {
     let fail_id = gate.fail.as_deref().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("gate '{}' missing fail target", node.node_id),
         )
     })?;
@@ -501,11 +501,11 @@ mod tests {
         VerifyInput,
     };
     use crate::types::{
-        ClaimOutcome, GateClaimRecord, GateNodeRecord, InvariantsState, IsolationMode, NodeKind,
-        NodeStatus, RunGraphSnapshot, RunRecord, RunStatus, SaveAction, TraceStatus,
-        ValidatedObservations,
+        ClaimOutcome, GateClaimRecord, GateNodeRecord, IsolationMode, NodeKind, NodeStatus,
+        RunGraphSnapshot, RunRecord, RunStatus, SaveAction, TraceStatus, ValidatedObservations,
     };
     use acdd_core::ids::{GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
+    use acdd_spec::InvariantsState;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
 

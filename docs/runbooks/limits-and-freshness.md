@@ -33,13 +33,13 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 - **`--root` / `ACDD_WORKSPACE_ROOT`**: selects the target repository root (defaults to `.`).
 - **MCP freshness vs. CLI**: MCP validates workspace identity and `adapter.digest` per call and auto-runs `delta` or `build` (reusing warm inventory checks for up to 5 seconds), whereas CLI queries read the on-disk index until you run `build` or `delta`.
 - **Digest staleness**: `acdd_read` snippet mode fails closed when on-disk source differs from the indexed digest (core text modes still read live files).
-- **What triggers reindexing**: changes to `roots`, `specs.*.path`, `linked_workspaces`, `modules.code`, `modules.docs`, or language profiles change `adapter.digest` and trigger rebuilds; changes to `response.*`, `state_db`, `retain_traces`, `profiles_dirs`, or `modules.state` do not.
+- **What triggers reindexing**: changes to `roots`, `specs.*.path`, `linked_workspaces`, `modules.code`, `modules.docs`, or language profiles change `adapter.digest` and trigger rebuilds; changes to `response.*`, `state_db`, `retain_traces`, `workflows_dirs`, `preset`, or `modules.state` do not.
 
 ## Query and source safety
 
 - **Read-only diagnostics (`code_map_analyze`)**: defaults to `mode="summary"` (accepts one read-only `SELECT` or `WITH` statement, `lint=true`, or `include_cycles=true`), or selects read-only `hotspots` (deterministic PageRank within the 2-second query budget), `boundary`, `path` (with `to`), `entrypoints`, `diff_impact`, or `cochange` (with optional `base`). Structural results reflect indexed syntax, not runtime behavior.
 - **Inspect/explain source previews**: omitted by default; when enabled, default to `5` leading lines and configured `max_body_lines` (default `100`, valid `1..=500`).
-- **`acdd_claim` inline budget**: defaults to `<= 9,500` bytes (`detail="compact"`), expanding up to `32 KiB` when `detail="full"` is passed.
+- **`acdd_claim` inline budget**: defaults to `<= 10,000` bytes compact soft cap (`detail="compact"`, recording dropped optional tiers in `omitted_sections` within `ResponsePolicy.max_output_bytes`), expanding up to `32 KiB` when `detail="full"` is passed.
 - **`acdd_read` symbol paging**: returns the entire symbol when serialized output fits `max_output_bytes` (`1,024–98,304`); otherwise pages cleanly at complete line boundaries requiring `generation` on continuations (an explicit `max_body_lines` is normalized to `>= 1`; an oversized single line returns a budget error + recovery hint).
 - **Read-only state reads**: `acdd status|list|show|next|blackboard --action read`, `acdd_state` reads, and `acdd_blackboard(action="read")` open `state.sqlite` strictly via `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` without creating missing DB files (`list` and `blackboard` bind `runs.generation`). See [MCP tools](../reference/mcp-tools.md).
 

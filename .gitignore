@@ -9,9 +9,10 @@ __pycache__/
 *.pyc
 /.worktrees/
 !/.acdd/
-!/.acdd/profile.yaml
-!/.acdd/profiles/
-!/.acdd/profiles/**
+!/.acdd/workflows/
+!/.acdd/workflows/**
+!/.acdd/specs/
+!/.acdd/specs/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*

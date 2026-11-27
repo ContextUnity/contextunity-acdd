@@ -202,11 +202,7 @@ pub(super) fn extract_island(
                 scope.binding_names().map(str::to_owned).collect();
             bindings.insert("event".into());
             let rebindings = scope.rebinding_names().map(str::to_owned).collect();
-            crate::typed_facts::NodeSemanticEntry::set_bindings(
-                scope,
-                bindings.into_iter().collect(),
-                rebindings,
-            );
+            scope.set_bindings(bindings.into_iter().collect(), rebindings);
         }
     }
     let mut ids = std::collections::HashMap::new();

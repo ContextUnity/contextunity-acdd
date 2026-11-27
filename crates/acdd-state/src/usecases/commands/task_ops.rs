@@ -15,7 +15,7 @@ use crate::machine::{
 use crate::store::traits::{exec_tx_with, StateBackend, StateReader};
 use crate::types::{
     BlackboardRecord, BlackboardStatus, BlackboardTopic, GateNodeRecord, IsolationMode, NodeKind,
-    RunGraphSnapshot, RunRecord, SubtaskRecord, SubtaskStatus, ValidatedObservations,
+    RunGraphSnapshot, RunRecord, SubtaskRecord, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::{
@@ -31,11 +31,12 @@ use crate::usecases::lifecycle::{
     with_repo_lock_and_maintenance_unchecked,
 };
 use acdd_core::config::SNAPSHOT_REF_PREFIX;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{check_ancestors_no_symlinks, check_git_entry_no_symlinks};
 use acdd_core::ids::RunId;
 use acdd_core::ports::{CompositeDomainProvider, DomainToolReq};
 use acdd_core::subsystems::SubsystemId;
+use acdd_spec::SubtaskStatus;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,7 +45,7 @@ fn resolve_snapshot_worktree(
     req: &SnapshotReq,
     task_run: Option<&RunRecord>,
     task_node: Option<&GateNodeRecord>,
-) -> Result<PathBuf, StateError> {
+) -> Result<PathBuf, AcddError> {
     let io = matches!(req.action, SnapshotAction::Save | SnapshotAction::Restore);
     let (Some(run), Some(node)) = (task_run, task_node) else {
         let raw = req
@@ -53,12 +54,12 @@ fn resolve_snapshot_worktree(
             .map(Path::new)
             .unwrap_or(&config.worktree);
         check_git_entry_no_symlinks(raw)
-            .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+            .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
         return Ok(raw.to_path_buf());
     };
     if io && node.isolation == IsolationMode::Worktree && node.worktree.is_none() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "snapshot task has no assigned worktree",
         ));
     }
@@ -69,10 +70,10 @@ fn resolve_snapshot_worktree(
         .map(Path::new)
         .unwrap_or(&config.worktree);
     check_git_entry_no_symlinks(literal)
-        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     if let Some(raw) = req.worktree.as_deref() {
         check_git_entry_no_symlinks(raw)
-            .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+            .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     }
     let assigned = resolve_node_worktree(config, run, node, None);
     if req
@@ -80,7 +81,7 @@ fn resolve_snapshot_worktree(
         .as_ref()
         .is_some_and(|path| canonicalize_macos_var(path) != assigned)
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             "explicit worktree does not match assigned task worktree",
         ));
@@ -98,13 +99,13 @@ pub(crate) fn handle_snapshot_dyn(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     req: SnapshotReq,
-) -> Result<SnapshotResp, StateError> {
+) -> Result<SnapshotResp, AcddError> {
     use SnapshotAction::{Clear, List, Save};
     check_git_entry_no_symlinks(&config.workspace_root)
-        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let primary = primary_workspace_root(config);
     check_ancestors_no_symlinks(&primary, Path::new(".git/acdd/repo.lock"))
-        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let target_str = req
         .task_ref
         .as_ref()
@@ -118,7 +119,7 @@ pub(crate) fn handle_snapshot_dyn(
         .transpose()?
         .flatten();
     let mut scope = None;
-    let bad = |m: &str| StateError::new(ErrorCode::ProfileSchemaInvalid, m.to_owned());
+    let bad = |m: &str| AcddError::new(ErrorCode::WorkflowSchemaInvalid, m.to_owned());
     let explicit = req.run.is_some();
     let mut run = if explicit {
         Some(resolve_active_run(
@@ -237,7 +238,7 @@ pub(crate) fn handle_snapshot_dyn(
     if (req.worktree.is_some() || task_node.is_none())
         && canonicalize_macos_var(&worktree) != target.target_worktree
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             "snapshot worktree must be a git worktree root".to_owned(),
         ));
@@ -356,7 +357,7 @@ pub(crate) fn handle_extend_scope_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: ExtendScopeReq,
-) -> Result<ExtendScopeResp, StateError> {
+) -> Result<ExtendScopeResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |_primary, _layout| {
         let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
         let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
@@ -429,7 +430,7 @@ pub(crate) fn handle_reopen_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: ReopenReq,
-) -> Result<ReopenResp, StateError> {
+) -> Result<ReopenResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |_primary, _layout| {
         let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
         let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
@@ -493,15 +494,15 @@ pub(crate) fn handle_subtask_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: SubtaskReq,
-) -> Result<SubtaskResp, StateError> {
+) -> Result<SubtaskResp, AcddError> {
     ensure_state_enabled(config)?;
     if matches!(
         req.status,
         SubtaskStatus::Completed | SubtaskStatus::Cancelled
     ) && req.evidence.as_deref().is_none_or(|e| e.trim().is_empty())
     {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "subtask '{}' status '{}' requires non-empty evidence",
                 req.subtask_ref, req.status
@@ -513,11 +514,11 @@ pub(crate) fn handle_subtask_dyn(
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
         let task_node_id = format!("task:{}", req.task_ref);
         if !snapshot.nodes.iter().any(|n| n.node_id == task_node_id) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "task '{}' does not exist in run '{}'",
                     req.task_ref, run.run_id
@@ -563,17 +564,17 @@ pub(crate) fn handle_blackboard_post_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: BlackboardPostReq,
-) -> Result<BlackboardPostResp, StateError> {
+) -> Result<BlackboardPostResp, AcddError> {
     ensure_blackboard_enabled(config)?;
     if req.author.trim().is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "blackboard post invalid: empty 'author' (expected non-empty worker/agent identifier)",
         ));
     }
     if req.payload.trim().is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "blackboard post invalid: empty 'payload' (expected non-empty message text or JSON payload)",
         ));
     }
@@ -582,7 +583,7 @@ pub(crate) fn handle_blackboard_post_dyn(
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
 
         let node_id = req
             .node
@@ -590,7 +591,7 @@ pub(crate) fn handle_blackboard_post_dyn(
             .map(|raw| {
                 parse_cursor_for_snapshot(&snapshot, raw)?
                     .to_node_id()
-                    .map_err(StateError::from)
+                    .map_err(AcddError::from)
             })
             .transpose()?;
         let recipient_node_id = req
@@ -599,7 +600,7 @@ pub(crate) fn handle_blackboard_post_dyn(
             .map(|raw| {
                 parse_cursor_for_snapshot(&snapshot, raw)?
                     .to_node_id()
-                    .map_err(StateError::from)
+                    .map_err(AcddError::from)
             })
             .transpose()?;
 
@@ -627,7 +628,7 @@ pub(crate) fn handle_call_plugin_tool_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: CallPluginToolReq,
-) -> Result<CallPluginToolResp, StateError> {
+) -> Result<CallPluginToolResp, AcddError> {
     if req.run.is_some() || req.node.is_some() {
         ensure_state_enabled(config)?;
     }
@@ -637,7 +638,7 @@ pub(crate) fn handle_call_plugin_tool_dyn(
         let run = resolve_active_run(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
         let cursor = req
             .node
             .as_deref()
@@ -650,8 +651,8 @@ pub(crate) fn handle_call_plugin_tool_dyn(
                 .iter()
                 .find(|n| n.node_id == node_id)
                 .ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("node '{c}' does not exist in run '{}'", run.run_id),
                     )
                 })?;
@@ -698,10 +699,10 @@ pub(crate) fn handle_call_plugin_tool_dyn(
     let output = provider
         .call_tool(&req.tool_name, &req.args, &tool_req)
         .map_err(|err| {
-            if let Some(se) = StateError::from_anyhow(&err) {
+            if let Some(se) = AcddError::from_anyhow(&err) {
                 se.clone()
             } else {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::DomainCapabilityUnavailable,
                     format!("plugin tool '{}' failed: {err}", req.tool_name),
                 )

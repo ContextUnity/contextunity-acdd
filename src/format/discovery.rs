@@ -238,7 +238,7 @@ fn render_overview_discovery(out: &mut String, container: &Value, scope: Option<
                 let rid = text_field(item, "run_id").unwrap_or("run");
                 let rname = text_field(item, "run_name").unwrap_or(rid);
                 let meta = format!(
-                    "`{}`; status=`{}`; profile=`{}`; isolation=`{}`",
+                    "`{}`; status=`{}`; workflow=`{}`; isolation=`{}`",
                     escape_text(rid),
                     escape_text(text_field(item, "status").unwrap_or("active")),
                     escape_text(text_field(item, "profile_id").unwrap_or("default")),

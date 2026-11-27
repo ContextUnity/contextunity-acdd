@@ -806,7 +806,7 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
         ("acdd.yaml", "state_db: .acdd/state.sqlite\nmodules: {state: true, blackboard: true}\n"),
         (".gitignore", ".acdd/\n"),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: verify\n          role: worker\n          proof: none\n",
         ),
     ]);
@@ -1002,9 +1002,15 @@ fn ux004_mcp_surface_consolidation_and_analyze_cli_parity_contract() {
         ])
     );
 
-    // Verify active-run-only acdd_state omits roadmap/draft and their 8 dead fields.
+    // Verify active-run-only acdd_state omits roadmap/draft and their 8 dead fields, and uses workflow/rebind_workflow.
     let state_schema = &tools.iter().find(|t| t["name"] == "acdd_state").unwrap()["inputSchema"];
     let state_props = state_schema["properties"].as_object().unwrap();
+    for canonical_field in ["workflow", "rebind_workflow"] {
+        assert!(
+            state_props.contains_key(canonical_field),
+            "canonical state field '{canonical_field}' missing"
+        );
+    }
     for removed_field in [
         "collection",
         "slug",

@@ -3,8 +3,9 @@
 ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linter rule, reader mode, and state-machine transition runs over the exact same Rust engine whether called by an AI agent over **MCP (`acdd serve`)** or by a developer / CI pipeline via the **CLI (`acdd ...`)**.
 
 - **Default output**: structured Markdown on both surfaces (pass `format: "json"` in MCP or `--format json` on CLI for machine-parsed JSON).
+- **Subsystem presets**: configure `preset: full | index | spec | state | minimal` in `acdd.yaml` (`spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation; registry-local `modules.required` mismatches emit `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET`, while cross-layer workspace preset mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE`).
 - **Index freshness**: MCP automatically runs incremental `delta` / `build` when files change (with a 5s inventory check cache); CLI reads `.acdd/code-map.sqlite` directly (`acdd build` / `acdd delta` updates it).
-- **Worktree targeting**: MCP tools accept an optional `worktree` field on every call; CLI commands accept `--root <PATH>` or `--worktree <PATH>`.
+- **Worktree targeting**: MCP tools accept an optional `worktree` field on every call; CLI commands accept `-C <PATH>` (short alias for `--root <PATH>`), `ACDD_WORKTREE` / `ACDD_RUN` env fallbacks across both code/docs and state commands, plus `acdd exec [--run <id|name>] [--worker <id>] -- <program> [args...]` to run build/test/git commands directly inside the resolved worktree.
 
 ---
 
@@ -32,7 +33,7 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 | **Search Markdown sections** | `search_docs` | `acdd docs search <query>` | `doc_type: "architecture" \| "adr" \| "guide"`, `include_excerpt: true` |
 | **Read doc section & links** | `get_doc` | `acdd docs get <path>` | `section: "Heading Title"`, `detail: "compact" \| "full"` |
 | **Verify all doc links** | *(via `code_map_lint`)* | `acdd docs check` | Checks relative Markdown links and `#heading` anchors |
-| **Interactive manual** | `acdd_guide` | `acdd guide [topic]` | `query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks` |
+| **Interactive manual** | `acdd_guide` | `acdd guide [topic] [--mcp]` | Defaults to CLI-focused guidance across 11 topics (`query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks`); pass `--mcp` for MCP guidance matching `acdd_guide` |
 
 ---
 
@@ -40,16 +41,17 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 
 | Capability | MCP Tool | CLI Equivalent | Purpose |
 | --- | --- | --- | --- |
-| **Scaffold workspace** | `acdd_guide(topic="init")` | `acdd init [--force]` | Create starter `acdd.yaml`, `.acdd/profile.yaml`, and `.gitignore` rules |
-| **Validate config & specs** | *(via `docs.specs` / CLI)* | `acdd validate [path]` | Fail-closed check of `acdd.yaml`, profiles, and spec DAGs |
-| **Draft next spec file** | *(CLI only; `acdd_state` redirects)* | `acdd draft <col> <slug>` | Create next numbered spec (e.g. `AC-010-feature.md`) |
-| **Start a run** | `acdd_state(action="start")` | `acdd start <spec \| --goal>` | Materialize run DAG & isolated worktrees |
-| **Inspect status, queue & roadmap** | `acdd_state(action="status" \| "list" \| "show" \| "next")` | `acdd status \| list \| show \| next \| roadmap` | Active-run progress and ready cursors (`roadmap` is CLI-only) |
-| **Reload context (read-only)** | `acdd_state(action="context")` | `acdd context [node]` | Re-render 6-tier `ClaimResp` after compaction without mutating claims |
+| **Scaffold workspace** | `acdd_guide(topic="init")` | `acdd init [--force]` | Create starter `acdd.yaml`, `.acdd/workflows/default.yaml`, and `.gitignore` rules (whitelisting `.acdd/workflows/` & `.acdd/specs/`) |
+| **Validate config & specs** | *(via `docs.specs` / CLI)* | `acdd validate [path]` | Fail-closed check (`ValidateReq.explicit_workflow?`) of `acdd.yaml`, workflows (`WORKFLOW_VALID`, `ACDD_WORKFLOW_SCHEMA_INVALID` + `FEATURE_REQUIRED_BY_PRESET`, or `DOMAIN_CAPABILITY_UNAVAILABLE`), and spec DAGs (`ACDD_SPEC_SCHEMA_INVALID`) |
+| **Draft next spec file** | *(CLI only; `acdd_state` redirects)* | `acdd draft <spec> <slug>` | Create next numbered spec (`DraftReq`: `spec`, `slug`, `prefix?`, `title?`, `workflow?` → `DraftResp`: `spec_id`, `spec_path`, `spec`) |
+| **Start a run** | `acdd_state(action="start")` | `acdd start <spec \| --goal> [--workflow <ref>]` | Materialize run DAG & isolated worktrees (`StateInput`: `worktree?`, `create_worktree?` → `StartReq`: `spec_path?`, `goal?`, `run_name?`, `workflow?`, `scope`, `target_base?`, `worktree`, `in_place`, `worktree_path?`) |
+| **Inspect status, queue & roadmap** | `acdd_state(action="status" \| "list" \| "show" \| "next")` | `acdd status \| list \| show \| next \| roadmap [SPEC_ID] [--spec KEY]` | Active-run progress and ready cursors (`roadmap` is CLI-only: `--spec` filters by config key, positional `[SPEC_ID]` drills down; `RoadmapReq.spec?` → `RoadmapSpecEntry`) |
+| **Reload context (read-only)** | `acdd_state(action="context")` | `acdd context [node] [--detail full]` | Re-render 6-tier `ClaimResp` after compaction without mutating claims |
 | **Git checkpoints** | `acdd_state(action="snapshot")` | `acdd snapshot save\|restore\|list\|clear` | Save or restore scoped Git refs (`refs/acdd/snapshots/...`) |
-| **Scope, sync & reopen** | `acdd_state(action="extend_scope" \| "sync" \| "reopen" \| "subtask" \| "clear")` | `acdd extend-scope \| sync \| reopen \| subtask \| clear` | Expand task scope, sync spec edits, reopen gates, update subtasks, or clear run |
+| **Scope, sync & reopen** | `acdd_state(action="extend_scope" \| "sync" \| "reopen" \| "subtask" \| "clear")` | `acdd extend-scope \| sync [--rebind-workflow] \| reopen \| subtask \| clear` | Expand task scope, sync spec edits (`SyncReq.rebind_workflow` → `SyncResp.rebound_workflow`), reopen gates, update subtasks, or clear run |
+| **Worktree command wrapper** | *(N/A)* | `acdd exec [--run <id\|name>] [--worker <id>] -- <cmd>` | Execute build/test/git commands directly inside the resolved worktree (`ACDD_WORKTREE`, `ACDD_RUN`) |
 | **Headless wave runner** | `acdd_state(action="run")` | `acdd run [--jobs N]` | Automatically execute command gates and `roles.<id>.runner` CLIs |
-| **Claim a gate** | `acdd_claim` | `acdd claim [node]` | Lock ready node (`claim_revision`) and receive 6-tier `ClaimResp` |
+| **Claim a gate** | `acdd_claim` | `acdd claim [node] [--detail full]` | Lock ready node (`claim_revision`) and receive 6-tier `ClaimResp` (`<= 10,000` B compact soft cap, `detail="full"` up to `32 KiB`, graceful `omitted_sections`) |
 | **Run gate checks** | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `checks:` (`code.seam`, `code.lint`), and scope guard |
 | **Pass or reject gate** | `acdd_submit` | `acdd submit <node>` | Submit `--action pass\|reject` with proofs/findings and run `save:` policy |
 | **Agent blackboard** | `acdd_blackboard` | `acdd blackboard` | Read or post `notes`, `decisions`, `blockers`, `findings`, `deferred` |

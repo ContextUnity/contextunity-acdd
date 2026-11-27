@@ -1,0 +1,28 @@
+# Starter repository workflow overlay (.acdd/workflows/default.yaml).
+# Inherits the built-in `code` lifecycle and binds local test/lint commands.
+# See references/workflow-reference.md for every supported WorkflowDef v2 option.
+
+version: 2
+inherit: code
+tags:
+  - default
+  - docs
+
+commands:
+  rust-check-and-test: &build_check_cmd
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
+    description: "Run strict lint and scoped tests for the active task."
+
+  build_check: *build_check_cmd
+
+  check_full_repo: &verify_all_cmd
+    command: "cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-targets"
+    description: "Run full-repository verification before handoff."
+    timeout_seconds: 1800
+
+  verify_all: *verify_all_cmd
+
+scope_args_by_pattern:
+  "src/**/*.rs": "--lib"
+  "tests/*.rs": "--test {file_stem}"

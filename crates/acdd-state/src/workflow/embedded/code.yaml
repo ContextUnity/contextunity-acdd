@@ -1,0 +1,463 @@
+version: 2
+inherit: base
+
+tags:
+  - default
+  - docs
+
+default_tools:
+  - code_map_overview
+  - code_map_search
+  - code_map_inspect
+  - code_map_impact
+  - code_map_analyze
+  - code_map_explain
+  - code_map_query
+  - code_map_lint
+  - ast_grep_search
+  - get_doc
+  - search_docs
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+
+proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
+    schema:
+      type: object
+      required:
+        - cited_invariants
+        - cited_symbols
+        - global_negative_boundaries
+        - blackboard_decision_id
+        - tasks
+      properties:
+        ac_mapping:
+          type: array
+          items:
+            type: string
+        c2_boundary_impact:
+          type: string
+        adr_required:
+          type: boolean
+        sad_updates:
+          type: array
+          items:
+            type: string
+        cited_invariants:
+          type: array
+          items:
+            type: string
+        cited_symbols:
+          type: array
+          items:
+            type: string
+        global_negative_boundaries:
+          type: array
+          items:
+            type: string
+        blackboard_decision_id:
+          type: string
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
+            properties:
+              layer:
+                type: string
+              summary:
+                type: string
+              exported_interfaces:
+                type: array
+                items:
+                  type: string
+              negative_boundaries:
+                type: array
+                items:
+                  type: string
+              canonical_owners:
+                type: array
+                items:
+                  type: string
+              mechanism_rules:
+                type: array
+                items:
+                  type: string
+              max_net_loc:
+                type: integer
+              verification_seam:
+                type: string
+              incoming_seams:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - source_task
+                    - contract_type
+                    - contract_ref
+                    - specification
+                  properties:
+                    source_task:
+                      type: string
+                    contract_type:
+                      type: string
+                      enum:
+                        - seam_dependency
+                        - shared_type
+                        - shared_helper
+                    contract_ref:
+                      type: string
+                    specification:
+                      type: string
+              outgoing_seams:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - target_task
+                    - contract_type
+                    - contract_ref
+                    - specification
+                  properties:
+                    target_task:
+                      type: string
+                    contract_type:
+                      type: string
+                      enum:
+                        - seam_dependency
+                        - shared_type
+                        - shared_helper
+                    contract_ref:
+                      type: string
+                    specification:
+                      type: string
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Spawn an architect subagent in the run worktree with thin (run, cursor, worker, worktree) prompt; reuse the same worker on blueprint rejection."
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Spawn a builder subagent in the assigned worktree with thin prompt; reuse the same worker on review rejection and handle BUDGET_OVERRIDE escalations."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: false
+    guidance: "Spawn a fresh independent_reviewer (distinct worker_id from build/polish) with thin prompt to audit all contours independently."
+
+guidance:
+  code.principles:
+    description: "ENGINEERING & SIMPLICITY PRINCIPLES"
+    criteria:
+      - "Reuse canonical owners (`INV-SINGLE-OWNER`), keep one SSOT with native closed enums/types instead of magic strings or shadow layers, and avoid unrequested fallback architecture."
+      - "Extend upstream producers instead of re-implementing downstream: when a consumer (query, lint, report, validator, or gate) lacks a structural fact, extend the canonical upstream extractor/resolver (`incoming_seams`) that owns that domain — never build parallel parsers, resolvers, or string heuristics in downstream consumers."
+      - "Zero production N+1 I/O, DB, parse, or subprocess loops: batch/preload once at the boundary, skip branches discarded by caller filters, and trust validated internal types without re-checking."
+      - "Extract shared helpers for `>= 5`-line repeated pipelines, keep cohesive single-caller code together, and decompose large routines only into distinct domain phases or reusable (`>= 2` callers) helpers — never slice a cohesive algorithm into single-use pass-through micro-functions or pack statements onto single lines."
+      - "Eliminate clones, `dead_tails`, `phantom_tested`, `dangling_calls`, and dead/test-only public API surface; escalate new subsystems or `max_net_loc` overages via `acdd_blackboard` (`decisions`/`blockers`) or `submit --action escalate` — never convert one-time incidents into permanent layers."
+      - "Keep logic/state tests in-memory with hoisted setup and table matrices; reserve tempdirs, VCS checkouts, and child processes strictly for isolation contracts."
+  code.tools:
+    description: "ACDD NAVIGATION & HYGIENE PROTOCOL"
+    criteria:
+      - "Use `code_map_*`, `ast_grep_search`, `acdd_read(selector: ...)`, `search_docs`, `get_doc` (`rg` only for literals/config); if MCP is unavailable, run 'acdd guide code'."
+      - "Run `code_map_lint` for arch/syntax/docs rules, `code_map_impact` and `code_map_query(operation=\"tests\"|\"prove_removal\")` before deleting/changing public symbols, and `code_map_query(duplicates, dead_tails)` before submit."
+      - "Do NOT run inline Python (`python -c` / heredocs) or write ad-hoc `.py` verification scripts — use native tests or `acdd` CLI."
+  milestone.synthesis:
+    description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
+    criteria:
+      - "Audit canonical owners (`code_map_*`, `get_doc` / ADRs) first and map every spec `AC-*` in `ac_mapping` and `cited_invariants` at the architectural seam level."
+      - "Keep blueprints strictly at architectural seams — canonical owners, layer boundaries, `incoming_seams`/`outgoing_seams`, `negative_boundaries`, realistic `max_net_loc`, and behavioral `verification_seam`s. Do NOT write pseudocode, exact CLI flags, raw SQL queries, or line-by-line implementation recipes in blueprint prose; defer missing upstream capabilities in unrelated subsystems to a separate milestone or escalate instead of expanding task scope."
+      - "Verify disjoint same-wave write scopes, `protected_paths` exclusion, and required doc/ADR deltas, then post a concise architectural decision via `acdd_blackboard` (`topic: decisions`) and cite its ID in `blackboard_decision_id`."
+  milestone.blueprint_review:
+    description: "INDEPENDENT BLUEPRINT REVIEW"
+    criteria:
+      - "Audit architectural viability only: 1:1 `AC-*` coverage, canonical-owner reuse (`INV-SINGLE-OWNER`, zero duplicate parsers/resolvers/stores), crate DAG layers, `incoming_seams`/`outgoing_seams` consistency, disjoint same-wave scopes, `protected_paths`, realistic `max_net_loc`, and a valid `blackboard_decision_id`."
+      - "Require a clean architectural plan WITHOUT pseudocode: do NOT demand or reject over low-level implementation details (exact CLI flag ordering, internal helper signatures, raw SQL predicates, or micro edge-case recipes) — verify those against live code and tests during `tasks.review`."
+  task.code:
+    description: "TASK BUILD & SEAM PROOF"
+    criteria:
+      - "Follow `pre_task_slice` (`canonical_owners`, `mechanism_rules`, `max_net_loc`); fix defects across all sibling call sites at the canonical owner, and extend upstream fact producers (`incoming_seams`) rather than adding downstream workarounds."
+      - "Author compiling, passing seam tests directly in `build` (`code.seam`, `exit_code == 0`) and verify hot-path budgets proportionally."
+      - "If `context_reset_required` is set, read the latest `rearchitect` decision from `acdd_blackboard` and rebuild cleanly from scratch."
+  task.review:
+    description: "INDEPENDENT TASK REVIEW"
+    criteria:
+      - "Gate 0 (Mechanism & Ownership Audit before edge-case review): verify that the change reuses existing canonical subsystems (`INV-SINGLE-OWNER`). If a candidate introduces a parallel parser, resolver, or heuristic for a domain already owned by an upstream subsystem, reject the mechanism immediately and route to the canonical owner — never request edge-case patches on top of a duplicate mechanism."
+      - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and `code_map_impact` / `code_map_query` (`duplicates`, `dead_tails`, `phantom_tested`, `dangling_calls`) across all contours."
+      - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations or duplicate subsystem implementations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
+      - "Reject N+1 loops, duplicate `>= 5`-line logic, artificial single-use micro-helper fragmentation, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are genuinely distinct)."
+  task.rearchitect:
+    description: "ARCHITECTURAL RECOVERY AFTER DRIFT"
+    criteria:
+      - "Diagnose the structural drift against invariants/canonical owners and post the simplest seam correction to `acdd_blackboard` (`topic: decisions`) before routing to `build`."
+  milestone.polish:
+    description: "INTEGRATION POLISH & DOCS RECONCILIATION"
+    criteria:
+      - "Resolve integration/review findings strictly inside admitted polish paths without weakening verified contracts."
+  milestone.review:
+    description: "INTEGRATION REVIEW"
+    criteria:
+      - "Audit the integrated diff against `target_base` across all contours, verify trace freshness, runtime test budgets, zero leaked temp resources, and workspace-wide `duplicates`/`dead_tails`."
+  milestone.handoff:
+    description: "TERMINAL DELIVERY RECEIPT"
+    criteria:
+      - "Confirm all non-cancelled tasks are completed and predecessor proofs match the current tree."
+
+contours:
+  architecture:
+    description: "Verify single-owner reuse, simplicity, layer boundaries, and absence of redundant or incident-driven abstractions."
+    criteria:
+      - "Confirm canonical owners and existing upstream producers are reused instead of accumulating defensive wrappers, redundant validations, parallel parsers/resolvers, or downstream string heuristics."
+      - "Verify strict layer boundaries, cohesive functions without artificial single-use micro-helper fragmentation, zero unnecessary code where structural data already exists, and zero incident-driven permanent abstractions."
+  concurrency:
+    description: "Verify concurrent operations preserve revision fencing, claim ownership, and rollback integrity."
+    criteria:
+      - "Verify CAS preconditions, claim revisions, and lock ordering prevent partial or stale state publication."
+  project_isolation:
+    description: "Verify data, profiles, paths, and Git operations stay confined to the owning workspace."
+    criteria:
+      - "Confirm path confinement, symlink rejection, and workspace isolation."
+
+commands:
+  build_check:
+    unbound: true
+  verify_all:
+    unbound: true
+
+gates:
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+        guidance:
+          - milestone.synthesis
+          - core.execution
+          - code.principles
+          - code.tools
+          - hitl.pro
+        context:
+          - docs.instructions
+          - docs.adrs
+          - docs.invariants
+        pass: review
+      - id: review
+        role: independent_reviewer
+        proof: review
+        contours:
+          - claims
+          - architecture
+          - project_isolation
+          - administration
+        independent_from:
+          - synthesize
+        guidance:
+          - milestone.blueprint_review
+          - core.review
+          - code.principles
+          - code.tools
+          - hitl.pro
+        context:
+          - docs.instructions
+          - docs.adrs
+          - docs.invariants
+        save:
+          immutable: true
+        fail: synthesize
+
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          save: snapshot
+          command: build_check
+          proof: command
+          checks:
+            - code.seam
+            - check: code.lint
+              with:
+                categories:
+                  - arch
+                  - syntax
+                  - docs
+          guidance:
+            - task.code
+            - core.execution
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+            - code.tests
+            - code.external_callers
+          pass: review
+
+        - id: review
+          role: independent_reviewer
+          proof: review
+          contours:
+            - paths
+            - claims
+            - architecture
+            - concurrency
+            - project_isolation
+            - administration
+          independent_from:
+            - build
+          need:
+            - build
+          guidance:
+            - task.review
+            - core.review
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+            - code.tests
+            - code.external_callers
+          save:
+            immutable: true
+          pass: deliver
+          fail: build
+          fail_drift: rearchitect
+
+        - id: deliver
+          role: independent_reviewer
+          independent_from:
+            - build
+          need:
+            - build
+            - review
+          receipt: true
+          guidance:
+            - hitl.pro
+          save:
+            immutable: true
+            post: commit
+          fail: build
+
+        - id: rearchitect
+          role: architect
+          guidance:
+            - task.rearchitect
+            - core.execution
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+          pass: build
+          max_attempts: 3
+
+  - id: run_tests
+    command: verify_all
+    proof: command
+    checks:
+      - check: code.lint
+        with:
+          categories:
+            - arch
+            - syntax
+            - docs
+    max_attempts: 3
+    pass: integration_review
+    fail: polish
+
+  - id: polish
+    role: builder
+    scope:
+      - ".acdd/workflows/**"
+      - ".acdd/specs/**"
+      - "docs/**"
+      - "website/**"
+      - "skills/**"
+      - "AGENTS.md"
+      - "README.md"
+      - "ROADMAP.md"
+      - "TESTS.md"
+      - ".gitignore"
+    command: verify_all
+    proof: command
+    max_attempts: 3
+    guidance:
+      - milestone.polish
+      - core.execution
+      - code.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+    pass: run_tests
+
+  - id: integration_review
+    role: independent_reviewer
+    proof: review
+    contours:
+      - paths
+      - claims
+      - architecture
+      - concurrency
+      - project_isolation
+      - administration
+    independent_from:
+      - polish
+      - "tasks.build"
+    need:
+      - run_tests
+    guidance:
+      - milestone.review
+      - core.review
+      - code.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+      - code.external_callers
+    save:
+      immutable: true
+    pass: handoff
+    fail: polish
+
+  - id: handoff
+    role: independent_reviewer
+    need:
+      - run_tests
+      - integration_review
+    receipt: true
+    guidance:
+      - milestone.handoff
+      - hitl.pro
+    save:
+      immutable: true
+      post: commit
+      archive: true
+      prune: true
+    fail: polish

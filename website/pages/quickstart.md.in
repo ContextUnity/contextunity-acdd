@@ -56,13 +56,14 @@ acdd init
 
 `acdd init` creates three things:
 
-- **`acdd.yaml`**: workspace config declaring indexed `roots:`, `ignore:` exclusions, and named `specs:` folders (`milestones` and `plans` by default).
-- **`.acdd/profile.yaml`**: workspace gate profile inheriting the built-in `code` lifecycle (where you bind your project's test command).
-- **`.gitignore` guard**: ignores `.acdd/code-map.sqlite` and `.acdd/state.sqlite` while keeping `.acdd/profile.yaml` tracked in Git.
+- **`acdd.yaml`**: workspace config declaring `preset: full`, indexed `roots:`, `ignore:` exclusions, `workflows_dirs: [.acdd/workflows]`, and named `specs:` configurations (`milestones` and `plans` by default, backed by `crates/acdd-spec`).
+- **`.acdd/workflows/default.yaml`**: workspace gate workflow inheriting the built-in `code` lifecycle (where you bind your project's test command).
+- **`.gitignore` guard**: ignores `.acdd/code-map.sqlite` and `.acdd/state.sqlite` while keeping `.acdd/workflows/` and `.acdd/specs/` tracked in Git.
 
 Starter `acdd.yaml` created by `acdd init`:
 
 ```yaml
+preset: full
 roots:
   - .
 ignore:
@@ -79,13 +80,14 @@ specs:
     path: docs/plans
     prefixes: [PLAN]
     digits: 3
-profiles_dirs:
-  - .acdd/profiles
+workflows_dirs:
+  - .acdd/workflows
 state_db: .acdd/state.sqlite
 ```
 
+- **`preset`**: selects active subsystems (`full`, `index`, `spec`, `state`, `minimal`); `spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation.
 - **`roots`**: folders ACDD indexes for AST symbols, call edges, and Markdown docs.
-- **`specs`**: user-defined specification collections (used later by `acdd draft` — you can rename `milestones`/`plans` or add collections like `features` or `rfcs`).
+- **`specs`**: user-defined specification configurations (used later by `acdd draft` — you can rename `milestones`/`plans` or add entries like `features` or `rfcs`).
 
 Build the initial code and documentation graph:
 
@@ -114,6 +116,9 @@ acdd query impact --changes staged --depth 1
 
 # 5. Run architectural, syntax, clone, and dead-code lint
 acdd lint --categories all
+
+# 6. Read built-in CLI guidance (or pass --mcp for MCP tool guidance)
+acdd guide code
 ```
 
 ---
@@ -142,7 +147,7 @@ How the two pieces work together inside your agent session:
 
 ## Step 5: Run your first verified workflow
 
-Bind your project's test command in `.acdd/profile.yaml`:
+Bind your project's test command in `.acdd/workflows/default.yaml`:
 
 ```yaml
 version: 2
@@ -159,19 +164,19 @@ You have two ways to start a verified run — **Option A (`--goal`)** for everyd
 
 ### Option A: Everyday bugfixes & focused changes (`--goal`, no spec file)
 
-Pass `--goal` to create an ephemeral single-task run (`goal.build` → `goal.review` → `goal.deliver`). Under `inherit: code`, `acdd next` starts at `blueprint_synthesis.synthesize` before `goal.build` — or jumps straight to `goal.build` if you add a lightweight `hotfix` overlay (see [Overriding Profiles](/docs/profiles/overriding-profiles/)):
+Pass `--goal` to create an ephemeral single-task run (`goal.build` → `goal.review` → `goal.deliver`). Under `inherit: code`, `acdd next` starts at `blueprint_synthesis.synthesize` before `goal.build` — or jumps straight to `goal.build` if you add a lightweight `hotfix` overlay in `.acdd/workflows/hotfix.yaml` (see [Overriding Workflows](/docs/workflows/overriding-workflows/)):
 
 ```bash
 # Start an isolated run scoped to src/auth/ and tests/
 acdd start --goal "Reject expired JWTs before DB lookup" --scope src/auth/ --scope tests/
 
-# Inspect the next ready cursor (`blueprint_synthesis.synthesize`, or `goal.build` with --profile hotfix)
+# Inspect the next ready cursor (`blueprint_synthesis.synthesize`, or `goal.build` with --workflow hotfix)
 acdd next
 
-# Claim the ready gate (prints the 6-tier Markdown contract & code context)
+# Claim the ready gate (prints the 6-tier Markdown contract & code context; target worktrees with -C)
 acdd claim
 
-# Once inside goal.build, run verification + lint checks and advance
+# Once inside goal.build, run verification + lint checks (or use `acdd exec -- cargo test`) and advance
 acdd verify goal.build --test rejects_expired_jwt
 acdd submit goal.build --action pass
 ```
@@ -181,10 +186,10 @@ acdd submit goal.build --action pass
 When a feature is too big for one agent turn and needs multiple coordinated tasks, use a **Specification** (`SpecDocument`):
 
 - **What is a Spec (Milestone or Plan)?**: A Git-tracked Markdown contract declaring acceptance criteria (`AC-*`), governing invariants (`INV-*`), and a DAG of `### task: <id>` blocks with non-overlapping file `scope:` globs so multiple agents can build in parallel waves.
-- **Where does `milestones` come from?**: `milestones` is **not** a magic built-in keyword — it is simply the collection name defined under `specs:` in `acdd.yaml` during `acdd init` (`milestones` → `docs/milestones/AC-001-...md`, `plans` → `docs/plans/PLAN-001-...md`). You can rename or add any collection key in `acdd.yaml`.
-- **Who writes the spec?**: Either scaffold the next numbered file with `acdd draft <collection> <slug>` and fill in the tasks (manually or with your agent), **or** run `acdd start --goal "Plan JWT rotation" --profile spec_planning` to have an architect agent synthesize and review the spec first.
+- **Where does `milestones` come from?**: `milestones` is **not** a magic built-in keyword — it is simply the spec configuration name defined under `specs:` in `acdd.yaml` during `acdd init` (`milestones` → `docs/milestones/AC-001-...md`, `plans` → `docs/plans/PLAN-001-...md`). You can rename or add any key under `specs:` in `acdd.yaml`.
+- **Who writes the spec?**: Either scaffold the next numbered file with `acdd draft <spec> <slug>` and fill in the tasks (manually or with your agent), **or** copy `skills/acdd/references/acdd-workflow-examples/spec_planning.yaml` to `.acdd/workflows/spec_planning.yaml` and run `acdd start --goal "Plan JWT rotation" --workflow spec_planning` to have an architect agent synthesize and review the spec first.
 
-Scaffold and launch a spec from your `milestones` collection:
+Scaffold and launch a spec from your `milestones` configuration:
 
 ```bash
 # 1. Allocate the next free ID in specs.milestones -> docs/milestones/AC-001-jwt-rotation.md
@@ -192,6 +197,10 @@ acdd draft milestones jwt-rotation --title "JWT Key Rotation"
 
 # 2. After filling in AC-* criteria and ### task: blocks, start the run in an isolated Git worktree
 acdd start docs/milestones/AC-001-jwt-rotation.md --worktree
+
+# 3. Target the worktree uniformly via -C (or ACDD_WORKTREE / ACDD_RUN) and run arbitrary commands via `acdd exec`
+acdd -C .worktrees/AC-001-jwt-rotation status
+acdd exec -- cargo test --workspace
 ```
 
 What the drafted `docs/milestones/AC-001-jwt-rotation.md` contract looks like:

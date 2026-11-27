@@ -5,14 +5,14 @@ use super::budget::{
     MAX_BLACKBOARD_ITEMS, MIN_LENS_BUDGET_BYTES,
 };
 use super::types::{baseline_ref_for_node, ClaimContextRequest, ClaimResp};
-use crate::profile::GateDef;
+use crate::workflow::GateDef;
 use crate::types::{
     ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, ClaimOutcome,
     GateArtifactRecord, GateNodeRecord, NodeKind, NodeStatus, RejectionFindings, RunGraphSnapshot,
     TraceStatus,
 };
 use acdd_core::config::ACDD_DIR;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::{estimate_json_bytes, utf8_tail};
 use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor};
@@ -152,7 +152,7 @@ pub(super) fn apply_tier2_findings(
     req: &ClaimContextRequest,
     target_cap: usize,
     hard_cap: usize,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if req.unresolved_findings.is_none() && req.failed_trace_log_tail.is_none() {
         return Ok(());
     }
@@ -213,7 +213,7 @@ pub(super) fn apply_tier3_pre_task_slice(
     req: &ClaimContextRequest,
     target_cap: usize,
     hard_cap: usize,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let optional_target_cap = req.optional_target_cap();
     if let Some(slice) = &req.pre_task_slice {
         // `,"pre_task_slice":` = 18 bytes
@@ -241,7 +241,7 @@ pub(super) fn apply_tier4_receipts(
     req: &ClaimContextRequest,
     target_cap: usize,
     hard_cap: usize,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if req.dependency_receipts.is_empty() {
         return Ok(());
     }
@@ -335,7 +335,7 @@ pub(super) fn apply_tier5_blackboard(
     req: &ClaimContextRequest,
     target_cap: usize,
     hard_cap: usize,
-) -> Result<usize, StateError> {
+) -> Result<usize, AcddError> {
     let mut priority: Vec<&BlackboardRecord> = Vec::new();
     let mut notes: Vec<&BlackboardRecord> = Vec::new();
     for item in &req.blackboard_items {
@@ -497,7 +497,7 @@ fn omit_context_lens(
     target_cap: usize,
     hard_cap: usize,
     bb_relevant_total: usize,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     if let Some(old_val) = resp.context_lenses.shift_remove(qualified_lens) {
         let key_bytes = estimate_json_bytes(qualified_lens) + 1;
         let sep = if resp.context_lenses.is_empty() {
@@ -527,7 +527,7 @@ pub(super) fn apply_tier6_context_lenses(
     target_cap: usize,
     hard_cap: usize,
     bb_relevant_total: usize,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if req.gate.context.is_empty() {
         return Ok(());
     }
@@ -619,10 +619,10 @@ pub(super) fn apply_tier6_context_lenses(
         let val = provider
             .provide_context(qualified_lens, &ctx_req)
             .map_err(|err| {
-                if let Some(state_err) = StateError::from_anyhow(&err) {
+                if let Some(state_err) = AcddError::from_anyhow(&err) {
                     state_err.clone()
                 } else {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::DomainCapabilityUnavailable,
                         format!("context lens '{qualified_lens}' failed: {err}"),
                     )

@@ -4,7 +4,7 @@ use super::super::common::{
 };
 use super::common::{collect_scoped_worktree_files, for_each_candidate_file, CodeDomainProvider};
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::{checked_child, is_doc_path};
 use acdd_core::lint::{LintCategory, LintSeverity};
@@ -36,8 +36,8 @@ fn parse_lint_check_params(params: &Value) -> Result<LintCheckParams> {
         return Ok(LintCheckParams::default());
     }
     serde_json::from_value(params.clone()).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid code.lint parameters: {err}"),
         )
         .into()

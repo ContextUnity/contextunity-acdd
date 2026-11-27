@@ -16,11 +16,12 @@ use crate::types::{
     ArtifactKind, BlackboardStatus, BlackboardStatusPatch, BlackboardTopic, ClaimOutcome,
     ClaimOutcomePatch, DependencySatisfiedPatch, GateArtifactRecord, GateNodeRecord, IsolationMode,
     NodeKind, NodeStatus, NodeStatusPatch, PredecessorTreeExpectation, RejectionFindings,
-    RejectionKind, RunGraphSnapshot, RunStatus, SubmitAction, SubtaskStatus, TraceStatus,
-    TransitionPlan, ValidatedObservations,
+    RejectionKind, RunGraphSnapshot, RunStatus, SubmitAction, TraceStatus, TransitionPlan,
+    ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{GateSelector, TaskRef, TreeOid, WorkerId};
+use acdd_spec::SubtaskStatus;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,7 +48,7 @@ pub fn evaluate_submit(
     profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &SubmitInput,
-) -> Result<SubmitEvaluation, StateError> {
+) -> Result<SubmitEvaluation, AcddError> {
     let node = crate::machine::require_claimed_in_progress(
         snapshot,
         &input.node_cursor,
@@ -58,7 +59,7 @@ pub fn evaluate_submit(
     let node_id = node.node_id.as_str();
 
     let active_claim = active_claim_for_node(snapshot, node_id).ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("node '{node_id}' has no active gate_claims record"),
         )
@@ -95,14 +96,14 @@ fn enforce_independent_from(
     node: &GateNodeRecord,
     gate: &MachineGateDef,
     worker_id: &WorkerId,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     for selector in &gate.independent_from {
         match selector {
             GateSelector::Local(gates) => {
                 let target = resolve_local_selector(snapshot, node, gates)?;
                 if let Some(author) = latest_accepted_or_current_worker(snapshot, target) {
                     if &author == worker_id {
-                        return Err(StateError::new(
+                        return Err(AcddError::new(
                             ErrorCode::TaskReviewNotIndependent,
                             format!(
                                 "worker '{worker_id}' cannot satisfy independent_from '{selector}' on '{}' because they authored '{}'",
@@ -134,7 +135,7 @@ fn enforce_independent_from(
                     {
                         if let Some(author) = latest_accepted_or_current_worker(snapshot, target) {
                             if &author == worker_id {
-                                return Err(StateError::new(
+                                return Err(AcddError::new(
                                     ErrorCode::TaskReviewNotIndependent,
                                     format!(
                                         "worker '{worker_id}' cannot satisfy independent_from '{selector}' on '{}' because they authored '{}'",
@@ -170,7 +171,7 @@ fn resolve_local_selector<'a>(
     snapshot: &'a RunGraphSnapshot,
     node: &GateNodeRecord,
     gates: &[acdd_core::ids::GateId],
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     let joined = gates
         .iter()
         .map(|g| g.as_str())
@@ -179,8 +180,8 @@ fn resolve_local_selector<'a>(
     let target_node_id = match node.kind {
         NodeKind::TaskGate => {
             let task_ref = node.task_ref.as_ref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("task_gate '{}' missing task_ref", node.node_id),
                 )
             })?;
@@ -206,8 +207,8 @@ fn resolve_local_selector<'a>(
             snapshot.nodes.iter().find(|n| n.node_id == root_id)
         })
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "selector '{joined}' referenced from '{}' does not match any gate node",
                     node.node_id
@@ -223,10 +224,10 @@ fn evaluate_reject(
     claim_revision: u32,
     obs: &ValidatedObservations,
     input: &SubmitInput,
-) -> Result<SubmitEvaluation, StateError> {
+) -> Result<SubmitEvaluation, AcddError> {
     let findings = input.rejection_findings.as_ref().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "submit --action reject on '{}' requires structured rejection findings",
                 node.node_id
@@ -235,15 +236,15 @@ fn evaluate_reject(
     })?;
 
     if findings.summary.trim().is_empty() || findings.items.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "rejection findings must include a non-empty summary and at least one finding item",
         ));
     }
     for (idx, item) in findings.items.iter().enumerate() {
         if item.message.trim().is_empty() || item.remediation.trim().is_empty() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "rejection finding item [{idx}] must include non-empty message and remediation"
                 ),
@@ -281,8 +282,8 @@ fn evaluate_reject(
         claim_revision,
         kind: ArtifactKind::Findings,
         payload_json: serde_json::to_string(&findings_payload).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to serialize findings artifact: {err}"),
             )
         })?,
@@ -348,8 +349,8 @@ fn evaluate_reject(
                     .iter()
                     .find(|n| n.parent_id == node.parent_id && n.gate_id == *fallback_fail_id)
                     .ok_or_else(|| {
-                        StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
+                        AcddError::new(
+                            ErrorCode::WorkflowSchemaInvalid,
                             format!(
                                 "fail target '{fallback_fail_id}' not found in container of '{}'",
                                 node.node_id
@@ -424,9 +425,9 @@ fn evaluate_pass(
     gate: &MachineGateDef,
     claim_revision: u32,
     input: &SubmitInput,
-) -> Result<SubmitEvaluation, StateError> {
+) -> Result<SubmitEvaluation, AcddError> {
     let current_tree = obs.current_tree.as_ref().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::TaskCandidateMismatch,
             format!(
                 "submit --action pass on '{}' requires current_tree observation",
@@ -441,7 +442,7 @@ fn evaluate_pass(
     let violations =
         detect_scope_violations(snapshot, profile, obs, &admitted_scope, is_unscoped_root);
     if !violations.is_empty() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::OutOfScopeChanges,
             format!(
                 "cannot submit '{}': working tree has out-of-scope changes: {}",
@@ -483,7 +484,7 @@ fn evaluate_pass(
         stale_node_ids.dedup();
         let preconditions = build_preconditions(snapshot, &stale_watch_ids, None);
         return Ok(SubmitEvaluation::MarkStaleAndReject {
-            error: StateError::new(
+            error: AcddError::new(
                 ErrorCode::TaskCandidateMismatch,
                 format!(
                     "predecessor node(s) [{}] drifted from current tree '{}' and were marked stale",
@@ -498,7 +499,7 @@ fn evaluate_pass(
 
     // 3. `save.immutable: true` check (`current_tree == claim_tree`).
     if gate.save.immutable && node.claim_tree.as_ref() != Some(current_tree) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskCandidateMismatch,
             format!(
                 "immutable gate '{}' detected working-tree drift from claim_tree ({:?} != {})",
@@ -553,8 +554,8 @@ fn evaluate_pass(
             .iter()
             .find(|n| n.parent_id == node.parent_id && n.gate_id == *pass_id)
             .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!(
                         "pass target '{pass_id}' not found in container of '{}'",
                         node.node_id
@@ -622,7 +623,7 @@ fn verify_pass_trace(
     claim_revision: u32,
     current_tree: &TreeOid,
     expected_execution_digest: Option<&String>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let needs_trace = matches!(
         gate.proof,
         MachineProofKind::Command | MachineProofKind::Call
@@ -643,7 +644,7 @@ fn verify_pass_trace(
         })
         .max_by_key(|t| t.trace_row_id.unwrap_or(0))
         .ok_or_else(|| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::TaskProofUnobserved,
                 format!(
                     "missing fresh '{}' verification trace for '{}' at claim_revision {}",
@@ -655,7 +656,7 @@ fn verify_pass_trace(
         })?;
 
     if trace.contract_revision != node.contract_revision {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskProofUnobserved,
             format!(
                 "trace contract_revision {} is stale (current contract_revision: {})",
@@ -666,7 +667,7 @@ fn verify_pass_trace(
 
     if let Some(expected_digest) = expected_execution_digest {
         if &trace.execution_digest != expected_digest {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskProofUnobserved,
                 format!(
                     "trace execution_digest '{}' does not match current '{}'",
@@ -678,7 +679,7 @@ fn verify_pass_trace(
 
     let tree_after_ok = trace.candidate_tree_after.as_ref() == Some(current_tree);
     if &trace.candidate_tree_before != current_tree || !tree_after_ok {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskProofUnobserved,
             format!(
                 "trace candidate trees ({} -> {:?}) do not match current_tree '{}'",
@@ -697,13 +698,13 @@ fn collect_pass_proof_artifacts(
     current_tree: &TreeOid,
     input: &SubmitInput,
     obs: &ValidatedObservations,
-) -> Result<Vec<GateArtifactRecord>, StateError> {
+) -> Result<Vec<GateArtifactRecord>, AcddError> {
     let mut new_artifacts = Vec::new();
     match &gate.proof {
         MachineProofKind::Review => {
             let rev = input.review_evidence.as_ref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("proof: review on '{}' requires --evidence", node.node_id),
                 )
             })?;
@@ -720,14 +721,14 @@ fn collect_pass_proof_artifacts(
         }
         MachineProofKind::CustomSchema(schema_name) => {
             let schema = profile.proof_schemas.get(schema_name).ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("proof schema '{schema_name}' is not declared in profile.proofs"),
                 )
             })?;
             let val = input.custom_evidence.as_ref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!(
                         "proof schema '{schema_name}' on '{}' requires --evidence JSON",
                         node.node_id
@@ -774,15 +775,15 @@ fn make_gate_artifact<T: serde::Serialize>(
     input: &SubmitInput,
     obs: &ValidatedObservations,
     label: &str,
-) -> Result<GateArtifactRecord, StateError> {
+) -> Result<GateArtifactRecord, AcddError> {
     Ok(GateArtifactRecord {
         run_id: snapshot.run.run_id.clone(),
         node_id: node.node_id.clone(),
         claim_revision: node.claim_revision,
         kind,
         payload_json: serde_json::to_string(payload).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to serialize {label}: {err}"),
             )
         })?,
@@ -799,17 +800,17 @@ fn handle_task_receipt_completion<'a>(
     input: &SubmitInput,
     watch_ids: &mut Vec<&'a str>,
     transition: &mut TransitionPlan,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let parent_id = node.parent_id.as_deref().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("task_gate '{}' has no parent task container", node.node_id),
         )
     })?;
     let parent_task = find_node(snapshot, parent_id)?;
     let task_ref = parent_task.task_ref.as_ref().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("task container '{parent_id}' missing task_ref"),
         )
     })?;
@@ -824,7 +825,7 @@ fn handle_task_receipt_completion<'a>(
             sub.status,
             SubtaskStatus::Completed | SubtaskStatus::Cancelled
         ) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
                     "cannot complete task '{task_ref}': subtask '{}' is '{}' (expected completed or cancelled)",
@@ -837,7 +838,7 @@ fn handle_task_receipt_completion<'a>(
             .as_deref()
             .is_some_and(|e| !e.trim().is_empty())
         {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!(
                     "cannot complete task '{task_ref}': subtask '{}' missing non-empty evidence",
@@ -947,10 +948,10 @@ fn handle_root_receipt_completion(
     current_tree: &TreeOid,
     input: &SubmitInput,
     transition: &mut TransitionPlan,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if is_post_task_root_node(snapshot, node) {
         if !all_non_cancelled_tasks_completed(snapshot) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 "cannot close root receipt gate before all non-cancelled tasks complete",
             ));
@@ -1088,10 +1089,10 @@ fn validate_review_evidence(
     gate: &MachineGateDef,
     rev: &crate::types::ReviewEvidence,
     expected_action: SubmitAction,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if rev.decision != expected_action {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "review evidence decision '{}' does not match submit action '{}'",
                 rev.decision, expected_action
@@ -1099,8 +1100,8 @@ fn validate_review_evidence(
         ));
     }
     if rev.summary.trim().is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "review evidence requires a non-empty summary",
         ));
     }
@@ -1108,8 +1109,8 @@ fn validate_review_evidence(
     let declared: BTreeSet<&str> = gate.contours.iter().map(String::as_str).collect();
     let provided: BTreeSet<&str> = rev.contours.keys().map(String::as_str).collect();
     if declared != provided {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "review evidence contours {:?} must match declared gate contours {:?} 1:1",
                 provided, declared
@@ -1120,8 +1121,8 @@ fn validate_review_evidence(
     if expected_action == SubmitAction::Pass {
         for (contour, res) in &rev.contours {
             if res.evidence.trim().is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!(
                         "review evidence contour '{contour}' must provide non-empty evidence on pass"
                     ),
@@ -1137,7 +1138,7 @@ fn resolve_need_targets<'a>(
     snapshot: &'a RunGraphSnapshot,
     node: &GateNodeRecord,
     selector: &GateSelector,
-) -> Result<Vec<&'a GateNodeRecord>, StateError> {
+) -> Result<Vec<&'a GateNodeRecord>, AcddError> {
     match selector {
         GateSelector::Local(gates) => Ok(vec![resolve_local_selector(snapshot, node, gates)?]),
         GateSelector::AllTasksGate(gates) => {
@@ -1159,8 +1160,8 @@ fn resolve_need_targets<'a>(
                 }
             }
             if out.is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("need selector '{selector}' matched no task gates"),
                 ));
             }

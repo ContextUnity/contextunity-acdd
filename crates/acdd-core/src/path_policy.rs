@@ -130,8 +130,7 @@ impl WorkspacePathPolicy {
     ///
     /// Excludes `.git/**`, `.worktrees/**`, `is_engine_managed(rel_path)`, configured `state_db`/`code_db`
     /// (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` (all APFS case-insensitively) EXCEPT
-    /// the tracked whitelist `.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`,
-    /// `.acdd/workflows/**`, and `.acdd/specs/**`.
+    /// the tracked whitelist `.acdd/workflows/**`, `.acdd/specs/**`, and `.acdd/frameworks/**`.
     /// Explicitly includes tracked artifacts such as `Cargo.lock` and `tests/**/*.jsonl`.
     pub fn is_candidate_included(&self, rel_path: &str) -> bool {
         let Some(norm) = normalize_rel_path(rel_path) else {
@@ -335,11 +334,9 @@ fn is_db_or_sidecar(norm_path: &str, db_path: &str) -> bool {
 }
 
 fn is_acdd_tracked_whitelist(norm_path: &str) -> bool {
-    norm_path == ".acdd/profile.yaml"
-        || norm_path.starts_with(".acdd/profiles/")
-        || norm_path.starts_with(".acdd/frameworks/")
-        || norm_path.starts_with(".acdd/workflows/")
+    norm_path.starts_with(".acdd/workflows/")
         || norm_path.starts_with(".acdd/specs/")
+        || norm_path.starts_with(".acdd/frameworks/")
 }
 
 /// Validate a workspace-relative scope path or brace-glob pattern.
@@ -698,11 +695,10 @@ mod tests {
             ("custom/index/code-map.sqlite.backup", false, false),
             (".acdd/run/r1/traces.jsonl", false, false),
             (".acdd/tmp/scratch.json", false, false),
-            (".acdd/profile.yaml", false, true),
-            (".ACDD/profile.yaml", false, false),
-            (".acdd/profiles/custom.yaml", false, true),
-            (".acdd/frameworks/django.yaml", false, true),
             (".acdd/workflows/default.yaml", false, true),
+            (".ACDD/workflows/default.yaml", false, false),
+            (".acdd/workflows/custom.yaml", false, true),
+            (".acdd/frameworks/django.yaml", false, true),
             (".acdd/workflows/hotfix.yaml", false, true),
             (".acdd/specs/example.md", false, true),
             (".acdd/code-map.sqlite", false, false),
@@ -777,11 +773,11 @@ mod tests {
             (".acdd/state.sqlite", &[".acdd/**", "**"], true, false),
             (".ACDD/state.sqlite", &["**"], true, false),
             (".acdd/run/r1/traces.jsonl", &[".acdd/**"], true, false),
-            (".acdd/profile.yaml", &[".acdd/profile.yaml"], true, true),
-            (".acdd/profile.yaml", &["src/**"], false, false),
+            (".acdd/workflows/default.yaml", &[".acdd/workflows/**"], true, true),
+            (".acdd/workflows/default.yaml", &["src/**"], false, false),
             (
-                ".acdd/profiles/team.yaml",
-                &[".acdd/profiles/**"],
+                ".acdd/workflows/team.yaml",
+                &[".acdd/workflows/**"],
                 true,
                 true,
             ),
@@ -822,7 +818,7 @@ mod tests {
             (".acdd/state.sqlite", false, false),
             (".ACDD/state.sqlite", false, false),
             (".acdd/code-map.sqlite", false, false),
-            (".acdd/profile.yaml", false, false),
+            (".acdd/workflows/default.yaml", false, false),
             (".git/config", false, false),
             (".GIT/HEAD", false, false),
             ("Cargo.toml", false, false),
@@ -1008,17 +1004,17 @@ mod tests {
     }
 
     #[test]
-    fn workspace_path_policy_json_backwards_compatibility_and_limits_matrix() {
-        let legacy_json = r#"{
+    fn workspace_path_policy_defaults_and_limits_matrix() {
+        let minimal_json = r#"{
             "engine_managed_paths": ["docs/milestones/AC-001.md"],
             "state_db_path": ".acdd/state.sqlite",
             "code_db_path": ".acdd/code-map.sqlite"
         }"#;
-        let legacy: WorkspacePathPolicy =
-            serde_json::from_str(legacy_json).expect("deserialize legacy JSON");
-        assert_eq!(legacy.max_snapshot_file_bytes, None);
-        assert_eq!(legacy.allowed_binary_extensions, None);
-        assert!(legacy.is_binary_extension_allowed("src/evil.bin"));
+        let minimal: WorkspacePathPolicy =
+            serde_json::from_str(minimal_json).expect("deserialize minimal JSON");
+        assert_eq!(minimal.max_snapshot_file_bytes, None);
+        assert_eq!(minimal.allowed_binary_extensions, None);
+        assert!(minimal.is_binary_extension_allowed("src/evil.bin"));
 
         let default_json =
             serde_json::to_value(WorkspacePathPolicy::default()).expect("serialize default");

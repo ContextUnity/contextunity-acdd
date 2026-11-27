@@ -1,7 +1,6 @@
 //! Shared data types and helper functions for `ClaimResp` assembly and context lenses.
 
-use crate::profile::{GateDef, ResolvedGateProfile};
-use crate::spec::{Receipt, SpecDocument, Subtask};
+use crate::workflow::{GateDef, ResolvedWorkflow};
 use crate::store::traits::StateReader;
 use crate::types::{
     BlackboardRecord, GateNodeRecord, RejectionFindings, RunGraphSnapshot, RunRecord,
@@ -9,6 +8,7 @@ use crate::types::{
 use crate::usecases::config::StateEngineConfig;
 use acdd_core::ids::{NodeCursor, RunId, TreeOid, WorkerId};
 use acdd_core::path_policy::WorkspacePathPolicy;
+use acdd_spec::{Receipt, SpecDocument, Subtask};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ pub struct ClaimContextRequest {
     /// Resolved `GateDef` for the node.
     pub gate: GateDef,
     /// Full resolved profile holding guidance slots and limits.
-    pub profile: ResolvedGateProfile,
+    pub profile: ResolvedWorkflow,
     /// Optional parsed specification document.
     pub spec: Option<SpecDocument>,
     /// Current subtask checklist from the owning task's persisted rows.
@@ -160,7 +160,7 @@ pub(crate) struct SnapshotContextInput<'a> {
     pub snapshot: &'a RunGraphSnapshot,
     pub node: &'a GateNodeRecord,
     pub gate: &'a GateDef,
-    pub profile: &'a ResolvedGateProfile,
+    pub profile: &'a ResolvedWorkflow,
     pub claim_revision: u32,
     pub worker_id: WorkerId,
     pub worktree: PathBuf,

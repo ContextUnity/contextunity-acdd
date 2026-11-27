@@ -4,7 +4,7 @@ use super::super::{
 };
 use super::state_tools::operation_kind;
 use crate::format::{OperationKind, OutputFormat};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::NodeCursor;
 use acdd_core::ports::{DomainToolDef, DomainToolOutput, DomainToolReq};
 use acdd_core::response::ResponsePolicy;
@@ -326,7 +326,7 @@ pub(super) fn validate_explicit_worktree_git_ancestors(
         };
         if candidate.is_dir() {
             acdd_core::fs::check_ancestors_no_symlinks(&candidate, Path::new(".git")).map_err(
-                |e| anyhow::anyhow!(StateError::new(ErrorCode::ExternalGitDrift, e.to_string())),
+                |e| anyhow::anyhow!(AcddError::new(ErrorCode::ExternalGitDrift, e.to_string())),
             )?;
         }
     }
@@ -559,7 +559,7 @@ fn prepare_tool_call_blocking(
             acdd_core::subsystems::disabled_tool_error(tool_name_prep, &arc.modules)
         {
             let early_response = Some(response::result_for(
-                Err(StateError::new(ErrorCode::FeatureDisabled, message).into()),
+                Err(AcddError::new(ErrorCode::FeatureDisabled, message).into()),
                 &arc.response,
                 output_format,
                 operation,
@@ -745,7 +745,7 @@ fn removed_state_action_redirect(
             "UNSUPPORTED_ACTION: MCP acdd_state focuses on active-run lifecycle operations; action 'roadmap' was removed from MCP. Use CLI `acdd roadmap` instead.",
         ),
         Some("draft") => Some(
-            "UNSUPPORTED_ACTION: MCP acdd_state focuses on active-run lifecycle operations; action 'draft' was removed from MCP. Use CLI `acdd draft <collection> <slug>` instead.",
+            "UNSUPPORTED_ACTION: MCP acdd_state focuses on active-run lifecycle operations; action 'draft' was removed from MCP. Use CLI `acdd draft <spec> <slug>` instead.",
         ),
         _ => None,
     }

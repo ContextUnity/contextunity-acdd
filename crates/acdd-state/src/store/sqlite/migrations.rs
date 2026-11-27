@@ -1,7 +1,7 @@
 //! Sequential SQLite schema migration runner seeded at `schema_version = 1`.
 
 use super::schema::{CURRENT_SCHEMA_VERSION, DOMAIN_TABLES, SCHEMA_V1_SQL};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Metadata snapshot read from SQLite-private `_sqlite_meta`.
@@ -18,7 +18,7 @@ pub struct SqliteMeta {
 #[derive(Debug, Clone, Copy)]
 struct MigrationStep {
     target_version: u32,
-    apply: fn(&Connection) -> Result<(), StateError>,
+    apply: fn(&Connection) -> Result<(), AcddError>,
 }
 
 const MIGRATIONS: &[MigrationStep] = &[
@@ -32,10 +32,10 @@ const MIGRATIONS: &[MigrationStep] = &[
     },
 ];
 
-fn apply_v1(conn: &Connection) -> Result<(), StateError> {
+fn apply_v1(conn: &Connection) -> Result<(), AcddError> {
     conn.execute_batch(SCHEMA_V1_SQL).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to initialize v1 state schema: {err}"),
         )
     })?;
@@ -45,18 +45,18 @@ fn apply_v1(conn: &Connection) -> Result<(), StateError> {
         [],
     )
     .map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to seed _sqlite_meta: {err}"),
         )
     })?;
     Ok(())
 }
 
-fn apply_v2(conn: &Connection) -> Result<(), StateError> {
+fn apply_v2(conn: &Connection) -> Result<(), AcddError> {
     let mut stmt = conn.prepare("PRAGMA table_info(runs)").map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to inspect runs columns before v2 migration: {err}"),
         )
     })?;
@@ -64,15 +64,15 @@ fn apply_v2(conn: &Connection) -> Result<(), StateError> {
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to read runs columns during v2 migration: {err}"),
             )
         })?;
     for col in rows {
         let name = col.map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to decode runs column name during v2 migration: {err}"),
             )
         })?;
@@ -84,8 +84,8 @@ fn apply_v2(conn: &Connection) -> Result<(), StateError> {
     if !has_spec_id {
         conn.execute("ALTER TABLE runs ADD COLUMN spec_id TEXT", [])
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to apply v2 migration (runs.spec_id): {err}"),
                 )
             })?;
@@ -94,23 +94,23 @@ fn apply_v2(conn: &Connection) -> Result<(), StateError> {
 }
 
 /// Validate SQLite `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION` without mutating the DB.
-pub(crate) fn validate_user_version(conn: &Connection) -> Result<(), StateError> {
+pub(crate) fn validate_user_version(conn: &Connection) -> Result<(), AcddError> {
     let raw: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to read SQLite PRAGMA user_version: {err}"),
             )
         })?;
     let uv = u32::try_from(raw).map_err(|_| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("invalid negative SQLite PRAGMA user_version: {raw}"),
         )
     })?;
     if uv > CURRENT_SCHEMA_VERSION {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "state database user_version {uv} is newer than supported version {CURRENT_SCHEMA_VERSION}"
@@ -121,11 +121,11 @@ pub(crate) fn validate_user_version(conn: &Connection) -> Result<(), StateError>
 }
 
 /// Ensure the SQLite database has been migrated to `CURRENT_SCHEMA_VERSION`.
-pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
+pub fn ensure_schema(conn: &mut Connection) -> Result<(), AcddError> {
     validate_user_version(conn)?;
     let pre_version = read_schema_version_in_conn(conn)?;
     if pre_version > CURRENT_SCHEMA_VERSION {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "state database schema_version {pre_version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
@@ -136,7 +136,7 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to begin schema migration transaction: {err}"),
             )
@@ -153,13 +153,13 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
                 |row| row.get(0),
             )
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to inspect sqlite_schema before initialization: {err}"),
                 )
             })?;
         if foreign_tables > 0 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ConfigMigrationRequired,
                 "state database contains existing tables without _sqlite_meta; migrate or recreate state.sqlite",
             ));
@@ -167,8 +167,8 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
     }
 
     if current_version > CURRENT_SCHEMA_VERSION {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "state database schema_version {current_version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
             ),
@@ -183,8 +183,8 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
                 params![i64::from(step.target_version)],
             )
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!(
                         "failed to update _sqlite_meta to schema_version {}: {err}",
                         step.target_version
@@ -197,7 +197,7 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
 
     verify_required_tables(&tx)?;
     tx.commit().map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("failed to commit schema migration transaction: {err}"),
         )
@@ -206,7 +206,7 @@ pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
 }
 
 /// Read `_sqlite_meta` from an initialized connection.
-pub fn read_meta(conn: &Connection) -> Result<SqliteMeta, StateError> {
+pub fn read_meta(conn: &Connection) -> Result<SqliteMeta, AcddError> {
     conn.query_row(
         "SELECT schema_version, write_seq, last_backup_seq FROM _sqlite_meta WHERE id = 1",
         [],
@@ -218,27 +218,27 @@ pub fn read_meta(conn: &Connection) -> Result<SqliteMeta, StateError> {
         },
     )
     .map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to read _sqlite_meta: {err}"),
         )
     })
     .and_then(|(schema_version, write_seq, last_backup_seq)| {
         let schema_version = u32::try_from(schema_version).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid negative schema_version in _sqlite_meta: {schema_version}"),
             )
         })?;
         let write_seq = u64::try_from(write_seq).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid negative write_seq in _sqlite_meta: {write_seq}"),
             )
         })?;
         let last_backup_seq = u64::try_from(last_backup_seq).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid negative last_backup_seq in _sqlite_meta: {last_backup_seq}"),
             )
         })?;
@@ -252,7 +252,7 @@ pub fn read_meta(conn: &Connection) -> Result<SqliteMeta, StateError> {
 
 /// Validate `_sqlite_meta.schema_version` on a read-only connection, returning the observed
 /// version (`1..=CURRENT_SCHEMA_VERSION`) or failing closed on uninitialized / newer schemas.
-pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, StateError> {
+pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, AcddError> {
     validate_user_version(conn)?;
     let version = read_schema_version_in_conn(conn)?;
     if version == 0 {
@@ -264,25 +264,25 @@ pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, Sta
                 |row| row.get(0),
             )
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to inspect sqlite_schema during read-only open: {err}"),
                 )
             })?;
         if foreign_tables > 0 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ConfigMigrationRequired,
                 "state database contains existing tables without _sqlite_meta; migrate or recreate state.sqlite",
             ));
         }
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ConfigMigrationRequired,
             "state database is uninitialized (missing _sqlite_meta)",
         ));
     }
     if version > CURRENT_SCHEMA_VERSION {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "state database schema_version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
             ),
@@ -291,7 +291,7 @@ pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, Sta
     Ok(version)
 }
 
-fn read_schema_version_in_conn(conn: &Connection) -> Result<u32, StateError> {
+fn read_schema_version_in_conn(conn: &Connection) -> Result<u32, AcddError> {
     let has_meta: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlite_meta')",
@@ -299,8 +299,8 @@ fn read_schema_version_in_conn(conn: &Connection) -> Result<u32, StateError> {
             |row| row.get(0),
         )
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to check _sqlite_meta existence: {err}"),
             )
         })?;
@@ -315,26 +315,26 @@ fn read_schema_version_in_conn(conn: &Connection) -> Result<u32, StateError> {
         )
         .optional()
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to read schema_version from _sqlite_meta: {err}"),
             )
         })?;
     let Some(raw) = version else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "_sqlite_meta exists without id = 1 metadata row",
         ));
     };
     u32::try_from(raw).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid negative schema_version in _sqlite_meta: {raw}"),
         )
     })
 }
 
-fn verify_required_tables(conn: &Connection) -> Result<(), StateError> {
+fn verify_required_tables(conn: &Connection) -> Result<(), AcddError> {
     for table in DOMAIN_TABLES {
         let exists: bool = conn
             .query_row(
@@ -343,14 +343,14 @@ fn verify_required_tables(conn: &Connection) -> Result<(), StateError> {
                 |row| row.get(0),
             )
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to verify table '{table}': {err}"),
                 )
             })?;
         if !exists {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("state database is missing required domain table '{table}'"),
             ));
         }

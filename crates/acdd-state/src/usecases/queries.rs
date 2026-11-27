@@ -6,8 +6,7 @@ use crate::context::slices::read_spec_readonly;
 use crate::context::{GateContextAssembler, SnapshotContextInput};
 use crate::machine::compute_schedule;
 use crate::observability::render_prometheus_text;
-use crate::profile::{GateDef, ResolvedGateProfile};
-use crate::spec::SpecStatus;
+use crate::workflow::{GateDef, ResolvedWorkflow};
 use crate::store::traits::StateReader;
 use crate::types::{
     BlackboardListReq, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus, RunGraphSnapshot,
@@ -25,9 +24,10 @@ use crate::usecases::lifecycle::{
     ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
     parse_profile_from_run, primary_workspace_root, resolve_node_worktree, resolve_run_optional,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, TreeOid, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
+use acdd_spec::SpecStatus;
 
 /// Execute a read-only [`StateQuery`] over `reader` without opening any write handles.
 pub fn execute_query(
@@ -35,7 +35,7 @@ pub fn execute_query(
     reader: &dyn StateReader,
     provider: &CompositeDomainProvider,
     query: StateQuery,
-) -> Result<StateQueryOutput, StateError> {
+) -> Result<StateQueryOutput, AcddError> {
     // Dispatch `Validate` before `ensure_state_enabled` so config/spec validation works with `modules.state: false`.
     if let StateQuery::Validate(req) = query {
         let root = primary_workspace_root(config);
@@ -44,13 +44,13 @@ pub fn execute_query(
                 &root,
                 std::path::Path::new(rel),
                 req.explicit_config.as_deref(),
-                req.explicit_profile.as_deref(),
+                req.explicit_workflow.as_deref(),
                 provider,
             )?,
             None => crate::validate::validate_workspace(
                 &root,
                 req.explicit_config.as_deref(),
-                req.explicit_profile.as_deref(),
+                req.explicit_workflow.as_deref(),
                 provider,
             )?,
         };
@@ -91,7 +91,7 @@ fn handle_status(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     req: StatusReq,
-) -> Result<StatusResp, StateError> {
+) -> Result<StatusResp, AcddError> {
     let run_opt = match resolve_run_optional(config, reader, req.run.as_deref(), None, true) {
         Ok(found) => found,
         Err(err) if req.run.is_some() => return Err(err),
@@ -137,7 +137,7 @@ fn handle_status(
     })
 }
 
-fn handle_list(reader: &dyn StateReader, req: ListReq) -> Result<ListResp, StateError> {
+fn handle_list(reader: &dyn StateReader, req: ListReq) -> Result<ListResp, AcddError> {
     let page = reader.list_runs(&ListRunsReq {
         workspace: req.workspace,
         status: req.status,
@@ -154,10 +154,10 @@ fn handle_show(
     reader: &dyn StateReader,
     provider: &CompositeDomainProvider,
     req: ShowReq,
-) -> Result<ShowResp, StateError> {
+) -> Result<ShowResp, AcddError> {
     let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
         || {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found matching show request",
             )
@@ -165,7 +165,7 @@ fn handle_show(
     )?;
 
     let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("run '{}' no longer exists in active storage", run.run_id),
         )
@@ -188,8 +188,8 @@ fn handle_show(
         .find(|n| n.node_id == node_id)
         .cloned()
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("node '{raw_node}' does not exist in run '{}'", run.run_id),
             )
         })?;
@@ -235,7 +235,7 @@ fn build_node_context_request(
     cursor: &NodeCursor,
     claim_revision: u32,
     worker_id: WorkerId,
-) -> Result<Option<crate::context::ClaimContextRequest>, StateError> {
+) -> Result<Option<crate::context::ClaimContextRequest>, AcddError> {
     let profile = parse_profile_from_run(&graph.run)?;
     let Some(gate_def) = find_profile_gate_def(&profile, cursor) else {
         return Ok(None);
@@ -273,7 +273,7 @@ fn build_show_context_preview(
     graph: &RunGraphSnapshot,
     node: &GateNodeRecord,
     cursor: &NodeCursor,
-) -> Result<Option<serde_json::Value>, StateError> {
+) -> Result<Option<serde_json::Value>, AcddError> {
     let worker_id = node
         .worker_id
         .clone()
@@ -293,8 +293,8 @@ fn build_show_context_preview(
 
     match GateContextAssembler::assemble(&ctx_req, provider) {
         Ok(resp) => Ok(Some(serde_json::to_value(resp).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to serialize context preview: {err}"),
             )
         })?)),
@@ -307,7 +307,7 @@ fn handle_next(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     req: NextReq,
-) -> Result<NextResp, StateError> {
+) -> Result<NextResp, AcddError> {
     let run_opt = resolve_run_optional(config, reader, req.run.as_deref(), None, true)?;
     let Some(run) = run_opt else {
         return Ok(NextResp {
@@ -372,10 +372,10 @@ fn handle_blackboard_read(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     req: BlackboardReadReq,
-) -> Result<BlackboardReadResp, StateError> {
+) -> Result<BlackboardReadResp, AcddError> {
     let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
         || {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found for blackboard read",
             )
@@ -383,16 +383,16 @@ fn handle_blackboard_read(
     )?;
 
     let graph_opt = reader.load_run_graph(&run.run_id)?;
-    let normalize_cursor = |raw: &str| -> Result<String, StateError> {
+    let normalize_cursor = |raw: &str| -> Result<String, AcddError> {
         if let Some(ref g) = graph_opt {
             parse_cursor_for_snapshot(g, raw)?
                 .to_node_id()
-                .map_err(StateError::from)
+                .map_err(AcddError::from)
         } else {
             raw.parse::<NodeCursor>()
-                .map_err(StateError::from)?
+                .map_err(AcddError::from)?
                 .to_node_id()
-                .map_err(StateError::from)
+                .map_err(AcddError::from)
         }
     };
 
@@ -429,7 +429,7 @@ fn handle_blackboard_read(
 fn handle_observability(
     reader: &dyn StateReader,
     req: ObservabilityReq,
-) -> Result<ObservabilityResp, StateError> {
+) -> Result<ObservabilityResp, AcddError> {
     let snapshot = reader.observability_snapshot()?;
     let prometheus_text = if req.include_prometheus {
         Some(render_prometheus_text(&snapshot))
@@ -447,10 +447,10 @@ fn handle_context(
     reader: &dyn StateReader,
     provider: &CompositeDomainProvider,
     req: ContextReq,
-) -> Result<crate::context::ClaimResp, StateError> {
+) -> Result<crate::context::ClaimResp, AcddError> {
     let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?.ok_or_else(
         || {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "no run found matching context request",
             )
@@ -458,7 +458,7 @@ fn handle_context(
     )?;
 
     let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("run '{}' no longer exists in active storage", run.run_id),
         )
@@ -474,15 +474,15 @@ fn handle_context(
         .iter()
         .find(|n| n.node_id == node_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("node '{cursor}' does not exist in run '{}'", run.run_id),
             )
         })?;
 
     if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "context is only available for gate nodes; '{cursor}' is {:?}",
                 node.kind
@@ -490,7 +490,7 @@ fn handle_context(
         ));
     }
     if !matches!(node.status, NodeStatus::InProgress | NodeStatus::Ready) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "gate '{cursor}' is {:?}; context requires an active claimed or ready gate",
@@ -502,7 +502,7 @@ fn handle_context(
         if node.status == NodeStatus::InProgress
             && node.worker_id.as_ref().is_some_and(|owned| owned != worker)
         {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskAlreadyClaimed,
                 format!(
                     "gate '{cursor}' is claimed by {}; specify the owning worker or omit --worker",
@@ -531,8 +531,8 @@ fn handle_context(
         worker_id,
     )?
     .ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -541,7 +541,7 @@ fn handle_context(
     if let Some(graph_after) = reader.load_run_graph(&run.run_id)? {
         if let Some(after) = graph_after.nodes.iter().find(|n| n.node_id == node_id) {
             if after.claim_revision != claim_revision {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     "context query must not mutate claim_revision",
                 ));
@@ -555,7 +555,7 @@ pub(crate) fn collect_ready_cursors_with_fallback(
     graph: &RunGraphSnapshot,
     obs: &ValidatedObservations,
     include_fallback_tref: bool,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let schedule = compute_schedule(graph, obs)?;
     let mut out = Vec::new();
     for nid in &schedule.ready_root_nodes {
@@ -584,7 +584,7 @@ pub(crate) fn collect_ready_cursors_with_fallback(
 fn collect_ready_cursors(
     graph: &RunGraphSnapshot,
     obs: &ValidatedObservations,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     collect_ready_cursors_with_fallback(graph, obs, true)
 }
 
@@ -604,7 +604,7 @@ fn read_spec_status_readonly(
 
 /// Borrow the root [`GateDef`] inside `profile` along `gates`.
 pub fn find_root_gate_def_ref<'a>(
-    profile: &'a ResolvedGateProfile,
+    profile: &'a ResolvedWorkflow,
     gates: &[acdd_core::ids::GateId],
     skip_tasks_blocks: bool,
 ) -> Option<&'a GateDef> {
@@ -621,7 +621,7 @@ pub fn find_root_gate_def_ref<'a>(
 
 /// Borrow the task-block [`GateDef`] inside `profile` matching `gate_id`.
 pub fn find_task_block_gate_def_ref<'a>(
-    profile: &'a ResolvedGateProfile,
+    profile: &'a ResolvedWorkflow,
     gate_id: &str,
 ) -> Option<&'a GateDef> {
     for item in &profile.gates {
@@ -636,7 +636,7 @@ pub fn find_task_block_gate_def_ref<'a>(
 
 /// Borrow the [`GateDef`] inside `profile` corresponding to `cursor`.
 pub fn find_profile_gate_def_ref<'a>(
-    profile: &'a ResolvedGateProfile,
+    profile: &'a ResolvedWorkflow,
     cursor: &NodeCursor,
 ) -> Option<&'a GateDef> {
     match cursor {
@@ -649,7 +649,7 @@ pub fn find_profile_gate_def_ref<'a>(
 
 /// Find the [`GateDef`] inside `profile` corresponding to `cursor`.
 pub(crate) fn find_profile_gate_def(
-    profile: &ResolvedGateProfile,
+    profile: &ResolvedWorkflow,
     cursor: &NodeCursor,
 ) -> Option<GateDef> {
     find_profile_gate_def_ref(profile, cursor).cloned()

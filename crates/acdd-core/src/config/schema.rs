@@ -19,23 +19,23 @@ fn default_spec_digits() -> usize {
     DEFAULT_SPEC_DIGITS
 }
 
-pub(super) fn default_profiles_dirs() -> Vec<String> {
-    vec![".acdd/profiles".into()]
+pub(super) fn default_workflows_dirs() -> Vec<String> {
+    vec![".acdd/workflows".into()]
 }
 
 /// Configuration for a spec collection under `specs:` in `acdd.yaml`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct SpecCollectionConfig {
+pub struct SpecConfig {
     /// Legacy single workspace-relative directory path containing spec documents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Multi-entry workspace-relative paths or glob patterns (e.g. `extensions/*/docs/milestones`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
-    /// Optional explicit gate profile for specs in this collection (else workspace default).
+    /// Optional explicit workflow for specs in this collection (else workspace default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    pub workflow: Option<String>,
     /// Allowed spec ID prefixes (e.g. `["AC"]`).
     #[serde(default)]
     pub prefixes: Vec<String>,
@@ -44,7 +44,7 @@ pub struct SpecCollectionConfig {
     pub digits: usize,
 }
 
-impl SpecCollectionConfig {
+impl SpecConfig {
     /// Return all configured normalized patterns (`path` followed by `paths`, deduplicated in order).
     pub fn patterns(&self) -> Vec<&str> {
         let mut out = Vec::new();
@@ -250,24 +250,24 @@ fn expand_spec_dir_segments(
 }
 
 /// Returns the default `specs:` collections (`milestones` and `plans`).
-pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
+pub fn default_specs() -> BTreeMap<String, SpecConfig> {
     BTreeMap::from([
         (
             "milestones".to_owned(),
-            SpecCollectionConfig {
+            SpecConfig {
                 path: Some("docs/milestones".to_owned()),
                 paths: Vec::new(),
-                profile: None,
+                workflow: None,
                 prefixes: vec!["AC".to_owned()],
                 digits: DEFAULT_SPEC_DIGITS,
             },
         ),
         (
             "plans".to_owned(),
-            SpecCollectionConfig {
+            SpecConfig {
                 path: Some("docs/plans".to_owned()),
                 paths: Vec::new(),
-                profile: None,
+                workflow: None,
                 prefixes: Vec::new(),
                 digits: DEFAULT_SPEC_DIGITS,
             },
@@ -284,7 +284,7 @@ fn normalize_spec_collection_path(raw: &str) -> std::result::Result<String, Acdd
         .to_owned();
     if normalized.is_empty() || !crate::path_policy::is_valid_scope_glob(&normalized) {
         return Err(AcddError::new(
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::SpecSchemaInvalid,
             format!(
                 "spec collection path '{raw}' must be a normalized workspace-relative path or glob"
             ),
@@ -294,19 +294,19 @@ fn normalize_spec_collection_path(raw: &str) -> std::result::Result<String, Acdd
 }
 
 pub(super) fn validate_and_normalize_specs(
-    specs: &mut BTreeMap<String, SpecCollectionConfig>,
+    specs: &mut BTreeMap<String, SpecConfig>,
 ) -> std::result::Result<(), AcddError> {
     let mut normalized_entries: Vec<(String, Vec<String>)> = Vec::with_capacity(specs.len());
     for (name, cfg) in specs.iter_mut() {
         if name.trim().is_empty() {
             return Err(AcddError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::SpecSchemaInvalid,
                 "spec collection name must not be empty",
             ));
         }
         if !(1..=16).contains(&cfg.digits) {
             return Err(AcddError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::SpecSchemaInvalid,
                 format!("specs.{name}.digits must be in 1..=16, got {}", cfg.digits),
             ));
         }
@@ -319,7 +319,7 @@ pub(super) fn validate_and_normalize_specs(
         let pats: Vec<String> = cfg.patterns().into_iter().map(str::to_owned).collect();
         if pats.is_empty() {
             return Err(AcddError::new(
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::SpecSchemaInvalid,
                 format!("specs.{name} must configure 'path' or non-empty 'paths'"),
             ));
         }
@@ -331,7 +331,7 @@ pub(super) fn validate_and_normalize_specs(
                 for pat_b in right_pats {
                     if crate::path_policy::patterns_overlap(pat_a, pat_b) {
                         return Err(AcddError::new(
-                            ErrorCode::ProfileSchemaInvalid,
+                            ErrorCode::SpecSchemaInvalid,
                             format!(
                                 "specs.{left_name} pattern '{pat_a}' overlaps specs.{right_name} pattern '{pat_b}'"
                             ),
@@ -409,14 +409,12 @@ impl ScannerLimits {
     /// Validate and normalize `allowed_binary_extensions` into a lowercase set, preserving `None`.
     pub fn normalized_allowed_binary_extensions(
         &self,
-    ) -> std::result::Result<Option<BTreeSet<String>>, crate::errors::StateError> {
+    ) -> std::result::Result<Option<BTreeSet<String>>, AcddError> {
         self.allowed_binary_extensions
             .as_ref()
             .map(crate::path_policy::normalize_binary_extensions)
             .transpose()
-            .map_err(|msg| {
-                crate::errors::StateError::new(crate::errors::ErrorCode::ProfileSchemaInvalid, msg)
-            })
+            .map_err(|msg| AcddError::new(ErrorCode::WorkflowSchemaInvalid, msg))
     }
 }
 
@@ -449,9 +447,9 @@ pub struct AdapterFile {
     /// Optional MCP subsystem selection.
     #[serde(deserialize_with = "deserialize_subsystem_registry")]
     pub modules: SubsystemRegistry,
-    /// Optional top-level module preset used by the workspace adapter format.
+    /// Optional top-level subsystem preset (`index | spec | state | full | minimal`).
     #[serde(default)]
-    pub profile: Option<crate::subsystems::SubsystemPreset>,
+    pub preset: Option<crate::subsystems::SubsystemPreset>,
     #[serde(default)]
     /// Optional scanner limits.
     pub limits: Option<ScannerLimits>,
@@ -468,10 +466,10 @@ pub struct AdapterFile {
     pub docs: Option<Vec<String>>,
     /// Configured spec collections (`specs:`).
     #[serde(default)]
-    pub specs: Option<BTreeMap<String, SpecCollectionConfig>>,
-    /// Directories searched for custom gate profiles.
+    pub specs: Option<BTreeMap<String, SpecConfig>>,
+    /// Directories searched for custom workflows.
     #[serde(default)]
-    pub profiles_dirs: Option<Vec<String>>,
+    pub workflows_dirs: Option<Vec<String>>,
     /// State SQLite database path relative to primary worktree root.
     #[serde(default)]
     pub state_db: Option<String>,
@@ -615,9 +613,9 @@ pub struct Adapter {
     /// Plan directories for task discovery; Markdown documents remain indexed.
     pub plans: Vec<String>,
     /// Configured spec collections (`specs:`).
-    pub specs: BTreeMap<String, SpecCollectionConfig>,
-    /// Directories searched for custom gate profiles.
-    pub profiles_dirs: Vec<String>,
+    pub specs: BTreeMap<String, SpecConfig>,
+    /// Directories searched for custom workflows.
+    pub workflows_dirs: Vec<String>,
     /// State SQLite database path.
     pub state_db: String,
     /// Number of retained run trace files.
@@ -667,7 +665,7 @@ impl Default for Adapter {
             milestones: vec!["docs/milestones".into()],
             plans: vec!["docs/plans".into()],
             specs: default_specs(),
-            profiles_dirs: default_profiles_dirs(),
+            workflows_dirs: default_workflows_dirs(),
             state_db: DEFAULT_STATE_DB.into(),
             retain_traces: DEFAULT_RETAIN_TRACES,
             architecture: ArchitectureConfig::default(),
@@ -770,10 +768,10 @@ mod tests {
             ]
         );
 
-        let missing_col = SpecCollectionConfig {
+        let missing_col = SpecConfig {
             path: Some("docs/nonexistent".to_owned()),
             paths: Vec::new(),
-            profile: None,
+            workflow: None,
             prefixes: Vec::new(),
             digits: 3,
         };
@@ -782,10 +780,10 @@ mod tests {
         // Recursive `**` glob excludes `archive/` directories and `matched_concrete_root` resolves owning collection root.
         std::fs::create_dir_all(root.join("docs/milestones/archive")).unwrap();
         std::fs::create_dir_all(root.join("docs/milestones/team")).unwrap();
-        let rec_col = SpecCollectionConfig {
+        let rec_col = SpecConfig {
             path: Some("docs/milestones/**".to_owned()),
             paths: Vec::new(),
-            profile: None,
+            workflow: None,
             prefixes: vec!["AC".to_owned()],
             digits: 3,
         };
@@ -808,10 +806,10 @@ mod tests {
                 .as_deref(),
             Some("docs/milestones")
         );
-        let deep_col = SpecCollectionConfig {
+        let deep_col = SpecConfig {
             path: Some("extensions/**/docs/milestones/**".to_owned()),
             paths: Vec::new(),
-            profile: None,
+            workflow: None,
             prefixes: vec!["AC".to_owned()],
             digits: 3,
         };

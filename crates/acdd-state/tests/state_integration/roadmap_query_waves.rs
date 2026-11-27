@@ -1,6 +1,6 @@
 use super::common::*;
-use acdd_core::config::SpecCollectionConfig;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::config::SpecConfig;
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ids::{RunName, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_state::store::traits::{StateBackend, StateReader};
@@ -16,23 +16,23 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn plans_collection_cfg() -> SpecCollectionConfig {
-    SpecCollectionConfig {
+fn plans_collection_cfg() -> SpecConfig {
+    SpecConfig {
         path: None,
         paths: vec!["docs/plans".to_owned()],
         prefixes: vec!["PLAN".to_owned()],
         digits: 3,
-        profile: None,
+        workflow: None,
     }
 }
 
-fn ext_collection_cfg(path: &str) -> SpecCollectionConfig {
-    SpecCollectionConfig {
+fn ext_collection_cfg(path: &str) -> SpecConfig {
+    SpecConfig {
         path: Some(path.to_owned()),
         paths: Vec::new(),
         prefixes: Vec::new(),
         digits: 3,
-        profile: None,
+        workflow: None,
     }
 }
 
@@ -61,7 +61,7 @@ fn roadmap_query(engine: &StateQueryEngine, req: RoadmapReq) -> RoadmapResp {
     }
 }
 
-fn roadmap_query_err(engine: &StateQueryEngine, req: RoadmapReq) -> StateError {
+fn roadmap_query_err(engine: &StateQueryEngine, req: RoadmapReq) -> AcddError {
     engine.query(StateQuery::Roadmap(req)).unwrap_err()
 }
 
@@ -195,7 +195,7 @@ fn seam_roadmap_query_waves_missing_db_base_waves_overlay_detail() {
     assert!(base_resp.waves[0].specs[0].depends_on[0].satisfied);
     assert_eq!(base_resp.waves[0].specs[1].spec_id, "AC-002");
     assert_eq!(base_resp.waves[1].specs[0].spec_id, "PLAN-001");
-    assert_eq!(base_resp.waves[1].specs[0].collection, "plans");
+    assert_eq!(base_resp.waves[1].specs[0].spec, "plans");
     assert_eq!(base_resp.waves[2].specs[0].spec_id, "AC-003");
 
     // 2. Overlay an active run for AC-004 and run table-driven filter matrix.
@@ -214,7 +214,7 @@ fn seam_roadmap_query_waves_missing_db_base_waves_overlay_detail() {
         &rw_engine,
         StartReq {
             spec_path: Some("docs/milestones/AC-004-active.md".to_owned()),
-            profile: Some(bound_p),
+            workflow: Some(bound_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -262,7 +262,7 @@ fn seam_roadmap_query_waves_missing_db_base_waves_overlay_detail() {
         RoadmapCase {
             label: "collection_plans",
             req: RoadmapReq {
-                collection: Some("plans".to_owned()),
+                spec: Some("plans".to_owned()),
                 ..RoadmapReq::default()
             },
             expect_in_progress: 0,
@@ -584,7 +584,7 @@ fn seam_roadmap_query_waves_active_run_cycles_blockers() {
         &adv_rw,
         StartReq {
             spec_path: Some("docs/milestones/AC-100-active.md".to_owned()),
-            profile: Some(adv_bound),
+            workflow: Some(adv_bound),
             in_place: true,
             ..StartReq::default()
         },
@@ -597,7 +597,7 @@ fn seam_roadmap_query_waves_active_run_cycles_blockers() {
     let filtered_plans = roadmap_query(
         &adv_ro,
         RoadmapReq {
-            collection: Some("plans".to_owned()),
+            spec: Some("plans".to_owned()),
             ..RoadmapReq::default()
         },
     );
@@ -710,7 +710,7 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     let active_link = adv_root.join("docs/milestones/escape.md");
     std::os::unix::fs::symlink(outside.path().join("secret.md"), &active_link).unwrap();
     let err = roadmap_query_err(&adv_ro, RoadmapReq::default());
-    assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(err.code, ErrorCode::SpecSchemaInvalid);
     fs::remove_file(&active_link).unwrap();
 
     // Also test symlinked archive .md file in a non-Git workspace.
@@ -725,7 +725,7 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     let arch_ro =
         StateQueryEngine::open_read_only(base_config(arch_root), adv_provider.clone()).unwrap();
     let arch_err = roadmap_query_err(&arch_ro, RoadmapReq::default());
-    assert_eq!(arch_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(arch_err.code, ErrorCode::SpecSchemaInvalid);
 
     // Committed Git mode 120000 symlink in archive/ must also fail closed.
     let git_arch_tmp = make_temp_dir("git-archive-symlink");
@@ -740,7 +740,7 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     git_commit_all(git_arch_root, "committed symlink");
     let git_arch_ro = roadmap_engine(git_arch_root, adv_provider.clone());
     let git_arch_err = roadmap_query_err(&git_arch_ro, RoadmapReq::default());
-    assert_eq!(git_arch_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(git_arch_err.code, ErrorCode::SpecSchemaInvalid);
 
     // Untracked symlink under docs/milestones/archive/escape.md in a primary Git repo must also fail closed.
     let git_untracked_tmp = make_temp_dir("git-untracked-archive-symlink");
@@ -760,14 +760,14 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     .unwrap();
     let git_untracked_ro = roadmap_engine(git_untracked_root, adv_provider.clone());
     let git_untracked_err = roadmap_query_err(&git_untracked_ro, RoadmapReq::default());
-    assert_eq!(git_untracked_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(git_untracked_err.code, ErrorCode::SpecSchemaInvalid);
     fs::remove_file(git_untracked_root.join("docs/milestones/archive/escape.md")).unwrap();
 
     // Direct .md symlink containing literal '\' in filename inside archive/ must fail closed (disk).
     let backslash_link = git_untracked_root.join("docs/milestones/archive/bad\\name.md");
     std::os::unix::fs::symlink(outside.path().join("secret.md"), &backslash_link).unwrap();
     let backslash_err = roadmap_query_err(&git_untracked_ro, RoadmapReq::default());
-    assert_eq!(backslash_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(backslash_err.code, ErrorCode::SpecSchemaInvalid);
     assert!(
         backslash_err.message.contains("bad\\name.md"),
         "expected bad\\name.md in error, got: {}",
@@ -790,14 +790,14 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     fs::remove_file(&committed_bs_link).unwrap();
     let committed_bs_ro = roadmap_engine(committed_bs_root, adv_provider.clone());
     let committed_bs_err = roadmap_query_err(&committed_bs_ro, RoadmapReq::default());
-    assert_eq!(committed_bs_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(committed_bs_err.code, ErrorCode::SpecSchemaInvalid);
     assert!(
         committed_bs_err.message.contains("bad\\name.md"),
         "expected bad\\name.md in committed error, got: {}",
         committed_bs_err.message
     );
 
-    // Unreadable glob prefix dir surfaces non-NotFound error in SpecCollectionConfig::resolve_dirs.
+    // Unreadable glob prefix dir surfaces non-NotFound error in SpecConfig::resolve_dirs.
     use std::os::unix::fs::PermissionsExt;
     let locked_dir = git_untracked_root.join("extensions/locked");
     fs::create_dir_all(locked_dir.join("sub/docs")).unwrap();
@@ -806,12 +806,12 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     let mut glob_cfg = base_config(git_untracked_root);
     glob_cfg.spec_collections.insert(
         "ext".to_owned(),
-        acdd_core::config::SpecCollectionConfig {
+        acdd_core::config::SpecConfig {
             path: Some("extensions/locked/*/docs".to_owned()),
             paths: Vec::new(),
             prefixes: Vec::new(),
             digits: 3,
-            profile: None,
+            workflow: None,
         },
     );
     let glob_ro = StateQueryEngine::open_read_only(glob_cfg, adv_provider.clone()).unwrap();
@@ -819,7 +819,7 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
     let _ = fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755));
     if deny_effective {
         let err = glob_res.unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+        assert_eq!(err.code, ErrorCode::SpecSchemaInvalid);
     }
 }
 
@@ -998,7 +998,7 @@ fn seam_roadmap_query_waves_archive_symlink_identity_and_non_utf8() {
     fs::remove_file(arch_sym_root.join("docs/milestones/archive")).unwrap();
     let arch_sym_ro = roadmap_engine(arch_sym_root, adv_provider.clone());
     let arch_sym_err = roadmap_query_err(&arch_sym_ro, RoadmapReq::default());
-    assert_eq!(arch_sym_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(arch_sym_err.code, ErrorCode::SpecSchemaInvalid);
     assert!(
         arch_sym_err.message.contains("archive"),
         "expected 'archive' in error, got: {}",
@@ -1017,7 +1017,7 @@ fn seam_roadmap_query_waves_archive_symlink_identity_and_non_utf8() {
             RoadmapReq::default(),
         )
         .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::SpecSchemaInvalid
     );
 }
 
@@ -1353,7 +1353,7 @@ fn seam_roadmap_query_waves_pre_task_barrier_and_worktree_scope_overlap() {
         &bp_rw,
         StartReq {
             spec_path: Some("docs/milestones/AC-BP-001.md".to_owned()),
-            profile: Some(bp_profile),
+            workflow: Some(bp_profile),
             in_place: true,
             ..StartReq::default()
         },
@@ -1439,7 +1439,7 @@ fn seam_roadmap_query_waves_pre_task_barrier_and_worktree_scope_overlap() {
         &ov_rw,
         StartReq {
             spec_path: Some("docs/milestones/AC-OV-001.md".to_owned()),
-            profile: Some(ov_profile),
+            workflow: Some(ov_profile),
             in_place: false,
             ..StartReq::default()
         },
@@ -1593,7 +1593,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
         &sync_rw,
         StartReq {
             spec_path: Some(producer_path.to_owned()),
-            profile: Some(sync_profile.clone()),
+            workflow: Some(sync_profile.clone()),
             worktree: true,
             ..StartReq::default()
         },
@@ -1603,7 +1603,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
         &sync_rw,
         StartReq {
             spec_path: Some("docs/milestones/AC-SYNC-001.md".to_owned()),
-            profile: Some(sync_profile),
+            workflow: Some(sync_profile),
             in_place: true,
             ..StartReq::default()
         },
@@ -1678,7 +1678,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     sync_rw
         .execute(StateCommand::Sync(acdd_state::usecases::SyncReq {
             run: Some(sync_run_id),
-            rebind_profile: false,
+            rebind_workflow: false,
         }))
         .unwrap();
     let synced_resp = roadmap_query(
@@ -1747,7 +1747,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
         &ext_rw,
         StartReq {
             spec_path: Some("docs/milestones/EXT-010.md".to_owned()),
-            profile: Some(ext_prof),
+            workflow: Some(ext_prof),
             in_place: true,
             ..StartReq::default()
         },
@@ -1796,8 +1796,8 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     .unwrap();
     let linked_source = "---\nid: MAIN-001\ntitle: Main\nstatus: planned\nrepositories: [{name: ext, path: ../ext-sec}]\ndepends_on: ['ext/EXT-010:T-01']\n---\n### task: T-01\n```yaml\ntask_ref: T-01\ndepends_on: ['ext/EXT-010:T-01']\nscope: [src/m/**]\nacceptance_criteria: [ok]\n```\n";
     fs::write(lw_main.join("docs/milestones/MAIN-001.md"), linked_source).unwrap();
-    let linked_doc = acdd_state::spec::parse_spec(linked_source).unwrap();
-    let issues = acdd_state::usecases::deps::validate_spec_dependencies(
+    let linked_doc = acdd_spec::parse_spec(linked_source).unwrap();
+    let issues = acdd_state::usecases::overlay::validate_spec_dependencies(
         &lw_main,
         &acdd_core::config::load_adapter(&lw_main, None).unwrap(),
         None,
@@ -1843,8 +1843,8 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
     git_commit_all(&lw_ext_pri, "change archive after closure");
     for (task, expected_ok) in [("T-01", true), ("T-02", false), ("missing", false)] {
         let source = linked_source.replace("EXT-010:T-01", &format!("EXT-011:{task}"));
-        let doc = acdd_state::spec::parse_spec(&source).unwrap();
-        let issues = acdd_state::usecases::deps::validate_spec_dependencies(
+        let doc = acdd_spec::parse_spec(&source).unwrap();
+        let issues = acdd_state::usecases::overlay::validate_spec_dependencies(
             &lw_main,
             &acdd_core::config::load_adapter(&lw_main, None).unwrap(),
             None,
@@ -1896,7 +1896,7 @@ fn seam_roadmap_query_waves_live_dependency_sync_and_reverse_blockers() {
             )
             .unwrap();
             let error = roadmap_query_err(&lw_ro, RoadmapReq::default());
-            assert_eq!(error.code, ErrorCode::ProfileSchemaInvalid);
+            assert_eq!(error.code, ErrorCode::SpecSchemaInvalid);
             assert!(error.message.contains(diagnostic), "{error}");
             fs::remove_file(link).unwrap();
         }
@@ -1948,7 +1948,7 @@ impl MultiRunFixture {
             StartReq {
                 spec_path: Some("docs/milestones/AC-MULTI.md".to_owned()),
                 run_name: Some(RunName::new("run-b").unwrap()),
-                profile: Some(self.prof.clone()),
+                workflow: Some(self.prof.clone()),
                 in_place: false,
                 worktree: true,
                 ..StartReq::default()
@@ -1983,7 +1983,7 @@ impl MultiRunFixture {
             StartReq {
                 spec_path: Some(format!("docs/milestones/{id}.md")),
                 run_name: Some(RunName::new(format!("wrong-{id}")).unwrap()),
-                profile: Some(self.prof.clone()),
+                workflow: Some(self.prof.clone()),
                 in_place,
                 worktree: !in_place,
                 ..StartReq::default()
@@ -2034,7 +2034,7 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
         StartReq {
             spec_path: Some(multi_path.to_owned()),
             run_name: Some(RunName::new("run-a").unwrap()),
-            profile: Some(fx.prof.clone()),
+            workflow: Some(fx.prof.clone()),
             in_place: false,
             worktree: true,
             ..StartReq::default()
@@ -2373,7 +2373,7 @@ fn seam_roadmap_query_waves_same_id_runs_and_wrong_checkout_isolation() {
             ..RoadmapReq::default()
         }))
         .unwrap_err();
-    assert_eq!(invalid_cfg.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(invalid_cfg.code, ErrorCode::WorkflowSchemaInvalid);
     assert!(invalid_cfg.message.contains("acdd.yaml"));
 }
 
@@ -2386,7 +2386,7 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         StartReq {
             spec_path: Some("docs/milestones/AC-MULTI.md".to_owned()),
             run_name: Some(RunName::new("run-a").unwrap()),
-            profile: Some(fx.prof.clone()),
+            workflow: Some(fx.prof.clone()),
             in_place: true,
             worktree: false,
             ..StartReq::default()
@@ -2413,7 +2413,7 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
         StartReq {
             spec_path: Some("docs/milestones/AC-BIND.md".to_owned()),
             run_name: Some(RunName::new("checkout-binding").unwrap()),
-            profile: Some(fx.prof.clone()),
+            workflow: Some(fx.prof.clone()),
             worktree: true,
             ..StartReq::default()
         },
@@ -2523,7 +2523,7 @@ fn seam_roadmap_query_waves_checkout_binding_provenance_and_sync() {
     fx.rw
         .execute(StateCommand::Sync(acdd_state::usecases::SyncReq {
             run: Some(binding.run.run_id.to_string()),
-            rebind_profile: false,
+            rebind_workflow: false,
         }))
         .unwrap();
     let StateQueryOutput::Roadmap(binding_after_sync) = fx
@@ -2639,7 +2639,7 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
         StartReq {
             spec_path: Some("docs/milestones/AC-LATE.md".to_owned()),
             run_name: Some(RunName::new("late-consumer").unwrap()),
-            profile: Some(fx.prof.clone()),
+            workflow: Some(fx.prof.clone()),
             worktree: true,
             ..StartReq::default()
         },
@@ -2658,7 +2658,7 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
         StartReq {
             spec_path: Some("docs/milestones/AC-ABSENT.md".to_owned()),
             run_name: Some(RunName::new("late-producer").unwrap()),
-            profile: Some(fx.prof.clone()),
+            workflow: Some(fx.prof.clone()),
             worktree_path: Some(late_checkout),
             ..StartReq::default()
         },
@@ -2669,7 +2669,7 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
             fx.rw
                 .execute(StateCommand::Sync(acdd_state::usecases::SyncReq {
                     run: Some(late_consumer.run.run_id.to_string()),
-                    rebind_profile: false,
+                    rebind_workflow: false,
                 }))
                 .unwrap();
             let graph = reader_for(&fx.cfg)
@@ -2709,4 +2709,89 @@ fn seam_roadmap_query_waves_late_producer_checkout_sync() {
             );
         }
     }
+}
+
+#[test]
+fn seam_roadmap_lazy_overlay_and_current_only_malformed_worktree_isolation() {
+    let fx = MultiRunFixture::new("roadmap-lazy-overlay");
+    let multi_root = &fx.root;
+    fs::write(
+        multi_root.join("docs/milestones/AC-UNREL.md"),
+        MULTI_ARC_SOURCE.replace("AC-ARC", "AC-UNREL"),
+    )
+    .unwrap();
+    git_commit_all(multi_root, "add AC-UNREL before sibling checkout");
+
+    let run_unrel = start_run(
+        &fx.rw,
+        StartReq {
+            spec_path: Some("docs/milestones/AC-UNREL.md".to_owned()),
+            run_name: Some(RunName::new("run-unrel").unwrap()),
+            workflow: Some(fx.prof.clone()),
+            in_place: false,
+            worktree: true,
+            ..StartReq::default()
+        },
+    )
+    .unwrap();
+    let wt_unrel = PathBuf::from(run_unrel.run.worktree.as_deref().unwrap());
+
+    // Remove AC-UNREL from primary root so it exists only on the sibling worktree,
+    // and keep a dependency-free local active run on primary root.
+    fs::remove_file(multi_root.join("docs/milestones/AC-UNREL.md")).unwrap();
+    git_commit_all(multi_root, "remove AC-UNREL from primary root");
+
+    let run_local = start_run(
+        &fx.rw,
+        StartReq {
+            spec_path: Some("docs/milestones/AC-ARC.md".to_owned()),
+            run_name: Some(RunName::new("run-local").unwrap()),
+            workflow: Some(fx.prof.clone()),
+            in_place: true,
+            worktree: false,
+            ..StartReq::default()
+        },
+    )
+    .unwrap();
+
+    // Corrupt acdd.yaml on the unrelated sibling worktree.
+    fs::write(wt_unrel.join("acdd.yaml"), "specs: [unclosed").unwrap();
+
+    // Unscoped roadmap fails closed on the sibling worktree's malformed acdd.yaml,
+    // whereas --current-only isolates discovery + overlay and succeeds cleanly.
+    let unscoped_err = roadmap_query_err(&fx.ro, RoadmapReq::default());
+    assert_eq!(unscoped_err.code, ErrorCode::WorkflowSchemaInvalid);
+
+    let current_only_resp = roadmap_query(
+        &fx.ro,
+        RoadmapReq {
+            current_only: true,
+            ..RoadmapReq::default()
+        },
+    );
+    let local_entry = current_only_resp
+        .in_progress
+        .iter()
+        .find(|e| e.run_id.as_deref() == Some(run_local.run.run_id.as_str()))
+        .expect("local active run included under --current-only");
+    assert!(
+        local_entry.tasks.is_empty(),
+        "default roadmap without include_tasks skips task projection"
+    );
+
+    let with_tasks = roadmap_query(
+        &fx.ro,
+        RoadmapReq {
+            current_only: true,
+            include_tasks: true,
+            ..RoadmapReq::default()
+        },
+    );
+    let local_with_tasks = with_tasks
+        .in_progress
+        .iter()
+        .find(|e| e.run_id.as_deref() == Some(run_local.run.run_id.as_str()))
+        .expect("local active run included with tasks");
+    assert_eq!(local_with_tasks.tasks.len(), 1);
+    assert_eq!(local_with_tasks.tasks[0].task_ref, "T-01");
 }

@@ -917,6 +917,124 @@ pub fn parse_ls_tree_z_record(record: &[u8]) -> Option<(String, String, String, 
     Some((mode, kind, oid, &record[tab + 1..]))
 }
 
+/// Git tree entry returned by [`list_git_tree_entries_multi`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTreeEntry {
+    /// Git file mode (`"100644"`, `"100755"`, `"120000"`, etc.).
+    pub mode: String,
+    /// Git blob object ID from `ls-tree`.
+    pub oid: String,
+    /// Exact raw repository-relative path bytes from `git ls-tree -z` (without `\` -> `/` rewriting).
+    pub raw_path: Vec<u8>,
+}
+
+/// Resolve `tree_or_commit` to its immutable Git tree object ID.
+pub fn resolve_git_tree_oid(
+    worktree: &Path,
+    tree_or_commit: &str,
+) -> std::result::Result<String, crate::errors::AcddError> {
+    use crate::errors::{AcddError, ErrorCode};
+    let trimmed = tree_or_commit.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("invalid tree/commit reference '{tree_or_commit}'"),
+        ));
+    }
+    let tree_spec = format!("{trimmed}^{{tree}}");
+    let oid = run_git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &tree_spec],
+        None,
+        &[],
+        None,
+    )
+    .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+    Ok(oid.trim().to_owned())
+}
+
+/// List blob entries (`mode`, `oid`, `raw_path`) under multiple `dir_rels` in `tree_or_commit` in one Git call.
+pub fn list_git_tree_entries_multi(
+    worktree: &Path,
+    tree_or_commit: &str,
+    dir_rels: &[&str],
+) -> std::result::Result<Vec<GitTreeEntry>, crate::errors::AcddError> {
+    use crate::errors::{AcddError, ErrorCode};
+    let trimmed = tree_or_commit.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("invalid tree/commit reference '{tree_or_commit}'"),
+        ));
+    }
+    let mut dir_prefixes = Vec::with_capacity(dir_rels.len());
+    let mut full_tree = dir_rels.is_empty();
+    for &dir_rel in dir_rels {
+        if dir_rel.is_empty() || dir_rel == "." {
+            full_tree = true;
+            continue;
+        }
+        let stripped = dir_rel
+            .strip_prefix("./")
+            .unwrap_or(dir_rel)
+            .trim_end_matches('/');
+        if stripped.is_empty()
+            || stripped
+                .split('/')
+                .any(|s| s.is_empty() || s == "." || s == ".." || s.contains('\\'))
+        {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!("invalid repository-relative directory '{dir_rel}'"),
+            ));
+        }
+        dir_prefixes.push(format!("{stripped}/"));
+    }
+    let is_hex_oid = (trimmed.len() == 40 || trimmed.len() == 64)
+        && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_hex_oid {
+        let tree_spec = format!("{trimmed}^{{tree}}");
+        run_git_stdout(
+            worktree,
+            &["rev-parse", "--verify", &tree_spec],
+            None,
+            &[],
+            None,
+        )
+        .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+    }
+    let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", trimmed];
+    if !full_tree {
+        args.push("--");
+        args.extend(dir_prefixes.iter().map(String::as_str));
+    }
+    let out = run_git_raw(worktree, &args, None, &[], None)
+        .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+    if !out.status.success() {
+        return Err(AcddError::new(
+            ErrorCode::ExternalGitDrift,
+            format_git_failure(&args, worktree, &out),
+        ));
+    }
+    let mut entries = Vec::new();
+    for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let Some((mode, kind, oid, raw_path)) = parse_ls_tree_z_record(record) else {
+            continue;
+        };
+        if kind != "blob" {
+            continue;
+        }
+        entries.push(GitTreeEntry {
+            mode,
+            oid,
+            raw_path: raw_path.to_vec(),
+        });
+    }
+    entries.sort_by(|a, b| a.raw_path.cmp(&b.raw_path));
+    entries.dedup_by(|a, b| a.raw_path == b.raw_path);
+    Ok(entries)
+}
+
 fn baseline_blob_entry(
     worktree: &Path,
     tree_oid: &str,

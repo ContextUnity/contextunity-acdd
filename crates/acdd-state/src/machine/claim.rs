@@ -14,7 +14,7 @@ use crate::types::{
     ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch, IsolationMode, NodeKind, NodeStatus,
     NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 
 fn build_claim_admission(
     node: &crate::types::GateNodeRecord,
@@ -52,10 +52,10 @@ fn admit_reclaim_in_progress(
     obs: &ValidatedObservations,
     input: &ClaimInput,
     node: &crate::types::GateNodeRecord,
-) -> Result<ClaimDecision, StateError> {
+) -> Result<ClaimDecision, AcddError> {
     let node_id = node.node_id.as_str();
     let active = active_claim_for_node(snapshot, node_id).ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("node '{node_id}' is in_progress without an active gate_claims row"),
         )
@@ -69,7 +69,7 @@ fn admit_reclaim_in_progress(
     }
 
     if !input.force {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskAlreadyClaimed,
             format!(
                 "node '{node_id}' is already claimed by worker '{}'",
@@ -84,7 +84,7 @@ fn admit_reclaim_in_progress(
     let same_worker = active.worker_id == input.worker_id;
     let dead_local_pid = input.previous_local_pid_alive == Some(false);
     if !same_worker && !dead_local_pid && !input.steal_remote {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskAlreadyClaimed,
             format!(
                 "refusing --force claim on '{node_id}' held by active worker '{}' without dead local PID or --steal-remote",
@@ -154,7 +154,7 @@ pub fn admit_claim(
     _profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &ClaimInput,
-) -> Result<ClaimDecision, StateError> {
+) -> Result<ClaimDecision, AcddError> {
     let node =
         crate::machine::require_active_claimable_node(snapshot, &input.node_cursor, "claim node")?;
     let node_id = node.node_id.clone();
@@ -194,7 +194,7 @@ pub fn admit_claim(
                 "cannot claim task gate '{node_id}' before pre-task root gates complete"
             ),
         };
-        let mut err = StateError::new(ErrorCode::GateVerificationFailed, msg);
+        let mut err = AcddError::new(ErrorCode::GateVerificationFailed, msg);
         if let Some(cursor) = pending_cursor {
             err = err.with_hint(format!("claim '{cursor}' next"));
         }
@@ -206,7 +206,7 @@ pub fn admit_claim(
             NodeStatus::Stale => ErrorCode::TaskCandidateMismatch,
             _ => ErrorCode::GateVerificationFailed,
         };
-        return Err(StateError::new(
+        return Err(AcddError::new(
             code,
             format!(
                 "cannot claim node '{node_id}' in status '{}' (expected 'ready' or 'in_progress')",
@@ -229,7 +229,7 @@ pub fn admit_claim(
                 && n.kind != NodeKind::Container
                 && n.status == NodeStatus::InProgress
         }) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskAlreadyClaimed,
                 format!(
                     "in_place isolation permits only one active node at a time ('{}' is currently in_progress)",
@@ -244,8 +244,8 @@ pub fn admit_claim(
 
     if node.kind == NodeKind::TaskGate {
         let parent_id = node.parent_id.as_deref().ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("task_gate '{node_id}' has no parent task container"),
             )
         })?;
@@ -253,14 +253,14 @@ pub fn admit_claim(
         watch_ids.push(parent_task.node_id.as_str());
 
         let task_ref = parent_task.task_ref.as_ref().ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("parent node '{parent_id}' missing task_ref"),
             )
         })?;
 
         if !task_dependencies_satisfied(snapshot, task_ref, obs) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("task '{task_ref}' still has unsatisfied dependencies"),
             ));

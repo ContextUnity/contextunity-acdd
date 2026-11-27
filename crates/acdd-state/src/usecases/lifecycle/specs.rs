@@ -1,25 +1,27 @@
 //! Spec collections, archive relpaths, profile-to-machine conversion, cursor resolution, and archive reconciliation.
 
 use super::cleanup::{build_tombstone_cleanup_manifest, CleanupManifestInput};
-use super::io::{read_confined_utf8, sorted_dir_paths};
 use crate::machine::{
     compute_schedule, MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem,
     MachineProfileInput, MachineProofKind, MachineSavePolicy, MachineTasksBlockDef,
 };
-use crate::profile::{GateDef, ProofDef, ProofKind, ResolvedGateProfile};
-use crate::spec::{extract_spec_number, format_next_spec_id, parse_spec, SpecDocument, SpecStatus};
+use crate::workflow::{GateDef, ProofDef, ProofKind, ResolvedWorkflow};
 use crate::store::sqlite::backup::RestoredActiveRun;
 use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunTombstoneRecord,
     SaveAction, TerminalStatus, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
-use acdd_core::config::SpecCollectionConfig;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::config::SpecConfig;
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::checked_child;
 use acdd_core::git::{git_common_dir, git_stdout, read_git_blob_utf8};
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, WorkerId};
 use acdd_core::schema::SchemaDef;
+use acdd_spec::{
+    effective_spec_collections as spec_effective_collections, match_spec_collection, parse_spec,
+    SpecDocument, SpecStatus,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,26 +30,8 @@ use std::path::Path;
 /// Return configured spec collections or the default `milestones` + `plans` map.
 pub fn effective_spec_collections(
     config: &StateEngineConfig,
-) -> BTreeMap<String, SpecCollectionConfig> {
-    if config.spec_collections.is_empty() {
-        acdd_core::config::default_specs()
-    } else {
-        config.spec_collections.clone()
-    }
-}
-
-/// Match a workspace-relative spec path to its owning collection key by longest matching pattern.
-pub fn match_spec_collection(
-    collections: &BTreeMap<String, SpecCollectionConfig>,
-    spec_relpath: &str,
-) -> Option<String> {
-    let norm = spec_relpath.trim().replace('\\', "/");
-    let norm = norm.strip_prefix("./").unwrap_or(&norm);
-    collections
-        .iter()
-        .filter(|(_, cfg)| cfg.matches_rel_path(norm))
-        .max_by_key(|(_, cfg)| cfg.patterns().into_iter().map(str::len).max().unwrap_or(0))
-        .map(|(name, _)| name.clone())
+) -> BTreeMap<String, SpecConfig> {
+    spec_effective_collections(&config.spec_collections)
 }
 
 /// Derive the archive relative path for an active run's `spec_relpath`.
@@ -55,7 +39,7 @@ pub(crate) fn compute_archive_relpath(
     config: &StateEngineConfig,
     run_collection: Option<&str>,
     spec_relpath: &str,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     let collections = effective_spec_collections(config);
     let col_key = run_collection
         .map(str::to_owned)
@@ -65,8 +49,8 @@ pub(crate) fn compute_archive_relpath(
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
                 format!("spec_path '{spec_relpath}' has no file name"),
             )
         })?;
@@ -93,20 +77,20 @@ pub(crate) fn compute_archive_relpath(
     }
 }
 
-/// Parse a `ResolvedGateProfile` from `runs.profile_json`.
-pub fn parse_profile_from_run(run: &RunRecord) -> Result<ResolvedGateProfile, StateError> {
+/// Parse a `ResolvedWorkflow` from `runs.profile_json`.
+pub fn parse_profile_from_run(run: &RunRecord) -> Result<ResolvedWorkflow, AcddError> {
     serde_json::from_str(&run.profile_json).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("corrupt runs.profile_json for '{}': {err}", run.run_id),
         )
     })
 }
 
-/// Convert a [`ResolvedGateProfile`] into the pure state machine's [`MachineProfileInput`].
+/// Convert a [`ResolvedWorkflow`] into the pure state machine's [`MachineProfileInput`].
 pub fn to_machine_profile(
-    profile: &ResolvedGateProfile,
-) -> Result<MachineProfileInput, StateError> {
+    profile: &ResolvedWorkflow,
+) -> Result<MachineProfileInput, AcddError> {
     let mut proof_schemas: BTreeMap<String, SchemaDef> = profile
         .proofs
         .iter()
@@ -141,7 +125,7 @@ pub fn to_machine_profile(
     }
 
     Ok(MachineProfileInput {
-        profile_id: profile.profile_id.clone(),
+        profile_id: profile.workflow_id.clone(),
         profile_json: profile.to_canonical_json()?,
         git: MachineGitPolicy {
             isolation: profile.git.isolation,
@@ -156,11 +140,11 @@ pub fn to_machine_profile(
 }
 
 fn convert_gate_def(
-    profile: &ResolvedGateProfile,
+    profile: &ResolvedWorkflow,
     gate: &GateDef,
     is_terminal_root: bool,
     proof_schemas: &mut BTreeMap<String, SchemaDef>,
-) -> Result<MachineGateDef, StateError> {
+) -> Result<MachineGateDef, AcddError> {
     let id = GateId::new(&gate.id)?;
     let proof = match &gate.proof {
         ProofDef::Kind(ProofKind::None) => MachineProofKind::None,
@@ -173,7 +157,7 @@ fn convert_gate_def(
         ProofDef::Scheme { scheme } => {
             let dig = acdd_core::format::canonical_json_sha256(
                 &serde_json::to_value(scheme.as_ref())
-                    .map_err(|e| StateError::new(ErrorCode::ProfileSchemaInvalid, e.to_string()))?,
+                    .map_err(|e| AcddError::new(ErrorCode::WorkflowSchemaInvalid, e.to_string()))?,
             );
             let synthetic = format!("__inline_{}", &dig[..12]);
             proof_schemas.insert(synthetic.clone(), *scheme.clone());
@@ -236,24 +220,24 @@ fn convert_gate_def(
 pub fn parse_cursor_for_snapshot(
     snapshot: &RunGraphSnapshot,
     raw: &str,
-) -> Result<NodeCursor, StateError> {
+) -> Result<NodeCursor, AcddError> {
     let trimmed = raw.trim();
     NodeCursor::parse_with_task_lookup(trimmed, |seg| {
         snapshot.nodes.iter().any(|n| {
             n.kind == NodeKind::Task && n.task_ref.as_ref().is_some_and(|t| t.as_str() == seg)
         })
     })
-    .map_err(StateError::from)
+    .map_err(AcddError::from)
 }
 
 /// Auto-select the next ready gate cursor when `ClaimReq.node` is omitted.
 pub fn auto_select_ready_cursor(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
-) -> Result<NodeCursor, StateError> {
+) -> Result<NodeCursor, AcddError> {
     let schedule = compute_schedule(snapshot, obs)?;
     if let Some(root_node_id) = schedule.ready_root_nodes.first() {
-        return NodeCursor::from_node_id(root_node_id).map_err(StateError::from);
+        return NodeCursor::from_node_id(root_node_id).map_err(AcddError::from);
     }
     for task_ref in &schedule.ready_tasks {
         let parent_id = format!("task:{task_ref}");
@@ -267,7 +251,7 @@ pub fn auto_select_ready_cursor(
             })
             .min_by_key(|n| n.seq_order)
         {
-            return NodeCursor::from_node_id(&gate_node.node_id).map_err(StateError::from);
+            return NodeCursor::from_node_id(&gate_node.node_id).map_err(AcddError::from);
         }
     }
     if let Some(in_prog) = snapshot
@@ -279,9 +263,9 @@ pub fn auto_select_ready_cursor(
         })
         .min_by_key(|n| n.seq_order)
     {
-        return NodeCursor::from_node_id(&in_prog.node_id).map_err(StateError::from);
+        return NodeCursor::from_node_id(&in_prog.node_id).map_err(AcddError::from);
     }
-    Err(StateError::new(
+    Err(AcddError::new(
         ErrorCode::GateVerificationFailed,
         format!(
             "no ready gate nodes available to claim in run '{}'",
@@ -294,16 +278,16 @@ pub fn auto_select_ready_cursor(
 pub fn auto_select_context_cursor(
     snapshot: &RunGraphSnapshot,
     worker_id: Option<&WorkerId>,
-) -> Result<NodeCursor, StateError> {
+) -> Result<NodeCursor, AcddError> {
     let is_gate = |n: &GateNodeRecord| matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate);
     let matches_worker =
         |n: &GateNodeRecord| worker_id.is_none_or(|w| n.worker_id.as_ref() == Some(w));
-    let to_cursors = |nodes: &[&GateNodeRecord]| -> Result<Vec<String>, StateError> {
+    let to_cursors = |nodes: &[&GateNodeRecord]| -> Result<Vec<String>, AcddError> {
         nodes
             .iter()
             .map(|n| NodeCursor::from_node_id(&n.node_id).map(|c| c.to_string()))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(StateError::from)
+            .map_err(AcddError::from)
     };
 
     let mut claimed: Vec<_> = snapshot
@@ -313,10 +297,10 @@ pub fn auto_select_context_cursor(
         .collect();
     claimed.sort_by_key(|n| n.seq_order);
     match claimed.len() {
-        1 => return NodeCursor::from_node_id(&claimed[0].node_id).map_err(StateError::from),
+        1 => return NodeCursor::from_node_id(&claimed[0].node_id).map_err(AcddError::from),
         n if n > 1 => {
             let cursors = to_cursors(&claimed)?;
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!(
                     "multiple active claimed gates match context request: {}; specify `node`",
@@ -334,10 +318,10 @@ pub fn auto_select_context_cursor(
         .collect();
     ready.sort_by_key(|n| n.seq_order);
     match ready.len() {
-        1 => NodeCursor::from_node_id(&ready[0].node_id).map_err(StateError::from),
+        1 => NodeCursor::from_node_id(&ready[0].node_id).map_err(AcddError::from),
         n if n > 1 => {
             let cursors = to_cursors(&ready)?;
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!(
                     "multiple ready gates match context request: {}; specify `node`",
@@ -345,7 +329,7 @@ pub fn auto_select_context_cursor(
                 ),
             ))
         }
-        _ => Err(StateError::new(
+        _ => Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "no active claimed or ready gate found for context in run '{}'",
@@ -510,7 +494,7 @@ pub(crate) fn reconcile_restored_runs_with_archives(
     active_runs: &[RestoredActiveRun],
     workspace_root: Option<&Path>,
     spec_collection_paths: &[String],
-) -> Result<Vec<RunTombstoneRecord>, StateError> {
+) -> Result<Vec<RunTombstoneRecord>, AcddError> {
     let mut tombstones = Vec::new();
     for row in active_runs {
         if row.is_ephemeral {
@@ -565,8 +549,8 @@ pub(crate) fn reconcile_restored_runs_with_archives(
         let run_id = RunId::new(row.run_id.clone())?;
         let run_name = RunName::new(row.run_name.clone())?;
         let generation = u64::try_from(row.generation).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("negative generation on restored run '{}'", row.run_id),
             )
         })?;
@@ -599,52 +583,4 @@ pub(crate) fn reconcile_restored_runs_with_archives(
         });
     }
     Ok(tombstones)
-}
-
-fn max_spec_num_in_dir(primary: &Path, scan_dir: &Path, prefix: &str, max_num: &mut Option<u32>) {
-    if fs::symlink_metadata(scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
-        return;
-    }
-    for p in sorted_dir_paths(scan_dir) {
-        if p.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-            if let Some(num) = extract_spec_number(stem, prefix) {
-                *max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
-            }
-        }
-        if let Ok(rel) = p.strip_prefix(primary) {
-            if let Ok(raw) = read_confined_utf8(primary, &rel.to_string_lossy()) {
-                if let Ok(doc) = parse_spec(&raw) {
-                    if let Some(num) = extract_spec_number(&doc.id, prefix) {
-                        *max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Compute the next collision-free sequential spec ID (`<PREFIX>-<NNN>`) across `db_max` and active + `archive/` files.
-pub fn next_spec_id_for_prefix(
-    primary: &Path,
-    collection: &str,
-    col: &SpecCollectionConfig,
-    prefix: &str,
-    db_max: Option<u32>,
-) -> Result<String, StateError> {
-    let mut max_num = db_max;
-    let resolved_dirs = col.resolve_dirs(primary).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("failed to resolve directories for '{collection}': {err}"),
-        )
-    })?;
-    for dir_abs in resolved_dirs {
-        for scan_dir in [dir_abs.clone(), dir_abs.join("archive")] {
-            max_spec_num_in_dir(primary, &scan_dir, prefix, &mut max_num);
-        }
-    }
-    Ok(format_next_spec_id(prefix, col.digits, max_num))
 }

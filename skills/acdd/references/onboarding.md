@@ -37,7 +37,7 @@ Record only facts needed for setup:
   package/workspace manifests. Inspect actual package scripts, Makefiles,
   build configuration, CI commands, and test targets.
 - Existing `AGENTS.md`, verification rules, `acdd.yaml`, selected ACDD
-  profile, documentation, plans, milestones, and ignore rules.
+  workflow, documentation, plans, milestones, and ignore rules.
 - Sibling repositories explicitly relevant to the request or confirmed by
   dependency manifests. Verify their paths, purpose, roots, and ownership;
   adjacency alone does not establish a dependency.
@@ -55,10 +55,10 @@ do not use `--force` over a tailored adapter.
 - Set `ignore` from actual build/cache directory basenames, respecting existing
   `.gitignore`; do not use invented glob semantics for `ignore`. Use `sensitive`
   patterns for confidential paths that readers must block.
-- Configure `specs:` collections (`milestones` with `path: docs/milestones`,
+- Configure `preset: full` (or `index | spec | state | minimal`), `specs:` entries (`milestones` with `path: docs/milestones`,
   `prefixes: [AC]`; `plans` with `path: docs/plans`,
-  `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles]`),
-  `state_db: .acdd/state.sqlite`, `retain_traces: 20`, and `modules:` (`code`, `docs`, `state`, `blackboard`).
+  `prefixes: [PLAN]`), `workflows_dirs` (`[.acdd/workflows]`),
+  `state_db: .acdd/state.sqlite`, `retain_traces: 20`, and `modules:` (`code`, `docs`, `spec`, `state`, `blackboard`).
 - Retain the default relative `state_db` unless the repository requires another
   location. Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
   and share state locks/backups under `<git_common_dir>/acdd/`.
@@ -69,17 +69,17 @@ Check `acdd guide adapter` when a field's semantics are uncertain. Keep
 configuration inside the consuming repository. Do not add scanners or
 template-rendering code to ACDD.
 
-## Synthesize a project profile
+## Synthesize a project workflow
 
-For ACDD setup, write a compact overlay in `.acdd/profile.yaml` (`version: 2`,
-`inherit: code` when `modules.code: true` or `inherit: base` / `inherit: audit` /
-`inherit: documentation`; when present, `.acdd/profile.yaml` automatically becomes
+For ACDD setup, write a compact overlay in `.acdd/workflows/default.yaml` (`version: 2`,
+`inherit: code` when `modules.code: true` or `inherit: base` / `inherit: documentation`;
+when present, `.acdd/workflows/default.yaml` automatically becomes
 the workspace default; use `gates:` to replace inherited gates or `gates_patch:` to
 patch them), using the
-[starter profile overlay](acdd_profile.yaml.example) and the complete
-[profile reference](profile-reference.md) for all `GateProfile v2` fields. Use the
-[audit examples catalog](acdd-profile-examples/README.md) when specializing
-`inherit: audit` workflows (`security-sast`, `pr-code-review`, `architecture-hygiene`);
+[starter workflow overlay](acdd_workflow.yaml.example) and the complete
+[workflow reference](workflow-reference.md) for all `WorkflowDef v2` fields. Use the
+[workflow examples catalog](acdd-workflow-examples/README.md) for ready-to-copy
+`audit`, `spec_planning`, `hotfix`, and `inherit: audit` workflows (`security-sast`, `pr-code-review`, `architecture-hygiene`);
 examples are starting points, and the installed schema (`acdd validate`)
 is the authority. Do not copy ACDD's Rust-specific guidance, models, protected
 files, or commands into an unrelated project.
@@ -95,8 +95,8 @@ and `gates` references consistent. Preserve independent review (`independent_fro
 and candidate immutability (`save.immutable: true`) boundaries. Optional
 `roles.<name>.runner` commands must match tools actually available to the project.
 
-Validate the profile before claims. Follow the resulting `acdd_claim`
-`guidance`, expected proof contract, and active profile for actual execution;
+Validate the workflow before claims. Follow the resulting `acdd_claim`
+`guidance`, expected proof contract, and active workflow for actual execution;
 do not prescribe a universal gate list or hardcoded model in `AGENTS.md`.
 
 ## Merge the agent router
@@ -146,12 +146,12 @@ manufacturing status/receipts.
 Run installed commands from the consuming repository root:
 
 ```sh
-acdd validate .acdd/profile.yaml
+acdd validate .acdd/workflows/default.yaml
 acdd validate
 ```
 
-Run the first command when a profile was created or changed, and `acdd validate`
-to validate the workspace adapter, active profiles, and open spec manifests.
+Run the first command when a workflow was created or changed, and `acdd validate`
+to validate the workspace adapter, active workflows, and open spec manifests.
 Validate each proposed spec with `acdd validate <repository-relative-spec.md>`
 and inspect diagnostics rather than accepting example YAML on appearance alone.
 
@@ -161,7 +161,7 @@ languages, and linked workspaces. Run `acdd lint` (or `code_map_lint`) when
 representative source symbol and documentation page. Review the diff for preserved
 settings, valid links, and scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) so
 runtime state under `.acdd/` and `/.worktrees/` stays excluded while
-`.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` remain tracked.
+`.acdd/workflows/**`, `.acdd/specs/**`, and `.acdd/frameworks/**` remain tracked.
 
 Report changed files, observed verification, remaining prerequisites, and the
 proposed next delivery step. Schema and link checks establish artifact validity;

@@ -1,7 +1,7 @@
 //! Shared leaf constants, path/adapter resolution, SQLite read helpers, and state execution helpers for `state_bridge`.
 
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
@@ -25,8 +25,8 @@ pub struct InvocationSettings {
     pub root: PathBuf,
     /// Explicit `--config` / `acdd.yaml` path override.
     pub config: Option<PathBuf>,
-    /// Explicit `--profile` override.
-    pub profile: Option<PathBuf>,
+    /// Explicit `--workflow` override.
+    pub workflow: Option<PathBuf>,
     /// Explicit `--state-db` override.
     pub state_db: Option<PathBuf>,
     /// Resolved `code-map.sqlite` path.
@@ -89,7 +89,7 @@ pub(super) fn truncate_single_line(text: &str, max_chars: usize) -> String {
 pub(super) fn build_composite_providers(
     config: &Adapter,
     providers: Vec<Arc<dyn DomainProvider>>,
-) -> Result<Arc<CompositeDomainProvider>, StateError> {
+) -> Result<Arc<CompositeDomainProvider>, AcddError> {
     let mut flags = BTreeMap::new();
     for provider in &providers {
         let id = provider.domain_id();
@@ -111,7 +111,7 @@ pub(crate) fn state_engine_config(
     state_db: Option<&Path>,
     code_db: Option<&Path>,
     config: &Adapter,
-) -> Result<StateEngineConfig, StateError> {
+) -> Result<StateEngineConfig, AcddError> {
     let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     let default_state_db = primary.join(".acdd/state.sqlite");
     let configured = acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
@@ -131,7 +131,7 @@ pub(crate) fn state_engine_config(
         state_db_override,
         code_db_path,
         spec_collections: config.specs.clone(),
-        profiles_dirs: config.profiles_dirs.clone(),
+        workflows_dirs: config.workflows_dirs.clone(),
         linked_workspaces,
         modules: config.modules.clone(),
         response_policy: config.response.clone(),
@@ -145,7 +145,7 @@ pub(crate) fn unsupported_domain_action(
     domain: &str,
     action: &str,
 ) -> anyhow::Result<DomainActionResult> {
-    Err(StateError::new(
+    Err(AcddError::new(
         ErrorCode::DomainCapabilityUnavailable,
         format!("{domain} domain does not expose action '{action}'"),
     )
@@ -162,7 +162,7 @@ pub fn execute_state_command(
     config: &Adapter,
     providers: Arc<CompositeDomainProvider>,
     cmd: StateCommand,
-) -> Result<StateCommandOutput, StateError> {
+) -> Result<StateCommandOutput, AcddError> {
     execute_state_command_with_config(
         root, worktree, state_db, code_db, config, providers, cmd, false,
     )
@@ -178,13 +178,13 @@ pub(crate) fn execute_state_command_with_config(
     providers: Arc<CompositeDomainProvider>,
     cmd: StateCommand,
     explicit_config: bool,
-) -> Result<StateCommandOutput, StateError> {
+) -> Result<StateCommandOutput, AcddError> {
     if let StateCommand::Snapshot(req) = &cmd {
         acdd_core::fs::check_git_entry_no_symlinks(root)
-            .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+            .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
         let wt = req.worktree.as_deref().unwrap_or(worktree);
         acdd_core::fs::check_git_entry_no_symlinks(wt)
-            .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+            .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     }
     let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
     if let StateCommand::Snapshot(req) = cmd {
@@ -208,7 +208,7 @@ pub fn execute_state_query(
     config: &Adapter,
     providers: Arc<CompositeDomainProvider>,
     query: StateQuery,
-) -> Result<StateQueryOutput, StateError> {
+) -> Result<StateQueryOutput, AcddError> {
     let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
     let engine = StateQueryEngine::open_read_only(engine_cfg, providers)?;
     engine.query(query)
@@ -290,8 +290,8 @@ pub(crate) fn resolve_worktree_adapter(
         .is_ok_and(|p| p.is_file());
     if local_path.is_some() || has_default {
         return acdd_core::config::load_adapter(worktree, local_path.as_deref()).map_err(|err| {
-            anyhow::anyhow!(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            anyhow::anyhow!(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to load worktree adapter: {err}"),
             ))
         });

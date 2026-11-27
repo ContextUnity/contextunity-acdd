@@ -7,7 +7,7 @@ use super::common::{
     DOCS_INVARIANT_MAX_RULE_CHARS,
 };
 use acdd_core::config::Adapter;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::{estimate_json_bytes, sha256_hex};
 use acdd_core::fs::{checked_child, is_doc_path};
 use acdd_core::path_policy::{
@@ -408,22 +408,21 @@ impl DocsDomainProvider {
                     "default_draft_dir": col_cfg.default_draft_dir(),
                     "prefixes": col_cfg.prefixes,
                     "digits": col_cfg.digits,
-                    "profile": col_cfg.profile,
+                    "workflow": col_cfg.workflow,
                     "next_ids": next_ids,
                 }),
             );
         }
 
-        let mut available_profiles: BTreeSet<String> =
-            ["base", "code", "audit", "documentation", "spec_planning"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-        for p in collect_profile_dir_files(&req.worktree, &worktree_adapter.profiles_dirs, 2) {
+        let mut available_workflows: BTreeSet<String> = ["base", "code", "documentation"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for p in collect_profile_dir_files(&req.worktree, &worktree_adapter.workflows_dirs, 2) {
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
             if matches!(ext, "yaml" | "yml") {
                 if let Ok(rel) = p.strip_prefix(&req.worktree) {
-                    available_profiles.insert(rel.to_string_lossy().replace('\\', "/"));
+                    available_workflows.insert(rel.to_string_lossy().replace('\\', "/"));
                 }
             }
         }
@@ -431,14 +430,14 @@ impl DocsDomainProvider {
         let mut payload = json!({
             "specs": specs_json,
             "docs_roots": worktree_adapter.docs,
-            "profiles_dirs": worktree_adapter.profiles_dirs,
-            "available_profiles": available_profiles,
+            "workflows_dirs": worktree_adapter.workflows_dirs,
+            "available_workflows": available_workflows,
             "architecture_zones": worktree_adapter.architecture.zones,
             "limits": {
                 "max_metadata_bytes": worktree_adapter.limits.max_metadata_bytes,
             },
             "modules": {
-                "profile": worktree_adapter.modules.profile,
+                "preset": worktree_adapter.modules.preset,
                 "enabled": worktree_adapter.modules.enabled,
                 "disabled": worktree_adapter.modules.disabled,
                 "domains": worktree_adapter.modules.domains,
@@ -538,7 +537,7 @@ impl DomainProvider for DocsDomainProvider {
             "instructions" => self.provide_instructions(req),
             "invariants" => self.provide_invariants(req),
             "workspace_config" => self.provide_workspace_config(req),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown docs context lens 'docs.{lens}'"),
             )
@@ -706,7 +705,7 @@ fn collect_filesystem_invariants(
 }
 
 fn unknown_docs_check(check: &str) -> anyhow::Error {
-    StateError::new(
+    AcddError::new(
         ErrorCode::DomainCapabilityUnavailable,
         format!("unknown docs check 'docs.{check}'"),
     )
@@ -715,11 +714,11 @@ fn unknown_docs_check(check: &str) -> anyhow::Error {
 
 fn collect_profile_dir_files(
     worktree: &Path,
-    profiles_dirs: &[String],
+    workflows_dirs: &[String],
     max_depth: usize,
 ) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    for dir in profiles_dirs {
+    for dir in workflows_dirs {
         let Ok(abs_dir) = checked_child(worktree, Path::new(dir)) else {
             continue;
         };
@@ -751,8 +750,8 @@ fn compute_specs_digest(worktree: &Path, adapter: &Adapter) -> String {
         }
     };
     record_file(acdd_core::config::ACDD_CONFIG_FILE);
-    record_file(".acdd/profile.yaml");
-    for path in collect_profile_dir_files(worktree, &adapter.profiles_dirs, 3) {
+    record_file(".acdd/workflows/default.yaml");
+    for path in collect_profile_dir_files(worktree, &adapter.workflows_dirs, 3) {
         if let Ok(rel) = path.strip_prefix(worktree) {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             record_file(&rel_str);
@@ -1254,6 +1253,7 @@ mod tests {
             test_target: None,
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
+            node_tags: vec![],
         };
         assert_check_matches_freshness(&provider, "links", "docs_live=", &check_req);
 
@@ -1481,15 +1481,15 @@ mod tests {
         assert!(matches!(failed, DomainCheckOutcome::Failed { .. }));
 
         // `docs.workspace_config` context lens and `docs.specs` validation + freshness check.
-        fs::create_dir_all(root.join(".acdd")).unwrap();
+        fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
         fs::write(
-            root.join(".acdd/profile.yaml"),
-            "version: 2\ninherit: spec_planning\n",
+            root.join(".acdd/workflows/default.yaml"),
+            "version: 2\ninherit: documentation\n",
         )
         .unwrap();
         fs::write(
             root.join("acdd.yaml"),
-            "docs:\n  - docs\nprofiles_dirs:\n  - .acdd/profiles\nlimits:\n  max_metadata_bytes: 1024\nmodules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\narchitecture:\n  zones:\n    core:\n      - \"crates/core/**\"\n",
+            "docs:\n  - docs\nworkflows_dirs:\n  - .acdd/workflows\nlimits:\n  max_metadata_bytes: 1024\nmodules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\narchitecture:\n  zones:\n    core:\n      - \"crates/core/**\"\n",
         )
         .unwrap();
         let adapter_cfg = acdd_core::config::load_adapter_report(root, None)
@@ -1505,13 +1505,17 @@ mod tests {
         );
         assert_eq!(ws_cfg_lens["docs_roots"], serde_json::json!(["docs"]));
         assert_eq!(
-            ws_cfg_lens["profiles_dirs"],
-            serde_json::json!([".acdd/profiles"])
+            ws_cfg_lens["workflows_dirs"],
+            serde_json::json!([".acdd/workflows"])
         );
-        let avail_profiles = ws_cfg_lens["available_profiles"].as_array().unwrap();
+        let avail_workflows = ws_cfg_lens["available_workflows"].as_array().unwrap();
         assert!(
-            avail_profiles.iter().any(|p| p == "spec_planning"),
-            "available_profiles should include embedded spec_planning: {ws_cfg_lens}"
+            avail_workflows.iter().any(|p| p == "documentation")
+                && avail_workflows
+                    .iter()
+                    .any(|p| p == ".acdd/workflows/default.yaml")
+                && !avail_workflows.iter().any(|p| p == "spec_planning"),
+            "available_workflows should include core triad + .acdd/workflows: {ws_cfg_lens}"
         );
         assert_eq!(ws_cfg_lens["limits"]["max_metadata_bytes"], 1024);
         assert!(ws_cfg_lens["architecture_zones"].get("core").is_some());

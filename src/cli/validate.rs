@@ -8,12 +8,12 @@ use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
 
-/// Validate one document or workspace with explicit `--config` and `--profile` overrides.
+/// Validate one document or workspace with explicit `--config` and `--workflow` overrides.
 pub fn run_with_options(
     root: &Path,
     relative: Option<&Path>,
     explicit_config: Option<&Path>,
-    explicit_profile: Option<&str>,
+    explicit_workflow: Option<&str>,
 ) -> Result<Value> {
     // Fall back to `Adapter::default()` only when loading `acdd.yaml` fails so
     // `acdd_state::validate` can emit structured config diagnostics; propagate provider errors.
@@ -23,8 +23,8 @@ pub fn run_with_options(
     };
     let providers = build_domain_providers(root, &adapter, None, Vec::new())?;
     let resp: ValidateResp = match relative {
-        Some(rel) => validate_document(root, rel, explicit_config, explicit_profile, &providers)?,
-        None => validate_workspace(root, explicit_config, explicit_profile, &providers)?,
+        Some(rel) => validate_document(root, rel, explicit_config, explicit_workflow, &providers)?,
+        None => validate_workspace(root, explicit_config, explicit_workflow, &providers)?,
     };
     Ok(serde_json::to_value(&resp)?)
 }

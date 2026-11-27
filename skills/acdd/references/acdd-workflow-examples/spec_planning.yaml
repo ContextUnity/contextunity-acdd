@@ -1,0 +1,192 @@
+version: 2
+inherit: base
+
+git:
+  isolation: in_place
+  worktrees: manual
+
+save: none
+
+tags:
+  - default
+  - docs
+  - planning
+
+default_tools:
+  - code_map_overview
+  - code_map_search
+  - code_map_inspect
+  - code_map_impact
+  - code_map_analyze
+  - code_map_explain
+  - code_map_query
+  - code_map_lint
+  - ast_grep_search
+  - get_doc
+  - search_docs
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Spawn an architect subagent in the workspace to ground codebase owners/invariants, draft or refine the target specification/plan/milestone using acdd.yaml specs rules, verify structural/link/lint checks, and reuse the same worker on review rejection."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: false
+    guidance: "Spawn a fresh independent_reviewer distinct from the architect to audit Completeness, Correctness, and Coherence: behavioral AC-* testability, Occam's razor, ADR/invariant alignment, acyclic wave disjointness, negative boundaries, and proportional seam proofs."
+
+proofs:
+  spec_plan:
+    description: "Grounded specification, milestone, or implementation plan synthesis proof"
+    schema:
+      type: object
+      required:
+        - artifact_kind
+        - spec
+        - spec_id
+        - spec_paths
+        - ac_mapping
+        - cited_invariants
+        - cited_symbols
+        - wave_dag
+        - scopes_disjoint
+        - negative_boundaries
+      properties:
+        artifact_kind:
+          type: string
+          enum: [milestone, plan, spec, workflow]
+        spec:
+          type: string
+        spec_id:
+          type: string
+        spec_paths:
+          type: array
+          items: { type: string }
+        roadmap_updated:
+          type: boolean
+        adr_updates:
+          type: array
+          items: { type: string }
+        ac_mapping:
+          type: array
+          items: { type: string }
+        cited_invariants:
+          type: array
+          items: { type: string }
+        cited_symbols:
+          type: array
+          items: { type: string }
+        wave_dag:
+          type: array
+          items:
+            type: array
+            items: { type: string }
+        scopes_disjoint:
+          type: boolean
+        protected_paths_excluded:
+          type: boolean
+        negative_boundaries:
+          type: array
+          items: { type: string }
+        blackboard_decision_id:
+          type: string
+
+guidance:
+  code.tools:
+    description: "MANDATORY ACDD GRAPH & CONFIG DISCOVERY PROTOCOL"
+    criteria:
+      - "Inspect `context_lenses[\"docs.workspace_config\"]` (and `acdd.yaml`) first to honor configured `specs.<spec>` paths, `prefixes`, `digits`, `workflow`, `docs` roots, `workflows_dirs`, `architecture.zones`, and `limits.max_metadata_bytes`."
+      - "Use CLI `acdd draft <spec> <slug> [--prefix <TAG>]` to allocate collision-free sequential IDs across active and `archive/` directories rather than guessing numbers."
+      - "Ground every cited symbol, owner, and seam via `code_map_overview`, `code_map_search(detail: \"compact\")`, `code_map_inspect`, `code_map_impact`, and `acdd_read(selector: ...)`; ground ADRs and `INV-*` rules via `search_docs`/`get_doc`."
+  plan.principles:
+    description: "ARCHITECTURAL VIABILITY, SPECIFICATION DISCIPLINE & WAVE HYGIENE"
+    criteria:
+      - "Separate WHAT/WHY in the spec (`Goal`, `Non-goals`, `invariants`, `acceptance_criteria`, `scope`, `negative_boundaries`) from HOW (`ADRs` / `blueprint_synthesis`): keep task YAML free of internal helper recipes while anchoring deltas against durable `docs/architecture/` and `docs/reference/` truth."
+      - "Author every `AC-*` before slicing tasks (`contract-planning`) as a testable behavioral scenario (`Condition/Trigger -> Action -> Observable Outcome or Fail-Closed Rejection/ErrorCode`), avoiding vague capability statements."
+      - "Apply Occam's razor: reuse canonical single owners (`INV-SINGLE-OWNER`) and declarative config/workflows rather than introducing parallel helpers, shims, shadow subsystems, or forbidden dependencies (`negative_boundaries`)."
+      - "Partition tasks into acyclic waves (`depends_on`) with strictly disjoint write `scope` globs within every concurrent wave, realistic `max_net_loc` budgets, and narrow production seam tests; co-evolve affected `docs/` and `ROADMAP.md` in admitted scope."
+  plan.synthesize:
+    description: "PHASE 1: SPECIFICATION / MILESTONE / PLAN SYNTHESIS & STRUCTURAL PROOF"
+    criteria:
+      - "Author or amend the target spec/plan/milestone inside the configured `acdd.yaml` `specs.<spec>` directory as a concise behavioral delta (updating `ROADMAP.md` when milestone scope or sequencing changes) within claim context budgets."
+      - "Bind every `AC-*` in `ac_mapping`, cite only verified symbols/invariants (`code_map_*`, `search_docs`), record explicit `negative_boundaries`, exclude `protected_paths`, and keep same-wave `scope:` globs disjoint."
+      - "Run `acdd_verify` (`docs.specs`, `docs.links`, and `code.lint` `[arch, docs]`) and resolve any schema, prefix/digit, scope-overlap, broken-link, or lint diagnostics before submitting `spec_plan` proof."
+  plan.review:
+    description: "PHASE 2: INDEPENDENT ARCHITECTURAL & CONTRACT AUDIT"
+    criteria:
+      - "Audit Completeness, Correctness, and Coherence: confirm 1:1 `Goal`/`AC-*` -> task/subtask -> seam mapping, falsifiable `Trigger -> Outcome / Fail-Closed` testability across edge/concurrency/error boundaries, and alignment with ADRs, `INV-*`, and `protected_paths`."
+      - "Audit `acdd.yaml` spec fit (`prefixes`, `digits`, `workflow`), wave acyclicity, strict same-wave write-scope disjointness, explicit `negative_boundaries`, and authentic symbol/invariant citations; reject to `synthesize` with actionable findings if over-engineered or underspecified."
+
+contours:
+  architecture:
+    description: "Verify Occam's razor simplicity, canonical owner reuse (INV-SINGLE-OWNER), ADR/invariant alignment, and layer isolation."
+    criteria:
+      - "Confirm zero speculative abstractions, shadow helpers, or upward/cross-layer leaks against acdd.yaml architecture.zones and ADRs."
+  waves_and_scopes:
+    description: "Verify acdd.yaml spec rules, acyclic task dependencies, disjoint concurrent write scopes, and proportional seam proofs."
+    criteria:
+      - "Confirm sequential non-colliding spec IDs, concise spec YAML, disjoint same-wave task globs, co-evolved docs/ROADMAP scope, and concrete seam verification."
+
+gates:
+  - id: synthesize
+    role: architect
+    proof: spec_plan
+    checks:
+      - docs.specs
+      - docs.links
+      - check: code.lint
+        with:
+          categories:
+            - arch
+            - docs
+    guidance:
+      - plan.synthesize
+      - core.execution
+      - plan.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.workspace_config
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+    max_attempts: 3
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    proof: review
+    contours:
+      - paths
+      - claims
+      - architecture
+      - waves_and_scopes
+      - administration
+    independent_from:
+      - synthesize
+    need:
+      - synthesize
+    receipt: true
+    guidance:
+      - plan.review
+      - core.review
+      - plan.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.workspace_config
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+    save:
+      immutable: true
+      report: ".acdd/reports/{run_name}.md"
+    max_attempts: 3
+    fail: synthesize

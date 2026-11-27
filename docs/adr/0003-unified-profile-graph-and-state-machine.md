@@ -13,16 +13,16 @@ Accepted.
 
 ## Context
 
-Maintaining separate execution engines, storage tables, and CLI/MCP surfaces for milestones, in-place plans, and root-only workflows duplicated DAG scheduling, claim locking, review routing, and recovery paths. Unifying all stateful execution around one declarative profile graph and one pure state-transition core eliminates structural drift while supporting both Git-tracked specifications and ephemeral `--goal` runs.
+Maintaining separate execution engines, storage tables, and CLI/MCP surfaces for milestones, in-place plans, and root-only workflows duplicated DAG scheduling, claim locking, review routing, and recovery paths. Unifying all stateful execution around one declarative workflow graph and one pure state-transition core eliminates structural drift while supporting both Git-tracked specifications and ephemeral `--goal` runs.
 
 ## Decision
 
-### 1. Two Primitives: `GateProfile` (`version: 2`) and `Run`
+### 1. Two Primitives: `WorkflowDef` (`version: 2`) and `Run`
 
-All lifecycle execution collapses onto two orthogonal primitives in `crates/acdd-state`:
+All lifecycle execution collapses onto two orthogonal primitives across `crates/acdd-spec` and `crates/acdd-state`:
 
-1. **`GateProfile` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly five profiles: `base`, `code`, `audit`, `documentation`, and `spec_planning`; `.acdd/profile.yaml` automatically becomes the workspace default when present, while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a profile) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects un-migrated `0.5` syntax (`ACDD_PROFILE_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
-2. **`Run`**: One active or completed execution instance bound to a `SpecDocument` (`docs/milestones/*.md`, `docs/plans/*.md`) or an ephemeral `--goal` specification (`.acdd/run/<run_id>/spec.md`) and materialized into a `gate_nodes` DAG addressed by validated [`NodeCursor`](../../crates/acdd-core/src/ids.rs) and `GateSelector` identifiers.
+1. **`WorkflowDef` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly three core workflows (`base`, `code`, `documentation`), while auxiliary templates (`audit`, `spec_planning`, `hotfix`) ship under `skills/acdd/references/acdd-workflow-examples/`. `.acdd/workflows/default.yaml` automatically becomes the workspace default when present (discovered via `workflows_dirs`, default `[".acdd/workflows"]`), while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a workflow) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects legacy or invalid workflow YAML (`ACDD_WORKFLOW_SCHEMA_INVALID`) separately from specification validation failures (`ACDD_SPEC_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
+2. **`Run`**: One active or completed execution instance bound to a `SpecDocument` (`docs/milestones/*.md`, `docs/plans/*.md`, parsed and statically validated in `crates/acdd-spec` over `SpecRuntimeOverlay`) or an ephemeral `--goal` specification (`.acdd/run/<run_id>/spec.md`) and materialized into a `gate_nodes` DAG addressed by validated [`NodeCursor`](../../crates/acdd-core/src/ids.rs) and `GateSelector` identifiers.
 
 ### 2. Node Hierarchy, `SpecDocument`, and `blueprint_synthesis`
 
@@ -38,7 +38,7 @@ All lifecycle execution collapses onto two orthogonal primitives in `crates/acdd
 > Invariant: The state machine reducer stays 100% pure and SQLite imports stay confined to `crates/acdd-state/src/store/sqlite/`.
 > - INV-STATE-PURE-MACHINE: `crates/acdd-state/src/machine/` is a pure functional transition planner with zero `std::fs`, `std::process`, `std::net`, or `rusqlite` calls. [`evaluate_transition`](../../crates/acdd-state/src/machine/mod.rs)
 > - INV-STATE-SQLITE-CONFINED: Direct `rusqlite` usage in `crates/acdd-state/src/` is confined exclusively to `crates/acdd-state/src/store/sqlite/`, while `usecases/` routes persistence through `&dyn StateBackend` (`exec_tx_dyn`). [`open_read_only_if_exists`](../../crates/acdd-state/src/store/sqlite/mod.rs)
-> - INV-STATE-SINGLE-VALIDATOR: All workspace, spec, profile, and dependency validation routes through `acdd_state::validate` and `acdd_state::usecases::deps`, and all `when:` parsing/evaluation routes through `WhenExpr`. [`validate_workspace`](../../crates/acdd-state/src/validate.rs) [`normalize_optional_when`](../../crates/acdd-state/src/profile/when.rs)
+> - INV-STATE-SINGLE-VALIDATOR: All workspace, spec, workflow, and dependency validation routes through `acdd_spec::{validate, deps}`, `acdd_state::validate`, and `acdd_state::usecases::deps`, and all `when:` parsing/evaluation routes through `WhenExpr`. [`validate_workspace`](../../crates/acdd-state/src/validate.rs) [`normalize_optional_when`](../../crates/acdd-state/src/workflow/when.rs)
 
 ```acdd-rule
 id: INV-STATE-PURE-MACHINE
@@ -91,7 +91,7 @@ include_tests: false
 ```
 
 - **`StateBackend` (`StateReader` / `StateTx`)**: Short optimistic-CAS transactions verify `node_version` and `runs.generation`, returning `ErrorCode::BackendConflict` on concurrent drift.
-- **Canonical errors**: `acdd-core::errors::AcddError` carries `ErrorCode`, a message, and an optional hint; `StateError` is its compatibility type alias. Stable `ErrorCode` wire names and exit codes are preserved.
+- **Canonical errors**: `acdd-core::errors::AcddError` is the sole structured error type across all workspace crates (`StateError` compatibility alias removed), carrying `ErrorCode`, a message, and an optional hint while keeping stable wire names and exit codes.
 - **SQLite schema**: [`crates/acdd-state/src/store/sqlite/schema.rs`](../../crates/acdd-state/src/store/sqlite/schema.rs) defines `_sqlite_meta` (`schema_version`, `write_seq`, `last_backup_seq`) and 9 domain tables: `runs`, `gate_nodes`, `task_dependencies`, `subtasks`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`, and `run_tombstones`.
 
 Use `ControlFlow` for early exits and borrow loaded graph slices through use-case phases. Keep one-caller preparation and accumulator structs out of the state API.
@@ -102,6 +102,6 @@ Blackboard messages scope to a `Run`, `NodeCursor`, or `SubtaskRef` across six t
 
 ## Consequences
 
-- Ephemeral `--goal` runs, `in_place` plans, taskless workflows, and multi-task `worktree` milestones execute through one flat CLI (`acdd start`, `claim`, `verify`, `submit`, `next`, `status`, `show`, `run`, `validate`) and five MCP state tools.
+- Ephemeral `--goal` runs, `in_place` plans, taskless workflows, and multi-task `worktree` milestones execute through one flat CLI (`acdd start`, `claim`, `verify`, `submit`, `next`, `status`, `show`, `run`, `validate`, `roadmap`, `draft`) and five MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`).
 - Pure `machine/` transition rules execute in `< 5 ms` against in-memory backends in `RunHarness::in_memory()` without disk or Git overhead.
 - Unrecognized YAML fields, stale `claim_revision`, and worker collisions fail closed with deterministic `ErrorCode` diagnostics (exit codes `2`, `3`, `4`).

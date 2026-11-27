@@ -20,7 +20,7 @@ This plan demonstrates an in-place `SpecDocument` executed on the unified `crate
 
 ## Execution Characteristics
 
-- **In-Place**: Executed via `acdd start docs/plans/example-feature-plan.md --in-place` (or with a `git.isolation: in_place` profile).
+- **In-Place**: Executed via `acdd start docs/plans/example-feature-plan.md --in-place` (or with a `git.isolation: in_place` workflow).
 - **Non-Committing Persistence**: In-place execution sets `git.isolation: in_place`, `git.worktrees: manual`, `save: none`, and neutralizes gate `save.post: commit` to `none` while preserving `save.immutable: true` (never auto-commits to Git).
 - **Archiving**: Upon completion at the terminal `handoff` gate (`archive: true, prune: true`), the run moves the closed document to `docs/plans/archive/`.
 

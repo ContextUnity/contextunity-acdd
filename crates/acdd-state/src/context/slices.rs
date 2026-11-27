@@ -1,10 +1,10 @@
 //! Read-only blueprint slice, dependency receipt, and specification loaders for context & submit paths.
 
-use crate::spec::{parse_spec, Receipt, SpecDocument};
 use crate::types::{ArtifactKind, GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot};
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::lifecycle::{primary_workspace_root, read_confined_utf8};
 use acdd_core::config::ACDD_DIR;
+use acdd_spec::{parse_spec, Receipt, SpecDocument};
 
 /// Read and parse the specification Markdown file for `run` read-only, if present on disk.
 pub(crate) fn read_spec_readonly(

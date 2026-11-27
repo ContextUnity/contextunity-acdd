@@ -3,14 +3,15 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::NodeCursor;
 use acdd_state::machine::graph::is_post_task_root_node;
 use acdd_state::machine::schedule::task_dependencies_satisfied;
-use acdd_state::types::{IsolationMode, NodeKind, NodeStatus, SubtaskStatus, TaskDependencyRecord};
+use acdd_spec::SubtaskStatus;
+use acdd_state::types::{IsolationMode, NodeKind, NodeStatus, TaskDependencyRecord};
 
 fn plan_sync(
     snapshot: &RunGraphSnapshot,
     profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &SyncInput,
-) -> Result<SyncPlan, acdd_core::errors::StateError> {
+) -> Result<SyncPlan, acdd_core::errors::AcddError> {
     let TransitionOutcome::Sync(plan) = evaluate_transition(
         snapshot,
         profile,
@@ -27,7 +28,7 @@ fn plan_extend_scope(
     snapshot: &RunGraphSnapshot,
     profile: &MachineProfileInput,
     input: &ExtendScopeInput,
-) -> Result<TransitionPlan, acdd_core::errors::StateError> {
+) -> Result<TransitionPlan, acdd_core::errors::AcddError> {
     let TransitionOutcome::Plan(plan) = evaluate_transition(
         snapshot,
         profile,
@@ -44,7 +45,7 @@ fn plan_reopen(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
     input: &ReopenInput,
-) -> Result<TransitionPlan, acdd_core::errors::StateError> {
+) -> Result<TransitionPlan, acdd_core::errors::AcddError> {
     let (dummy_profile, _) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let TransitionOutcome::Plan(plan) = evaluate_transition(
         snapshot,
@@ -115,7 +116,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
             &SyncInput {
                 spec: spec_with_t4.clone(),
                 new_profile: None,
-                rebind_profile: false,
+                rebind_workflow: false,
             },
         )
         .unwrap_err()
@@ -280,7 +281,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         (
             NodeCursor::root(vec![g("handoff")]).unwrap(),
             "docs/x.md",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             NodeCursor::root(vec![g("polish")]).unwrap(),
@@ -399,6 +400,47 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         2
     );
 
+    // A cascade-Stale downstream task with claim_revision >= 1 and overlapping extended_scope must NOT block claiming reopened T1.
+    let shared_entry = acdd_spec::ExtendedScopeEntry {
+        path: "src/t2.rs".to_owned(),
+        reason: "overlap check".to_owned(),
+    };
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1")
+        .unwrap()
+        .extended_scope
+        .push(shared_entry);
+    let t2_task = snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T2")
+        .unwrap();
+    t2_task.claim_revision = 1;
+    t2_task.extended_scope.push(acdd_spec::ExtendedScopeEntry {
+        path: "src/t2.rs".to_owned(),
+        reason: "downstream prior claim".to_owned(),
+    });
+    admit_claim(
+        &snap,
+        &profile,
+        &obs,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
+            worker_id: w("w1"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T1".to_owned(),
+            branch: None,
+            baseline_commit: None,
+            claim_tree: tree('a'),
+            span_id: "cccccccccccccccc".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+
     // 4. Reopen `blueprint_synthesis.synthesize` -> allows syncing new task T4 without resetting Completed T3!
     snap.nodes
         .iter_mut()
@@ -453,7 +495,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: spec_with_t4,
             new_profile: Some(rebound_profile.clone()),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap();
@@ -541,7 +583,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: spec_remove_dep,
             new_profile: None,
-            rebind_profile: false,
+            rebind_workflow: false,
         },
     )
     .unwrap();
@@ -763,7 +805,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: p9_spec,
             new_profile: Some(p9_rebound),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap();
@@ -818,7 +860,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: r_spec,
             new_profile: Some(r_rebound),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap();
@@ -875,7 +917,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: rc_spec.clone(),
             new_profile: Some(rc_rebound),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap();
@@ -911,7 +953,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         "unclaimed descendant of demoted root container must also demote to Pending"
     );
 
-    // Rebinding Container <-> RootGate fails closed (`ProfileSchemaInvalid`), and adding child gates
+    // Rebinding Container <-> RootGate fails closed (`WorkflowSchemaInvalid`), and adding child gates
     // under a Completed/Cancelled ancestor never inserts orphaned children.
     let mut kind_flip = rc_base.clone();
     kind_flip.gates[0] =
@@ -923,11 +965,11 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: rc_spec.clone(),
             new_profile: Some(kind_flip),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap_err();
-    assert_eq!(flip_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(flip_err.code, ErrorCode::WorkflowSchemaInvalid);
     assert!(flip_err.message.contains("across node kind change"));
 
     for nid in [
@@ -955,7 +997,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
         &SyncInput {
             spec: rc_spec,
             new_profile: Some(add_under_done),
-            rebind_profile: true,
+            rebind_workflow: true,
         },
     )
     .unwrap();

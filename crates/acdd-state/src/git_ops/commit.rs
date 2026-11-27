@@ -9,7 +9,7 @@ use super::snapshot::{
     blob_oid_at, collect_literal_scope_paths, guard_candidate_path, list_stage_entries,
     list_untracked_entries, remove_confined_file, TemporaryGitIndex,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::fs::{atomic_write, checked_child, open_confined};
@@ -97,18 +97,18 @@ pub struct ArchiveCommitResp {
 }
 
 /// Read the current `HEAD` commit OID in `worktree`.
-pub fn current_head_commit(worktree: &Path) -> Result<CommitOid, StateError> {
+pub fn current_head_commit(worktree: &Path) -> Result<CommitOid, AcddError> {
     let oid = run_git_stdout(
         worktree,
         &["rev-parse", "--verify", "HEAD"],
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-    CommitOid::new(oid).map_err(StateError::from)
+    CommitOid::new(oid).map_err(AcddError::from)
 }
 
 /// Read the current symbolic branch name (`None` when detached).
-pub fn current_branch_name(worktree: &Path) -> Result<Option<String>, StateError> {
+pub fn current_branch_name(worktree: &Path) -> Result<Option<String>, AcddError> {
     run_git_stdout(
         worktree,
         &["rev-parse", "--git-dir"],
@@ -127,7 +127,7 @@ pub fn current_branch_name(worktree: &Path) -> Result<Option<String>, StateError
     } else if out.status.code() == Some(1) {
         Ok(None)
     } else {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "git symbolic-ref failed in '{}': {}",
@@ -150,7 +150,7 @@ pub fn is_protected_main_branch(branch: Option<&str>) -> bool {
 pub fn create_scoped_commit_with_expected(
     req: &ScopedCommitReq,
     expected_scoped_tree: Option<&TreeOid>,
-) -> Result<ScopedCommitResp, StateError> {
+) -> Result<ScopedCommitResp, AcddError> {
     let claim_trailer = format!(
         "Acdd-Claim: {}/{}/{}",
         req.run_id.as_str(),
@@ -195,7 +195,7 @@ pub fn create_scoped_commit_with_expected(
                     .path_policy
                     .is_scope_admitted(&norm, &req.admitted_scope);
             if admitted {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
                         "nested git repository/submodule '{norm}' is not permitted in scoped commit"
@@ -236,7 +236,7 @@ pub fn create_scoped_commit_with_expected(
                 }
             }
             Err(err) => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!("failed inspecting scoped path '{norm}': {err}"),
                 ));
@@ -277,7 +277,7 @@ pub fn create_scoped_commit_with_expected(
                 Some(index_info.as_bytes()),
             )?;
             if !out.status.success() {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
                         "failed verifying staged scoped tree via update-index: {}",
@@ -288,7 +288,7 @@ pub fn create_scoped_commit_with_expected(
         }
         let staged_scoped_tree = scoped_idx.write_tree()?;
         if &staged_scoped_tree != expected_scoped {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskCandidateMismatch,
                 format!(
                     "working tree changed before scoped commit (expected scoped tree {}, got {})",
@@ -316,7 +316,7 @@ pub fn create_scoped_commit_with_expected(
                 });
             }
         }
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "HEAD '{}' drifted from expected base_head '{}' without a matching Acdd-Claim commit",
@@ -343,24 +343,24 @@ pub fn create_scoped_commit_with_expected(
 }
 
 /// Write `archive_relpath` (confined + atomic), optionally commit, or idempotently recover after crash.
-pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp, StateError> {
+pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp, AcddError> {
     let Some(norm_spec) = normalize_rel_path(&req.spec_relpath) else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid spec relative path '{}'", req.spec_relpath),
         ));
     };
     let Some(norm_archive) = normalize_rel_path(&req.archive_relpath) else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid archive relative path '{}'", req.archive_relpath),
         ));
     };
 
     let expected_digest = sha256_hex(req.rendered_archive_markdown.as_bytes());
     if expected_digest != req.rendered_archive_digest {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "rendered_archive_digest mismatch: expected '{expected_digest}', got '{}'",
                 req.rendered_archive_digest
@@ -375,7 +375,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
         req.claim_revision
     );
     let archive_abs = checked_child(&req.worktree, Path::new(&norm_archive)).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("archive path '{norm_archive}' failed confinement check: {err}"),
         )
@@ -397,7 +397,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
                         false,
                     )
                     .map_err(|err| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::ExternalGitDrift,
                             format!("failed re-materializing '{norm_archive}' on retry: {err}"),
                         )
@@ -457,7 +457,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
         false,
     )
     .map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("failed writing archive '{norm_archive}': {err}"),
         )
@@ -467,7 +467,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
     if will_commit {
         let base_head = current_head_commit(&req.worktree)?;
         let (temp_index, idx_dir) = TemporaryGitIndex::create_temp(&req.worktree)?;
-        if let Err(err) = (|| -> Result<TreeOid, StateError> {
+        if let Err(err) = (|| -> Result<TreeOid, AcddError> {
             temp_index.read_tree(base_head.as_str())?;
             temp_index.stage_paths(std::slice::from_ref(&norm_archive))?;
             temp_index.remove_paths(std::slice::from_ref(&norm_spec))?;
@@ -514,10 +514,10 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
     })
 }
 
-fn ensure_branch_writable(worktree: &Path, allow_main: bool) -> Result<(), StateError> {
+fn ensure_branch_writable(worktree: &Path, allow_main: bool) -> Result<(), AcddError> {
     let branch = current_branch_name(worktree)?;
     if !allow_main && is_protected_main_branch(branch.as_deref()) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::MainBranchProtected,
             format!(
                 "refusing to commit onto protected branch '{}'; pass --allow-main to override",
@@ -535,7 +535,7 @@ fn commit_temp_index(
     base_head: &CommitOid,
     expected_tree: &TreeOid,
     commit_message: &str,
-) -> Result<CommitOid, StateError> {
+) -> Result<CommitOid, AcddError> {
     let identity_env = ensure_non_empty_git_identity(worktree);
     drop((temp_index, idx_dir));
     let out = run_git_raw(
@@ -553,7 +553,7 @@ fn commit_temp_index(
         Some(commit_message.as_bytes()),
     )?;
     if !out.status.success() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "git commit-tree failed: {}",
@@ -580,7 +580,7 @@ fn commit_temp_index(
 fn commit_tree_and_single_parent(
     worktree: &Path,
     commit_oid: &str,
-) -> Result<(TreeOid, CommitOid), StateError> {
+) -> Result<(TreeOid, CommitOid), AcddError> {
     let parents_line = run_git_stdout(
         worktree,
         &["rev-list", "--parents", "-n", "1", commit_oid],
@@ -589,7 +589,7 @@ fn commit_tree_and_single_parent(
     )?;
     let fields: Vec<&str> = parents_line.split_whitespace().collect();
     if fields.len() != 2 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("commit '{commit_oid}' does not have exactly one parent"),
         ));
@@ -604,7 +604,7 @@ fn commit_tree_and_single_parent(
     Ok((TreeOid::new(tree_raw)?, CommitOid::new(fields[1])?))
 }
 
-fn diff_tree_paths(worktree: &Path, base: &str, new: &str) -> Result<Vec<String>, StateError> {
+fn diff_tree_paths(worktree: &Path, base: &str, new: &str) -> Result<Vec<String>, AcddError> {
     let out = run_git_checked(
         worktree,
         &[
@@ -635,7 +635,7 @@ pub(crate) fn find_claim_commit_in_range(
     worktree: &Path,
     run_base_head: Option<&CommitOid>,
     claim_trailer: &str,
-) -> Result<Option<CommitOid>, StateError> {
+) -> Result<Option<CommitOid>, AcddError> {
     let rev_out = if let Some(base) = run_base_head {
         let range = format!("{base}..HEAD");
         run_git_raw(worktree, &["rev-list", &range], None, &[], None)?

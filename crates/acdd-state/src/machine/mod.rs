@@ -34,7 +34,7 @@ use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus,
     ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, WorkerId};
 
 /// Construct a [`NodeStatusPatch`] that clears active claim ownership (and optionally accepted tree/digest).
@@ -61,11 +61,11 @@ pub(crate) fn require_claimed_in_progress<'a>(
     action_label: &str,
     expected_rev: Option<u32>,
     worker_id: Option<&WorkerId>,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     let node = require_active_claimable_node(snapshot, cursor, action_label)?;
     let node_id = node.node_id.as_str();
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::StaleClaimRevision,
             format!(
                 "node '{node_id}' must be in_progress with an active claim before {action_label} (status: {}, claim_revision: {})",
@@ -75,7 +75,7 @@ pub(crate) fn require_claimed_in_progress<'a>(
     }
     if let Some(expected) = expected_rev {
         if expected != node.claim_revision {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::StaleClaimRevision,
                 format!(
                     "{action_label} claim_revision {expected} does not match active claim_revision {} on '{node_id}'",
@@ -86,7 +86,7 @@ pub(crate) fn require_claimed_in_progress<'a>(
     }
     if let Some(worker) = worker_id {
         if node.worker_id.as_ref() != Some(worker) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskAlreadyClaimed,
                 format!("worker '{worker}' does not hold the active claim on '{node_id}'"),
             ));
@@ -100,10 +100,10 @@ pub(crate) fn require_active_node<'a>(
     snapshot: &'a RunGraphSnapshot,
     cursor: &NodeCursor,
     action_label: &str,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "cannot {action_label} in non-active run '{}' (status: {})",
                 snapshot.run.run_id, snapshot.run.status
@@ -119,11 +119,11 @@ pub(crate) fn require_active_claimable_node<'a>(
     snapshot: &'a RunGraphSnapshot,
     cursor: &NodeCursor,
     action_label: &str,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     let node = require_active_node(snapshot, cursor, action_label)?;
     if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "cannot {action_label} structural node '{}' (kind: {})",
                 node.node_id, node.kind
@@ -139,7 +139,7 @@ pub fn evaluate_transition(
     profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &TransitionInput,
-) -> Result<TransitionOutcome, StateError> {
+) -> Result<TransitionOutcome, AcddError> {
     match input {
         TransitionInput::Claim(req) => Ok(TransitionOutcome::Claim(Box::new(admit_claim(
             snapshot, profile, obs, req,

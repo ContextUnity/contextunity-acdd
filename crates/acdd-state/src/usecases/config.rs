@@ -1,7 +1,7 @@
 //! Host configuration for [`super::StateEngine`] and [`super::StateQueryEngine`].
 
 use crate::store::sqlite::SqliteBackendOptions;
-use acdd_core::config::{SpecCollectionConfig, DEFAULT_STATE_DB};
+use acdd_core::config::{SpecConfig, DEFAULT_STATE_DB};
 use acdd_core::response::ResponsePolicy;
 use acdd_core::subsystems::SubsystemRegistry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,9 +19,9 @@ pub struct StateEngineConfig {
     /// Optional `code-map.sqlite` path propagated to role runners (`ACDD_CODE_DB`).
     pub code_db_path: Option<PathBuf>,
     /// Configured spec collections from `acdd.yaml` (`specs:`).
-    pub spec_collections: BTreeMap<String, SpecCollectionConfig>,
-    /// Configured profile search directories (`profiles_dirs`).
-    pub profiles_dirs: Vec<String>,
+    pub spec_collections: BTreeMap<String, SpecConfig>,
+    /// Configured workflow search directories (`workflows_dirs`).
+    pub workflows_dirs: Vec<String>,
     /// Configured linked workspace aliases (`linked_workspaces`).
     pub linked_workspaces: BTreeMap<String, PathBuf>,
     /// Active subsystem/domain enablement registry (`modules:`).

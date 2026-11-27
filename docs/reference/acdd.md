@@ -6,10 +6,10 @@ doc_type: guide
 # Augmented Context & Durable Dispatch (ACDD)
 
 **Augmented Context & Durable Dispatch (ACDD)** is ACDD's declarative lifecycle
-state machine (`crates/acdd-state` + `crates/acdd-core`) for structured AI and
+state machine (`crates/acdd-state`, `crates/acdd-spec`, and `crates/acdd-core`) for structured AI and
 human software engineering. Instead of letting coding agents run open-ended
 loops over an entire repository, ACDD binds Git-tracked specifications, SQLite
-run state, and declarative `v2` YAML `GateProfile` graphs into atomic, verifiable
+run state, and declarative `v2` YAML `WorkflowDef` graphs into atomic, verifiable
 **gates** that deliver only the context needed for the active step.
 
 ---
@@ -21,16 +21,17 @@ ACDD separates *what* must be built from *how* work is governed and verified:
 1. **Git-Tracked Authority (`docs/milestones/*.md`, `docs/plans/*.md`)**: Humans
    and architects keep contracts, `### task:` specifications, write perimeters
    (`scope`), dependency edges (`depends_on`), and proof policies in Markdown
-   under Git (`specs:` collections in `acdd.yaml`). Milestone and task `spec`
+   under Git (`specs:` configurations in `acdd.yaml`, parsed and validated by
+   `crates/acdd-spec` over `SpecRuntimeOverlay`). Milestone and task `spec`
    references and `acceptance_criteria` project only the claimed task's criteria
    into `ClaimResp.contract`.
 2. **Persistent Run Queue & Proof Store (`.acdd/state.sqlite`)**: ACDD
-   synchronizes specifications and profile graphs into the primary worktree's
+   synchronizes specifications and workflow graphs into the primary worktree's
    `.acdd/state.sqlite` (`runs`, `gate_nodes`, `task_dependencies`, `subtasks`,
    `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`,
    `run_tombstones`). Rebuilding `.acdd/code-map.sqlite` never resets active run
    state or traces.
-3. **Declarative Governance Profile (`version: 2` `GateProfile`)**: Defines Git
+3. **Declarative Governance Workflow (`version: 2` `WorkflowDef`)**: Defines Git
    isolation/integration (`git:`), persistence (`save:`), roles, commands,
    `DomainProvider` hooks (`call`, `checks`, `context`, `tools_add`/`tools_remove`),
    proof schemas, guidance slots, review contours, and ordered gates with `pass` /
@@ -70,32 +71,32 @@ rendering (delegating `ClaimResp` prompt formatting to
 default, or structured JSON via `format: "json"` / `--format json`;
 see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
-Read-only **`StateQuery::Roadmap`** (CLI `acdd roadmap`)
-aggregates specs across configured `specs:` collections with active runs, dependency
+Read-only **`StateQuery::Roadmap`** (CLI `acdd roadmap`, backed by `crates/acdd-spec` + optional `SpecRuntimeOverlay`)
+aggregates specs across configured `specs:` entries with active runs, dependency
 waves, critical-path ordering, scope-overlap markers, and optional per-spec task
 drill-down. Formatting lives in `src/format/roadmap.rs`; the query opens
 `.acdd/state.sqlite` read-only when present and does not create a missing database.
 
-### One Unified `Run` + `GateProfile` Engine
+### One Unified `Run` + `WorkflowDef` Engine
 
 Under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md)
 and [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md),
 ACDD runs all workflows through one state machine (`crates/acdd-state`), selected
-by `GateProfile` `git:` and `save:` policies:
+by `WorkflowDef` `git:` and `save:` policies:
 
-| Mode / Embedded Profile | Spec / Input | Isolation & `save` | Primary Use Case |
+| Mode / Embedded Workflow | Spec / Input | Isolation & `save` | Primary Use Case |
 | --- | --- | --- | --- |
 | **`base`** | Any spec or `--goal` | `git.isolation: worktree`, `save: commit` | Domain-pure baseline (`gates: []`) for custom overlays |
 | **`code`** (default) | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
-| **`audit`** | Any spec or `--goal` | `git.isolation: in_place`, `save: none` | Read-only `recon -> analyze -> triage` review and taint scanning with `.acdd/reports/{run_name}.md` |
 | **`documentation`** | Any spec or `--goal` | `git.isolation: worktree`, `save: commit` | Compiler-free documentation and `acdd-rule` authoring gated on `docs.links` and `code.lint` (`[arch, docs]`) |
-| **In-place / `--goal`** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | Defaults to `code` (`worktree`) unless `--in-place` (`save: none`) or `--profile audit` | Taskless goal sweeps, autonomous QA, and single-branch runs |
+| **Templates (`audit`, `spec_planning`, `hotfix`)** | Any spec or `--goal` | `in_place` / `worktree` (`skills/acdd/references/acdd-workflow-examples/`) | Copyable overlays for read-only audits, spec synthesis, or localized bugfixes |
+| **In-place / `--goal`** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | Defaults to `code` (`worktree`) unless `--in-place` (`save: none`) or `--workflow` overlay | Taskless goal sweeps, autonomous QA, and single-branch runs |
 
 ---
 
 ## 2. How Gates Work
 
-Everything in a `v2` `GateProfile` is a **gate** declared under `gates:`. Every
+Everything in a `v2` `WorkflowDef` is a **gate** declared under `gates:`. Every
 gate uses one primary proof/execution contract:
 
 - **Role / review / delivery gate** (`role: <role_id>`): Claimed via `acdd claim`
@@ -121,7 +122,7 @@ gate uses one primary proof/execution contract:
 
 ### Hierarchical gate cursors and `code.seam` checks
 
-Profile containers expand into `gate_nodes` rows (`container`, `root_gate`,
+Workflow containers expand into `gate_nodes` rows (`container`, `root_gate`,
 `task`, `task_gate`) addressed by dotted `NodeCursor` identifiers
 (`blueprint_synthesis.synthesize`, `<task_ref>.build`, `verify`, `handoff`).
 Pre-task root gates run before `- tasks:` blocks unlock; when a pre-task gate
@@ -166,7 +167,7 @@ groups that only repeat an already-reported whole-symbol **`exact`** or
   instruct the runner/coordinator to return findings to the prior worker on `defect` rejections.
 - **Conditional Task Tracks (`when`) & Retry Budgets (`max_attempts`)**: `- tasks:`
   and `task_gate` nodes support boolean `when:` tag expressions evaluated
-  against each task's effective `tags` (`tags:` in profile + task YAML). Explicit
+  against each task's effective `tags` (`tags:` in workflow + task YAML). Explicit
   `max_attempts` (default `3`, `>= 1`) caps failures/cycles before escalation.
 - **Save & Candidate Immutability (`save`)**: Claim admission records `claim_tree`
   from the scoped candidate tree (`TreeOid`); `save.immutable: true` rejects
@@ -178,13 +179,13 @@ groups that only repeat an already-reported whole-symbol **`exact`** or
 
 ---
 
-## 3. Embedded Profiles & Repository Overlays
+## 3. Embedded Workflows & Repository Overlays
 
-Profiles follow the loading precedence documented in [ACDD profiles](profiles.md)
-and [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration).
-Repositories typically rely on the automatic workspace default (`.acdd/profile.yaml`
-when present, else built-in `code`) and customize `.acdd/profile.yaml` with `version: 2`,
-`inherit: code` (or `base` / `audit`), `gates_patch:`, and project
+Workflows follow the loading precedence documented in [ACDD workflows](workflows.md)
+and [Workspace configuration](configuration.md#declarative-acdd-workflow-and-role-configuration).
+Repositories typically rely on the automatic workspace default (`.acdd/workflows/default.yaml`
+when present, else built-in `code`) and customize `.acdd/workflows/default.yaml` with `version: 2`,
+`inherit: code` (or `base` / `documentation`), `gates_patch:`, and project
 command bindings:
 
 ```yaml
@@ -200,29 +201,26 @@ commands:
 
 ---
 
-## Built-in Default Profile Walkthrough (`base.yaml`, `code.yaml`, `audit.yaml`, & `documentation.yaml`)
+## Built-in Default Workflow Walkthrough (`base.yaml`, `code.yaml`, & `documentation.yaml`)
 
-[`crates/acdd-state/src/profile/embedded/base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)
+[`crates/acdd-state/src/workflow/embedded/base.yaml`](../../crates/acdd-state/src/workflow/embedded/base.yaml)
 defines the domain-pure baseline (`gates: []`, 7 core `default_tools`,
 universal `core.execution`, `core.review`, and `hitl.pro` guidance, and three
 core contours `paths`, `claims`, and `administration`). Embedded
-[`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml) (the
-built-in code-delivery fallback when `.acdd/profile.yaml` is absent) inherits `base`, adds the three-phase
+[`code.yaml`](../../crates/acdd-state/src/workflow/embedded/code.yaml) (the
+built-in code-delivery fallback when `.acdd/workflows/default.yaml` is absent) inherits `base`, adds the three-phase
 milestone lifecycle (`commands: build_check` and `verify_all` are marked
 `unbound: true`), sets `tags: [default, docs]` (`docs`-tagged tasks skip
 `code.seam`), binds the 18 `default_tools`, attaches `code.seam` and `code.lint` checks and
 `docs.*` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
 automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
-`modules.code: false` or `modules.docs: false`. Embedded
-[`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml) inherits `base`
-with `git.isolation: in_place` and `save: none`, defining a read-only `recon -> analyze -> triage`
-review and security/taint scanning pipeline that propagates upstream stage proofs via
-`predecessor_proofs` and writes Markdown reports via `save.report: ".acdd/reports/{run_name}.md"`.
-Embedded [`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml)
+`modules.code: false` or `modules.docs: false`. Embedded [`documentation.yaml`](../../crates/acdd-state/src/workflow/embedded/documentation.yaml)
 inherits `base` with `modules: { required: [docs, code] }`, providing a
 compiler-free lifecycle (`blueprint_synthesis` -> tasks `build`/`review`/`deliver`
 -> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated by
-`docs.links` and `code.lint` (`[arch, docs]`).
+`docs.links` and `code.lint` (`[arch, docs]`). Ready-to-copy `audit.yaml`,
+`spec_planning.yaml`, and `hotfix.yaml` templates live in
+[`skills/acdd/references/acdd-workflow-examples/`](../../skills/acdd/references/acdd-workflow-examples/README.md).
 
 ```text
 Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
@@ -281,7 +279,7 @@ DAG waves using `crates/acdd-state/src/runner/`:
 
 ## 5. Documentation and instructions co-evolution
 
-A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates matching documentation and agent instructions during its `build` stage (and includes those paths in its initial `scope`). Follow the [shared skill's task guidance](../../skills/acdd/SKILL.md#acdd-profiles-and-task-operations).
+A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates matching documentation and agent instructions during its `build` stage (and includes those paths in its initial `scope`). Follow the [shared skill's task guidance](../../skills/acdd/SKILL.md#acdd-workflows-and-task-operations).
 
 ## Compiled language profiles
 

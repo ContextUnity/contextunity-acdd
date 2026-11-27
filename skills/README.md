@@ -8,7 +8,7 @@ This directory contains the reusable companion skills for AI coding agents worki
 
 | Skill | Description | Primary Phase |
 |---|---|---|
-| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Navigation of ACDD MCP/CLI tools, graph discovery/hygiene (`duplicates`, `dead_tails`), profile & task lifecycle, and blackboard coordination. | All Sessions |
+| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Navigation of ACDD MCP/CLI tools, graph discovery/hygiene (`duplicates`, `dead_tails`), workflow & task lifecycle, and blackboard coordination. | All Sessions |
 | [`contract-planning`](contract-planning/SKILL.md) | Architectural viability audit, ADR/invariant reconciliation, risk probing, and end-to-end contract tracing before task authoring or amendments. | Spec & Blueprint Synthesis |
 | [`test-suite-rules`](test-suite-rules/SKILL.md) | Authoring, deduplicating, and refactoring tests through real production seams, table-driven contract matrices, lowest-cost isolation, and leak-free harnesses. | Testing & Refactoring |
 | [`close-review-findings`](close-review-findings/SKILL.md) | Classifying review findings, clustering by canonical owner invariant, generalizing defects without test bloat, and verifying closure. | Review & Defect Remediation |

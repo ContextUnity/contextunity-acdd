@@ -1,13 +1,13 @@
 //! Tiered `ClaimResp` budget reservation constants and Tier 1 contract/subtask sizing.
 
 use super::types::{ClaimContextRequest, ClaimResp};
-use crate::profile::{check_guidance_budget, resolve_and_budget_guidance, ResolvedGateProfile};
-use crate::spec::Subtask;
+use crate::workflow::{check_guidance_budget, resolve_and_budget_guidance, ResolvedWorkflow};
 use crate::types::GateNodeRecord;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::estimate_json_bytes;
 use acdd_core::ids::NodeCursor;
 use acdd_core::{pack_knapsack_indices, KnapsackItem};
+use acdd_spec::Subtask;
 use serde_json::{json, Map, Value};
 
 /// Maximum blackboard messages included in Tier 5 (`ADR-0006`).
@@ -44,7 +44,7 @@ pub(super) fn settle_total_bytes(resp: &mut ClaimResp) -> usize {
 /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
 pub(super) fn preflight_mandatory(
     req: &ClaimContextRequest,
-) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
+) -> Result<(ClaimResp, NodeCursor, usize), AcddError> {
     let node_cursor = NodeCursor::from_node_id(&req.node.node_id)?;
     let inspect_cmd = format!("acdd show {} --run {}", node_cursor, req.run.run_id);
     let response_hard_cap = req.effective_hard_max_bytes();
@@ -89,7 +89,7 @@ pub(super) fn preflight_mandatory(
 
     let tier1_bytes = settle_total_bytes(&mut resp);
     if tier1_bytes > tier1_cap {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GuidanceBudgetExceeded,
             format!(
                 "mandatory claim metadata + contract + guidance ({tier1_bytes} bytes) exceeds Tier 1 cap ({tier1_cap} bytes)"
@@ -111,7 +111,7 @@ pub(super) fn preflight_mandatory(
 }
 
 pub(super) fn is_pre_task_root_in_profile(
-    profile: &ResolvedGateProfile,
+    profile: &ResolvedWorkflow,
     node: &GateNodeRecord,
 ) -> bool {
     let top_id = node
@@ -243,7 +243,7 @@ pub(super) fn enforce_hard_cap_with_reclaim(
     resp: &mut ClaimResp,
     response_hard_cap: usize,
     relevant_blackboard_total: usize,
-) -> Result<(usize, bool), StateError> {
+) -> Result<(usize, bool), AcddError> {
     let mut reclaimed = false;
     let mut settled = settle_total_bytes(resp);
     while settled > response_hard_cap {
@@ -255,7 +255,7 @@ pub(super) fn enforce_hard_cap_with_reclaim(
         settled = settle_total_bytes(resp);
     }
     if settled > response_hard_cap {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GuidanceBudgetExceeded,
             format!(
                 "mandatory claim context + required omission notices ({settled} bytes) exceeds hard cap ({response_hard_cap} bytes)"
@@ -274,7 +274,7 @@ pub(super) fn record_omitted_section(
     target_cap: usize,
     response_hard_cap: usize,
     relevant_blackboard_total: Option<usize>,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let effective_target_cap = target_cap.min(response_hard_cap);
     if section == "blackboard" {
         if let Some(total) = relevant_blackboard_total {

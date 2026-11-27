@@ -4,14 +4,14 @@
 
 - **Root [`AGENTS.md`](AGENTS.md)**: workspace routing, tool/script boundaries, worker self-claim, Git/worktree permissions, `BUDGET_OVERRIDE` authority, and handoff workflow.
 - **Domain/Owner `AGENTS.md` + [`TESTS.md`](TESTS.md) + [`docs/AGENTS.md`](docs/AGENTS.md)**: detailed architecture, `INV-SINGLE-OWNER`, test harness/placement rules, and documentation governance (loaded by scope via `docs.instructions`).
-- **Profile `ClaimResp.guidance` (`.acdd/profile.yaml` <- `code` <- `base`)**: concise gate- and role-specific operational checklists injected on `acdd_claim` / `acdd claim`.
+- **Workflow `ClaimResp.guidance` (`.acdd/workflows/default.yaml` <- `code` <- `base`)**: concise gate- and role-specific operational checklists injected on `acdd_claim` / `acdd claim`.
 - **Skills (`skills/*/SKILL.md`) & `acdd_guide`**: step-by-step procedures, evidence schemas, and SQLite/AST usage examples on demand.
 
 ## Read before work
 
 - Read [documentation instructions](docs/AGENTS.md) before documentation changes.
 - Read [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md) before structural changes.
-- Read [src/AGENTS.md](src/AGENTS.md) and the crate instructions ([`acdd-core`](crates/acdd-core/AGENTS.md), [`acdd-index`](crates/acdd-index/AGENTS.md), [`acdd-state`](crates/acdd-state/AGENTS.md)) before source code changes.
+- Read [src/AGENTS.md](src/AGENTS.md) and the crate instructions ([`acdd-core`](crates/acdd-core/AGENTS.md), [`acdd-spec`](crates/acdd-spec/AGENTS.md), [`acdd-index`](crates/acdd-index/AGENTS.md), [`acdd-state`](crates/acdd-state/AGENTS.md)) before source code changes.
 - Read [roadmap](ROADMAP.md) and [milestones](docs/milestones/README.md) for admitted direction and commitments.
 - Read [tests/AGENTS.md](tests/AGENTS.md) for test placement and authoring boundaries.
 
@@ -23,7 +23,7 @@
 - Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md).
-- Planning & live DAG waves: Use `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` alongside [roadmap](ROADMAP.md) and [milestones](docs/milestones/README.md). Update [roadmap](ROADMAP.md) in the same change whenever authoring new milestones or refining milestone scope, sequencing, or release lines with the user.
+- Planning & live DAG waves: Use `acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]` alongside [roadmap](ROADMAP.md) and [milestones](docs/milestones/README.md). Update [roadmap](ROADMAP.md) in the same change whenever authoring new milestones or refining milestone scope, sequencing, or release lines with the user.
 - Verification: [required gates](TESTS.md) and [test invariants](tests/AGENTS.md).
 - Canonical ownership & architecture rules: Enforce `INV-CORE-LEAF`, `INV-STATE-NO-INDEX`, `INV-STATE-BRIDGE-BOUNDARY` ([ADR 0001](docs/adr/0001-crate-dag-and-layer-boundaries.md)), `INV-STATE-PURE-MACHINE`, `INV-STATE-SQLITE-CONFINED` ([ADR 0003](docs/adr/0003-unified-profile-graph-and-state-machine.md)), `INV-SINGLE-OWNER`, `INV-GIT-SINGLE-OWNER`, and `INV-NO-DEAD-CODE-SHIMS` ([modularity](docs/architecture/modularity.md#single-owner-and-modularity-invariants)); search existing owners via `code_map_search` / `ast_grep_search` before authoring helpers and escalate via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before adding any new subsystem or exceeding `~80-100` net production LOC for a defect fix.
 - Mandatory clone & dead-tail hygiene: Before submitting `build` or passing `review` / `integration_review`, run `code_map_query(operation="duplicates", path=<scope>)` and `code_map_query(operation="dead_tails", path=<scope>)` (workspace-wide without `path`/`target` for `integration_review`; CLI equivalents `acdd query run duplicates` / `acdd query run dead_tails`), plus `acdd lint` (`code_map_lint`). Builders and independent reviewers must eliminate or reject introduced `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, `dangling_calls`, and lint errors without temporary exclusion lists.
@@ -38,16 +38,16 @@ status, passing tests, or SHAs that add no context. Before rejecting a review,
 post structured `findings` with concrete remediation, then include the message
 ID in the required typed rejection findings; see the linked procedure.
 
-Use active-run ACDD MCP tools (`acdd_state`, `acdd_claim` defaulting to `<= 9,500` bytes or `detail: "full"` up to `32 KiB`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`) or the flat `acdd` CLI (`start`, `draft`, `roadmap`, `claim`, `verify`, `submit`, `next`, `status`, `show`, `run`, `tool`, `blackboard`) on the surface that provides the needed operation (note `acdd_state` is active-run-only; use CLI `acdd roadmap` / `acdd draft` for spec planning and drafting). Follow the active `GateProfile` (`.acdd/profile.yaml`) and the `ClaimResp` (`contract` and `guidance`) returned by `acdd_claim` / `acdd claim` for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Repository roles in `.acdd/profile.yaml` (inherited from `code`) use `mode: subagent` without shell `runner:` commands, so coordinator sessions MUST NOT call `acdd run` (`WORKFLOW_RUNNER_REQUIRED`); orchestrate gates explicitly via `acdd_claim` / `acdd_verify` / `acdd_submit` (or CLI equivalents) using subagents, swarm workers, or `codex exec` background tasks, completing `blueprint_synthesis.synthesize` $\to$ `blueprint_synthesis.review` before claiming tasks. Task builds and reviews run the scoped task seam test and strict Clippy without forcing the full unfiltered suite during iteration. Follow [TESTS.md](TESTS.md) for exact task and milestone verification commands and count rules.
+Use active-run ACDD MCP tools (`acdd_state`, `acdd_claim` defaulting to `<= 10,000` bytes compact soft cap or `detail: "full"` up to `32 KiB`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`) or the flat `acdd` CLI (`start`, `draft`, `roadmap`, `claim`, `verify`, `submit`, `next`, `status`, `show`, `run`, `tool`, `blackboard`) on the surface that provides the needed operation (note `acdd_state` is active-run-only; use CLI `acdd roadmap` / `acdd draft` for spec planning and drafting). Follow the active `WorkflowDef` (`.acdd/workflows/default.yaml`) and the `ClaimResp` (`contract` and `guidance`) returned by `acdd_claim` / `acdd claim` for gate sequence, proof policy, roles, models, review contours, and workflow-specific behavior. Repository roles in `.acdd/workflows/default.yaml` (inherited from `code`) use `mode: subagent` without shell `runner:` commands, so coordinator sessions MUST NOT call `acdd run` (`WORKFLOW_RUNNER_REQUIRED`); orchestrate gates explicitly via `acdd_claim` / `acdd_verify` / `acdd_submit` (or CLI equivalents) using subagents, swarm workers, or `codex exec` background tasks, completing `blueprint_synthesis.synthesize` $\to$ `blueprint_synthesis.review` before claiming tasks. Task builds and reviews run the scoped task seam test and strict Clippy without forcing the full unfiltered suite during iteration. Follow [TESTS.md](TESTS.md) for exact task and milestone verification commands and count rules.
 
-The repository ACDD profile registers `rust-check-and-test` as strict Clippy, scoped tests (`{scope_target}` + `{test_filter}`), and `cargo test --test commitment_integrity`. For automated gates (`build`), run `acdd verify <node_cursor> --test <test_path::test_fn>` (or MCP `acdd_verify`), then submit the stage via `acdd submit <node_cursor> --action pass` (or `acdd_submit`) without manual evidence assembly. Delivery infers proof from the accepted candidate tree. Review and schema-defined gates provide their declared typed evidence payload (`review_evidence` / `custom_evidence`). Write any temporary agent or workflow scratch files (inventories, baselines, scratch JSON/notes) under `.acdd/tmp/` rather than directly in `.acdd/` (except engine-managed files).
+The repository ACDD workflow registers `rust-check-and-test` as strict Clippy, scoped tests (`{scope_target}` + `{test_filter}`), and `cargo test --test commitment_integrity`. For automated gates (`build`), run `acdd verify <node_cursor> --test <test_path::test_fn>` (or MCP `acdd_verify`), then submit the stage via `acdd submit <node_cursor> --action pass` (or `acdd_submit`) without manual evidence assembly. Delivery infers proof from the accepted candidate tree. Review and schema-defined gates provide their declared typed evidence payload (`review_evidence` / `custom_evidence`). Write any temporary agent or workflow scratch files (inventories, baselines, scratch JSON/notes) under `.acdd/tmp/` rather than directly in `.acdd/` (except engine-managed files).
 
-- **Hotfix workflow (`.acdd/profiles/hotfix.yaml`)**: For localized bugfixes that do not need a milestone spec, `blueprint_synthesis`, or `integration_review`, start an ephemeral run via `acdd start --goal "<summary>" --profile hotfix [--scope <path> ...]` (add `--worktree` when isolated branch execution is needed) and run `goal.build` -> `goal.review` -> `goal.deliver` -> `run_tests` -> `handoff` (routing to `polish` on `run_tests` or `handoff` failure).
+- **Hotfix workflow (`.acdd/workflows/hotfix.yaml`)**: For localized bugfixes that do not need a milestone spec, `blueprint_synthesis`, or `integration_review`, start an ephemeral run via `acdd start --goal "<summary>" --workflow hotfix [--scope <path> ...]` (add `--worktree` when isolated branch execution is needed) and run `goal.build` -> `goal.review` -> `goal.deliver` -> `run_tests` -> `handoff` (routing to `polish` on `run_tests` or `handoff` failure).
 
 <!-- acdd:agents-verification:start -->
 When authoring contracts or testing capabilities:
 - Follow [`tests/AGENTS.md`](tests/AGENTS.md) and [`TESTS.md`](TESTS.md) for test placement inside existing canonical binaries (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`, `crates/acdd-state/tests/state_integration.rs`), `RunHarness::in_memory()` / `PersistedSnapshot` reuse, table-driven contract matrices, zero review-fix test bloat, and zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`).
-- **Build seam proof**: Author compiling, passing seam tests directly in `build` (`exit_code == 0`, `code.seam` reachability, and `max_net_loc` budgets) without separate runtime-red `contract` steps.
+- **Build seam proof**: Author compiling, passing scoped tests directly in `build` (`exit_code == 0` and `max_net_loc` budgets; `.acdd/workflows/default.yaml` configures `code.lint` + `rust-check-and-test`, while `code.seam` AST reachability remains active in the embedded `code` workflow and opt-in overrides) without separate runtime-red `contract` steps.
 - **Autonomous scope extension**: Extend scope autonomously via `acdd extend-scope` / `acdd_state(action: "extend_scope")` within admitted roots to unblock implementation or verification without halting for human permission.
 <!-- acdd:agents-verification:end -->
 
@@ -56,7 +56,7 @@ When authoring contracts or testing capabilities:
 
 `blueprint_synthesis` (`synthesize` (role: `architect`) $\to$ `review` (role: `independent_reviewer`)) runs before tasks. Load [`contract-planning`](skills/contract-planning/SKILL.md) and:
 1. Keep blueprints strictly at the **architectural seam level** (canonical owners, layer boundaries, invariants, `incoming_seams`/`outgoing_seams`, `negative_boundaries`, `max_net_loc`, behavioral `verification_seam`s) — zero pseudocode, exact CLI flag recipes, or raw SQL in prose. Apply Occam's razor and escalate/split unrelated upstream gaps rather than inflating task scope.
-2. Keep `protected_paths` (`Cargo.toml`, `crates/*/Cargo.toml`, `.acdd/profile.yaml`) off-limits without explicit authorization.
+2. Keep `protected_paths` (`Cargo.toml`, `crates/*/Cargo.toml`, `.acdd/workflows/**`) off-limits without explicit authorization.
 3. Post a concise architectural decision on `acdd_blackboard` (`topic: decisions`) and materialize per-task slices (`proof.tasks[<task_ref>]`) before submitting. Independent blueprint reviewers verify architecture, owners, scopes, and seams — never demand pseudocode or low-level code recipes during `blueprint_synthesis.review`.
 <!-- acdd:contract-synthesis:end -->
 
@@ -64,16 +64,20 @@ When authoring contracts or testing capabilities:
 
 Before terminal handoff, launch a documentation agent in the run worktree.
 Give it the spec manifest, the final diff against the selected target base, the
-accepted task evidence, and an explicit admitted documentation write scope.
-Require it to load `agent-instructions`, read `docs/AGENTS.md` and affected owner
-instructions, and reconcile behavior, CLI/MCP, configuration, workflows,
-architecture, invariant descriptions, skills, and examples with live code/tests.
-Update affected pages; explain when no update is needed. Preserve task-level
-documentation co-evolution. Route source defects to their task owner and
-architecture decision changes to owner approval. Post the scanned content binding,
-updates, checks, and unresolved findings on `acdd_blackboard`. Submit the
-documentation edits for independent review, then run the final checks in
-`TESTS.md` (including `cargo run -- docs check` and `cargo run -- validate`).
+accepted task evidence, and an explicit admitted documentation write scope
+(including `website/` whenever user-facing docs, CLI/MCP, workflows, or
+configuration change). Require it to load `agent-instructions`, read
+`docs/AGENTS.md` and affected owner instructions, and reconcile behavior,
+CLI/MCP, configuration, workflows, architecture, invariant descriptions, skills,
+examples, and `website/` (`website/pages/`, `website/templates/`,
+`website/sync-docs.py`) with live code/tests. Update affected pages; explain
+when no update is needed. Preserve task-level documentation co-evolution. Route
+source defects to their task owner and architecture decision changes to owner
+approval. Post the scanned content binding, updates, checks, and unresolved
+findings on `acdd_blackboard`. Submit the documentation edits for independent
+review, then run the final checks in `TESTS.md` (including
+`cargo run -- docs check`, `cargo run -- validate`, and
+`./website/build.sh --check` covering `sync-docs.py && zola build && zola check`).
 Repeat the affected scan if implementation changes afterward. The coordinator
 launches the agent; this step adds no ACDD gate or runtime launcher.
 
@@ -94,7 +98,7 @@ Worktrees live at `.worktrees/<run_name>` for isolated runs and `.worktrees/<run
 When every task in the run is completed or cancelled:
 
 1. **Absorb Polish & Verify Repository Gates (`run_tests`)**:
-   Commit all working-tree polish in the run worktree and run `acdd verify run_tests` (which executes `.acdd/profile.yaml`'s `check_full_repo` via `./scripts/check-full-repo.sh`: sequential `commitment_integrity`, workspace strict Clippy, `docs check`, and `validate`, followed by parallel `cargo test --workspace --all-targets` on Linux and `./scripts/test-macos-ssh.sh` on the configured macOS SSH host; `polish` runs fast `polish_check` without duplicating full Linux + macOS test suites). Verify `/tmp/contextunity-test-*` `BEFORE == AFTER` locally (remote macOS leak checks run inside `scripts/test-macos-ssh.sh`). Never assemble manual `ssh`/`rsync` commands for macOS verification; always invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh`.
+   Commit all working-tree polish in the run worktree and run `acdd verify run_tests` (which executes `.acdd/workflows/default.yaml`'s `check_full_repo` via `./scripts/check-full-repo.sh`: sequential `commitment_integrity`, workspace strict Clippy, `docs check`, and `validate`, followed by parallel `cargo test --workspace --all-targets` on Linux and `./scripts/test-macos-ssh.sh` on the configured macOS SSH host; `polish` runs fast `polish_check` without duplicating full Linux + macOS test suites). Verify `/tmp/contextunity-test-*` `BEFORE == AFTER` locally (remote macOS leak checks run inside `scripts/test-macos-ssh.sh`). Never assemble manual `ssh`/`rsync` commands for macOS verification; always invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh`.
 
 2. **Submit `run_tests` and Independent `integration_review`**:
    Submit `acdd submit run_tests --action pass`, claim and complete `integration_review` with an independent reviewer (`review_evidence` across declared contours), then submit `acdd submit handoff --action pass` (which runs `save.post: commit`, `archive: true`, `prune: true`, moving the completed spec to `archive/` and pruning the active run into `run_tombstones`).

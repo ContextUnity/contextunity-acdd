@@ -69,7 +69,7 @@ gates:
 fn git_verify_submit_commit_and_archive_e2e() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "main");
-    ws.write(".acdd/profiles/e2e.yaml", GIT_E2E_PROFILE);
+    ws.write(".acdd/workflows/e2e.yaml", GIT_E2E_PROFILE);
     ws.write(
         "docs/milestones/AC-010-e2e.md",
         r#"---
@@ -92,7 +92,7 @@ scope: [src/lib.rs]
         ws.root(),
         &[
             "add",
-            ".acdd/profiles/e2e.yaml",
+            ".acdd/workflows/e2e.yaml",
             "docs/milestones/AC-010-e2e.md",
         ],
     );
@@ -105,7 +105,7 @@ scope: [src/lib.rs]
     let StateCommandOutput::Start(started) = engine
         .execute(StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/AC-010-e2e.md".to_owned()),
-            profile: Some(".acdd/profiles/e2e.yaml".to_owned()),
+            workflow: Some(".acdd/workflows/e2e.yaml".to_owned()),
             worktree: true,
             ..StartReq::default()
         }))
@@ -552,7 +552,7 @@ fn blueprint_max_net_loc_and_architectural_drift_runner_seams() {
             "---\nid: AC-DRIFT\ntitle: Drift Seam\nstatus: planned\n---\n# Drift\n\n### task: t1\n```yaml\ntask_ref: t1\ntarget: Exercise max_net_loc and architectural_drift seams\nscope: [src/lib.rs, tests/t1_seam.rs]\n```\n",
         );
         ws.write(
-            ".acdd/profiles/drift.yaml",
+            ".acdd/workflows/drift.yaml",
             r#"version: 2
 inherit: code
 git: { isolation: in_place, worktrees: manual }
@@ -606,7 +606,7 @@ gates:
         let StateCommandOutput::Start(start) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/AC-DRIFT.md".to_owned()),
-                profile: Some(".acdd/profiles/drift.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/drift.yaml".to_owned()),
                 in_place: true,
                 ..StartReq::default()
             }))
@@ -989,7 +989,7 @@ gates:
             ),
         );
         ws.write(
-            ".acdd/profiles/drift-run.yaml",
+            ".acdd/workflows/drift-run.yaml",
             r#"version: 2
 inherit: none
 git: { isolation: in_place, worktrees: manual }
@@ -1039,7 +1039,7 @@ gates:
         let StateCommandOutput::Start(start) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/AC-RUN-DRIFT.md".to_owned()),
-                profile: Some(".acdd/profiles/drift-run.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/drift-run.yaml".to_owned()),
                 in_place: true,
                 ..StartReq::default()
             }))

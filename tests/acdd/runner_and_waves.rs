@@ -2,7 +2,7 @@ use super::support::{base_engine_config, git_cmd, init_git_repo_on_branch, TestP
 use crate::common::Workspace;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
-use acdd_state::profile::{RoleDef, RoleExecutionMode};
+use acdd_state::workflow::{RoleDef, RoleExecutionMode};
 use acdd_state::runner::{spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow};
 use acdd_state::types::ClaimOutcome;
 use acdd_state::usecases::dto::{RunReq, StartReq};
@@ -30,7 +30,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
     // 1. Ordered workflow fixture executes gates in `pass:` order.
     {
         let ws = init_workflow_ws(
-            ".acdd/profiles/ordered.yaml",
+            ".acdd/workflows/ordered.yaml",
             include_str!("fixtures/workflows/ordered.yaml"),
         );
         let cfg = base_engine_config(ws.root());
@@ -38,7 +38,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let StateCommandOutput::Start(s) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/minimal.md".to_owned()),
-                profile: Some(".acdd/profiles/ordered.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/ordered.yaml".to_owned()),
                 ..StartReq::default()
             }))
             .unwrap()
@@ -65,7 +65,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
     // 2. Retry workflow fixture recovers on second attempt (`attempt` -> `fail: prepare` -> `attempt` passes).
     {
         let ws = init_workflow_ws(
-            ".acdd/profiles/retry.yaml",
+            ".acdd/workflows/retry.yaml",
             include_str!("fixtures/workflows/retry.yaml"),
         );
         let cfg = base_engine_config(ws.root());
@@ -73,7 +73,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let StateCommandOutput::Start(s) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/minimal.md".to_owned()),
-                profile: Some(".acdd/profiles/retry.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/retry.yaml".to_owned()),
                 ..StartReq::default()
             }))
             .unwrap()
@@ -102,7 +102,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
     // 3. Failing workflow halts before running subsequent `forbidden` gate.
     {
         let ws = init_workflow_ws(
-            ".acdd/profiles/failing.yaml",
+            ".acdd/workflows/failing.yaml",
             include_str!("fixtures/workflows/failing.yaml"),
         );
         let cfg = base_engine_config(ws.root());
@@ -110,7 +110,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let StateCommandOutput::Start(s) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/minimal.md".to_owned()),
-                profile: Some(".acdd/profiles/failing.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/failing.yaml".to_owned()),
                 ..StartReq::default()
             }))
             .unwrap()
@@ -131,7 +131,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
     // 4. Timeout workflow (`timeout_seconds: 1`) kills process group cleanly.
     {
         let ws = init_workflow_ws(
-            ".acdd/profiles/timeout.yaml",
+            ".acdd/workflows/timeout.yaml",
             include_str!("fixtures/workflows/timeout.yaml"),
         );
         let cfg = base_engine_config(ws.root());
@@ -139,7 +139,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let StateCommandOutput::Start(s) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/minimal.md".to_owned()),
-                profile: Some(".acdd/profiles/timeout.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/timeout.yaml".to_owned()),
                 ..StartReq::default()
             }))
             .unwrap()
@@ -159,7 +159,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
     // 5. Role without runner (`rejection_routing.yaml`) fails closed with WorkflowRunnerRequired.
     {
         let ws = init_workflow_ws(
-            ".acdd/profiles/rej.yaml",
+            ".acdd/workflows/rej.yaml",
             include_str!("fixtures/workflows/rejection_routing.yaml"),
         );
         let cfg = base_engine_config(ws.root());
@@ -167,7 +167,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         let StateCommandOutput::Start(s) = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/minimal.md".to_owned()),
-                profile: Some(".acdd/profiles/rej.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/rej.yaml".to_owned()),
                 ..StartReq::default()
             }))
             .unwrap()

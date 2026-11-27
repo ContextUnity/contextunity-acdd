@@ -5,9 +5,6 @@ use crate::git_ops::snapshot::current_scope_tree;
 use crate::git_ops::worktree::RepoWorktreeLayout;
 use crate::machine::{MachineGateDef, MachineProfileInput};
 use crate::observability::build_completed_run_digest;
-use crate::spec::{
-    parse_spec, render_archive_markdown, ArchiveTaskUpdate, SpecDocument, SpecStatus,
-};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     GateNodeRecord, NodeStatus, NodeVersionExpectation, RunGraphSnapshot, RunTombstoneRecord,
@@ -21,12 +18,13 @@ use crate::usecases::lifecycle::{
     resume_pending_tombstone_cleanups_dyn,
 };
 use acdd_core::config::CLAIM_TRAILER_KEY;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
 use acdd_core::git::read_git_blob_utf8;
 use acdd_core::ids::{CommitOid, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
+use acdd_spec::{parse_spec, render_archive_markdown, ArchiveTaskUpdate, SpecDocument, SpecStatus};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -48,7 +46,7 @@ pub(super) fn probe_interrupted_archive(
     machine_gate: &MachineGateDef,
     req: &SubmitReq,
     policy: &WorkspacePathPolicy,
-) -> Result<Option<RecoveredArchiveGitState>, StateError> {
+) -> Result<Option<RecoveredArchiveGitState>, AcddError> {
     if !machine_gate.save.archive || snapshot.run.is_ephemeral {
         return Ok(None);
     }
@@ -69,7 +67,7 @@ pub(super) fn probe_interrupted_archive(
 
     // Archive file already exists on disk; validate it strictly against run, claim, tree, and receipts.
     let existing_archive_bytes = fs::read(&archive_abs).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "failed reading existing archive '{}': {err}",
@@ -79,7 +77,7 @@ pub(super) fn probe_interrupted_archive(
     })?;
     let existing_digest = sha256_hex(&existing_archive_bytes);
     let existing_str = std::str::from_utf8(&existing_archive_bytes).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' is not valid UTF-8: {err}",
@@ -88,7 +86,7 @@ pub(super) fn probe_interrupted_archive(
         )
     })?;
     let existing_doc = parse_spec(existing_str).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' failed spec validation: {err}",
@@ -98,7 +96,7 @@ pub(super) fn probe_interrupted_archive(
     })?;
 
     if existing_doc.status != SpecStatus::Completed {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' has non-completed status '{:?}'",
@@ -108,7 +106,7 @@ pub(super) fn probe_interrupted_archive(
         ));
     }
     let Some(ref closure) = existing_doc.closure else {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' is missing required closure metadata",
@@ -117,7 +115,7 @@ pub(super) fn probe_interrupted_archive(
         ));
     };
     if closure.status != SpecStatus::Completed {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' closure status '{:?}' is not completed",
@@ -128,7 +126,7 @@ pub(super) fn probe_interrupted_archive(
     }
     if let Some(ref expected_spec_id) = snapshot.run.spec_id {
         if &existing_doc.id != expected_spec_id {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "existing archive '{}' spec_id '{}' does not match active run spec_id '{}'",
@@ -142,7 +140,7 @@ pub(super) fn probe_interrupted_archive(
     if closure.target_base != snapshot.run.target_base
         || closure.target_base_commit != snapshot.run.target_base_commit
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' closure target_base does not match active run '{}'",
@@ -153,7 +151,7 @@ pub(super) fn probe_interrupted_archive(
     }
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::StaleClaimRevision,
             format!(
                 "node '{}' is not in_progress with an active claim (status: {})",
@@ -163,7 +161,7 @@ pub(super) fn probe_interrupted_archive(
     }
     if let Some(expected_rev) = req.claim_revision {
         if expected_rev != node.claim_revision {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::StaleClaimRevision,
                 format!(
                     "submit claim_revision {expected_rev} does not match active claim_revision {} on '{}'",
@@ -173,7 +171,7 @@ pub(super) fn probe_interrupted_archive(
         }
     }
     if node.worker_id.as_ref() != Some(&req.worker_id) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskAlreadyClaimed,
             format!(
                 "worker '{}' does not hold the active claim on '{}'",
@@ -184,7 +182,7 @@ pub(super) fn probe_interrupted_archive(
 
     let current_tree = current_scope_tree(target_worktree, None, policy)?;
     if machine_gate.save.immutable && node.claim_tree.as_ref() != Some(&current_tree) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskCandidateMismatch,
             format!(
                 "immutable gate '{}' detected working-tree drift from claim_tree ({:?} != {})",
@@ -209,7 +207,7 @@ pub(super) fn probe_interrupted_archive(
             if checked_child(target_worktree, Path::new(spec_rel)).is_ok_and(|p| p.is_file()) {
                 return Ok(None);
             }
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "existing archive '{}' has no matching Acdd-Claim commit and source spec '{}' is missing",
@@ -219,9 +217,9 @@ pub(super) fn probe_interrupted_archive(
             ));
         };
         let committed_blob = read_git_blob_utf8(target_worktree, commit_oid.as_str(), &archive_rel)
-            .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+            .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
         if committed_blob.as_deref() != Some(existing_str) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "existing archive '{}' does not match committed archive blob at '{}'",
@@ -253,7 +251,7 @@ pub(super) fn probe_interrupted_archive(
         || closure.rollup != render_input.closure.rollup
         || !archive_tasks_match_expected(&existing_doc, &render_input.tasks)
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "existing archive '{}' closure or task receipts do not match active run '{}' state",
@@ -269,13 +267,13 @@ pub(super) fn probe_interrupted_archive(
         let spec_raw_opt = match read_confined_utf8(target_worktree, spec_rel) {
             Ok(raw) => Some(raw),
             Err(_) if in_git => read_git_blob_utf8(target_worktree, "HEAD", spec_rel)
-                .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?,
+                .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?,
             Err(_) => None,
         };
         if let Some(ref spec_raw) = spec_raw_opt {
             let (_, expected_dig) = render_archive_markdown(spec_raw, &render_input)?;
             if expected_dig != existing_digest {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
                         "existing archive '{}' digest '{}' does not match active run '{}'",
@@ -286,7 +284,7 @@ pub(super) fn probe_interrupted_archive(
                 ));
             }
         } else if closure.task_receipts.is_empty() {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "cannot verify existing archive '{}' in no-commit mode without source spec '{}' or run-bound task receipts",
@@ -345,7 +343,7 @@ fn load_spec_for_tombstone(
     archive_path: Option<&str>,
     closed_commit: Option<&CommitOid>,
     spec_path: Option<&str>,
-) -> Option<crate::spec::SpecDocument> {
+) -> Option<SpecDocument> {
     if let (Some(arch_rel), Some(commit_oid)) = (archive_path, closed_commit) {
         if let Ok(Some(raw)) = read_git_blob_utf8(target_worktree, commit_oid.as_str(), arch_rel) {
             if let Ok(doc) = parse_spec(&raw) {
@@ -389,7 +387,7 @@ pub(super) fn finalize_with_prune(
     archive_path: Option<String>,
     closed_commit: Option<CommitOid>,
     now_utc: &str,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let mut cleanup_manifest =
         build_tombstone_cleanup_manifest_from_snapshot(config, snapshot, primary);
     if archive_path.is_none() {

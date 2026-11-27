@@ -1,0 +1,199 @@
+# How to Override Built-in Workflows
+
+You rarely need to write a `WorkflowDef` from scratch. Create `.acdd/workflows/default.yaml` (or `.acdd/workflows/<name>.yaml`) and set `inherit:` to an embedded workflow (`base`, `code`, `documentation`) or a local workflow file.
+
+## Inheritance & patching rules
+
+1. **Map merging**: `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`, `contours`, and `gate_templates` merge by key. Setting `<key>: null` removes an inherited entry.
+2. **Replacing vs. patching gates**:
+   - `gates: [...]` replaces the inherited gate DAG completely.
+   - `gates_patch: [...]` surgically modifies inherited gates by `id`, dotted cursor (`"tasks.build"`, `"blueprint_synthesis.review"`), or `- tasks:`.
+   - `- <id_or_cursor>: null` deletes an inherited gate.
+   - `after: <sibling_id>` or `before: <sibling_id>` inserts a new gate next to an existing sibling.
+   - Setting a scalar property to `null` (e.g. `role: null`, `command: null`) clears the inherited value.
+3. **Content pinning**: `inherit: .acdd/workflows/default.yaml:9f3a1c2` pins the parent file by SHA-256 prefix (`7..=64` hex chars) and fails closed if the parent changes unexpectedly.
+
+---
+
+## 1. Overriding `base` (minimal custom pipeline)
+
+Start from `base` when you want clean `worktree` isolation, core contours, and `limits`, while defining your own `gates:` from scratch:
+
+```yaml
+version: 2
+inherit: base
+
+commands:
+  test_all: "npm test"
+
+roles:
+  worker:
+    mode: subagent
+    runner: "codex exec --full-auto -"
+
+gates:
+  - id: implement
+    role: worker
+    command: test_all
+    proof: command
+    pass: verify
+  - id: verify
+    command: test_all
+    proof: command
+    receipt: true
+    save: { immutable: true, post: commit }
+```
+
+---
+
+## 2. Overriding `code` (`.acdd/workflows/default.yaml` example with opt-in `code.seam`)
+
+`code` declares abstract `build_check` and `verify_all` slots. Override them in `.acdd/workflows/default.yaml`, bind `scope_args_by_pattern`, route models or external `runner:` CLIs, and customize checks with `gates_patch` (this repository's own `.acdd/workflows/default.yaml` runs `code.lint` only, while the example below illustrates opting into `code.seam`):
+
+```yaml
+version: 2
+inherit: code
+tags: [default, docs]
+
+commands:
+  build_check:
+    command: "pytest -q {scope_target} {test_filter}"
+    test_filter: "-k {test}"
+  verify_all:
+    command: "ruff check . && pytest -q"
+    timeout_seconds: 1200
+  sec_scan: "cargo audit -q"
+
+scope_args_by_pattern:
+  "src/billing/**": "tests/billing/"
+  "tests/*.py": "{file_stem}.py"
+
+roles:
+  builder:
+    models: [claude-sonnet-4, gemini-4-hydrogen-high]
+    reuse_on_reject: true
+  independent_reviewer:
+    models: [claude-opus-4]
+
+gates_patch:
+  - id: tasks.build
+    max_attempts: 4
+    checks:
+      - code.seam
+      - check: code.lint
+        with: { categories: [arch, syntax, docs] }
+  - id: security_gate
+    after: run_tests
+    command: sec_scan
+    proof: command
+    pass: integration_review
+    fail: polish
+```
+
+---
+
+## 3. Customizing `audit` (template copy + custom security contours)
+
+`audit` ships as a reference template in `skills/acdd/references/acdd-workflow-examples/audit.yaml` (`git.isolation: in_place`, `save: none`). Copy it into `.acdd/workflows/audit.yaml` and inherit it in an overlay to add custom `contours`, enforce `code.lint` AST rules during `analyze`, customize report output paths, or attach a headless `auditor.runner`:
+
+```yaml
+version: 2
+inherit: .acdd/workflows/audit.yaml
+
+roles:
+  auditor:
+    runner: "claude -p --permission-mode plan"
+
+contours:
+  sql_safety:
+    description: "Verify all SQL queries use parameterized bindings or read-only connections."
+    criteria:
+      - "Inspect every SQLite/Postgres call site via code_map_impact."
+
+gates_patch:
+  - id: analyze
+    contours: [correctness, security, architecture, sql_safety]
+    checks:
+      - check: code.lint
+        with: { categories: [arch] }
+  - id: triage
+    save:
+      immutable: true
+      post: none
+      report: ".acdd/reports/security-{run_name}.md"
+```
+
+---
+
+## 4. Overriding `documentation` (custom doc scope & rules)
+
+`documentation` verifies docs and `acdd-rule` invariants without needing a compiler. Override `polish` scope, disable an unnecessary gate, or add link/style checks:
+
+```yaml
+version: 2
+inherit: documentation
+
+commands:
+  spell_check: "typos docs/ README.md"
+
+gates_patch:
+  - id: verify_docs
+    command: spell_check
+    checks:
+      - docs.links
+      - check: code.lint
+        with: { categories: [arch, docs] }
+  - id: polish
+    scope: ["docs/**", "README.md", "CHANGELOG.md"]
+```
+
+---
+
+## 5. Customizing `spec_planning` (template copy + custom reviewer)
+
+`spec_planning` ships in `skills/acdd/references/acdd-workflow-examples/spec_planning.yaml` and validates `acdd.yaml` `specs.*` entries and wave disjointness. Copy it to `.acdd/workflows/spec_planning.yaml` and inherit it to bind your preferred planning model or adjust `save.report`:
+
+```yaml
+version: 2
+inherit: .acdd/workflows/spec_planning.yaml
+
+roles:
+  architect:
+    models: [gemini-4-neon-xhigh]
+  independent_reviewer:
+    models: [claude-opus-4]
+
+gates_patch:
+  - id: synthesize
+    max_attempts: 4
+  - id: review
+    save:
+      immutable: true
+      report: ".acdd/reports/plan-review-{spec_id}.md"
+```
+
+---
+
+## 6. Layering a `hotfix` overlay on `.acdd/workflows/default.yaml`
+
+Place sibling overlays under `.acdd/workflows/` (e.g. `.acdd/workflows/hotfix.yaml`, adapted from `skills/acdd/references/acdd-workflow-examples/hotfix.yaml`). By inheriting `.acdd/workflows/default.yaml` (or `default`), you keep all repository `commands` and `scope_args_by_pattern` while pruning milestone-only gates:
+
+```yaml
+version: 2
+inherit: .acdd/workflows/default.yaml
+
+gates_patch:
+  - blueprint_synthesis: null
+  - id: run_tests
+    pass: handoff
+  - integration_review: null
+  - id: handoff
+    need: [run_tests]
+    guidance: [milestone.handoff, core.execution, hitl.pro]
+```
+
+Run it anytime via:
+
+```sh
+acdd start --goal "Fix billing timeout" --workflow hotfix --scope src/billing/
+```

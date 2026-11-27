@@ -1,43 +1,67 @@
 //! Single canonical workspace, specification, profile, and dependency validator.
 //!
 //! Owned by `acdd-state` so `acdd validate`, `acdd start`, `acdd draft`, `acdd sync`,
-//! `StateQuery::Validate`, and `docs check` share one set of structural and fail-closed checks.
+//! `StateQuery::Validate`, and `docs check` share structural, profile, and state-backed checks.
 
 use crate::machine::{effective_task_tags, matches_when};
-use crate::profile::{
-    resolve_optional_profile_ref_with_dirs, resolve_profile_from_str_with_dirs,
-    resolve_profile_ref_with_dirs, validate_profile, ProfileValidationOptions, ResolvedGateProfile,
+use crate::workflow::{
+    resolve_optional_workflow_ref_with_dirs, resolve_workflow_from_str_with_dirs,
+    resolve_workflow_ref_with_dirs, validate_workflow, ResolvedWorkflow, WorkflowValidationOptions,
 };
-use crate::spec::{parse_spec, SpecDocument, SpecStatus};
-use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
-use crate::types::{NodeStatus, RunStatus};
 use crate::usecases::config::StateEngineConfig;
-use crate::usecases::deps::{collect_workspace_specs, validate_spec_dependencies};
-use crate::usecases::dto::{ValidateDiagnostic, ValidateResp, ValidateSummary};
+use crate::usecases::deps::try_resolve_effective_state_db;
+use crate::usecases::dto::{ValidateDiagnostic, ValidateResp};
 use crate::usecases::lifecycle::{
-    effective_modules_for_profile, effective_spec_collections, match_spec_collection,
-    read_confined_utf8, validate_profile_fail_closed,
+    effective_modules_for_profile, effective_spec_collections, validate_profile_fail_closed,
 };
-use acdd_core::config::{
-    load_adapter_report, Adapter, SpecCollectionConfig, ACDD_CONFIG_FILE, ACDD_DIR,
-};
-use acdd_core::errors::{ErrorCode, StateError};
+use crate::usecases::overlay::{validate_spec_dependencies, StateRuntimeOverlay};
+use acdd_core::config::{Adapter, SpecConfig, ACDD_CONFIG_FILE, ACDD_DIR};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::fs::checked_child;
 use acdd_core::path_policy::{is_valid_scope_glob, scopes_overlap};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::subsystems::SubsystemId;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use acdd_spec::discovery::{match_spec_collection, read_confined_utf8};
+use acdd_spec::overlay::{NoopRuntimeOverlay, SpecRuntimeOverlay};
+use acdd_spec::validate::{
+    build_resp, fail, fail_state_err, load_strict_adapter, pass, scan_collection_specs,
+    validate_spec_static_checks, ScannedSpec,
+};
+use acdd_spec::{parse_spec, SpecDocument, SpecStatus};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// Validate all specs, profiles, `acdd.yaml`, and active constraints across a workspace root.
+fn resolve_validation_state_db(
+    root: &Path,
+    explicit_config: Option<&Path>,
+) -> Result<Option<PathBuf>, AcddError> {
+    if explicit_config.is_some() {
+        return Ok(None);
+    }
+    match try_resolve_effective_state_db(root, None) {
+        Ok(path) => Ok(Some(path)),
+        Err(err) if err.code == ErrorCode::WorkflowSchemaInvalid => {
+            let root_canon = acdd_core::fs::canonical_root(root).unwrap_or_else(|_| root.to_path_buf());
+            let primary = acdd_core::git::primary_worktree_root(&root_canon)
+                .unwrap_or_else(|| root_canon.clone());
+            if primary != root_canon {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Validate all specs, workflows, `acdd.yaml`, and active constraints across a workspace root.
 pub fn validate_workspace(
     root: &Path,
     explicit_config: Option<&Path>,
     explicit_profile: Option<&str>,
     providers: &CompositeDomainProvider,
-) -> Result<ValidateResp, StateError> {
+) -> Result<ValidateResp, AcddError> {
     let mut diagnostics = Vec::new();
     let mut warnings = Vec::new();
 
@@ -67,54 +91,71 @@ pub fn validate_workspace(
     }
 
     let require_bound = adapter.modules.is_enabled(SubsystemId::State.as_str());
-    let profile_rel = format!("{ACDD_DIR}/profile.yaml");
-    let has_workspace_profile = root.join(&profile_rel).is_file();
+    let workflow_rel = format!("{ACDD_DIR}/workflows/default.yaml");
+    let has_workspace_workflow = root.join(&workflow_rel).is_file();
     let profile_diag_path = if let Some(explicit) = explicit_profile {
         explicit.to_owned()
-    } else if has_workspace_profile {
-        profile_rel
+    } else if has_workspace_workflow {
+        workflow_rel
     } else {
         "embedded:code".to_owned()
     };
 
-    let active_profile = match resolve_optional_profile_ref_with_dirs(
-        explicit_profile,
-        Some(root),
-        Some(&adapter.modules),
-        Some(&adapter.profiles_dirs),
-    ) {
-        Ok(resolved) => {
-            let opts = ProfileValidationOptions {
-                domain_providers: Some(providers),
-                acdd_modules: Some(&adapter.modules),
-                require_bound_commands: require_bound,
-            };
-            match validate_profile(&resolved, &opts) {
-                Ok(()) => {
-                    diagnostics.push(pass(
-                        &profile_diag_path,
-                        "PROFILE_VALID",
-                        format!(
-                            "validated {} gates and {} commands",
-                            resolved.gates.len(),
-                            resolved.commands.len()
-                        ),
-                    ));
-                    Some(resolved)
-                }
-                Err(err) => {
-                    diagnostics.push(fail_state_err(&profile_diag_path, &err, 1, 1));
-                    None
+    let active_profile = if require_bound || has_workspace_workflow || explicit_profile.is_some() {
+        match resolve_optional_workflow_ref_with_dirs(
+            explicit_profile,
+            Some(root),
+            Some(&adapter.modules),
+            Some(&adapter.workflows_dirs),
+        ) {
+            Ok(resolved) => {
+                let opts = WorkflowValidationOptions {
+                    domain_providers: Some(providers),
+                    acdd_modules: Some(&adapter.modules),
+                    require_bound_commands: require_bound,
+                };
+                match validate_workflow(&resolved, &opts) {
+                    Ok(()) => {
+                        diagnostics.push(pass(
+                            &profile_diag_path,
+                            "WORKFLOW_VALID",
+                            format!(
+                                "validated {} gates and {} commands",
+                                resolved.gates.len(),
+                                resolved.commands.len()
+                            ),
+                        ));
+                        Some(resolved)
+                    }
+                    Err(err) => {
+                        diagnostics.push(fail_state_err(&profile_diag_path, &err, 1, 1));
+                        None
+                    }
                 }
             }
+            Err(err) => {
+                diagnostics.push(fail_state_err(&profile_diag_path, &err, 1, 1));
+                None
+            }
         }
-        Err(err) => {
-            diagnostics.push(fail_state_err(&profile_diag_path, &err, 1, 1));
-            None
-        }
+    } else {
+        None
     };
 
-    let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
+    let noop = NoopRuntimeOverlay;
+    let state_overlay;
+    let overlay: &dyn SpecRuntimeOverlay = if require_bound {
+        let state_db_override = resolve_validation_state_db(root, explicit_config)?;
+        state_overlay = StateRuntimeOverlay::for_validation(
+            root,
+            &adapter,
+            None,
+            state_db_override.as_deref(),
+        );
+        &state_overlay
+    } else {
+        &noop
+    };
     let (scanned_specs, scan_failed_count) =
         scan_collection_specs(root, &adapter, &mut diagnostics);
     let active_docs: Vec<SpecDocument> = scanned_specs.iter().map(|s| s.doc.clone()).collect();
@@ -124,7 +165,7 @@ pub fn validate_workspace(
         validate_parsed_spec(
             root,
             &adapter,
-            Some(&state_db_path),
+            overlay,
             providers,
             active_profile.as_ref(),
             entry.col.as_ref(),
@@ -146,7 +187,7 @@ pub fn validate_document(
     explicit_config: Option<&Path>,
     explicit_profile: Option<&str>,
     providers: &CompositeDomainProvider,
-) -> Result<ValidateResp, StateError> {
+) -> Result<ValidateResp, AcddError> {
     let mut diagnostics = Vec::new();
     let mut warnings = Vec::new();
 
@@ -220,11 +261,11 @@ pub fn validate_document(
         }
     };
 
-    let profile_rel = format!("{ACDD_DIR}/profile.yaml");
+    let workflow_rel = format!("{ACDD_DIR}/workflows/default.yaml");
     match path_kind(&abs_path) {
         Some(DocumentKind::Profile) => {
             let require_bound = adapter.modules.is_enabled(SubsystemId::State.as_str())
-                && (rel_display == profile_rel || explicit_profile.is_some());
+                && (rel_display == workflow_rel || explicit_profile.is_some());
             validate_profile_doc(
                 root,
                 &rel_display,
@@ -243,26 +284,32 @@ pub fn validate_document(
                     return Ok(build_resp(&scope_label, diagnostics, warnings, 1));
                 }
             };
-            let has_workspace_profile = root.join(&profile_rel).is_file();
+            let state_enabled = adapter.modules.is_enabled(SubsystemId::State.as_str());
+            let has_workspace_profile = root.join(&workflow_rel).is_file();
             let profile_diag_path = if let Some(explicit) = explicit_profile {
                 explicit
             } else if has_workspace_profile {
-                profile_rel.as_str()
+                workflow_rel.as_str()
             } else {
                 "embedded:code"
             };
-            let active_profile = match resolve_optional_profile_ref_with_dirs(
-                explicit_profile,
-                Some(root),
-                Some(&adapter.modules),
-                Some(&adapter.profiles_dirs),
-            ) {
-                Ok(p) => Some(p),
-                Err(err) => {
-                    diagnostics.push(fail_state_err(profile_diag_path, &err, 1, 1));
+            let active_profile =
+                if state_enabled || has_workspace_profile || explicit_profile.is_some() {
+                    match resolve_optional_workflow_ref_with_dirs(
+                        explicit_profile,
+                        Some(root),
+                        Some(&adapter.modules),
+                        Some(&adapter.workflows_dirs),
+                    ) {
+                        Ok(p) => Some(p),
+                        Err(err) => {
+                            diagnostics.push(fail_state_err(profile_diag_path, &err, 1, 1));
+                            None
+                        }
+                    }
+                } else {
                     None
-                }
-            };
+                };
             let mut sink = Vec::new();
             let (mut scanned_specs, _) = scan_collection_specs(root, &adapter, &mut sink);
             if let Some(pos) = scanned_specs.iter().position(|e| e.rel_path == rel_display) {
@@ -278,11 +325,25 @@ pub fn validate_document(
             let active_docs: Vec<SpecDocument> = scanned_specs.into_iter().map(|s| s.doc).collect();
             let col = match_spec_collection(&adapter.specs, &rel_display)
                 .and_then(|k| adapter.specs.get(&k));
-            let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
+            let noop = NoopRuntimeOverlay;
+            let state_overlay;
+            let overlay: &dyn SpecRuntimeOverlay =
+                if adapter.modules.is_enabled(SubsystemId::State.as_str()) {
+                    let state_db_override = resolve_validation_state_db(root, explicit_config)?;
+                    state_overlay = StateRuntimeOverlay::for_validation(
+                        root,
+                        &adapter,
+                        None,
+                        state_db_override.as_deref(),
+                    );
+                    &state_overlay
+                } else {
+                    &noop
+                };
             validate_parsed_spec(
                 root,
                 &adapter,
-                Some(&state_db_path),
+                overlay,
                 providers,
                 active_profile.as_ref(),
                 col,
@@ -311,11 +372,11 @@ pub fn validate_spec_for_run(
     reader: &dyn StateReader,
     provider: &CompositeDomainProvider,
     doc: &SpecDocument,
-    profile: &ResolvedGateProfile,
-) -> Result<(), StateError> {
+    profile: &ResolvedWorkflow,
+) -> Result<(), AcddError> {
     if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::SpecSchemaInvalid,
             format!(
                 "cannot start or sync spec '{}' with terminal status '{:?}'",
                 doc.id, doc.status
@@ -328,7 +389,7 @@ pub fn validate_spec_for_run(
     let source = &config.worktree;
     let adapter = Adapter {
         specs: effective_spec_collections(config),
-        profiles_dirs: config.profiles_dirs.clone(),
+        workflows_dirs: config.workflows_dirs.clone(),
         modules: config.modules.clone(),
         linked_workspaces: config
             .linked_workspaces
@@ -359,41 +420,13 @@ pub fn validate_spec_for_run(
         &active_docs,
     );
     if let Some(first) = dep_issues.into_iter().next() {
-        return Err(StateError::new(first.code, first.message));
+        return Err(AcddError::new(first.code, first.message));
     }
 
     crate::usecases::deps::verify_run_level_depends_on(config, reader, doc)?;
 
     validate_tasks_against_profile(doc, profile)?;
     Ok(())
-}
-
-fn load_strict_adapter(
-    root: &Path,
-    explicit_config: Option<&Path>,
-) -> Result<Adapter, ValidateDiagnostic> {
-    let config_label = explicit_config
-        .and_then(|p| p.strip_prefix(root).ok().or(Some(p)))
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|| ACDD_CONFIG_FILE.to_owned());
-    match load_adapter_report(root, explicit_config) {
-        Ok(report) => {
-            if !report.linked_workspace_errors.is_empty() {
-                return Err(fail(
-                    ErrorCode::ProfileSchemaInvalid.as_str(),
-                    &config_label,
-                    1,
-                    1,
-                    format!(
-                        "invalid linked_workspaces in {ACDD_CONFIG_FILE}: {}",
-                        report.linked_workspace_errors.join("; ")
-                    ),
-                ));
-            }
-            Ok(report.adapter)
-        }
-        Err(err) => Err(fail_state_err(&config_label, &err, 1, 1)),
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -426,14 +459,14 @@ fn validate_profile_doc(
     let profile_id = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("profile");
-    let resolved = match resolve_profile_from_str_with_dirs(
+        .unwrap_or("workflow");
+    let resolved = match resolve_workflow_from_str_with_dirs(
         content,
         profile_id,
         Some(path),
         Some(root),
         Some(&adapter.modules),
-        Some(&adapter.profiles_dirs),
+        Some(&adapter.workflows_dirs),
     ) {
         Ok(resolved) => resolved,
         Err(err) => {
@@ -441,15 +474,15 @@ fn validate_profile_doc(
             return;
         }
     };
-    let opts = ProfileValidationOptions {
+    let opts = WorkflowValidationOptions {
         domain_providers: Some(providers),
         acdd_modules: Some(&adapter.modules),
         require_bound_commands,
     };
-    match validate_profile(&resolved, &opts) {
+    match validate_workflow(&resolved, &opts) {
         Ok(()) => diagnostics.push(pass(
             path,
-            "PROFILE_VALID",
+            "WORKFLOW_VALID",
             format!(
                 "validated {} gates and {} registered commands",
                 resolved.gates.len(),
@@ -460,106 +493,42 @@ fn validate_profile_doc(
     }
 }
 
-struct ScannedSpec {
-    rel_path: String,
-    col: Option<SpecCollectionConfig>,
-    doc: SpecDocument,
-}
-
-fn scan_collection_specs(
-    root: &Path,
-    adapter: &Adapter,
-    diagnostics: &mut Vec<ValidateDiagnostic>,
-) -> (Vec<ScannedSpec>, usize) {
-    let scan = collect_workspace_specs(root, &adapter.specs);
-    let failed_count = scan.errors.len();
-    for err in scan.errors {
-        diagnostics.push(fail(err.diag_code, &err.path, 1, 1, err.message));
-    }
-    let specs = scan
-        .specs
-        .into_iter()
-        .map(|s| ScannedSpec {
-            rel_path: s.rel_path,
-            col: s.collection,
-            doc: s.doc,
-        })
-        .collect();
-    (specs, failed_count)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn validate_parsed_spec(
     root: &Path,
     adapter: &Adapter,
-    state_db_path: Option<&Path>,
+    overlay: &dyn SpecRuntimeOverlay,
     providers: &CompositeDomainProvider,
-    workspace_profile: Option<&ResolvedGateProfile>,
-    col: Option<&SpecCollectionConfig>,
+    workspace_profile: Option<&ResolvedWorkflow>,
+    col: Option<&SpecConfig>,
     rel_path: &str,
     spec: &SpecDocument,
     active_docs: &[SpecDocument],
     diagnostics: &mut Vec<ValidateDiagnostic>,
     warnings: &mut Vec<Value>,
 ) {
-    let mut doc_failed = false;
-
-    if matches!(spec.status, SpecStatus::Completed | SpecStatus::Cancelled) {
-        diagnostics.push(fail(
-            ErrorCode::ProfileSchemaInvalid.as_str(),
-            rel_path,
-            1,
-            1,
-            format!(
-                "spec '{}' has terminal status '{:?}' in active collection directory; move to archive/",
-                spec.id, spec.status
-            ),
-        ));
-        doc_failed = true;
-    }
-
-    if let Some(col_cfg) = col {
-        validate_spec_id_against_collection(
-            rel_path,
-            &spec.id,
-            col_cfg,
-            diagnostics,
-            warnings,
-            &mut doc_failed,
-        );
-    }
-
-    if spec.status == SpecStatus::Planned {
-        validate_planned_spec_task_statuses(
-            state_db_path,
-            rel_path,
-            spec,
-            diagnostics,
-            &mut doc_failed,
-        );
-    }
-
     let effective_profile_ref = spec
-        .profile
+        .workflow
         .as_deref()
-        .or_else(|| col.and_then(|c| c.profile.as_deref()));
+        .or_else(|| col.and_then(|c| c.workflow.as_deref()));
 
+    let mut doc_failed = false;
     let resolved_owned;
     let effective_profile = if let Some(pref) = effective_profile_ref {
-        match resolve_profile_ref_with_dirs(
+        match resolve_workflow_ref_with_dirs(
             pref,
             Some(root),
             Some(&adapter.modules),
-            Some(&adapter.profiles_dirs),
+            Some(&adapter.workflows_dirs),
         ) {
             Ok(p) => {
                 let effective_mods = effective_modules_for_profile(&adapter.modules, &p.modules);
-                let opts = ProfileValidationOptions {
+                let opts = WorkflowValidationOptions {
                     domain_providers: Some(providers),
                     acdd_modules: Some(&effective_mods),
                     require_bound_commands: effective_mods.is_enabled(SubsystemId::State.as_str()),
                 };
-                if let Err(err) = validate_profile(&p, &opts) {
+                if let Err(err) = validate_workflow(&p, &opts) {
                     diagnostics.push(fail_state_err(rel_path, &err, 1, 1));
                     doc_failed = true;
                 }
@@ -576,57 +545,24 @@ fn validate_parsed_spec(
         workspace_profile
     };
 
+    doc_failed |= validate_spec_static_checks(
+        root,
+        adapter,
+        overlay,
+        col,
+        rel_path,
+        spec,
+        active_docs,
+        effective_profile.is_none(),
+        diagnostics,
+        warnings,
+    );
+
     if let Some(profile) = effective_profile {
         if let Err(err) = validate_tasks_against_profile(spec, profile) {
             diagnostics.push(fail_state_err(rel_path, &err, 1, 1));
             doc_failed = true;
         }
-    } else {
-        // Still validate task scope syntax even when no profile resolved.
-        for task in &spec.tasks {
-            for pat in task
-                .scope
-                .iter()
-                .chain(task.extended_scope.iter().map(|e| &e.path))
-            {
-                if !is_valid_scope_glob(pat) {
-                    diagnostics.push(fail(
-                        ErrorCode::ProfileSchemaInvalid.as_str(),
-                        rel_path,
-                        1,
-                        1,
-                        format!(
-                            "task '{}' has invalid or non-normalized scope glob '{pat}'",
-                            task.task_ref
-                        ),
-                    ));
-                    doc_failed = true;
-                }
-            }
-        }
-    }
-
-    if let Some(ref guidance) = spec.guidance {
-        let empty_guidance = matches!(guidance, serde_yaml::Value::Null)
-            || guidance.as_str().is_some_and(|s| s.trim().is_empty())
-            || guidance.as_mapping().is_some_and(|m| m.is_empty())
-            || guidance.as_sequence().is_some_and(|s| s.is_empty());
-        if empty_guidance {
-            warnings.push(json!({"path": rel_path, "message": "spec guidance block is empty"}));
-        }
-    }
-
-    let state_db_override = state_db_path.map(PathBuf::from);
-    for issue in validate_spec_dependencies(
-        root,
-        adapter,
-        None,
-        state_db_override.as_deref(),
-        spec,
-        active_docs,
-    ) {
-        diagnostics.push(fail(issue.code.as_str(), rel_path, 1, 1, issue.message));
-        doc_failed = true;
     }
 
     if !doc_failed {
@@ -638,170 +574,10 @@ fn validate_parsed_spec(
     }
 }
 
-fn validate_spec_id_against_collection(
-    rel_path: &str,
-    spec_id: &str,
-    col: &SpecCollectionConfig,
-    diagnostics: &mut Vec<ValidateDiagnostic>,
-    warnings: &mut Vec<Value>,
-    doc_failed: &mut bool,
-) {
-    if col.prefixes.is_empty() {
-        return;
-    }
-    let Some((prefix, rest)) = spec_id.split_once('-') else {
-        diagnostics.push(fail(
-            ErrorCode::ProfileSchemaInvalid.as_str(),
-            rel_path,
-            1,
-            1,
-            format!(
-                "spec id '{spec_id}' must start with one of {:?}-<NNN>",
-                col.prefixes
-            ),
-        ));
-        *doc_failed = true;
-        return;
-    };
-
-    if !col
-        .prefixes
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(prefix))
-    {
-        diagnostics.push(fail(
-            ErrorCode::ProfileSchemaInvalid.as_str(),
-            rel_path,
-            1,
-            1,
-            format!(
-                "spec id '{spec_id}' prefix '{prefix}' does not match collection prefixes {:?}",
-                col.prefixes
-            ),
-        ));
-        *doc_failed = true;
-        return;
-    }
-
-    let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if digit_len == 0 {
-        diagnostics.push(fail(
-            ErrorCode::ProfileSchemaInvalid.as_str(),
-            rel_path,
-            1,
-            1,
-            format!("spec id '{spec_id}' is missing numeric suffix after prefix '{prefix}-'"),
-        ));
-        *doc_failed = true;
-        return;
-    }
-    if digit_len != col.digits {
-        diagnostics.push(fail(
-            ErrorCode::ProfileSchemaInvalid.as_str(),
-            rel_path,
-            1,
-            1,
-            format!(
-                "spec id '{spec_id}' numeric padding has {digit_len} digit(s), expected {}",
-                col.digits
-            ),
-        ));
-        *doc_failed = true;
-        return;
-    }
-
-    if !col.prefixes.iter().any(|allowed| allowed == prefix) {
-        warnings.push(json!({
-            "path": rel_path,
-            "code": "SPEC_PREFIX_CASE",
-            "message": format!("spec id '{spec_id}' prefix '{prefix}' differs in case from {:?}", col.prefixes)
-        }));
-    }
-}
-
-fn load_reconciled_task_statuses(
-    state_db_path: Option<&Path>,
-    rel_path: &str,
-    spec_id: &str,
-) -> BTreeMap<String, NodeStatus> {
-    let mut reconciled_statuses = BTreeMap::new();
-    let Some(db_path) = state_db_path.filter(|p| p.is_file()) else {
-        return reconciled_statuses;
-    };
-    let reader = SqliteStateReader::new(db_path);
-    let Ok(runs) = crate::usecases::lifecycle::list_all_runs(&reader, Some(RunStatus::Active))
-    else {
-        return reconciled_statuses;
-    };
-    let Some(run) = runs.into_iter().find(|r| {
-        r.spec_id.as_deref() == Some(spec_id) || r.spec_path.as_deref() == Some(rel_path)
-    }) else {
-        return reconciled_statuses;
-    };
-    let Ok(Some(snap)) = reader.load_run_graph(&run.run_id) else {
-        return reconciled_statuses;
-    };
-    for node in snap.nodes {
-        if let Some(tref) = node.task_ref {
-            if node.kind == crate::types::NodeKind::Task {
-                reconciled_statuses.insert(tref.as_str().to_owned(), node.status);
-            }
-        }
-    }
-    reconciled_statuses
-}
-
-fn validate_planned_spec_task_statuses(
-    state_db_path: Option<&Path>,
-    rel_path: &str,
-    spec: &SpecDocument,
-    diagnostics: &mut Vec<ValidateDiagnostic>,
-    doc_failed: &mut bool,
-) {
-    let advanced: Vec<_> = spec
-        .tasks
-        .iter()
-        .filter(|t| matches!(t.status, SpecStatus::Active | SpecStatus::Completed))
-        .collect();
-    if advanced.is_empty() {
-        return;
-    }
-
-    // Check if an active Run in state.sqlite reconciles these task statuses.
-    let reconciled_statuses = load_reconciled_task_statuses(state_db_path, rel_path, &spec.id);
-
-    for task in advanced {
-        let reconciled = matches!(
-            (
-                task.status,
-                reconciled_statuses.get(task.task_ref.as_str()).copied(),
-            ),
-            (SpecStatus::Completed, Some(NodeStatus::Completed))
-                | (
-                    SpecStatus::Active,
-                    Some(NodeStatus::InProgress | NodeStatus::Ready)
-                )
-        );
-        if !reconciled {
-            diagnostics.push(fail(
-                ErrorCode::ProfileSchemaInvalid.as_str(),
-                rel_path,
-                1,
-                1,
-                format!(
-                    "planned spec '{}' has task '{}' with unreconciled status '{:?}'",
-                    spec.id, task.task_ref, task.status
-                ),
-            ));
-            *doc_failed = true;
-        }
-    }
-}
-
 fn validate_tasks_against_profile(
     spec: &SpecDocument,
-    profile: &ResolvedGateProfile,
-) -> Result<(), StateError> {
+    profile: &ResolvedWorkflow,
+) -> Result<(), AcddError> {
     for task in &spec.tasks {
         let eff_tags = effective_task_tags(&task.tags, &profile.tags)?;
 
@@ -822,20 +598,20 @@ fn validate_tasks_against_profile(
         }
         if profile.gates.iter().any(|g| g.tasks.is_some()) {
             if matched_blocks != 1 {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
                     format!(
-                        "task '{}' matched {matched_blocks} '- tasks:' blocks in profile '{}' (expected 1)",
-                        task.task_ref, profile.profile_id
+                        "task '{}' matched {matched_blocks} '- tasks:' blocks in workflow '{}' (expected 1)",
+                        task.task_ref, profile.workflow_id
                     ),
                 ));
             }
             if matched_gates == 0 {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
                     format!(
-                        "task '{}' matched zero task gates in profile '{}'",
-                        task.task_ref, profile.profile_id
+                        "task '{}' matched zero task gates in workflow '{}'",
+                        task.task_ref, profile.workflow_id
                     ),
                 ));
             }
@@ -847,8 +623,8 @@ fn validate_tasks_against_profile(
             .chain(task.extended_scope.iter().map(|e| &e.path))
         {
             if !is_valid_scope_glob(pat) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
                     format!(
                         "task '{}' has invalid or non-normalized scope glob '{pat}'",
                         task.task_ref
@@ -858,7 +634,7 @@ fn validate_tasks_against_profile(
             if !profile.protected_paths.is_empty()
                 && scopes_overlap(std::slice::from_ref(pat), &profile.protected_paths)
             {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::OutOfScopeChanges,
                     format!(
                         "task '{}' scope '{pat}' overlaps protected_paths {:?}",
@@ -869,52 +645,4 @@ fn validate_tasks_against_profile(
         }
     }
     Ok(())
-}
-
-fn pass(path: &str, code: &str, message: String) -> ValidateDiagnostic {
-    ValidateDiagnostic {
-        status: "pass".to_owned(),
-        code: code.to_owned(),
-        path: path.to_owned(),
-        line: 1,
-        column: 1,
-        message,
-    }
-}
-
-fn fail(code: &str, path: &str, line: usize, column: usize, message: String) -> ValidateDiagnostic {
-    ValidateDiagnostic {
-        status: "fail".to_owned(),
-        code: code.to_owned(),
-        path: path.to_owned(),
-        line,
-        column,
-        message,
-    }
-}
-
-fn fail_state_err(path: &str, err: &StateError, line: usize, column: usize) -> ValidateDiagnostic {
-    fail(err.code.as_str(), path, line, column, err.to_string())
-}
-
-fn build_resp(
-    scope: &str,
-    diagnostics: Vec<ValidateDiagnostic>,
-    warnings: Vec<Value>,
-    documents_validated: usize,
-) -> ValidateResp {
-    let failed = diagnostics.iter().filter(|d| d.status == "fail").count();
-    let passed = diagnostics.iter().filter(|d| d.status == "pass").count();
-    ValidateResp {
-        valid: failed == 0,
-        scope: scope.to_owned(),
-        summary: ValidateSummary {
-            passed,
-            failed,
-            warnings: warnings.len(),
-            documents_validated,
-        },
-        diagnostics,
-        warnings,
-    }
 }

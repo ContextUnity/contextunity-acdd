@@ -1,28 +1,32 @@
 //! External cross-run/cross-workspace dependency resolution and run-level `depends_on` checks.
 
 use super::snapshot::{
-    find_latest_matching_tombstone, is_completed_archive_doc, is_git_repo, load_dep_snapshot,
-    tombstone_superseded_by_cleared, visit_archived_specs, DepSnapshot, PreloadedDepContext,
+    find_latest_matching_tombstone, load_dep_snapshot, tombstone_superseded_by_cleared, DepSnapshot,
+    PreloadedDepContext,
 };
 use super::syntax::{
-    checkout_scoped_target_selector, effective_active_run_config, load_ws_adapter,
-    resolve_linked_workspace_root, resolve_observation_context, resolve_spec_repositories,
+    checkout_scoped_target_selector, effective_active_run_config, resolve_observation_context,
     run_in_checkout, run_matches_selector, same_repository,
 };
-use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
 use crate::types::{NodeStatus, RunGraphSnapshot, RunTombstoneRecord, TerminalStatus};
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::lifecycle::{
     effective_spec_collections, list_all_runs, list_all_tombstones, primary_workspace_root,
-    read_confined_utf8,
 };
-use acdd_core::config::SpecCollectionConfig;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::config::SpecConfig;
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::canonical_root;
 use acdd_core::git::{list_owned_worktrees, read_git_blob_utf8};
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
+use acdd_spec::deps::{resolve_dep_target, DepTargetResolution};
+use acdd_spec::discovery::{
+    is_git_repo, load_ws_adapter, read_confined_utf8, resolve_linked_workspace_root,
+    resolve_spec_repositories,
+};
+use acdd_spec::overlay::{RuntimeDepResolution, SpecRuntimeOverlay};
+use acdd_spec::{parse_spec, SpecDocument, SpecStatus};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -32,13 +36,13 @@ fn verify_archived_task_completed(
     closed_commit: Option<&CommitOid>,
     task_ref: &str,
     dep_label: &str,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let raw = if is_git_repo(ws_path) {
         if let Some(commit_oid) = closed_commit {
             read_git_blob_utf8(ws_path, commit_oid.as_str(), arch_rel)
-                .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?
+                .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?
                 .ok_or_else(|| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!(
                             "spec dependency '{dep_label}' archive '{arch_rel}' not found in closed commit '{commit_oid}'"
@@ -46,12 +50,12 @@ fn verify_archived_task_completed(
                     )
                 })?
         } else if let Some(head_blob) = read_git_blob_utf8(ws_path, "HEAD", arch_rel)
-            .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?
+            .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?
         {
             head_blob
         } else {
             read_confined_utf8(ws_path, arch_rel).map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!(
                         "spec dependency '{dep_label}' archive '{arch_rel}' is unreadable: {err}"
@@ -61,37 +65,19 @@ fn verify_archived_task_completed(
         }
     } else {
         read_confined_utf8(ws_path, arch_rel).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("spec dependency '{dep_label}' archive '{arch_rel}' is unreadable: {err}"),
             )
         })?
     };
     let parsed = parse_spec(&raw).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{dep_label}' archive '{arch_rel}' is invalid: {err}"),
         )
     })?;
-    let Some(task) = parsed
-        .tasks
-        .iter()
-        .find(|t| t.task_ref.as_str() == task_ref)
-    else {
-        return Err(StateError::new(
-            ErrorCode::GateVerificationFailed,
-            format!(
-                "spec dependency '{dep_label}' does not contain task '{task_ref}' in '{arch_rel}'"
-            ),
-        ));
-    };
-    if task.status != SpecStatus::Completed {
-        return Err(StateError::new(
-            ErrorCode::GateVerificationFailed,
-            format!("spec dependency '{dep_label}' task '{task_ref}' is not completed"),
-        ));
-    }
-    Ok(())
+    archived_task_outcome(&parsed, arch_rel, task_ref, dep_label)
 }
 
 /// Evaluate external cross-run/cross-workspace dependencies via strictly read-only [`SqliteStateReader`].
@@ -100,7 +86,7 @@ fn verify_archived_task_completed(
 pub fn collect_external_satisfied_deps(
     config: &StateEngineConfig,
     graph: &RunGraphSnapshot,
-) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
+) -> Result<Vec<(String, RunId, TaskRef)>, AcddError> {
     collect_external_satisfied_deps_with_owned(config, graph, None)
 }
 
@@ -108,7 +94,7 @@ pub(crate) fn collect_external_satisfied_deps_with_owned(
     config: &StateEngineConfig,
     graph: &RunGraphSnapshot,
     owned: Option<&[PathBuf]>,
-) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
+) -> Result<Vec<(String, RunId, TaskRef)>, AcddError> {
     collect_external_satisfied_deps_cached(config, graph, owned, &mut BTreeMap::new())
 }
 
@@ -117,7 +103,7 @@ pub(crate) type ExternalDepCache = BTreeMap<
     (
         PathBuf,
         SqliteStateReader,
-        BTreeMap<String, SpecCollectionConfig>,
+        BTreeMap<String, SpecConfig>,
         DepSnapshot,
     ),
 >;
@@ -127,7 +113,14 @@ pub(crate) fn collect_external_satisfied_deps_cached(
     graph: &RunGraphSnapshot,
     owned: Option<&[PathBuf]>,
     contexts: &mut ExternalDepCache,
-) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
+) -> Result<Vec<(String, RunId, TaskRef)>, AcddError> {
+    let needs_eval = graph.dependencies.iter().any(|dep| {
+        dep.depends_on_run_id != graph.run.run_id
+            && (!dep.satisfied || Path::new(&dep.depends_on_workspace) != Path::new("."))
+    });
+    if !needs_eval {
+        return Ok(Vec::new());
+    }
     let primary = primary_workspace_root(config);
     let owned_buf;
     let owned = match owned {
@@ -194,76 +187,18 @@ pub(crate) fn collect_external_satisfied_deps_cached(
     Ok(satisfied)
 }
 
-pub(crate) enum DepTargetResolution {
-    ActiveSpec {
-        cancelled: bool,
-        task_exists: bool,
-    },
-    ActiveRun {
-        run_id: RunId,
-        spec_id: Option<String>,
-        task_exists: bool,
-        task_completed: bool,
-    },
-    Tombstone {
-        cleared: bool,
-        task_outcome: Result<(), StateError>,
-    },
-    ArchivedSpec {
-        rel_path: String,
-        completed_doc: bool,
-        task_exists: bool,
-        task_completed: bool,
-    },
-    NotFound,
-}
-
-fn match_archived_spec_content(
-    raw: &str,
-    rel_posix: String,
-    run_sel: &str,
-    task_sel: Option<&str>,
-) -> Option<DepTargetResolution> {
-    let parsed = parse_spec(raw).ok()?;
-    if parsed.id != run_sel {
-        return None;
-    }
-    Some(archived_resolution(&parsed, rel_posix, task_sel))
-}
-
-fn archived_resolution(
-    parsed: &SpecDocument,
-    rel_posix: String,
-    task_sel: Option<&str>,
-) -> DepTargetResolution {
-    let completed_doc = is_completed_archive_doc(parsed);
-    let (task_exists, task_completed) = match task_sel {
-        Some(t_ref) => match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref) {
-            Some(t) => (true, t.status == SpecStatus::Completed),
-            None => (false, false),
-        },
-        None => (true, true),
-    };
-    DepTargetResolution::ArchivedSpec {
-        rel_path: rel_posix,
-        completed_doc,
-        task_exists,
-        task_completed,
-    }
-}
-
 fn archived_task_outcome(
     doc: &SpecDocument,
     path: &str,
     task: &str,
     label: &str,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     match doc.tasks.iter().find(|t| t.task_ref.as_str() == task) {
-        None => Err(StateError::new(
+        None => Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{label}' does not contain task '{task}' in '{path}'"),
         )),
-        Some(t) if t.status != SpecStatus::Completed => Err(StateError::new(
+        Some(t) if t.status != SpecStatus::Completed => Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{label}' task '{task}' is not completed"),
         )),
@@ -271,13 +206,13 @@ fn archived_task_outcome(
     }
 }
 
-fn resolve_active_run_dep(
+pub(crate) fn resolve_active_run_dep(
     reader: &dyn StateReader,
     run_sel: &str,
     task_sel: Option<&str>,
     run_checkout: Option<&Path>,
     preloaded: Option<&PreloadedDepContext<'_>>,
-) -> Result<Option<DepTargetResolution>, StateError> {
+) -> Result<Option<RuntimeDepResolution>, AcddError> {
     let owned_runs;
     let runs = if let Some(ctx) = preloaded {
         ctx.runs
@@ -306,7 +241,7 @@ fn resolve_active_run_dep(
         }
         None => (true, false),
     };
-    Ok(Some(DepTargetResolution::ActiveRun {
+    Ok(Some(RuntimeDepResolution::ActiveRun {
         run_id: run.run_id.clone(),
         spec_id: run.spec_id.clone(),
         task_exists,
@@ -314,14 +249,14 @@ fn resolve_active_run_dep(
     }))
 }
 
-fn resolve_tombstone_dep(
+pub(crate) fn resolve_tombstone_dep(
     ws_path: &Path,
     reader: &dyn StateReader,
     run_sel: &str,
     task_sel: Option<&str>,
     dep_label: &str,
     preloaded: Option<&PreloadedDepContext<'_>>,
-) -> Result<Option<DepTargetResolution>, StateError> {
+) -> Result<Option<RuntimeDepResolution>, AcddError> {
     let owned_tombs;
     let tombs = if let Some(ctx) = preloaded {
         ctx.tombstones
@@ -342,7 +277,7 @@ fn resolve_tombstone_dep(
         } else if latest.is_ephemeral && t_ref == "goal" {
             Ok(())
         } else {
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("dependency '{dep_label}' has no archive to verify task '{t_ref}'"),
             ))
@@ -350,7 +285,7 @@ fn resolve_tombstone_dep(
     } else {
         Ok(())
     };
-    Ok(Some(DepTargetResolution::Tombstone {
+    Ok(Some(RuntimeDepResolution::Tombstone {
         cleared,
         task_outcome,
     }))
@@ -363,7 +298,7 @@ fn resolve_archived_tombstone_task(
     t_ref: &str,
     dep_label: &str,
     preloaded: Option<&PreloadedDepContext<'_>>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if let Some(ctx) = preloaded {
         let checkout_doc = latest
             .closed_commit
@@ -397,90 +332,51 @@ fn resolve_archived_tombstone_task(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_dep_target(
-    ws_path: &Path,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
-    reader_opt: Option<&dyn StateReader>,
-    active_specs: Option<&[SpecDocument]>,
-    run_sel: &str,
-    task_sel: Option<&str>,
-    dep_label: &str,
-    run_checkout: Option<&Path>,
-    preloaded: Option<&PreloadedDepContext<'_>>,
-) -> Result<DepTargetResolution, StateError> {
-    if let Some(reader) = reader_opt {
-        if let Some(res) =
-            resolve_active_run_dep(reader, run_sel, task_sel, run_checkout, preloaded)?
-        {
-            return Ok(res);
-        }
+struct ReaderRuntimeOverlay<'a> {
+    reader: &'a dyn StateReader,
+    preloaded: Option<&'a PreloadedDepContext<'a>>,
+}
+
+impl SpecRuntimeOverlay for ReaderRuntimeOverlay<'_> {
+    fn resolve_active_run_dep(
+        &self,
+        _ws_path: &Path,
+        _collections: &BTreeMap<String, SpecConfig>,
+        run_sel: &str,
+        task_sel: Option<&str>,
+        run_checkout: Option<&Path>,
+    ) -> Result<Option<RuntimeDepResolution>, AcddError> {
+        resolve_active_run_dep(self.reader, run_sel, task_sel, run_checkout, self.preloaded)
     }
 
-    if let Some(target_doc) = active_specs.and_then(|specs| specs.iter().find(|s| s.id == run_sel))
-    {
-        let cancelled = target_doc.status == SpecStatus::Cancelled;
-        let task_exists = task_sel.is_none_or(|t_ref| {
-            target_doc
-                .tasks
-                .iter()
-                .any(|t| t.task_ref.as_str() == t_ref)
-        });
-        return Ok(DepTargetResolution::ActiveSpec {
-            cancelled,
-            task_exists,
-        });
+    fn resolve_tombstone_dep(
+        &self,
+        ws_path: &Path,
+        _collections: &BTreeMap<String, SpecConfig>,
+        run_sel: &str,
+        task_sel: Option<&str>,
+        dep_label: &str,
+    ) -> Result<Option<RuntimeDepResolution>, AcddError> {
+        resolve_tombstone_dep(
+            ws_path,
+            self.reader,
+            run_sel,
+            task_sel,
+            dep_label,
+            self.preloaded,
+        )
     }
-
-    if let Some(reader) = reader_opt {
-        if let Some(res) =
-            resolve_tombstone_dep(ws_path, reader, run_sel, task_sel, dep_label, preloaded)?
-        {
-            return Ok(res);
-        }
-    }
-
-    if let Some(ctx) = preloaded {
-        return Ok(ctx
-            .archived_specs
-            .get(run_sel)
-            .map_or(DepTargetResolution::NotFound, |(path, doc)| {
-                archived_resolution(doc, path.clone(), task_sel)
-            }));
-    }
-    let mut scratch_warnings = Vec::new();
-    if let Some(found) = visit_archived_specs(
-        ws_path,
-        collections,
-        false,
-        None,
-        &mut scratch_warnings,
-        |_, rel_posix, raw| match_archived_spec_content(raw, rel_posix, run_sel, task_sel),
-    )? {
-        return Ok(found);
-    }
-    if !scratch_warnings.is_empty() {
-        let joined = scratch_warnings.join("; ");
-        let code = if joined.contains("HEAD") {
-            ErrorCode::ExternalGitDrift
-        } else {
-            ErrorCode::ProfileSchemaInvalid
-        };
-        return Err(StateError::new(code, joined));
-    }
-
-    Ok(DepTargetResolution::NotFound)
 }
 
 fn is_external_task_satisfied(
     reader: &dyn StateReader,
     ws_path: &Path,
-    collections: &BTreeMap<String, SpecCollectionConfig>,
+    collections: &BTreeMap<String, SpecConfig>,
     target_run_id: &RunId,
     target_task_ref: &TaskRef,
     run_checkout: Option<&Path>,
     preloaded: &PreloadedDepContext<'_>,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let task_sel = if target_task_ref.is_whole_spec() {
         None
     } else {
@@ -488,16 +384,20 @@ fn is_external_task_satisfied(
     };
     let persisted = preloaded.runs.iter().find(|r| r.run_id == *target_run_id);
     let target = checkout_scoped_target_selector(persisted, target_run_id.as_str(), run_checkout);
+    let overlay = ReaderRuntimeOverlay {
+        reader,
+        preloaded: Some(preloaded),
+    };
     match resolve_dep_target(
         ws_path,
         collections,
-        Some(reader),
+        &overlay,
         None,
+        Some(preloaded.archived_specs),
         target,
         task_sel,
         target_run_id.as_str(),
         run_checkout,
-        Some(preloaded),
     )? {
         DepTargetResolution::ActiveSpec { .. } | DepTargetResolution::NotFound => Ok(false),
         DepTargetResolution::ActiveRun { task_completed, .. } => Ok(task_completed),
@@ -519,7 +419,7 @@ pub fn verify_run_level_depends_on(
     config: &StateEngineConfig,
     local_reader: &dyn StateReader,
     doc: &SpecDocument,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if doc.depends_on.is_empty() {
         return Ok(());
     }
@@ -530,14 +430,14 @@ pub fn verify_run_level_depends_on(
     for dep_raw in &doc.depends_on {
         let trimmed = dep_raw.trim();
         if trimmed.is_empty() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 "spec depends_on entry cannot be empty",
             ));
         }
         let (ws_path, ws_collections, run_sel, reader_owned): (
             PathBuf,
-            BTreeMap<String, SpecCollectionConfig>,
+            BTreeMap<String, SpecConfig>,
             &str,
             Option<SqliteStateReader>,
         ) = if let Some((ws_alias, rest)) = trimmed.split_once('/') {
@@ -586,10 +486,15 @@ pub fn verify_run_level_depends_on(
             None => (run_sel, None),
         };
 
+        let overlay = ReaderRuntimeOverlay {
+            reader,
+            preloaded: None,
+        };
         match resolve_dep_target(
             &ws_path,
             &ws_collections,
-            Some(reader),
+            &overlay,
+            None,
             None,
             run_sel,
             task_sel,
@@ -597,7 +502,6 @@ pub fn verify_run_level_depends_on(
             (trimmed.contains('/')
                 && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&primary))
             .then_some(ws_path.as_path()),
-            None,
         )? {
             DepTargetResolution::Tombstone {
                 cleared: false,
@@ -606,7 +510,7 @@ pub fn verify_run_level_depends_on(
                 task_outcome?;
             }
             DepTargetResolution::Tombstone { cleared: true, .. } => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!(
                         "spec dependency '{trimmed}' was cleared (terminal_status='cleared') and cannot satisfy depends_on"
@@ -620,7 +524,7 @@ pub fn verify_run_level_depends_on(
                 task_completed,
             } => {
                 if !completed_doc {
-                    return Err(StateError::new(
+                    return Err(AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!(
                             "spec dependency '{trimmed}' targets non-completed archive '{rel_path}'"
@@ -629,7 +533,7 @@ pub fn verify_run_level_depends_on(
                 }
                 if let Some(t_ref) = task_sel {
                     if !task_exists {
-                        return Err(StateError::new(
+                        return Err(AcddError::new(
                             ErrorCode::GateVerificationFailed,
                             format!(
                                 "spec dependency '{trimmed}' does not contain task '{t_ref}' in '{rel_path}'"
@@ -637,7 +541,7 @@ pub fn verify_run_level_depends_on(
                         ));
                     }
                     if !task_completed {
-                        return Err(StateError::new(
+                        return Err(AcddError::new(
                             ErrorCode::GateVerificationFailed,
                             format!("spec dependency '{trimmed}' task '{t_ref}' is not completed"),
                         ));
@@ -647,7 +551,7 @@ pub fn verify_run_level_depends_on(
             DepTargetResolution::ActiveSpec { .. }
             | DepTargetResolution::ActiveRun { .. }
             | DepTargetResolution::NotFound => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!("spec dependency '{trimmed}' is not completed"),
                 ));

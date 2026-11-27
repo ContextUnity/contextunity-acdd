@@ -8,7 +8,7 @@ use crate::machine::{
     MachineGateDef, MachineGraphItem, MachineProfileInput, MachineProofKind, SubmitEvaluation,
     SubmitInput,
 };
-use crate::profile::ResolvedGateProfile;
+use crate::workflow::ResolvedWorkflow;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     GateNodeRecord, GateTraceRecord, NodeKind, NodeStatus, RunGraphSnapshot, SaveAction,
@@ -23,7 +23,7 @@ use crate::usecases::lifecycle::{
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, resolve_commands, split_qualified_check};
 use acdd_core::config::CLAIM_TRAILER_KEY;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{GateId, NodeCursor, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
@@ -35,7 +35,7 @@ pub(super) struct SubmitPreflight {
     pub(super) primary: std::path::PathBuf,
     pub(super) target_worktree: std::path::PathBuf,
     pub(super) snapshot: RunGraphSnapshot,
-    pub(super) resolved_profile: ResolvedGateProfile,
+    pub(super) resolved_profile: ResolvedWorkflow,
     pub(super) node: GateNodeRecord,
     pub(super) machine_gate: MachineGateDef,
     pub(super) cursor: NodeCursor,
@@ -50,7 +50,7 @@ pub(super) fn inspect_submit_preflight(
     backend: &dyn StateBackend,
     primary: &Path,
     req: &SubmitReq,
-) -> Result<Option<SubmitPreflight>, StateError> {
+) -> Result<Option<SubmitPreflight>, AcddError> {
     let loaded =
         load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
@@ -65,7 +65,7 @@ pub(super) fn inspect_submit_preflight(
         return Ok(None);
     };
     if node.status == NodeStatus::InProgress && node.worker_id.as_ref() != Some(&req.worker_id) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskAlreadyClaimed,
             format!("node '{}' is claimed by another worker", node.node_id),
         ));
@@ -198,7 +198,7 @@ pub(super) fn observe_existing_trace_freshness(
     preflight: &SubmitPreflight,
     req: &SubmitReq,
     tr: &GateTraceRecord,
-) -> Result<Option<String>, StateError> {
+) -> Result<Option<String>, AcddError> {
     let SubmitPreflight {
         primary,
         target_worktree,
@@ -212,8 +212,8 @@ pub(super) fn observe_existing_trace_freshness(
         ..
     } = preflight;
     let gate_def = find_profile_gate_def(resolved_profile, cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -249,6 +249,7 @@ pub(super) fn observe_existing_trace_freshness(
         test_target: effective_test_target.map(ToOwned::to_owned),
         path_policy: policy.clone(),
         baseline_ref: crate::context::baseline_ref_for_node(node),
+        node_tags: node.tags.clone(),
     };
     let mut live_index_gens = Vec::new();
     let mut live_salts = Vec::new();
@@ -257,8 +258,8 @@ pub(super) fn observe_existing_trace_freshness(
         match provider
             .observe_freshness(&chk.check, &chk.with, &check_req)
             .map_err(|err| {
-                StateError::from_anyhow(&err).cloned().unwrap_or_else(|| {
-                    StateError::new(
+                AcddError::from_anyhow(&err).cloned().unwrap_or_else(|| {
+                    AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!(
                             "domain check '{}' freshness check errored: {err}",
@@ -305,7 +306,7 @@ fn mark_drifted_need_predecessors_stale(
     node: &GateNodeRecord,
     observations: &ValidatedObservations,
     req: &SubmitReq,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let mut probe_profile = machine_profile.clone();
     for item in &mut probe_profile.gates {
         match item {
@@ -365,7 +366,7 @@ fn mark_drifted_need_predecessors_stale(
 pub(super) fn ensure_fresh_trace(
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
-    resolved_profile: &ResolvedGateProfile,
+    resolved_profile: &ResolvedWorkflow,
     machine_profile: &MachineProfileInput,
     node: &GateNodeRecord,
     machine_gate: &MachineGateDef,
@@ -376,7 +377,7 @@ pub(super) fn ensure_fresh_trace(
     policy: &WorkspacePathPolicy,
     req: &SubmitReq,
     verified_hint: Option<&(TreeOid, String)>,
-) -> Result<Option<String>, StateError> {
+) -> Result<Option<String>, AcddError> {
     if machine_gate.save.immutable {
         if let Some(ref claim_tree) = node.claim_tree {
             if claim_tree != current_tree {
@@ -394,7 +395,7 @@ pub(super) fn ensure_fresh_trace(
                     },
                     req,
                 )?;
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::TaskCandidateMismatch,
                     format!(
                         "immutable gate '{}' working tree '{}' drifted from claim_tree '{}'",
@@ -417,8 +418,8 @@ pub(super) fn ensure_fresh_trace(
     }
 
     let _gate_def = find_profile_gate_def(resolved_profile, cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -432,7 +433,7 @@ pub(super) fn ensure_fresh_trace(
         }
     }
 
-    Err(StateError::new(
+    Err(AcddError::new(
         ErrorCode::TaskProofUnobserved,
         format!(
             "no fresh passing verify trace for '{}'; run verify before submit",

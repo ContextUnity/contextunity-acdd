@@ -173,7 +173,7 @@ impl ServerHandler for Server {
 mod tests {
     use super::*;
     use crate::mcp::response;
-    use acdd_core::errors::{ErrorCode, StateError};
+    use acdd_core::errors::{ErrorCode, AcddError};
     use acdd_core::ports::{
         is_builtin_mcp_tool, DomainActionReq, DomainActionResult, DomainCapabilities,
         DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider, DomainToolDef,
@@ -573,7 +573,7 @@ mod tests {
                 Some("./symlinked-wt"),
             )
             .unwrap_err();
-            let state_err = StateError::from_anyhow(&err).expect("StateError");
+            let state_err = AcddError::from_anyhow(&err).expect("AcddError");
             assert_eq!(state_err.code, ErrorCode::ExternalGitDrift);
         }
     }

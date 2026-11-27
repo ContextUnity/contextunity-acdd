@@ -6,8 +6,7 @@ use crate::git_ops::worktree::{
     remove_worktree_and_branch, CreateWorktreeReq, RepoWorktreeLayout,
 };
 use crate::machine::{build_initial_run_graph, BuildGraphInput};
-use crate::profile::{resolve_optional_profile_ref_with_dirs, ResolvedGateProfile};
-use crate::spec::{materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus};
+use crate::workflow::{resolve_optional_workflow_ref_with_dirs, ResolvedWorkflow};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, ValidatedObservations, WorktreeLifecycle,
@@ -22,11 +21,12 @@ use crate::usecases::lifecycle::{
     validate_profile_fail_closed, with_repo_lock_and_maintenance_unchecked,
 };
 use acdd_core::config::{Adapter, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::ids::{RunId, RunName, TaskRef};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::telemetry::TraceId;
+use acdd_spec::{materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus};
 use serde_json::json;
 use std::path::Path;
 
@@ -41,17 +41,17 @@ pub(crate) fn handle_start_dyn(
     provider: &CompositeDomainProvider,
     req: StartReq,
     source_override: Option<&Adapter>,
-) -> Result<StartResp, StateError> {
+) -> Result<StartResp, AcddError> {
     ensure_state_enabled(config)?;
     if req.spec_path.is_some() == req.goal.is_some() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "start requires exactly one of 'spec_path' or 'goal'",
         ));
     }
     if req.in_place && (req.worktree || req.worktree_path.is_some()) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "conflicting isolation flags: cannot combine '--in-place' with '--worktree' or '--worktree-path'",
         ));
     }
@@ -77,7 +77,7 @@ fn start_holding_repo_lock(
     primary: &Path,
     req: StartReq,
     source_override: Option<&Adapter>,
-) -> Result<StartResp, StateError> {
+) -> Result<StartResp, AcddError> {
     let _ = resume_pending_tombstone_cleanups_dyn(config, backend, layout)?;
 
     let caller = resolve_source_checkout(primary, layout, &config.worktree, false)?;
@@ -114,8 +114,8 @@ fn start_holding_repo_lock(
         let raw_content = read_confined_utf8(source, &norm_rel)?;
         let doc = parse_spec(&raw_content)?;
         if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
                 format!(
                     "cannot start run from spec '{}' with terminal status '{:?}'",
                     doc.id, doc.status
@@ -127,9 +127,9 @@ fn start_holding_repo_lock(
         let col_profile = col
             .as_deref()
             .and_then(|key| collections.get(key))
-            .and_then(|value| value.profile.as_deref());
+            .and_then(|value| value.workflow.as_deref());
         let profile_ref = req
-            .profile
+            .workflow
             .as_deref()
             .map(|reference| {
                 Path::new(reference)
@@ -138,13 +138,13 @@ fn start_holding_repo_lock(
                     .and_then(Path::to_str)
                     .unwrap_or(reference)
             })
-            .or(doc.profile.as_deref())
+            .or(doc.workflow.as_deref())
             .or(col_profile);
-        let resolved = resolve_optional_profile_ref_with_dirs(
+        let resolved = resolve_optional_workflow_ref_with_dirs(
             profile_ref,
             Some(source),
             Some(&config.modules),
-            Some(&checkout.profiles_dirs),
+            Some(&checkout.workflows_dirs),
         )?;
         validate_profile_fail_closed(config, &resolved, provider, true)?;
         run_id = generate_run_id(&doc.id)?;
@@ -162,11 +162,11 @@ fn start_holding_repo_lock(
     } else {
         let requested_scope = req.scope;
         let goal_text = req.goal.as_deref().unwrap_or("");
-        let mut resolved = resolve_optional_profile_ref_with_dirs(
-            req.profile.as_deref(),
+        let mut resolved = resolve_optional_workflow_ref_with_dirs(
+            req.workflow.as_deref(),
             Some(primary),
             Some(&config.modules),
-            Some(&config.profiles_dirs),
+            Some(&config.workflows_dirs),
         )?;
         validate_profile_fail_closed(config, &resolved, provider, true)?;
         run_id = generate_run_id("goal")?;
@@ -178,13 +178,17 @@ fn start_holding_repo_lock(
         let effective_scope = if !has_tasks_block {
             for pattern in &requested_scope {
                 if !acdd_core::path_policy::is_valid_scope_glob(pattern) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::SpecSchemaInvalid,
                         format!("goal run has invalid or non-normalized scope glob '{pattern}'"),
                     ));
                 }
             }
-            if requested_scope.is_empty() && resolved.profile_id == "spec_planning" {
+            if requested_scope.is_empty()
+                && (resolved.workflow_id == "spec_planning"
+                    || resolved.workflow_id == "spec_planning.yaml"
+                    || resolved.workflow_id.ends_with("/spec_planning.yaml"))
+            {
                 let docs_roots = source_override
                     .map(|adapter| adapter.docs.clone())
                     .unwrap_or_else(|| {
@@ -210,15 +214,15 @@ fn start_holding_repo_lock(
             &run_id,
             &run_name,
             goal_text,
-            &resolved.profile_id,
+            &resolved.workflow_id,
             &effective_scope,
             &[],
             has_tasks_block,
         )?;
         let ephemeral_path = format!("{ACDD_DIR}/run/{}/spec.md", run_id);
         let ephemeral_abs = checked_child(primary, Path::new(&ephemeral_path)).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
                 format!("invalid ephemeral spec path '{ephemeral_path}': {err}"),
             )
         })?;
@@ -260,16 +264,16 @@ fn start_holding_repo_lock(
     );
 
     let resolved_yaml = serde_yaml::to_string(&resolved_profile).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to serialize profile.resolved.yaml: {err}"),
         )
     })?;
     let profile_snapshot_rel = format!("{ACDD_DIR}/run/{}/profile.resolved.yaml", run_id.as_str());
     let profile_snapshot_path =
         checked_child(primary, Path::new(&profile_snapshot_rel)).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid profile snapshot path '{profile_snapshot_rel}': {err}"),
             )
         })?;
@@ -333,10 +337,10 @@ fn start_holding_repo_lock(
     if let Some(worktree) = managed_wt_req.as_mut().filter(|_| !is_ephemeral) {
         worktree
             .copy_uncommitted_paths
-            .extend(crate::profile::inherit::profile_lineage_paths(
+            .extend(crate::workflow::inherit::workflow_lineage_paths(
                 spec_source,
-                &resolved_profile.profile_id,
-                &checkout.profiles_dirs,
+                &resolved_profile.workflow_id,
+                &checkout.workflows_dirs,
             )?);
         if source != primary {
             worktree
@@ -391,11 +395,11 @@ fn start_holding_repo_lock(
             if !graph.run.is_ephemeral {
                 let destination =
                     checkout_config(config, primary, &created.worktree, source_override)?;
-                let mut dest_profile = resolve_optional_profile_ref_with_dirs(
-                    Some(&resolved_profile.profile_id),
+                let mut dest_profile = resolve_optional_workflow_ref_with_dirs(
+                    Some(&resolved_profile.workflow_id),
                     Some(&created.worktree),
                     Some(&config.modules),
-                    Some(&destination.profiles_dirs),
+                    Some(&destination.workflows_dirs),
                 )?;
                 apply_effective_isolation(
                     &mut dest_profile,
@@ -403,9 +407,9 @@ fn start_holding_repo_lock(
                     effective_worktrees,
                 );
                 if to_machine_profile(&dest_profile)?.profile_json != machine_profile.profile_json {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        "managed checkout profile differs from source",
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
+                        "managed checkout workflow differs from source",
                     ));
                 }
                 let dest_doc = parse_spec(&read_confined_utf8(
@@ -432,8 +436,8 @@ fn start_holding_repo_lock(
                     &checkout,
                 )?;
                 if dest_spec != source_spec {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::SpecSchemaInvalid,
                         "managed checkout dependency bindings differ from source",
                     ));
                 }
@@ -449,13 +453,13 @@ fn start_holding_repo_lock(
                     dep.satisfied = was_satisfied;
                 }
                 if dest_satisfied != obs.external_satisfied_deps {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::SpecSchemaInvalid,
                         "managed checkout dependency satisfaction differs from source",
                     ));
                 }
             }
-            Ok::<(), StateError>(())
+            Ok::<(), AcddError>(())
         })();
         if let Err(err) = checked {
             remove_worktree_and_branch(
@@ -480,8 +484,8 @@ fn start_holding_repo_lock(
 
     if let Some((eph_abs, rendered_spec)) = ephemeral_spec_to_write {
         atomic_write(&eph_abs, rendered_spec.as_bytes(), false).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to materialize ephemeral spec '{}': {err}",
                     eph_abs.display()
@@ -490,8 +494,8 @@ fn start_holding_repo_lock(
         })?;
     }
     atomic_write(&profile_snapshot_path, resolved_yaml.as_bytes(), false).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "failed to write resolved profile snapshot '{}': {err}",
                 profile_snapshot_path.display()
@@ -514,7 +518,7 @@ fn start_holding_repo_lock(
         }),
     );
 
-    let gate_plan = ResolvedGateProfile::dispatch_plan(&resolved_profile);
+    let gate_plan = ResolvedWorkflow::dispatch_plan(&resolved_profile);
     Ok(StartResp {
         run: graph.run,
         ready_nodes,
@@ -574,7 +578,7 @@ fn apply_initial_external_dep_satisfaction(
     }
 }
 
-fn assign_root_gate_scopes(gates: &mut [crate::profile::GateDef], scope: &[String]) {
+fn assign_root_gate_scopes(gates: &mut [crate::workflow::GateDef], scope: &[String]) {
     for gate in gates {
         if gate.tasks.is_none() && gate.scope.is_empty() {
             gate.scope = scope.to_vec();
@@ -637,9 +641,9 @@ fn derive_spec_planning_scope(
         }
     }
 
-    for dir in &checkout.profiles_dirs {
+    for dir in &checkout.workflows_dirs {
         push_entry(dir, false);
     }
-    push_entry(&format!("{ACDD_DIR}/profiles/**"), false);
+    push_entry(&format!("{ACDD_DIR}/workflows/**"), false);
     scope
 }

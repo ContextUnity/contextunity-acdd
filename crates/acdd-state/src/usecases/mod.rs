@@ -9,6 +9,7 @@ pub mod config;
 pub mod deps;
 pub mod dto;
 pub mod lifecycle;
+pub mod overlay;
 pub mod queries;
 pub mod roadmap;
 pub mod run;
@@ -24,7 +25,7 @@ use self::commands::{handle_start_dyn, handle_sync_dyn};
 use crate::store::sqlite::{SqliteStateBackend, SqliteStateReader};
 use crate::store::traits::{StateBackend, StateReader};
 use acdd_core::config::Adapter;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::subsystems::SubsystemId;
 use std::sync::Arc;
@@ -41,7 +42,7 @@ impl StateQueryEngine {
     pub fn open_read_only(
         config: StateEngineConfig,
         provider: Arc<CompositeDomainProvider>,
-    ) -> Result<Self, StateError> {
+    ) -> Result<Self, AcddError> {
         let (db_path, _) = config.resolved_state_db_path();
         Ok(Self {
             config,
@@ -51,7 +52,7 @@ impl StateQueryEngine {
     }
 
     /// Execute a read-only [`StateQuery`], enforcing `modules.state` fail-closed.
-    pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, StateError> {
+    pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, AcddError> {
         queries::execute_query(&self.config, self.reader.as_ref(), &self.provider, query)
     }
 }
@@ -68,9 +69,9 @@ impl StateEngine {
     pub fn open(
         config: StateEngineConfig,
         provider: Arc<CompositeDomainProvider>,
-    ) -> Result<Self, StateError> {
+    ) -> Result<Self, AcddError> {
         if !config.modules.is_subsystem_enabled(SubsystemId::State) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::FeatureDisabled,
                 "state subsystem is disabled in modules:",
             ));
@@ -103,7 +104,7 @@ impl StateEngine {
     }
 
     /// Execute a mutating or plugin [`StateCommand`].
-    pub fn execute(&self, cmd: StateCommand) -> Result<StateCommandOutput, StateError> {
+    pub fn execute(&self, cmd: StateCommand) -> Result<StateCommandOutput, AcddError> {
         execute_on(&self.config, self.backend.as_ref(), &self.provider, cmd)
     }
 
@@ -112,7 +113,7 @@ impl StateEngine {
         &self,
         cmd: StateCommand,
         source_override: &Adapter,
-    ) -> Result<StateCommandOutput, StateError> {
+    ) -> Result<StateCommandOutput, AcddError> {
         execute_on_dyn(
             &self.config,
             self.backend.as_ref(),
@@ -129,7 +130,7 @@ pub(crate) fn execute_on<B: StateBackend + Send + Sync>(
     backend: &B,
     provider: &CompositeDomainProvider,
     cmd: StateCommand,
-) -> Result<StateCommandOutput, StateError> {
+) -> Result<StateCommandOutput, AcddError> {
     execute_on_dyn(config, backend, provider, cmd, None)
 }
 
@@ -137,13 +138,13 @@ pub(crate) fn execute_on<B: StateBackend + Send + Sync>(
 pub fn execute_snapshot_readonly(
     config: &StateEngineConfig,
     req: SnapshotReq,
-) -> Result<StateCommandOutput, StateError> {
+) -> Result<StateCommandOutput, AcddError> {
     lifecycle::ensure_state_enabled(config)?;
     acdd_core::fs::check_git_entry_no_symlinks(&config.workspace_root)
-        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let wt = req.worktree.as_deref().unwrap_or(&config.worktree);
     acdd_core::fs::check_git_entry_no_symlinks(wt)
-        .map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        .map_err(|e| AcddError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let reader = crate::store::sqlite::SqliteStateReader::new(config.resolved_state_db_path().0);
     commands::task_ops::handle_snapshot_dyn(config, &reader, req).map(StateCommandOutput::Snapshot)
 }
@@ -154,7 +155,7 @@ fn execute_on_dyn(
     provider: &CompositeDomainProvider,
     cmd: StateCommand,
     source_override: Option<&Adapter>,
-) -> Result<StateCommandOutput, StateError> {
+) -> Result<StateCommandOutput, AcddError> {
     match &cmd {
         StateCommand::CallPluginTool(req) if req.run.is_none() && req.node.is_none() => {}
         _ => lifecycle::ensure_state_enabled(config)?,

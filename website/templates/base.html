@@ -42,7 +42,7 @@
         <a href="{{ get_url(path='/') }}#state">State</a>
         <a href="{{ get_url(path='/') }}#code-index">Index</a>
         <a href="{{ get_url(path='/') }}#linter">Lint</a>
-        <a href="{{ get_url(path='/') }}#profiles">Profiles</a>
+        <a href="{{ get_url(path='/') }}#workflows">Workflows</a>
         <a href="{{ get_url(path='/') }}#coming-soon">Roadmap</a>
       </nav>
 
@@ -70,7 +70,7 @@
         <a href="{{ get_url(path='@/docs/state/_index.md') }}">State</a>
         <a href="{{ get_url(path='@/docs/index/_index.md') }}">Index</a>
         <a href="{{ get_url(path='@/docs/lint/_index.md') }}">Lint</a>
-        <a href="{{ get_url(path='@/docs/profiles/_index.md') }}">Profiles</a>
+        <a href="{{ get_url(path='@/docs/workflows/_index.md') }}">Workflows</a>
         <a href="mailto:acdd@contextunity.com">acdd@contextunity.com</a>
         <a href="{{ config.extra.github_url }}" target="_blank" rel="noopener">GitHub</a>
       </div>
@@ -170,7 +170,7 @@
 
     // Mouse-tracking glass spotlight on cards
     const spotlightCards = document.querySelectorAll(
-      ".contrast-card, .adopt-card, .exec-card, .index-card, .linked-ws-panel, .linter-card, .profile-row, .task-step, .lang-strip, .hub-card"
+      ".contrast-card, .adopt-card, .exec-card, .index-card, .linked-ws-panel, .linter-card, .workflow-row, .task-step, .lang-strip, .hub-card"
     );
     spotlightCards.forEach((card) => {
       card.addEventListener("pointermove", (e) => {

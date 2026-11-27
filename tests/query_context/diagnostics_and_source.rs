@@ -2152,7 +2152,7 @@ fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
         "sensitive:\n  - \".env\"\n  - \"managed/secret_caller.py\"\n",
     );
     w.write(".env", "SECRET_TOKEN=baseline\n");
-    w.write(".acdd/profile.yaml", "version: 2\n");
+    w.write(".acdd/workflows/default.yaml", "version: 2\n");
     w.write("managed/spec.md", "baseline spec\n");
     w.write(
         "managed/secret_caller.py",
@@ -2189,7 +2189,7 @@ fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
         "from pkg.service import alpha\n\ndef invoke():\n    return alpha(2)\n",
     );
     w.write(".env", "SECRET_TOKEN=commit1\n");
-    w.write(".acdd/profile.yaml", "version: 2 # c1\n");
+    w.write(".acdd/workflows/default.yaml", "version: 2 # c1\n");
     w.write("managed/spec.md", "commit1 spec\n");
     w.run_git(&["add", "-A"]).expect("stage commit 1");
     w.commit_git("cochange commit 1", None).expect("commit 1");
@@ -2201,7 +2201,7 @@ fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
          def beta(z, extra=0):\n    return alpha(z) + extra\n",
     );
     w.write(".env", "SECRET_TOKEN=dirty\n");
-    w.write(".acdd/profile.yaml", "version: 2 # dirty\n");
+    w.write(".acdd/workflows/default.yaml", "version: 2 # dirty\n");
     w.write("managed/spec.md", "dirty managed spec\n");
     w.build();
     let conn = w.open();
@@ -2316,7 +2316,7 @@ fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
     let diff_str = diff.to_string();
     for forbidden in [
         ".env",
-        ".acdd/profile.yaml",
+        ".acdd/workflows/default.yaml",
         "managed/spec.md",
         "managed/secret_caller.py",
         "managed/test_secret.py",
@@ -2589,7 +2589,7 @@ fn analyze_diff_impact_cochange_and_markdown_contract_matrix() {
     let cochange_str = cochange.to_string();
     for forbidden in [
         ".env",
-        ".acdd/profile.yaml",
+        ".acdd/workflows/default.yaml",
         "managed/spec.md",
         "code-map.sqlite",
     ] {

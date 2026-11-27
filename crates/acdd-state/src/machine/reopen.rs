@@ -10,7 +10,7 @@ use crate::types::{
     ClaimOutcome, ClaimOutcomePatch, DependencySatisfiedPatch, GateNodeRecord, NodeKind,
     NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::TaskRef;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -78,7 +78,7 @@ fn reopen_completed_task_dependents<'a>(
     cascade: bool,
     watch_ids: &mut BTreeSet<&'a str>,
     transition: &mut TransitionPlan,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if task_node.status != NodeStatus::Completed {
         return Ok(());
     }
@@ -111,7 +111,7 @@ fn reopen_completed_task_dependents<'a>(
         });
 
         if has_active_or_done && !cascade {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DependentTaskCompleted,
                 format!(
                     "cannot reopen completed task '{task_ref}' without --cascade because dependent task '{dep_ref}' is '{}'",
@@ -192,7 +192,7 @@ fn reset_task_gate_reopen<'a>(
     watch_ids: &mut BTreeSet<&'a str>,
     claim_patches: &mut Vec<ClaimOutcomePatch>,
     patches_by_id: &mut Vec<NodeStatusPatch>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     close_active_claim_at(snapshot, now_utc, &target.node_id, claim_patches);
     patches_by_id.push(make_reset_patch(target, NodeStatus::Ready, true));
     for sib in &snapshot.nodes {
@@ -233,7 +233,7 @@ fn reset_root_gate_reopen<'a>(
     watch_ids: &mut BTreeSet<&'a str>,
     claim_patches: &mut Vec<ClaimOutcomePatch>,
     patches_by_id: &mut Vec<NodeStatusPatch>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     close_active_claim_at(snapshot, now_utc, &target.node_id, claim_patches);
     patches_by_id.push(make_reset_patch(target, NodeStatus::Ready, true));
     for sib in &snapshot.nodes {
@@ -265,13 +265,13 @@ pub(crate) fn plan_reopen(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
     input: &ReopenInput,
-) -> Result<TransitionPlan, StateError> {
+) -> Result<TransitionPlan, AcddError> {
     let target = crate::machine::require_active_node(snapshot, &input.node_cursor, "reopen node")?;
     let target_id = target.node_id.as_str();
 
     if target.kind == NodeKind::Container && target.node_id.starts_with("tasks#") {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("cannot reopen structural tasks block '{target_id}' directly"),
         ));
     }
@@ -391,7 +391,7 @@ pub(crate) fn plan_reopen(
                 }
                 NodeStatus::InProgress | NodeStatus::Completed => {
                     if !input.cascade {
-                        return Err(StateError::new(
+                        return Err(AcddError::new(
                             ErrorCode::DependentTaskCompleted,
                             format!(
                                 "cannot reopen task '{}' without --cascade because post-task root gate '{}' is '{}'",

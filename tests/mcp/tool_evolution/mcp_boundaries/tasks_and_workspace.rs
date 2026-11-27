@@ -9,7 +9,7 @@ fn ergonomic_task_aliases_reach_existing_operations() {
         ),
         (".gitignore", ".acdd/\n"),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n",
         ),
         ("app.py", "def first(): pass\n"),

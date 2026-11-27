@@ -15,25 +15,25 @@ Run the focused test command required by the admitted task contract (e.g. `cargo
 
 For Rust task builds and reviews, run strict Clippy alongside the focused test:
 `cargo clippy <scope_target> --all-features -- -D warnings` (or workspace-wide `cargo clippy --workspace --all-targets --all-features -- -D warnings`). Record its exact command and exit code with the build evidence; Clippy contributes no test count.
-The repository profile (`.acdd/profile.yaml`) registers `rust-check-and-test` as `cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter} && cargo test --test commitment_integrity`.
+The repository workflow (`.acdd/workflows/default.yaml`) registers `rust-check-and-test` as `cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter} && cargo test --test commitment_integrity`.
 Claim context (`acdd_claim` / `acdd claim`) supplies `ClaimResp` (`guidance`, `contract`, and `context_lenses` with the contract seam and indexed covering-test targets); use the scoped command matching the task proof (with `--test <filter>`) and record its exact string. Full unfiltered suite execution (`cargo test --workspace --all-targets`) is deferred to the terminal verification gate.
 
 ## Milestone handoff gate
 
-Before terminal `handoff`, run the repository's `run_tests` gate (`acdd verify run_tests` in `.acdd/profile.yaml`) or execute each command from the repository root:
+Before terminal `handoff`, run the repository's `run_tests` gate (`acdd verify run_tests` in `.acdd/workflows/default.yaml`) or execute each command from the repository root:
 
 1. `cargo test --test commitment_integrity`
 2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-3. `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib` (and `cargo test --workspace --lib` covering all 3 library crates `acdd-core`, `acdd-index`, `acdd-state`, and root `--lib`)
+3. `cargo test -p acdd-core --lib && cargo test -p acdd-spec --lib && cargo test -p acdd-state --lib` (and `cargo test --workspace --lib` covering all 4 library crates `acdd-core`, `acdd-spec`, `acdd-index`, `acdd-state`, and root `--lib`)
 4. `cargo test --workspace --all-targets`
 5. `cargo run -- docs check && cargo run -- validate`
 6. `./scripts/test-macos-ssh.sh` (non-interactive remote macOS SSH verification on `ACDD_MACOS_SSH_HOST`, default `maxos`, syncing current `HEAD` + working tree into an isolated remote directory and running Clippy, `--workspace --all-targets`, and tempdir leak checks; supports `--scope <path> [--filter <pattern>] [--exact] [--no-clippy]` and `--target "<cargo_args>"` for fast targeted macOS test runs)
 
 Also verify temporary directory cleanup across test runs: compare `/tmp/contextunity-test-*` counts immediately before and after executing tests so shared fixtures (`PersistedSnapshot`, local `Workspace` drops, `RunHarness`, child processes) leave zero leaked directories (`BEFORE == AFTER`).
 
-The root package's `--all-targets` run without `--workspace` does not execute workspace member library unit tests (`acdd-core`, `acdd-index`, `acdd-state`). Record the workspace library result (`cargo test --workspace --lib` and/or `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib`) alongside the integration suite result.
+The root package's `--all-targets` run without `--workspace` does not execute workspace member library unit tests (`acdd-core`, `acdd-spec`, `acdd-index`, `acdd-state`). Record the workspace library result (`cargo test --workspace --lib` and/or `cargo test -p acdd-core --lib && cargo test -p acdd-spec --lib && cargo test -p acdd-state --lib`) alongside the integration suite result.
 
-Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository profile's `check_full_repo` (bound to gate `run_tests` via `./scripts/check-full-repo.sh`) runs fast fail-closed pre-checks (`commitment_integrity`, workspace strict Clippy, `docs check`, `validate`) sequentially so compilation or doc errors stop immediately, and then runs Linux `cargo test --workspace --all-targets` and `./scripts/test-macos-ssh.sh` in parallel (`polish` uses `polish_check` so full suites do not run twice back-to-back). Never hand-craft ad-hoc `ssh` / `rsync` commands for macOS testing; invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh` directly. Follow [Cross-Platform Boundaries](docs/architecture/cross-platform.md) whenever modifying paths, worktrees, or temp-dir assertions (`/var` -> `/private/var`). Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
+Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository workflow's `check_full_repo` (bound to gate `run_tests` via `./scripts/check-full-repo.sh`) runs fast fail-closed pre-checks (`commitment_integrity`, workspace strict Clippy, `docs check`, `validate`) sequentially so compilation or doc errors stop immediately, and then runs Linux `cargo test --workspace --all-targets` and `./scripts/test-macos-ssh.sh` in parallel (`polish` uses `polish_check` so full suites do not run twice back-to-back). Never hand-craft ad-hoc `ssh` / `rsync` commands for macOS testing; invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh` directly. Follow [Cross-Platform Boundaries](docs/architecture/cross-platform.md) whenever modifying paths, worktrees, or temp-dir assertions (`/var` -> `/private/var`). Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
 
 Use `test-suite-rules` when authoring, deduplicating, splitting, replacing, or removing tests.
 
@@ -82,9 +82,9 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
    - All spec and profile fixtures under `tests/acdd/fixtures/{milestones,plans,workflows}` are audited in `tests/acdd/fixtures_matrix.rs` using `RunHarness` and `validate_profile_document` ([ADR 0003](docs/adr/0003-unified-profile-graph-and-state-machine.md)).
    - Ad-hoc markdown/YAML heredoc copy-pasting, direct procedural bash-like scripting, and external CLI subprocess spawning are strictly banned for state-engine test suites.
 
-10. **Profile-Driven Universal Lifecycle & Worker Independence (`INV-TEST-PROFILE-DRIVEN-LIFECYCLE`)**:
+10. **Workflow-Driven Universal Lifecycle & Worker Independence (`INV-TEST-PROFILE-DRIVEN-LIFECYCLE`)**:
     - Task integration and lifecycle tests must NOT hardcode private gate lists (`&["contract", "build", "review", "deliver"]`).
-    - Task advancement must be driven dynamically via the task's active `GateProfile` (`harness.profile().executable_gates()`, `claim_next()`, `advance_to()`, `advance_to_completion()`).
+    - Task advancement must be driven dynamically via the task's active `ResolvedWorkflow` (`harness.profile().executable_gates()`, `claim_next()`, `advance_to()`, `advance_to_completion()`).
     - The test harness automatically derives isolated synthetic sessions per simulated worker (`test-session-{worker}`) to make in-process tests immune to ambient host environment variables.
     - Dedicated integration tests must verify that an independent gate rejects the accepted predecessor's `worker_id` with `TASK_REVIEW_NOT_INDEPENDENT`, regardless of session metadata, while a distinct worker is not vetoed by missing or equal session metadata.
     - Runner tests must separately verify distinct session identities and fingerprints, process isolation, and retained session reuse on rejection.
@@ -110,7 +110,7 @@ When writing or extending tests in this repository, agents MUST follow the **Pro
 ### Available `<Domain>Harness` Implementations
 | Harness | Subsystem / Scope | Canonical Fixtures | Key Production Seams |
 | :--- | :--- | :--- | :--- |
-| `RunHarness` | Unified `GateProfile` (`v2`), DAG gates, claims, verification, blackboard, git ops, runner waves | `tests/acdd/fixtures/{milestones,plans,workflows}/` (`crates/acdd-state/tests/state_integration.rs` + `tests/acdd/`, `< 15s` full suite) | `StateEngine::execute`, `StateQueryEngine::query`, `validate_profile_document` |
+| `RunHarness` | Unified `WorkflowDef` (`v2`), DAG gates, claims, verification, blackboard, git ops, runner waves | `tests/acdd/fixtures/{milestones,plans,workflows}/` (`crates/acdd-state/tests/state_integration.rs` + `tests/acdd/`, `< 15s` full suite) | `StateEngine::execute`, `StateQueryEngine::query`, `validate_workflow` |
 | `ExtractorHarness` | Syntax parsing, AST extraction, fact emission (zero disk I/O) | In-memory code snippets | `languages::rust::extract`, `languages::python::extract` |
 | `McpTestHarness` | MCP JSON-RPC protocol, tool routing, response compaction | Real Workspace files, SQLite, and workspace-local extraction cache | Production RMCP server over an in-process duplex stream |
 

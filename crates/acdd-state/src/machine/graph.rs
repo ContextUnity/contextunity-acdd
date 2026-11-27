@@ -4,21 +4,21 @@ use crate::machine::inputs::{
     BuildGraphInput, MachineGateDef, MachineGraphItem, MachineProfileInput, MachineTaskSpec,
 };
 use crate::types::{
-    GateNodeRecord, InvariantsState, NodeKind, NodeStatus, NodeVersionExpectation,
-    RunGraphSnapshot, RunRecord, RunStatus, StoragePreconditions, SubtaskRecord,
-    TaskDependencyRecord,
+    GateNodeRecord, NodeKind, NodeStatus, NodeVersionExpectation, RunGraphSnapshot, RunRecord,
+    RunStatus, StoragePreconditions, SubtaskRecord, TaskDependencyRecord,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, TaskRef};
+use acdd_spec::InvariantsState;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) use crate::profile::when::WhenExpr;
+pub(crate) use crate::workflow::when::WhenExpr;
 
 /// Normalize a task's tags (`["default"]` when empty) and validate every tag against `profile.tags`.
 pub fn effective_task_tags(
     raw_tags: &[String],
     allowed_tags: &BTreeSet<String>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     if raw_tags.is_empty() {
         return Ok(vec!["default".to_owned()]);
     }
@@ -26,8 +26,8 @@ pub fn effective_task_tags(
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for tag in raw_tags {
         if tag != "default" && !allowed_tags.contains(tag) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("unknown task tag '{tag}' is not declared in profile.tags"),
             ));
         }
@@ -43,7 +43,7 @@ pub fn matches_when(
     when: Option<&str>,
     task_tags: &[String],
     allowed_tags: &BTreeSet<String>,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let Some(expr_raw) = when else {
         return Ok(true);
     };
@@ -56,7 +56,7 @@ pub fn matches_when(
 pub fn build_initial_run_graph(
     profile: &MachineProfileInput,
     input: &BuildGraphInput,
-) -> Result<RunGraphSnapshot, StateError> {
+) -> Result<RunGraphSnapshot, AcddError> {
     validate_tasks_spec(&input.spec.tasks, &input.run_id, &profile.tags)?;
 
     let first_tasks_idx = profile
@@ -81,8 +81,8 @@ pub fn build_initial_run_graph(
         match item {
             MachineGraphItem::Gate(gate) => {
                 if gate.when.is_some() {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("when: is forbidden on root gate '{}'", gate.id),
                     ));
                 }
@@ -104,8 +104,8 @@ pub fn build_initial_run_graph(
                     let tags = effective_task_tags(&task.tags, &profile.tags)?;
                     if matches_when(block.when.as_deref(), &tags, &profile.tags)? {
                         if !assigned_tasks.insert(task.task_ref.clone()) {
-                            return Err(StateError::new(
-                                ErrorCode::ProfileSchemaInvalid,
+                            return Err(AcddError::new(
+                                ErrorCode::WorkflowSchemaInvalid,
                                 format!(
                                     "task '{}' matches multiple '- tasks:' blocks in profile '{}'",
                                     task.task_ref, profile.profile_id
@@ -169,8 +169,8 @@ pub fn build_initial_run_graph(
 
     for task in &input.spec.tasks {
         if !assigned_tasks.contains(&task.task_ref) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "task '{}' did not match any '- tasks:' block in profile '{}'",
                     task.task_ref, profile.profile_id
@@ -237,12 +237,12 @@ impl RunGraphBuilder<'_> {
         parent_id: Option<&str>,
         prefix_gates: Vec<acdd_core::ids::GateId>,
         activate_entry: bool,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let profile = self.profile;
         let input = self.input;
         if gate.when.is_some() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("when: is forbidden on root gate '{}'", gate.id),
             ));
         }
@@ -315,7 +315,7 @@ impl RunGraphBuilder<'_> {
         parent_block_id: &str,
         template_gates: &[MachineGateDef],
         pre_task_satisfied: bool,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let profile = self.profile;
         let input = self.input;
         let tags = effective_task_tags(&task.tags, &profile.tags)?;
@@ -330,8 +330,8 @@ impl RunGraphBuilder<'_> {
             }
         }
         if matched_gates.is_empty() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "task '{}' matched zero task gates in profile '{}'",
                     task.task_ref, profile.profile_id
@@ -459,14 +459,14 @@ pub(crate) fn validate_tasks_spec(
     tasks: &[MachineTaskSpec],
     run_id: &acdd_core::ids::RunId,
     allowed_tags: &BTreeSet<String>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let mut task_refs = BTreeSet::new();
     let mut adj: BTreeMap<&TaskRef, Vec<&TaskRef>> = BTreeMap::new();
 
     for task in tasks {
         if !task_refs.insert(&task.task_ref) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("duplicate task_ref '{}' in specification", task.task_ref),
             ));
         }
@@ -478,14 +478,14 @@ pub(crate) fn validate_tasks_spec(
         for dep in &task.depends_on {
             if dep.depends_on_run_id == *run_id {
                 if dep.depends_on_ref == task.task_ref {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("task '{}' cannot depend on itself", task.task_ref),
                     ));
                 }
                 if !task_refs.contains(&&dep.depends_on_ref) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "task '{}' depends on unknown intra-run task '{}'",
                             task.task_ref, dep.depends_on_ref
@@ -505,8 +505,8 @@ pub(crate) fn validate_tasks_spec(
         if state.get(task_ref).copied().unwrap_or(0) == 0
             && has_dep_cycle(task_ref, &adj, &mut state)
         {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("cycle detected in task_dependencies involving '{task_ref}'"),
             ));
         }
@@ -537,14 +537,14 @@ fn has_dep_cycle<'a>(
 pub fn find_node<'a>(
     snapshot: &'a RunGraphSnapshot,
     node_id: &str,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     snapshot
         .nodes
         .iter()
         .find(|n| n.node_id == node_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "node '{node_id}' does not exist in run '{}'",
                     snapshot.run.run_id
@@ -557,13 +557,13 @@ pub fn find_node<'a>(
 pub fn resolve_gate_def<'a>(
     profile: &'a MachineProfileInput,
     node: &GateNodeRecord,
-) -> Result<&'a MachineGateDef, StateError> {
+) -> Result<&'a MachineGateDef, AcddError> {
     match node.kind {
         NodeKind::RootGate | NodeKind::Container => {
             if let Ok(NodeCursor::Root(gates)) = NodeCursor::from_node_id(&node.node_id) {
                 return find_root_gate_def(&profile.gates, &gates).ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "no gate definition for root node '{}' in profile '{}'",
                             node.node_id, profile.profile_id
@@ -571,8 +571,8 @@ pub fn resolve_gate_def<'a>(
                     )
                 });
             }
-            Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "node '{}' is a structural tasks container, not a gate",
                     node.node_id
@@ -585,8 +585,8 @@ pub fn resolve_gate_def<'a>(
                 NodeCursor::Root(_) => Vec::new(),
             };
             let target_gate_id = cursor_gates.pop().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("task_gate '{}' has empty gate path", node.node_id),
                 )
             })?;
@@ -597,16 +597,16 @@ pub fn resolve_gate_def<'a>(
                     }
                 }
             }
-            Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "no task gate definition for '{}' in profile '{}'",
                     node.node_id, profile.profile_id
                 ),
             ))
         }
-        NodeKind::Task => Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        NodeKind::Task => Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "task container '{}' has no single gate definition",
                 node.node_id

@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main
 ### 2. Initialize, index & lint any Git repository
 
 ```bash
-acdd init                        # Generates starter acdd.yaml, .acdd/profile.yaml & .gitignore rules
+acdd init                        # Generates starter acdd.yaml, .acdd/workflows/default.yaml & .gitignore rules
 acdd build .                     # Builds .acdd/code-map.sqlite (MCP refreshes it automatically)
 acdd query overview              # Summarizes languages, entrypoints, and indexed docs
 acdd lint --categories all       # Checks architecture, docs, syntax, clones, dead code & cycles
@@ -132,18 +132,17 @@ Every capability runs over the exact same Rust engine whether called by an AI ag
 | **Gate Execution & Blackboard** | `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard` | `claim`, `verify`, `submit`, `blackboard` |
 | **Guide, Validation & Plugins** | `acdd_guide`, `<domain>_<name>` | `guide`, `validate`, `tool <domain>_<name>` |
 
-Full schemas and flags: **[MCP Tools Reference](docs/reference/mcp-tools.md)** · **[CLI Reference](docs/reference/cli.md)** · **[Profiles Reference](docs/reference/profiles.md)**.
+Full schemas and flags: **[MCP Tools Reference](docs/reference/mcp-tools.md)** · **[CLI Reference](docs/reference/cli.md)** · **[Workflows Reference](docs/reference/workflows.md)**.
 
 ---
 
-## Built-in Profiles & Companion Skills
+## Built-in Workflows & Companion Skills
 
-- **5 Embedded `GateProfile` (`version: 2`) Workflows** (customizable in `.acdd/profile.yaml` via `inherit:` and `gates_patch:`):
+- **3 Core Embedded `WorkflowDef` (`version: 2`) Workflows** (customizable in `.acdd/workflows/default.yaml` via `inherit:` and `gates_patch:`, with `audit`, `spec_planning`, and `hotfix` templates in [`skills/acdd/references/acdd-workflow-examples/`](skills/acdd/references/acdd-workflow-examples/README.md)):
   - **`code`**: Full engineering lifecycle (`blueprint_synthesis` → parallel `tasks.{build, review, deliver, rearchitect}` → `run_tests` → `integration_review` → `handoff`).
   - **`base`**: Minimal worktree + atomic commit foundation for custom gate pipelines.
-  - **`audit`**: Read-only 3-phase security & correctness review (`recon` → `analyze` → `triage`) emitting Markdown reports.
   - **`documentation`**: Compiler-free living docs & `acdd-rule` verification workflow.
-  - **`spec_planning`**: Architectural spec drafting and disjoint parallel-wave validation.
+  - **Workflow Templates (`skills/acdd/references/acdd-workflow-examples/`)**: Copyable `audit` (read-only `recon` → `analyze` → `triage`), `spec_planning` (read-only spec synthesis & review), and `hotfix` (localized bugfix) overlays.
 - **5 Bundled Companion Agent Skills (`skills/`)**:
   - [`acdd`](skills/acdd/SKILL.md) (MCP navigation & self-claimed gates), [`contract-planning`](skills/contract-planning/SKILL.md) (blueprint & ADR audit), [`test-suite-rules`](skills/test-suite-rules/SKILL.md) (production-seam testing), [`close-review-findings`](skills/close-review-findings/SKILL.md) (multi-surface root-cause fixes), and [`agent-instructions`](skills/agent-instructions/SKILL.md) (`AGENTS.md` & indexed docs).
 

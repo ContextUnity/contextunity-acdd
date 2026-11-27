@@ -1,4 +1,4 @@
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::git::git_command;
 use acdd_core::ids::{RunId, TaskRef};
 use acdd_state::harness::RunHarness;
@@ -92,7 +92,7 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
         let future_err = v1_reader
             .list_runs(&ListRunsReq::default())
             .expect_err("future schema_version must fail closed on read-only open");
-        assert_eq!(future_err.code, ErrorCode::ProfileSchemaInvalid);
+        assert_eq!(future_err.code, ErrorCode::WorkflowSchemaInvalid);
 
         let conn = Connection::open(&db_path).expect("restore v1 version");
         conn.execute(
@@ -123,7 +123,7 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
                     )",
                     [],
                 )
-                .map_err(|e| StateError::new(ErrorCode::BackendConflict, e.to_string()))?;
+                .map_err(|e| AcddError::new(ErrorCode::BackendConflict, e.to_string()))?;
                 Ok(())
             })
             .expect("seed run row");

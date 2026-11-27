@@ -6,11 +6,11 @@ use crate::{
         build_domain_providers, execute_state_command_with_config, execute_state_query,
     },
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
+use acdd_spec::SubtaskStatus;
 use acdd_state::types::{
     BlackboardStatus, BlackboardTopic, RejectionFindings, ReviewEvidence, RunStatus, SubmitAction,
-    SubtaskStatus,
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
@@ -153,8 +153,8 @@ fn parse_json_or_at_file(root: &Path, raw: &str) -> Result<Value> {
         trimmed.to_owned()
     };
     serde_json::from_str(&payload).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid JSON payload: {err}"),
         )
         .into()
@@ -162,13 +162,13 @@ fn parse_json_or_at_file(root: &Path, raw: &str) -> Result<Value> {
 }
 
 fn state_err_invalid(msg: impl Into<String>) -> anyhow::Error {
-    StateError::new(ErrorCode::ProfileSchemaInvalid, msg).into()
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, msg).into()
 }
 
 pub(super) fn dispatch(
     state_ctx: &CliStateCtx<'_>,
-    explicit_profile_ref: Option<String>,
-    cli_profile: Option<&Path>,
+    explicit_workflow_ref: Option<String>,
+    cli_workflow: Option<&Path>,
     command: Command,
 ) -> Result<(Value, Option<String>)> {
     let root = state_ctx.root;
@@ -199,8 +199,8 @@ pub(super) fn dispatch(
                 spec_path: spec,
                 goal,
                 run_name,
-                profile: explicit_profile_ref
-                    .or_else(|| cli_profile.map(|p| p.to_string_lossy().into_owned())),
+                workflow: explicit_workflow_ref
+                    .or_else(|| cli_workflow.map(|p| p.to_string_lossy().into_owned())),
                 scope,
                 target_base,
                 worktree,
@@ -209,17 +209,54 @@ pub(super) fn dispatch(
             }))
         }
         Command::Draft {
-            collection,
+            spec,
             slug,
             prefix,
             title: spec_title,
-        } => state_ctx.command(StateCommand::Draft(DraftReq {
-            collection,
-            slug,
-            prefix,
-            title: spec_title,
-            profile: explicit_profile_ref,
-        })),
+        } => {
+            if !state_ctx
+                .adapter
+                .modules
+                .is_subsystem_enabled(acdd_core::subsystems::SubsystemId::Spec)
+            {
+                return Err(AcddError::new(
+                    ErrorCode::FeatureDisabled,
+                    "FEATURE_DISABLED: 'spec' subsystem is disabled in modules:",
+                )
+                .into());
+            }
+            let req = DraftReq {
+                spec,
+                slug,
+                prefix,
+                title: spec_title,
+                workflow: explicit_workflow_ref,
+            };
+            if state_ctx
+                .adapter
+                .modules
+                .is_subsystem_enabled(acdd_core::subsystems::SubsystemId::State)
+            {
+                state_ctx.command(StateCommand::Draft(req))
+            } else {
+                let primary = acdd_core::git::primary_worktree_root(root)
+                    .unwrap_or_else(|| root.to_path_buf());
+                let cols = acdd_spec::effective_spec_collections(&state_ctx.adapter.specs);
+                let resp = acdd_spec::draft_spec(
+                    &primary,
+                    &cols,
+                    &req,
+                    &acdd_spec::overlay::NoopRuntimeOverlay,
+                )?;
+                let wrapped = StateCommandOutput::Draft(resp);
+                render_cli_state_output(
+                    &wrapped,
+                    state_ctx.output_format,
+                    state_ctx.adapter.debug,
+                    || format::render_state_command_markdown(&wrapped, state_ctx.title),
+                )
+            }
+        }
         Command::Status { run } => state_ctx.query(root, StateQuery::Status(StatusReq { run })),
         Command::List {
             workspace,
@@ -265,21 +302,66 @@ pub(super) fn dispatch(
         }
         Command::Roadmap {
             spec_id,
-            collection,
+            spec,
             ready,
             active,
             tasks,
-        } => state_ctx.query(
-            root,
-            StateQuery::Roadmap(RoadmapReq {
+        } => {
+            if !state_ctx
+                .adapter
+                .modules
+                .is_subsystem_enabled(acdd_core::subsystems::SubsystemId::Spec)
+            {
+                return Err(AcddError::new(
+                    ErrorCode::FeatureDisabled,
+                    "FEATURE_DISABLED: 'spec' subsystem is disabled in modules:",
+                )
+                .into());
+            }
+            let req = RoadmapReq {
                 spec_id,
-                collection,
+                spec,
                 ready_only: ready,
                 active_only: active,
                 include_tasks: tasks,
                 ..Default::default()
-            }),
-        ),
+            };
+            if state_ctx
+                .adapter
+                .modules
+                .is_subsystem_enabled(acdd_core::subsystems::SubsystemId::State)
+            {
+                state_ctx.query(root, StateQuery::Roadmap(req))
+            } else {
+                let primary = acdd_core::git::primary_worktree_root(root)
+                    .unwrap_or_else(|| root.to_path_buf());
+                let linked: std::collections::BTreeMap<String, std::path::PathBuf> = state_ctx
+                    .adapter
+                    .linked_workspaces
+                    .iter()
+                    .map(|lw| (lw.name.clone(), lw.path.clone()))
+                    .collect();
+                let roadmap_detail = req.spec_id.is_some();
+                let cfg = acdd_spec::roadmap::RoadmapConfig {
+                    workspace_root: &primary,
+                    worktree: root,
+                    spec_collections: &state_ctx.adapter.specs,
+                    linked_workspaces: &linked,
+                };
+                let resp = acdd_spec::roadmap::build_roadmap(
+                    &cfg,
+                    &acdd_spec::overlay::NoopRuntimeOverlay,
+                    req,
+                )?;
+                let wrapped = acdd_state::usecases::StateQueryOutput::Roadmap(Box::new(resp));
+                render_cli_state_output(
+                    &wrapped,
+                    state_ctx.output_format,
+                    state_ctx.adapter.debug,
+                    || format::render_state_query_markdown(&wrapped, state_ctx.title, roadmap_detail),
+                )
+            }
+        }
         Command::Claim {
             node,
             run,
@@ -402,10 +484,10 @@ pub(super) fn dispatch(
         })),
         Command::Sync {
             run,
-            rebind_profile,
+            rebind_workflow,
         } => state_ctx.command(StateCommand::Sync(SyncReq {
             run,
-            rebind_profile,
+            rebind_workflow,
         })),
         Command::Subtask {
             task_ref,
@@ -589,10 +671,10 @@ pub(super) fn dispatch(
                 let output = providers
                     .call_tool(&tool_name, &parsed_args, &tool_req)
                     .map_err(|err| {
-                        if let Some(se) = StateError::from_anyhow(&err) {
+                        if let Some(se) = AcddError::from_anyhow(&err) {
                             anyhow::Error::from(se.clone())
                         } else {
-                            anyhow::Error::from(StateError::new(
+                            anyhow::Error::from(AcddError::new(
                                 ErrorCode::DomainCapabilityUnavailable,
                                 format!("plugin tool '{tool_name}' failed: {err}"),
                             ))

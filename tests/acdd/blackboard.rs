@@ -15,7 +15,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");
     ws.write(
-        ".acdd/profiles/bb.yaml",
+        ".acdd/workflows/bb.yaml",
         "version: 2\ninherit: none\nsave: none\ngates:\n  - tasks:\n      gates:\n        - id: work\n          pass: finish\n        - id: finish\n          need: [work]\n          receipt: true\n",
     );
     ws.write(
@@ -35,7 +35,7 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
             &providers,
             StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/001-linear.md".to_owned()),
-                profile: Some(".acdd/profiles/bb.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/bb.yaml".to_owned()),
                 ..StartReq::default()
             }),
         )

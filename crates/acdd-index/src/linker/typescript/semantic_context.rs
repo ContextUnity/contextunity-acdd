@@ -76,14 +76,6 @@ pub(in crate::linker) fn typed_dom_receiver(_name: &str) -> Option<&'static str>
     None
 }
 
-#[cfg(not(feature = "lang-typescript"))]
-pub(in crate::linker) fn typed_dom_property(
-    _receiver: &str,
-    _property: &str,
-) -> Option<&'static str> {
-    None
-}
-
 pub(in crate::linker) fn resolve_applied<'a>(
     owner: &'a Node,
     args: &[TypeExpr],

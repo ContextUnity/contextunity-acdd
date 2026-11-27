@@ -32,11 +32,8 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-const STANDARD_FRAMEWORK_MANIFESTS: &[(&str, &str, &str)] =
+pub(super) const STANDARD_FRAMEWORK_MANIFESTS: &[(&str, &str, &str)] =
     include!(concat!(env!("OUT_DIR"), "/framework_manifests.rs"));
-
-static STANDARD_FRAMEWORK_MANIFESTS_DIGEST: std::sync::OnceLock<String> =
-    std::sync::OnceLock::new();
 
 static PARSED_STANDARD_FRAMEWORK_MANIFESTS: std::sync::OnceLock<
     std::result::Result<HashMap<String, FrameworkManifest>, String>,
@@ -666,23 +663,6 @@ impl DependencyRegistry {
                         })
                 )
             })
-    }
-
-    /// Exposes the static deterministic digest of bundled standard framework manifests.
-    pub fn standard_manifests_digest_static() -> &'static str {
-        STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"acdd-standard-framework-manifests-v1\0");
-            for (name, extension, source) in STANDARD_FRAMEWORK_MANIFESTS {
-                hasher.update((name.len() as u64).to_be_bytes());
-                hasher.update(name.as_bytes());
-                hasher.update((extension.len() as u64).to_be_bytes());
-                hasher.update(extension.as_bytes());
-                hasher.update((source.len() as u64).to_be_bytes());
-                hasher.update(source.as_bytes());
-            }
-            hex::encode(hasher.finalize())
-        })
     }
 
     /// Returns a workspace-local manifest unconditionally, otherwise a bundled manifest.

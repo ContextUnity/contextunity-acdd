@@ -5,8 +5,8 @@ use super::constants::{
 };
 use super::linked::resolve_linked_workspaces;
 use super::schema::{
-    default_profiles_dirs, default_specs, validate_and_normalize_specs, Adapter, AdapterFile,
-    LinkedWorkspace, ScannerLimits, SpecCollectionConfig, StrictAdapterReport,
+    default_specs, default_workflows_dirs, validate_and_normalize_specs, Adapter, AdapterFile,
+    LinkedWorkspace, ScannerLimits, SpecConfig, StrictAdapterReport,
 };
 use crate::errors::{AcddError, ErrorCode};
 use crate::fs::{checked_child, safe_relative};
@@ -20,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn config_schema_err(message: impl Into<String>) -> AcddError {
-    AcddError::new(ErrorCode::ProfileSchemaInvalid, message)
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, message)
 }
 
 /// Loads and normalizes workspace adapter configuration (logging linked-workspace warnings to stderr).
@@ -140,23 +140,23 @@ fn load_adapter_inner(
             .map_err(|e| config_schema_err(e.to_string()))?;
     }
     let mut modules = raw.modules.clone();
-    if let Some(profile) = raw.profile {
-        modules.profile = profile;
+    if let Some(preset) = raw.preset {
+        modules.preset = preset;
     }
     modules
         .validate()
         .map_err(|e| config_schema_err(e.to_string()))?;
     let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
     validate_and_normalize_specs(&mut specs)?;
-    let profiles_dirs = raw
-        .profiles_dirs
+    let workflows_dirs = raw
+        .workflows_dirs
         .clone()
-        .unwrap_or_else(default_profiles_dirs);
-    for dir in &profiles_dirs {
+        .unwrap_or_else(default_workflows_dirs);
+    for dir in &workflows_dirs {
         let trimmed = dir.trim();
         if trimmed.is_empty() || !safe_relative(Path::new(trimmed)) {
             return Err(config_schema_err(format!(
-                "profiles_dirs entry '{dir}' must be a relative plain path"
+                "workflows_dirs entry '{dir}' must be a relative plain path"
             )));
         }
     }
@@ -286,7 +286,7 @@ fn load_adapter_inner(
             milestones,
             plans,
             specs,
-            profiles_dirs,
+            workflows_dirs,
             state_db,
             retain_traces,
             architecture: raw.architecture,
@@ -329,7 +329,7 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
         "milestones": adapter.milestones,
         "plans": adapter.plans,
         "specs": adapter.specs,
-        "profiles_dirs": adapter.profiles_dirs,
+        "workflows_dirs": adapter.workflows_dirs,
         "state_db": adapter.state_db,
         "retain_traces": adapter.retain_traces,
         "architecture": &adapter.architecture,
@@ -415,11 +415,18 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
     let aliases: BTreeMap<String, String> = parse_persisted_or(value, "aliases", BTreeMap::new)?;
     let milestones: Vec<String> = parse_persisted_or(value, "milestones", Vec::new)?;
     let plans: Vec<String> = parse_persisted_or(value, "plans", Vec::new)?;
-    let mut specs: BTreeMap<String, SpecCollectionConfig> =
+    let mut specs: BTreeMap<String, SpecConfig> =
         parse_persisted_or(value, "specs", default_specs)?;
     validate_and_normalize_specs(&mut specs)?;
-    let profiles_dirs: Vec<String> =
-        parse_persisted_or(value, "profiles_dirs", default_profiles_dirs)?;
+    let workflows_dirs: Vec<String> =
+        parse_persisted_or(value, "workflows_dirs", default_workflows_dirs)?;
+    for dir in &workflows_dirs {
+        let trimmed = dir.trim();
+        anyhow::ensure!(
+            !trimmed.is_empty() && safe_relative(Path::new(trimmed)),
+            "invalid persisted workflows_dirs entry '{dir}'"
+        );
+    }
     let state_db: String = parse_persisted_or(value, "state_db", || DEFAULT_STATE_DB.to_owned())?;
     anyhow::ensure!(!state_db.trim().is_empty(), "invalid persisted state_db");
     let retain_traces: usize =
@@ -447,7 +454,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         milestones,
         plans,
         specs,
-        profiles_dirs,
+        workflows_dirs,
         state_db,
         retain_traces,
         architecture,
@@ -480,11 +487,11 @@ mod tests {
             defaults.specs["milestones"].path.as_deref(),
             Some("docs/milestones")
         );
-        assert_eq!(defaults.specs["milestones"].profile, None);
+        assert_eq!(defaults.specs["milestones"].workflow, None);
         assert_eq!(defaults.specs["plans"].path.as_deref(), Some("docs/plans"));
-        assert_eq!(defaults.specs["plans"].profile, None);
+        assert_eq!(defaults.specs["plans"].workflow, None);
         assert!(defaults.specs["plans"].prefixes.is_empty());
-        assert_eq!(defaults.profiles_dirs, [".acdd/profiles"]);
+        assert_eq!(defaults.workflows_dirs, [".acdd/workflows"]);
         assert_eq!(defaults.state_db, ".acdd/state.sqlite");
         assert_eq!(defaults.retain_traces, 20);
         assert_eq!(defaults.digest, "");
@@ -517,18 +524,18 @@ modules:
 roots: [.]
 state_db: .acdd/custom-state.sqlite
 retain_traces: 99
-profiles_dirs: [custom/profiles]
+workflows_dirs: [custom/workflows]
 response: { page_size: 10 }
 debug: true
 specs:
   milestones:
     path: docs/milestones
-    profile: custom_profile
+    workflow: custom_workflow
     prefixes: [MS]
     digits: 5
   plans:
     path: docs/plans
-    profile: another_profile
+    workflow: another_workflow
     prefixes: [PL]
     digits: 4
 modules:
@@ -602,11 +609,11 @@ roots: [.]
     }
 
     #[test]
-    fn strict_adapter_rejects_unknown_fields_legacy_05_keys_and_invalid_linked_workspaces() {
+    fn strict_adapter_rejects_unknown_fields_and_invalid_linked_workspaces() {
         let _cleanup = crate::fs::ScopedTempDir::create("acdd_strict_cfg").unwrap();
         let dir = _cleanup.path().to_path_buf();
 
-        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits, ArchitectureConfig -> ProfileSchemaInvalid.
+        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits, ArchitectureConfig -> WorkflowSchemaInvalid.
         for bad_yaml in [
             "unknown_top_level: true\n",
             "limits:\n  unknown_limit: 5\n",
@@ -619,33 +626,19 @@ roots: [.]
             let err = load_adapter(&dir, None).unwrap_err();
             assert_eq!(
                 err.code,
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::WorkflowSchemaInvalid,
                 "{bad_yaml}: {err}"
             );
         }
 
-        // 2. Removed legacy keys are rejected via deny_unknown_fields -> ProfileSchemaInvalid.
-        for unknown_key in [
-            "milestones",
-            "plans",
-            "tasks_db",
-            "workflows_dir",
-            "milestone_prefix",
-            "plan_prefix",
-            "task_repository",
-            "task_project",
-            "acdd_profile",
-        ] {
-            let yaml = if matches!(unknown_key, "milestones" | "plans") {
-                format!("{unknown_key}: [docs/{unknown_key}]\n")
-            } else {
-                format!("{unknown_key}: legacy_val\n")
-            };
+        // 2. Unknown config keys are rejected via deny_unknown_fields -> WorkflowSchemaInvalid.
+        for unknown_key in ["unknown_top_level_key", "bogus_config_key"] {
+            let yaml = format!("{unknown_key}: bad_val\n");
             std::fs::write(dir.join(ACDD_CONFIG_FILE), &yaml).unwrap();
             let err = load_adapter(&dir, None).unwrap_err();
             assert_eq!(
                 err.code,
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::WorkflowSchemaInvalid,
                 "{unknown_key}: {err}"
             );
         }
@@ -758,7 +751,8 @@ linked_workspaces:
             ("milestones", json!({"bad": true})),
             ("plans", json!(123)),
             ("specs", json!(["not-a-map"])),
-            ("profiles_dirs", json!(true)),
+            ("workflows_dirs", json!(true)),
+            ("workflows_dirs", json!(["../escape"])),
             ("state_db", json!(99)),
             ("state_db", json!("   ")),
             ("retain_traces", json!("five")),

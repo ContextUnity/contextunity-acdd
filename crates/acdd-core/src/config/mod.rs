@@ -20,4 +20,4 @@ pub use paths::{
     resolve_effective_state_db_path, resolve_file_path, resolve_memory_budget_bytes,
     resolve_state_db_path, workspace_path,
 };
-pub use schema::{default_specs, Adapter, LinkedWorkspace, ScannerLimits, SpecCollectionConfig};
+pub use schema::{default_specs, Adapter, LinkedWorkspace, ScannerLimits, SpecConfig};

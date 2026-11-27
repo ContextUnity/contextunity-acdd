@@ -5,11 +5,11 @@ use crate::machine::graph::{build_preconditions, find_node};
 use crate::machine::inputs::{ExtendScopeInput, MachineProfileInput};
 use crate::machine::schedule::check_task_scope_overlap;
 use crate::types::{
-    ExtendedScopeEntry, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan,
-    ValidatedObservations,
+    NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path};
+use acdd_spec::ExtendedScopeEntry;
 
 /// Plan a pure `extend_scope` update honoring shell `ValidatedObservations` (e.g. custom DB path policy).
 pub(crate) fn plan_extend_scope_with_obs(
@@ -17,20 +17,20 @@ pub(crate) fn plan_extend_scope_with_obs(
     profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &ExtendScopeInput,
-) -> Result<TransitionPlan, StateError> {
+) -> Result<TransitionPlan, AcddError> {
     let target_node =
         crate::machine::require_active_node(snapshot, &input.node_cursor, "extend_scope")?;
     let target_id = target_node.node_id.as_str();
 
     if input.reason.trim().is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "extend_scope requires a non-empty reason",
         ));
     }
     if input.paths.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "extend_scope requires at least one path or glob pattern",
         ));
     }
@@ -40,7 +40,7 @@ pub(crate) fn plan_extend_scope_with_obs(
             && target_node.status == NodeStatus::InProgress
             && target_node.worker_id.as_ref() != Some(worker)
         {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskAlreadyClaimed,
                 format!(
                     "worker '{worker}' does not hold the active claim on '{}'",
@@ -54,8 +54,8 @@ pub(crate) fn plan_extend_scope_with_obs(
         NodeKind::Task => target_node,
         NodeKind::TaskGate => {
             let parent_id = target_node.parent_id.as_deref().ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("task_gate '{target_id}' has no parent task container"),
                 )
             })?;
@@ -63,8 +63,8 @@ pub(crate) fn plan_extend_scope_with_obs(
         }
         NodeKind::RootGate if target_node.node_id == "root:polish" => target_node,
         _ => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "extend_scope requires a task, task_gate, or root:polish cursor (got '{target_id}')"
                 ),
@@ -76,7 +76,7 @@ pub(crate) fn plan_extend_scope_with_obs(
         task_node.status,
         NodeStatus::Completed | NodeStatus::Cancelled
     ) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "cannot extend_scope on terminal task '{}' (status: {})",
@@ -90,19 +90,19 @@ pub(crate) fn plan_extend_scope_with_obs(
     let mut normalized_paths = Vec::with_capacity(input.paths.len());
     for raw_path in &input.paths {
         if !is_valid_scope_glob(raw_path) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!("extend_scope rejected invalid scope path or glob '{raw_path}'"),
             ));
         }
         let norm = normalize_rel_path(raw_path).ok_or_else(|| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!("extend_scope rejected invalid relative path '{raw_path}'"),
             )
         })?;
         if !policy.is_candidate_included(&norm) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!("extend_scope path '{norm}' is excluded from candidate/agent writes"),
             ));
@@ -111,7 +111,7 @@ pub(crate) fn plan_extend_scope_with_obs(
             std::slice::from_ref(&norm),
             &profile.protected_paths,
         ) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!("extend_scope path '{norm}' overlaps protected_paths"),
             ));

@@ -2,4 +2,4 @@ state_db: .acdd/custom-state.sqlite
 specs:
   plans:
     path: custom-plans
-    profile: profiles/rejected.yaml
+    workflow: workflows/rejected.yaml

@@ -541,7 +541,7 @@ fn render_instructions_lens(out: &mut String, val: &Value) {
 
 fn render_workspace_config_lens(out: &mut String, val: &Value) {
     out.push_str("\n## Workspace Configuration\n\n");
-    for key in ["docs_roots", "profiles_dirs", "available_profiles"] {
+    for key in ["docs_roots", "workflows_dirs", "available_workflows"] {
         if let Some(arr) = val.get(key) {
             out.push_str(&format!("- {key}: [{}]\n", join_json_str_list(Some(arr))));
         }
@@ -600,12 +600,12 @@ fn render_workspace_config_lens(out: &mut String, val: &Value) {
         if let Some(d) = spec.get("digits").and_then(Value::as_u64) {
             meta.push(format!("digits: {d}"));
         }
-        if let Some(p) = spec
-            .get("profile")
+        if let Some(w) = spec
+            .get("workflow")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            meta.push(format!("profile: `{p}`"));
+            meta.push(format!("workflow: `{w}`"));
         }
         if !next_ids.is_empty() {
             meta.push(format!("next: {next_ids}"));

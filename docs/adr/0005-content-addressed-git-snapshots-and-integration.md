@@ -24,7 +24,7 @@ Coupling gate verification to branch commit history (`-p HEAD` or `git merge-bas
 
 ### 2. Declarative `git:` Policy, Atomic Plumbing Commits, and `rebase-ff` Wave Landing
 
-Profiles configure Git execution declaratively under `git:` ([`GitPolicy`](../../crates/acdd-state/src/profile/schema.rs)):
+Workflows configure Git execution declaratively under `git:` ([`GitPolicy`](../../crates/acdd-state/src/workflow/schema.rs)):
 
 - **`isolation`**: `worktree` | `in_place`
 - **`worktrees`**: `manual` | `managed`

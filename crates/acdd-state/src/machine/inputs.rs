@@ -1,15 +1,15 @@
 //! Pure input and output models consumed and produced by the `acdd_state::machine` core.
 
 use crate::types::{
-    ExtendedScopeEntry, GateClaimRecord, GateNodeRecord, IsolationMode, RejectionFindings,
-    ReviewEvidence, SaveAction, StoragePreconditions, SubmitAction, SubtaskStatus,
-    TaskDependencyRecord, TransitionPlan, WorktreeLifecycle,
+    GateClaimRecord, GateNodeRecord, IsolationMode, RejectionFindings, ReviewEvidence, SaveAction,
+    StoragePreconditions, SubmitAction, TaskDependencyRecord, TransitionPlan, WorktreeLifecycle,
 };
-use acdd_core::errors::StateError;
+use acdd_core::errors::AcddError;
 use acdd_core::ids::{
     CommitOid, GateId, NodeCursor, RunId, SubtaskRef, TaskRef, TreeOid, WorkerId,
 };
 use acdd_core::schema::SchemaDef;
+use acdd_spec::{ExtendedScopeEntry, SubtaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -385,8 +385,8 @@ pub struct VerifyEvaluation {
     pub trace_finish: crate::types::TraceFinishInput,
     /// CAS storage preconditions verified before recording the trace/transition.
     pub preconditions: StoragePreconditions,
-    /// `Ok(())` when verification satisfied all gate contracts, or the exact `StateError`.
-    pub outcome: Result<(), StateError>,
+    /// `Ok(())` when verification satisfied all gate contracts, or the exact `AcddError`.
+    pub outcome: Result<(), AcddError>,
     /// Optional follow-up transition plan when a mechanical (`role: None`) gate with `fail:` fails.
     pub failure_transition: Option<TransitionPlan>,
 }
@@ -430,7 +430,7 @@ pub enum SubmitEvaluation {
         /// CAS preconditions for `StateTx::mark_nodes_stale`.
         preconditions: StoragePreconditions,
         /// Canonical `TASK_CANDIDATE_MISMATCH` error returned after marking stale.
-        error: StateError,
+        error: AcddError,
     },
 }
 
@@ -463,10 +463,10 @@ pub struct ReopenInput {
 pub struct SyncInput {
     /// Updated parsed specification tasks and digest.
     pub spec: MachineSpecInput,
-    /// Updated profile (used when `rebind_profile == true`).
+    /// Updated workflow (used when `rebind_workflow == true`).
     pub new_profile: Option<MachineProfileInput>,
     /// Whether to rebind non-completed gates to `new_profile`.
-    pub rebind_profile: bool,
+    pub rebind_workflow: bool,
 }
 
 /// Pure synchronization plan emitted by `plan_sync`.

@@ -4,8 +4,7 @@ use crate::context::slices::read_spec_readonly;
 use crate::git_ops::worktree::remove_worktree_and_branch;
 use crate::machine::{evaluate_transition, SyncInput, TransitionInput, TransitionOutcome};
 use crate::observability::build_completed_run_digest;
-use crate::profile::inherit::resolve_profile_for_rebind;
-use crate::spec::parse_spec;
+use crate::workflow::inherit::resolve_workflow_for_rebind;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     ArchiveCleanupEntry, RunTombstoneRecord, StoragePreconditions, TerminalStatus,
@@ -17,115 +16,30 @@ use crate::usecases::dto::{ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, Sy
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
     cleanup_tombstone, effective_spec_collections, ensure_state_enabled, is_managed_run_branch,
-    load_active_run_graph, next_spec_id_for_prefix, primary_workspace_root, read_confined_utf8,
-    resolve_active_run, resolve_source_checkout, to_machine_profile, validate_profile_fail_closed,
+    load_active_run_graph, primary_workspace_root, read_confined_utf8, resolve_active_run,
+    resolve_source_checkout, to_machine_profile, validate_profile_fail_closed,
     with_repo_lock_and_maintenance,
 };
 use acdd_core::config::{Adapter, ACDD_DIR};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::ports::CompositeDomainProvider;
+use acdd_spec::parse_spec;
 use serde_json::json;
 use std::path::Path;
 
-use super::common::{build_machine_spec_input, sanitize_slug};
+use super::common::build_machine_spec_input;
 
 pub(crate) fn handle_draft_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: DraftReq,
-) -> Result<DraftResp, StateError> {
+) -> Result<DraftResp, AcddError> {
     ensure_state_enabled(config)?;
     let collections = effective_spec_collections(config);
-    let col = collections.get(&req.collection).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("unknown spec collection '{}'", req.collection),
-        )
-    })?;
-
-    let slug = sanitize_slug(&req.slug)?;
-    let draft_dir = col.default_draft_dir().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "spec collection '{}' has no literal non-glob directory for drafting",
-                req.collection
-            ),
-        )
-    })?;
     let primary = primary_workspace_root(config);
-
-    let (spec_id, spec_rel) = if col.prefixes.is_empty() && req.prefix.is_none() {
-        (slug.clone(), format!("{draft_dir}/{slug}.md"))
-    } else {
-        let prefix = match req.prefix {
-            Some(ref p) => {
-                if !col.prefixes.is_empty() && !col.prefixes.contains(p) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "prefix '{p}' is not allowed for collection '{}' (allowed: {:?})",
-                            req.collection, col.prefixes
-                        ),
-                    ));
-                }
-                p.clone()
-            }
-            None => col
-                .prefixes
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "SPEC".to_owned()),
-        };
-
-        let db_max = backend.max_spec_number(&req.collection, &prefix)?;
-        let spec_id = next_spec_id_for_prefix(&primary, &req.collection, col, &prefix, db_max)?;
-        let spec_rel = format!("{draft_dir}/{spec_id}-{slug}.md");
-        (spec_id, spec_rel)
-    };
-
-    let title = req
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| slug.replace('-', " "));
-    let profile_line = req
-        .profile
-        .as_deref()
-        .or(col.profile.as_deref())
-        .map(|p| format!("profile: {p}\n"))
-        .unwrap_or_default();
-
-    let rendered = format!(
-        "---\nid: {spec_id}\ntitle: \"{}\"\ndoc_type: contract\n{profile_line}status: planned\ninvariants: []\nacceptance_criteria: []\n---\n\n# {spec_id}: {title}\n\n### task: T1\n\n```yaml\ntarget: \"Describe task T1 target\"\nscope: []\ntags: [default]\ninvariants: []\nacceptance_criteria: []\n```\n",
-        title.replace('"', "\\\"")
-    );
-    let _ = parse_spec(&rendered)?;
-
-    match acdd_core::fs::write_new_confined(&primary, Path::new(&spec_rel), rendered.as_bytes()) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("draft target '{spec_rel}' already exists"),
-            ));
-        }
-        Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to write drafted spec '{spec_rel}': {err}"),
-            ));
-        }
-    }
-
-    Ok(DraftResp {
-        spec_id,
-        spec_path: spec_rel,
-        collection: req.collection,
-    })
+    let overlay = crate::usecases::overlay::BackendDraftOverlay(backend);
+    acdd_spec::draft_spec(&primary, &collections, &req, &overlay)
 }
 
 pub(crate) fn handle_sync_dyn(
@@ -134,7 +48,7 @@ pub(crate) fn handle_sync_dyn(
     provider: &CompositeDomainProvider,
     req: SyncReq,
     source_override: Option<&Adapter>,
-) -> Result<SyncResp, StateError> {
+) -> Result<SyncResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |primary, layout| {
         let caller = resolve_source_checkout(primary, layout, &config.worktree, false)?;
         let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
@@ -158,13 +72,13 @@ pub(crate) fn handle_sync_dyn(
         let doc = parse_spec(&raw_spec)?;
         let checkout = checkout_config(config, primary, &source, source_override)?;
 
-        let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_profile
+        let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_workflow
         {
-            let mut refreshed = resolve_profile_for_rebind(
+            let mut refreshed = resolve_workflow_for_rebind(
                 &snapshot.run.profile_id,
                 Some(&source),
                 Some(&config.modules),
-                Some(&checkout.profiles_dirs),
+                Some(&checkout.workflows_dirs),
             )?;
             apply_effective_isolation(
                 &mut refreshed,
@@ -207,7 +121,7 @@ pub(crate) fn handle_sync_dyn(
             &TransitionInput::Sync(SyncInput {
                 spec: machine_spec,
                 new_profile: new_machine_profile,
-                rebind_profile: req.rebind_profile,
+                rebind_workflow: req.rebind_workflow,
             }),
         )?;
         let TransitionOutcome::Sync(sync_plan) = outcome else {
@@ -242,7 +156,7 @@ pub(crate) fn handle_sync_dyn(
         Ok(SyncResp {
             run_id: snapshot.run.run_id,
             spec_digest,
-            rebound_profile: req.rebind_profile,
+            rebound_workflow: req.rebind_workflow,
             added_nodes,
             updated_nodes,
         })
@@ -253,12 +167,12 @@ pub(crate) fn handle_clear_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     req: ClearReq,
-) -> Result<ClearResp, StateError> {
+) -> Result<ClearResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |primary, layout| {
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
 
         // Never delete the user's non-ephemeral spec file on `clear`; only clean worktrees, branches (including `run.branch`), refs, and ephemeral spec.
         let mut cleanup_manifest =

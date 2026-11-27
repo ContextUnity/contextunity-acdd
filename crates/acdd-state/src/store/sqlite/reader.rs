@@ -7,7 +7,7 @@ use crate::types::{
     RunGraphSnapshot, RunRecord, RunTombstoneRecord, SubtaskRecord, TaskDependencyRecord,
     TraceStatus,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::same_filesystem_path;
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use rusqlite::{
@@ -34,8 +34,8 @@ impl Drop for ReadTxGuard<'_> {
 fn with_read_tx<T>(
     conn: &Connection,
     context: &str,
-    f: impl FnOnce() -> Result<T, StateError>,
-) -> Result<T, StateError> {
+    f: impl FnOnce() -> Result<T, AcddError>,
+) -> Result<T, AcddError> {
     let started = if conn.is_autocommit() {
         conn.execute_batch("BEGIN DEFERRED;")
             .map_err(|err| map_sql_err(err, context))?;
@@ -50,25 +50,25 @@ fn with_read_tx<T>(
     f()
 }
 
-fn map_sql_err(err: rusqlite::Error, context: &str) -> StateError {
+fn map_sql_err(err: rusqlite::Error, context: &str) -> AcddError {
     if let rusqlite::Error::SqliteFailure(sqlite_err, _) = &err {
         if matches!(
             sqlite_err.code,
             rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
         ) {
-            return StateError::new(
+            return AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("{context}: SQLite busy/locked: {err}"),
             );
         }
     }
-    StateError::new(ErrorCode::ProfileSchemaInvalid, format!("{context}: {err}"))
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, format!("{context}: {err}"))
 }
 
-fn parse_enum<T: FromStr<Err = StateError>>(raw: &str, field: &str) -> Result<T, StateError> {
+fn parse_enum<T: FromStr<Err = AcddError>>(raw: &str, field: &str) -> Result<T, AcddError> {
     raw.parse::<T>().map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid {field} '{raw}': {}", err.message),
         )
     })
@@ -78,10 +78,10 @@ fn parse_id<T>(
     raw: String,
     ctor: impl FnOnce(String) -> Result<T, acdd_core::ids::IdError>,
     field: &str,
-) -> Result<T, StateError> {
+) -> Result<T, AcddError> {
     ctor(raw).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid {field} in storage: {err}"),
         )
     })
@@ -91,52 +91,52 @@ fn parse_opt_id<T>(
     raw: Option<String>,
     ctor: impl FnOnce(String) -> Result<T, acdd_core::ids::IdError>,
     field: &str,
-) -> Result<Option<T>, StateError> {
+) -> Result<Option<T>, AcddError> {
     raw.map(|v| parse_id(v, ctor, field)).transpose()
 }
 
-fn parse_json_col<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, StateError> {
+fn parse_json_col<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, AcddError> {
     serde_json::from_str(raw).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid JSON in {field}: {err}"),
         )
     })
 }
 
-fn to_u32(val: i64, field: &str) -> Result<u32, StateError> {
+fn to_u32(val: i64, field: &str) -> Result<u32, AcddError> {
     u32::try_from(val).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("integer overflow/negative value for {field}: {val}"),
         )
     })
 }
 
-fn to_u64(val: i64, field: &str) -> Result<u64, StateError> {
+fn to_u64(val: i64, field: &str) -> Result<u64, AcddError> {
     u64::try_from(val).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("integer overflow/negative value for {field}: {val}"),
         )
     })
 }
 
-fn to_usize(val: i64, field: &str) -> Result<usize, StateError> {
+fn to_usize(val: i64, field: &str) -> Result<usize, AcddError> {
     usize::try_from(val).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("integer overflow/negative value for {field}: {val}"),
         )
     })
 }
 
-fn to_bool_flag(val: i64, field: &str) -> Result<bool, StateError> {
+fn to_bool_flag(val: i64, field: &str) -> Result<bool, AcddError> {
     match val {
         0 => Ok(false),
         1 => Ok(true),
-        other => Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        other => Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid boolean integer for {field}: {other}"),
         )),
     }
@@ -146,15 +146,15 @@ fn col<T: rusqlite::types::FromSql>(
     row: &Row<'_>,
     idx: usize,
     field: &str,
-) -> Result<T, StateError> {
+) -> Result<T, AcddError> {
     row.get(idx).map_err(|err| map_sql_err(err, field))
 }
 
-fn col_enum<T: FromStr<Err = StateError>>(
+fn col_enum<T: FromStr<Err = AcddError>>(
     row: &Row<'_>,
     idx: usize,
     field: &str,
-) -> Result<T, StateError> {
+) -> Result<T, AcddError> {
     parse_enum(&col::<String>(row, idx, field)?, field)
 }
 
@@ -163,7 +163,7 @@ fn col_id<T>(
     idx: usize,
     ctor: impl FnOnce(String) -> Result<T, acdd_core::ids::IdError>,
     field: &str,
-) -> Result<T, StateError> {
+) -> Result<T, AcddError> {
     parse_id(col(row, idx, field)?, ctor, field)
 }
 
@@ -172,27 +172,27 @@ fn col_opt_id<T>(
     idx: usize,
     ctor: impl FnOnce(String) -> Result<T, acdd_core::ids::IdError>,
     field: &str,
-) -> Result<Option<T>, StateError> {
+) -> Result<Option<T>, AcddError> {
     parse_opt_id(col(row, idx, field)?, ctor, field)
 }
 
-fn col_u32(row: &Row<'_>, idx: usize, field: &str) -> Result<u32, StateError> {
+fn col_u32(row: &Row<'_>, idx: usize, field: &str) -> Result<u32, AcddError> {
     to_u32(col(row, idx, field)?, field)
 }
 
-fn col_u64(row: &Row<'_>, idx: usize, field: &str) -> Result<u64, StateError> {
+fn col_u64(row: &Row<'_>, idx: usize, field: &str) -> Result<u64, AcddError> {
     to_u64(col(row, idx, field)?, field)
 }
 
-fn col_bool(row: &Row<'_>, idx: usize, field: &str) -> Result<bool, StateError> {
+fn col_bool(row: &Row<'_>, idx: usize, field: &str) -> Result<bool, AcddError> {
     to_bool_flag(col(row, idx, field)?, field)
 }
 
-fn col_json<T: DeserializeOwned>(row: &Row<'_>, idx: usize, field: &str) -> Result<T, StateError> {
+fn col_json<T: DeserializeOwned>(row: &Row<'_>, idx: usize, field: &str) -> Result<T, AcddError> {
     parse_json_col(&col::<String>(row, idx, field)?, field)
 }
 
-fn decode_run_row(row: &Row<'_>) -> Result<RunRecord, StateError> {
+fn decode_run_row(row: &Row<'_>) -> Result<RunRecord, AcddError> {
     Ok(RunRecord {
         run_id: col_id(row, 0, RunId::new, "runs.run_id")?,
         run_name: col_id(row, 1, RunName::new, "runs.run_name")?,
@@ -219,7 +219,7 @@ fn decode_run_row(row: &Row<'_>) -> Result<RunRecord, StateError> {
     })
 }
 
-fn decode_node_row(row: &Row<'_>) -> Result<GateNodeRecord, StateError> {
+fn decode_node_row(row: &Row<'_>) -> Result<GateNodeRecord, AcddError> {
     Ok(GateNodeRecord {
         run_id: col_id(row, 0, RunId::new, "gate_nodes.run_id")?,
         node_id: col(row, 1, "gate_nodes.node_id")?,
@@ -252,7 +252,7 @@ fn decode_node_row(row: &Row<'_>) -> Result<GateNodeRecord, StateError> {
     })
 }
 
-fn decode_dependency_row(row: &Row<'_>) -> Result<TaskDependencyRecord, StateError> {
+fn decode_dependency_row(row: &Row<'_>) -> Result<TaskDependencyRecord, AcddError> {
     let depends_on_ref_raw: String = col(row, 4, "task_dependencies.depends_on_ref")?;
     Ok(TaskDependencyRecord {
         run_id: col_id(row, 0, RunId::new, "task_dependencies.run_id")?,
@@ -272,7 +272,7 @@ fn decode_dependency_row(row: &Row<'_>) -> Result<TaskDependencyRecord, StateErr
     })
 }
 
-fn decode_subtask_row(row: &Row<'_>) -> Result<SubtaskRecord, StateError> {
+fn decode_subtask_row(row: &Row<'_>) -> Result<SubtaskRecord, AcddError> {
     Ok(SubtaskRecord {
         run_id: col_id(row, 0, RunId::new, "subtasks.run_id")?,
         node_id: col(row, 1, "subtasks.node_id")?,
@@ -285,7 +285,7 @@ fn decode_subtask_row(row: &Row<'_>) -> Result<SubtaskRecord, StateError> {
     })
 }
 
-fn decode_claim_row(row: &Row<'_>) -> Result<GateClaimRecord, StateError> {
+fn decode_claim_row(row: &Row<'_>) -> Result<GateClaimRecord, AcddError> {
     Ok(GateClaimRecord {
         claim_id: Some(col(row, 0, "gate_claims.claim_id")?),
         run_id: col_id(row, 1, RunId::new, "gate_claims.run_id")?,
@@ -302,7 +302,7 @@ fn decode_claim_row(row: &Row<'_>) -> Result<GateClaimRecord, StateError> {
     })
 }
 
-fn decode_trace_row(row: &Row<'_>) -> Result<GateTraceRecord, StateError> {
+fn decode_trace_row(row: &Row<'_>) -> Result<GateTraceRecord, AcddError> {
     Ok(GateTraceRecord {
         trace_row_id: Some(col(row, 0, "gate_traces.trace_row_id")?),
         run_id: col_id(row, 1, RunId::new, "gate_traces.run_id")?,
@@ -337,7 +337,7 @@ fn decode_trace_row(row: &Row<'_>) -> Result<GateTraceRecord, StateError> {
     })
 }
 
-fn decode_artifact_row(row: &Row<'_>) -> Result<GateArtifactRecord, StateError> {
+fn decode_artifact_row(row: &Row<'_>) -> Result<GateArtifactRecord, AcddError> {
     Ok(GateArtifactRecord {
         run_id: col_id(row, 0, RunId::new, "gate_artifacts.run_id")?,
         node_id: col(row, 1, "gate_artifacts.node_id")?,
@@ -349,7 +349,7 @@ fn decode_artifact_row(row: &Row<'_>) -> Result<GateArtifactRecord, StateError> 
     })
 }
 
-fn decode_blackboard_row(row: &Row<'_>) -> Result<BlackboardRecord, StateError> {
+fn decode_blackboard_row(row: &Row<'_>) -> Result<BlackboardRecord, AcddError> {
     Ok(BlackboardRecord {
         id: Some(col(row, 0, "blackboard.id")?),
         run_id: col_id(row, 1, RunId::new, "blackboard.run_id")?,
@@ -365,7 +365,7 @@ fn decode_blackboard_row(row: &Row<'_>) -> Result<BlackboardRecord, StateError> 
     })
 }
 
-fn decode_tombstone_row(row: &Row<'_>) -> Result<RunTombstoneRecord, StateError> {
+fn decode_tombstone_row(row: &Row<'_>) -> Result<RunTombstoneRecord, AcddError> {
     Ok(RunTombstoneRecord {
         run_id: col_id(row, 0, RunId::new, "run_tombstones.run_id")?,
         run_name: col_id(row, 1, RunName::new, "run_tombstones.run_name")?,
@@ -402,9 +402,9 @@ fn query_opt_decoded<T>(
     conn: &Connection,
     sql: &str,
     params: impl rusqlite::Params,
-    decoder: fn(&Row<'_>) -> Result<T, StateError>,
+    decoder: fn(&Row<'_>) -> Result<T, AcddError>,
     context: &str,
-) -> Result<Option<T>, StateError> {
+) -> Result<Option<T>, AcddError> {
     conn.query_row(sql, params, |row| Ok(decoder(row)))
         .optional()
         .map_err(|err| map_sql_err(err, context))?
@@ -414,9 +414,9 @@ fn query_opt_decoded<T>(
 fn collect_rows<T>(
     stmt: &mut rusqlite::Statement<'_>,
     params: impl rusqlite::Params,
-    decoder: fn(&Row<'_>) -> Result<T, StateError>,
+    decoder: fn(&Row<'_>) -> Result<T, AcddError>,
     context: &str,
-) -> Result<Vec<T>, StateError> {
+) -> Result<Vec<T>, AcddError> {
     let mapped = stmt
         .query_map(params, |row| Ok(decoder(row)))
         .map_err(|err| map_sql_err(err, context))?;
@@ -479,7 +479,7 @@ const TOMBSTONE_COLS: &str = "run_id, run_name, collection, workspace, spec_id, 
 pub(crate) fn load_run_graph(
     conn: &Connection,
     run_id: &RunId,
-) -> Result<Option<RunGraphSnapshot>, StateError> {
+) -> Result<Option<RunGraphSnapshot>, AcddError> {
     load_run_graph_with_version(conn, run_id, super::schema::CURRENT_SCHEMA_VERSION)
 }
 
@@ -487,7 +487,7 @@ pub(crate) fn load_run_graph_with_version(
     conn: &Connection,
     run_id: &RunId,
     schema_version: u32,
-) -> Result<Option<RunGraphSnapshot>, StateError> {
+) -> Result<Option<RunGraphSnapshot>, AcddError> {
     with_read_tx(conn, "begin load_run_graph", || {
         load_run_graph_inner(conn, run_id, schema_version)
     })
@@ -497,7 +497,7 @@ fn load_run_graph_inner(
     conn: &Connection,
     run_id: &RunId,
     schema_version: u32,
-) -> Result<Option<RunGraphSnapshot>, StateError> {
+) -> Result<Option<RunGraphSnapshot>, AcddError> {
     let run_cols_sql = run_cols(schema_version);
     let run_sql = format!("SELECT {run_cols_sql} FROM runs WHERE run_id = ?1");
     let run_opt = query_opt_decoded(
@@ -616,7 +616,7 @@ fn load_run_graph_inner(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn list_runs(conn: &Connection, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
+pub(crate) fn list_runs(conn: &Connection, req: &ListRunsReq) -> Result<ListRunsPage, AcddError> {
     list_runs_with_version(conn, req, super::schema::CURRENT_SCHEMA_VERSION)
 }
 
@@ -624,7 +624,7 @@ pub(crate) fn list_runs_with_version(
     conn: &Connection,
     req: &ListRunsReq,
     schema_version: u32,
-) -> Result<ListRunsPage, StateError> {
+) -> Result<ListRunsPage, AcddError> {
     with_read_tx(conn, "begin list_runs", || {
         list_runs_inner(conn, req, schema_version)
     })
@@ -636,8 +636,8 @@ fn query_paginated_table<T>(
     where_sql: &str,
     bind_values: Vec<SqlValue>,
     (limit, offset): (usize, usize),
-    decode: fn(&Row<'_>) -> Result<T, StateError>,
-) -> Result<(Vec<T>, usize), StateError> {
+    decode: fn(&Row<'_>) -> Result<T, AcddError>,
+) -> Result<(Vec<T>, usize), AcddError> {
     let count_sql = format!("SELECT COUNT(*) FROM {table}{where_sql}");
     let total_raw: i64 = conn
         .query_row(&count_sql, params_from_iter(bind_values.iter()), |row| {
@@ -668,7 +668,7 @@ fn list_runs_inner(
     conn: &Connection,
     req: &ListRunsReq,
     schema_version: u32,
-) -> Result<ListRunsPage, StateError> {
+) -> Result<ListRunsPage, AcddError> {
     let limit = req.limit.clamp(1, 100);
     let offset = req.offset;
 
@@ -697,7 +697,7 @@ fn list_runs_inner(
             .map_err(|err| map_sql_err(err, "list_runs(generation)"))?;
         let observed = to_u64(observed_raw, "runs.generation")?;
         if observed != expected_gen {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "runs generation drifted during pagination: expected {expected_gen}, observed {observed}"
@@ -752,7 +752,7 @@ fn list_runs_inner(
 pub(crate) fn resolve_active_run_by_worktree(
     conn: &Connection,
     worktree: &str,
-) -> Result<Option<RunRecord>, StateError> {
+) -> Result<Option<RunRecord>, AcddError> {
     resolve_active_run_by_worktree_with_version(
         conn,
         worktree,
@@ -764,7 +764,7 @@ pub(crate) fn resolve_active_run_by_worktree_with_version(
     conn: &Connection,
     worktree: &str,
     schema_version: u32,
-) -> Result<Option<RunRecord>, StateError> {
+) -> Result<Option<RunRecord>, AcddError> {
     with_read_tx(conn, "begin resolve_active_run_by_worktree", || {
         resolve_active_run_by_worktree_inner(conn, worktree, schema_version)
     })
@@ -774,7 +774,7 @@ fn resolve_active_run_by_worktree_inner(
     conn: &Connection,
     worktree: &str,
     schema_version: u32,
-) -> Result<Option<RunRecord>, StateError> {
+) -> Result<Option<RunRecord>, AcddError> {
     let run_cols_sql = run_cols(schema_version);
     // 1. Direct exact match on runs.worktree (enforced unique for active runs by uq_runs_active_worktree).
     let exact_run_sql =
@@ -807,7 +807,7 @@ fn resolve_active_run_by_worktree_inner(
         "resolve_active_run_by_worktree(nodes)",
     )?;
     if node_matches.len() > 1 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("multiple active runs reference worktree '{worktree}'"),
         ));
@@ -871,7 +871,7 @@ fn resolve_active_run_by_worktree_inner(
     }
 
     if matched_ids.len() > 1 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("multiple active runs match worktree '{worktree}'"),
         ));
@@ -881,7 +881,7 @@ fn resolve_active_run_by_worktree_inner(
 
 pub(crate) fn load_task_statuses(
     conn: &Connection,
-) -> Result<Vec<(RunId, String, NodeStatus)>, StateError> {
+) -> Result<Vec<(RunId, String, NodeStatus)>, AcddError> {
     let mut stmt = conn
         .prepare("SELECT run_id, node_id, status FROM gate_nodes WHERE kind = 'task'")
         .map_err(|err| map_sql_err(err, "prepare task statuses"))?;
@@ -902,7 +902,7 @@ pub(crate) fn load_task_statuses(
 pub(crate) fn active_worker_claims(
     conn: &Connection,
     worker_id: &WorkerId,
-) -> Result<Vec<ActiveWorkerClaim>, StateError> {
+) -> Result<Vec<ActiveWorkerClaim>, AcddError> {
     let mut stmt = conn
         .prepare(
             "SELECT r.run_id, gn.node_id, COALESCE(gn.worktree, parent.worktree, r.worktree)
@@ -935,7 +935,7 @@ pub(crate) fn load_node(
     conn: &Connection,
     run_id: &RunId,
     node_id: &str,
-) -> Result<Option<GateNodeRecord>, StateError> {
+) -> Result<Option<GateNodeRecord>, AcddError> {
     let sql = format!("SELECT {NODE_COLS} FROM gate_nodes WHERE run_id = ?1 AND node_id = ?2");
     query_opt_decoded(
         conn,
@@ -950,7 +950,7 @@ pub(crate) fn latest_claim(
     conn: &Connection,
     run_id: &RunId,
     node_id: &str,
-) -> Result<Option<GateClaimRecord>, StateError> {
+) -> Result<Option<GateClaimRecord>, AcddError> {
     query_opt_decoded(
         conn,
         "SELECT claim_id, run_id, node_id, claim_revision, worker_id, session_fingerprint,
@@ -970,7 +970,7 @@ pub(crate) fn latest_trace(
     run_id: &RunId,
     node_id: &str,
     claim_revision: u32,
-) -> Result<Option<GateTraceRecord>, StateError> {
+) -> Result<Option<GateTraceRecord>, AcddError> {
     query_opt_decoded(
         conn,
         "SELECT trace_row_id, run_id, node_id, claim_revision, contract_revision,
@@ -994,7 +994,7 @@ pub(crate) fn load_artifact(
     node_id: &str,
     claim_revision: u32,
     kind: ArtifactKind,
-) -> Result<Option<GateArtifactRecord>, StateError> {
+) -> Result<Option<GateArtifactRecord>, AcddError> {
     query_opt_decoded(
         conn,
         "SELECT run_id, node_id, claim_revision, kind, payload_json, snapshot_commit, created_at
@@ -1015,7 +1015,7 @@ pub(crate) fn list_blackboard(
     conn: &Connection,
     run_id: &RunId,
     req: &BlackboardListReq,
-) -> Result<BlackboardPage, StateError> {
+) -> Result<BlackboardPage, AcddError> {
     with_read_tx(conn, "begin list_blackboard", || {
         list_blackboard_inner(conn, run_id, req)
     })
@@ -1025,7 +1025,7 @@ fn list_blackboard_inner(
     conn: &Connection,
     run_id: &RunId,
     req: &BlackboardListReq,
-) -> Result<BlackboardPage, StateError> {
+) -> Result<BlackboardPage, AcddError> {
     let limit = req.limit.clamp(1, 100);
     let offset = req.offset;
 
@@ -1057,7 +1057,7 @@ fn list_blackboard_inner(
 
     if let Some(expected_gen) = req.generation {
         if observed_gen != Some(expected_gen) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "blackboard run generation mismatch for '{}': expected {expected_gen}, observed {:?}",
@@ -1128,7 +1128,7 @@ fn list_blackboard_inner(
 pub(crate) fn load_tombstone(
     conn: &Connection,
     run_id: &RunId,
-) -> Result<Option<RunTombstoneRecord>, StateError> {
+) -> Result<Option<RunTombstoneRecord>, AcddError> {
     let sql = format!("SELECT {TOMBSTONE_COLS} FROM run_tombstones WHERE run_id = ?1");
     query_opt_decoded(
         conn,
@@ -1156,7 +1156,7 @@ pub(crate) fn max_spec_number(
     conn: &Connection,
     collection: &str,
     prefix: &str,
-) -> Result<Option<u32>, StateError> {
+) -> Result<Option<u32>, AcddError> {
     with_read_tx(conn, "begin max_spec_number", || {
         max_spec_number_inner(conn, collection, prefix)
     })
@@ -1166,7 +1166,7 @@ fn max_spec_number_inner(
     conn: &Connection,
     collection: &str,
     prefix: &str,
-) -> Result<Option<u32>, StateError> {
+) -> Result<Option<u32>, AcddError> {
     let mut best: Option<u32> = None;
 
     let mut runs_stmt = conn
@@ -1218,13 +1218,13 @@ fn max_spec_number_inner(
 
 pub(crate) fn observability_snapshot(
     conn: &Connection,
-) -> Result<ObservabilitySnapshot, StateError> {
+) -> Result<ObservabilitySnapshot, AcddError> {
     with_read_tx(conn, "begin observability_snapshot", || {
         observability_snapshot_inner(conn)
     })
 }
 
-fn observability_snapshot_inner(conn: &Connection) -> Result<ObservabilitySnapshot, StateError> {
+fn observability_snapshot_inner(conn: &Connection) -> Result<ObservabilitySnapshot, AcddError> {
     let active_runs: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM runs WHERE status = 'active'",

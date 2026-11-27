@@ -16,7 +16,7 @@ use acdd_core::{
         self, load_adapter, resolve_code_db_path, resolve_memory_budget_bytes,
         resolve_state_db_path, Adapter,
     },
-    errors::{ErrorCode, StateError},
+    errors::{ErrorCode, AcddError},
     fs::canonical_root,
 };
 use acdd_index::{
@@ -822,7 +822,7 @@ fn build_inner_with_cache(
     let root = canonical_root(root)?;
     let adapter = load_adapter(&root, adapter_path)?;
     if !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs") {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
         )

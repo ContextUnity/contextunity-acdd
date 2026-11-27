@@ -30,8 +30,9 @@ specs:
     path: docs/plans
     prefixes: []
     digits: 3
-profiles_dirs:
-  - .acdd/profiles
+preset: full
+workflows_dirs:
+  - .acdd/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 modules:
@@ -65,6 +66,8 @@ architecture:
   zones:
     core:
       - "crates/acdd-core/src/**"
+    spec:
+      - "crates/acdd-spec/src/**"
     index:
       - "crates/acdd-index/src/**"
     state:
@@ -89,14 +92,43 @@ architecture:
       - "src/mcp/**"
 
   rules:
+    - id: ARCH-SPEC-DEPS
+      severity: error
+      kind: allow_only_dependencies
+      from:
+        zones: [spec]
+      to:
+        zones: [core]
+      message: "crates/acdd-spec may only depend on crates/acdd-core"
+
+    - id: ARCH-SPEC-EXTERNAL-BAN
+      severity: error
+      kind: forbid_dependency
+      from:
+        zones: [spec]
+      to:
+        external_symbols: ["acdd_index", "acdd_state", "rusqlite", "tree_sitter", "zstd", "rayon", "hashbrown", "petgraph", "pulldown_cmark", "walkdir", "ignore", "clap", "rmcp", "tokio", "libc", "regex"]
+      message: "crates/acdd-spec must remain free of index, state, SQLite, regex, walkdir, and runtime dependencies"
+
+    - id: ARCH-INDEX-SPEC-ENTRY
+      severity: error
+      kind: boundary_entry
+      from:
+        zones: [index]
+      to:
+        zones: [spec]
+      entrypoints:
+        - "crates/acdd-spec/src/frontmatter.rs"
+      message: "crates/acdd-index may only call crates/acdd-spec via crates/acdd-spec/src/frontmatter.rs"
+
     - id: ARCH-INDEX-DEPS
       severity: error
       kind: allow_only_dependencies
       from:
         zones: [index]
       to:
-        zones: [core]
-      message: "crates/acdd-index may only depend on crates/acdd-core"
+        zones: [core, spec]
+      message: "crates/acdd-index may only depend on crates/acdd-core and crates/acdd-spec"
 
     - id: ARCH-INDEX-EXTERNAL-BAN
       severity: error
@@ -325,7 +357,7 @@ architecture:
     - id: ARCH-ZONE-DAG-ACYCLIC
       severity: error
       kind: forbid_cycles
-      zones: [core, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+      zones: [core, spec, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
       message: "Architectural workspace zones must remain an acyclic DAG"
 
     - id: ARCH-ACYCLIC-HOST-MODULES
@@ -340,7 +372,7 @@ architecture:
       severity: error
       kind: forbid_cycles
       from:
-        zones: [core, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+        zones: [core, spec, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
         paths: ["src/*.rs"]
       edge_kinds: [imports]
       message: "Workspace production module import graph must remain acyclic (including same-directory modules)"

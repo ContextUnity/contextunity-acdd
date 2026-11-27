@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Run fast repository boundary/compile/docs checks sequentially, then execute the
 # full Linux workspace test suite and remote macOS SSH verification in parallel.
-# Intended for `.acdd/profile.yaml`'s `check_full_repo` (`run_tests`) command.
+# Intended for `.acdd/workflows/default.yaml`'s `check_full_repo` (`run_tests`) command.
 
 linux_pid=""
 

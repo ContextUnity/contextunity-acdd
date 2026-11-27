@@ -9,7 +9,7 @@ mod signature_scope;
 pub use common::CodeDomainProvider;
 pub(crate) use lint::ensure_fresh_worktree_index;
 
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ports::{
     CheckCapability, DomainActionReq, DomainActionResult, DomainCapabilities, DomainCheckOutcome,
     DomainCheckReq, DomainContextReq, DomainProvider, FreshnessObservation,
@@ -71,7 +71,7 @@ impl DomainProvider for CodeDomainProvider {
             "seam" => self.run_seam_check(params, req),
             "signature_scope" => self.run_signature_scope_check(req),
             "lint" => self.run_lint_check(params, req),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown code check 'code.{check}'"),
             )
@@ -103,7 +103,7 @@ impl DomainProvider for CodeDomainProvider {
                 })
             }
             "lint" => self.observe_lint_freshness(params, req),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown code check 'code.{check}'"),
             )
@@ -116,7 +116,7 @@ impl DomainProvider for CodeDomainProvider {
             "symbols" => self.provide_symbols(req),
             "tests" => self.provide_tests(req),
             "external_callers" => self.provide_external_callers(req),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown code context lens 'code.{lens}'"),
             )
@@ -193,6 +193,7 @@ mod tests {
         run_git(&["init"]);
         run_git(&["config", "user.email", "test@example.com"]);
         run_git(&["config", "user.name", "Test"]);
+        run_git(&["config", "commit.gpgsign", "false"]);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("tests")).unwrap();
         fs::write(
@@ -241,6 +242,7 @@ mod tests {
             test_target: Some("tests/seam_test.rs::test_live_seam".to_owned()),
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
+            node_tags: vec![],
         };
         let cases = [
             (
@@ -284,7 +286,26 @@ mod tests {
                         }
                     );
                 }
-                (DomainCheckOutcome::Failed { .. }, false) => {}
+                (DomainCheckOutcome::Failed { .. }, false) => {
+                    // Freshness observation computes deterministic input salts without rerunning validation.
+                    let observed = provider
+                        .observe_freshness("seam", &serde_json::Value::Null, &req)
+                        .unwrap();
+                    match observed {
+                        acdd_core::ports::FreshnessObservation::Passed {
+                            index_generation,
+                            execution_digest_salt,
+                        } => {
+                            assert_eq!(index_generation.as_deref(), Some("no-index"));
+                            let salt = execution_digest_salt.as_deref().unwrap_or_default();
+                            assert!(salt.contains("index_generation="), "{salt}");
+                            assert!(salt.contains("live_files_digest="), "{salt}");
+                        }
+                        other => panic!(
+                            "expected deterministic freshness observation for {label}: {other:?}"
+                        ),
+                    }
+                }
                 _ => panic!("unexpected outcome for {label}: {outcome:?}"),
             }
         }
@@ -349,6 +370,110 @@ mod tests {
             assert_seam_outcome(&provider, &req, expect_pass, label);
         }
 
+        // Verify `docs`-tagged tasks: non-Rust tooling passes without --test; Rust prod code still enforces seam BFS.
+        fs::create_dir_all(root.join("website")).unwrap();
+        fs::write(
+            root.join("website/build.py"),
+            "def render_site():\n    return 'ok'\n",
+        )
+        .unwrap();
+        fs::write(root.join("website/index.html"), "<html></html>\n").unwrap();
+        let docs_tooling_req = DomainCheckReq {
+            admitted_scope: vec!["website/build.py".into(), "website/index.html".into()],
+            changed_paths: vec!["website/build.py".into()],
+            test_target: None,
+            node_tags: vec!["docs".to_owned()],
+            ..seam_req.clone()
+        };
+        let docs_tooling_outcome = provider
+            .run_check("seam", &serde_json::Value::Null, &docs_tooling_req)
+            .unwrap();
+        let docs_salt = match docs_tooling_outcome {
+            DomainCheckOutcome::Passed {
+                summary,
+                execution_digest_salt,
+            } => {
+                assert_eq!(
+                    summary,
+                    "code.seam: docs-tagged task with no Rust production code in scope"
+                );
+                let obs = provider
+                    .observe_freshness("seam", &serde_json::Value::Null, &docs_tooling_req)
+                    .unwrap();
+                assert_eq!(
+                    obs,
+                    acdd_core::ports::FreshnessObservation::Passed {
+                        index_generation: Some("no-index".to_owned()),
+                        execution_digest_salt: execution_digest_salt.clone(),
+                    }
+                );
+                execution_digest_salt
+            }
+            other => panic!("expected docs-tagged non-Rust tooling to pass: {other:?}"),
+        };
+        let invalid_test_req = DomainCheckReq {
+            test_target: Some("tests/missing.rs::nonexistent_test".to_owned()),
+            ..docs_tooling_req.clone()
+        };
+        assert_seam_outcome(
+            &provider,
+            &invalid_test_req,
+            false,
+            "docs-tagged task still validates explicit test target before passing",
+        );
+        // `observe_freshness` observes live input salts without rerunning seam validation;
+        // `run_check` fails closed so no passing verify trace is recorded for invalid explicit targets.
+        assert_eq!(
+            provider
+                .observe_freshness("seam", &serde_json::Value::Null, &invalid_test_req)
+                .unwrap(),
+            acdd_core::ports::FreshnessObservation::Passed {
+                index_generation: Some("no-index".to_owned()),
+                execution_digest_salt: docs_salt.clone(),
+            }
+        );
+        let sym_cfg = serde_json::json!({"target_symbol": "nonexistent_symbol"});
+        let invalid_target_sym_outcome = provider
+            .run_check("seam", &sym_cfg, &docs_tooling_req)
+            .unwrap();
+        assert!(
+            matches!(invalid_target_sym_outcome, DomainCheckOutcome::Failed { .. }),
+            "docs-tagged task still validates explicit target_symbol before passing: {invalid_target_sym_outcome:?}"
+        );
+        assert_eq!(
+            provider
+                .observe_freshness("seam", &sym_cfg, &docs_tooling_req)
+                .unwrap(),
+            acdd_core::ports::FreshnessObservation::Passed {
+                index_generation: Some("no-index".to_owned()),
+                execution_digest_salt: docs_salt,
+            }
+        );
+        assert_seam_outcome(
+            &provider,
+            &DomainCheckReq {
+                admitted_scope: vec!["website/build.py".into(), "src/engine.rs".into()],
+                changed_paths: vec!["src/engine.rs".into()],
+                test_target: None,
+                node_tags: vec!["docs".to_owned()],
+                ..seam_req.clone()
+            },
+            false,
+            "docs-tagged task with Rust prod code fails closed without seam test",
+        );
+        assert_seam_outcome(
+            &provider,
+            &DomainCheckReq {
+                admitted_scope: vec!["website/build.py".into(), "src/engine.rs".into()],
+                changed_paths: vec!["src/engine.rs".into()],
+                test_target: Some("tests/seam_test.rs::test_live_seam".to_owned()),
+                node_tags: vec!["docs".to_owned()],
+                ..seam_req.clone()
+            },
+            true,
+            "docs-tagged task with Rust prod code passes when seam test reaches it",
+        );
+
         // Verify signature_scope flags an external non-test caller when a public signature changes.
         let sig_fail = provider
             .run_check(
@@ -365,6 +490,7 @@ mod tests {
                     test_target: None,
                     path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
                     baseline_ref: None,
+                    node_tags: vec![],
                 },
             )
             .unwrap();
@@ -384,6 +510,7 @@ mod tests {
             test_target: None,
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
+            node_tags: vec![],
         };
         let sig_pass = provider
             .run_check(
@@ -663,6 +790,7 @@ mod tests {
             test_target: None,
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
+            node_tags: vec![],
         };
         let obs_before_del = provider
             .observe_freshness("signature_scope", &serde_json::Value::Null, &del_req)

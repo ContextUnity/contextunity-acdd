@@ -1,11 +1,11 @@
 use super::*;
 use crate::harness::RunHarness;
-use crate::spec::{ClosureSummary, Receipt, ReceiptRollup, SpecStatus};
 use crate::types::{
-    ClaimOutcome, GateClaimRecord, GateTraceRecord, InvariantsState, NodeKind, NodeStatus,
-    ObservabilitySnapshot, RunTombstoneRecord, TerminalStatus, TraceStatus,
+    ClaimOutcome, GateClaimRecord, GateTraceRecord, NodeKind, NodeStatus, ObservabilitySnapshot,
+    RunTombstoneRecord, TerminalStatus, TraceStatus,
 };
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
+use acdd_spec::{ClosureSummary, InvariantsState, Receipt, ReceiptRollup, SpecStatus};
 use serde_json::Value;
 use std::collections::BTreeMap;
 

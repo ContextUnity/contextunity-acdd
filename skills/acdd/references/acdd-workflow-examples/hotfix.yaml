@@ -1,0 +1,12 @@
+version: 2
+# Standalone template inheriting embedded `code`; use `.acdd/workflows/default.yaml` when customizing repo defaults.
+inherit: code
+
+gates_patch:
+  - blueprint_synthesis: null
+  - id: run_tests
+    pass: handoff
+  - integration_review: null
+  - id: handoff
+    need: [run_tests]
+    guidance: [milestone.handoff, core.execution, hitl.pro]

@@ -1,21 +1,21 @@
-# Built-in Profile: `code`
+# Built-in Workflow: `code`
 
-The embedded **`code`** profile (`crates/acdd-state/src/profile/embedded/code.yaml`) is the full software engineering lifecycle built into the `acdd` binary. It inherits `base` (`git.isolation: worktree`, `save: commit`, `limits`) and defines `architect`, `builder`, and `independent_reviewer` roles alongside abstract `build_check` and `verify_all` command slots.
+The embedded **`code`** workflow (`crates/acdd-state/src/workflow/embedded/code.yaml`) is one of three workflows embedded directly in the `acdd` binary (`base`, `code`, `documentation`; reference templates for `audit`, `spec_planning`, and `hotfix` live in `skills/acdd/references/acdd-workflow-examples/`). It inherits `base` (`git.isolation: worktree`, `save: commit`, `limits`) and defines `architect`, `builder`, and `independent_reviewer` roles alongside abstract `build_check` and `verify_all` command slots.
 
 ---
 
 ## How `ClaimResp` assembles agent context
 
-When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6-tier budgeted `ClaimResp`** envelope (`<= 9,500` bytes default, or `detail="full"` up to `32 KiB`) and renders it as structured Markdown:
+When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6-tier budgeted `ClaimResp`** envelope using three distinct byte caps — `response_hard_cap` (`ResponsePolicy.max_output_bytes`, bounded by `32 KiB`), `tier1_cap` (`limits.max_guidance_bytes.min(response_hard_cap)`), and `optional_target_cap` (**`<= 10,000` bytes** default compact soft ceiling, or `detail="full"` up to `32 KiB`) — degrading gracefully via `omitted_sections` (with counts and inspect commands such as `acdd blackboard --action read`, `acdd context --detail full`, and `acdd show`) when compact Tier 1 exceeds `10,000` bytes within `tier1_cap`:
 
 | Tier | Field | Contents |
 | --- | --- | --- |
-| **1 (Mandatory)** | `contract`, `guidance` | Task/milestone spec excerpt, admitted `scope`, `acceptance_criteria`, and all resolved `guidance` blocks (fails with `GuidanceBudgetExceeded` if Tier 1 exceeds `max_guidance_bytes`). |
-| **2 (Rework)** | `unresolved_findings` | Latest rejection `findings` and `failed_trace_log_tail` (up to `diagnostic_inline_bytes`, 4,096 bytes) when returning after `fail` or `rearchitect`. |
+| **1 (Mandatory)** | `contract`, `guidance` | Task/milestone spec excerpt, admitted `scope`, `acceptance_criteria`, and all resolved `guidance` blocks (fails with `GUIDANCE_BUDGET_EXCEEDED` only when exceeding `tier1_cap` or `response_hard_cap`). |
+| **2 (Rework)** | `unresolved_findings` | Latest rejection `findings` and `failed_trace_log_tail` (up to `diagnostic_inline_bytes`, 4,096 bytes) when returning after `fail` or `rearchitect` (drops trace tail first and records `unresolved_findings` in `omitted_sections` if compact budget is tight). |
 | **3 (Architect Slice)** | `pre_task_slice` | Per-task blueprint slice materialized during `blueprint_synthesis` (`canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`). |
 | **4 (Dependencies)** | `dependency_receipts` | Completed receipts from upstream dependency tasks (`need:`). |
-| **5 (Coordination)** | `blackboard` | Recent `notes`, `blockers`, and `decisions` posted on `acdd_blackboard` (up to 6 items × 220 chars). |
-| **6 (Domain Lenses)** | `context_lenses` | Dynamic `docs.*` and `code.*` context lenses declared on the gate's `context:` list, in YAML declaration order. |
+| **5 (Coordination)** | `blackboard` | Recent `notes`, `blockers`, and `decisions` posted on `acdd_blackboard` (up to 6 items × 220 chars; records `blackboard (N of M omitted)` in `omitted_sections` when truncated). |
+| **6 (Domain Lenses)** | `context_lenses` | Dynamic `docs.*` and `code.*` context lenses declared on the gate's `context:` list, in YAML declaration order (trimmed sections appear in `omitted_sections`). |
 
 ---
 
@@ -40,7 +40,7 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
    - Receives `docs.*` and `code.symbols` to realign the design.
 7. **`run_tests` & `polish`**:
    - `run_tests` runs `verify_all` + `code.lint` (`[arch, syntax, docs]`).
-   - Failures route to `polish` (`builder`, scoped to docs/skills/profiles/configs).
+   - Failures route to `polish` (`builder`, scoped to docs/skills/workflows/configs).
 8. **`integration_review` & `handoff`**:
    - `integration_review` audits the full integrated run branch (`independent_from: [polish, tasks.build]`).
    - `handoff` finalizes the run (`post: commit`, `archive: true`, `prune: true`).

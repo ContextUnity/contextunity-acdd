@@ -50,7 +50,7 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
         "---\nid: AC-001\ntitle: Linked\nstatus: active\n---\n",
     );
     ws.write(
-        ".worktrees/source/.acdd/profile.yaml",
+        ".worktrees/source/.acdd/workflows/default.yaml",
         "version: 2\ninherit: none\nsave: none\ngates:\n  - id: handoff\n",
     );
     ws.write(
@@ -59,7 +59,7 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
     );
     ws.write(
         ".worktrees/source/alternate.yaml",
-        "state_db: .acdd/alternate.sqlite\nprofiles_dirs: [overrides]\nspecs:\n  override: {path: alternate-work}\n",
+        "state_db: .acdd/alternate.sqlite\nworkflows_dirs: [overrides]\nspecs:\n  override: {path: alternate-work}\n",
     );
     ws.write(
         ".worktrees/source/alternate-work/AC-004.md",
@@ -92,12 +92,12 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
             "configured",
             primary.as_path(),
             vec!["--root", linked_arg, "--config", "alternate.yaml"],
-            vec!["--profile", "chosen"],
+            vec!["--workflow", "chosen"],
         ),
         (
             "explicit",
             primary.as_path(),
-            vec!["--profile", ".acdd/profile.yaml"],
+            vec!["--workflow", ".acdd/workflows/default.yaml"],
             vec!["--worktree-path", ".worktrees/source"],
         ),
     ];
@@ -132,7 +132,7 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
         let (collection, profile) = if name == "configured" {
             ("override", "overrides/chosen.yaml")
         } else {
-            ("custom", ".acdd/profile.yaml")
+            ("custom", ".acdd/workflows/default.yaml")
         };
         assert_eq!(started.run.collection.as_deref(), Some(collection));
         assert_eq!(started.run.profile_id, profile);
@@ -143,8 +143,8 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
             &options
         };
         assert!(matches!(run_cli(sync_options,
-            &["sync", "--run", started.run.run_id.as_str(), "--rebind-profile"], &[]),
-            StateCommandOutput::Sync(output) if output.rebound_profile));
+            &["sync", "--run", started.run.run_id.as_str(), "--rebind-workflow"], &[]),
+            StateCommandOutput::Sync(output) if output.rebound_workflow));
         if name == "explicit" {
             assert!(matches!(
                 run_cli(
@@ -214,8 +214,8 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
 fn cli_snapshot_round_trip() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");
-    ws.write("acdd.yaml", "profile: full\nmodules: {state: true}\n");
-    ws.write(".acdd/profile.yaml", "version: 2\ngit: {isolation: in_place, worktrees: manual}\nroles: {worker: {mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - {id: build, role: worker, proof: none}\n");
+    ws.write("acdd.yaml", "preset: full\nmodules: {state: true}\n");
+    ws.write(".acdd/workflows/default.yaml", "version: 2\ngit: {isolation: in_place, worktrees: manual}\nroles: {worker: {mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - {id: build, role: worker, proof: none}\n");
     ws.write("docs/milestones/010-snapshot.md", "---\nid: m-snapshot\ntitle: Snapshot\ndoc_type: milestone\nstatus: active\n---\n# Snapshot\n\n### task: snap-task\n```yaml\ntask_ref: snap-task\ntarget: Snapshot\nscope: [src/lib.rs]\n```\n");
     let r1 = "pub fn base() -> i32 { 1 }\n";
     let r2 = "pub fn base() -> i32 { 2 }\n";
@@ -734,7 +734,7 @@ fn cli_snapshot_round_trip() {
 fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");
-    ws.write(".acdd/profiles/two-gate.yaml", TWO_GATE_PROFILE);
+    ws.write(".acdd/workflows/two-gate.yaml", TWO_GATE_PROFILE);
     ws.write(
         "docs/milestones/001-branching.md",
         include_str!("fixtures/milestones/branching_deps.md"),
@@ -756,11 +756,11 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
             &cfg,
             &providers,
             StateCommand::Draft(DraftReq {
-                collection: "milestones".to_owned(),
+                spec: "milestones".to_owned(),
                 slug: "new-feature".to_owned(),
                 prefix: None,
                 title: Some("New Feature".to_owned()),
-                profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
             }),
         )
         .unwrap()
@@ -779,7 +779,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
             &providers,
             StateCommand::Start(StartReq {
                 spec_path: Some("docs/milestones/001-branching.md".to_owned()),
-                profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                 ..StartReq::default()
             }),
         )
@@ -873,7 +873,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
             &providers,
             StateCommand::Sync(SyncReq {
                 run: Some(rid.clone()),
-                rebind_profile: false,
+                rebind_workflow: false,
             }),
         )
         .unwrap_err();
@@ -892,6 +892,10 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
         )
         .unwrap();
     ws.write(
+        ".acdd/workflows/spec_planning.yaml",
+        include_str!("../../skills/acdd/references/acdd-workflow-examples/spec_planning.yaml"),
+    );
+    ws.write(
         "acdd.yaml",
         "docs:\n  - docs\n  - ARCHITECTURE.md\nmodules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
     );
@@ -903,7 +907,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
             &providers,
             StateCommand::Start(StartReq {
                 goal: Some("Plan new milestone".to_owned()),
-                profile: Some("spec_planning".to_owned()),
+                workflow: Some(".acdd/workflows/spec_planning.yaml".to_owned()),
                 scope: Vec::new(),
                 ..StartReq::default()
             }),
@@ -941,7 +945,7 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     assert!(scope_vals.contains(&"docs/milestones/**"), "{scope_vals:?}");
     assert!(scope_vals.contains(&"ARCHITECTURE.md"), "{scope_vals:?}");
     assert!(scope_vals.contains(&"ROADMAP.md"), "{scope_vals:?}");
-    assert!(scope_vals.contains(&".acdd/profiles/**"), "{scope_vals:?}");
+    assert!(scope_vals.contains(&".acdd/workflows/**"), "{scope_vals:?}");
     assert!(
         !scope_vals.iter().any(|p| p.starts_with("src")),
         "{scope_vals:?}"

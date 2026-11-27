@@ -60,8 +60,8 @@ fn render_detail(resp: &RoadmapResp) -> String {
 
     let mut out = format!("# {}\n\n", spec.spec_id);
     out.push_str(&format!(
-        "**title**: {}\n**collection**: `{}` | **status**: `{}` | **path**: `{}`\n",
-        spec.title, spec.collection, spec.status, spec.path
+        "**title**: {}\n**spec**: `{}` | **status**: `{}` | **path**: `{}`\n",
+        spec.title, spec.spec, spec.status, spec.path
     ));
     if let Some(run_id) = spec.run_id.as_deref() {
         out.push_str(&format!("**run**: `{run_id}`\n"));
@@ -264,7 +264,7 @@ mod tests {
         RoadmapSpecEntry {
             spec_id: id.into(),
             title: "Title".into(),
-            collection: "milestones".into(),
+            spec: "milestones".into(),
             path: format!("docs/milestones/{id}.md"),
             doc_type: "contract".into(),
             status: "planned".into(),
@@ -318,7 +318,7 @@ mod tests {
                 specs: vec![RoadmapSpecEntry {
                     spec_id: "AC-003".into(),
                     title: "Leaf".into(),
-                    collection: "milestones".into(),
+                    spec: "milestones".into(),
                     path: "docs/milestones/AC-003.md".into(),
                     doc_type: "contract".into(),
                     status: "planned".into(),

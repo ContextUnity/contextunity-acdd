@@ -16,7 +16,7 @@ use crate::{
     format::{self, OperationKind, OutputFormat},
     state_bridge::InvocationSettings,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::subsystems::SubsystemId;
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -182,6 +182,14 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn exit_on_cli_error(error: anyhow::Error) -> Result<()> {
+    if let Some(acdd_err) = AcddError::from_anyhow(&error) {
+        eprintln!("{error:#}");
+        std::process::exit(acdd_err.exit_code());
+    }
+    Err(error)
+}
+
 /// Parses CLI arguments from the process environment and executes the selected command.
 pub async fn run_from_env() -> Result<()> {
     use clap::{parser::ValueSource, CommandFactory, FromArgMatches};
@@ -205,18 +213,12 @@ pub async fn run_from_env() -> Result<()> {
 }
 
 impl Cli {
-    /// Run the parsed CLI command and terminate with canonical `StateError` exit codes (`2`/`3`/`4`).
+    /// Run the parsed CLI command and terminate with canonical `AcddError` exit codes (`2`/`3`/`4`).
     async fn run(self, sources: CliRunSources) -> Result<()> {
         match self.run_inner(&mut io::stdout(), None, &sources).await {
             Ok(Some(code)) if code != 0 => std::process::exit(code),
             Ok(_) => Ok(()),
-            Err(error) => {
-                if let Some(state_err) = StateError::from_anyhow(&error) {
-                    eprintln!("{error:#}");
-                    std::process::exit(state_err.exit_code());
-                }
-                Err(error)
-            }
+            Err(error) => exit_on_cli_error(error),
         }
     }
 
@@ -349,7 +351,7 @@ impl Cli {
             }
         };
 
-        // `init` and `guide init` must work even before `.acdd/profile.yaml` exists.
+        // `init` and `guide init` must work even before `.acdd/workflows/default.yaml` exists.
         if matches!(self.command.as_ref(), Some(Command::Init { .. })) {
             let force = matches!(self.command.as_ref(), Some(Command::Init { force: true }));
             let result = guide::initialize(&root, force)?;
@@ -378,7 +380,8 @@ impl Cli {
             }
         }
 
-        // `validate` handles potentially broken configs/profiles directly without ResolvedPaths pre-failing.
+        // `validate` handles potentially broken configs/workflows directly without ResolvedPaths pre-failing,
+        // while still failing closed with `FEATURE_DISABLED` when `spec` is disabled on a valid config.
         if let Some(Command::Validate { path }) = self.command {
             let explicit_config = self.config.as_deref().map(|p| {
                 if p.is_absolute() {
@@ -387,15 +390,26 @@ impl Cli {
                     root.join(p)
                 }
             });
-            let explicit_profile = self
-                .profile
+            if let Ok(report) =
+                acdd_core::config::load_adapter_report(&root, explicit_config.as_deref())
+            {
+                if !report.adapter.modules.is_subsystem_enabled(SubsystemId::Spec) {
+                    return Err(AcddError::new(
+                        ErrorCode::FeatureDisabled,
+                        "FEATURE_DISABLED: 'spec' subsystem is disabled in modules:",
+                    )
+                    .into());
+                }
+            }
+            let explicit_workflow = self
+                .workflow
                 .as_deref()
                 .map(|p| p.to_string_lossy().into_owned());
             let result = validate::run_with_options(
                 &root,
                 path.as_deref(),
                 explicit_config.as_deref(),
-                explicit_profile.as_deref(),
+                explicit_workflow.as_deref(),
             )?;
             let failed = result.get("valid").and_then(Value::as_bool) == Some(false);
             let formatted = format::render_for_operation(
@@ -407,8 +421,23 @@ impl Cli {
             );
             writeln!(output, "{formatted}")?;
             if failed {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                let has_non_spec_err = result["diagnostics"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|d| {
+                        d["status"] == "fail"
+                            && d["code"]
+                                .as_str()
+                                .is_some_and(|c| c != ErrorCode::SpecSchemaInvalid.as_str())
+                    });
+                let code = if has_non_spec_err {
+                    ErrorCode::WorkflowSchemaInvalid
+                } else {
+                    ErrorCode::SpecSchemaInvalid
+                };
+                return Err(AcddError::new(
+                    code,
                     "VALIDATION_FAILED: one or more documents failed validation",
                 )
                 .into());
@@ -416,16 +445,16 @@ impl Cli {
             return Ok(None);
         }
 
-        let profile_at_root = match &self.command {
+        let workflow_at_root = match &self.command {
             Some(Command::Start {
                 spec: Some(_),
                 worktree_path: Some(_),
                 ..
             }) => None,
-            _ => self.profile.as_deref(),
+            _ => self.workflow.as_deref(),
         };
         let settings =
-            paths::ResolvedPaths::resolve(&root, self.config.as_deref(), profile_at_root)?;
+            paths::ResolvedPaths::resolve(&root, self.config.as_deref(), workflow_at_root)?;
         let database = acdd_core::config::resolve_code_db_path(&root, self.db.as_deref());
         let state_db = self.state_db.as_ref().map(|path| {
             if path.is_absolute() {
@@ -434,7 +463,7 @@ impl Cli {
                 root.join(path)
             }
         });
-        let profile_argument = self.profile.as_ref().map(|path| {
+        let workflow_argument = self.workflow.as_ref().map(|path| {
             if path.is_absolute() {
                 path.clone()
             } else {
@@ -452,7 +481,7 @@ impl Cli {
             settings,
             database,
             state_db,
-            profile_argument,
+            workflow_argument,
         )
         .await?;
         Ok(None)
@@ -470,7 +499,7 @@ impl Cli {
         settings: paths::ResolvedPaths,
         db: PathBuf,
         state_db: Option<PathBuf>,
-        profile_argument: Option<PathBuf>,
+        workflow_argument: Option<PathBuf>,
     ) -> Result<()> {
         let output_format = OutputFormat::from(self.format);
         let command = self.command.unwrap_or(Command::Serve);
@@ -485,7 +514,7 @@ impl Cli {
                 .modules
                 .is_subsystem_enabled(SubsystemId::Docs)
             {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::FeatureDisabled,
                     "FEATURE_DISABLED: 'docs' module is disabled in modules:",
                 )
@@ -499,7 +528,7 @@ impl Cli {
         let paths::ResolvedPaths {
             adapter,
             config: explicit_config,
-            profile_ref: explicit_profile_ref,
+            workflow_ref: explicit_workflow_ref,
             ..
         } = settings;
 
@@ -528,10 +557,13 @@ impl Cli {
             title,
             adapter.retain_traces,
         );
-        if let Ok(db) =
-            acdd_state::usecases::deps::try_resolve_effective_state_db(&root, state_db.as_deref())
-        {
-            span = span.with_state_db(db);
+        if span_ctx.is_some() {
+            if let Ok(db) = acdd_state::usecases::deps::try_resolve_effective_state_db(
+                &root,
+                state_db.as_deref(),
+            ) {
+                span = span.with_state_db(db);
+            }
         }
         let checkout_root = effective_root.map(std::path::absolute).transpose()?;
         let state_ctx = dispatch_state::CliStateCtx {
@@ -567,7 +599,7 @@ impl Cli {
                     let invocation = InvocationSettings {
                         root: root.clone(),
                         config: explicit_config.clone(),
-                        profile: profile_argument,
+                        workflow: workflow_argument,
                         state_db: state_db.clone(),
                         code_db: db.clone(),
                     };
@@ -595,8 +627,8 @@ impl Cli {
                 | Command::Docs { .. }) => dispatch_code::dispatch(&code_ctx, cmd),
                 cmd => dispatch_state::dispatch(
                     &state_ctx,
-                    explicit_profile_ref,
-                    self.profile.as_deref(),
+                    explicit_workflow_ref,
+                    self.workflow.as_deref(),
                     cmd,
                 ),
             }
@@ -704,7 +736,7 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::Cli;
-    use acdd_core::errors::{ErrorCode, StateError};
+    use acdd_core::errors::{AcddError, ErrorCode};
     use acdd_core::fs::ScopedTempDir;
     use clap::Parser;
     use std::fs;
@@ -714,7 +746,8 @@ mod tests {
         // 1. Exact ErrorCode -> exit code mapping (v7 §4.3: 2/3/4)
         let exit_cases = [
             (ErrorCode::ConfigMigrationRequired, 2),
-            (ErrorCode::ProfileSchemaInvalid, 2),
+            (ErrorCode::WorkflowSchemaInvalid, 2),
+            (ErrorCode::SpecSchemaInvalid, 2),
             (ErrorCode::TaskAlreadyClaimed, 3),
             (ErrorCode::OutOfScopeChanges, 3),
             (ErrorCode::GateVerificationFailed, 4),
@@ -722,7 +755,7 @@ mod tests {
         ];
         for (code, expected) in exit_cases {
             assert_eq!(
-                StateError::new(code, "test").exit_code(),
+                AcddError::new(code, "test").exit_code(),
                 expected,
                 "{code:?}"
             );
@@ -739,8 +772,8 @@ mod tests {
                 "ship feature",
                 "--name",
                 "m1",
-                "--profile",
-                "audit",
+                "--workflow",
+                "code",
             ],
             vec!["acdd", "draft", "milestones", "my-slug"],
             vec![
@@ -748,7 +781,7 @@ mod tests {
                 "draft",
                 "milestones",
                 "my-slug",
-                "--profile",
+                "--workflow",
                 "code",
             ],
             vec!["acdd", "status", "--run", "m1"],
@@ -756,7 +789,7 @@ mod tests {
             vec!["acdd", "show", "--run", "m1"],
             vec!["acdd", "next", "--run", "m1"],
             vec!["acdd", "roadmap"],
-            vec!["acdd", "roadmap", "--format", "json"],
+            vec!["acdd", "roadmap", "--spec", "milestones", "--format", "json"],
             vec!["acdd", "claim", "t1.build", "--run", "m1", "--worker", "w1"],
             vec!["acdd", "verify", "t1.build", "--run", "m1"],
             vec![
@@ -775,6 +808,7 @@ mod tests {
             ],
             vec!["acdd", "reopen", "t1.build", "--run", "m1"],
             vec!["acdd", "sync", "--run", "m1"],
+            vec!["acdd", "sync", "--run", "m1", "--rebind-workflow"],
             vec![
                 "acdd",
                 "subtask",
@@ -847,7 +881,7 @@ mod tests {
                 .block_on(cli.run_with_writer(&mut out))
                 .unwrap();
 
-            let profile = fs::read_to_string(root.join(".acdd/profile.yaml")).unwrap();
+            let profile = fs::read_to_string(root.join(".acdd/workflows/default.yaml")).unwrap();
             assert!(profile.contains(expected_inherit), "{profile}");
             let gi = fs::read_to_string(root.join(".gitignore")).unwrap();
             assert!(gi.contains(".acdd/*.sqlite*"), "{gi}");
@@ -872,7 +906,7 @@ mod tests {
                     .unwrap()
                     .block_on(cli_force.run_with_writer(&mut out))
                     .unwrap();
-                assert!(fs::read_to_string(root.join(".acdd/profile.yaml"))
+                assert!(fs::read_to_string(root.join(".acdd/workflows/default.yaml"))
                     .unwrap()
                     .contains("inherit: code"));
             }
@@ -881,14 +915,14 @@ mod tests {
         // 4. `acdd validate` succeeds on valid workspace with bound commands and fails on unbound/broken profile
         let vdir = ScopedTempDir::create("acdd-ut-cli-validate").unwrap();
         let vroot = vdir.path();
-        fs::create_dir_all(vroot.join(".acdd")).unwrap();
+        fs::create_dir_all(vroot.join(".acdd/workflows")).unwrap();
         fs::write(
             vroot.join("acdd.yaml"),
             "modules:\n  code: true\n  docs: true\n  state: true\n",
         )
         .unwrap();
         fs::write(
-            vroot.join(".acdd/profile.yaml"),
+            vroot.join(".acdd/workflows/default.yaml"),
             "version: 2\ninherit: code\ncommands:\n  test: \"cargo test --lib {test_filter}\"\n  build_check: \"cargo check --lib\"\n  verify_all: \"cargo test --lib\"\n",
         )
         .unwrap();
@@ -896,7 +930,7 @@ mod tests {
         assert_eq!(val["valid"], serde_json::json!(true), "{val}");
 
         fs::write(
-            vroot.join(".acdd/profile.yaml"),
+            vroot.join(".acdd/workflows/default.yaml"),
             "version: 2\ninherit: code\n",
         )
         .unwrap();
@@ -905,7 +939,7 @@ mod tests {
         assert_eq!(unbound["diagnostics"][1]["code"], "COMMAND_UNBOUND");
 
         fs::write(
-            vroot.join(".acdd/profile.yaml"),
+            vroot.join(".acdd/workflows/default.yaml"),
             "version: 1\nbogus: true\n",
         )
         .unwrap();
@@ -925,7 +959,7 @@ mod tests {
         );
         let cfg_minimal = acdd_core::config::Adapter {
             modules: acdd_core::subsystems::SubsystemRegistry {
-                profile: acdd_core::subsystems::SubsystemPreset::Minimal,
+                preset: acdd_core::subsystems::SubsystemPreset::Minimal,
                 ..Default::default()
             },
             ..Default::default()
@@ -966,7 +1000,7 @@ mod tests {
             .unwrap()
             .block_on(tool_cli.run_with_writer(&mut tool_out))
             .unwrap_err();
-        let tool_state_err = StateError::from_anyhow(&tool_err).expect("StateError");
+        let tool_state_err = AcddError::from_anyhow(&tool_err).expect("AcddError");
         assert_eq!(tool_state_err.code, ErrorCode::DomainCapabilityUnavailable);
         assert!(!troot.join(".acdd/state.sqlite").exists());
 
@@ -1016,6 +1050,62 @@ mod tests {
                 .unwrap(),
             Some(cfg_a)
         );
+        // 9. `preset: spec` enables CLI validate/roadmap/draft without state.sqlite; `preset: index` fails closed with FeatureDisabled.
+        let pdir = ScopedTempDir::create("acdd-ut-cli-spec-preset").unwrap();
+        let proot = pdir.path();
+        fs::create_dir_all(proot.join("docs/milestones")).unwrap();
+        fs::write(
+            proot.join("docs/milestones/AC-001.md"),
+            "---\nid: AC-001\ntitle: \"Spec preset\"\ndoc_type: contract\nstatus: planned\n---\n\n### task: t1\n\n```yaml\ntarget: \"Verify\"\nscope: [src/**]\n```\n",
+        )
+        .unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        fs::write(proot.join("acdd.yaml"), "preset: spec\n").unwrap();
+        for argv in [
+            vec!["acdd", "--root", proot.to_str().unwrap(), "validate"],
+            vec!["acdd", "--root", proot.to_str().unwrap(), "roadmap"],
+            vec![
+                "acdd",
+                "--root",
+                proot.to_str().unwrap(),
+                "draft",
+                "milestones",
+                "stateless-draft",
+            ],
+        ] {
+            let mut buf = Vec::new();
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            rt.block_on(cli.run_with_writer(&mut buf))
+                .unwrap_or_else(|e| panic!("preset: spec failed for {argv:?}: {e:#}"));
+        }
+        assert!(
+            !proot.join(".acdd/state.sqlite").exists(),
+            "preset: spec must not materialize state.sqlite"
+        );
+        fs::write(proot.join("acdd.yaml"), "preset: index\n").unwrap();
+        for argv in [
+            vec!["acdd", "--root", proot.to_str().unwrap(), "validate"],
+            vec!["acdd", "--root", proot.to_str().unwrap(), "roadmap"],
+            vec![
+                "acdd",
+                "--root",
+                proot.to_str().unwrap(),
+                "draft",
+                "milestones",
+                "blocked-draft",
+            ],
+        ] {
+            let mut buf = Vec::new();
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            let err = rt
+                .block_on(cli.run_with_writer(&mut buf))
+                .expect_err("preset: index must reject spec CLI commands");
+            assert_eq!(
+                AcddError::from_anyhow(&err).expect("AcddError").code,
+                ErrorCode::FeatureDisabled,
+                "{argv:?}: {err:#}"
+            );
+        }
     }
 
     #[test]
@@ -1035,7 +1125,7 @@ mod tests {
 
         let dir = ScopedTempDir::create("acdd-ut-cli-writer").unwrap();
         let root = dir.path();
-        fs::write(root.join("acdd.yaml"), "profile: minimal\n").unwrap();
+        fs::write(root.join("acdd.yaml"), "preset: minimal\n").unwrap();
         fs::write(root.join("notes.txt"), "hello\n").unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

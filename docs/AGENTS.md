@@ -132,14 +132,26 @@ branch merges. Obtain explicit approval for publication.
 
 ## Shared skill and example maintenance
 
-When modifying architecture, workflows, declarative profiles, schemas, CLI commands, or standing Git permissions:
-- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_profile.yaml.example`, `profile-reference.md`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+When modifying architecture, workflows, schemas, CLI commands, or standing Git permissions:
+- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_workflow.yaml.example`, `workflow-reference.md`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
 - Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
 - Do not write to external agent directories (`~/.agents/`) directly during task execution; external installation and distribution is handled via installer workflows and dedicated distribution commands.
+
+## Website synchronization (`website/`)
+
+When changing user-facing CLI/MCP surfaces, workflows, presets, configuration,
+architecture, or reference docs, update `website/` (`website/pages/`,
+`website/templates/`, `website/sync-docs.py`) in the same documentation scope.
+Verify `./website/build.sh --check` (`sync-docs.py && zola build && zola check`)
+passes with zero errors and zero orphaned pages before submitting documentation
+updates or completing a pre-handoff documentation scan.
 
 ## Delivery documentation
 
 Follow root [AGENTS.md](../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../TESTS.md#milestone-handoff-gate) for verification,
 archival, integration, and worktree cleanup. Include changed reference,
-architecture, runbook pages, shared skills, and reference examples in the reviewed delivery scope.
-Verify that all profile and configuration examples parse and validate cleanly, and that documentation links and frontmatter validate before authorized publication.
+architecture, runbook pages, shared skills, reference examples, and `website/`
+pages/templates/`sync-docs.py` in the reviewed delivery scope.
+Verify that all workflow and configuration examples parse and validate cleanly,
+documentation links and frontmatter validate (`acdd docs check` and `acdd validate`),
+and `./website/build.sh --check` passes before authorized publication.

@@ -22,9 +22,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "ACDD_CONFIG")]
     /// Explicit root-confined ACDD configuration file.
     pub config: Option<PathBuf>,
-    #[arg(long, global = true, env = "ACDD_PROFILE")]
-    /// Explicit gate profile reference or root-confined profile path.
-    pub profile: Option<PathBuf>,
+    #[arg(long, global = true, env = "ACDD_WORKFLOW")]
+    /// Explicit workflow reference or root-confined workflow path.
+    pub workflow: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value = "markdown")]
     /// Output format: markdown (default) or json.
     pub format: CliOutputFormat,
@@ -80,9 +80,9 @@ pub enum Command {
         #[arg(long)]
         worktree: Option<std::path::PathBuf>,
     },
-    /// Initialize `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules.
+    /// Initialize `acdd.yaml`, `.acdd/workflows/default.yaml`, and canonical `.gitignore` rules.
     Init {
-        /// Overwrite existing `acdd.yaml` and `.acdd/profile.yaml`.
+        /// Overwrite existing `acdd.yaml` and `.acdd/workflows/default.yaml`.
         #[arg(long)]
         force: bool,
     },
@@ -112,13 +112,13 @@ pub enum Command {
         #[arg(long)]
         worktree_path: Option<PathBuf>,
     },
-    /// Draft the next sequentially numbered spec document in a configured collection.
+    /// Draft the next sequentially numbered spec document in a configured spec collection.
     Draft {
-        /// Collection key from `acdd.yaml` `specs:` (e.g. `milestones`, `plans`).
-        collection: String,
+        /// Spec key from `acdd.yaml` `specs:` (e.g. `milestones`, `plans`).
+        spec: String,
         /// URL/file slug for the drafted spec document.
         slug: String,
-        /// Optional prefix override (must belong to `collection.prefixes`).
+        /// Optional prefix override (must belong to `spec.prefixes`).
         #[arg(long)]
         prefix: Option<String>,
         /// Optional human-readable title.
@@ -180,13 +180,13 @@ pub enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// Cross-collection roadmap: in-progress runs, dependency waves, and task drill-down (read-only).
+    /// Cross-spec roadmap: in-progress runs, dependency waves, and task drill-down (read-only).
     Roadmap {
         /// Optional spec ID filter / drill-down selector.
         spec_id: Option<String>,
-        /// Optional spec collection display filter.
+        /// Optional spec configuration display filter.
         #[arg(long)]
-        collection: Option<String>,
+        spec: Option<String>,
         /// Show only Wave 0 ready specs.
         #[arg(long)]
         ready: bool,
@@ -219,7 +219,7 @@ pub enum Command {
         /// Explicit worktree path override.
         #[arg(long)]
         worktree: Option<PathBuf>,
-        /// Context detail budget (`compact` default <= 9,500 bytes, or `full` up to 32 KiB).
+        /// Context detail budget (`compact` default <= 10,000 bytes, or `full` up to 32 KiB).
         #[arg(long)]
         detail: Option<String>,
     },
@@ -312,14 +312,14 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Synchronize spec edits (and optional `--rebind-profile`) into an active `Run`.
+    /// Synchronize spec edits (and optional `--rebind-workflow`) into an active `Run`.
     Sync {
         /// Optional run ID or name selector.
         #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
-        /// Rebind non-completed gates against the latest resolved profile.
+        /// Rebind non-completed gates against the latest resolved workflow.
         #[arg(long)]
-        rebind_profile: bool,
+        rebind_workflow: bool,
     },
     /// Update a task's subtask status and mandatory terminal evidence.
     Subtask {
@@ -475,7 +475,7 @@ pub enum Command {
         #[arg(long)]
         detail: Option<String>,
     },
-    /// Validate `acdd.yaml`, `.acdd/profile.yaml`, `DomainProvider` capabilities, and specs fail-closed.
+    /// Validate `acdd.yaml`, `.acdd/workflows/default.yaml`, `DomainProvider` capabilities, and specs fail-closed.
     Validate {
         /// Optional workspace-relative file; when omitted, validates the full workspace.
         path: Option<PathBuf>,

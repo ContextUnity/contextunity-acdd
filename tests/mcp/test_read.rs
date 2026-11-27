@@ -159,7 +159,7 @@ fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
         lines_content.push_str(&format!("line {i}\n"));
     }
     let workspace = Workspace::with_files(&[
-        ("acdd.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "preset: minimal\n"),
         ("notes.txt", lines_content.as_str()),
         ("src/lib.rs", "pub fn value() {}\n"),
         ("test.txt", "hello\n"),
@@ -171,8 +171,8 @@ fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
     )
     .unwrap_err();
     assert_eq!(
-        acdd_core::errors::StateError::from_anyhow(&disabled_build)
-            .expect("FeatureDisabled StateError")
+        acdd_core::errors::AcddError::from_anyhow(&disabled_build)
+            .expect("FeatureDisabled AcddError")
             .code,
         acdd_core::errors::ErrorCode::FeatureDisabled
     );
@@ -292,7 +292,7 @@ fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
         (
             "acdd.yaml",
             &format!(
-                "profile: minimal\nroots: [src]\nlinked_workspaces:\n  - name: extra\n    path: {}\n",
+                "preset: minimal\nroots: [src]\nlinked_workspaces:\n  - name: extra\n    path: {}\n",
                 linked.root().display()
             ),
         ),
@@ -455,7 +455,7 @@ fn acdd_read_handles_path_aliases_and_rejects_unsafe_paths() {
     let w = Workspace::with_files(&[
         (
             "acdd.yaml",
-            &format!("profile: minimal\nsensitive: ['secrets/**', '.env*']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
+            &format!("preset: minimal\nsensitive: ['secrets/**', '.env*']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
         ),
         ("notes.txt", "safe\n"),
         ("small.txt", "inside\n"),
@@ -607,7 +607,7 @@ fn acdd_read_delta_uses_the_admitted_linked_git_context() {
     let primary = Workspace::with_files(&[(
         "acdd.yaml",
         &format!(
-            "profile: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n",
+            "preset: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n",
             linked.root().display()
         ),
     )]);
@@ -772,7 +772,7 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     files.extend([
         (
             "acdd.yaml",
-            "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
+            "preset: minimal\nmodules: {codemap: true}\nroots: [.]\n",
         ),
         (
             "model.py",
@@ -999,7 +999,7 @@ fn acdd_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
     let mut client = McpTestHarness::indexed(&[
         (
             "acdd.yaml",
-            "profile: minimal\nmodules: {docs: true}\nroots: [.]\ndocs: [docs]\n",
+            "preset: minimal\nmodules: {docs: true}\nroots: [.]\ndocs: [docs]\n",
         ),
         (
             "docs/guide.md",
@@ -1058,9 +1058,9 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         let w = Workspace::with_files(&[
             (
                 "acdd.yaml",
-                "profile: full\nmodules: {code: true, docs: true, state: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nspecs:\n  milestones:\n    path: docs/milestones\n",
+                "preset: full\nmodules: {code: true, docs: true, state: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nspecs:\n  milestones:\n    path: docs/milestones\n",
             ),
-            (".acdd/profile.yaml", &profile_yaml),
+            (".acdd/workflows/default.yaml", &profile_yaml),
             ("allowed.txt", "allowed\n"),
             ("other.txt", "other\n"),
             (
@@ -1130,7 +1130,7 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
 #[test]
 fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
     let mut registry = SubsystemRegistry {
-        profile: SubsystemPreset::Minimal,
+        preset: SubsystemPreset::Minimal,
         ..Default::default()
     };
     assert_eq!(
@@ -1196,7 +1196,7 @@ fn acdd_read_inline_budget_and_next_start_line_continuation_matrix() {
         "z".repeat(10_000)
     );
     let w = Workspace::with_files(&[
-        ("acdd.yaml", "profile: minimal\nroots: [.]\n"),
+        ("acdd.yaml", "preset: minimal\nroots: [.]\n"),
         ("src/big.rs", &big_lines),
         ("src/long_line.rs", &single_long),
     ]);

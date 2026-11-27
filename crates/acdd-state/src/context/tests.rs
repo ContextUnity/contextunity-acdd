@@ -1,14 +1,13 @@
 use super::*;
-use crate::profile::{
-    resolve_profile_ref_with_dirs,
+use crate::workflow::{
+    resolve_workflow_ref_with_dirs,
     schema::{GateGuidanceRef, GuidanceEntry, InlineGuidance},
-    GateDef, ResolvedGateProfile, RoleDef,
+    GateDef, ResolvedWorkflow, RoleDef,
 };
-use crate::spec::{Receipt, SpecDocument, SpecStatus, TaskSpec};
 use crate::types::{
     BlackboardRecord, BlackboardStatus, BlackboardTopic, FindingItem, FindingSeverity,
-    GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RejectionFindings,
-    RejectionKind, RunRecord, RunStatus,
+    GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RejectionFindings, RejectionKind,
+    RunRecord, RunStatus,
 };
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
@@ -17,6 +16,8 @@ use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
     DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
 };
+use acdd_spec::spec::TaskSpec;
+use acdd_spec::{InvariantsState, Receipt, SpecDocument, SpecStatus};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -71,7 +72,7 @@ fn base_request() -> ClaimContextRequest {
     let worker_id = WorkerId::new("w1").unwrap();
     let tree = TreeOid::new("1".repeat(40)).unwrap();
     let commit = CommitOid::new("2".repeat(40)).unwrap();
-    let mut profile = ResolvedGateProfile::default();
+    let mut profile = ResolvedWorkflow::default();
     profile.guidance.insert(
         "g1".to_owned(),
         GuidanceEntry::Text("Follow rules".to_owned()),
@@ -148,7 +149,7 @@ fn base_request() -> ClaimContextRequest {
         id: "AC-001".to_owned(),
         title: "Test Spec".to_owned(),
         doc_type: "contract".to_owned(),
-        profile: None,
+        workflow: None,
         status: SpecStatus::Active,
         cancellation_reason: None,
         spec: Some("Root spec".to_owned()),
@@ -782,10 +783,10 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     // `hard_max_bytes < response_max_bytes`: optional packing, subtask evidence, and omission notices stay <= response_hard_cap.
     let mut hard_lt_soft = tiered_req.clone();
     hard_lt_soft.gate.context.clear();
-    hard_lt_soft.live_subtasks = vec![crate::spec::Subtask {
+    hard_lt_soft.live_subtasks = vec![acdd_spec::Subtask {
         subtask_ref: acdd_core::ids::SubtaskRef::new("s1").unwrap(),
         title: "Subtask with evidence".to_owned(),
-        status: crate::types::SubtaskStatus::Completed,
+        status: acdd_spec::SubtaskStatus::Completed,
         evidence: Some("e".repeat(120)),
     }];
     let hard_cap = sep_tier1_only + 700;
@@ -814,7 +815,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
-    let profile_dirs = vec![".acdd/profiles".to_owned()];
+    let workflow_dirs = vec![".acdd/workflows".to_owned()];
     let provider = CompositeDomainProvider::with_module_flags(
         vec![Arc::new(LensMockProvider {
             domain: "docs".to_owned(),
@@ -835,16 +836,16 @@ fn profile_gates_claim_context_window_budget_matrix() {
                                 "default_draft_dir": "docs/milestones",
                                 "prefixes": ["AC"],
                                 "digits": 3,
-                                "profile": "code",
+                                "workflow": "code",
                                 "next_ids": {"AC": "AC-010"}
                             }
                         },
                         "docs_roots": ["docs"],
-                        "profiles_dirs": [".acdd/profiles"],
-                        "available_profiles": ["code", "documentation", "spec_planning"],
+                        "workflows_dirs": [".acdd/workflows"],
+                        "available_workflows": ["code", "documentation", "hotfix"],
                         "architecture_zones": {"core": ["crates/core/**"]},
                         "limits": {"max_metadata_bytes": 2048},
-                        "modules": {"profile": null, "enabled": [], "disabled": [], "domains": {}}
+                        "modules": {"preset": null, "enabled": [], "disabled": [], "domains": {}}
                     }),
                 ),
                 (
@@ -883,19 +884,22 @@ fn profile_gates_claim_context_window_budget_matrix() {
     )
     .unwrap();
 
-    for (label, profile_ref) in [
-        ("default", ".acdd/profile.yaml"),
+    for (label, workflow_ref) in [
+        ("default", ".acdd/workflows/default.yaml"),
         ("hotfix", "hotfix"),
         ("documentation", "documentation"),
-        ("spec_planning", "spec_planning"),
+        (
+            "spec_planning",
+            "skills/acdd/references/acdd-workflow-examples/spec_planning.yaml",
+        ),
     ] {
-        let profile = resolve_profile_ref_with_dirs(
-            profile_ref,
+        let profile = resolve_workflow_ref_with_dirs(
+            workflow_ref,
             Some(&workspace_root),
             None,
-            Some(&profile_dirs),
+            Some(&workflow_dirs),
         )
-        .unwrap_or_else(|e| panic!("failed to resolve {label} profile: {e}"));
+        .unwrap_or_else(|e| panic!("failed to resolve {label} workflow: {e}"));
 
         let mut leaf_gates: Vec<(String, GateDef, bool)> = Vec::new();
         for g in &profile.gates {
@@ -957,7 +961,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
             );
             if md.contains("## Workspace Configuration") {
                 assert!(
-                    md.contains("- spec `milestones`: `docs/milestones` (prefixes: [AC], digits: 3, profile: `code`, next: AC=AC-010)"),
+                    md.contains("- spec `milestones`: `docs/milestones` (prefixes: [AC], digits: 3, workflow: `code`, next: AC=AC-010)"),
                     "{label}/{gate_label}: unexpected spec rendering:\n{md}"
                 );
                 assert!(

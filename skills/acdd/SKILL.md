@@ -11,7 +11,7 @@ Use ACDD's indexed code graph, AST search, documentation graph, and task tools.
 Prefer registered MCP tools; use the CLI (`acdd ...`) for offline operations it
 owns, and fall back to local search only when ACDD is unavailable. Active tool
 schemas are the authority; see [tool catalog](references/tool-catalog.md) for
-signatures, [profile reference](references/profile-reference.md) for `GateProfile`
+signatures, [workflow reference](references/workflow-reference.md) for `WorkflowDef`
 options, and [routing example](references/agents.md.example) for repo setup.
 
 For repository onboarding or setup, follow the
@@ -95,30 +95,34 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
   Queries have a 2s budget, 96 KiB cap, and default page size 12 (max 100); continue
   with the returned `next_offset` / `next_source_offset` and `generation` (`>= 8`-char prefix).
 
-## ACDD profiles and task operations
+## ACDD workflows and task operations
 
-Embedded profiles (`base`, `code`, `audit`, `documentation`, `spec_planning`) or repository `.acdd/profile.yaml`
-and `.acdd/profiles/<name>.yaml` overlays (`version: 2`, validated via `acdd validate`) govern gates,
+Embedded workflows (`base`, `code`, `documentation`) or repository `.acdd/workflows/default.yaml`
+and `.acdd/workflows/<name>.yaml` overlays (`version: 2`, validated via `acdd validate`, plus ready-to-copy `audit`, `spec_planning`, and `hotfix` templates in `references/acdd-workflow-examples/`) govern gates,
 proof schemas, contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
 preserving `save.immutable: true`), and `save.report` (written strictly under
 `.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
-| Profile (`--profile` / `inherit`) | Purpose & Gate Flow | Typical Launch Command |
+| Workflow (`--workflow` / `inherit`) | Purpose & Gate Flow | Typical Launch Command |
 |---|---|---|
 | `code` (default) | Full software lifecycle (`blueprint_synthesis` -> `tasks` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`) | `acdd start <spec_path>` or `acdd start --goal "..."` |
-| `base` | Minimal worktree-isolated baseline (`gates: []`, `save: commit`) for custom non-code overlays | `acdd start --goal "..." --profile base` |
-| `audit` | Read-only `in_place` (`save: none`) review/SAST/hygiene (`recon -> analyze -> triage`) writing `.acdd/reports/{run_name}.md` | `acdd start --goal "..." --profile audit` |
-| `documentation` | Compiler-free living docs & `acdd-rule` invariant lifecycle gated on `docs.links` + `code.lint` (`[arch, docs]`) | `acdd start <spec_path> --profile documentation` or `acdd start --goal "..." --profile documentation` |
-| `spec_planning` | Read-only `in_place` synthesis & review (`synthesize -> review`) aware of `acdd.yaml` `specs.*` collections | `acdd start --goal "..." --profile spec_planning` |
-| Custom (`.acdd/profiles/<name>.yaml`, e.g. `hotfix`) | Repo-local workflow overlays (`gates_patch:` / `inherit:`), e.g. `hotfix` (`goal.build -> goal.review -> goal.deliver -> run_tests -> handoff`, skipping `blueprint_synthesis` & `integration_review`) | `acdd start --goal "..." --profile hotfix --scope <path>...` |
+| `base` | Minimal worktree-isolated baseline (`gates: []`, `save: commit`) for custom non-code overlays | `acdd start --goal "..." --workflow base` |
+| `documentation` | Compiler-free living docs & `acdd-rule` invariant lifecycle gated on `docs.links` + `code.lint` (`[arch, docs]`) | `acdd start <spec_path> --workflow documentation` or `acdd start --goal "..." --workflow documentation` |
+| `audit` (template) | Read-only `in_place` (`save: none`) review/SAST/hygiene (`recon -> analyze -> triage`) writing `.acdd/reports/{run_name}.md` | `acdd start --goal "..." --workflow audit` (or path to template) |
+| `spec_planning` (template) | Read-only `in_place` synthesis & review (`synthesize -> review`) aware of `acdd.yaml` `specs.*` configurations | `acdd start --goal "..." --workflow spec_planning` (or path to template) |
+| Custom (`.acdd/workflows/<name>.yaml`, e.g. `hotfix`) | Repo-local workflow overlays (`gates_patch:` / `inherit:`), e.g. `hotfix` (`goal.build -> goal.review -> goal.deliver -> run_tests -> handoff`, skipping `blueprint_synthesis` & `integration_review`) | `acdd start --goal "..." --workflow hotfix --scope <path>...` |
 
-1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers via CLI `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` (MCP `acdd_state` is active-run-only and redirects `roadmap`/`draft` to CLI), then start a run with one of the profile commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
-2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (default `<= 9,500` bytes; pass `detail="full"` for up to `32 KiB`; omit `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then indexes/syncs `ClaimResp.worktree` via `acdd --root <ClaimResp.worktree> build` or MCP `worktree` before reading/querying code and works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
+1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers via CLI `acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]` (MCP `acdd_state` is active-run-only and redirects `roadmap`/`draft` to CLI), then start a run with one of the workflow commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
+2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (default `<= 10,000` bytes compact soft cap with `omitted_sections`; pass `detail="full"` for up to `32 KiB`; omit `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then indexes/syncs `ClaimResp.worktree` via `acdd -C <ClaimResp.worktree> build` or MCP `worktree` before reading/querying code and works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
    including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within
    admitted write scope (`in_write_scope: ALLOWED`); extend autonomously via
    `acdd_state(action="extend_scope", ...)` (`acdd extend-scope`) inside module
-   roots when needed. Keep scratch files in `.acdd/tmp/`.
+   roots when needed. Keep scratch files in `.acdd/tmp/`. When updating
+   documentation or running a pre-handoff documentation scan in a repository
+   that maintains a `website/` site (`website/pages/`, `website/templates/`,
+   `website/sync-docs.py`), reconcile affected `website/` sources in the same
+   scope and verify `./website/build.sh --check` (`sync-docs.py && zola build && zola check`).
 4. Verify via `acdd_verify(node=..., test_target=...)` (`acdd verify <cursor> [--test <filter>]`)
    before submitting command/check gates so `execution_digest` and candidate trees bind.
 5. Submit via `acdd_submit` / `acdd submit` (`pass` or `reject`). Note `acdd run`

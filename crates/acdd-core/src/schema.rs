@@ -1,4 +1,4 @@
-use crate::errors::{ErrorCode, StateError};
+use crate::errors::{AcddError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ impl SchemaDef {
     }
 
     /// Validate that this `SchemaDef` itself is structurally sound.
-    pub fn validate_schema(&self, path: &str) -> Result<(), StateError> {
+    pub fn validate_schema(&self, path: &str) -> Result<(), AcddError> {
         if self.enum_values.as_ref().is_some_and(Vec::is_empty) {
             return Err(schema_err(format!("{path}.enum must not be empty")));
         }
@@ -156,8 +156,8 @@ impl SchemaDef {
         Ok(())
     }
 
-    /// Validate a JSON value against this schema, failing closed with `ACDD_PROFILE_SCHEMA_INVALID`.
-    pub fn validate_value(&self, value: &Value, path: &str) -> Result<(), StateError> {
+    /// Validate a JSON value against this schema, failing closed with `ACDD_WORKFLOW_SCHEMA_INVALID`.
+    pub fn validate_value(&self, value: &Value, path: &str) -> Result<(), AcddError> {
         let type_matches = match self.schema_type.as_str() {
             "object" => value.is_object(),
             "array" => value.is_array(),
@@ -230,8 +230,8 @@ impl SchemaDef {
     }
 }
 
-fn schema_err(message: String) -> StateError {
-    StateError::new(ErrorCode::ProfileSchemaInvalid, message)
+fn schema_err(message: String) -> AcddError {
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, message)
 }
 
 #[cfg(test)]
@@ -292,7 +292,7 @@ mod tests {
             let res = schema.validate_schema("$");
             assert_eq!(res.is_ok(), expect_ok, "validate_schema({label}): {res:?}");
             if let Err(err) = res {
-                assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+                assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid);
             }
         }
     }
@@ -376,7 +376,7 @@ mod tests {
             let res = root.validate_value(value, "$");
             assert_eq!(res.is_ok(), *expect_ok, "validate_value({label}): {res:?}");
             if let Err(err) = res {
-                assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+                assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid);
             }
         }
     }

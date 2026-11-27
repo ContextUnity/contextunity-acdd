@@ -16,7 +16,7 @@ fn graph_construction_node_ids_and_when_filtering() {
         effective_task_tags(&["nope".to_owned()], &allowed)
             .unwrap_err()
             .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
     let (mut profile, _) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     // Add `when: "code"` to `build` gate so `T3` (`docs`) skips `build`.
@@ -92,7 +92,7 @@ fn graph_construction_node_ids_and_when_filtering() {
         build_initial_run_graph(&profile, &bad_input)
             .unwrap_err()
             .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
 }
 

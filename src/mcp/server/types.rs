@@ -122,8 +122,8 @@ pub(super) fn rebase_invocation_settings(
             .config
             .as_deref()
             .map(|p| rebase_path(p, &from_root, &rebased_root)),
-        profile: settings
-            .profile
+        workflow: settings
+            .workflow
             .as_deref()
             .map(|p| rebase_path(p, &from_root, &rebased_root)),
         state_db: settings.state_db.clone(),
@@ -306,7 +306,7 @@ impl Server {
         adapter: &scanner::Adapter,
     ) -> std::result::Result<
         Arc<acdd_core::ports::CompositeDomainProvider>,
-        acdd_core::errors::StateError,
+        acdd_core::errors::AcddError,
     > {
         self.domain_providers_for(&self.root, Some(&self.db), adapter)
     }
@@ -318,7 +318,7 @@ impl Server {
         adapter: &scanner::Adapter,
     ) -> std::result::Result<
         Arc<acdd_core::ports::CompositeDomainProvider>,
-        acdd_core::errors::StateError,
+        acdd_core::errors::AcddError,
     > {
         #[cfg(test)]
         let extras = self.extra_domain_providers.clone();

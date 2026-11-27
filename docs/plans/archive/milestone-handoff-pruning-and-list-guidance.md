@@ -62,4 +62,4 @@ make no measured latency or benchmark claim.
 
 AC-001 profile-v2 runtime and task-level telemetry remain separate planned work.
 The current runnable profile and future v2 proposal are explicitly distinguished
-in the [profile reference](../../reference/profiles.md#reference-examples).
+in `docs/reference/profiles.md#reference-examples` (now [workflows reference](../../reference/workflows.md#reference-examples)).

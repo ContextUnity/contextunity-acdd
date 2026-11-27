@@ -8,6 +8,8 @@ mod cold_sealing;
 mod disk_index;
 #[path = "commitment_integrity/parallel_sealing.rs"]
 mod parallel_sealing;
+#[path = "commitment_integrity/spec_boundaries.rs"]
+mod spec_boundaries;
 #[path = "commitment_integrity/state_boundaries.rs"]
 mod state_boundaries;
 

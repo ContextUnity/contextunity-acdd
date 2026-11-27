@@ -441,14 +441,14 @@ fn inv_single_owner_architectural_fences() {
         );
     }
 
-    // 2. `crates/acdd-state/src/machine/graph.rs` reuses `crate::profile::when::WhenExpr`.
+    // 2. `crates/acdd-state/src/machine/graph.rs` reuses `crate::workflow::when::WhenExpr`.
     let graph_path = manifest_dir.join("crates/acdd-state/src/machine/graph.rs");
     let graph_raw = std::fs::read_to_string(&graph_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", graph_path.display()));
     let graph_code = strip_rust_comments(&graph_raw);
     assert!(
-        graph_code.contains("crate::profile::when"),
-        "crates/acdd-state/src/machine/graph.rs must use crate::profile::when"
+        graph_code.contains("crate::workflow::when"),
+        "crates/acdd-state/src/machine/graph.rs must use crate::workflow::when"
     );
     for forbidden in ["enum WhenExpr", "fn tokenize_when", "fn eval_when"] {
         assert!(
@@ -535,7 +535,7 @@ fn inv_single_owner_architectural_fences() {
         violations.join("\n")
     );
     for delegator in [
-        "crates/acdd-state/src/profile/validate.rs",
+        "crates/acdd-state/src/workflow/validate.rs",
         "crates/acdd-state/src/machine/schedule.rs",
         "crates/acdd-state/src/validate.rs",
     ] {
@@ -549,7 +549,7 @@ fn inv_single_owner_architectural_fences() {
 
     // 4. Embedded `base.yaml` is domain-pure and `code.yaml` inherits `base`.
     let base_profile_raw = std::fs::read_to_string(
-        manifest_dir.join("crates/acdd-state/src/profile/embedded/base.yaml"),
+        manifest_dir.join("crates/acdd-state/src/workflow/embedded/base.yaml"),
     )
     .unwrap();
     for forbidden in ["101", "134", ".acdd/frameworks", "code.", "docs."] {
@@ -559,7 +559,7 @@ fn inv_single_owner_architectural_fences() {
         );
     }
     let code_profile_raw = std::fs::read_to_string(
-        manifest_dir.join("crates/acdd-state/src/profile/embedded/code.yaml"),
+        manifest_dir.join("crates/acdd-state/src/workflow/embedded/code.yaml"),
     )
     .unwrap();
     let code_profile_yaml: serde_yaml::Value = serde_yaml::from_str(&code_profile_raw).unwrap();
@@ -569,22 +569,24 @@ fn inv_single_owner_architectural_fences() {
         "embedded code.yaml must use `inherit: base`"
     );
 
-    // 5. Embedded `in_place.yaml` is removed; embedded `audit.yaml` inherits `base` with explicit `save.report`.
-    assert!(
-        !manifest_dir
-            .join("crates/acdd-state/src/profile/embedded/in_place.yaml")
-            .exists(),
-        "embedded in_place.yaml must be removed (`in_place` is an execution mode)"
-    );
-    let audit_raw = std::fs::read_to_string(
-        manifest_dir.join("crates/acdd-state/src/profile/embedded/audit.yaml"),
-    )
-    .unwrap();
+    // 5. Embedded directory holds strictly the core triad (`base`, `code`, `documentation`);
+    //    `audit.yaml`, `spec_planning.yaml`, and `hotfix.yaml` live in `skills/acdd/references/acdd-workflow-examples/`.
+    for removed in ["in_place.yaml", "audit.yaml", "spec_planning.yaml"] {
+        assert!(
+            !manifest_dir
+                .join("crates/acdd-state/src/workflow/embedded")
+                .join(removed)
+                .exists(),
+            "embedded {removed} must be absent from core embedded triad"
+        );
+    }
+    let examples_dir = manifest_dir.join("skills/acdd/references/acdd-workflow-examples");
+    let audit_raw = std::fs::read_to_string(examples_dir.join("audit.yaml")).unwrap();
     let audit_yaml: serde_yaml::Value = serde_yaml::from_str(&audit_raw).unwrap();
     assert_eq!(
         audit_yaml["inherit"].as_str(),
         Some("base"),
-        "embedded audit.yaml must use `inherit: base`"
+        "audit.yaml example must use `inherit: base`"
     );
     assert_eq!(
         audit_yaml["git"]["isolation"].as_str(),
@@ -608,11 +610,8 @@ fn inv_single_owner_architectural_fences() {
         "audit.yaml triage gate must declare explicit save.report"
     );
 
-    // 6. Embedded `spec_planning.yaml` inherits `base`, isolates `in_place`, defaults `save: none`, and has no hardcoded runners/models.
-    let sp_raw = std::fs::read_to_string(
-        manifest_dir.join("crates/acdd-state/src/profile/embedded/spec_planning.yaml"),
-    )
-    .unwrap();
+    // 6. `spec_planning.yaml` and `hotfix.yaml` examples match structural invariants without hardcoded runners/models.
+    let sp_raw = std::fs::read_to_string(examples_dir.join("spec_planning.yaml")).unwrap();
     let sp_yaml: serde_yaml::Value = serde_yaml::from_str(&sp_raw).unwrap();
     assert_eq!(sp_yaml["inherit"].as_str(), Some("base"));
     assert_eq!(sp_yaml["git"]["isolation"].as_str(), Some("in_place"));
@@ -629,4 +628,5 @@ fn inv_single_owner_architectural_fences() {
         sp_review["save"]["report"].as_str(),
         Some(".acdd/reports/{run_name}.md")
     );
+    assert!(examples_dir.join("hotfix.yaml").is_file());
 }

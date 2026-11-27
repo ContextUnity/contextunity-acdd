@@ -5,7 +5,7 @@ use super::invalidation::*;
 use super::shared::{assign_components, BuildMode, SourceSnapshotMismatch};
 use acdd_core::{
     config::{self, checked_child, load_adapter, Adapter, ENGINE_SCHEMA_VERSION},
-    errors::{ErrorCode, StateError},
+    errors::{ErrorCode, AcddError},
     fs::canonical_root,
 };
 use acdd_index::{
@@ -122,7 +122,7 @@ fn admit_delta_generation(
     if selected_adapter.as_ref().is_some_and(|adapter| {
         !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs")
     }) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
         )
@@ -180,7 +180,7 @@ fn admit_delta_generation(
         None => load_adapter(&root, adapter.adapter_path.as_deref())?,
     };
     if !current_adapter.modules.is_enabled("code") && !current_adapter.modules.is_enabled("docs") {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
         )

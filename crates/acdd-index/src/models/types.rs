@@ -222,11 +222,14 @@ impl NodeSemanticEntry {
             node.native_semantic = None;
         }
     }
+}
 
-    pub fn set_bindings(node: &mut Node, bindings: Vec<String>, rebindings: Vec<String>) {
-        Self::ingest(node);
-        if bindings.is_empty() && rebindings.is_empty() && node.native_semantic.is_none() {
-            if let Some(details) = node.details.as_object_mut() {
+impl Node {
+    /// Assign semantic binding and rebinding sets onto `self`.
+    pub fn set_bindings(&mut self, bindings: Vec<String>, rebindings: Vec<String>) {
+        NodeSemanticEntry::ingest(self);
+        if bindings.is_empty() && rebindings.is_empty() && self.native_semantic.is_none() {
+            if let Some(details) = self.details.as_object_mut() {
                 details.remove(NodeDetailKey::BINDINGS);
                 details.remove(NodeDetailKey::REBINDINGS);
             }
@@ -234,11 +237,11 @@ impl NodeSemanticEntry {
         }
         let has_bindings = !bindings.is_empty();
         let has_rebindings = !rebindings.is_empty();
-        let entry = node.native_semantic.get_or_insert_with(Default::default);
+        let entry = self.native_semantic.get_or_insert_with(Default::default);
         entry.bindings = bindings;
         entry.rebindings = rebindings;
         entry.admitted |= 3;
-        if let Some(details) = node.details.as_object_mut() {
+        if let Some(details) = self.details.as_object_mut() {
             for (key, present) in [
                 (NodeDetailKey::BINDINGS, has_bindings),
                 (NodeDetailKey::REBINDINGS, has_rebindings),
@@ -253,9 +256,6 @@ impl NodeSemanticEntry {
             }
         }
     }
-}
-
-impl Node {
     /// Returns a persisted detail entry using its canonical key.
     pub fn detail_entry(&self, key: &str) -> &Value {
         self.details.get(key).unwrap_or(&JSON_NULL)

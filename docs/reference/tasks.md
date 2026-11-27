@@ -5,9 +5,10 @@ title: State, tasks & lifecycle
 
 # State, tasks & lifecycle
 
-A single declarative `Run` + `GateProfile` state engine in
-[`crates/acdd-state`](../../crates/acdd-state/src/lib.rs) and leaf
-contracts in [`crates/acdd-core`](../../crates/acdd-core/src/lib.rs)
+A single declarative `Run` + `WorkflowDef` state engine in
+[`crates/acdd-state`](../../crates/acdd-state/src/lib.rs), declarative spec
+parsing/validation/roadmap in [`crates/acdd-spec`](../../crates/acdd-spec/src/lib.rs),
+and leaf contracts in [`crates/acdd-core`](../../crates/acdd-core/src/lib.rs)
 ([ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md)).
 Domain-specific code/docs hooks (`call:`, `checks:`, `context:`, and `<domain>_<name>`
 plugin tools) connect through [`DomainProvider`](../../crates/acdd-core/src/ports.rs)
@@ -16,16 +17,16 @@ implementations in [`src/state_bridge/`](../../src/state_bridge/mod.rs)
 
 ---
 
-## Core Concepts: `Run`, `GateProfile`, and `GateNode`
+## Core Concepts: `Run`, `WorkflowDef`, and `GateNode`
 
 Every lifecycle execution instantiates one **`Run`** bound to a resolved
-**`v2` `GateProfile`**:
+**`v2` `WorkflowDef`**:
 
 - **`Run`**: Created by `acdd start` (from a workspace-confined spec file or
   ephemeral `--goal`), storing immutable `profile_json`, `spec_digest`,
   `isolation` (`worktree` or `in_place`), optional `target_base` / `branch` /
   `worktree`, `trace_id`, and monotonic optimistic `generation` (`>= 1`).
-- **`GateNode` (`gate_nodes`)**: Materializes the profile's `gates:` hierarchy
+- **`GateNode` (`gate_nodes`)**: Materializes the workflow's `gates:` hierarchy
   and `- tasks:` spec blocks into one tree of typed nodes addressed by dotted
   `NodeCursor` identifiers:
   - `container`: Structural group of root gates (e.g. `blueprint_synthesis`).
@@ -54,7 +55,7 @@ scope:
 status: planned
 ```
 
-For full field parsing rules, see [`crates/acdd-state/src/spec.rs`](../../crates/acdd-state/src/spec.rs)
+For full field parsing rules, see [`crates/acdd-spec/src/spec.rs`](../../crates/acdd-spec/src/spec.rs)
 and the example feature plan in [example-feature-plan.md](example-feature-plan.md).
 
 ---
@@ -67,10 +68,10 @@ State operations map symmetrically across the flat CLI and five state MCP tools 
 | --- | --- | --- | --- |
 | Status / List / Show / Next | `acdd_state(action: "status \| list \| show \| next \| observability")` | `acdd status`, `list`, `show`, `next` | Read-only run/node inspection, ready waves, and telemetry |
 | Start / Draft | `acdd_state(action: "start")` | `acdd start`, `acdd draft` | Initialize a new `Run` (MCP/CLI) or draft numbered spec (CLI `acdd draft`) |
-| Roadmap | *(CLI only; `acdd_state` redirects)* | `acdd roadmap` | Inspect cross-collection runs, dependency waves, and critical path |
+| Roadmap | *(CLI only; `acdd_state` redirects)* | `acdd roadmap` | Inspect cross-spec runs, dependency waves, and critical path |
 | Scope / Reopen / Sync / Subtask | `acdd_state(action: "extend_scope \| reopen \| sync \| subtask")` | `acdd extend-scope`, `reopen`, `sync`, `subtask` | Manage scope extensions, cascades, spec sync, and subtasks |
 | Clear / Run | `acdd_state(action: "clear \| run")` | `acdd clear`, `acdd run` | Clear tombstones and execute DAG waves (with internal `rebase-ff` landing) |
-| Claim | `acdd_claim` | `acdd claim [<node>] [--detail compact\|full]` | Atomically claim a ready/active node and return `ClaimResp` (`<= 9,500` B default, `32 KiB` full) |
+| Claim | `acdd_claim` | `acdd claim [<node>] [--detail compact\|full]` | Atomically claim a ready/active node and return `ClaimResp` (`<= 10,000` B compact soft cap, `32 KiB` full) |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
 | Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear \| list")` | `acdd snapshot save\|restore\|list\|clear` | Save, restore, list, or delete task and standalone Git checkpoints |
@@ -120,7 +121,7 @@ in full mode, capping the entire `ClaimResp` across Tiers 1–6 and
 `omitted_sections`) across six ordered tiers:
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting
-   empty `invariants` and default `tools` matching `profile.default_tools`,
+   empty `invariants` and default `tools` matching `workflow.default_tools`,
    sending the full spec body on `blueprint_synthesis` or taskless specs and
    `spec_path` on post-task root gates) plus resolved gate guidance (never
    truncated; settled at its exact `total_bytes` fixpoint and failing closed with
@@ -179,7 +180,7 @@ Manage Git checkpoints via `acdd snapshot <save|restore|list|clear> ...` or `acd
 - **`list`**: lists saved snapshot revisions for a task or standalone label.
 - **`clear`**: deletes one revision (`--rev`), refs older than `<N><s|m|h|d|w>` (`--older-than`), a named prefix, or `--all` (alias `--delete`).
 - **Task vs. standalone refs**: omitting `--run` resolves to task mode if the target matches an unambiguously resolved active run (cleaned up automatically on `deliver`, run `clear`, or `handoff`). When clearing with `--rev` or `--older-than` without `--run`, it targets standalone refs at `refs/acdd/snapshots/_adhoc/<label>/r<rev>`, which task lifecycle events never delete.
-- **Profile hook**: `save.post: snapshot` is valid only on leaf task gates.
+- **Workflow hook**: `save.post: snapshot` is valid only on leaf task gates.
 
 ---
 
@@ -195,7 +196,7 @@ authority, and agent writes never conflate:
    (`claim_tree`, `accepted_tree`). Excludes `.git/**`, `.worktrees/**`,
    `is_engine_managed`, configured `state_db` / `code_db` (+ `-wal`, `-shm`,
    `.backup` sidecars), and `.acdd/**` **except** the tracked configuration
-   whitelist (`.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`).
+   whitelist (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks/**`).
    Tracked assets like `Cargo.lock` and `tests/**/*.jsonl` remain included.
 3. **`is_scope_admitted(rel_path, scope)`**: Brace-aware (`{a,b}`) component-wise
    glob/directory match owned solely by `acdd_core::path_policy` against the
@@ -271,10 +272,12 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
 
 ## Canonical Diagnostic Error Codes (`ErrorCode`)
 
-[`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) maps machine-readable `ErrorCode` variants to stable CLI exit codes:
+[`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) maps `AcddError` (the sole structured error type across all workspace crates) and its `ErrorCode` variants to stable CLI exit codes:
 
 | Exit Code | Category | Diagnostic Codes |
 | --- | --- | --- |
-| **`2`** | Usage, Config & Schema | `ACDD_PROFILE_SCHEMA_INVALID`, `COMMAND_UNBOUND`, `COMMAND_TEST_FILTER_UNSUPPORTED`, `COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`, `UNKNOWN_GUIDANCE_SLOT`, `GUIDANCE_BUDGET_EXCEEDED`, `RUN_SELECTOR_AMBIGUOUS`, `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED` |
+| **`2`** | Usage, Config & Schema | `CONFIG_MIGRATION_REQUIRED`, `ACDD_WORKFLOW_SCHEMA_INVALID`, `ACDD_SPEC_SCHEMA_INVALID`, `COMMAND_UNBOUND`, `COMMAND_TEST_FILTER_UNSUPPORTED`, `COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`, `UNKNOWN_GUIDANCE_SLOT`, `GUIDANCE_BUDGET_EXCEEDED`, `RUN_SELECTOR_AMBIGUOUS`, `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED` |
 | **`3`** | State, Gate & Scope | `TASK_ALREADY_CLAIMED`, `STALE_CLAIM_REVISION`, `TASK_REVIEW_NOT_INDEPENDENT`, `OUT_OF_SCOPE_CHANGES`, `TASK_SCOPE_CONFLICT`, `TASK_PROOF_UNOBSERVED`, `TASK_CANDIDATE_MISMATCH`, `TASK_NOT_INTEGRATED`, `PRE_TASK_ARTIFACT_STALE`, `DEPENDENT_TASK_COMPLETED`, `DOMAIN_CAPABILITY_UNAVAILABLE`, `MAIN_BRANCH_PROTECTED` |
 | **`4`** | Execution, Git & Storage | `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`, `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`, `MUTATING_ACTION_UNCERTAIN_OUTCOME`, `BACKEND_CONFLICT` |
+
+Additional validation diagnostics include `WORKFLOW_VALID` (pass diagnostic from `acdd validate` for resolved `WorkflowDef` documents) and registry-local `FEATURE_REQUIRED_BY_PRESET` text inside `ACDD_WORKFLOW_SCHEMA_INVALID` `message` from `SubsystemRegistry::validate()` ([`subsystems.rs`](../../crates/acdd-core/src/subsystems.rs)), while cross-layer workspace-preset vs. workflow `modules.required` mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE` ([`validate.rs`](../../crates/acdd-state/src/workflow/validate.rs)). See [configuration](configuration.md#state-storage-and-module-toggles), [CLI reference](cli.md), and [MCP tools](mcp-tools.md) for the exact `StartReq` / `StateInput`, `SyncReq` / `SyncResp`, `DraftReq` / `DraftResp`, `ValidateReq`, and `RoadmapReq` / `RoadmapSpecEntry` field contracts.

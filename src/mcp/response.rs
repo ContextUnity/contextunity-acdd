@@ -119,7 +119,7 @@ pub(crate) fn result_for_presented(
                 });
                 return CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
             }
-            if let Some(state_err) = error.downcast_ref::<acdd_core::errors::StateError>() {
+            if let Some(state_err) = error.downcast_ref::<acdd_core::errors::AcddError>() {
                 let mut err_obj = serde_json::Map::new();
                 err_obj.insert("code".into(), json!(state_err.code.as_str()));
                 err_obj.insert("message".into(), json!(state_err.message));
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn state_error_formats_structured_code_message_and_hint() {
-        let err = acdd_core::errors::StateError::new(
+        let err = acdd_core::errors::AcddError::new(
             acdd_core::errors::ErrorCode::FeatureDisabled,
             "state subsystem disabled",
         )

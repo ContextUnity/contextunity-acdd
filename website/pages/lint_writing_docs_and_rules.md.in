@@ -191,8 +191,8 @@ acdd lint --rule INV-NO-RAW-GIT
 ### MCP usage (`code_map_lint`)
 Agents invoke `code_map_lint` with optional `target`, `categories`, `rules`, `severity`, and pagination (`limit`, `offset`, `generation`).
 
-### Enforcing lint automatically in profile gates
-Attach `code.lint` to any `build` or `verify` gate inside `.acdd/profile.yaml`:
+### Enforcing lint automatically in workflow gates
+Attach `code.lint` to any `build` or `verify` gate inside `.acdd/workflows/default.yaml`:
 
 ```yaml
 gates_patch:

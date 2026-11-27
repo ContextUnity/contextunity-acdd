@@ -14,7 +14,7 @@ pub(crate) use docs_domain::DocsDomainProvider;
 pub(crate) use overview::overview;
 
 use acdd_core::config::Adapter;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ports::{CompositeDomainProvider, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
@@ -34,7 +34,7 @@ pub fn build_domain_providers(
     config: &Adapter,
     code_db: Option<&Path>,
     extra_providers: Vec<Arc<dyn DomainProvider>>,
-) -> Result<Arc<CompositeDomainProvider>, StateError> {
+) -> Result<Arc<CompositeDomainProvider>, AcddError> {
     let code_db_owned = acdd_core::config::resolve_custom_db_path(root, code_db);
     let mut providers: Vec<Arc<dyn DomainProvider>> = vec![
         Arc::new(CodeDomainProvider::with_code_db(
@@ -84,16 +84,16 @@ pub struct ExecTarget {
     pub run_id: Option<acdd_core::ids::RunId>,
 }
 
-fn canonical_existing_dir(path: &Path) -> Result<std::path::PathBuf, StateError> {
+fn canonical_existing_dir(path: &Path) -> Result<std::path::PathBuf, AcddError> {
     let canon = path.canonicalize().map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("checkout path '{}' is unavailable: {err}", path.display()),
         )
     })?;
     let canon = acdd_core::fs::canonicalize_macos_var(&canon);
     if !canon.is_dir() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("checkout path '{}' is not a directory", canon.display()),
         ));
@@ -101,7 +101,7 @@ fn canonical_existing_dir(path: &Path) -> Result<std::path::PathBuf, StateError>
     Ok(canon)
 }
 
-fn load_exec_adapter(root: &Path, explicit_config: Option<&Path>) -> Result<Adapter, StateError> {
+fn load_exec_adapter(root: &Path, explicit_config: Option<&Path>) -> Result<Adapter, AcddError> {
     let config_path = explicit_config.map(|cfg| {
         if cfg.is_absolute() {
             cfg.to_path_buf()
@@ -109,12 +109,7 @@ fn load_exec_adapter(root: &Path, explicit_config: Option<&Path>) -> Result<Adap
             root.join(cfg)
         }
     });
-    acdd_core::config::load_adapter(root, config_path.as_deref()).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("ACDD_PROFILE_SCHEMA_INVALID: {err}"),
-        )
-    })
+    acdd_core::config::load_adapter(root, config_path.as_deref())
 }
 
 fn resolve_exec_state_db(
@@ -122,7 +117,7 @@ fn resolve_exec_state_db(
     root: &Path,
     explicit_state_db: Option<&Path>,
     adapter: &Adapter,
-) -> Result<std::path::PathBuf, StateError> {
+) -> Result<std::path::PathBuf, AcddError> {
     if let Some(path) = explicit_state_db {
         let resolved = if path.is_absolute() {
             path.to_path_buf()
@@ -151,7 +146,7 @@ fn resolve_worktree_active_run(
         acdd_state::store::sqlite::SqliteStateReader,
         acdd_state::types::RunRecord,
     )>,
-    StateError,
+    AcddError,
 > {
     if !std::fs::symlink_metadata(state_db).is_ok_and(|m| m.file_type().is_file()) {
         return Ok(None);
@@ -181,7 +176,7 @@ fn resolve_exec_checkout_target(
     primary: std::path::PathBuf,
     explicit_config: Option<&Path>,
     explicit_state_db: Option<&Path>,
-) -> Result<ExecTarget, StateError> {
+) -> Result<ExecTarget, AcddError> {
     let adapter_root = if explicit_config.is_some()
         || checkout
             .join(acdd_core::config::ACDD_CONFIG_FILE)
@@ -207,7 +202,7 @@ fn resolve_exec_checkout_target(
 fn resolve_exec_run_target(
     run: &acdd_state::types::RunRecord,
     primary: &Path,
-) -> Result<ExecTarget, StateError> {
+) -> Result<ExecTarget, AcddError> {
     let raw_wt = run
         .worktree
         .as_deref()
@@ -224,11 +219,11 @@ fn resolve_exec_worker_target(
     reader: &acdd_state::store::sqlite::SqliteStateReader,
     primary: &Path,
     raw_worker: &str,
-) -> Result<ExecTarget, StateError> {
+) -> Result<ExecTarget, AcddError> {
     let worker_id = acdd_core::ids::WorkerId::new(raw_worker)?;
     let claims = acdd_state::store::traits::StateReader::active_worker_claims(reader, &worker_id)?;
     match claims.len() {
-        0 => Err(StateError::new(
+        0 => Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("no active in_progress gate found claimed by worker '{worker_id}'"),
         )
@@ -253,7 +248,7 @@ fn resolve_exec_worker_target(
                     format!("{}:{} -> {}", c.run_id, c.node_id, wt.display())
                 })
                 .collect();
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!(
                     "worker '{worker_id}' has {} active in_progress claims: {}",
@@ -268,7 +263,7 @@ fn resolve_exec_worker_target(
 
 /// Read-only resolution of the target worktree and active `run_id` for `acdd exec`
 /// without creating `.acdd/state.sqlite` or opening it read-write.
-pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, StateError> {
+pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, AcddError> {
     if let Some(raw_root) = input.explicit_cli_root {
         let checkout = canonical_existing_dir(raw_root)?;
         let primary = acdd_state::usecases::lifecycle::resolve_repo_layout_optional(&checkout)?
@@ -323,7 +318,7 @@ pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, S
         .unwrap_or_else(|| anchor.clone());
     let adapter = load_exec_adapter(&primary, input.explicit_config)?;
     if !adapter.modules.is_subsystem_enabled(SubsystemId::State) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "state subsystem is disabled in modules:",
         ));
@@ -351,7 +346,7 @@ pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, S
         Some(acdd_state::types::RunStatus::Active),
     )?;
     match active_runs.len() {
-        0 => Err(StateError::new(
+        0 => Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             "no active run found for this workspace",
         )
@@ -374,7 +369,7 @@ pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, S
                     )
                 })
                 .collect();
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!(
                     "{} active runs exist; target is ambiguous: {}",
@@ -397,7 +392,7 @@ fn resolve_worktree_active_run_node(
         acdd_state::types::RunGraphSnapshot,
         acdd_state::types::GateNodeRecord,
     )>,
-    StateError,
+    AcddError,
 > {
     let Some((reader, run)) = resolve_worktree_active_run(state_db, worktree)? else {
         return Ok(None);
@@ -438,9 +433,9 @@ fn resolve_worktree_active_run_node(
 }
 
 fn find_gate_in_profile<'a>(
-    profile: &'a acdd_state::profile::ResolvedGateProfile,
+    profile: &'a acdd_state::workflow::ResolvedWorkflow,
     cursor: &acdd_core::ids::NodeCursor,
-) -> Option<&'a acdd_state::profile::GateDef> {
+) -> Option<&'a acdd_state::workflow::GateDef> {
     match cursor {
         acdd_core::ids::NodeCursor::Root(gates) => {
             acdd_state::usecases::queries::find_root_gate_def_ref(profile, gates, false)
@@ -471,7 +466,7 @@ fn build_state_engine_config(
         state_db_override,
         code_db_path,
         spec_collections: adapter.specs.clone(),
-        profiles_dirs: adapter.profiles_dirs.clone(),
+        workflows_dirs: adapter.workflows_dirs.clone(),
         linked_workspaces: adapter
             .linked_workspaces
             .iter()
@@ -621,7 +616,7 @@ pub fn active_node_context(
     let node_cursor = acdd_core::ids::NodeCursor::from_node_id(&node.node_id)?.to_string();
     let admitted_scope = acdd_state::machine::container_scope(&graph, &node);
     let profile =
-        serde_json::from_str::<acdd_state::profile::ResolvedGateProfile>(&run.profile_json).ok();
+        serde_json::from_str::<acdd_state::workflow::ResolvedWorkflow>(&run.profile_json).ok();
     let protected_paths = profile
         .as_ref()
         .map(|p| p.protected_paths.clone())
@@ -671,9 +666,9 @@ pub fn resolve_worktree_span_context(
     worktree: &Path,
     state_db: Option<&Path>,
     config: &Adapter,
-) -> Result<Option<WorktreeSpanContext>, StateError> {
+) -> Result<Option<WorktreeSpanContext>, AcddError> {
     if !config.modules.is_subsystem_enabled(SubsystemId::State) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "state subsystem is disabled in modules:",
         ));
@@ -729,9 +724,9 @@ mod tests {
         run_git(&["config", "user.email", "test@example.com"]);
         run_git(&["config", "user.name", "Test"]);
         fs::create_dir_all(root.join("src")).unwrap();
-        fs::create_dir_all(root.join(".acdd")).unwrap();
+        fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
         fs::write(
-            root.join(".acdd/profile.yaml"),
+            root.join(".acdd/workflows/default.yaml"),
             "version: 2\nprotected_paths:\n  - Cargo.toml\nroles:\n  builder:\n    mode: subagent\ncommands:\n  build_check: \"cargo check --lib\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n",
         )
         .unwrap();
@@ -761,7 +756,7 @@ mod tests {
                 state_db_override: None,
                 code_db_path: None,
                 spec_collections: adapter.specs.clone(),
-                profiles_dirs: adapter.profiles_dirs.clone(),
+                workflows_dirs: adapter.workflows_dirs.clone(),
                 linked_workspaces: std::collections::BTreeMap::new(),
                 modules: adapter.modules.clone(),
                 response_policy: adapter.response.clone(),
@@ -783,7 +778,7 @@ mod tests {
                 spec_path: None,
                 goal: Some("edit scoped".into()),
                 run_name: None,
-                profile: None,
+                workflow: None,
                 scope: vec!["src/scoped.rs".into()],
                 target_base: None,
                 worktree: false,
@@ -976,7 +971,7 @@ mod tests {
             }))
             .unwrap();
         fs::write(
-            root.join(".acdd/profile.yaml"),
+            root.join(".acdd/workflows/default.yaml"),
             "version: 2\nprotected_paths:\n  - Cargo.toml\nroles:\n  architect:\n    mode: subagent\n  builder:\n    mode: subagent\ngates:\n  - id: verify\n    role: architect\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n",
         )
         .unwrap();
@@ -985,7 +980,7 @@ mod tests {
                 spec_path: None,
                 goal: Some("unscoped root check".into()),
                 run_name: None,
-                profile: None,
+                workflow: None,
                 scope: vec![],
                 target_base: None,
                 worktree: false,

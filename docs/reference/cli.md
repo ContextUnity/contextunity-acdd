@@ -15,16 +15,16 @@ title: CLI reference
 | `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.acdd/code-map.sqlite`; `ACDD_DB` can set it. Does not select the state store. |
 | `--state-db <PATH>` | State SQLite database path override (`ACDD_STATE_DB`). Defaults to `state_db` in `acdd.yaml` (`.acdd/state.sqlite` under the primary Git worktree). |
 | `--config <PATH>` | Root-confined ACDD YAML configuration; `ACDD_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/acdd.yaml` when present. |
-| `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation \| spec_planning`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
+| `--workflow <REF>` | Explicit gate workflow name (`base \| code \| documentation`), `workflows_dirs` entry, or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_WORKFLOW` can set it. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
 - **Positional root**: `build`, `scan`, and `delta` also accept a positional workspace path (when combined with `-C`/`--root`, both must resolve to the same directory).
-- **Flag & env precedence**: CLI `-C`/`--root` overrides `ACDD_WORKSPACE_ROOT`, which overrides `ACDD_WORKTREE`. All CLI `--run` options accept `ACDD_RUN` as an environment fallback so nested `acdd` invocations inside an active worktree shell inherit the active run automatically; explicit `--run` overrides `-C`/`--worktree` and positional selectors, while explicit `-C`/`--worktree` (and positional `clear` target) overrides ambient `ACDD_RUN`.
+- **Flag & env precedence**: CLI flags override matching `ACDD_*` environment variables once per invocation; `-C`/`--root` overrides `ACDD_WORKSPACE_ROOT`, which overrides `ACDD_WORKTREE`. All CLI `--run` options accept `ACDD_RUN` as an environment fallback so nested `acdd` invocations inside an active worktree shell inherit the active run automatically; explicit `--run` overrides `-C`/`--worktree` and positional selectors, while explicit `-C`/`--worktree` (and positional `clear` target) overrides ambient `ACDD_RUN`.
 - **Unified worktree targeting (`-C <worktree>`)**: passing `-C <worktree>` works uniformly for both code/docs commands (`build`, `delta`, `read`, `query`, `ast`, `lint`, `docs`) and state commands (`status`, `show`, `next`, `context`, `blackboard`, `claim`, `verify`, `submit`) without redundant `--run` or `--worktree` flags (resolving the primary repository via `--git-common-dir` and the active run via the target worktree).
-- **Profile precedence**: `--profile` / `ACDD_PROFILE` → spec `profile:` → `specs.<collection>.profile` → `profiles_dirs` → `.acdd/profile.yaml` → built-in `code` (plus `base`, `audit`, `documentation`, `spec_planning`).
+- **Workflow precedence**: `--workflow` / `ACDD_WORKFLOW` → spec `workflow:` → `specs.<name>.workflow` → `workflows_dirs` → `.acdd/workflows/default.yaml` → built-in `code` (plus `base`, `documentation`). Removed CLI flags fail via Clap argument parsing.
 - **State DB resolution**: `--state-db` → `state_db` in `acdd.yaml` → `<primary_worktree>/.acdd/state.sqlite` (resolved via `--git-common-dir`).
-- **Runner vs. command environments**: spawned role runners receive `ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, and `ACDD_AGENT_SESSION_ID`; project build/test commands run in a sanitized environment with `TRACEPARENT`, internal `ACDD_*` variables (`ACDD_CONFIG`, `ACDD_DB`, `ACDD_EXTRACTION_CACHE_DIR`, `ACDD_PROFILE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `ACDD_WORKSPACE_ROOT`, `ACDD_AGENT_SESSION_ID`, `ACDD_ROLE_*`, `ACDD_MODEL`, `ACDD_REASONING`), and `GIT_*` variables scrubbed.
-- **`serve` & `delta` config retention**: `serve` keeps its resolved config/profile across reloads; `delta` reuses the persisted index adapter unless `--config` is passed explicitly.
+- **Runner vs. command environments**: spawned role runners receive `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `ACDD_ROLE_*`, `ACDD_MODEL`, `ACDD_REASONING`, and `TRACEPARENT`; project build/test commands run in a sanitized environment with `TRACEPARENT`, internal `ACDD_*` variables (`ACDD_CONFIG`, `ACDD_DB`, `ACDD_EXTRACTION_CACHE_DIR`, `ACDD_WORKFLOW`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `ACDD_WORKSPACE_ROOT`, `ACDD_AGENT_SESSION_ID`, `ACDD_ROLE_*`, `ACDD_MODEL`, `ACDD_REASONING`), and `GIT_*` variables scrubbed.
+- **`serve` & `delta` config retention**: `serve` keeps its resolved config/workflow across reloads; `delta` reuses the persisted index adapter unless `--config` is passed explicitly.
 
 ## Inventory and indexing
 
@@ -66,7 +66,7 @@ acdd query overview --aspects entrypoints
 acdd query overview --aspects entrypoints_with_tests
 acdd query overview --aspects topology
 acdd query search 'parse*' --kind function --classification production --limit 30
-acdd query search 'takes:GateProfile'
+acdd query search 'takes:WorkflowDef'
 acdd query search 'returns:Result'
 acdd query inspect 'src/module.py:parse' --show-source
 acdd query explain 'src/module.py:parse'
@@ -131,37 +131,37 @@ acdd lint --categories all --limit 50 --offset 0
 
 ## Unified state lifecycle
 
-Flat `Run` and `GateProfile` commands backed by `crates/acdd-state` and `src/state_bridge/` (see [state, tasks & lifecycle](tasks.md) for schemas, locks, and error codes).
+Flat `Run` and `WorkflowDef` commands backed by `crates/acdd-state`, `crates/acdd-spec` (`draft`, `roadmap`, `validate`), and `src/state_bridge/` (see [state, tasks & lifecycle](tasks.md) for schemas, locks, and error codes).
 
 ### Workspace initialization and specification drafting
 
 ```sh
 acdd init [--force]
-acdd draft <collection> <slug> [--prefix PREFIX] [--title "Title"] [--profile PROFILE]
+acdd draft <spec> <slug> [--prefix PREFIX] [--title "Title"]
 ```
 
-- `init [--force]`: Writes starter `acdd.yaml`, `.acdd/profile.yaml` (`inherit: code` when `code` module is enabled, otherwise `inherit: base`), and the canonical `.acdd/` protection block in `.gitignore`, verifying via `git check-ignore` that `.acdd/state.sqlite` is ignored and `.acdd/profile.yaml` stays trackable.
-- `draft <collection> <slug>`: Creates the next sequentially zero-padded specification Markdown file in the configured `specs.<collection>` directory (`milestones` or `plans` by default).
+- `init [--force]`: Writes starter `acdd.yaml` (`preset: full`, `workflows_dirs: [.acdd/workflows]`), `.acdd/workflows/default.yaml` (`inherit: code` when `code` module is enabled, otherwise `inherit: base`), and the canonical `.acdd/` protection block in `.gitignore`, verifying via `git check-ignore` that `.acdd/state.sqlite` is ignored and `.acdd/workflows/default.yaml` stays trackable.
+- `draft <spec> <slug>`: Creates the next sequentially zero-padded specification Markdown file in the configured `specs.<spec>` directory (`milestones` or `plans` by default) via `crates/acdd-spec` under `SubsystemId::Spec` without creating `.acdd/state.sqlite`. Populates `DraftReq` (`spec`, `slug`, `prefix?`, `title?`, `workflow?`) and returns `DraftResp` (`spec_id`, `spec_path`, `spec`) under `--format json`.
 
 ### Run startup, inspection, and ready queue
 
 ```sh
-acdd start [<spec>] [--goal TEXT] [--name RUN_NAME] [--profile PROFILE] [--scope PATH ...] [--target-base REF] [--worktree | --in-place] [--worktree-path PATH]
+acdd start [<spec>] [--goal TEXT] [--name RUN_NAME] [--workflow WORKFLOW] [--scope PATH ...] [--target-base REF] [--worktree | --in-place] [--worktree-path PATH]
 acdd status [--run RUN_ID_OR_NAME]
 acdd list [--workspace NAME] [--status active|completed|cancelled] [--include-tombstones] [--limit 1..100] [--offset N] [--generation GEN]
 acdd show [<node>] [--run RUN_ID_OR_NAME]
 acdd context [<node>] [--run RUN_ID_OR_NAME] [--worker WORKER_ID]
 acdd next [--run RUN_ID_OR_NAME] [--limit N]
-acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]
+acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]
 ```
 
-- `start`: Starts a new `Run` from a spec file (`<spec>`) or an ephemeral `--goal` (materializing `.acdd/run/<run_id>/spec.md`, attaching `--scope` globs as task scope or frontmatter `owners:` on taskless profiles like `audit`). Selects `worktree` (`--worktree`, `--worktree-path`, `--target-base`) or `--in-place` isolation (neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`).
+- `start`: Starts a new `Run` from a spec file (`<spec>`) or an ephemeral `--goal` (materializing `.acdd/run/<run_id>/spec.md`, attaching `--scope` globs as task scope or frontmatter `owners:` on taskless workflows like `audit`). Selects `worktree` (`--worktree`, `--worktree-path`, `--target-base`) or `--in-place` isolation (neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`). Maps to `StartReq` (`spec_path?`, `goal?`, `run_name?`, `workflow?`, `scope`, `target_base?`, `worktree`, `in_place`, `worktree_path?`, `#[serde(deny_unknown_fields)]`).
 - **`status`**: renders active run summary and current gate status.
 - **`list`**: lists runs (`--include-tombstones` includes cleared/completed/cancelled `run_tombstones` with `runs.generation` paging).
 - **`show`**: renders the full run tree or one dotted node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
 - **`next`**: lists currently ready node cursors and topological execution waves.
 - **`context`**: reads `.acdd/state.sqlite` (`SQLITE_OPEN_READ_ONLY`) to refresh `ClaimResp` + blackboard without mutating claims or advancing `claim_revision` (ideal for `PostCompact` / `SessionStart(compact)` hooks).
-- **`roadmap`**: displays cross-collection runs, dependency waves, critical-path order, and scope overlaps (`--tasks` / `<spec_id>` drills down; never creates `state.sqlite`).
+- **`roadmap`**: displays cross-spec runs, dependency waves, critical-path order, and scope overlaps via `crates/acdd-spec` + `SpecRuntimeOverlay` under `SubsystemId::Spec` (`--spec <CONFIG_KEY>` filters by configured `specs:` key; `--tasks` / positional `[SPEC_ID]` drills down; never creates `state.sqlite`). Maps to `RoadmapReq` (`spec_id?`, `spec?`, `ready_only`, `active_only`, `include_tasks`, `archived`, `current_only`) and emits [`RoadmapSpecEntry`](../../crates/acdd-spec/src/types.rs) items (`spec_id`, `title`, `spec`, `path`, `doc_type`, `status`, `run_id?`, `worktree?`, `source_worktree?`, `divergence`, `completed_tasks`, `total_tasks`, `active_gates`, `unblocks_specs`, `unblocks_tasks`, `parallel_safe`, `scope_overlaps`, `depends_on`, `blocks`, `tasks`) under `--format json`.
 
 ### Gate execution: `claim`, `verify`, `submit`
 
@@ -171,7 +171,7 @@ acdd verify <node> [--run RUN] [--worker ID] [--test TARGET] [--claim-revision R
 acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revision REV] [--test TARGET] [--evidence JSON_OR_@PATH] [--findings JSON_OR_@PATH] [--invariant ID ...] [--summary TEXT] [--allow-main] [--worktree PATH]
 ```
 
-- `claim`: Claims `<node>` (or auto-selects the next ready cursor when `<node>` is omitted) under optimistic concurrency (`claim_revision` + `node_version`), returning the 6-tier budgeted `ClaimResp` (`<= 9,500` bytes by default, or up to `32 KiB` with `--detail full`). Pass `--force` to take over an active claim (`--steal-remote` required across different host session fingerprints).
+- `claim`: Claims `<node>` (or auto-selects the next ready cursor when `<node>` is omitted) under optimistic concurrency (`claim_revision` + `node_version`), returning the 6-tier budgeted `ClaimResp` (`<= 10,000` bytes compact soft cap with `omitted_sections` on overflow, or up to `32 KiB` with `--detail full`). Pass `--force` to take over an active claim (`--steal-remote` required across different host session fingerprints).
 - `verify`: Executes the node's `command:`, `call:`, `checks:` (`DomainProvider`), and write-scope perimeter barrier without advancing state. `--test` passes the targeted test filter to `{test_filter}` and `code.seam` (for example on `build` gates).
 - **`submit`**: submits `--action pass` or `--action reject` for `claim_revision`:
   - Requires a fresh passing `verify` trace bound to the active `claim_revision` and working tree on gates with `command:`, `call:`, `checks:`, or `proof: command|call` (failing closed with `TASK_PROOF_UNOBSERVED` when absent or stale; `--test` checks trace digest parity without auto-running `verify`), `--evidence` on review/schema gates, and structured `--findings` (`kind`: `defect | architectural_drift`) on `reject`.
@@ -186,14 +186,14 @@ acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revis
 ```sh
 acdd extend-scope <node> --path PATH [--path PATH ...] --reason TEXT [--run RUN] [--worker ID]
 acdd reopen <node> [--run RUN] [--cascade] [--reason TEXT]
-acdd sync [--run RUN] [--rebind-profile]
+acdd sync [--run RUN] [--rebind-workflow]
 acdd subtask <task_ref> <subtask_ref> --status pending|in_progress|completed|cancelled [--evidence TEXT] [--run RUN]
 acdd blackboard [--action read|post] [--run RUN] [--node CURSOR] [--recipient-node CURSOR] [--subtask-ref REF] [--gate GATE] [--author WORKER] [--topic draft|notes|findings|blockers|decisions|deferred] [--payload TEXT] [--status open|acknowledged|resolved|carried_over] [--limit N] [--offset N] [--generation GEN]
 ```
 
 - `extend-scope`: Expands `admitted_scope` after conflict checks against other claimed incomplete tasks (blocking `.acdd/**` and `protected_paths` with `OUT_OF_SCOPE_CHANGES`).
 - `reopen`: Reopens a gate or task container; `--cascade` marks downstream `in_progress`/`completed` dependent tasks stale.
-- `sync`: Reconciles spec edits into an active run; `--rebind-profile` rebinds non-completed gates against the latest profile.
+- `sync`: Reconciles spec edits into an active run (`SyncReq`: `run?`, `rebind_workflow`); `--rebind-workflow` rebinds non-completed gates against the latest workflow, returning `SyncResp` (`run_id`, `spec_digest`, `rebound_workflow`, `added_nodes`, `updated_nodes`).
 - `subtask`: Transitions subtask state; terminal `completed` or `cancelled` requires non-empty `--evidence`.
 - `blackboard`: Reads or posts scoped collaboration messages (`open | acknowledged | resolved | carried_over`) across topics `draft | notes | findings | blockers | decisions | deferred`.
 
@@ -213,8 +213,10 @@ acdd run [--run RUN] [--jobs N] [--allow-main] [--dry-run]
 ```
 
 `acdd run` drives the active `Run` across topological DAG waves using the
-resolved `GateProfile`:
-- `run`: Executes automated DAG waves using the resolved `GateProfile` (see `--dry-run`, `--jobs N`, `--allow-main`).
+resolved `WorkflowDef`:
+- Executes mechanical `command:` / `call:` gates directly via `verify` + `submit`.
+- Spawns configured `roles.<role>.runner` processes for role-assigned gates (clamped to `--jobs 1` when `git.isolation: in_place`), streaming child output and collecting accepted submissions.
+- `--dry-run` computes schedulable waves without mutating storage or spawning runners.
 - Role-assigned gates without a configured `runner:` command fail closed with `WORKFLOW_RUNNER_REQUIRED` (manual/subagent orchestration uses `claim` -> `verify` -> `submit` directly).
 
 ### Worktree command transit (`exec`)
@@ -259,7 +261,7 @@ acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree 
 acdd validate [<PATH>]
 ```
 
-- **`validate [<PATH>]`**: runs the unified workspace validator (`acdd_state::validate` + `acdd_state::usecases::deps`):
-  - **Config (`acdd.yaml`)**: validates schema keys (`load_adapter_report`, rejecting unknown keys via `#[serde(deny_unknown_fields)]`), `specs:` collections, and `linked_workspaces` paths.
-  - **Profiles (`.acdd/profile.yaml`)**: verifies inheritance, fields, bound commands (when `modules.state` is enabled), and `DomainProvider` capabilities.
-  - **Specs**: validates collection prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths (omitting `<PATH>` checks the entire workspace).
+- **`validate [<PATH>]`**: runs the unified validator (`ValidateReq`: `path?`, `explicit_config?`, `explicit_workflow?`, invoked through `acdd_state::validate` whenever `SubsystemId::Spec` is enabled; `modules.state` controls whether live `StateRuntimeOverlay` run/tombstone checks and bound workflow `commands:` checks run; never creates `.acdd/state.sqlite`):
+  - **Config (`acdd.yaml`)**: validates schema keys (`load_adapter_report`, rejecting unknown or removed keys via `#[serde(deny_unknown_fields)]`), `specs:` entries, and `linked_workspaces` paths.
+  - **Workflows (`.acdd/workflows/default.yaml`)**: verifies inheritance, fields, bound commands (when `modules.state` is enabled), `DomainProvider` capabilities, and `modules.required` (`WORKFLOW_VALID` on pass; `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET` in `message` for registry-local requirement mismatches, or `DOMAIN_CAPABILITY_UNAVAILABLE` when a workflow requires a subsystem disabled by workspace `preset:` / `modules:`).
+  - **Specs**: validates prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths (`ACDD_SPEC_SCHEMA_INVALID` on error; omitting `<PATH>` checks the entire workspace).

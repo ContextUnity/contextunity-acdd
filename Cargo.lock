@@ -21,6 +21,7 @@ name = "acdd-index"
 version = "0.7.1"
 dependencies = [
  "acdd-core",
+ "acdd-spec",
  "anyhow",
  "cc",
  "hashbrown 0.14.5",
@@ -61,10 +62,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acdd-spec"
+version = "0.7.1"
+dependencies = [
+ "acdd-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "acdd-state"
 version = "0.7.1"
 dependencies = [
  "acdd-core",
+ "acdd-spec",
  "acdd-state",
  "anyhow",
  "chrono",
@@ -301,6 +314,7 @@ version = "0.7.1"
 dependencies = [
  "acdd-core",
  "acdd-index",
+ "acdd-spec",
  "acdd-state",
  "anyhow",
  "chrono",

@@ -1,6 +1,6 @@
 //! Leaf Git subprocess execution, trailer formatting, and failpoint helpers for `git_ops`.
 
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{canonicalize_macos_var, ScopedTempDir};
 use acdd_core::ids::CommitOid;
 use acdd_core::path_policy::normalize_rel_path;
@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Output;
 
-pub(super) fn create_scoped_temp_dir(prefix: &str) -> Result<ScopedTempDir, StateError> {
+pub(super) fn create_scoped_temp_dir(prefix: &str) -> Result<ScopedTempDir, AcddError> {
     ScopedTempDir::create(prefix).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("failed creating temporary directory '{prefix}': {err}"),
         )
@@ -23,13 +23,13 @@ pub(super) fn run_git_raw(
     index_file: Option<&Path>,
     extra_env: &[(&str, &str)],
     stdin_bytes: Option<&[u8]>,
-) -> Result<Output, StateError> {
+) -> Result<Output, AcddError> {
     let output = if index_file.is_none() && extra_env.is_empty() && stdin_bytes.is_none() {
         acdd_core::git::git_command(worktree, args)
     } else {
         acdd_core::git::run_git_raw(worktree, args, index_file, extra_env, stdin_bytes)
     };
-    output.map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))
+    output.map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))
 }
 
 pub(super) fn run_git_stdout(
@@ -37,7 +37,7 @@ pub(super) fn run_git_stdout(
     args: &[&str],
     index_file: Option<&Path>,
     error_code: ErrorCode,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     let output = run_git_checked(worktree, args, index_file, None, error_code)?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
@@ -48,10 +48,10 @@ pub(super) fn run_git_checked(
     index_file: Option<&Path>,
     stdin_bytes: Option<&[u8]>,
     error_code: ErrorCode,
-) -> Result<Output, StateError> {
+) -> Result<Output, AcddError> {
     let output = run_git_raw(worktree, args, index_file, &[], stdin_bytes)?;
     if !output.status.success() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             error_code,
             acdd_core::git::format_git_failure(args, worktree, &output),
         ));
@@ -59,7 +59,7 @@ pub(super) fn run_git_checked(
     Ok(output)
 }
 
-pub(super) fn git_dir_path(worktree: &Path) -> Result<std::path::PathBuf, StateError> {
+pub(super) fn git_dir_path(worktree: &Path) -> Result<std::path::PathBuf, AcddError> {
     let raw = run_git_stdout(
         worktree,
         &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -73,7 +73,7 @@ pub(super) fn commit_has_exact_trailer(
     worktree: &Path,
     commit_oid: &str,
     trailer_line: &str,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let msg = run_git_stdout(
         worktree,
         &["show", "-s", "--format=%B", commit_oid],
@@ -87,7 +87,7 @@ pub(super) fn first_commit_with_exact_trailer(
     worktree: &Path,
     rev_list_stdout: &[u8],
     trailer_line: &str,
-) -> Result<Option<CommitOid>, StateError> {
+) -> Result<Option<CommitOid>, AcddError> {
     let stdout = String::from_utf8_lossy(rev_list_stdout);
     for oid in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if commit_has_exact_trailer(worktree, oid, trailer_line)? {
@@ -101,7 +101,7 @@ pub(super) fn sync_default_index_paths(
     worktree: &Path,
     target_commit: &str,
     rel_paths: &[String],
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if rel_paths.is_empty() {
         return Ok(());
     }

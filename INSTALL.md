@@ -5,9 +5,9 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.7.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (18 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.7.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `WorkflowDef` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (18 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
-This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
+This guide walks you through installing ACDD MCP, configuring your workspace, selecting workflows, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
 ---
 
@@ -180,11 +180,11 @@ codex mcp add acdd -- acdd
 
 ## 2. Workspace Initialization and `acdd.yaml`
 
-`acdd.yaml` located at the root of your project is the adapter configuration file. It declares which directories to index, where documentation lives, `specs:` collections, profile directories, state store path, `modules:` flags, and output budgets.
+`acdd.yaml` located at the root of your project is the adapter configuration file. It declares the active `preset:`, which directories to index, where documentation lives, `specs:` configurations, workflow directories, state store path, `modules:` flags, and output budgets.
 
 ### Quick Bootstrap
 
-Generate a starter `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules automatically:
+Generate a starter `acdd.yaml`, `.acdd/workflows/default.yaml`, and canonical `.gitignore` rules automatically:
 
 ```bash
 acdd init
@@ -198,6 +198,9 @@ Verify your workspace configuration and state store health anytime with `acdd va
 A complete `acdd.yaml` template:
 
 ```yaml
+# Subsystem preset: full | index | spec | state | minimal
+preset: full
+
 # Source directories to parse and index into .acdd/code-map.sqlite
 roots:
   - src
@@ -208,7 +211,7 @@ docs:
   - README.md
   - docs
 
-# Specification collections (mapped to profiles and sequential IDs)
+# Spec configurations (mapped to workflows and sequential IDs)
 specs:
   milestones:
     path: docs/milestones
@@ -219,9 +222,9 @@ specs:
     prefixes: [PLAN]
     digits: 3
 
-# Directories searched for standalone/named GateProfile YAML files
-profiles_dirs:
-  - .acdd/profiles
+# Directories searched for standalone/named WorkflowDef YAML files
+workflows_dirs:
+  - .acdd/workflows
 
 # State database path and run trace retention
 state_db: ".acdd/state.sqlite"
@@ -283,7 +286,7 @@ response:
 Run the following checks from your repository root:
 
 ```bash
-# 1. Validate configuration syntax, profiles, DomainProvider capabilities, and specs
+# 1. Validate configuration syntax, workflows, DomainProvider capabilities, and specs
 acdd validate
 
 # 2. Verify documentation links and anchors
@@ -306,14 +309,15 @@ When connected to an AI agent via MCP, calling `code_map_overview` returns the s
 
 ### Setting up `.gitignore`
 
-ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persisting committed gate profiles and framework manifests. Configure your `.gitignore` using the canonical pattern (written automatically by `acdd init`):
+ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persisting committed gate workflows, spec definitions, and framework manifests. Configure your `.gitignore` using the canonical pattern (written automatically by `acdd init`):
 
 ```gitignore
 /.worktrees/
 !/.acdd/
-!/.acdd/profile.yaml
-!/.acdd/profiles/
-!/.acdd/profiles/**
+!/.acdd/workflows/
+!/.acdd/workflows/**
+!/.acdd/specs/
+!/.acdd/specs/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*
@@ -328,35 +332,34 @@ ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persi
 
 ---
 
-## 3. Profiles: Built-in vs Custom Universal Profile
+## 3. Workflows: Built-in vs Custom Universal Workflow
 
-Profiles (`GateProfile`, `version: 2`) govern lifecycle stages, `git:` isolation/integration policy, verification rules, review contours, roles, and contextual guidance injected into agent claims under ACDD.
+Workflows (`WorkflowDef`, `version: 2`) govern lifecycle stages, `git:` isolation/integration policy, verification rules, review contours, roles, and contextual guidance injected into agent claims under ACDD.
 
-### Profile Resolution Order
+### Workflow Resolution Order
 
-When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active profile in the following priority:
-1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`, `documentation`, `spec_planning`), `profiles_dirs` entry, or workspace-relative path.
-2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: audit` or a custom `.acdd/profiles/*.yaml`).
-3. **Collection override**: Optional `specs.<collection>.profile` configured in `acdd.yaml`.
-4. **Repository default**: `.acdd/profile.yaml` if present.
+When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active workflow in the following priority:
+1. **CLI `--workflow` flag**: Explicit built-in name (`base`, `code`, `documentation`), `workflows_dirs` entry, or workspace-relative path.
+2. **Spec frontmatter `workflow:`**: Workflow declared in the specification Markdown frontmatter (e.g. `workflow: documentation` or a custom `.acdd/workflows/*.yaml`).
+3. **Spec override**: Optional `specs.<name>.workflow` configured in `acdd.yaml`.
+4. **Repository default**: `.acdd/workflows/default.yaml` if present.
 5. **Compiled built-in fallback**: Embedded `code` (automatically stripping disabled `code`/`docs` domain hooks).
 
 If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`), ACDD verifies the parent file digest on every load and fails closed if tampered.
 
-### Built-in Profiles
+### Built-in Workflows
 
-ACDD embeds five `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
+ACDD embeds three `version: 2` core workflows (`crates/acdd-state/src/workflow/embedded/`):
 
 - **`base`**: domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
 - **`code`**: full engineering lifecycle inheriting `base` (`blueprint_synthesis` -> per-task `build`/`review`/`deliver`/`rearchitect` -> `run_tests`/`polish`/`integration_review`/`handoff`), 18 tools, `code.seam` + `code.lint` checks, and `docs.*`/`code.*` context lenses.
-- **`audit`**: read-only code review and SAST workflow (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured JSON Schema findings, and `save.report: ".acdd/reports/{run_name}.md"`.
 - **`documentation`**: compiler-free living docs & invariant authoring pipeline inheriting `base` (`modules.required: [docs, code]`) gated on `docs.links` and `code.lint` (`[arch, docs]`).
-- **`spec_planning`**: specification and wave planning pipeline (`synthesize -> review`) inheriting `base` (`git.isolation: in_place`, `save: none`), deriving planning scope from `acdd.yaml` `specs.*`/`docs` and gating on `docs.specs`, `docs.links`, and `code.lint`.
+- **Copyable templates (`skills/acdd/references/acdd-workflow-examples/`)**: `audit.yaml` (read-only `recon -> analyze -> triage`), `spec_planning.yaml` (read-only spec synthesis & review), and `hotfix.yaml` (localized bugfix), copyable into `.acdd/workflows/`.
 - **`--in-place` / `git.isolation: in_place`**: disables worktrees (`worktrees: manual`, `save: none`) and neutralizes `save.post: commit` to `none` while keeping `save.immutable: true`.
 
-### Authoring a Custom Universal Profile (`version: 2`)
+### Authoring a Custom Universal Workflow (`version: 2`)
 
-Create `.acdd/profile.yaml` to tailor commands, roles, and review contours to your technology stack:
+Create `.acdd/workflows/default.yaml` to tailor commands, roles, and review contours to your technology stack:
 
 ```yaml
 version: 2
@@ -392,8 +395,8 @@ gates_patch:
 ```
 
 > [!TIP]
-> Always validate custom profiles using `acdd validate .acdd/profile.yaml`.
-> See [ACDD Architecture & Default Profile Guide](docs/reference/acdd.md) and [ACDD Profiles Reference](docs/reference/profiles.md) for gate mechanics and inheritance details, or inspect [`skills/acdd/references/acdd_profile.yaml.example`](skills/acdd/references/acdd_profile.yaml.example) for a standalone `inherit: none` template.
+> Always validate custom workflows using `acdd validate .acdd/workflows/default.yaml`.
+> See [ACDD Architecture & Default Workflow Guide](docs/reference/acdd.md) and [ACDD Workflows Reference](docs/reference/workflows.md) for gate mechanics and inheritance details, or inspect [`skills/acdd/references/acdd_workflow.yaml.example`](skills/acdd/references/acdd_workflow.yaml.example) for a standalone `inherit: none` template.
 
 ---
 
@@ -446,7 +449,7 @@ Place an `AGENTS.md` in your repository root based on [`skills/acdd/references/a
 1. **Mandatory MCP Navigation**: Instruct agents to use `code_map_*`, `ast_grep_search`, and `acdd_read` for code exploration.
 2. **Direct Single-Shot Symbol Reads**: Direct agents to call `acdd_read(selector="SymbolName")` directly when a symbol name is known, avoiding multi-step search grep calls.
 3. **State & Blackboard Context**: Route lifecycle state through `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, and mandate posting technical notes, findings, and blockers to `acdd_blackboard`.
-4. **Verification Seams**: Point agents to the active `.acdd/profile.yaml` and `TESTS.md` for exact verification commands.
+4. **Verification Seams**: Point agents to the active `.acdd/workflows/default.yaml` and `TESTS.md` for exact verification commands.
 
 ### Configuring IDE / Agent Platform Rules
 
@@ -526,14 +529,14 @@ ACDD marks the section with `is_invariant: true` and connects it to the governed
 
 ## 7. Working with Runs, Specs, Plans, and Workflows
 
-Stateful execution uses the flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` (`version: 2`).
+Stateless specification discovery and scaffolding (`acdd draft`, `acdd roadmap`, `acdd validate`) run via `crates/acdd-spec` under `SubsystemId::Spec` without creating `.acdd/state.sqlite`, while stateful execution (`acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd run`) persists runs and gate transitions in `.acdd/state.sqlite` under `WorkflowDef` (`version: 2`).
 
 ### Spec & Run Lifecycle
 
 #### 1. Drafting and Starting a Run
 
 ```bash
-# Draft the next sequentially numbered spec in a configured collection (e.g. milestones or plans)
+# Draft the next sequentially numbered spec in a configured specs: entry (e.g. milestones or plans)
 acdd draft milestones auth-refactor --prefix AC --title "Refactor Auth Pipeline"
 
 # Start a worktree-isolated run from an existing spec manifest:
@@ -604,6 +607,6 @@ acdd submit handoff --action pass
 
 ### In-Place Plans, Standalone Workflows, and Plugin Tools
 
-- **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/PLAN-001-cache-rollout.md --in-place` (or select a `git.isolation: in_place` profile via `profile:` / `specs.plans.profile`). `--in-place` neutralizes `save: commit` to `none` so work runs cleanly in the current checkout.
-- **Audit, Spec Planning & Custom Profiles (`audit`, `spec_planning`, `.acdd/profiles/*.yaml`)**: Start read-only audits via `acdd start --goal "Audit auth paths" --profile audit` (writing reports to `.acdd/reports/<run_name>.md` on `triage` pass), draft/review specs or plans via `acdd start --goal "Plan <feature>" --profile spec_planning`, or run custom profile files with `--profile <name>`.
+- **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/PLAN-001-cache-rollout.md --in-place` (or select a `git.isolation: in_place` workflow via `workflow:` / `specs.plans.workflow`). `--in-place` neutralizes `save: commit` to `none` so work runs cleanly in the current checkout.
+- **Audit, Spec Planning & Custom Workflows (`.acdd/workflows/*.yaml`)**: Copy `audit.yaml` or `spec_planning.yaml` from `skills/acdd/references/acdd-workflow-examples/` into `.acdd/workflows/` and start read-only audits via `acdd start --goal "Audit auth paths" --workflow audit` (writing reports to `.acdd/reports/<run_name>.md` on `triage` pass), draft/review specs or plans via `acdd start --goal "Plan <feature>" --workflow spec_planning`, or run any custom workflow file with `--workflow <name_or_path>`.
 - **External `DomainProvider` Plugin Tools**: Invoke registered plugin tools from CLI via `acdd tool <domain>_<name> --args '{"key":"value"}'` or directly over MCP.

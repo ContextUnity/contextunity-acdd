@@ -3,10 +3,11 @@ use super::super::{
     server::{primary_workspace_root_for, Server},
 };
 use crate::format::{OperationKind, OutputFormat};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::response::ResponsePolicy;
 use acdd_index::scanner;
-use acdd_state::types::{BlackboardStatus, BlackboardTopic, RunStatus, SubtaskStatus};
+use acdd_spec::SubtaskStatus;
+use acdd_state::types::{BlackboardStatus, BlackboardTopic, RunStatus};
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, ContextReq, ExtendScopeReq, ListReq,
     NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, SnapshotReq, StartReq, StateCommand,
@@ -34,7 +35,7 @@ struct StateCallContext<'a> {
 }
 
 impl StateCallContext<'_> {
-    fn execute_query(&self, query: StateQuery) -> Result<StateQueryOutput, StateError> {
+    fn execute_query(&self, query: StateQuery) -> Result<StateQueryOutput, AcddError> {
         crate::state_bridge::execute_state_query(
             self.workspace_root,
             self.target_root,
@@ -46,7 +47,7 @@ impl StateCallContext<'_> {
         )
     }
 
-    fn execute_command(&self, cmd: StateCommand) -> Result<StateCommandOutput, StateError> {
+    fn execute_command(&self, cmd: StateCommand) -> Result<StateCommandOutput, AcddError> {
         crate::state_bridge::execute_state_command(
             self.workspace_root,
             self.target_root,
@@ -59,23 +60,23 @@ impl StateCallContext<'_> {
     }
 }
 
-fn require_present<T>(value: Option<T>, field: &str, action: &str) -> Result<T, StateError> {
+fn require_present<T>(value: Option<T>, field: &str, action: &str) -> Result<T, AcddError> {
     value.ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("'{field}' is required for action '{action}'"),
         )
     })
 }
 
-fn require_field(value: Option<String>, field: &str, action: &str) -> Result<String, StateError> {
+fn require_field(value: Option<String>, field: &str, action: &str) -> Result<String, AcddError> {
     require_present(value.filter(|s| !s.trim().is_empty()), field, action)
 }
 
 fn build_state_command_from_input(
     p: StateInput,
     explicit_worktree: Option<PathBuf>,
-) -> std::result::Result<StateCommand, StateError> {
+) -> std::result::Result<StateCommand, AcddError> {
     let run = p.run;
     match p.action {
         McpStateAction::Snapshot => Ok(StateCommand::Snapshot(SnapshotReq {
@@ -107,7 +108,7 @@ fn build_state_command_from_input(
                 spec_path: p.spec_path,
                 goal: p.goal,
                 run_name: p.run_name,
-                profile: p.profile,
+                workflow: p.workflow,
                 scope: p.scope.unwrap_or_default(),
                 target_base: p.target_base,
                 worktree: create_wt,
@@ -119,8 +120,8 @@ fn build_state_command_from_input(
             let node = require_field(p.node, "node", "extend_scope")?;
             let paths = p.paths.unwrap_or_default();
             if paths.is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     "'paths' must be non-empty for action 'extend_scope'",
                 ));
             }
@@ -144,7 +145,7 @@ fn build_state_command_from_input(
         }
         McpStateAction::Sync => Ok(StateCommand::Sync(SyncReq {
             run,
-            rebind_profile: p.rebind_profile.unwrap_or(false),
+            rebind_workflow: p.rebind_workflow.unwrap_or(false),
         })),
         McpStateAction::Subtask => {
             let task_ref = require_present(p.task_ref, "task_ref", "subtask")?;
@@ -179,7 +180,7 @@ fn build_state_command_from_input(
     }
 }
 
-fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery, StateError> {
+fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery, AcddError> {
     let run = p.run;
     match p.action {
         McpStateAction::Status => Ok(StateQuery::Status(StatusReq { run })),
@@ -232,7 +233,7 @@ async fn run_state_blocking(
         };
         if let Some(message) = acdd_core::subsystems::disabled_tool_error(title, &adapter.modules) {
             return response::state_result(
-                Err(StateError::new(ErrorCode::FeatureDisabled, message).into()),
+                Err(AcddError::new(ErrorCode::FeatureDisabled, message).into()),
                 &adapter.response,
                 output_format,
                 title,

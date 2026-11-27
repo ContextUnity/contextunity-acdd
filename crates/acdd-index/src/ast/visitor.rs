@@ -1481,11 +1481,7 @@ fn merge_previous_scope_flow(
 
 fn write_scope_bindings(node: &mut Node, state: &VisitState<'_, '_>, bindings: ScopeBindings) {
     if state.flows.is_some() {
-        crate::typed_facts::NodeSemanticEntry::set_bindings(
-            node,
-            bindings.all,
-            bindings.rebindings,
-        );
+        node.set_bindings(bindings.all, bindings.rebindings);
         return;
     }
     set_optional_json_detail(

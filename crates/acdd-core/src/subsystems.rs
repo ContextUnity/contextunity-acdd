@@ -1,4 +1,4 @@
-//! Typed registries shared by ACDD profiles and workspace adapters.
+//! Typed registries shared by ACDD workflows and workspace adapters.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +13,8 @@ pub enum SubsystemId {
     Code,
     /// Documentation indexing and lookup subsystem (`docs`).
     Docs,
+    /// Specification discovery, validation, drafting, and static roadmap subsystem (`spec`).
+    Spec,
     /// Task state machine and run lifecycle subsystem (`state`, alias `acdd`).
     State,
     /// Shared run blackboard subsystem (`blackboard`).
@@ -23,9 +25,10 @@ pub enum SubsystemId {
 
 impl SubsystemId {
     /// All canonical built-in subsystem identifiers in stable declaration order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Code,
         Self::Docs,
+        Self::Spec,
         Self::State,
         Self::Blackboard,
         Self::Memory,
@@ -36,6 +39,7 @@ impl SubsystemId {
         match self {
             Self::Code => "code",
             Self::Docs => "docs",
+            Self::Spec => "spec",
             Self::State => "state",
             Self::Blackboard => "blackboard",
             Self::Memory => "memory",
@@ -47,7 +51,7 @@ impl SubsystemId {
         match self {
             Self::Code => &["codemap"],
             Self::State => &["acdd"],
-            Self::Docs | Self::Blackboard | Self::Memory => &[],
+            Self::Docs | Self::Spec | Self::Blackboard | Self::Memory => &[],
         }
     }
 
@@ -70,6 +74,7 @@ impl FromStr for SubsystemId {
         match s {
             "code" | "codemap" => Ok(Self::Code),
             "docs" => Ok(Self::Docs),
+            "spec" => Ok(Self::Spec),
             "state" | "acdd" => Ok(Self::State),
             "blackboard" => Ok(Self::Blackboard),
             "memory" => Ok(Self::Memory),
@@ -78,18 +83,20 @@ impl FromStr for SubsystemId {
     }
 }
 
-/// Built-in subsystem presets for the MCP tool surface.
+/// Built-in three-layer subsystem presets for `acdd.yaml` `preset:`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SubsystemPreset {
-    /// Enable every active built-in subsystem.
+    /// Enable every active built-in subsystem (`code`, `docs`, `spec`, `state`, `blackboard`).
     #[default]
     Full,
-    /// Enable code navigation and documentation tools.
-    Navigator,
-    /// Enable task orchestration and blackboard tools.
-    Orchestrator,
-    /// Enable no module-owned tools; `acdd_guide` remains available as a core tool.
+    /// Enable code navigation and documentation tools (`code`, `docs`).
+    Index,
+    /// Enable stateless specification commands and documentation tools (`spec`, `docs`).
+    Spec,
+    /// Enable task orchestration, blackboard, and specification tools (`state`, `blackboard`, `spec`).
+    State,
+    /// Enable no module-owned tools; `acdd_read` and `acdd_guide` remain available as core tools.
     Minimal,
 }
 
@@ -97,13 +104,13 @@ pub enum SubsystemPreset {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubsystemRegistry {
-    /// Named built-in profile used when no per-subsystem override is present.
-    pub profile: SubsystemPreset,
+    /// Named built-in preset used when no per-subsystem override is present.
+    pub preset: SubsystemPreset,
     /// Explicitly enabled subsystem identifiers.
     pub enabled: BTreeSet<String>,
     /// Explicitly disabled subsystem identifiers.
     pub disabled: BTreeSet<String>,
-    /// Subsystems required by the active profile.
+    /// Subsystems required by the active workflow.
     pub required: BTreeSet<String>,
     /// Enablement toggles for external `DomainProvider` plugins (`domains.<name>`).
     pub domains: BTreeMap<String, bool>,
@@ -112,7 +119,7 @@ pub struct SubsystemRegistry {
 impl Default for SubsystemRegistry {
     fn default() -> Self {
         Self {
-            profile: SubsystemPreset::Full,
+            preset: SubsystemPreset::Full,
             enabled: BTreeSet::new(),
             disabled: BTreeSet::new(),
             required: BTreeSet::new(),
@@ -144,7 +151,7 @@ impl SubsystemRegistry {
         }
         if let Some(name) = self.required.iter().find(|name| !self.is_enabled(name)) {
             anyhow::bail!(
-                "FEATURE_REQUIRED_BY_PROFILE: ACDD subsystem '{name}' is required but disabled"
+                "FEATURE_REQUIRED_BY_PRESET: ACDD subsystem '{name}' is required but disabled"
             );
         }
         Ok(())
@@ -161,11 +168,15 @@ impl SubsystemRegistry {
             // Reserved slot for AC-006; inactive unless explicitly enabled.
             return false;
         }
-        match self.profile {
+        match self.preset {
             SubsystemPreset::Full => true,
-            SubsystemPreset::Navigator => matches!(id, SubsystemId::Code | SubsystemId::Docs),
-            SubsystemPreset::Orchestrator => {
-                matches!(id, SubsystemId::State | SubsystemId::Blackboard)
+            SubsystemPreset::Index => matches!(id, SubsystemId::Code | SubsystemId::Docs),
+            SubsystemPreset::Spec => matches!(id, SubsystemId::Spec | SubsystemId::Docs),
+            SubsystemPreset::State => {
+                matches!(
+                    id,
+                    SubsystemId::State | SubsystemId::Blackboard | SubsystemId::Spec
+                )
             }
             SubsystemPreset::Minimal => false,
         }
@@ -267,6 +278,7 @@ mod tests {
             ("code", Some(SubsystemId::Code)),
             ("codemap", Some(SubsystemId::Code)),
             ("docs", Some(SubsystemId::Docs)),
+            ("spec", Some(SubsystemId::Spec)),
             ("state", Some(SubsystemId::State)),
             ("acdd", Some(SubsystemId::State)),
             ("blackboard", Some(SubsystemId::Blackboard)),
@@ -359,5 +371,32 @@ mod tests {
         assert!(reg.is_enabled("memory"));
         assert!(reg.is_domain_enabled("http"));
         assert!(!reg.is_domain_enabled("sql"));
+
+        // Three-layer presets matrix (`full`, `index`, `spec`, `state`, `minimal`).
+        let preset_cases: &[(SubsystemPreset, [bool; 5])] = &[
+            // [code, docs, spec, state, blackboard]
+            (SubsystemPreset::Full, [true, true, true, true, true]),
+            (SubsystemPreset::Index, [true, true, false, false, false]),
+            (SubsystemPreset::Spec, [false, true, true, false, false]),
+            (SubsystemPreset::State, [false, false, true, true, true]),
+            (
+                SubsystemPreset::Minimal,
+                [false, false, false, false, false],
+            ),
+        ];
+        for &(preset, expected) in preset_cases {
+            let r = SubsystemRegistry {
+                preset,
+                ..Default::default()
+            };
+            let actual = [
+                r.is_subsystem_enabled(SubsystemId::Code),
+                r.is_subsystem_enabled(SubsystemId::Docs),
+                r.is_subsystem_enabled(SubsystemId::Spec),
+                r.is_subsystem_enabled(SubsystemId::State),
+                r.is_subsystem_enabled(SubsystemId::Blackboard),
+            ];
+            assert_eq!(actual, expected, "preset {preset:?}");
+        }
     }
 }

@@ -5,13 +5,13 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let (workspace, harness) = McpTestHarness::with_files(&[
         (
             "acdd.yaml",
-            "profile: full\nmodules: {state: true, blackboard: true}\n",
+            "preset: full\nmodules: {state: true, blackboard: true}\n",
         ),
         (".gitignore", ".acdd/\n"),
         ("src/lib.rs", "original\n"),
         ("docs/milestones/010-snapshot.md", "---\nid: m-snapshot\ntitle: Snapshot\ndoc_type: milestone\nstatus: active\n---\n# Snapshot\n\n### task: snap-task\n```yaml\ntask_ref: snap-task\ntarget: Snapshot\nscope: [src/lib.rs]\n```\n"),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: verify\n          role: worker\n          proof: none\n",
         ),
     ]);
@@ -92,7 +92,7 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
         .expect_err("snapshot_action is required");
     let missing_text = missing.to_string();
     assert!(
-        missing_text.contains("ACDD_PROFILE_SCHEMA_INVALID")
+        missing_text.contains("ACDD_WORKFLOW_SCHEMA_INVALID")
             && missing_text.contains("'snapshot_action' is required for action 'snapshot'"),
         "{missing_text}"
     );

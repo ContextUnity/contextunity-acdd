@@ -23,7 +23,7 @@ Milestones use a 2-letter domain prefix and a 3-digit sequence number (`TAG-NNN-
 
 | Domain Prefix | Domain Name | Scope & Responsibilities | Range |
 | :--- | :--- | :--- | :--- |
-| **`AC`** | **ACDD & State Engine** | Unified `GateProfile`/`Run` engine (`acdd-state`), SPI (`acdd-core`), observability, memory, triggers | `AC-001` .. `AC-999` |
+| **`AC`** | **ACDD & State Engine** | Unified `WorkflowDef`/`Run` engine (`acdd-state`), SPI (`acdd-core`), observability, memory, triggers | `AC-001` .. `AC-999` |
 | **`LS`** | **Language Semantics** | Tree-sitter parsers, AST extraction, declarative framework packs, linker | `LS-001` .. `LS-999` |
 | **`PF`** | **Performance & Storage** | Cold-build throughput, SQLite compaction, latency budgets, index memory | `PF-001` .. `PF-999` |
 | **`AR`** | **Architecture & Modularity** | Engine architecture, traits (`LanguageLinker`), crate decoupling | `AR-001` .. `AR-999` |
@@ -68,7 +68,7 @@ required_skills:
 ---
 ```
 
-Frontmatter must strictly declare only fields supported by `SpecFrontmatter` (`id`, `title`, `doc_type`, `profile`, `status`, `cancellation_reason`, `spec`, `depends_on`, `owners`, `invariants`, `acceptance_criteria`, `guidance`, `required_skills`, `repositories`, `linked_to`, `closure`). Unknown fields fail `acdd validate`.
+Frontmatter must strictly declare only fields supported by `SpecFrontmatter` (`id`, `title`, `doc_type`, `workflow`, `status`, `cancellation_reason`, `spec`, `depends_on`, `owners`, `invariants`, `acceptance_criteria`, `guidance`, `required_skills`, `repositories`, `linked_to`, `closure`). Unknown fields fail `acdd validate`.
 
 ### 2. Task Blocks and Scope Boundaries
 
@@ -96,10 +96,10 @@ subtasks:
 
 - **`depends_on:` (Topological Waves)**: Waves are strictly formed by the dependency DAG (`depends_on: [...]`). Tasks with empty `depends_on: []` execute in Wave 0; tasks depending solely on Wave 0 run concurrently in Wave 1 under `git.isolation: worktree`.
 - **`scope:` and `extended_scope:` (Files)**: `scope` is the admitted baseline. Workers add paths via `acdd extend-scope <node> --path <glob> --reason "..."` (or `acdd_state(action: "extend_scope")`), which increments `contract_revision` in `.acdd/state.sqlite` until terminal archival writes `extended_scope` into the archived spec.
-- **`tags:` and `when:`**: Task blocks default to `tags: [default]`; `when:` expressions in `GateProfile` (`version: 2`) select conditional gates based on task tags.
+- **`tags:` and `when:`**: Task blocks default to `tags: [default]`; `when:` expressions in `WorkflowDef` (`version: 2`) select conditional gates based on task tags.
 
 ### 3. Review & Verification Governance
 
-- **Gate progression**: The resolved `GateProfile` (`version: 2`) defines root gates, `- tasks:` gates, `pass:`/`fail:`/`fail_drift:` edges, `need:` candidate tree parity checks, and `DomainProvider` capabilities (`call:`, `checks:`, `context:`).
+- **Gate progression**: The resolved `WorkflowDef` (`version: 2`) defines root gates, `- tasks:` gates, `pass:`/`fail:`/`fail_drift:` edges, `need:` candidate tree parity checks, and `DomainProvider` capabilities (`call:`, `checks:`, `context:`).
 - **Reuse-first & complexity escalation**: During synthesis, build, and polish, audit canonical owners (`INV-SINGLE-OWNER`), reuse existing shared abstractions, and record justification or escalate via `acdd_blackboard` (`topic: decisions` or `blockers`) before introducing any new subsystem, shadow resolver, narrow string heuristic, or disproportionate defect-fix complexity growth.
 - **Review and escalation**: Independent reviewers (`independent_from`) evaluate every configured contour (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`) using typed `ReviewEvidence` (`--evidence`) or reject with structured `RejectionFindings` (`--findings`). Builders refute ADR- or contract-contradicting findings via `acdd_blackboard` (`topic: decisions`) citing `file:line` proof (`REBUTTAL OVER BLIND REWRITE`), while reviewers reject only on concrete contract/invariant violations or reproducible defects (`BURDEN OF PROOF`).

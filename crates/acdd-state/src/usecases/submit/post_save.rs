@@ -10,7 +10,6 @@ use crate::git_ops::worktree::{
     cleanup_locked_refs, lock_cleanup_repos, try_lock_secondary_repo, RepoWorktreeLayout,
 };
 use crate::machine::{plan_container_blackboard_cleanup, MachineGateDef};
-use crate::spec::{is_safe_path_segment_id, render_archive_markdown};
 use crate::store::traits::StateBackend;
 use crate::types::{
     BlackboardListReq, BlackboardRecord, BlackboardStatus, BlackboardTopic, GateNodeRecord,
@@ -22,11 +21,12 @@ use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
     compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child, is_normalized_relative};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, SubtaskRef, TreeOid};
 use acdd_core::path_policy::{has_json_extension, WorkspacePathPolicy};
 use acdd_core::subsystems::SubsystemId;
+use acdd_spec::{is_safe_path_segment_id, render_archive_markdown};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -52,7 +52,7 @@ pub(super) fn execute_post_save_git(
     now_utc: &str,
     req: &SubmitReq,
     policy: &WorkspacePathPolicy,
-) -> Result<PersistPostSaveOutcome, StateError> {
+) -> Result<PersistPostSaveOutcome, AcddError> {
     let should_commit = machine_gate.save.post == SaveAction::Commit;
     let should_snapshot = machine_gate.save.post == SaveAction::Snapshot;
     let snapshot_task = node
@@ -88,15 +88,15 @@ pub(super) fn execute_post_save_git(
     // Pre-validate report destination confinement and serialization BEFORE any Git mutation.
     if let Some(ref rel) = report_rel {
         let dest = checked_child(primary, Path::new(rel)).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid confined save.report path '{rel}': {err}"),
             )
         })?;
         match std::fs::symlink_metadata(&dest) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!(
                         "save.report target '{}' must be a regular file",
                         dest.display()
@@ -106,8 +106,8 @@ pub(super) fn execute_post_save_git(
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed inspecting save.report '{}': {err}", dest.display()),
                 ));
             }
@@ -129,8 +129,8 @@ pub(super) fn execute_post_save_git(
 
     let (committed_oid, archive_path) = if machine_gate.save.archive && !snapshot.run.is_ephemeral {
         let spec_rel = snapshot.run.spec_path.as_deref().ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 "non-ephemeral run missing spec_path for archive",
             )
         })?;
@@ -155,7 +155,7 @@ pub(super) fn execute_post_save_git(
         if should_commit {
             let branch = current_branch_name(target_worktree)?;
             if is_protected_main_branch(branch.as_deref()) && !req.allow_main {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::MainBranchProtected,
                     format!(
                         "refusing archive commit onto protected branch '{}' without --allow-main",
@@ -186,7 +186,7 @@ pub(super) fn execute_post_save_git(
     } else if should_commit {
         let branch = current_branch_name(target_worktree)?;
         if is_protected_main_branch(branch.as_deref()) && !req.allow_main {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::MainBranchProtected,
                 format!(
                     "refusing scoped commit onto protected branch '{}' without --allow-main",
@@ -275,7 +275,7 @@ fn expand_report_relpath(
     node: &GateNodeRecord,
     protected_paths: &[String],
     policy: &WorkspacePathPolicy,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     let spec_id = snapshot.run.spec_id.as_deref().unwrap_or("goal");
     for (label, value) in [
         ("run_id", snapshot.run.run_id.as_str()),
@@ -284,8 +284,8 @@ fn expand_report_relpath(
         ("spec_id", spec_id),
     ] {
         if !is_safe_path_segment_id(value) || value.contains(['{', '}']) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "gate '{}' cannot expand unsafe save.report placeholder '{{{label}}}' = '{value}'",
                     node.gate_id
@@ -305,8 +305,8 @@ fn expand_report_relpath(
         || !is_normalized_relative(Path::new(&rendered))
         || !policy.is_valid_report_path(&rendered, protected_paths)
     {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "gate '{}' rendered invalid or prohibited save.report path '{rendered}'",
                 node.gate_id
@@ -330,10 +330,10 @@ fn materialize_report_file(
     committed_oid: Option<&CommitOid>,
     now_utc: &str,
     req: &SubmitReq,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     let dest = checked_child(primary, Path::new(report_rel)).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid confined save.report path '{report_rel}': {err}"),
         )
     })?;
@@ -351,8 +351,8 @@ fn materialize_report_file(
         req,
     )?;
     atomic_write(&dest, &bytes, false).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to write save.report '{}': {err}", dest.display()),
         )
     })?;
@@ -372,7 +372,7 @@ fn render_gate_report(
     committed_oid: Option<&CommitOid>,
     now_utc: &str,
     req: &SubmitReq,
-) -> Result<Vec<u8>, StateError> {
+) -> Result<Vec<u8>, AcddError> {
     let proof_value = req.custom_evidence.clone().or_else(|| {
         req.review_evidence
             .as_ref()
@@ -430,8 +430,8 @@ fn render_gate_report(
             "blackboard": highlights,
         });
         let text = serde_json::to_string_pretty(&payload).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to serialize save.report JSON: {err}"),
             )
         })?;
@@ -510,7 +510,7 @@ pub(super) fn list_all_blackboard_items(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     run_id: &RunId,
-) -> Result<Vec<BlackboardRecord>, StateError> {
+) -> Result<Vec<BlackboardRecord>, AcddError> {
     if !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(Vec::new());
     }
@@ -542,7 +542,7 @@ pub(super) fn attach_container_blackboard_cleanup(
     node: &GateNodeRecord,
     machine_gate: &MachineGateDef,
     plan: &mut TransitionPlan,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if !machine_gate.receipt || !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(());
     }
@@ -629,7 +629,7 @@ mod tests {
             state_db_override: None,
             code_db_path: None,
             spec_collections: BTreeMap::new(),
-            profiles_dirs: Vec::new(),
+            workflows_dirs: Vec::new(),
             linked_workspaces: BTreeMap::new(),
             modules: SubsystemRegistry::default(),
             response_policy: ResponsePolicy::default(),

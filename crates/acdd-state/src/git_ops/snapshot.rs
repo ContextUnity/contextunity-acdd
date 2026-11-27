@@ -4,7 +4,7 @@ use super::exec::{
     collect_included_z_paths, create_scoped_temp_dir, run_git_checked, run_git_stdout,
 };
 use crate::types::IsolationMode;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::fs::{atomic_replace, checked_child, open_confined};
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
@@ -42,17 +42,17 @@ impl TemporaryGitIndex {
         }
     }
 
-    pub(super) fn create_temp(worktree: &Path) -> Result<(Self, ScopedTempDir), StateError> {
+    pub(super) fn create_temp(worktree: &Path) -> Result<(Self, ScopedTempDir), AcddError> {
         let dir = create_scoped_temp_dir("acdd-idx")?;
         let index_path = dir.path().join("index");
         Ok((Self::new(worktree.to_path_buf(), index_path), dir))
     }
 
     /// Populate this temporary index from `tree_or_head` (`git read-tree`).
-    pub fn read_tree(&self, tree_or_head: &str) -> Result<(), StateError> {
+    pub fn read_tree(&self, tree_or_head: &str) -> Result<(), AcddError> {
         if let Some(parent) = self.index_path.parent() {
             fs::create_dir_all(parent).map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
                         "failed to prepare temporary index directory '{}': {err}",
@@ -83,17 +83,17 @@ impl TemporaryGitIndex {
     }
 
     /// Write the current temporary index contents to a Git tree object (`git write-tree`).
-    pub fn write_tree(&self) -> Result<TreeOid, StateError> {
+    pub fn write_tree(&self) -> Result<TreeOid, AcddError> {
         let oid = run_git_stdout(
             &self.worktree,
             &["write-tree"],
             Some(&self.index_path),
             ErrorCode::ExternalGitDrift,
         )?;
-        TreeOid::new(oid).map_err(StateError::from)
+        TreeOid::new(oid).map_err(AcddError::from)
     }
 
-    fn update_paths(&self, prefix_args: &[&str], paths: &[String]) -> Result<(), StateError> {
+    fn update_paths(&self, prefix_args: &[&str], paths: &[String]) -> Result<(), AcddError> {
         for chunk in paths.chunks(200) {
             let mut args: Vec<String> = prefix_args.iter().map(|s| (*s).to_owned()).collect();
             for path in chunk {
@@ -111,11 +111,11 @@ impl TemporaryGitIndex {
         Ok(())
     }
 
-    pub(super) fn stage_paths(&self, paths: &[String]) -> Result<(), StateError> {
+    pub(super) fn stage_paths(&self, paths: &[String]) -> Result<(), AcddError> {
         self.update_paths(&["add", "-f", "--"], paths)
     }
 
-    pub(super) fn remove_paths(&self, paths: &[String]) -> Result<(), StateError> {
+    pub(super) fn remove_paths(&self, paths: &[String]) -> Result<(), AcddError> {
         self.update_paths(
             &["rm", "--cached", "--quiet", "--ignore-unmatch", "--"],
             paths,
@@ -126,7 +126,7 @@ impl TemporaryGitIndex {
 pub(super) fn list_stage_entries(
     worktree: &Path,
     index_file: Option<&Path>,
-) -> Result<BTreeMap<String, (String, String)>, StateError> {
+) -> Result<BTreeMap<String, (String, String)>, AcddError> {
     let out = run_git_checked(
         worktree,
         &["ls-files", "--cached", "--stage", "-z"],
@@ -148,7 +148,7 @@ pub(super) fn list_stage_entries(
     Ok(entries)
 }
 
-pub(super) fn list_untracked_entries(worktree: &Path) -> Result<Vec<String>, StateError> {
+pub(super) fn list_untracked_entries(worktree: &Path) -> Result<Vec<String>, AcddError> {
     let out = run_git_checked(
         worktree,
         &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -169,10 +169,10 @@ pub(super) fn guard_candidate_path(
     rel_path: &str,
     index_mode: Option<&str>,
     path_policy: &WorkspacePathPolicy,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let relative = Path::new(rel_path);
     let invalid = |reason: &str| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("candidate '{rel_path}': {reason}"),
         )
@@ -249,7 +249,7 @@ pub fn current_scope_tree(
     worktree: &Path,
     scope: Option<&[String]>,
     path_policy: &WorkspacePathPolicy,
-) -> Result<TreeOid, StateError> {
+) -> Result<TreeOid, AcddError> {
     let staged = list_stage_entries(worktree, None)?;
     let untracked = list_untracked_entries(worktree)?;
 
@@ -267,7 +267,7 @@ pub fn current_scope_tree(
             let admitted = path_policy.is_candidate_included(&norm)
                 && scope.is_none_or(|s| path_policy.is_scope_admitted(&norm, s));
             if admitted {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
                         "nested git repository/submodule '{norm}' is not permitted in snapshot/commit scope"
@@ -314,7 +314,7 @@ pub(crate) fn snapshot_prefix(run: &RunId, task: Option<&TaskRef>) -> String {
     prefix
 }
 
-pub(crate) fn validate_snapshot_label(raw: &str) -> Result<(), StateError> {
+pub(crate) fn validate_snapshot_label(raw: &str) -> Result<(), AcddError> {
     ((1..=64).contains(&raw.len())
         && raw != "_adhoc"
         && !raw.starts_with('.')
@@ -326,17 +326,17 @@ pub(crate) fn validate_snapshot_label(raw: &str) -> Result<(), StateError> {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-')))
     .then_some(())
     .ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid snapshot name '{raw}'"),
         )
     })
 }
 
-pub(crate) fn parse_older_than(raw: &str) -> Result<u64, StateError> {
+pub(crate) fn parse_older_than(raw: &str) -> Result<u64, AcddError> {
     let bad = || {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid duration '{raw}'"),
         )
     };
@@ -361,7 +361,7 @@ pub(crate) fn parse_older_than(raw: &str) -> Result<u64, StateError> {
 pub(crate) fn list_snapshot_refs(
     worktree: &Path,
     prefix: &str,
-) -> Result<Vec<(String, i64)>, StateError> {
+) -> Result<Vec<(String, i64)>, AcddError> {
     Ok(run_git_stdout(
         worktree,
         &[
@@ -392,7 +392,7 @@ pub(crate) fn save_task_snapshot(
     reference: &str,
     tree: &TreeOid,
     create_only: bool,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let code = ErrorCode::ExternalGitDrift;
     let commit = run_git_stdout(
         worktree,
@@ -425,7 +425,7 @@ pub(crate) fn restore_task_snapshot(
     revision: Option<u32>,
     scope: Option<&[String]>,
     policy: &WorkspacePathPolicy,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     let code = ErrorCode::ExternalGitDrift;
     let reference = if let Some(rev) = revision {
         format!("{prefix}r{rev}")
@@ -438,7 +438,7 @@ pub(crate) fn restore_task_snapshot(
             .unwrap_or_default()
     };
     if reference.is_empty() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             code,
             format!("no snapshot ref found under {prefix}"),
         ));
@@ -474,9 +474,9 @@ pub(crate) fn restore_task_snapshot(
         let raw = records
             .next()
             .and_then(|p| std::str::from_utf8(p).ok())
-            .ok_or_else(|| StateError::new(code, "snapshot path must be UTF-8"))?;
+            .ok_or_else(|| AcddError::new(code, "snapshot path must be UTF-8"))?;
         if normalize_rel_path(raw).as_deref() != Some(raw) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 code,
                 format!("snapshot path '{raw}' is not normalized"),
             ));
@@ -496,7 +496,7 @@ pub(crate) fn restore_task_snapshot(
             Err(err) => return Err(snapshot_path_error(raw, err)),
         };
         if dest_meta.as_ref().is_some_and(|m| !m.is_file()) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 code,
                 format!("snapshot destination '{raw}' is not a regular file"),
             ));
@@ -509,7 +509,7 @@ pub(crate) fn restore_task_snapshot(
                 writes.push(0);
             }
             _ => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     code,
                     format!("snapshot entry '{raw}' is not a regular file"),
                 ))
@@ -588,14 +588,14 @@ fn rollback_snapshot_path(worktree: &Path, raw: &str, backup: Option<&Path>) -> 
     Ok(())
 }
 
-fn snapshot_path_error(path: impl std::fmt::Display, err: std::io::Error) -> StateError {
-    StateError::new(
+fn snapshot_path_error(path: impl std::fmt::Display, err: std::io::Error) -> AcddError {
+    AcddError::new(
         ErrorCode::ExternalGitDrift,
         format!("cannot update '{path}': {err}"),
     )
 }
 
-pub(crate) fn remove_confined_file(worktree: &Path, rel_path: &str) -> Result<(), StateError> {
+pub(crate) fn remove_confined_file(worktree: &Path, rel_path: &str) -> Result<(), AcddError> {
     let target = checked_child(worktree, Path::new(rel_path))
         .map_err(|err| snapshot_path_error(rel_path, err))?;
     match fs::remove_file(&target) {
@@ -621,12 +621,12 @@ pub fn diff_scope_changed_paths(
     baseline_commit: Option<&CommitOid>,
     claim_tree: Option<&TreeOid>,
     path_policy: &WorkspacePathPolicy,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let mut changed = BTreeSet::new();
     match isolation {
         IsolationMode::Worktree => {
             let base = baseline_commit.ok_or_else(|| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     "missing baseline_commit for worktree scope diff",
                 )
@@ -649,7 +649,7 @@ pub fn diff_scope_changed_paths(
         }
         IsolationMode::InPlace => {
             let base_tree = claim_tree.ok_or_else(|| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     "missing claim_tree for in_place scope diff",
                 )
@@ -684,17 +684,17 @@ pub fn tree_entry_at(
     worktree: &Path,
     tree_or_commit: &str,
     rel_path: &str,
-) -> Result<Option<(String, String)>, StateError> {
+) -> Result<Option<(String, String)>, AcddError> {
     let trimmed = tree_or_commit.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid tree/commit reference '{tree_or_commit}'"),
         ));
     }
     let Some(norm) = normalize_rel_path(rel_path) else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid repository-relative path '{rel_path}'"),
         ));
     };
@@ -728,118 +728,6 @@ pub fn blob_oid_at(
     worktree: &Path,
     tree_or_commit: &str,
     rel_path: &str,
-) -> Result<Option<String>, StateError> {
+) -> Result<Option<String>, AcddError> {
     Ok(tree_entry_at(worktree, tree_or_commit, rel_path)?.map(|(_, oid)| oid))
-}
-
-/// List normalized relative file paths directly inside `dir_rel` at `tree_or_commit`.
-/// Git tree entry returned by [`list_git_tree_entries`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitTreeEntry {
-    /// Git file mode (`"100644"`, `"100755"`, `"120000"`, etc.).
-    pub mode: String,
-    /// Git blob object ID from `ls-tree`.
-    pub oid: String,
-    /// Exact raw repository-relative path bytes from `git ls-tree -z` (without `\` -> `/` rewriting).
-    pub raw_path: Vec<u8>,
-}
-
-/// Resolve `tree_or_commit` to its immutable Git tree object ID.
-pub fn resolve_git_tree_oid(worktree: &Path, tree_or_commit: &str) -> Result<String, StateError> {
-    let trimmed = tree_or_commit.trim();
-    if trimmed.is_empty() || trimmed.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("invalid tree/commit reference '{tree_or_commit}'"),
-        ));
-    }
-    let tree_spec = format!("{trimmed}^{{tree}}");
-    let oid = run_git_stdout(
-        worktree,
-        &["rev-parse", "--verify", &tree_spec],
-        None,
-        ErrorCode::ExternalGitDrift,
-    )?;
-    Ok(oid.trim().to_owned())
-}
-
-/// List blob entries (`mode`, `path`) under multiple `dir_rels` in `tree_or_commit` in one Git call.
-pub fn list_git_tree_entries_multi(
-    worktree: &Path,
-    tree_or_commit: &str,
-    dir_rels: &[&str],
-) -> Result<Vec<GitTreeEntry>, StateError> {
-    let trimmed = tree_or_commit.trim();
-    if trimmed.is_empty() || trimmed.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("invalid tree/commit reference '{tree_or_commit}'"),
-        ));
-    }
-    let mut dir_prefixes = Vec::with_capacity(dir_rels.len());
-    let mut full_tree = dir_rels.is_empty();
-    for &dir_rel in dir_rels {
-        if dir_rel.is_empty() || dir_rel == "." {
-            full_tree = true;
-            continue;
-        }
-        let stripped = dir_rel
-            .strip_prefix("./")
-            .unwrap_or(dir_rel)
-            .trim_end_matches('/');
-        if stripped.is_empty()
-            || stripped
-                .split('/')
-                .any(|s| s.is_empty() || s == "." || s == ".." || s.contains('\\'))
-        {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("invalid repository-relative directory '{dir_rel}'"),
-            ));
-        }
-        dir_prefixes.push(format!("{stripped}/"));
-    }
-    let is_hex_oid = (trimmed.len() == 40 || trimmed.len() == 64)
-        && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
-    if !is_hex_oid {
-        let tree_spec = format!("{trimmed}^{{tree}}");
-        run_git_stdout(
-            worktree,
-            &["rev-parse", "--verify", &tree_spec],
-            None,
-            ErrorCode::ExternalGitDrift,
-        )?;
-    }
-    let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", trimmed];
-    if !full_tree {
-        args.push("--");
-        args.extend(dir_prefixes.iter().map(String::as_str));
-    }
-    let out = run_git_checked(worktree, &args, None, None, ErrorCode::ExternalGitDrift)?;
-    let mut entries = Vec::new();
-    for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
-            continue;
-        };
-        let header = String::from_utf8_lossy(&record[..tab]);
-        let mut parts = header.split_whitespace();
-        let Some(mode) = parts.next() else {
-            continue;
-        };
-        let kind = parts.next();
-        if kind != Some("blob") {
-            continue;
-        }
-        let Some(oid) = parts.next() else {
-            continue;
-        };
-        entries.push(GitTreeEntry {
-            mode: mode.to_owned(),
-            oid: oid.to_owned(),
-            raw_path: record[tab + 1..].to_vec(),
-        });
-    }
-    entries.sort_by(|a, b| a.raw_path.cmp(&b.raw_path));
-    entries.dedup_by(|a, b| a.raw_path == b.raw_path);
-    Ok(entries)
 }

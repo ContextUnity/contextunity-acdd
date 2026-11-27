@@ -10,7 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-const EXEC_TEST_PROFILE: &str = r#"version: 2
+const EXEC_TEST_WORKFLOW: &str = r#"version: 2
 inherit: none
 save: none
 roles:
@@ -56,13 +56,10 @@ fn seed_exec_repo(ws: &Workspace) -> std::path::PathBuf {
     let primary = ws.root().canonicalize().unwrap();
     init_git_repo_on_branch(&primary, "main");
     git_cmd(&primary, &["config", "commit.gpgsign", "false"]);
-    ws.write(
-        "acdd.yaml",
-        "modules:\n  code: true\n  docs: true\n  state: true\n",
-    );
-    ws.write(".acdd/profile.yaml", EXEC_TEST_PROFILE);
-    git_cmd(&primary, &["add", "acdd.yaml", ".acdd/profile.yaml"]);
-    git_cmd(&primary, &["commit", "-m", "seed acdd profile"]);
+    ws.write("acdd.yaml", "preset: full\n");
+    ws.write(".acdd/workflows/default.yaml", EXEC_TEST_WORKFLOW);
+    git_cmd(&primary, &["add", "acdd.yaml", ".acdd/workflows/default.yaml"]);
+    git_cmd(&primary, &["commit", "-m", "seed acdd workflow"]);
     primary
 }
 
@@ -277,6 +274,65 @@ fn cli_dash_c_worktree_parity_and_env_inheritance() {
         &["--format", "json", "-C", wt_b_str, "clear", "--force"],
     );
     assert!(dash_c_beats_env_clear.contains(&run_b), "{dash_c_beats_env_clear}");
+
+    // Linked worktree `validate` follows primary `state_db` when primary `acdd.yaml` is valid,
+    // and still validates the worktree when primary holds a pre-cutover `WorkflowSchemaInvalid` `acdd.yaml`.
+    let (run_v, wt_v) = start_worktree_run(&primary, "run-val");
+    let wt_v_str = wt_v.to_str().unwrap();
+    fs::create_dir_all(primary.join("docs/milestones")).unwrap();
+    fs::write(
+        primary.join("docs/milestones/AC-001-base.md"),
+        "---\nid: AC-001\ntitle: Base\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: active\nscope: [src/]\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        primary.join("acdd.yaml"),
+        "preset: full\nstate_db: .acdd/primary-state.sqlite\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
+    )
+    .unwrap();
+    fs::write(
+        primary.join(".acdd/workflows/task_wf.yaml"),
+        "version: 2\ngates:\n  - tasks:\n      gates:\n        - id: build\n          command: build_check\n          proof: command\ncommands:\n  build_check: \"echo ok\"\n",
+    )
+    .unwrap();
+    let _ = acdd_ok(
+        &primary,
+        &[],
+        &[
+            "start",
+            "docs/milestones/AC-001-base.md",
+            "--workflow",
+            ".acdd/workflows/task_wf.yaml",
+            "--in-place",
+        ],
+    );
+    fs::create_dir_all(wt_v.join(".acdd/workflows")).unwrap();
+    fs::write(
+        wt_v.join(".acdd/workflows/default.yaml"),
+        "version: 2\ninherit: code\ncommands:\n  build_check: \"echo ok\"\n  verify_all: \"echo ok\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(wt_v.join("docs/milestones")).unwrap();
+    fs::write(
+        wt_v.join("docs/milestones/AC-001-base.md"),
+        "---\nid: AC-001\ntitle: Base\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: active\nscope: [src/]\nstatus: active\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        wt_v.join("acdd.yaml"),
+        "preset: full\nstate_db: .acdd/wt-other.sqlite\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
+    )
+    .unwrap();
+    let _ = acdd_ok(&primary, &[], &["-C", wt_v_str, "validate"]);
+    let _ = acdd_ok(&primary, &[], &["clear", "--force"]);
+    fs::write(
+        wt_v.join("docs/milestones/AC-001-base.md"),
+        "---\nid: AC-001\ntitle: Base\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: active\nscope: [src/]\n```\n",
+    )
+    .unwrap();
+    fs::write(primary.join("acdd.yaml"), "unknown_pre_cutover_key: 1\n").unwrap();
+    let _ = acdd_ok(&primary, &[], &["-C", wt_v_str, "validate"]);
+    let _ = run_v;
 }
 
 #[test]

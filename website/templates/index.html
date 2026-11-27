@@ -117,12 +117,12 @@
       <div class="adopt-card">
         <div class="adopt-step">Step 02 · Daily Bugfixes &amp; Features</div>
         <h4>Guardrailed Ad-Hoc Goals (<code>--goal</code>)</h4>
-        <p>Run <code>acdd start --goal "Fix retry bug" --profile hotfix</code>. Enforces write scopes, automated test checks, and independent review without authoring a spec file.</p>
+        <p>Run <code>acdd start --goal "Fix retry bug" --workflow hotfix</code> (with <code>.acdd/workflows/hotfix.yaml</code>). Enforces write scopes, automated test checks, and independent review without authoring a spec file.</p>
       </div>
       <div class="adopt-card">
         <div class="adopt-step">Step 03 · Multi-Task Features</div>
         <h4>Markdown Specs &amp; Parallel Swarms</h4>
-        <p>Scaffold numbered Markdown contracts from <code>acdd.yaml</code> <code>specs:</code> collections (<code>acdd draft milestones ...</code>) and dispatch parallel builders + reviewers inside isolated Git <code>.worktrees/</code>.</p>
+        <p>Scaffold numbered Markdown contracts from <code>acdd.yaml</code> <code>specs:</code> configurations (<code>acdd draft milestones ...</code>) and dispatch parallel builders + reviewers inside isolated Git <code>.worktrees/</code>.</p>
       </div>
     </div>
   </div>
@@ -166,23 +166,24 @@
             <span class="chrome-label">terminal · bash</span>
           </div>
           <pre><code># 1a. Everyday task: start directly from a goal (creates task `goal`)
-acdd start --goal "Fix auth parser" --profile hotfix --scope src/auth/
+acdd start --goal "Fix auth parser" --workflow hotfix --scope src/auth/
 
-# 1b. Or multi-task spec (`milestones` is a folder configured in acdd.yaml `specs:`)
+# 1b. Or multi-task spec (`milestones` is configured under `specs:` in acdd.yaml)
 acdd draft milestones auth-tokens        # -> docs/milestones/AC-001-auth-tokens.md
 acdd start docs/milestones/AC-001-auth-tokens.md --worktree
 
-# 2. Check ready cursors &amp; claim a task gate (e.g. `goal.build` or `token-parser.build`)
-acdd next
-acdd claim goal.build --worker dev-1
+# 2. Check ready cursors &amp; claim a task gate (target worktrees uniformly via -C)
+acdd -C .worktrees/AC-001-auth-tokens next
+acdd -C .worktrees/AC-001-auth-tokens claim goal.build --worker dev-1
 
-# 3. Verify scoped checks &amp; submit transition
-acdd verify goal.build --test parser_tests
-acdd submit goal.build --action pass
+# 3. Verify scoped checks (or run commands inside the worktree via `acdd exec`) &amp; submit
+acdd exec -- cargo test --test parser_tests
+acdd -C .worktrees/AC-001-auth-tokens verify goal.build --test parser_tests
+acdd -C .worktrees/AC-001-auth-tokens submit goal.build --action pass
 
 # 4. Independent review &amp; commit, or headless multi-wave runner
-acdd claim goal.review --worker rev-1
-acdd submit goal.review --action pass --evidence review.json
+acdd -C .worktrees/AC-001-auth-tokens claim goal.review --worker rev-1
+acdd -C .worktrees/AC-001-auth-tokens submit goal.review --action pass --evidence review.json
 # acdd run --jobs 4   # spawns configured role runners across waves</code></pre>
         </div>
       </div>
@@ -217,10 +218,10 @@ acdd submit goal.review --action pass --evidence review.json
     <div class="tasks-grid">
       <div class="tasks-steps">
         <div class="task-step">
-          <div class="step-badge">What is a Spec? · Collections in acdd.yaml</div>
+          <div class="step-badge">What is a Spec? · Configured in acdd.yaml</div>
           <h3>Git-tracked Markdown contracts for multi-task waves</h3>
           <p>
-            A <strong>Spec</strong> splits a large feature into <code>AC-*</code> criteria and parallel <code>### task:</code> blocks with disjoint write scopes. <code>acdd init</code> sets up <code>specs.milestones</code> (<code>docs/milestones/AC-001-...md</code>) and <code>specs.plans</code> in <code>acdd.yaml</code> — scaffold via <code>acdd draft &lt;collection&gt; &lt;slug&gt;</code>, generate via <code>--profile spec_planning</code>, or rename collections freely.
+            A <strong>Spec</strong> splits a large feature into <code>AC-*</code> criteria and parallel <code>### task:</code> blocks with disjoint write scopes (parsed by <code>crates/acdd-spec</code> across 4 library crates + 1 binary). <code>acdd init</code> sets up <code>specs.milestones</code> (<code>docs/milestones/AC-001-...md</code>) and <code>specs.plans</code> — scaffold via <code>acdd draft &lt;spec&gt; &lt;slug&gt;</code>, plan with the <code>spec_planning</code> template, or run <code>preset: spec</code> for stateless <code>validate</code>/<code>roadmap</code>/<code>draft</code> without creating <code>.acdd/state.sqlite</code>.
           </p>
         </div>
 
@@ -228,7 +229,7 @@ acdd submit goal.review --action pass --evidence review.json
           <div class="step-badge">Wave Scheduling, Snapshots &amp; Compaction</div>
           <h3>Durable state across restarts</h3>
           <p>
-            Inspect cross-run dependency waves with <code>acdd roadmap</code>, save Git checkpoints with <code>acdd snapshot</code>, expand write scopes via <code>acdd extend-scope</code>, and reload active contracts after context compaction with <code>acdd context</code>.
+            Inspect cross-run dependency waves with <code>acdd roadmap</code>, save Git checkpoints with <code>acdd snapshot</code>, expand write scopes via <code>acdd extend-scope</code>, target worktrees with <code>-C</code> / <code>acdd exec</code>, and reload active contracts after context compaction with <code>acdd context</code> (<code>--detail full</code> up to <code>32 KiB</code>).
           </p>
         </div>
       </div>
@@ -426,69 +427,69 @@ ast_pattern: 'Command::new("git")'
   </div>
 </section>
 
-<!-- 4. ACDD PROFILES -->
-<section class="section section-theme section-theme-profiles" id="profiles">
+<!-- 4. ACDD WORKFLOWS -->
+<section class="section section-theme section-theme-workflows" id="workflows">
   <div class="container">
     <div class="section-header">
-      <div class="eyebrow">04 · ACDD Profiles</div>
-      <h2>Built-in profiles, gates &amp; what agents receive in context</h2>
-      <p>Five embedded profiles out of the box — plus repository overlays you can inherit, patch, or compose for any stack.</p>
+      <div class="eyebrow">04 · ACDD Workflows</div>
+      <h2>Built-in workflows, gates &amp; what agents receive in context</h2>
+      <p>Three embedded workflows built into the binary (<code>base</code>, <code>code</code>, <code>documentation</code>) — plus ready-to-copy reference templates (<code>audit</code>, <code>spec_planning</code>, <code>hotfix</code>) and repository overlays under <code>.acdd/workflows/</code>.</p>
     </div>
 
-    <div class="profiles-list" style="margin-bottom: 34px;">
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">base</span>
-          <span class="profile-tag">worktree · save: commit</span>
+    <div class="workflows-list" style="margin-bottom: 34px;">
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">base</span>
+          <span class="workflow-tag">embedded · worktree · save: commit</span>
         </div>
-        <p>Foundation profile supplying default tool admission, protective limits, core execution/review guidance, and <code>paths</code> / <code>claims</code> / <code>administration</code> contours.</p>
+        <p>Foundation workflow supplying default tool admission, protective limits, core execution/review guidance, and <code>paths</code> / <code>claims</code> / <code>administration</code> contours.</p>
       </div>
 
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">code</span>
-          <span class="profile-tag">worktree · save: commit</span>
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">code</span>
+          <span class="workflow-tag">embedded · worktree · save: commit</span>
         </div>
         <p>Full engineering lifecycle: <code>blueprint_synthesis</code> → parallel <code>tasks.{build, review, deliver, rearchitect}</code> → <code>run_tests</code> / <code>polish</code> → <code>integration_review</code> → <code>handoff</code>.</p>
       </div>
 
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">audit</span>
-          <span class="profile-tag">in_place · save: none</span>
-        </div>
-        <p>Read-only 3-phase security &amp; correctness audit (<code>recon</code> → <code>analyze</code> → <code>triage</code>) with strict JSON Schema findings and Markdown reports under <code>.acdd/reports/</code>.</p>
-      </div>
-
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">documentation</span>
-          <span class="profile-tag">worktree · save: commit</span>
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">documentation</span>
+          <span class="workflow-tag">embedded · worktree · save: commit</span>
         </div>
         <p>Living documentation &amp; invariant workflow verifying symbol links, Markdown anchors (<code>docs.links</code>), and executable <code>acdd-rule</code> blocks (<code>code.lint [arch, docs]</code>).</p>
       </div>
 
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">spec_planning</span>
-          <span class="profile-tag">in_place · save: none</span>
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">audit (template)</span>
+          <span class="workflow-tag">in_place · save: none</span>
         </div>
-        <p>Architectural planning pipeline (<code>synthesize</code> → <code>review</code>) validating spec collection prefixes, acyclic waves, and disjoint parallel write scopes before coding begins.</p>
+        <p>Reference read-only 3-phase security &amp; correctness audit (<code>recon</code> → <code>analyze</code> → <code>triage</code>) in <code>skills/acdd/references/acdd-workflow-examples/</code> with JSON Schema findings and <code>.acdd/reports/</code> output.</p>
       </div>
 
-      <div class="profile-row">
-        <div class="profile-head">
-          <span class="profile-name">hotfix (overlay)</span>
-          <span class="profile-tag">inherits .acdd/profile.yaml</span>
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">spec_planning (template)</span>
+          <span class="workflow-tag">in_place · save: none</span>
         </div>
-        <p>Example custom repository overlay for localized fixes: keeps scoped checks and <code>run_tests</code> while pruning <code>blueprint_synthesis</code> and <code>integration_review</code>.</p>
+        <p>Reference architectural planning template (<code>synthesize</code> → <code>review</code>) validating <code>specs.*</code> prefixes, acyclic waves, and disjoint parallel write scopes before coding begins.</p>
+      </div>
+
+      <div class="workflow-row">
+        <div class="workflow-head">
+          <span class="workflow-name">hotfix (template)</span>
+          <span class="workflow-tag">inherits .acdd/workflows/default.yaml</span>
+        </div>
+        <p>Reference overlay for localized fixes under <code>.acdd/workflows/hotfix.yaml</code>: keeps scoped checks and <code>run_tests</code> while pruning <code>blueprint_synthesis</code> and <code>integration_review</code>.</p>
       </div>
     </div>
 
     <div class="explorer-subhead">
       <div class="eyebrow">Live Gate Context Example</div>
       <h3>Example context delivered to each gate</h3>
-      <p>Switch tabs below to inspect the exact 6-tier budgeted Markdown payload injected into an agent's context window via <code>acdd_claim</code>.</p>
+      <p>Switch tabs below to inspect the 6-tier budgeted Markdown payload (<code>&lt;= 10,000</code> B compact soft cap, <code>detail="full"</code> up to <code>32 KiB</code>, with graceful <code>omitted_sections</code> counts &amp; inspect hints) injected into an agent's context window via <code>acdd_claim</code> / <code>acdd claim</code>.</p>
     </div>
 
     <div class="gate-explorer" id="gate-context">
@@ -944,12 +945,12 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
           <tr>
             <td><strong>Start, Queue, Roadmap &amp; Snapshots</strong></td>
             <td><code>acdd_state(action="start" | "next" | "snapshot" | ...)</code></td>
-            <td><code>acdd init | draft | start | next | roadmap | snapshot | run</code></td>
+            <td><code>acdd -C &lt;wt&gt; init | draft | start | next | roadmap | snapshot | run | exec</code></td>
           </tr>
           <tr>
-            <td><strong>Gate Claim, Verify, Submit &amp; Board</strong></td>
-            <td><code>acdd_claim</code> · <code>acdd_verify</code> · <code>acdd_submit</code> · <code>acdd_blackboard</code></td>
-            <td><code>acdd claim</code> · <code>acdd verify</code> · <code>acdd submit</code> · <code>acdd blackboard</code></td>
+            <td><strong>Gate Claim, Verify, Submit &amp; Guides</strong></td>
+            <td><code>acdd_claim</code> · <code>acdd_verify</code> · <code>acdd_submit</code> · <code>acdd_blackboard</code> · <code>acdd_guide</code></td>
+            <td><code>acdd claim | verify | submit | blackboard | guide [--mcp] | validate</code></td>
           </tr>
         </tbody>
       </table>
@@ -1071,9 +1072,9 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
     <div class="index-grid">
       <article class="index-card">
         <div class="index-kicker">01 · v0.8.0 · AC-006</div>
-        <h3>Universal Spec Builder &amp; Path Sets</h3>
+        <h3>Universal Spec Builder, <code>.acdd/specs/</code> &amp; <code>.acdd/lint/</code></h3>
         <p>
-          Declare custom <code>specs:</code> schemas and named <code>paths.*</code> sets directly in <code>.acdd/profile.yaml</code>—typed frontmatter items, cross-spec DAGs, and verified <code>spec_deltas</code> replacing hardcoded repo layouts.
+          Building on <code>AR-006</code> (<code>crates/acdd-spec</code>), declare custom <code>specs:</code> schemas under <code>.acdd/specs/</code>, architectural lint files in <code>.acdd/lint/*.yaml</code>, and <code>.acdd/workflows/</code> paths — with named <code>items:</code>, cross-spec DAGs, and verified <code>spec_deltas</code>.
         </p>
       </article>
 
@@ -1087,17 +1088,17 @@ assertion `left == right` failed: expected 0 db queries on invalid signature, go
 
       <article class="index-card">
         <div class="index-kicker">03 · v0.8.0 · AC-005</div>
-        <h3>Unified Swarm Mode &amp; Engine Redesign</h3>
+        <h3>Unified Swarm Mode &amp; Agent Session Reuse</h3>
         <p>
-          Replaces special-cased <code>- tasks:</code> blocks with one orthogonal <code>mode: linear | parallel | swarm</code> engine, lock-free <code>save: none</code> SQLite CAS, grouped <code>save: handoff</code>, coordinator groups, and zero-token <code>@mention</code> blackboard waits.
+          Replaces <code>- tasks:</code> blocks with one orthogonal <code>mode: linear | parallel | swarm</code> engine, <code>agents.&lt;name&gt;.reuse</code> (<code>never | on_reject | always</code> with <code>max_reuses</code> &amp; <code>max_context_tokens</code>), lock-free <code>save: none</code> SQLite CAS, grouped <code>save: handoff</code>, and zero-token <code>@mention</code> blackboard waits.
         </p>
       </article>
 
       <article class="index-card">
         <div class="index-kicker">04 · Later · AC-007</div>
-        <h3>Live Gate Board UI &amp; Telemetry</h3>
+        <h3>Live Gate Board UI &amp; GenAI Telemetry</h3>
         <p>
-          Separates explicit <code>acdd mcp</code> from read-only <code>acdd serve</code> on <code>127.0.0.1</code>—live SSE Gate Board Web UI, bounded-cardinality Prometheus <code>/metrics</code>, and OTLP trace relay.
+          Separates explicit <code>acdd mcp</code> from read-only <code>acdd serve</code> on <code>127.0.0.1</code> — live SSE Gate Board Web UI, bounded-cardinality Prometheus <code>/metrics</code>, and OTLP GenAI token/session telemetry (<code>gen_ai.usage.*</code>, <code>acdd.session.*</code>).
         </p>
       </article>
 

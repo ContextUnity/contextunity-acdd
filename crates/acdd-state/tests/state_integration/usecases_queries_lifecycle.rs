@@ -4,10 +4,11 @@ use acdd_core::ids::{RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::ports::DomainToolOutput;
 use acdd_state::harness::RunHarness;
 use acdd_state::store::traits::{StateBackend, StateReader};
+use acdd_spec::SubtaskStatus;
 use acdd_state::types::{
     ArtifactKind, BlackboardTopic, ClaimOutcome, GateArtifactRecord, GateClaimRecord,
     IsolationMode, NodeStatus, NodeStatusPatch, NodeVersionExpectation, StoragePreconditions,
-    SubtaskStatus, TerminalStatus, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
+    TerminalStatus, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
 };
 use acdd_state::usecases::dto::{
     BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, ClaimReq, ClearReq, ContextReq,
@@ -92,7 +93,7 @@ scope: [src/lib.rs]
         &engine,
         StartReq {
             spec_path: Some(spec.to_owned()),
-            profile: Some(profile.clone()),
+            workflow: Some(profile.clone()),
             ..StartReq::default()
         },
     )
@@ -356,7 +357,7 @@ scope: [src/lib.rs]
         &engine,
         StartReq {
             spec_path: Some(spec.to_owned()),
-            profile: Some(commit_profile),
+            workflow: Some(commit_profile),
             ..StartReq::default()
         },
     )
@@ -672,7 +673,7 @@ scope: [src/lib.rs]
         &linked,
         StartReq {
             spec_path: Some(spec.to_owned()),
-            profile: Some(profile.clone()),
+            workflow: Some(profile.clone()),
             ..StartReq::default()
         },
     )
@@ -711,7 +712,7 @@ scope: [src/lib.rs]
         &recovered,
         StartReq {
             spec_path: Some(spec.to_owned()),
-            profile: Some(profile),
+            workflow: Some(profile),
             ..StartReq::default()
         },
     )
@@ -908,7 +909,7 @@ scope: [src/lib.rs]
         snap(Save, Some("note.lock"), Some(1), false, None)
             .unwrap_err()
             .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
     let auto = snap(Save, Some("auto"), None, false, None).unwrap();
     let StateCommandOutput::Snapshot(auto) = auto else {
@@ -1007,7 +1008,7 @@ scope: [src/lib.rs]
     for raw in ["1д", "9999999999w"] {
         assert_eq!(
             snap(Clear, None, None, false, Some(raw)).unwrap_err().code,
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
             "{raw}"
         );
     }
@@ -1086,7 +1087,7 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
             assert_eq!(n.ready_gates[0].role.as_deref(), Some("builder"));
             assert_eq!(
                 n.ready_gates[0].mode,
-                Some(acdd_state::profile::RoleExecutionMode::Subagent)
+                Some(acdd_state::workflow::RoleExecutionMode::Subagent)
             );
             assert_eq!(n.ready_gates[0].reuse_on_reject, Some(true));
             assert!(n.ready_gates[0].guidance.is_some());
@@ -1194,11 +1195,11 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
                 &cfg,
                 &provider,
                 StateCommand::Draft(DraftReq {
-                    collection: "milestones".to_owned(),
+                    spec: "milestones".to_owned(),
                     slug: "blocked".to_owned(),
                     prefix: None,
                     title: None,
-                    profile: None,
+                    workflow: None,
                 })
             )
             .unwrap_err()
@@ -1326,14 +1327,14 @@ fn seam_mock_domain_provider_plugin_tool_and_gate_tools_matrix() {
             "missing_url",
             "http_probe",
             json!({}),
-            Some(ErrorCode::ProfileSchemaInvalid),
+            Some(ErrorCode::WorkflowSchemaInvalid),
             0,
         ),
         (
             "extra_prop",
             "http_probe",
             json!({ "url": "https://x", "extra": 42 }),
-            Some(ErrorCode::ProfileSchemaInvalid),
+            Some(ErrorCode::WorkflowSchemaInvalid),
             0,
         ),
         (
@@ -1383,7 +1384,7 @@ fn seam_mock_domain_provider_plugin_tool_and_gate_tools_matrix() {
             &engine,
             StartReq {
                 goal: Some("Bad".to_owned()),
-                profile: Some(bad_p),
+                workflow: Some(bad_p),
                 ..StartReq::default()
             }
         )
@@ -1395,7 +1396,7 @@ fn seam_mock_domain_provider_plugin_tool_and_gate_tools_matrix() {
         &engine,
         StartReq {
             goal: Some("Ok".to_owned()),
-            profile: Some(ok_p),
+            workflow: Some(ok_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -1438,7 +1439,7 @@ gates:
         &mut_engine,
         StartReq {
             goal: Some("Mutating call crash recovery".to_owned()),
-            profile: Some(mut_p),
+            workflow: Some(mut_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -1594,11 +1595,11 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
             &cfg,
             &provider,
             StateCommand::Draft(DraftReq {
-                collection: "milestones".to_owned(),
+                spec: "milestones".to_owned(),
                 slug: "new-feature".to_owned(),
                 prefix: None,
                 title: Some("New Feature".to_owned()),
-                profile: None,
+                workflow: None,
             }),
         )
         .unwrap()
@@ -1616,16 +1617,16 @@ fn seam_draft_sequential_numbering_and_archive_scan() {
                 &cfg,
                 &provider,
                 StateCommand::Draft(DraftReq {
-                    collection: "milestones".to_owned(),
+                    spec: "milestones".to_owned(),
                     slug: "---".to_owned(),
                     prefix: None,
                     title: None,
-                    profile: None,
+                    workflow: None,
                 })
             )
             .unwrap_err()
             .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::SpecSchemaInvalid
     );
 }
 
@@ -1655,13 +1656,13 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
         )
         .unwrap_err()
         .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
     let eph = start_run(
         &engine,
         StartReq {
             goal: Some("Ship ephemeral run".to_owned()),
-            profile: Some(bound_p.clone()),
+            workflow: Some(bound_p.clone()),
             scope: vec!["crates/a/**".to_owned()],
             in_place: true,
             ..StartReq::default()
@@ -1717,7 +1718,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
             &engine,
             StartReq {
                 spec_path: Some("docs/milestones/AC-010-dep.md".to_owned()),
-                profile: Some(bound_p.clone()),
+                workflow: Some(bound_p.clone()),
                 in_place: true,
                 ..StartReq::default()
             }
@@ -1751,7 +1752,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
             &engine,
             StartReq {
                 spec_path: Some("docs/milestones/AC-010-bad-task.md".to_owned()),
-                profile: Some(bound_p.clone()),
+                workflow: Some(bound_p.clone()),
                 in_place: true,
                 ..StartReq::default()
             }
@@ -1764,7 +1765,7 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
         &engine,
         StartReq {
             spec_path: Some("docs/milestones/AC-010-dep.md".to_owned()),
-            profile: Some(bound_p),
+            workflow: Some(bound_p),
             in_place: true,
             ..StartReq::default()
         }
@@ -1966,7 +1967,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             spec,
             "---\nid: AC-001\ntitle: Linked checkout\nstatus: active\n---\n",
         ),
-        (".acdd/profile.yaml", "version: 2\ninherit: shared\n"),
+        (".acdd/workflows/default.yaml", "version: 2\ninherit: shared\n"),
         (
             dependent,
             "---\nid: AC-003\ntitle: Linked dependency\nstatus: active\ndepends_on: [AC-002]\n---\n",
@@ -1976,12 +1977,12 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             "---\nid: AC-002\ntitle: Linked archive\nstatus: completed\n---\n",
         ),
         (
-            "profiles/shared.yaml",
+            "workflows/shared.yaml",
             "version: 2\ninherit: none\nsave: none\ngates:\n  - tasks:\n      gates:\n        - id: build\n  - id: handoff\n",
         ),
         (
             "acdd.yaml",
-            "state_db: .acdd/foreign.sqlite\nprofiles_dirs: [profiles]\nspecs:\n  custom: {path: work}\nlinked_workspaces:\n  - name: configured\n    path: .\n",
+            "state_db: .acdd/foreign.sqlite\nworkflows_dirs: [workflows]\nspecs:\n  custom: {path: work}\nlinked_workspaces:\n  - name: configured\n    path: .\n",
         ),
         (
             "work/AC-004.md",
@@ -2016,7 +2017,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
-    git_ok(&linked, &["add", "work/archive", "profiles"]);
+    git_ok(&linked, &["add", "work/archive", "workflows"]);
     git_ok(&linked, &["commit", "-m", "linked inputs"]);
     let head = git_ok(&linked, &["rev-parse", "HEAD"]);
     fs::create_dir_all(primary.join("work")).unwrap();
@@ -2025,19 +2026,19 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
         "---\nid: AC-006\ntitle: Active substitute\nstatus: active\n---\n### task: build\n```yaml\ntask_ref: build\ntarget: build\nscope: [src/]\n```\n",
     )
     .unwrap();
-    fs::create_dir_all(primary.join("profiles")).unwrap();
+    fs::create_dir_all(primary.join("workflows")).unwrap();
     fs::write(
-        primary.join("profiles/new-parent.yaml"),
+        primary.join("workflows/new-parent.yaml"),
         "version: 2\ninherit: none\nprotected_paths: [src/]\n",
     )
     .unwrap();
     git_ok(
         &primary,
-        &["add", "profiles/new-parent.yaml", "work/AC-006.md"],
+        &["add", "workflows/new-parent.yaml", "work/AC-006.md"],
     );
     git_ok(&primary, &["commit", "-m", "primary profile"]);
     assert!(!primary.join(spec).exists());
-    assert!(!primary.join(".acdd/profile.yaml").exists());
+    assert!(!primary.join(".acdd/workflows/default.yaml").exists());
 
     let foreign = tmp.path().join("foreign");
     init_git_repo(&foreign, "foreign");
@@ -2166,25 +2167,25 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             caller.linked_workspaces.remove("alias");
             fs::write(
                 linked.join("acdd.yaml"),
-                "state_db: .acdd/foreign.sqlite\nprofiles_dirs: [profiles]\nspecs:\n  custom: {path: work}\n",
+                "state_db: .acdd/foreign.sqlite\nworkflows_dirs: [workflows]\nspecs:\n  custom: {path: work}\n",
             )
             .unwrap();
         }
         if name == "rebind-worktree" {
             fs::write(
-                linked.join("profiles/shared.yaml"),
+                linked.join("workflows/shared.yaml"),
                 "version: 2\ninherit: none\nsave: none\ngit:\n  isolation: in_place\ngates:\n  - tasks:\n      gates:\n        - id: build\n  - id: handoff\n",
             )
             .unwrap();
         }
         if name == "lineage" {
             fs::write(
-                linked.join(".acdd/profile.yaml"),
+                linked.join(".acdd/workflows/default.yaml"),
                 "version: 2\ninherit: new-parent\n",
             )
             .unwrap();
             fs::write(
-                linked.join("profiles/new-parent.yaml"),
+                linked.join("workflows/new-parent.yaml"),
                 "version: 2\ninherit: none\nsave: none\ngates:\n  - id: handoff\n",
             )
             .unwrap();
@@ -2225,7 +2226,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
         let sync = |run: &RunId| {
             StateCommand::Sync(SyncReq {
                 run: Some(run.to_string()),
-                rebind_profile: true,
+                rebind_workflow: true,
             })
         };
 
@@ -2244,7 +2245,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             let ready_nodes = started.ready_nodes.clone();
             let run = started.run;
             assert_eq!(run.collection.as_deref(), Some("custom"));
-            assert_eq!(run.profile_id, ".acdd/profile.yaml");
+            assert_eq!(run.profile_id, ".acdd/workflows/default.yaml");
             assert_eq!(
                 run.target_base.as_deref(),
                 Some(if name == "lineage" {
@@ -2256,7 +2257,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             assert_eq!(run.target_base_commit.as_ref().unwrap().as_str(), head);
             assert_eq!(run.worktree.as_deref(), expected.to_str());
             assert!(matches!(shared.execute(sync(&run.run_id)).unwrap(),
-                StateCommandOutput::Sync(output) if output.rebound_profile));
+                StateCommandOutput::Sync(output) if output.rebound_workflow));
             if name == "explicit" {
                 started_run = Some(run.run_id);
             } else if expected == &linked {
@@ -2269,7 +2270,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     assert!(graph.dependencies[0].satisfied, "{name}");
                     fs::write(
                         linked.join("acdd.yaml"),
-                        "state_db: .acdd/foreign.sqlite\nprofiles_dirs: [profiles]\nspecs:\n  custom: {path: work}\nlinked_workspaces:\n  - name: configured\n    path: .\n",
+                        "state_db: .acdd/foreign.sqlite\nworkflows_dirs: [workflows]\nspecs:\n  custom: {path: work}\nlinked_workspaces:\n  - name: configured\n    path: .\n",
                     )
                     .unwrap();
                 }
@@ -2306,7 +2307,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                     assert_eq!(claim.worktree, task_wt.to_str().unwrap());
                     assert!(task_wt.is_dir(), "{name}");
                     fs::write(
-                        linked.join("profiles/shared.yaml"),
+                        linked.join("workflows/shared.yaml"),
                         "version: 2\ninherit: none\nsave: none\ngates:\n  - tasks:\n      gates:\n        - id: build\n  - id: handoff\n",
                     )
                     .unwrap();
@@ -2323,7 +2324,7 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
                         fs::read(linked.join(spec)).unwrap()
                     );
                 }
-                let profile = ".acdd/profile.yaml";
+                let profile = ".acdd/workflows/default.yaml";
                 assert_eq!(
                     fs::read(expected.join(profile)).unwrap(),
                     fs::read(linked.join(profile)).unwrap()
@@ -2331,11 +2332,11 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             }
             if name == "lineage" {
                 assert_eq!(
-                    fs::read(expected.join("profiles/new-parent.yaml")).unwrap(),
-                    fs::read(linked.join("profiles/new-parent.yaml")).unwrap()
+                    fs::read(expected.join("workflows/new-parent.yaml")).unwrap(),
+                    fs::read(linked.join("workflows/new-parent.yaml")).unwrap()
                 );
                 fs::write(
-                    linked.join(".acdd/profile.yaml"),
+                    linked.join(".acdd/workflows/default.yaml"),
                     "version: 2\ninherit: shared\n",
                 )
                 .unwrap();
@@ -2448,7 +2449,7 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
             )
             .unwrap_err()
             .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
     assert!(matches!(
         harness
@@ -2507,7 +2508,7 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
                 }),
             )
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+        assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid);
         assert!(err.message.contains(expected_field));
     }
     let bb_query_out = queries::execute_query(
@@ -2663,7 +2664,7 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
             &provider,
             StateCommand::Sync(SyncReq {
                 run: Some("run-life-001".to_owned()),
-                rebind_profile: false,
+                rebind_workflow: false,
             }),
         )
         .unwrap()
@@ -2735,7 +2736,7 @@ gates:
             &provider,
             StateCommand::Start(StartReq {
                 goal: Some("Verify the repository".to_owned()),
-                profile: Some(profile),
+                workflow: Some(profile),
                 in_place: true,
                 ..StartReq::default()
             }),
@@ -2896,11 +2897,11 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     // 1. Prefixless draft creates docs/plans/my-slug.md with id: my-slug and rejects collision.
     let draft_plan = match engine
         .execute(StateCommand::Draft(DraftReq {
-            collection: "plans".to_owned(),
+            spec: "plans".to_owned(),
             slug: "my-slug".to_owned(),
             title: Some("My Plan".to_owned()),
             prefix: None,
-            profile: None,
+            workflow: None,
         }))
         .unwrap()
     {
@@ -2911,11 +2912,11 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     assert_eq!(draft_plan.spec_path, "docs/plans/my-slug.md");
     assert!(engine
         .execute(StateCommand::Draft(DraftReq {
-            collection: "plans".to_owned(),
+            spec: "plans".to_owned(),
             slug: "my-slug".to_owned(),
             title: None,
             prefix: None,
-            profile: None,
+            workflow: None,
         }))
         .is_err());
 
@@ -2927,11 +2928,11 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     .unwrap();
     let draft_ms = match engine
         .execute(StateCommand::Draft(DraftReq {
-            collection: "milestones".to_owned(),
+            spec: "milestones".to_owned(),
             slug: "next".to_owned(),
             title: None,
             prefix: None,
-            profile: None,
+            workflow: None,
         }))
         .unwrap()
     {
@@ -2980,7 +2981,7 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         .execute(StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
             run_name: Some(RunName::new("ac5").unwrap()),
-            profile: Some(p),
+            workflow: Some(p),
             in_place: true,
             ..Default::default()
         }))

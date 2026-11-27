@@ -5,7 +5,7 @@ doc_type: guide
 
 # Milestone Instructions & Authoring Governance
 
-This document defines the `SpecDocument` authoring format and lifecycle governance used by the unified `crates/acdd-state` + `crates/acdd-core` engine under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md).
+This document defines the `SpecDocument` authoring format and lifecycle governance used by the unified `crates/acdd-spec`, `crates/acdd-state`, and `crates/acdd-core` engine under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md).
 
 ---
 
@@ -40,11 +40,11 @@ linked_to: []
 
 1. **`id`**: Must match `<TAG>-<NNN>-<slug>` conforming to the Domain Taxonomy (`AC`, `LS`, `PF`, `AR`, `UX`, `IN`) or numeric legacy format.
 2. **`doc_type: contract`**: Milestones are execution contracts (`doc_type: plan` is used for in-place plans under `docs/plans/`).
-3. **`profile`**: Optional profile selector (`base | code | audit | <path>`). When omitted, collection defaults apply (`specs.milestones.profile` -> `code`).
+3. **`workflow`**: Optional workflow selector (`base | code | documentation | <path>`). When omitted, spec defaults apply (`specs.milestones.workflow` -> `code`).
 4. **`status`**: One of `planned`, `active`, `completed`, or `cancelled` (cancelled manifests require a non-empty `cancellation_reason`).
 5. **`guidance: { slot: tier }`**: Binds parameterized guidance slots (`hitl.pro`, etc.).
 6. **`invariants:`**: Prefixed with `INV-<NAME>` in single quotes; every invariant must be verifiable by automated tests.
-7. **`#[serde(deny_unknown_fields)]`**: Unknown frontmatter keys (including legacy `acdd_profile`, `repository`, or `project`) fail `acdd validate`.
+7. **`#[serde(deny_unknown_fields)]`**: Unknown or removed frontmatter keys fail `acdd validate`.
 
 ---
 
@@ -92,8 +92,8 @@ subtasks:
   - **Disjoint Scopes**: Concurrent tasks in the same wave MUST have disjoint `scope:` declarations to avoid Git integration conflicts and `TASK_SCOPE_CONFLICT`.
   - **Co-Evolution of Documentation**: Include affected `docs/` files directly in `scope:` when modifying public interfaces, CLI/MCP surfaces, or runtime contracts.
   - Workers may expand admitted scope at runtime via `acdd extend-scope <node> --path <glob> --reason "..."` (or `acdd_state(action: "extend_scope")`), which increments `contract_revision` in `.acdd/state.sqlite` and fails closed with `TASK_SCOPE_CONFLICT` if the path overlaps another already-claimed incomplete task.
-- **`tags:`**: Defaults to `["default"]`. Must match declared `tags:` in the active `GateProfile` (`acdd validate` fails closed on unknown tags).
-- **No per-task profile overrides**: Legacy per-task `acdd_profile` and `proof_policy` fields are rejected by `acdd validate`.
+- **`tags:`**: Defaults to `["default"]`. Must match declared `tags:` in the active `WorkflowDef` (`acdd validate` fails closed on unknown tags).
+- **No per-task workflow overrides**: Unknown or removed per-task fields fail `acdd validate` via `#[serde(deny_unknown_fields)]`.
 
 ---
 
@@ -138,7 +138,7 @@ subtasks:
 1. **Zero-Collision Test Registration**: Register new seam modules in canonical domain test binaries (`tests/acdd.rs`, `tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/commitment_integrity.rs`) in Task 0; downstream wave tasks edit only their own seam modules.
 2. **Disjoint File Scopes**: Concurrent tasks in the same wave must have disjoint `scope:` declarations.
 3. **Closed DAG & Valid Tags**: All `depends_on` references, `tags`, and `profile` references must pass `acdd validate <manifest>` before `acdd start <manifest>`.
-4. **Build Seam Proof (`proof: command` + `code.seam`)**: Author compiling, passing seam tests directly in `build` (`exit_code == 0`, respecting `max_net_loc` budgets) while `code.seam` verifies AST reachability (`<= 8` hops) from the `--test` target to production symbols in `admitted_scope`.
+4. **Build Seam Proof (`proof: command`)**: Author compiling, passing scoped tests directly in `build` (`exit_code == 0`, respecting `max_net_loc` budgets; embedded `code` and opt-in workflows additionally verify `code.seam` AST reachability `<= 8` hops from the `--test` target to production symbols in `admitted_scope`, while this repository's `.acdd/workflows/default.yaml` enforces `code.lint` + `rust-check-and-test`).
 5. **Replace, Don't Stack**: Whenever an AC introduces a new enum, type, or facade, explicitly name the retired symbol/wrapper to delete and the live production call sites to migrate; never specify production enum variants or predicates with zero production callers.
 6. **Non-Fallback Fast-Path Proof**: Whenever an AC introduces an optimization with a silent fallback (`Ok(None) => slow_path`), require a production-seam test asserting the fast path actually executes on realistic production-generated data (e.g. `pipeline::build` with full-range hashes) rather than only synthetic fixtures.
 7. **Bounded Milestone Scope**: Keep each milestone to a cohesive 2–4 task slice; do not bolt unrelated architectural refactor waves onto a mid-flight performance or feature milestone.

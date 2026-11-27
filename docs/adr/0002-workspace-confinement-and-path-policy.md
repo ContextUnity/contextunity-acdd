@@ -13,7 +13,7 @@ Accepted.
 
 ## Context
 
-Scanning or executing file/SQLite/Git operations against broad roots (`/`, `/home`, `..`), symlink escapes, or conflated worktree paths risks reading sensitive host files, exhausting memory, corrupting databases via symlinked sidecars, or either falsely triggering `TASK_CANDIDATE_MISMATCH` on runtime SQLite files or letting agents overwrite `.acdd/profile.yaml` and active `SpecDocument` contracts.
+Scanning or executing file/SQLite/Git operations against broad roots (`/`, `/home`, `..`), symlink escapes, or conflated worktree paths risks reading sensitive host files, exhausting memory, corrupting databases via symlinked sidecars, or either falsely triggering `TASK_CANDIDATE_MISMATCH` on runtime SQLite files or letting agents overwrite `.acdd/workflows/**` and active `SpecDocument` contracts.
 
 ## Decision
 
@@ -34,12 +34,12 @@ Scanning or executing file/SQLite/Git operations against broad roots (`/`, `/hom
 1. **`is_engine_managed(rel_path)`**: Matches active `Run` `spec_path` and `archive_path` files owned by the state engine. Human spec edits during an active run are reconciled via `acdd sync`.
 2. **`is_candidate_included(rel_path)`**: Defines which files enter reproducible Git `TreeOid` candidate/snapshot calculations:
    - **Excludes**: `.git/**`, `.worktrees/**`, `is_engine_managed(rel_path)`, configured `state_db` / `code_db` (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` **except** the tracked configuration whitelist.
-   - **Includes**: Tracked repository artifacts (`Cargo.lock`, `tests/**/*.jsonl`) and the tracked `.acdd/` whitelist (`.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`).
+   - **Includes**: Tracked repository artifacts (`Cargo.lock`, `tests/**/*.jsonl`) and the tracked `.acdd/` whitelist (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks/**`).
 3. **`is_scope_admitted(rel_path, scope)`**: Component-wise normalized glob or directory match against the node's `admitted_scope` (`scope` + `extended_scope`).
-4. **`is_agent_writable(rel_path, admitted_scope, protected_paths)`**: Returns `true` strictly when `is_candidate_included(rel_path)` AND `!is_scope_admitted(rel_path, protected_paths)` AND `is_scope_admitted(rel_path, admitted_scope)`. Consequently, `.acdd/{profile.yaml,profiles/**,frameworks/**}` participate in `TreeOid` snapshots while remaining un-writable by agents unless explicitly admitted in `scope` and not in `protected_paths`.
+4. **`is_agent_writable(rel_path, admitted_scope, protected_paths)`**: Returns `true` strictly when `is_candidate_included(rel_path)` AND `!is_scope_admitted(rel_path, protected_paths)` AND `is_scope_admitted(rel_path, admitted_scope)`. Consequently, `.acdd/{workflows/**,specs/**,frameworks/**}` participate in `TreeOid` snapshots while remaining un-writable by agents unless explicitly admitted in `scope` and not in `protected_paths`.
 
 ## Consequences
 
 - Indexing, SQLite storage, advisory locking, and Git operations stay strictly confined within authorized repository perimeters across Linux and macOS.
-- Runtime state files (`.acdd/state.sqlite*`, `.acdd/code-map.sqlite*`, `.acdd/run/**`, `.acdd/tmp/**`) never cause spurious `TASK_CANDIDATE_MISMATCH` drift, while profile/framework config changes remain cryptographically bound to `TreeOid`.
+- Runtime state files (`.acdd/state.sqlite*`, `.acdd/code-map.sqlite*`, `.acdd/run/**`, `.acdd/tmp/**`) never cause spurious `TASK_CANDIDATE_MISMATCH` drift, while workflow/spec/framework config changes remain cryptographically bound to `TreeOid`.
 - Out-of-scope agent edits fail closed with `OUT_OF_SCOPE_CHANGES` before verification or submission.

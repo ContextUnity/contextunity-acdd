@@ -391,7 +391,7 @@ fn database_target_guard_matrix() {
                     let link = directory.join("alias-state.sqlite");
                     std::os::unix::fs::symlink(&target, &link).unwrap();
                     let link_err = SqliteStateBackend::open(&link).err().unwrap();
-                    assert_eq!(link_err.code, ErrorCode::ProfileSchemaInvalid);
+                    assert_eq!(link_err.code, ErrorCode::WorkflowSchemaInvalid);
 
                     // Opening a published `code-map.sqlite` as a state DB fails closed (`ConfigMigrationRequired`).
                     let schema_err = SqliteStateBackend::open(&index).err().unwrap();

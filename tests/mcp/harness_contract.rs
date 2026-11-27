@@ -594,7 +594,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         ("acdd.yaml", "roots: [src/]\ndocs: [docs/]\nmodules:\n  domains:\n    probe: true\n"),
         ("src/lib.rs", "pub fn target_fn() -> i32 { 42 }\n#[cfg(test)]\nmod tests { #[test] fn covers_target() { assert_eq!(super::target_fn(), 42); } }\n"),
         ("docs/adr/0001-custom-db.md", "---\ntitle: Custom DB ADR\ndoc_type: adr\n---\n# Custom DB ADR\n"),
-        (".acdd/profile.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: []\n    context: [docs.adrs]\n    save:\n      post: none\n      prune: true\n"),
+        (".acdd/workflows/default.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: []\n    context: [docs.adrs]\n    save:\n      post: none\n      prune: true\n"),
     ]);
     workspace.seed_git().unwrap();
     let rel_wt = workspace.path(".worktrees/wt-rel");
@@ -615,7 +615,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         .with_invocation_settings(InvocationSettings {
             root: workspace.root().to_path_buf(),
             config: None,
-            profile: None,
+            workflow: None,
             state_db: Some(custom_state_db.clone()),
             code_db: custom_code_db.clone(),
         });
@@ -744,6 +744,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         test_target: Some("src/lib.rs::covers_target".into()),
         path_policy: Default::default(),
         baseline_ref: None,
+        node_tags: vec![],
     };
     let custom_providers = build_domain_providers(
         workspace.root(),
@@ -822,4 +823,88 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     assert!(adrs["items"]
         .as_array()
         .is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
+}
+
+#[test]
+fn preset_spec_exposes_only_spec_and_docs_tools_without_state_sqlite() {
+    let workspace = Workspace::with_files(&[("acdd.yaml", "preset: spec\n")]);
+    for (preset, expected_count, expected_subset, forbidden_subset) in [
+        (
+            "full",
+            18usize,
+            &["acdd_state", "code_map_search", "get_doc", "acdd_read"][..],
+            &[][..],
+        ),
+        (
+            "index",
+            13usize,
+            &["code_map_overview", "ast_grep_search", "get_doc", "search_docs", "acdd_read", "acdd_guide"][..],
+            &["acdd_state", "acdd_claim", "acdd_blackboard"][..],
+        ),
+        (
+            "spec",
+            4usize,
+            &["acdd_guide", "acdd_read", "get_doc", "search_docs"][..],
+            &["acdd_state", "acdd_claim", "code_map_overview"][..],
+        ),
+        (
+            "state",
+            7usize,
+            &["acdd_state", "acdd_claim", "acdd_verify", "acdd_submit", "acdd_blackboard", "acdd_read", "acdd_guide"][..],
+            &["code_map_overview", "get_doc"][..],
+        ),
+        (
+            "minimal",
+            2usize,
+            &["acdd_read", "acdd_guide"][..],
+            &["acdd_state", "code_map_overview", "get_doc"][..],
+        ),
+    ] {
+        workspace.write("acdd.yaml", &format!("preset: {preset}\n"));
+        let mut client =
+            McpTestHarness::spawn(workspace.root(), &workspace.db(), &format!("preset-{preset}"))
+                .expect("spawn server");
+        let initialized = client
+            .request_value(
+                "initialize",
+                json!({
+                    "protocolVersion":"2025-03-26", "capabilities":{},
+                    "clientInfo":{"name":"in-process-test","version":"1"}
+                }),
+            )
+            .expect("initialize server");
+        assert!(initialized.get("error").is_none(), "{preset}: {initialized}");
+        client
+            .notify("notifications/initialized", json!({}))
+            .expect("notify initialized");
+        let listed = client
+            .request_value("tools/list", json!({}))
+            .expect("tools/list");
+        let mut names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names.len(), expected_count, "{preset}: {names:?}");
+        for req in expected_subset {
+            assert!(names.contains(req), "{preset}: missing {req} in {names:?}");
+        }
+        for forbid in forbidden_subset {
+            assert!(!names.contains(forbid), "{preset}: unexpected {forbid} in {names:?}");
+        }
+        if preset == "spec" {
+            let (_, disabled_resp) = client
+                .call("acdd_state", json!({"action": "status"}))
+                .expect("MCP transport");
+            assert_eq!(disabled_resp["result"]["isError"], true, "{disabled_resp}");
+            let msg = disabled_resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("");
+            assert!(msg.contains("FEATURE_DISABLED"), "{msg}");
+        }
+        client.finish().expect("server finishes cleanly");
+    }
+    assert!(!workspace.path(".acdd/state.sqlite").exists());
 }

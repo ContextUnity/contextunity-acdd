@@ -5,7 +5,7 @@ use crate::machine::graph::{container_scope, is_post_task_root_node, is_pre_task
 use crate::types::{
     GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::TaskRef;
 use acdd_core::path_policy::scopes_overlap;
 use serde::{Deserialize, Serialize};
@@ -29,11 +29,11 @@ pub struct ScheduleReport {
 }
 
 /// Return `true` if a task has already been claimed (`claim_revision >= 1` on task or any child gate)
-/// and has not yet reached a terminal state (`Completed` or `Cancelled`).
+/// and has not yet reached a terminal or cascade-stale state (`Completed`, `Cancelled`, or `Stale`).
 fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeRecord) -> bool {
     if matches!(
         task_node.status,
-        NodeStatus::Completed | NodeStatus::Cancelled
+        NodeStatus::Completed | NodeStatus::Cancelled | NodeStatus::Stale
     ) {
         return false;
     }
@@ -52,7 +52,7 @@ pub(crate) fn check_task_scope_overlap(
     excluding_task_id: &str,
     candidate_scope: &[String],
     conflict_prefix: &str,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     for other in &snapshot.nodes {
         if other.kind != NodeKind::Task || other.node_id == excluding_task_id {
             continue;
@@ -60,7 +60,7 @@ pub(crate) fn check_task_scope_overlap(
         if is_task_claimed_unfinished(snapshot, other) {
             let other_scope = container_scope(snapshot, other);
             if scopes_overlap(candidate_scope, &other_scope) {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::TaskScopeConflict,
                     format!(
                         "{conflict_prefix} already-claimed unfinished task '{}'",
@@ -156,16 +156,16 @@ pub fn all_non_cancelled_tasks_completed(snapshot: &RunGraphSnapshot) -> bool {
 pub fn check_post_task_integration_barrier(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if !all_non_cancelled_tasks_completed(snapshot) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             "cannot run post-task root gates before all non-cancelled tasks are completed",
         ));
     }
     if snapshot.run.isolation == IsolationMode::Worktree && !obs.unintegrated_tasks.is_empty() {
         let missing: Vec<&str> = obs.unintegrated_tasks.iter().map(TaskRef::as_str).collect();
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskNotIntegrated,
             format!(
                 "completed task deltas missing from run worktree: {}",
@@ -180,7 +180,7 @@ pub fn check_post_task_integration_barrier(
 pub fn compute_schedule(
     snapshot: &RunGraphSnapshot,
     obs: &ValidatedObservations,
-) -> Result<ScheduleReport, StateError> {
+) -> Result<ScheduleReport, AcddError> {
     let pre_task_satisfied = pre_task_barrier_satisfied(snapshot);
     let all_tasks_completed = all_non_cancelled_tasks_completed(snapshot);
     let post_task_blocked_reason = if all_tasks_completed
@@ -290,7 +290,7 @@ fn compute_task_waves(
     task_nodes: &[&GateNodeRecord],
     obs: &ValidatedObservations,
     claimed_unfinished_scopes: &[(TaskRef, Vec<String>)],
-) -> Result<Vec<Vec<TaskRef>>, StateError> {
+) -> Result<Vec<Vec<TaskRef>>, AcddError> {
     let mut remaining: BTreeMap<TaskRef, &GateNodeRecord> = BTreeMap::new();
     let mut completed: BTreeSet<TaskRef> = BTreeSet::new();
 
@@ -353,8 +353,8 @@ fn compute_task_waves(
             if blocked_on_external {
                 break;
             }
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 "remaining tasks have unsatisfied or cyclic dependencies",
             ));
         }
@@ -392,7 +392,7 @@ fn compute_task_waves(
         if wave.is_empty() {
             // If all eligible tasks in wave 0 were blocked by already-claimed unfinished tasks,
             // fall back to scheduling the claimed unfinished tasks first, or break tie on wave >= 1.
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskScopeConflict,
                 "eligible tasks are all blocked by overlapping active task scopes",
             ));

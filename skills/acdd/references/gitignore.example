@@ -1,11 +1,12 @@
 # Place this block after other ignore rules. It ignores worktrees and runtime
-# artifacts under `.acdd/` while keeping `.acdd/profile.yaml`, `.acdd/profiles/**`,
+# artifacts under `.acdd/` while keeping `.acdd/workflows/**`, `.acdd/specs/**`,
 # and `.acdd/frameworks/**` tracked in Git.
 /.worktrees/
 !/.acdd/
-!/.acdd/profile.yaml
-!/.acdd/profiles/
-!/.acdd/profiles/**
+!/.acdd/workflows/
+!/.acdd/workflows/**
+!/.acdd/specs/
+!/.acdd/specs/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*

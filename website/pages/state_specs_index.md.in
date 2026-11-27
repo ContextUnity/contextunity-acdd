@@ -1,34 +1,34 @@
 # ACDD State
 
-**ACDD State** (`crates/acdd-state`) turns software engineering workflows — from specification drafting to multi-wave execution — into durable, resumable DAG runs stored in `.acdd/state.sqlite`.
+**ACDD State** (`crates/acdd-state`, backed by `crates/acdd-spec` for static spec parsing and `SpecRuntimeOverlay`) turns software engineering workflows — from specification drafting to multi-wave execution — into durable, resumable DAG runs stored in `.acdd/state.sqlite`.
 
 ## How a workflow starts and moves through tasks
 
 1. **Create a specification (or start ad-hoc)**:
    - **What a Spec is**: a Git-tracked Markdown contract (`SpecDocument`) declaring `AC-*` acceptance criteria, `INV-*` invariants, and `### task: <id>` blocks with `depends_on` edges and disjoint file `scope:` globs.
-   - **Spec collections (`milestones`, `plans`)**: named folders configured under `specs:` in `acdd.yaml` by `acdd init` (e.g. `milestones` → `docs/milestones/AC-001-...md`; customizable to any name/prefix).
-   - `acdd draft <collection> <slug>`: scaffolds the next sequentially numbered spec file inside the chosen `specs.<collection>` folder.
-   - `spec_planning` profile: lets an architect agent draft and review `AC-*` criteria and disjoint task waves (`acdd start --goal "Plan ..." --profile spec_planning`).
-   - `acdd start --goal "..."`: starts a single-goal workflow directly (e.g. `--profile hotfix --scope src/parser/`) when you do not need a multi-task spec file.
+   - **Spec configurations (`milestones`, `plans`)**: named folders configured under `specs:` in `acdd.yaml` by `acdd init` (e.g. `milestones` → `docs/milestones/AC-001-...md`; customizable to any name/prefix).
+   - `acdd draft <spec> <slug>`: scaffolds the next sequentially numbered spec file inside the chosen `specs.<name>` folder.
+   - `spec_planning` template (`skills/acdd/references/acdd-workflow-examples/spec_planning.yaml`): lets an architect agent draft and review `AC-*` criteria and disjoint task waves (`acdd start --goal "Plan ..." --workflow .acdd/workflows/spec_planning.yaml`).
+   - `acdd start --goal "..."`: starts a single-goal workflow directly (e.g. `--workflow hotfix --scope src/parser/`) when you do not need a multi-task spec file.
 2. **Materialize the Run & DAG**:
-   - **Profile & digest**: `acdd start <spec>` resolves the active `GateProfile` (`version: 2`) and hashes the spec into a SHA-256 `spec_digest`.
-   - **Isolation**: creates isolated Git worktrees when `git.isolation: worktree` is active.
+   - **Workflow & digest**: `acdd start <spec>` resolves the active `WorkflowDef` (`version: 2`) and hashes the spec into a SHA-256 `spec_digest` (failing closed with `ACDD_WORKFLOW_SCHEMA_INVALID` or `ACDD_SPEC_SCHEMA_INVALID` on schema errors).
+   - **Isolation & targeting**: creates isolated Git worktrees when `git.isolation: worktree` is active; target worktrees uniformly from CLI via `-C <PATH>` (`ACDD_WORKTREE` / `ACDD_RUN` fallbacks) or `acdd exec [--run <id|name>] [--worker <id>] -- <cmd>`.
    - **Gate cursors**: materializes typed `GateNode` rows addressed by dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `T1.deliver`, `run_tests`, `integration_review`, `handoff`).
 3. **Schedule parallel waves**:
    - `depends_on`: defines task dependency edges across waves.
-   - `acdd roadmap` & `acdd next`: list every ready cursor whose dependencies are completed and whose write scopes do not overlap.
+   - `acdd roadmap [SPEC_ID] [--spec <KEY>]` & `acdd next`: list every ready cursor whose dependencies are completed and whose write scopes do not overlap (`--spec` selects a configured `specs:` key; `[SPEC_ID]` drills down into one spec).
 4. **Claim → Edit → Verify → Submit**:
-   - `acdd_claim`: locks the node under optimistic concurrency (`claim_revision` + `node_version`) and returns a budgeted 6-tier `ClaimResp` Markdown prompt.
-   - `acdd_verify`: runs scoped tests and `DomainProvider` checks (`code.seam`, `code.lint`) inside the admitted write scope.
-   - `acdd_blackboard`: shares scoped decisions, blockers, and review findings across agents.
-   - `acdd_submit`: advances the gate (`pass` / `reject`) after verifying proofs and contour findings.
+   - `acdd_claim` / `acdd claim`: locks the node under optimistic concurrency (`claim_revision` + `node_version`) and returns a budgeted 6-tier `ClaimResp` Markdown prompt (`<= 10,000` bytes default compact soft cap, `detail="full"` up to `32 KiB`, gracefully reporting overflow in `omitted_sections` with counts and inspect commands such as `acdd blackboard --action read`, `acdd context --detail full`, and `acdd show`).
+   - `acdd_verify` / `acdd verify`: runs scoped tests and `DomainProvider` checks (`code.seam`, `code.lint`) inside the admitted write scope.
+   - `acdd_blackboard` / `acdd blackboard`: shares scoped decisions, blockers, and review findings across agents.
+   - `acdd_submit` / `acdd submit`: advances the gate (`pass` / `reject`) after verifying proofs and contour findings.
    - `independent_reviewer`: distinct worker identity auditing `review` / `integration_review` before `deliver` creates an atomic `Acdd-Claim` commit.
 
 ## Connecting agents & tools
 
-- **Over MCP (`acdd serve`)**: Connect Antigravity, Claude Code, Codex, or Cursor to the 18 built-in MCP tools. Coordinators spawn workers with thin prompts `(run, node_cursor, worker_id, worktree)` and each worker self-claims via `acdd_claim`.
+- **Over MCP (`acdd serve`)**: Connect Antigravity, Claude Code, Codex, or Cursor to the 18 built-in MCP tools (or configure `preset: full | index | spec | state | minimal` in `acdd.yaml` to scope subsystems). Coordinators spawn workers with thin prompts `(run, node_cursor, worker_id, worktree)` and each worker self-claims via `acdd_claim`.
 - **Headless CLI runners (`acdd run`)**: Configure `roles.<name>.runner` shell commands to automatically spawn any CLI agent across topological waves.
-- **Compaction recovery (`acdd context`)**: Read-only command that reloads the current `ClaimResp` contract and blackboard without mutating claim state.
+- **Compaction recovery (`acdd context`)**: Read-only command that reloads the current `ClaimResp` contract and blackboard without mutating claim state (`--detail full` for up to `32 KiB`).
 
 ## MCP Tools vs. CLI Comparison
 
@@ -41,9 +41,9 @@ Both surfaces invoke the same Rust core, index reader, and state machine (`acdd 
 | **Graph Queries & Diagnostics** | `code_map_query` (`tests`, `prove_removal`, `duplicates`, `dead_tails`, ...), `code_map_analyze`, `ast_grep_search` | `query tests\|remove`, `query run <op>`, `query sql`, `query analyze`, `ast grep` | Identical read-only SQL, analyze modes, & Tree-sitter budgets |
 | **Lint & Docs Checks** | `code_map_lint`, `search_docs`, `get_doc` | `lint`, `docs search`, `docs get`, `docs check` | Same 6 lint categories and `INV-*` governance |
 | **File & Symbol Read** | `acdd_read` | `read` | Layered text modes (`<= 9,000` B inline / `48 KiB` full) + digest-checked symbol slices |
-| **Run & Wave Queue** | `acdd_state` (active runs: `start`, `status`, `list`, `show`, `next`, `context`, `snapshot`, `sync`, `clear`, `run`) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `extend-scope`, `reopen`, `sync`, `subtask`, `clear`, `run` | CLI owns `draft`/`roadmap`; MCP `acdd_state` handles active runs |
-| **Gate Execution** | `acdd_claim`, `acdd_verify`, `acdd_submit` | `claim`, `verify`, `submit` | Shared 6-tier `ClaimResp` Markdown & CAS locking |
-| **Coordination & Guides** | `acdd_blackboard`, `acdd_guide`, `<domain>_<name>` | `blackboard`, `guide`, `tool <domain>_<name>`, `validate` | `validate` checks `acdd.yaml`, profiles, and specs |
+| **Run & Wave Queue** | `acdd_state` (active runs: `start`, `status`, `list`, `show`, `next`, `context`, `snapshot`, `sync`, `clear`, `run`) | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `roadmap`, `context`, `snapshot`, `extend-scope`, `reopen`, `sync`, `subtask`, `clear`, `run`, `exec` | CLI owns `draft`/`roadmap`/`exec`; MCP `acdd_state` handles active runs |
+| **Gate Execution** | `acdd_claim`, `acdd_verify`, `acdd_submit` | `claim`, `verify`, `submit` | Shared 6-tier `ClaimResp` Markdown (`<= 10,000` B soft cap) & CAS locking |
+| **Coordination & Guides** | `acdd_blackboard`, `acdd_guide`, `<domain>_<name>` | `blackboard`, `guide [--mcp]`, `tool <domain>_<name>`, `validate` | `validate` checks `acdd.yaml`, workflows, and specs; `guide` defaults to CLI |
 
 ## Pages in this section
 

@@ -1,0 +1,222 @@
+version: 2
+inherit: base
+
+tags: [default, docs]
+
+modules: { required: [docs, code] }
+
+default_tools: [code_map_overview, code_map_search, code_map_inspect, code_map_impact, code_map_query, code_map_lint, ast_grep_search, get_doc, search_docs, acdd_read, acdd_guide, acdd_state, acdd_claim, acdd_verify, acdd_submit, acdd_blackboard]
+
+proofs:
+  blueprint:
+    description: "Documentation and invariant architecture blueprint with grounded citations"
+    schema:
+      type: object
+      required: [cited_invariants, cited_symbols, global_negative_boundaries, blackboard_decision_id, tasks]
+      properties:
+        ac_mapping: { type: array, items: { type: string } }
+        adr_required: { type: boolean }
+        sad_updates: { type: array, items: { type: string } }
+        cited_invariants: { type: array, items: { type: string } }
+        cited_symbols: { type: array, items: { type: string } }
+        global_negative_boundaries: { type: array, items: { type: string } }
+        blackboard_decision_id: { type: string }
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required: [layer, summary, exported_interfaces, negative_boundaries, incoming_seams, outgoing_seams]
+            properties:
+              layer: { type: string }
+              summary: { type: string }
+              exported_interfaces: { type: array, items: { type: string } }
+              negative_boundaries: { type: array, items: { type: string } }
+              canonical_owners: { type: array, items: { type: string } }
+              mechanism_rules: { type: array, items: { type: string } }
+              max_net_loc: { type: integer }
+              verification_seam: { type: string }
+              incoming_seams:
+                type: array
+                items:
+                  type: object
+                  required: [source_task, contract_type, contract_ref, specification]
+                  properties:
+                    source_task: { type: string }
+                    contract_type: { type: string, enum: [seam_dependency, shared_type, shared_helper] }
+                    contract_ref: { type: string }
+                    specification: { type: string }
+              outgoing_seams:
+                type: array
+                items:
+                  type: object
+                  required: [target_task, contract_type, contract_ref, specification]
+                  properties:
+                    target_task: { type: string }
+                    contract_type: { type: string, enum: [seam_dependency, shared_type, shared_helper] }
+                    contract_ref: { type: string }
+                    specification: { type: string }
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Spawn an architect subagent to map canonical doc/invariant owners and acdd-rule coverage; reuse on rejection."
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Spawn a documentation builder in the assigned worktree; reuse on review rejection."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: false
+    guidance: "Spawn a fresh independent_reviewer (distinct worker_id from build/polish) to verify docs, links, and invariants."
+
+guidance:
+  docs.principles:
+    description: "LIVING DOCUMENTATION & EXECUTABLE INVARIANT PRINCIPLES"
+    criteria:
+      - "Follow `docs/AGENTS.md` SSOT: place canonical `INV-*` rules in `docs/adr/` or `docs/architecture/` with unique IDs and concise routers in `**/AGENTS.md`."
+      - "Pair enforceable architectural invariants with `acdd-rule` YAML blocks referencing valid `acdd.yaml` zones and live symbols via `code_map_*`."
+      - "Keep prose accurate against live code/tests; never duplicate `INV-*` definitions across non-contract docs or mutate `docs/**/archive/`."
+  docs.tools:
+    description: "DOCUMENTATION & LINT NAVIGATION PROTOCOL"
+    criteria:
+      - "Use `search_docs`/`get_doc` for doc discovery, `code_map_lint` for `[arch, docs]` rule verification, and `code_map_overview`/`search`/`inspect` + `acdd_read` to verify cited symbols."
+  docs.synthesis:
+    description: "DOCUMENTATION BLUEPRINT SYNTHESIS"
+    criteria:
+      - "Audit `docs/{adr,architecture,reference}/` and `**/AGENTS.md`, assign disjoint doc/invariant ownership per task, post the decision to `acdd_blackboard`, and cite `blackboard_decision_id`."
+  docs.blueprint_review:
+    description: "INDEPENDENT BLUEPRINT REVIEW"
+    criteria:
+      - "Verify `INV-*` uniqueness, valid `acdd-rule` zone/rule boundaries, SSOT doc placement, and `blackboard_decision_id`."
+  docs.build:
+    description: "DOCUMENTATION AUTHORING & LINT VERIFICATION"
+    criteria:
+      - "Author or refactor docs and `acdd-rule` blocks strictly within `admitted_scope`, and pass `docs.links` + `code.lint` (`[arch, docs]`) before submit."
+      - "When a `website/` site exists in the repository, reconcile affected site pages/config and verify `./website/build.sh --check`."
+  docs.review:
+    description: "INDEPENDENT DOCUMENTATION REVIEW"
+    criteria:
+      - "Verify every `AC` 1:1, valid `acdd-rule` blocks, non-contract `INV-*` uniqueness, verified symbol/file links, `website/` alignment (`./website/build.sh --check` when present), and clean `code_map_lint` across all contours."
+      - "Reject localized defects to `build` (`kind: defect`); reject structural SSOT/ownership conflicts to `rearchitect` (`kind: architectural_drift`)."
+  docs.rearchitect:
+    description: "DOCUMENTATION DRIFT RECOVERY"
+    criteria:
+      - "Resolve conflicting doc/invariant ownership via `acdd_blackboard` (`topic: decisions`) before routing back to `build`."
+  docs.polish:
+    description: "INTEGRATION POLISH & CROSS-REFERENCE RECONCILIATION"
+    criteria:
+      - "Resolve `verify_docs` and `integration_review` findings within admitted polish paths while preserving accepted contracts."
+  docs.integration_review:
+    description: "INTEGRATION DOCUMENTATION REVIEW"
+    criteria:
+      - "Audit the integrated diff against `target_base` across all contours and confirm `docs.links` and workspace-wide `code.lint` (`[arch, docs]`) pass."
+  docs.handoff:
+    description: "TERMINAL DELIVERY RECEIPT"
+    criteria:
+      - "Confirm all non-cancelled tasks are completed and predecessor proofs match the current tree."
+
+contours:
+  architecture:
+    description: "Verify documentation SSOT placement, unique INV-* ownership, and valid executable acdd-rule blocks."
+    criteria:
+      - "Confirm each architectural invariant has one canonical non-contract definition, valid zone/symbol references, and zero redundant copies."
+
+gates:
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+        guidance: [docs.synthesis, core.execution, docs.principles, docs.tools, hitl.pro]
+        context: [docs.instructions, docs.adrs, docs.invariants]
+        pass: review
+      - id: review
+        role: independent_reviewer
+        proof: review
+        contours: [paths, claims, architecture, administration]
+        independent_from: [synthesize]
+        guidance: [docs.blueprint_review, core.review, docs.principles, docs.tools, hitl.pro]
+        context: [docs.instructions, docs.adrs, docs.invariants]
+        save: { immutable: true }
+        fail: synthesize
+
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          save: snapshot
+          checks:
+            - docs.links
+            - check: code.lint
+              with: { categories: [arch, docs] }
+          guidance: [docs.build, core.execution, docs.principles, docs.tools, hitl.pro]
+          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          pass: review
+        - id: review
+          role: independent_reviewer
+          proof: review
+          contours: [paths, claims, architecture, administration]
+          independent_from: [build]
+          need: [build]
+          guidance: [docs.review, core.review, docs.principles, docs.tools, hitl.pro]
+          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          save: { immutable: true }
+          pass: deliver
+          fail: build
+          fail_drift: rearchitect
+        - id: deliver
+          role: independent_reviewer
+          independent_from: [build]
+          need: [build, review]
+          receipt: true
+          guidance: [hitl.pro]
+          save: { immutable: true, post: commit }
+          fail: build
+        - id: rearchitect
+          role: architect
+          guidance: [docs.rearchitect, core.execution, docs.principles, docs.tools, hitl.pro]
+          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          pass: build
+          max_attempts: 3
+
+  - id: verify_docs
+    checks:
+      - docs.links
+      - check: code.lint
+        with: { categories: [arch, docs] }
+    max_attempts: 3
+    pass: integration_review
+    fail: polish
+
+  - id: polish
+    role: builder
+    scope: [".acdd/workflows/**", ".acdd/specs/**", "docs/**", "website/**", "skills/**", "AGENTS.md", "**/AGENTS.md", "README.md", "INSTALL.md", "CHANGELOG.md"]
+    checks:
+      - docs.links
+      - check: code.lint
+        with: { categories: [arch, docs] }
+    max_attempts: 3
+    guidance: [docs.polish, core.execution, docs.principles, docs.tools, hitl.pro]
+    context: [docs.instructions, docs.adrs, docs.invariants]
+    pass: verify_docs
+
+  - id: integration_review
+    role: independent_reviewer
+    proof: review
+    contours: [paths, claims, architecture, administration]
+    independent_from: [polish, "tasks.build"]
+    need: [verify_docs]
+    guidance: [docs.integration_review, core.review, docs.principles, docs.tools, hitl.pro]
+    context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+    save: { immutable: true }
+    pass: handoff
+    fail: polish
+
+  - id: handoff
+    role: independent_reviewer
+    need: [verify_docs, integration_review]
+    receipt: true
+    guidance: [docs.handoff, hitl.pro]
+    save: { immutable: true, post: commit, archive: true, prune: true }
+    fail: polish

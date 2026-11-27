@@ -12,7 +12,7 @@ fn evaluate_submit_plan(
     profile: &acdd_state::machine::MachineProfileInput,
     obs: &acdd_state::types::ValidatedObservations,
     input: &SubmitInput,
-) -> Result<acdd_state::types::TransitionPlan, acdd_core::errors::StateError> {
+) -> Result<acdd_state::types::TransitionPlan, acdd_core::errors::AcddError> {
     match evaluate_submit(snapshot, profile, obs, input)? {
         SubmitEvaluation::Apply(plan) => Ok(plan),
         SubmitEvaluation::MarkStaleAndReject { error, .. } => Err(error),

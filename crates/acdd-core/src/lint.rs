@@ -1,6 +1,6 @@
 //! Pure leaf architectural, graph hygiene, and documentation lint contracts.
 
-use crate::errors::{ErrorCode, StateError};
+use crate::errors::{AcddError, ErrorCode};
 use crate::path_policy::{glob_matches, is_valid_scope_glob, normalize_rel_path};
 use crate::schema::{AdditionalPropertiesDef, SchemaDef};
 use schemars::JsonSchema;
@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
-fn schema_invalid(msg: impl Into<String>) -> StateError {
-    StateError::new(ErrorCode::ProfileSchemaInvalid, msg.into())
+fn schema_invalid(msg: impl Into<String>) -> AcddError {
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, msg.into())
 }
 
 macro_rules! closed_lint_enum {
@@ -35,7 +35,7 @@ macro_rules! closed_lint_enum {
         }
 
         impl FromStr for $name {
-            type Err = StateError;
+            type Err = AcddError;
             fn from_str(raw: &str) -> Result<Self, Self::Err> {
                 match raw {
                     $($wire => Ok(Self::$variant),)+
@@ -204,7 +204,7 @@ impl ZoneSelector {
         &self,
         known_zones: Option<&BTreeSet<String>>,
         ctx: &str,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         if self.is_empty() {
             return Err(schema_invalid(format!("{ctx} selector must not be empty")));
         }
@@ -255,7 +255,7 @@ pub struct ArchRuleSpec {
 
 impl ArchRuleSpec {
     /// Validate rule fields, selector non-emptiness, glob syntax, and optional zone references.
-    pub fn validate(&self, known_zones: Option<&BTreeSet<String>>) -> Result<(), StateError> {
+    pub fn validate(&self, known_zones: Option<&BTreeSet<String>>) -> Result<(), AcddError> {
         if self.id.trim().is_empty() {
             return Err(schema_invalid("arch rule 'id' must not be empty"));
         }
@@ -345,7 +345,7 @@ impl ComplexityLimits {
     }
 
     /// Validate that any complexity invariant binding is non-empty.
-    pub fn validate(&self) -> Result<(), StateError> {
+    pub fn validate(&self) -> Result<(), AcddError> {
         if self
             .invariant
             .as_deref()
@@ -392,7 +392,7 @@ impl ArchitectureConfig {
     }
 
     /// Validate all declared zones, glob patterns, complexity limits, rule ID uniqueness, and zone references.
-    pub fn validate(&self) -> Result<(), StateError> {
+    pub fn validate(&self) -> Result<(), AcddError> {
         self.complexity.validate()?;
         for (zone_name, globs) in &self.zones {
             if zone_name.trim().is_empty() {
@@ -469,7 +469,7 @@ pub fn lint_check_input_schema() -> SchemaDef {
     root
 }
 
-fn validate_non_empty_strings(items: &[String], ctx: &str) -> Result<(), StateError> {
+fn validate_non_empty_strings(items: &[String], ctx: &str) -> Result<(), AcddError> {
     for item in items {
         if item.trim().is_empty() {
             return Err(schema_invalid(format!("{ctx} entries must not be empty")));
@@ -478,7 +478,7 @@ fn validate_non_empty_strings(items: &[String], ctx: &str) -> Result<(), StateEr
     Ok(())
 }
 
-fn validate_scope_globs(globs: &[String], ctx: &str) -> Result<(), StateError> {
+fn validate_scope_globs(globs: &[String], ctx: &str) -> Result<(), AcddError> {
     for glob in globs {
         if !is_valid_scope_glob(glob) {
             return Err(schema_invalid(format!(
@@ -493,7 +493,7 @@ fn validate_zone_refs(
     zones: &[String],
     known_zones: Option<&BTreeSet<String>>,
     ctx: &str,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     for zone in zones {
         if zone.trim().is_empty() {
             return Err(schema_invalid(format!("{ctx} entries must not be empty")));
@@ -529,7 +529,7 @@ mod tests {
         }
         assert_eq!(
             "bogus".parse::<LintCategory>().unwrap_err().code,
-            ErrorCode::ProfileSchemaInvalid
+            ErrorCode::WorkflowSchemaInvalid
         );
 
         assert_eq!(LintSeverity::default(), LintSeverity::Error);
@@ -624,7 +624,7 @@ rules:
                 let err = cfg
                     .validate()
                     .expect_err(&format!("{label}: expected validation failure"));
-                assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
+                assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{label}: {err}");
             }
         }
     }

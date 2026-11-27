@@ -20,7 +20,7 @@ pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
         state_db_override: None,
         code_db_path: None,
         spec_collections: default_specs(),
-        profiles_dirs: vec![".acdd/profiles".to_owned()],
+        workflows_dirs: vec![".acdd/workflows".to_owned()],
         linked_workspaces: BTreeMap::new(),
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
@@ -47,6 +47,7 @@ pub(crate) fn init_git_repo_on_branch(repo: &Path, branch: &str) {
     let _ = git_cmd(repo, &["init", "-b", branch]);
     let _ = git_cmd(repo, &["config", "user.name", "ACDD Test"]);
     let _ = git_cmd(repo, &["config", "user.email", "test@acdd.local"]);
+    let _ = git_cmd(repo, &["config", "commit.gpgsign", "false"]);
     std::fs::write(repo.join("README.md"), "# ACDD Fixture Repo\n").unwrap();
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/lib.rs"), "pub fn base() -> i32 { 1 }\n").unwrap();
@@ -188,7 +189,7 @@ impl DomainProvider for TestProvider {
             Ok(json!({
                 "lens": lens,
                 "docs_roots": ["docs"],
-                "available_profiles": ["spec_planning"],
+                "available_workflows": ["code"],
             }))
         } else {
             Ok(json!({"lens": lens, "items": []}))

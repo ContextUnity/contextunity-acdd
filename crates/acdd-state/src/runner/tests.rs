@@ -1,7 +1,7 @@
 use super::command::execute_gate_commands_inner;
 use super::spawner::spawn_role_runner_borrowed_inner;
 use super::*;
-use crate::profile::{CommandDef, ResourceLimits, RoleDef, RoleExecutionMode};
+use crate::workflow::{CommandDef, ResourceLimits, RoleDef, RoleExecutionMode};
 use crate::types::ClaimOutcome;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};

@@ -1,0 +1,14 @@
+[package]
+name = "acdd-spec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure Rust ContextUnity ACDD specification frontmatter, parsing, drafting, validation, and static roadmap DAG"
+
+[dependencies]
+acdd-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true }

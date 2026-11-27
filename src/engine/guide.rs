@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 
-/// Canonical `0.6.0` `acdd.yaml` template.
+/// Canonical `acdd.yaml` template.
 const TEMPLATE: &str = "\
+preset: full
 roots:
   - .
 ignore:
@@ -26,19 +27,20 @@ specs:
     path: docs/plans
     prefixes: [PLAN]
     digits: 3
-profiles_dirs:
-  - .acdd/profiles
+workflows_dirs:
+  - .acdd/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 ";
 
-/// Canonical `.gitignore` block ensuring `.acdd/profile.yaml`, `profiles/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
+/// Canonical `.gitignore` block ensuring `.acdd/workflows/**`, `.acdd/specs/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
 const CANONICAL_GITIGNORE_BLOCK: &str = "\
 /.worktrees/
 !/.acdd/
-!/.acdd/profile.yaml
-!/.acdd/profiles/
-!/.acdd/profiles/**
+!/.acdd/workflows/
+!/.acdd/workflows/**
+!/.acdd/specs/
+!/.acdd/specs/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*
@@ -156,13 +158,13 @@ pub fn run_with_adapter_mode(
     Ok(value)
 }
 
-/// Initialize `acdd.yaml`, `.acdd/profile.yaml` (`inherit: code` or `inherit: base`), and canonical `.gitignore` block.
+/// Initialize `acdd.yaml`, `.acdd/workflows/default.yaml` (`inherit: code` or `inherit: base`), and canonical `.gitignore` block.
 pub fn initialize(root: &Path, force: bool) -> Result<Value> {
     let acdd_yaml = root.join("acdd.yaml");
-    let profile_yaml = root.join(".acdd/profile.yaml");
+    let workflow_yaml = root.join(".acdd/workflows/default.yaml");
 
-    if acdd_yaml.exists() && profile_yaml.exists() && !force {
-        bail!("acdd.yaml and .acdd/profile.yaml already exist; pass --force to replace");
+    if acdd_yaml.exists() && workflow_yaml.exists() && !force {
+        bail!("acdd.yaml and .acdd/workflows/default.yaml already exist; pass --force to replace");
     }
 
     let mut wrote_config = false;
@@ -174,17 +176,17 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
     let adapter = load_adapter(root, Some(&acdd_yaml))?;
     let code_enabled = adapter.modules.is_enabled("code");
     let inherit = if code_enabled { "code" } else { "base" };
-    let profile_content = format!(
+    let workflow_content = format!(
         "version: 2\ninherit: {inherit}\n\n# Bind abstract command slots (`test`, `build_check`, `verify_all`) for your project:\n# commands:\n#   test: \"cargo test --lib {{test_filter}}\"\n#   build_check: \"cargo clippy --workspace --all-targets -- -D warnings && cargo test --lib\"\n#   verify_all: \"cargo test --workspace\"\n"
     );
 
-    let mut wrote_profile = false;
-    if !profile_yaml.exists() || force {
-        if let Some(parent) = profile_yaml.parent() {
+    let mut wrote_workflow = false;
+    if !workflow_yaml.exists() || force {
+        if let Some(parent) = workflow_yaml.parent() {
             fs::create_dir_all(parent)?;
         }
-        acdd_core::fs::atomic_write(&profile_yaml, profile_content.as_bytes(), false)?;
-        wrote_profile = true;
+        acdd_core::fs::atomic_write(&workflow_yaml, workflow_content.as_bytes(), false)?;
+        wrote_workflow = true;
     }
 
     let gitignore_path = root.join(".gitignore");
@@ -203,16 +205,17 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
         let ignored_state = git_command(root, &["check-ignore", "-q", ".acdd/state.sqlite"])?
             .status
             .success();
-        let ignored_profile = git_command(root, &["check-ignore", "-q", ".acdd/profile.yaml"])?
-            .status
-            .success();
+        let ignored_workflow =
+            git_command(root, &["check-ignore", "-q", ".acdd/workflows/default.yaml"])?
+                .status
+                .success();
         if !ignored_state {
             bail!(
                 "GITIGNORE_VERIFICATION_FAILED: .gitignore did not ignore .acdd/state.sqlite; check repository ignore rules"
             );
         }
-        if ignored_profile {
-            bail!("GITIGNORE_VERIFICATION_FAILED: .gitignore must not ignore .acdd/profile.yaml");
+        if ignored_workflow {
+            bail!("GITIGNORE_VERIFICATION_FAILED: .gitignore must not ignore .acdd/workflows/default.yaml");
         }
         git_check_ignore_verified = true;
     }
@@ -220,10 +223,10 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
     Ok(json!({
         "root": root,
         "config_path": acdd_yaml,
-        "profile_path": profile_yaml,
+        "workflow_path": workflow_yaml,
         "inherit": inherit,
         "created_config": wrote_config,
-        "created_profile": wrote_profile,
+        "created_workflow": wrote_workflow,
         "gitignore_path": gitignore_path,
         "git_check_ignore_verified": git_check_ignore_verified,
     }))
@@ -263,10 +266,10 @@ fn upsert_canonical_gitignore(existing: &str) -> String {
 fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<Value> {
     match topic {
         "lifecycle" => Ok(json!({
-            "purpose": "Advance admitted work through its active GateProfile (`version: 2`) and observed proof gates.",
-            "authority": "The resolved GateProfile and `acdd_claim` contract + guidance are authoritative. Gate names and transitions are profile data, not hardcoded stages.",
+            "purpose": "Advance admitted work through its active WorkflowDef (`version: 2`) and observed proof gates.",
+            "authority": "The resolved WorkflowDef and `acdd_claim` contract + guidance are authoritative. Gate names and transitions are workflow data, not hardcoded stages.",
             "steps": [
-                "Use CLI `acdd roadmap` for cross-collection planning (and CLI `acdd draft` to scaffold specs), and `acdd context [<node>]` / `acdd_state(action: \"context\")` to refresh budgeted gate contract/guidance over SQLITE_OPEN_READ_ONLY without mutating claims.",
+                "Use CLI `acdd roadmap` for cross-spec planning (and CLI `acdd draft <spec> <slug>` to scaffold specs), and `acdd context [<node>]` / `acdd_state(action: \"context\")` to refresh budgeted gate contract/guidance over SQLITE_OPEN_READ_ONLY without mutating claims.",
                 "Use `acdd next` / `acdd_state(action: \"next\")` or `acdd status` to discover ready cursors, then `acdd claim` / `acdd_claim` with `node`, `worker_id`, and `worktree`.",
                 "Implement strictly inside admitted write scope (`in_write_scope: ALLOWED` in `acdd_read`). Call `acdd verify <cursor> [--test <target>]` / `acdd_verify` to observe fresh trace evidence.",
                 "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`, and optional `kind`: `defect | architectural_drift`).",
@@ -288,21 +291,21 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "references": ["AGENTS.md", "docs/reference/tasks.md", "docs/reference/cli.md"]
         })),
         "gates" => Ok(json!({
-            "purpose": "Follow the active GateProfile's `when:` tag expressions, `pass:`/`fail:` routes, `save:` policy, `checks:`, `context:`, and proof contracts.",
+            "purpose": "Follow the active WorkflowDef's `when:` tag expressions, `pass:`/`fail:` routes, `save:` policy, `checks:`, `context:`, and proof contracts.",
             "steps": [
-                "Inspect the active profile and `acdd_claim` contract before running commands or reviews.",
+                "Inspect the active workflow and `acdd_claim` contract before running commands or reviews.",
                 "Use `acdd verify` / `acdd_verify` to observe `command:`, `call:`, `checks:`, and scope barriers without mutating gate state.",
                 "Submit only fresh, claim-bound observations via `acdd submit` / `acdd_submit`."
             ],
             "when": "Boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses); valid on `- tasks:` blocks and `task_gate`s, forbidden on `root_gate`s.",
             "transitions": "`pass:`, `fail:`, and `fail_drift:` select explicit next gate targets (`defect` routes via `fail:`, `architectural_drift` routes via `fail_drift:` and triggers builder context reset); `max_attempts` caps retries and root/container cycle counts before `escalated`. `independent_from` enforces `worker_id` inequality.",
-            "persistence": "`git.isolation` (`worktree | in_place` via profile or `--in-place`) and `git.worktrees` (`manual | managed`). Top-level `save` applies `none | commit`. Gate `save.post` applies `none | commit | snapshot` (`commit` writes an atomic plumbing commit with `Acdd-Claim`; `snapshot` is valid only on leaf task gates); `immutable: true` enforces `current_tree == claim_tree`; `save.report: <relpath>` writes a gate report strictly under `.acdd/reports/*.{md,json}` on pass.",
+            "persistence": "`git.isolation` (`worktree | in_place` via workflow or `--in-place`) and `git.worktrees` (`manual | managed`). Top-level `save` applies `none | commit`. Gate `save.post` applies `none | commit | snapshot` (`commit` writes an atomic plumbing commit with `Acdd-Claim`; `snapshot` is valid only on leaf task gates); `immutable: true` enforces `current_tree == claim_tree`; `save.report: <relpath>` writes a gate report strictly under `.acdd/reports/*.{md,json}` on pass.",
             "verification": "`verify` records `gate_traces` with RFC-8785 SHA-256 `execution_digest` bound to `contract_revision`, resolved commands, `test_target`, `checks:` salts (`index_generation` + `live_files_digest`), and `candidate_tree_before == candidate_tree_after`.",
             "example": {
                 "mcp": { "name": "acdd_verify", "arguments": { "node": "t1.build", "test_target": "tests/seam.rs::case" } },
                 "cli": "acdd verify t1.build --test tests/seam.rs::case"
             },
-            "references": ["docs/reference/tasks.md", "docs/reference/profiles.md", "docs/reference/cli.md"]
+            "references": ["docs/reference/tasks.md", "docs/reference/workflows.md", "docs/reference/cli.md"]
         })),
         "subtasks" => Ok(json!({
             "purpose": "Track bounded task slices and mandatory terminal evidence before container `receipt: true` gates.",
@@ -340,6 +343,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "filename": "acdd.yaml",
             "template": TEMPLATE,
             "keys": [
+                "preset",
                 "roots",
                 "eligible_roots",
                 "docs",
@@ -347,7 +351,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "excluded_directory_names",
                 "excluded_file_names",
                 "specs",
-                "profiles_dirs",
+                "workflows_dirs",
                 "state_db",
                 "retain_traces",
                 "modules",
@@ -359,8 +363,9 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "sensitive",
                 "DEBUG"
             ],
-            "specs": "Map of collection name -> { path, profile, prefixes, digits } (defaults: milestones -> docs/milestones, plans -> docs/plans); paths must not overlap by components.",
-            "modules": "Enable/disable subsystems (`code`, `docs`, `state`, `blackboard`, `memory`, `domains.<id>`). Disabling `state` physically prevents `state.sqlite` creation and hides the 5 MCP state tools.",
+            "preset": "Three-layer subsystem preset (`full` default, `index`, `spec`, `state`, `minimal`); `spec` enables CLI `acdd validate`/`roadmap`/`draft` and MCP docs/core tools without creating `.acdd/state.sqlite`.",
+            "specs": "Map of spec name -> { path, workflow, prefixes, digits } (defaults: milestones -> docs/milestones, plans -> docs/plans); paths must not overlap by components.",
+            "modules": "Enable/disable subsystems (`code`, `docs`, `spec`, `state`, `blackboard`, `memory`, `domains.<id>`). Disabling `state` physically prevents `state.sqlite` creation and hides the 5 MCP state tools.",
             "linked_workspaces": "Array of { name, path, enabled?, roots, docs, ignore }; indexes sibling worktrees and resolves cross-repo `depends_on`.",
             "default": "Workspace root; `.git`, `.worktrees`, `.acdd` runtime artifacts, and common build directories excluded."
         })),
@@ -378,12 +383,19 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
         })),
         "acdd" => Ok(json!({
-            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 18 static + external DomainProvider plugin tools.",
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified WorkflowDef engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 18 static + external DomainProvider plugin tools.",
             "steps": [
-                "Initialize with `acdd init` (selects `inherit: code | base | audit | spec_planning`, writes canonical `.gitignore`).",
-                "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
-                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--profile spec_planning]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
+                "Initialize with `acdd init` (selects `inherit: code | base`, writes `.acdd/workflows/default.yaml` and canonical `.gitignore`; auxiliary templates live in `skills/acdd/references/acdd-workflow-examples/`).",
+                "Validate workspace config, active workflow, `DomainProvider` capabilities, and active specs with `acdd validate`.",
+                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--workflow <ref>]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
             ],
+            "presets": {
+                "full": "code + docs + spec + state + blackboard (all 18 static tools)",
+                "index": "code + docs",
+                "spec": "spec (CLI validate/roadmap/draft without state.sqlite) + docs (4 MCP tools)",
+                "state": "state + blackboard + spec",
+                "minimal": "core only (`acdd_read`, `acdd_guide`)"
+            },
             "mcp_tools": {
                 "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_query", "code_map_lint", "ast_grep_search"],
                 "docs": ["get_doc", "search_docs"],
@@ -534,10 +546,10 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
             "references": ["docs/AGENTS.md", "docs/reference/cli.md"]
         })),
         "lifecycle" => Ok(json!({
-            "purpose": "Advance admitted work through its active GateProfile (`version: 2`) and observed proof gates via CLI.",
-            "authority": "The resolved GateProfile and `acdd claim` contract + guidance are authoritative. Gate names and transitions are profile data, not hardcoded stages.",
+            "purpose": "Advance admitted work through its active WorkflowDef (`version: 2`) and observed proof gates via CLI.",
+            "authority": "The resolved WorkflowDef and `acdd claim` contract + guidance are authoritative. Gate names and transitions are workflow data, not hardcoded stages.",
             "steps": [
-                "Use `acdd roadmap` for cross-collection planning, `acdd draft` to scaffold specs, and `acdd context [<node>]` to inspect budgeted gate context read-only without mutating claims.",
+                "Use `acdd roadmap` for cross-spec planning, `acdd draft` to scaffold specs, and `acdd context [<node>]` to inspect budgeted gate context read-only without mutating claims.",
                 "Use `acdd next` or `acdd status` to discover ready cursors, then `acdd claim <cursor> --worker <id> --worktree <path>`.",
                 "Implement strictly inside admitted write scope and run `acdd verify <cursor> [--test <target>]` and `acdd exec -- <cmd>` inside the worktree.",
                 "Submit via `acdd submit <cursor> --action pass|reject` (with structured `--findings` JSON on reject), and complete subtasks via `acdd subtask` with non-empty `--evidence` before receipt gates.",
@@ -556,17 +568,18 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
             "references": ["AGENTS.md", "docs/reference/tasks.md", "docs/reference/cli.md"]
         })),
         "acdd" => Ok(json!({
-            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine and flat `acdd` CLI.",
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified WorkflowDef engine and flat `acdd` CLI.",
             "steps": [
-                "Initialize with `acdd init` (selects `inherit: code | base | audit | spec_planning`, writes canonical `.gitignore`).",
-                "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
-                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--profile hotfix|spec_planning]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `context`, `clear`, `run`, `tool`)."
+                "Initialize with `acdd init` (selects `inherit: code | base`, writes `.acdd/workflows/default.yaml` and canonical `.gitignore`; auxiliary templates live in `skills/acdd/references/acdd-workflow-examples/`).",
+                "Validate workspace config, active workflow, `DomainProvider` capabilities, and active specs with `acdd validate`.",
+                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--workflow <ref>]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `context`, `clear`, `run`, `tool`)."
             ],
             "cli_commands": {
                 "code": ["acdd query overview", "acdd query search", "acdd query inspect", "acdd query impact", "acdd query analyze", "acdd query explain", "acdd query run", "acdd lint", "acdd ast grep"],
                 "docs": ["acdd docs get", "acdd docs search", "acdd docs check"],
+                "spec": ["acdd validate", "acdd roadmap", "acdd draft"],
                 "core": ["acdd read", "acdd guide", "acdd exec"],
-                "state": ["acdd start", "acdd draft", "acdd roadmap", "acdd status", "acdd list", "acdd show", "acdd context", "acdd next", "acdd claim", "acdd verify", "acdd submit", "acdd extend-scope", "acdd reopen", "acdd sync", "acdd subtask", "acdd blackboard", "acdd clear", "acdd run"],
+                "state": ["acdd start", "acdd status", "acdd list", "acdd show", "acdd context", "acdd next", "acdd claim", "acdd verify", "acdd submit", "acdd extend-scope", "acdd reopen", "acdd sync", "acdd subtask", "acdd blackboard", "acdd clear", "acdd run"],
                 "plugins": "acdd tool <domain>_<name> --args '{...}' from active DomainProviders"
             },
             "example": { "cli": "acdd status" },
@@ -588,7 +601,7 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
                 obj.insert(
                     "steps".into(),
                     json!([
-                        "Inspect the active profile and `acdd claim` / `acdd context` output before running commands or reviews.",
+                        "Inspect the active workflow and `acdd claim` / `acdd context` output before running commands or reviews.",
                         "Use `acdd verify <cursor> [--test <target>]` to observe `command:`, `call:`, `checks:`, and scope barriers without mutating gate state.",
                         "Submit only fresh, claim-bound observations via `acdd submit <cursor> --action pass|reject`."
                     ]),
@@ -620,7 +633,7 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
             if let Some(obj) = val.as_object_mut() {
                 obj.insert(
                     "modules".into(),
-                    json!("Enable/disable subsystems (`code`, `docs`, `state`, `blackboard`, `memory`, `domains.<id>`). Disabling `state` physically prevents `state.sqlite` creation and state commands."),
+                    json!("Enable/disable subsystems (`code`, `docs`, `spec`, `state`, `blackboard`, `domains.<id>`). Disabling `state` physically prevents `state.sqlite` creation and state commands."),
                 );
             }
             Ok(val)

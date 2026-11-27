@@ -8,14 +8,15 @@ use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::harness::RunHarness;
 use acdd_state::machine::{evaluate_transition, ExtendScopeInput, TransitionInput};
-use acdd_state::profile::resolve_optional_profile_ref_with_dirs;
-use acdd_state::spec::parse_spec;
+use acdd_spec::parse_spec;
+use acdd_state::workflow::resolve_optional_workflow_ref_with_dirs;
 use acdd_state::store::traits::exec_tx_with;
 use acdd_state::types::{
     GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
     RunTombstoneRecord, StoragePreconditions, TerminalStatus,
 };
-use acdd_state::usecases::deps::{validate_spec_dependencies, verify_run_level_depends_on};
+use acdd_state::usecases::deps::verify_run_level_depends_on;
+use acdd_state::usecases::overlay::validate_spec_dependencies;
 use acdd_state::usecases::lifecycle::to_machine_profile;
 use acdd_state::usecases::StateEngineConfig;
 use acdd_state::validate::{validate_document, validate_spec_for_run, validate_workspace};
@@ -78,9 +79,9 @@ fn full_providers() -> CompositeDomainProvider {
 }
 
 fn write_bound_profile(root: &Path, extra: &str) {
-    fs::create_dir_all(root.join(".acdd")).unwrap();
+    fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
     fs::write(
-        root.join(".acdd/profile.yaml"),
+        root.join(".acdd/workflows/default.yaml"),
         format!(
             "version: 2\ninherit: code\ncommands:\n  test: \"cargo test {{test_filter}}\"\n  build_check: \"cargo check\"\n  verify_all: \"cargo test\"\n{extra}"
         ),
@@ -94,37 +95,24 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     let root = dir.path();
     let providers = full_providers();
 
-    // 1. Removed legacy keys fail schema validation via deny_unknown_fields -> ACDD_PROFILE_SCHEMA_INVALID.
-    fs::write(
-        root.join("acdd.yaml"),
-        "milestones:\n  path: docs/milestones\n",
-    )
-    .unwrap();
-    let res_legacy = validate_workspace(root, None, None, &providers).unwrap();
-    assert!(!res_legacy.valid);
-    assert_eq!(
-        res_legacy.diagnostics[0].code,
-        ErrorCode::ProfileSchemaInvalid.as_str()
-    );
-
-    // 2. Invalid schema acdd.yaml triggers ACDD_PROFILE_SCHEMA_INVALID.
+    // 1. Unknown top-level key in acdd.yaml triggers ACDD_WORKFLOW_SCHEMA_INVALID via deny_unknown_fields.
     fs::write(root.join("acdd.yaml"), "bogus_unknown: true\n").unwrap();
     let res_schema = validate_workspace(root, None, None, &providers).unwrap();
     assert!(!res_schema.valid);
     assert_eq!(
         res_schema.diagnostics[0].code,
-        ErrorCode::ProfileSchemaInvalid.as_str()
+        ErrorCode::WorkflowSchemaInvalid.as_str()
     );
 
-    // 3. Valid acdd.yaml + unbound commands with modules.state: true -> diagnostics[0] = CONFIG_VALID, diagnostics[1] = COMMAND_UNBOUND.
+    // 2. Valid acdd.yaml + unbound commands with modules.state: true -> diagnostics[0] = CONFIG_VALID, diagnostics[1] = COMMAND_UNBOUND.
     fs::write(
         root.join("acdd.yaml"),
         "modules:\n  code: true\n  docs: true\n  state: true\n",
     )
     .unwrap();
-    fs::create_dir_all(root.join(".acdd")).unwrap();
+    fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
     fs::write(
-        root.join(".acdd/profile.yaml"),
+        root.join(".acdd/workflows/default.yaml"),
         "version: 2\ninherit: code\n",
     )
     .unwrap();
@@ -140,7 +128,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     )
     .unwrap();
     fs::write(
-        root.join(".acdd/profile.yaml"),
+        root.join(".acdd/workflows/default.yaml"),
         "version: 2\ninherit: none\ndefault_tools: [acdd_read]\ncommands:\n  t:\n    unbound: true\ngates:\n  - id: verify\n    command: t\n    proof: command\n",
     )
     .unwrap();
@@ -153,7 +141,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         "modules:\n  code: true\n  docs: true\n  state: true\n",
     )
     .unwrap();
-    write_bound_profile(root, "protected_paths: [Cargo.toml, .acdd/profile.yaml]\n");
+    write_bound_profile(root, "protected_paths: [Cargo.toml, .acdd/workflows/default.yaml]\n");
     fs::create_dir_all(root.join("docs/milestones")).unwrap();
     fs::create_dir_all(root.join("docs/plans")).unwrap();
 
@@ -242,7 +230,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         );
         assert_eq!(
             bad_lim_res.diagnostics[0].code,
-            ErrorCode::ProfileSchemaInvalid.as_str()
+            ErrorCode::WorkflowSchemaInvalid.as_str()
         );
     }
     fs::write(
@@ -288,7 +276,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         state_db_override: None,
         code_db_path: None,
         spec_collections: default_specs(),
-        profiles_dirs: vec![".acdd/profiles".to_owned()],
+        workflows_dirs: vec![".acdd/workflows".to_owned()],
         linked_workspaces: BTreeMap::new(),
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
@@ -297,7 +285,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         allowed_binary_extensions: None,
     };
     let resolved_p =
-        resolve_optional_profile_ref_with_dirs(None, Some(root), Some(&cfg.modules), None).unwrap();
+        resolve_optional_workflow_ref_with_dirs(None, Some(root), Some(&cfg.modules), None).unwrap();
     let harness = RunHarness::in_memory().unwrap();
     validate_spec_for_run(&cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap();
 
@@ -441,7 +429,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     g_cfg.worktree = groot.to_path_buf();
     let uncommitted_err =
         validate_spec_for_run(&g_cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap_err();
-    assert_eq!(uncommitted_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(uncommitted_err.code, ErrorCode::SpecSchemaInvalid);
     let direct_dep_err = verify_run_level_depends_on(&g_cfg, &harness, &dep_05_doc).unwrap_err();
     assert_eq!(direct_dep_err.code, ErrorCode::GateVerificationFailed);
     git_command(groot, &["add", "docs/milestones/archive/AC-090-legacy.md"]).unwrap();
@@ -537,7 +525,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         .unwrap();
         let err =
             validate_spec_for_run(&cfg, &harness, &providers, &bad_doc, &resolved_p).unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{bad_scope}");
+        assert_eq!(err.code, ErrorCode::SpecSchemaInvalid, "{bad_scope}");
     }
 
     // (b) plan_extend_scope rejects malformed brace globs.
@@ -558,12 +546,12 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     .unwrap_err();
     assert_eq!(ext_err.code, ErrorCode::OutOfScopeChanges);
 
-    // (c) validate_document surfaces broken .acdd/profile.yaml rather than swallowing with .ok().
+    // (c) validate_document surfaces broken .acdd/workflows/default.yaml rather than swallowing with .ok().
     let broken_ws = tempfile::tempdir().unwrap();
-    fs::create_dir_all(broken_ws.path().join(".acdd")).unwrap();
+    fs::create_dir_all(broken_ws.path().join(".acdd/workflows")).unwrap();
     fs::create_dir_all(broken_ws.path().join("docs/milestones")).unwrap();
     fs::write(
-        broken_ws.path().join(".acdd/profile.yaml"),
+        broken_ws.path().join(".acdd/workflows/default.yaml"),
         "version: 2\ninherit: missing_parent\n",
     )
     .unwrap();
@@ -585,8 +573,8 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         doc_broken_prof
             .diagnostics
             .iter()
-            .any(|d| d.status == "fail" && d.path == ".acdd/profile.yaml"),
-        "expected .acdd/profile.yaml diagnostic: {doc_broken_prof:?}"
+            .any(|d| d.status == "fail" && d.path == ".acdd/workflows/default.yaml"),
+        "expected .acdd/workflows/default.yaml diagnostic: {doc_broken_prof:?}"
     );
 
     // (d) Cross-spec task-level cycle detection & non-cyclic cross-spec task refs.
@@ -609,7 +597,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     assert!(
         cyc_issues
             .iter()
-            .any(|i| i.code == ErrorCode::ProfileSchemaInvalid && i.message.contains("cross-spec")),
+            .any(|i| i.code == ErrorCode::SpecSchemaInvalid && i.message.contains("cross-spec")),
         "expected cross-spec task cycle diagnostic: {cyc_issues:?}"
     );
 
@@ -661,7 +649,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     assert!(
         alias_cyc_issues
             .iter()
-            .any(|i| i.code == ErrorCode::ProfileSchemaInvalid && i.message.contains("cross-spec")),
+            .any(|i| i.code == ErrorCode::SpecSchemaInvalid && i.message.contains("cross-spec")),
         "self-alias cross-spec cycle must fail closed: {alias_cyc_issues:?}"
     );
 
@@ -680,7 +668,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     assert!(
         self_dep_issues
             .iter()
-            .any(|i| i.code == ErrorCode::ProfileSchemaInvalid
+            .any(|i| i.code == ErrorCode::SpecSchemaInvalid
                 && i.message.contains("cannot depend on itself")),
         "self-alias self-dependency must fail closed: {self_dep_issues:?}"
     );

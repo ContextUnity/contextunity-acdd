@@ -2,7 +2,7 @@
 
 use super::exec::{run_git_checked, run_git_raw, run_git_stdout};
 use super::snapshot::parse_canonical_revision;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child, ensure_confined_dir_all, open_confined};
 use acdd_core::ids::{CommitOid, RunId};
 use acdd_core::lock::{try_acquire_exclusive, FileLockGuard};
@@ -62,9 +62,9 @@ pub struct CreatedWorktree {
 }
 
 /// Resolve primary worktree, `--git-common-dir`, and shared lock/backup paths for `worktree`.
-pub fn resolve_repo_layout(worktree: &Path) -> Result<RepoWorktreeLayout, StateError> {
+pub fn resolve_repo_layout(worktree: &Path) -> Result<RepoWorktreeLayout, AcddError> {
     if !worktree.exists() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("worktree path '{}' does not exist", worktree.display()),
         ));
@@ -121,36 +121,36 @@ pub fn resolve_repo_layout(worktree: &Path) -> Result<RepoWorktreeLayout, StateE
 }
 
 /// Create a managed run-level worktree under `.worktrees/<run_name>`.
-pub fn create_run_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, StateError> {
+pub fn create_run_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, AcddError> {
     create_managed_worktree(req, None)
 }
 
 /// Create a managed task-level worktree under `.worktrees/<run_name>-<task_ref>`.
-pub fn create_task_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, StateError> {
+pub fn create_task_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, AcddError> {
     create_managed_worktree(req, None)
 }
 
 pub(crate) fn create_managed_worktree(
     req: &CreateWorktreeReq,
     copy_source: Option<&Path>,
-) -> Result<CreatedWorktree, StateError> {
+) -> Result<CreatedWorktree, AcddError> {
     let primary = canonicalize_macos_var(&req.primary_worktree);
     if !primary.exists() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("primary worktree '{}' does not exist", primary.display()),
         ));
     }
 
     if req.branch_name.trim().is_empty() || req.branch_name.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid worktree branch name '{}'", req.branch_name),
         ));
     }
     if req.base_ref.trim().is_empty() || req.base_ref.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid base ref '{}'", req.base_ref),
         ));
     }
@@ -160,7 +160,7 @@ pub(crate) fn create_managed_worktree(
         &["check-ref-format", "--branch", &req.branch_name],
         None,
         None,
-        ErrorCode::ProfileSchemaInvalid,
+        ErrorCode::WorkflowSchemaInvalid,
     )?;
 
     let base_check = format!("{}^{{commit}}", req.base_ref);
@@ -178,15 +178,15 @@ pub(crate) fn create_managed_worktree(
     };
     let target_wt = canonicalize_macos_var(&raw_target);
     if target_wt.exists() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!("worktree path '{}' already exists", target_wt.display()),
         ));
     }
 
     let parent = target_wt.parent().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "worktree path '{}' requires a parent directory",
                 target_wt.display()
@@ -229,11 +229,11 @@ pub(crate) fn create_managed_worktree(
     })
 }
 
-fn ensure_confined_dir_exists(dir: &Path) -> Result<(), StateError> {
+fn ensure_confined_dir_exists(dir: &Path) -> Result<(), AcddError> {
     ensure_confined_dir_all(dir, dir)
         .map(|_| ())
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "failed preparing confined directory '{}': {err}",
@@ -247,24 +247,24 @@ fn copy_uncommitted_files(
     primary: &Path,
     target_wt: &Path,
     paths: &[String],
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     for raw in paths {
         let Some(norm) = normalize_rel_path(raw) else {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid uncommitted relative path '{raw}'"),
             ));
         };
         let rel = Path::new(&norm);
         let src = checked_child(primary, rel).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!("uncommitted path '{norm}' failed confinement check: {err}"),
             )
         })?;
         match fs::symlink_metadata(&src) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!("refusing to copy symlink '{norm}' into managed worktree"),
                 ));
@@ -273,20 +273,20 @@ fn copy_uncommitted_files(
                 let mut open_opts = OpenOptions::new();
                 open_opts.read(true);
                 let mut file = open_confined(primary, rel, &mut open_opts).map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::ExternalGitDrift,
                         format!("failed reading '{norm}': {err}"),
                     )
                 })?;
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes).map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::ExternalGitDrift,
                         format!("failed reading bytes from '{norm}': {err}"),
                     )
                 })?;
                 let dst = checked_child(target_wt, rel).map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::ExternalGitDrift,
                         format!("destination path '{norm}' failed confinement check: {err}"),
                     )
@@ -299,7 +299,7 @@ fn copy_uncommitted_files(
                 #[cfg(not(unix))]
                 let executable = false;
                 atomic_write(&dst, &bytes, executable).map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::ExternalGitDrift,
                         format!("failed writing '{norm}' into managed worktree: {err}"),
                     )
@@ -308,7 +308,7 @@ fn copy_uncommitted_files(
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
                     format!("failed inspecting '{norm}': {err}"),
                 ));
@@ -323,7 +323,7 @@ pub fn is_branch_merged_into_ref(
     primary_worktree: &Path,
     branch_ref: &str,
     target_ref: &str,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let primary = canonicalize_macos_var(primary_worktree);
     let full_ref = if branch_ref.starts_with("refs/") {
         branch_ref.to_owned()
@@ -356,13 +356,13 @@ pub fn remove_worktree_and_branch(
     worktree: Option<&Path>,
     branch: Option<&str>,
     force: bool,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let primary = canonicalize_macos_var(primary_worktree);
 
     if let Some(wt) = worktree {
         let can_wt = canonicalize_macos_var(wt);
         if can_wt == primary {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 "refusing to remove the primary repository worktree",
             ));
@@ -382,15 +382,15 @@ pub fn remove_worktree_and_branch(
 
     if let Some(raw_branch) = branch {
         if super::commit::is_protected_main_branch(Some(raw_branch)) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::MainBranchProtected,
                 format!("refusing to delete protected branch '{raw_branch}'"),
             ));
         }
         let short = raw_branch.strip_prefix("refs/heads/").unwrap_or(raw_branch);
         if short.trim().is_empty() || short.starts_with('-') {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("invalid branch name '{raw_branch}'"),
             ));
         }
@@ -422,22 +422,22 @@ pub fn cleanup_run_refs<'a>(
     locked: Option<&'a RepoWorktreeLayout>,
     workspaces: impl IntoIterator<Item = &'a PathBuf>,
     run_id: &RunId,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     cleanup_refs(locked, workspaces, run_id, None)
 }
 
 pub(crate) fn try_lock_secondary_repo(
     locked: Option<&RepoWorktreeLayout>,
     target: &RepoWorktreeLayout,
-) -> Result<Option<FileLockGuard>, StateError> {
+) -> Result<Option<FileLockGuard>, AcddError> {
     if locked.is_some_and(|primary| primary.git_common_dir == target.git_common_dir) {
         return Ok(None);
     }
     try_acquire_exclusive(&target.repo_lock_path)
-        .map_err(|err| StateError::new(ErrorCode::BackendConflict, err.to_string()))?
+        .map_err(|err| AcddError::new(ErrorCode::BackendConflict, err.to_string()))?
         .map(Some)
         .ok_or_else(|| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "repository lock is busy: '{}'",
@@ -452,7 +452,7 @@ pub(crate) fn cleanup_refs<'a>(
     workspaces: impl IntoIterator<Item = &'a PathBuf>,
     run_id: &RunId,
     snapshot: Option<String>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let repos = lock_cleanup_repos(locked, workspaces)?;
     cleanup_locked_refs(&repos, run_id, snapshot, None, None, None)
 }
@@ -460,7 +460,7 @@ pub(crate) fn cleanup_refs<'a>(
 pub(crate) fn lock_cleanup_repos<'a>(
     locked: Option<&'a RepoWorktreeLayout>,
     workspaces: impl IntoIterator<Item = &'a PathBuf>,
-) -> Result<Vec<(RepoWorktreeLayout, Option<FileLockGuard>)>, StateError> {
+) -> Result<Vec<(RepoWorktreeLayout, Option<FileLockGuard>)>, AcddError> {
     let mut seen_common_dirs = BTreeSet::new();
     let mut repos = Vec::new();
     for ws in locked
@@ -494,7 +494,7 @@ pub(crate) fn cleanup_locked_refs(
     exact: Option<&str>,
     suffix: Option<&str>,
     older_than: Option<i64>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let mut deleted = Vec::new();
     let prefixes = match snapshot {
         Some(prefix) => vec![prefix],

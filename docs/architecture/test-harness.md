@@ -27,7 +27,7 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
 > - INV-TEST-IN-MEMORY-FIRST: Drive pure DAG scheduling, dependency readiness, gate transitions, AST extraction, and blackboard routing in-memory (`RunHarness::in_memory()`, `ExtractorHarness`) without tempdirs, Git worktrees, or child processes unless physical isolation is under test. [`execute_snapshot_readonly`](../../crates/acdd-state/src/usecases/mod.rs)
 > - INV-TEST-BINARY-BUDGET: Register test suites inside the canonical domain binaries (`tests/{acdd,core,languages,linker,mcp,query_context,commitment_integrity}.rs`) or `crates/acdd-state/tests/state_integration.rs` without adding new top-level `tests/<name>.rs` binaries. [`execute_on_dyn`](../../crates/acdd-state/src/usecases/mod.rs)
 > - INV-TEST-ZERO-LEAK-TEARDOWN: Clean up temporary test workspaces and `.acdd/cold-*` artifacts (`BEFORE == AFTER` for `/tmp/contextunity-test-*`), and never store `Workspace` or `TempDir` in `OnceLock`/`LazyLock` statics. [`count_contextunity_temp_dirs`](../../crates/acdd-state/src/harness.rs)
-> - INV-TEST-PROFILE-DRIVEN-LIFECYCLE: Drive task lifecycle tests dynamically from the active `GateProfile` rather than hardcoding private gate lists, and enforce `TASK_REVIEW_NOT_INDEPENDENT` across independent review gates. [`validate_tasks_against_profile`](../../crates/acdd-state/src/validate.rs)
+> - INV-TEST-PROFILE-DRIVEN-LIFECYCLE: Drive task lifecycle tests dynamically from the active `ResolvedWorkflow` rather than hardcoding private gate lists, and enforce `TASK_REVIEW_NOT_INDEPENDENT` across independent review gates. [`validate_tasks_against_profile`](../../crates/acdd-state/src/validate.rs)
 
 ## Layers
 

@@ -8,7 +8,7 @@ use crate::machine::{
     compute_execution_digest, container_scope, evaluate_verify, ActionExecutionOutcome,
     ExecutionDigestInput, MachineProfileInput, VerifyExecutionObservation, VerifyInput,
 };
-use crate::profile::{resolve_command_for_scope, GateDef, ResolvedGateProfile};
+use crate::workflow::{resolve_command_for_scope, GateDef, ResolvedWorkflow};
 use crate::runner::{execute_gate_commands, render_invocation_command, CommandExecReq};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
@@ -23,7 +23,7 @@ use crate::usecases::lifecycle::{
     resolve_node_worktree, resolve_repo_layout_optional,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{GateId, TreeOid};
 use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainCheckOutcome, DomainCheckReq,
@@ -43,14 +43,14 @@ fn verify_active_node_cas<'a>(
     node_id: &str,
     req: &VerifyReq,
     captured: Option<&CapturedVerifyClaim>,
-) -> Result<&'a GateNodeRecord, StateError> {
+) -> Result<&'a GateNodeRecord, AcddError> {
     let node = snapshot
         .nodes
         .iter()
         .find(|n| n.node_id == node_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "node '{}' does not exist in run '{}'",
                     req.node, snapshot.run.run_id
@@ -59,7 +59,7 @@ fn verify_active_node_cas<'a>(
         })?;
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::StaleClaimRevision,
             format!(
                 "node '{node_id}' must be in_progress with an active claim before verify (status: {}, claim_revision: {})",
@@ -69,7 +69,7 @@ fn verify_active_node_cas<'a>(
     }
     if let Some(expected_rev) = req.claim_revision {
         if expected_rev != node.claim_revision {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::StaleClaimRevision,
                 format!(
                     "verify claim_revision {expected_rev} does not match active claim_revision {} on '{node_id}'",
@@ -80,7 +80,7 @@ fn verify_active_node_cas<'a>(
     }
     if let Some(ref worker) = req.worker_id {
         if node.worker_id.as_ref() != Some(worker) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::TaskAlreadyClaimed,
                 format!("worker '{worker}' does not hold the active claim on '{node_id}'"),
             ));
@@ -92,7 +92,7 @@ fn verify_active_node_cas<'a>(
             || node.worker_id != cap.worker_id
             || node.node_version != cap.node_version
         {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::StaleClaimRevision,
                 format!(
                     "node '{node_id}' claim state changed concurrently during verify (claim_rev {}->{}, contract_rev {}->{}, version {}->{})",
@@ -114,7 +114,7 @@ pub(crate) fn handle_verify_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: VerifyReq,
-) -> Result<VerifyResp, StateError> {
+) -> Result<VerifyResp, AcddError> {
     handle_verify_with_failure_return(config, backend, provider, req, false)
 }
 
@@ -124,7 +124,7 @@ pub(crate) fn handle_verify_with_failure_return(
     provider: &CompositeDomainProvider,
     req: VerifyReq,
     apply_failure_transition: bool,
-) -> Result<VerifyResp, StateError> {
+) -> Result<VerifyResp, AcddError> {
     ensure_state_enabled(config)?;
     let primary = primary_workspace_root(config);
     let layout = resolve_repo_layout_optional(&primary)?;
@@ -151,7 +151,7 @@ pub(crate) fn handle_verify_with_failure_return(
                     None => {
                         let started = tx.start_trace(&eval.preconditions, &eval.trace_start)?;
                         started.trace_row_id.ok_or_else(|| {
-                            StateError::new(
+                            AcddError::new(
                                 ErrorCode::BackendConflict,
                                 "start_trace returned no trace_row_id",
                             )
@@ -217,8 +217,8 @@ pub(crate) fn handle_verify_with_failure_return(
         node_version: node.node_version,
     };
     let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -327,6 +327,7 @@ pub(crate) fn handle_verify_with_failure_return(
         test_target: req.test_target.clone(),
         path_policy: policy.clone(),
         baseline_ref: crate::context::baseline_ref_for_node(node),
+        node_tags: node.tags.clone(),
     };
     let (check_results, index_generation, live_files_digest) =
         run_gate_checks(provider, &gate_def, &check_req)?;
@@ -351,7 +352,7 @@ pub(crate) fn handle_verify_with_failure_return(
     })?;
 
     let (action_outcome, existing_running_trace_id) =
-        (|| -> Result<(Option<ActionExecutionOutcome>, Option<i64>), StateError> {
+        (|| -> Result<(Option<ActionExecutionOutcome>, Option<i64>), AcddError> {
             let Some(ref call_ref) = gate_def.call else {
                 return Ok((None, None));
             };
@@ -365,14 +366,14 @@ pub(crate) fn handle_verify_with_failure_return(
 
             let call_lock = acquire_repo_lock(layout.as_ref())?;
             let call_snap = backend.load_run_graph(run_id)?.ok_or_else(|| {
-                StateError::new(ErrorCode::BackendConflict, "run disappeared before call")
+                AcddError::new(ErrorCode::BackendConflict, "run disappeared before call")
             })?;
             let call_node = verify_active_node_cas(&call_snap, &node_id, &req, Some(&captured))?;
             let mut prev_abort_row = None;
             if let Some(prev) = backend.latest_trace(run_id, &node_id, call_node.claim_revision)? {
                 if prev.status == TraceStatus::Running {
                     let prev_row_id = prev.trace_row_id.ok_or_else(|| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::BackendConflict,
                             "running trace missing trace_row_id",
                         )
@@ -435,7 +436,7 @@ pub(crate) fn handle_verify_with_failure_return(
                 )
             })?;
             let trace_row_id = trace_row.trace_row_id.ok_or_else(|| {
-                StateError::new(ErrorCode::BackendConflict, "start_trace missing row id")
+                AcddError::new(ErrorCode::BackendConflict, "start_trace missing row id")
             })?;
             drop(call_lock);
             acdd_core::failpoint::hit("verify_after_start_trace");
@@ -482,8 +483,8 @@ pub(crate) fn handle_verify_with_failure_return(
                 .commands
                 .get(cmd_id)
                 .ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("unknown command slot '{cmd_id}'"),
                     )
                 })?
@@ -511,7 +512,7 @@ pub(crate) fn handle_verify_with_failure_return(
     // Phase 3 (re-acquire `repo.lock`): CAS-check node state, re-capture post-execution tree, persist trace.
     let post_lock = acquire_repo_lock(layout.as_ref())?;
     let latest_snapshot = backend.load_run_graph(run_id)?.ok_or_else(|| {
-        StateError::new(ErrorCode::BackendConflict, "run disappeared during verify")
+        AcddError::new(ErrorCode::BackendConflict, "run disappeared during verify")
     })?;
     let latest_node = verify_active_node_cas(&latest_snapshot, &node_id, &req, Some(&captured))?;
 
@@ -590,17 +591,17 @@ pub(crate) fn handle_verify_with_failure_return(
 
 /// Resolve deterministic rendered command lines for a gate's `command:`.
 pub(crate) fn resolve_commands(
-    profile: &ResolvedGateProfile,
+    profile: &ResolvedWorkflow,
     gate_def: &GateDef,
     admitted_scope: &[String],
     test_target: Option<&str>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let Some(ref cmd_id) = gate_def.command else {
         return Ok(Vec::new());
     };
     let cmd_def = profile.commands.get(cmd_id).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "gate '{}' references unknown command '{cmd_id}'",
                 gate_def.id
@@ -622,10 +623,10 @@ pub(crate) fn resolve_commands(
 
 type GateChecksOutput = (Vec<CheckResultRecord>, Option<String>, Option<String>);
 
-pub(crate) fn split_qualified_check(check: &str) -> Result<(&str, &str), StateError> {
+pub(crate) fn split_qualified_check(check: &str) -> Result<(&str, &str), AcddError> {
     check.split_once('.').ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("check '{check}' must be qualified as '<domain>.<check>'"),
         )
     })
@@ -635,7 +636,7 @@ fn run_gate_checks(
     provider: &CompositeDomainProvider,
     gate_def: &GateDef,
     req: &DomainCheckReq,
-) -> Result<GateChecksOutput, StateError> {
+) -> Result<GateChecksOutput, AcddError> {
     let mut results = Vec::with_capacity(gate_def.checks.len());
     let mut index_generations = Vec::new();
     let mut salts = Vec::new();
@@ -669,10 +670,10 @@ fn run_gate_checks(
                 });
             }
             Err(err) => {
-                if let Some(se) = StateError::from_anyhow(&err) {
+                if let Some(se) = AcddError::from_anyhow(&err) {
                     return Err(se.clone());
                 }
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!("domain check '{}' errored: {err}", chk.check),
                 ));
@@ -698,7 +699,7 @@ fn run_gate_checks(
                 result.execution_digest_salt = execution_digest_salt;
             }
             Ok(FreshnessObservation::Failed { summary }) => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!(
                         "domain check '{}' freshness failed after checks: {summary}",
@@ -707,8 +708,8 @@ fn run_gate_checks(
                 ))
             }
             Err(err) => {
-                return Err(StateError::from_anyhow(&err).cloned().unwrap_or_else(|| {
-                    StateError::new(
+                return Err(AcddError::from_anyhow(&err).cloned().unwrap_or_else(|| {
+                    AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!("domain check '{}' freshness errored: {err}", chk.check),
                     )
@@ -753,13 +754,13 @@ fn mark_trace_failed_if_contract_error(
     trace_row_id: i64,
     candidate_tree_before: &TreeOid,
     err: &anyhow::Error,
-) -> Result<(), StateError> {
-    let Some(se) = StateError::from_anyhow(err) else {
+) -> Result<(), AcddError> {
+    let Some(se) = AcddError::from_anyhow(err) else {
         return Ok(());
     };
     if !matches!(
         se.code,
-        ErrorCode::DomainCapabilityUnavailable | ErrorCode::ProfileSchemaInvalid
+        ErrorCode::DomainCapabilityUnavailable | ErrorCode::WorkflowSchemaInvalid
     ) {
         return Ok(());
     }
@@ -784,7 +785,7 @@ fn mark_trace_failed_if_contract_error(
 pub(crate) fn find_machine_gate<'a>(
     profile: &'a MachineProfileInput,
     node: &GateNodeRecord,
-) -> Result<&'a crate::machine::MachineGateDef, StateError> {
+) -> Result<&'a crate::machine::MachineGateDef, AcddError> {
     crate::machine::graph::resolve_gate_def(profile, node)
 }
 

@@ -280,6 +280,37 @@ impl CodeDomainProvider {
             }
         }
 
+        let has_explicit_test = req
+            .test_target
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty());
+        let is_docs_task = req.node_tags.iter().any(|t| t == "docs");
+        let has_rust_callable_prod_symbol = is_docs_task
+            && scoped_code_files.iter().any(|path| {
+                Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+                    && live_facts.get(path).is_some_and(|facts| {
+                        facts
+                            .nodes
+                            .iter()
+                            .any(|n| !n.is_test && is_callable_kind(n.kind.as_str()))
+                    })
+            });
+
+        if is_docs_task
+            && !has_rust_callable_prod_symbol
+            && (!test_starts.is_empty() || !has_explicit_test)
+        {
+            return Ok(DomainCheckOutcome::Passed {
+                summary: "code.seam: docs-tagged task with no Rust production code in scope"
+                    .to_owned(),
+                execution_digest_salt: Some(salt),
+            });
+        }
+
         if test_starts.is_empty() {
             let desc = req.test_target.as_deref().unwrap_or("<none>");
             return Ok(DomainCheckOutcome::Failed {

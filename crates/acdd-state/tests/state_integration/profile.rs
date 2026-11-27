@@ -12,8 +12,8 @@ use acdd_state::machine::{
     ClaimInput, MachineSpecInput, MachineTaskSpec, SubmitEvaluation, SubmitInput,
     VerifyExecutionObservation, VerifyInput,
 };
-use acdd_state::profile::{inherit::*, schema::*, shell_template::*, validate::*};
-use acdd_state::spec::materialize_ephemeral_goal_spec_with_options;
+use acdd_spec::materialize_ephemeral_goal_spec_with_options;
+use acdd_state::workflow::{inherit::*, schema::*, shell_template::*, validate::*};
 use acdd_state::store::traits::StateBackend;
 use acdd_state::types::{
     CheckResultRecord, FindingItem, FindingSeverity, IsolationMode, NodeStatus,
@@ -135,14 +135,14 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         ..SubsystemRegistry::default()
     };
 
-    // 1. Embedded profiles matrix (`base`, `code`, `audit`, `documentation`; `"workspace"` & `"in_place"` removed).
-    for removed in ["workspace", "in_place"] {
+    // 1. Embedded workflows matrix (`base`, `code`, `documentation`; `"workspace"`, `"in_place"`, `"audit"`, `"spec_planning"` removed from embedded).
+    for removed in ["workspace", "in_place", "audit", "spec_planning"] {
         assert!(
-            embedded_profile(removed).is_none(),
-            "removed embedded profile '{removed}' must not exist"
+            embedded_workflow(removed).is_none(),
+            "removed embedded workflow '{removed}' must not exist"
         );
-        let err = resolve_profile_ref_with_dirs(removed, None, None, None).unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{removed}");
+        let err = resolve_workflow_ref_with_dirs(removed, None, None, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{removed}");
     }
 
     type EmbeddedCase<'a> = (
@@ -163,9 +163,6 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             false,
             Err(ErrorCode::DomainCapabilityUnavailable),
         ),
-        ("audit", None, false, Ok(())),
-        ("audit", None, true, Ok(())),
-        ("audit", Some(&code_docs_disabled), false, Ok(())),
         ("documentation", None, false, Ok(())),
         ("documentation", None, true, Ok(())),
         (
@@ -186,22 +183,17 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             false,
             Err(ErrorCode::DomainCapabilityUnavailable),
         ),
-        ("spec_planning", None, false, Ok(())),
-        ("spec_planning", None, true, Ok(())),
-        ("spec_planning", Some(&docs_disabled), false, Ok(())),
-        ("spec_planning", Some(&code_disabled), false, Ok(())),
-        ("spec_planning", Some(&code_docs_disabled), false, Ok(())),
     ];
 
     for &(name, mods, require_bound, expected) in cases {
         let resolved =
-            resolve_profile_ref_with_dirs(name, None, mods, None).expect("embedded resolves");
-        let opts = ProfileValidationOptions {
+            resolve_workflow_ref_with_dirs(name, None, mods, None).expect("embedded resolves");
+        let opts = WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: mods,
             require_bound_commands: require_bound,
         };
-        let res = validate_profile(&resolved, &opts);
+        let res = validate_workflow(&resolved, &opts);
         match expected {
             Ok(()) => assert!(
                 res.is_ok(),
@@ -214,11 +206,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         }
     }
 
-    let base_p = resolve_profile_ref_with_dirs("base", None, None, None).unwrap();
+    let base_p = resolve_workflow_ref_with_dirs("base", None, None, None).unwrap();
     assert_eq!(base_p.default_tools.len(), 7);
     assert!(base_p.gates.is_empty());
 
-    let code_p = resolve_profile_ref_with_dirs("code", None, None, None).unwrap();
+    let code_p = resolve_workflow_ref_with_dirs("code", None, None, None).unwrap();
     assert!(!code_p.roles["independent_reviewer"].reuse_on_reject);
     assert!(code_p.roles["builder"].reuse_on_reject);
     assert_eq!(code_p.default_tools.len(), 18);
@@ -324,7 +316,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
 
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let repo_p =
-        resolve_profile_ref_with_dirs(".acdd/profile.yaml", Some(&repo_root), None, None).unwrap();
+        resolve_workflow_ref_with_dirs(".acdd/workflows/default.yaml", Some(&repo_root), None, None)
+            .unwrap();
     let repo_plan = repo_p.dispatch_plan();
     let handoff = repo_plan.iter().find(|g| g.cursor == "handoff").unwrap();
     assert_eq!(handoff.role.as_deref(), Some("coordinator"));
@@ -336,7 +329,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         .unwrap();
     assert_eq!(build.mode, Some(RoleExecutionMode::Subagent));
     assert_eq!(build.models, repo_p.roles["builder"].models);
-    let custom_models = resolve_profile_from_str_with_dirs(
+    let custom_models = resolve_workflow_from_str_with_dirs(
         "version: 2\ninherit: code\nroles:\n  builder:\n    models: ['model-a', 'model-b:high']\n",
         "custom",
         None,
@@ -359,7 +352,10 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         vec!["model-a", "model-b:high"]
     );
 
-    let audit_p = resolve_profile_ref_with_dirs("audit", None, None, None).unwrap();
+    let audit_raw =
+        include_str!("../../../../skills/acdd/references/acdd-workflow-examples/audit.yaml");
+    let audit_p = resolve_workflow_from_str_with_dirs(audit_raw, "audit", None, None, None, None)
+        .unwrap();
     assert_eq!(audit_p.git.isolation, IsolationMode::InPlace);
     assert_eq!(audit_p.git.worktrees, WorktreeLifecycle::Manual);
     assert_eq!(audit_p.save, SaveAction::None);
@@ -387,7 +383,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert!(code_polish.scope.iter().any(|s| s == "ROADMAP.md"));
     assert!(code_polish.scope.iter().any(|s| s == "TESTS.md"));
 
-    let doc_p = resolve_profile_ref_with_dirs("documentation", None, None, None).unwrap();
+    let doc_p = resolve_workflow_ref_with_dirs("documentation", None, None, None).unwrap();
     assert!(doc_p.tags.contains("docs"));
     assert_eq!(
         doc_p.modules.required,
@@ -457,7 +453,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(doc_verify.checks[0].check, "docs.links");
     assert_eq!(doc_verify.checks[1].check, "code.lint");
 
-    let doc_child = resolve_profile_from_str_with_dirs(
+    let doc_child = resolve_workflow_from_str_with_dirs(
         "version: 2\ninherit: documentation\n",
         "doc-child",
         None,
@@ -466,9 +462,9 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         None,
     )
     .unwrap();
-    validate_profile(
+    validate_workflow(
         &doc_child,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: true,
@@ -477,7 +473,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     .unwrap();
     assert_eq!(doc_child.modules.required, doc_p.modules.required);
 
-    let sp_p = resolve_profile_ref_with_dirs("spec_planning", None, None, None).unwrap();
+    let sp_raw = include_str!(
+        "../../../../skills/acdd/references/acdd-workflow-examples/spec_planning.yaml"
+    );
+    let sp_p = resolve_workflow_from_str_with_dirs(sp_raw, "spec_planning", None, None, None, None)
+        .unwrap();
     assert!(sp_p.tags.contains("docs"));
     assert!(sp_p.tags.contains("planning"));
     assert_eq!(sp_p.git.isolation, IsolationMode::InPlace);
@@ -511,198 +511,176 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         Some(".acdd/reports/{run_name}.md")
     );
 
-    let sp_code_off =
-        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_disabled), None).unwrap();
-    let sp_code_off_synth = sp_code_off
-        .gates
-        .iter()
-        .find(|g| g.id == "synthesize")
-        .unwrap();
-    assert_eq!(
-        sp_code_off_synth
-            .checks
-            .iter()
-            .map(|c| c.check.as_str())
-            .collect::<Vec<_>>(),
-        vec!["docs.specs", "docs.links"]
-    );
-    assert!(!sp_code_off
-        .default_tools
-        .iter()
-        .any(|t| t.starts_with("code_map_") || t == "ast_grep_search"));
-
-    let sp_docs_off =
-        resolve_profile_ref_with_dirs("spec_planning", None, Some(&docs_disabled), None).unwrap();
-    let sp_docs_off_synth = sp_docs_off
-        .gates
-        .iter()
-        .find(|g| g.id == "synthesize")
-        .unwrap();
-    assert_eq!(
-        sp_docs_off_synth
-            .checks
-            .iter()
-            .map(|c| c.check.as_str())
-            .collect::<Vec<_>>(),
-        vec!["code.lint"]
-    );
-    assert!(sp_docs_off_synth.context.is_empty());
-    assert!(!sp_docs_off
-        .default_tools
-        .iter()
-        .any(|t| t == "get_doc" || t == "search_docs"));
-
-    let sp_both_off =
-        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_docs_disabled), None)
+    let sp_resolved =
+        resolve_workflow_from_str_with_dirs(sp_raw, "spec_planning", None, None, None, None)
             .unwrap();
-    let sp_both_off_synth = sp_both_off
-        .gates
-        .iter()
-        .find(|g| g.id == "synthesize")
-        .unwrap();
-    assert!(sp_both_off_synth.checks.is_empty());
-    assert!(sp_both_off_synth.context.is_empty());
+    validate_workflow(
+        &sp_resolved,
+        &WorkflowValidationOptions {
+            domain_providers: Some(&providers),
+            acdd_modules: None,
+            require_bound_commands: true,
+        },
+    )
+    .unwrap();
+
+    for (label, mods) in [
+        ("code_disabled", &code_disabled),
+        ("docs_disabled", &docs_disabled),
+        ("code_docs_disabled", &code_docs_disabled),
+    ] {
+        let err = validate_workflow(
+            &sp_resolved,
+            &WorkflowValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: Some(mods),
+                require_bound_commands: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::DomainCapabilityUnavailable, "{label}: {err}");
+    }
 }
 
 #[test]
 fn profile_schema_and_legacy_rejection_matrix() {
     let providers = code_and_docs_providers();
     let cases: &[(&str, &str, ErrorCode)] = &[
-        ("wrong_version", "version: 1\n", ErrorCode::ProfileSchemaInvalid),
+        ("wrong_version", "version: 1\n", ErrorCode::WorkflowSchemaInvalid),
         (
             "legacy_persistence",
             "version: 2\npersistence: commit\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_policies",
             "version: 2\npolicies:\n  review:\n    independent_worker: true\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_agents",
             "version: 2\nagents:\n  builder:\n    mode: subagent\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_git_commit_note_singular",
             "version: 2\ngit_commit_note:\n  format: markdown\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_ast_delta",
             "version: 2\ngit_commit_notes:\n  default:\n    sections: [ast_delta]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_polish_scope",
             "version: 2\npolish_scope: [docs/**]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_gate_on_fail",
             "version: 2\ngates:\n  - id: a\n    on_fail: a\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_gate_steps",
             "version: 2\ngates:\n  - id: a\n    steps: [do something]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_gate_loop",
             "version: 2\ngates:\n  - id: a\n    loop:\n      scope: build\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_output_errors",
             "version: 2\ncommands:\n  t:\n    command: cargo test\n    output:\n      errors: ['^err']\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_proof_seam_test",
             "version: 2\ngates:\n  - id: a\n    proof: seam_test\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_proof_delivery",
             "version: 2\ngates:\n  - id: a\n    proof: delivery\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_tool_task_claim",
             "version: 2\ndefault_tools: [task_claim]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_tool_session_checkpoint",
             "version: 2\ndefault_tools: [session_checkpoint]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_tool_forge_guide",
             "version: 2\ndefault_tools: [forge_guide]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "when_on_root_gate",
             "version: 2\ntags: [code]\ngates:\n  - id: verify\n    when: code\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "archive_on_task_gate",
             "version: 2\ngates:\n  - tasks:\n      gates:\n        - id: build\n          save:\n            archive: true\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_pre_commit",
             "version: 2\ngates:\n  - id: verify\n    save:\n      pre: commit\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "terminal_root_gate_with_pass",
             "version: 2\ngates:\n  - id: a\n    pass: b\n  - id: b\n    pass: a\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "self_loop_pass",
             "version: 2\ngates:\n  - id: a\n    pass: a\n  - id: b\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "pass_equals_fail",
             "version: 2\ngates:\n  - id: a\n    pass: b\n    fail: b\n  - id: b\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "receipt_without_need",
             "version: 2\ngates:\n  - id: handoff\n    receipt: true\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "legacy_proof_contract",
             "version: 2\ncommands:\n  t: cargo test\ngates:\n  - id: c\n    command: t\n    proof: contract\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "removed_expected_failure",
             "version: 2\ncommands:\n  t: cargo test\ngates:\n  - id: b\n    command: t\n    proof: command\n    expected_failure:\n      exit_codes: [1]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "removed_command_output",
             "version: 2\ncommands:\n  t:\n    command: cargo test\n    output:\n      require_counts: false\ngates:\n  - id: b\n    command: t\n    proof: command\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "review_with_command",
             "version: 2\nroles:\n  rev:\n    mode: subagent\ncontours:\n  paths:\n    description: p\n    criteria: [c]\ncommands:\n  t: cargo test\ngates:\n  - id: r\n    role: rev\n    command: t\n    proof: review\n    contours: [paths]\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "review_without_contours",
             "version: 2\nroles:\n  rev:\n    mode: subagent\ngates:\n  - id: r\n    role: rev\n    proof: review\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "unknown_guidance_slot",
@@ -712,109 +690,109 @@ fn profile_schema_and_legacy_rejection_matrix() {
         (
             "legacy_gate_save_pre",
             "version: 2\ngates:\n  - id: a\n    save:\n      pre: none\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "fail_drift_unknown",
             "version: 2\ngates:\n  - id: a\n    fail_drift: missing\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "fail_drift_equals_pass",
             "version: 2\ngates:\n  - id: a\n    pass: b\n    fail_drift: b\n  - id: b\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "gates_merge_removed",
             "version: 2\ninherit: code\ngates_merge: patch\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "gates_and_gates_patch_mutually_exclusive",
             "version: 2\ninherit: code\ngates:\n  - id: a\ngates_patch:\n  - id: b\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "gates_patch_requires_inherit",
             "version: 2\ngates_patch:\n  - id: a\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "gates_patch_forbids_inherit_none",
             "version: 2\ninherit: none\ngates_patch:\n  - id: a\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_traversal",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: ../escape.md\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_absolute",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: /abs.md\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_unknown_var",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".acdd/reports/{unknown_var}.md\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_empty",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \"   \"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_backslash",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \"reports\\\\out.md\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_state_sqlite",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".acdd/state.sqlite\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_code_map_sqlite",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".acdd/code-map.sqlite\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_apfs_acdd_state",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".ACDD/state.sqlite\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_apfs_acdd_reports_case",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".ACDD/reports/{run_id}.md\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_git_config",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".git/config\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_apfs_git_head",
             "version: 2\ngates:\n  - id: a\n    save:\n      report: \".GIT/HEAD\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
         (
             "save_report_protected_cargo_toml",
             "version: 2\nprotected_paths: [Cargo.toml]\ngates:\n  - id: a\n    save:\n      report: \"CARGO.TOML\"\n",
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
         ),
     ];
 
-    let opts = ProfileValidationOptions {
+    let opts = WorkflowValidationOptions {
         domain_providers: Some(&providers),
         acdd_modules: None,
         require_bound_commands: false,
     };
 
     for &(label, yaml, expected_code) in cases {
-        let err = resolve_profile_from_str_with_dirs(yaml, label, None, None, None, None)
-            .and_then(|p| validate_profile(&p, &opts))
+        let err = resolve_workflow_from_str_with_dirs(yaml, label, None, None, None, None)
+            .and_then(|p| validate_workflow(&p, &opts))
             .expect_err("expected validation failure");
         assert_eq!(err.code, expected_code, "case '{label}': {err}");
     }
@@ -834,11 +812,11 @@ fn profile_schema_and_legacy_rejection_matrix() {
                 "version: 2\ninherit: none\n{}",
                 body.replace("{action}", action)
             );
-            let checked = resolve_profile_from_str_with_dirs(&yaml, label, None, None, None, None)
-                .and_then(|p| validate_profile(&p, &opts));
+            let checked = resolve_workflow_from_str_with_dirs(&yaml, label, None, None, None, None)
+                .and_then(|p| validate_workflow(&p, &opts));
             assert_eq!(
                 checked.err().map(|err| err.code),
-                (!supported).then_some(ErrorCode::ProfileSchemaInvalid),
+                (!supported).then_some(ErrorCode::WorkflowSchemaInvalid),
                 "{label}: {action}"
             );
         }
@@ -849,7 +827,7 @@ fn profile_schema_and_legacy_rejection_matrix() {
 fn inherit_pin_cycle_and_patch_matrix() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    fs::create_dir_all(root.join(".acdd/profiles")).unwrap();
+    fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
 
     let base_bytes = br#"version: 2
 inherit: code
@@ -914,26 +892,26 @@ gates:
     need: [verify]
     save: { post: commit, archive: true, prune: true }
 "#;
-    let base_rel = ".acdd/profiles/base.yaml";
+    let base_rel = ".acdd/workflows/base.yaml";
     fs::write(root.join(base_rel), base_bytes).unwrap();
     let base_sha = acdd_core::format::sha256_hex(base_bytes);
     let short_pin = &base_sha[..12];
 
     // Cycle fixture: a.yaml -> b.yaml -> a.yaml
     fs::write(
-        root.join(".acdd/profiles/cyc_a.yaml"),
-        "version: 2\ninherit: .acdd/profiles/cyc_b.yaml\n",
+        root.join(".acdd/workflows/cyc_a.yaml"),
+        "version: 2\ninherit: .acdd/workflows/cyc_b.yaml\n",
     )
     .unwrap();
     fs::write(
-        root.join(".acdd/profiles/cyc_b.yaml"),
-        "version: 2\ninherit: .acdd/profiles/cyc_a.yaml\n",
+        root.join(".acdd/workflows/cyc_b.yaml"),
+        "version: 2\ninherit: .acdd/workflows/cyc_a.yaml\n",
     )
     .unwrap();
-    // Self-inheritance on .acdd/profile.yaml
+    // Self-inheritance on .acdd/workflows/default.yaml
     fs::write(
-        root.join(".acdd/profile.yaml"),
-        "version: 2\ninherit: .acdd/profile.yaml\n",
+        root.join(".acdd/workflows/default.yaml"),
+        "version: 2\ninherit: .acdd/workflows/default.yaml\n",
     )
     .unwrap();
 
@@ -966,7 +944,7 @@ gates:
 "#;
 
     let providers = code_and_docs_providers();
-    let opts = ProfileValidationOptions {
+    let opts = WorkflowValidationOptions {
         domain_providers: Some(&providers),
         acdd_modules: None,
         require_bound_commands: true,
@@ -1011,9 +989,9 @@ gates_patch:
     );
 
     let patched =
-        resolve_profile_from_str_with_dirs(&valid_patch, "patched", None, Some(root), None, None)
+        resolve_workflow_from_str_with_dirs(&valid_patch, "patched", None, Some(root), None, None)
             .unwrap();
-    validate_profile(&patched, &opts).unwrap();
+    validate_workflow(&patched, &opts).unwrap();
     assert!(!patched.roles.contains_key("extra_role"));
     assert!(!patched.commands.contains_key("extra_cmd"));
     assert!(!patched.guidance.contains_key("extra.slot"));
@@ -1045,8 +1023,8 @@ gates_patch:
 
     // Template expansion check
     let tpl_prof =
-        resolve_profile_from_str_with_dirs(template_yaml, "tpl", None, None, None, None).unwrap();
-    validate_profile(&tpl_prof, &opts).unwrap();
+        resolve_workflow_from_str_with_dirs(template_yaml, "tpl", None, None, None, None).unwrap();
+    validate_workflow(&tpl_prof, &opts).unwrap();
     assert_eq!(tpl_prof.gates[0].gates.len(), 2);
     assert_eq!(tpl_prof.gates[0].gates[0].max_attempts, 2);
 
@@ -1054,17 +1032,17 @@ gates_patch:
     let bad_cases: &[(&str, &str, Option<&str>)] = &[
         (
             "pin_mismatch",
-            "version: 2\ninherit: \".acdd/profiles/base.yaml:deadbeef0000\"\n",
+            "version: 2\ninherit: \".acdd/workflows/base.yaml:deadbeef0000\"\n",
             None,
         ),
         (
             "pin_too_short",
-            "version: 2\ninherit: \".acdd/profiles/base.yaml:dead\"\n",
+            "version: 2\ninherit: \".acdd/workflows/base.yaml:dead\"\n",
             None,
         ),
         (
             "cycle_detection",
-            "version: 2\ninherit: .acdd/profiles/cyc_a.yaml\n",
+            "version: 2\ninherit: .acdd/workflows/cyc_a.yaml\n",
             None,
         ),
         (
@@ -1074,8 +1052,8 @@ gates_patch:
         ),
         (
             "workspace_self_inherit",
-            "version: 2\ninherit: .acdd/profile.yaml\n",
-            Some(".acdd/profile.yaml"),
+            "version: 2\ninherit: .acdd/workflows/default.yaml\n",
+            Some(".acdd/workflows/default.yaml"),
         ),
         (
             "patch_missing_target",
@@ -1100,9 +1078,9 @@ gates_patch:
     ];
 
     for &(label, yaml, rel_path) in bad_cases {
-        let err = resolve_profile_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
+        let err = resolve_workflow_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
             .expect_err("expected failure");
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{label}: {err}");
+        assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{label}: {err}");
     }
 }
 
@@ -1210,31 +1188,31 @@ fn command_pattern_test_filter_and_budget_matrix() {
             "cargo test '{test_filter}'",
             None,
             Some("my_test"),
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         (
             "cargo test \"{scope_target}\" {test_filter}",
             None,
             Some("my_test"),
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         (
             "cargo test \\{test_filter}",
             None,
             Some("my_test"),
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         (
             "cargo test 'unclosed {test_filter}",
             None,
             Some("my_test"),
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         (
             "cargo test {test_filter}",
             Some(TestFilterConfig::Template("--filter '{test}'".to_owned())),
             Some("my_test"),
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         ("true # don't change", None, None, Ok("true # don't change")),
         (
@@ -1339,7 +1317,7 @@ gates:
     proof: call
 "#,
             None,
-            Err(ErrorCode::ProfileSchemaInvalid),
+            Err(ErrorCode::WorkflowSchemaInvalid),
         ),
         (
             r#"version: 2
@@ -1374,13 +1352,13 @@ gates:
 
     for &(yaml, mods, expected) in cases {
         let resolved =
-            resolve_profile_from_str_with_dirs(yaml, "dom", None, None, mods, None).unwrap();
-        let opts = ProfileValidationOptions {
+            resolve_workflow_from_str_with_dirs(yaml, "dom", None, None, mods, None).unwrap();
+        let opts = WorkflowValidationOptions {
             domain_providers: Some(&full_providers),
             acdd_modules: mods,
             require_bound_commands: false,
         };
-        let res = validate_profile(&resolved, &opts);
+        let res = validate_workflow(&resolved, &opts);
         match expected {
             Ok(()) => assert!(res.is_ok(), "{res:?}"),
             Err(code) => assert_eq!(res.unwrap_err().code, code),
@@ -1392,21 +1370,21 @@ gates:
 fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     let providers = code_and_docs_providers();
 
-    // 1. code profile with docs: false strips get_doc, search_docs, docs.* context/checks and validates.
+    // 1. code workflow with docs: false strips get_doc, search_docs, docs.* context/checks and validates.
     let docs_disabled = SubsystemRegistry {
         disabled: BTreeSet::from(["docs".to_owned()]),
         ..SubsystemRegistry::default()
     };
     let code_no_docs =
-        resolve_profile_ref_with_dirs("code", None, Some(&docs_disabled), None).unwrap();
+        resolve_workflow_ref_with_dirs("code", None, Some(&docs_disabled), None).unwrap();
     assert!(!code_no_docs
         .default_tools
         .iter()
         .any(|t| t == "get_doc" || t == "search_docs"));
     assert!(code_no_docs.tags.contains("docs"));
-    validate_profile(
+    validate_workflow(
         &code_no_docs,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: Some(&docs_disabled),
             require_bound_commands: false,
@@ -1414,30 +1392,30 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
 
-    // 3. Default resolution via resolve_optional_profile_ref_with_dirs (`.acdd/profile.yaml` -> embedded `code` fallback with disabled hooks stripped).
+    // 3. Default resolution via resolve_optional_workflow_ref_with_dirs (`.acdd/workflows/default.yaml` -> embedded `code` fallback with disabled hooks stripped).
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let default_no_ws = resolve_optional_profile_ref_with_dirs(
+    let default_no_ws = resolve_optional_workflow_ref_with_dirs(
         None,
         Some(root),
         Some(&SubsystemRegistry::default()),
         None,
     )
     .unwrap();
-    assert_eq!(default_no_ws.profile_id, "code");
+    assert_eq!(default_no_ws.workflow_id, "code");
     assert_eq!(default_no_ws.git.isolation, IsolationMode::Worktree);
     assert_eq!(default_no_ws.default_tools.len(), 18);
 
-    let default_no_domains = resolve_optional_profile_ref_with_dirs(
+    let default_no_domains = resolve_optional_workflow_ref_with_dirs(
         None,
         Some(root),
         Some(&disabled_code_and_docs_modules()),
         None,
     )
     .unwrap();
-    validate_profile(
+    validate_workflow(
         &default_no_domains,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: Some(&disabled_code_and_docs_modules()),
             require_bound_commands: false,
@@ -1445,20 +1423,25 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
 
-    fs::create_dir_all(root.join(".acdd")).unwrap();
+    fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
     fs::write(
-        root.join(".acdd/profile.yaml"),
+        root.join(".acdd/workflows/default.yaml"),
         "version: 2\ninherit: code\ncommands:\n  test: \"pytest {test_filter}\"\n  build_check: \"pytest\"\n  verify_all: \"pytest\"\n",
     )
     .unwrap();
-    let ws_default = resolve_optional_profile_ref_with_dirs(None, Some(root), None, None).unwrap();
+    let ws_default = resolve_optional_workflow_ref_with_dirs(None, Some(root), None, None).unwrap();
     assert!(
         matches!(ws_default.commands.get("test"), Some(CommandDef::Script(s)) if s == "pytest {test_filter}")
     );
 
-    // Audit overlay with gates_patch + valid save.report templates
-    let audit_overlay = resolve_profile_from_str_with_dirs(
-        "version: 2\ninherit: audit\ngates_patch:\n  - id: analyze\n    save:\n      report: \".acdd/reports/{spec_id}-{run_id}.json\"\n  - id: triage\n    save:\n      report: \".acdd/reports/{run_name}-{gate_id}.md\"\n",
+    // Audit overlay loaded from skills workflow examples with gates_patch + valid save.report templates.
+    fs::write(
+        root.join(".acdd/workflows/audit.yaml"),
+        include_str!("../../../../skills/acdd/references/acdd-workflow-examples/audit.yaml"),
+    )
+    .unwrap();
+    let audit_overlay = resolve_workflow_from_str_with_dirs(
+        "version: 2\ninherit: .acdd/workflows/audit.yaml\ngates_patch:\n  - id: analyze\n    save:\n      report: \".acdd/reports/{spec_id}-{run_id}.json\"\n  - id: triage\n    save:\n      report: \".acdd/reports/{run_name}-{gate_id}.md\"\n",
         "audit-overlay",
         None,
         Some(root),
@@ -1466,9 +1449,9 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
         None,
     )
     .unwrap();
-    validate_profile(
+    validate_workflow(
         &audit_overlay,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: true,
@@ -1498,52 +1481,52 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
         Some(".acdd/reports/{run_name}-{gate_id}.md")
     );
 
-    // 4. profiles_dirs custom lookup in resolve_profile_ref_with_dirs + nested inherit + cycle + broken config propagation.
+    // 4. workflows_dirs custom lookup in resolve_workflow_ref_with_dirs + nested inherit + cycle + broken config propagation.
     fs::write(
         root.join("acdd.yaml"),
-        "profiles_dirs:\n  - custom/profiles\n",
+        "workflows_dirs:\n  - custom/workflows\n",
     )
     .unwrap();
-    fs::create_dir_all(root.join("custom/profiles")).unwrap();
+    fs::create_dir_all(root.join("custom/workflows")).unwrap();
     fs::write(
-        root.join("custom/profiles/team.yaml"),
+        root.join("custom/workflows/team.yaml"),
         "version: 2\ninherit: code\ncommands:\n  test: \"go test ./...\"\n",
     )
     .unwrap();
     fs::write(
-        root.join("custom/profiles/nested.yaml"),
+        root.join("custom/workflows/nested.yaml"),
         "version: 2\ninherit: team\n",
     )
     .unwrap();
-    let custom_p = resolve_profile_ref_with_dirs("team", Some(root), None, None).unwrap();
+    let custom_p = resolve_workflow_ref_with_dirs("team", Some(root), None, None).unwrap();
     assert!(
         matches!(custom_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./...")
     );
-    let nested_p = resolve_profile_ref_with_dirs("nested", Some(root), None, None).unwrap();
+    let nested_p = resolve_workflow_ref_with_dirs("nested", Some(root), None, None).unwrap();
     assert!(
         matches!(nested_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./...")
     );
 
     fs::write(
-        root.join("custom/profiles/cyc-a.yaml"),
+        root.join("custom/workflows/cyc-a.yaml"),
         "version: 2\ninherit: cyc-b\n",
     )
     .unwrap();
     fs::write(
-        root.join("custom/profiles/cyc-b.yaml"),
+        root.join("custom/workflows/cyc-b.yaml"),
         "version: 2\ninherit: cyc-a\n",
     )
     .unwrap();
     let nested_cyc_err =
-        resolve_profile_ref_with_dirs("cyc-a", Some(root), None, None).unwrap_err();
-    assert_eq!(nested_cyc_err.code, ErrorCode::ProfileSchemaInvalid);
+        resolve_workflow_ref_with_dirs("cyc-a", Some(root), None, None).unwrap_err();
+    assert_eq!(nested_cyc_err.code, ErrorCode::WorkflowSchemaInvalid);
 
-    // Broken acdd.yaml propagates error instead of silently falling back when resolving profiles_dirs.
+    // Broken acdd.yaml propagates error instead of silently falling back when resolving workflows_dirs.
     let broken_dir = tempfile::tempdir().unwrap();
     fs::write(broken_dir.path().join("acdd.yaml"), "bogus_unknown: true\n").unwrap();
     let broken_cfg_err =
-        resolve_profile_ref_with_dirs("team", Some(broken_dir.path()), None, None).unwrap_err();
-    assert_eq!(broken_cfg_err.code, ErrorCode::ProfileSchemaInvalid);
+        resolve_workflow_ref_with_dirs("team", Some(broken_dir.path()), None, None).unwrap_err();
+    assert_eq!(broken_cfg_err.code, ErrorCode::WorkflowSchemaInvalid);
 
     // 4b. protected_paths malformed glob rejection + inherited when-tags preservation on tags: override.
     for bad_prot in [
@@ -1551,7 +1534,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
         "../escape",
         "{a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}.rs",
     ] {
-        let p_bad_prot = resolve_profile_from_str_with_dirs(
+        let p_bad_prot = resolve_workflow_from_str_with_dirs(
             &format!("version: 2\nprotected_paths: [\"{bad_prot}\"]\n"),
             "bad-prot",
             None,
@@ -1560,16 +1543,16 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             None,
         )
         .unwrap();
-        let err = validate_profile(&p_bad_prot, &ProfileValidationOptions::default()).unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{bad_prot}");
+        let err = validate_workflow(&p_bad_prot, &WorkflowValidationOptions::default()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{bad_prot}");
     }
 
     fs::write(
-        root.join("custom/profiles/parent-when.yaml"),
+        root.join("custom/workflows/parent-when.yaml"),
         "version: 2\ninherit: code\ntags: [default, docs]\ngates_patch:\n  - id: tasks.build\n    when: \"!docs\"\n",
     )
     .unwrap();
-    let child_override_tags = resolve_profile_from_str_with_dirs(
+    let child_override_tags = resolve_workflow_from_str_with_dirs(
         "version: 2\ninherit: parent-when\ntags: [frontend]\n",
         "child-tags",
         None,
@@ -1580,9 +1563,9 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     .unwrap();
     assert!(child_override_tags.tags.contains("docs"));
     assert!(child_override_tags.tags.contains("frontend"));
-    validate_profile(
+    validate_workflow(
         &child_override_tags,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
@@ -1590,7 +1573,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
 
-    let child_typo_tag = resolve_profile_from_str_with_dirs(
+    let child_typo_tag = resolve_workflow_from_str_with_dirs(
         "version: 2\ninherit: code\ntags: [frontend]\ngates_patch:\n  - id: tasks.build\n    when: typo_tag\n",
         "child-typo",
         None,
@@ -1599,24 +1582,24 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
         None,
     )
     .unwrap();
-    let typo_err = validate_profile(
+    let typo_err = validate_workflow(
         &child_typo_tag,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
         },
     )
     .unwrap_err();
-    assert_eq!(typo_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(typo_err.code, ErrorCode::WorkflowSchemaInvalid);
 
     // Undeclared parent `when:` tag typo must NOT be promoted into child `tags:` when child overrides `tags:`.
     fs::write(
-        root.join("custom/profiles/parent-typo.yaml"),
+        root.join("custom/workflows/parent-typo.yaml"),
         "version: 2\ninherit: code\ntags: [default]\ngates_patch:\n  - id: tasks.build\n    when: parent_undeclared_typo\n",
     )
     .unwrap();
-    let child_of_typo = resolve_profile_from_str_with_dirs(
+    let child_of_typo = resolve_workflow_from_str_with_dirs(
         "version: 2\ninherit: parent-typo\ntags: [frontend]\n",
         "child-of-typo",
         None,
@@ -1626,16 +1609,16 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     )
     .unwrap();
     assert!(!child_of_typo.tags.contains("parent_undeclared_typo"));
-    let parent_typo_err = validate_profile(
+    let parent_typo_err = validate_workflow(
         &child_of_typo,
-        &ProfileValidationOptions {
+        &WorkflowValidationOptions {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
         },
     )
     .unwrap_err();
-    assert_eq!(parent_typo_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(parent_typo_err.code, ErrorCode::WorkflowSchemaInvalid);
 
     // 5. inherit.rs patch bugs: tools: null, tools + tools_add, use_template + inline overrides, scope_args_by_pattern.
     let patch_yaml = r#"version: 2
@@ -1680,7 +1663,7 @@ gates_patch:
         max_attempts: 5
 "#;
     let patched =
-        resolve_profile_from_str_with_dirs(patch_yaml, "patched", None, None, None, None).unwrap();
+        resolve_workflow_from_str_with_dirs(patch_yaml, "patched", None, None, None, None).unwrap();
     let tb = patched.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
     let review_g = tb.gates.iter().find(|g| g.id == "review").unwrap();
     assert_eq!(
@@ -1745,7 +1728,7 @@ gates_patch:
 
 #[test]
 fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
-    let doc_profile = resolve_profile_ref_with_dirs("documentation", None, None, None).unwrap();
+    let doc_profile = resolve_workflow_ref_with_dirs("documentation", None, None, None).unwrap();
     let tree_a = TreeOid::new("a".repeat(40)).unwrap();
     let obs = ValidatedObservations {
         current_tree: Some(tree_a.clone()),
@@ -2031,13 +2014,13 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
             &rid,
             &rname,
             "Consolidate AGENTS.md invariants",
-            &prof.profile_id,
+            &prof.workflow_id,
             &["docs/**".to_owned(), "AGENTS.md".to_owned()],
             &[],
             true,
         )
         .unwrap();
-        let parsed = acdd_state::spec::parse_spec(&goal_md).unwrap();
+        let parsed = acdd_spec::parse_spec(&goal_md).unwrap();
         assert_eq!(parsed.tasks.len(), 1);
         let t_ref = parsed.tasks[0].task_ref.clone();
 

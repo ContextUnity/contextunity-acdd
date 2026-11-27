@@ -11,15 +11,16 @@ use crate::store::sqlite::migrations::SqliteMeta;
 use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend};
 use crate::store::traits::{StateBackend, StateReader, StateTx};
 use crate::types::{
-    GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunRecord, RunStatus, SaveAction, SubtaskStatus, TaskDependencyRecord,
+    GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
+    SaveAction, TaskDependencyRecord,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::ids::{
     CommitOid, GateId, GateSelector, RunId, RunName, SubtaskRef, TaskRef, TreeOid,
 };
 use acdd_core::schema::SchemaDef;
+use acdd_spec::{InvariantsState, SubtaskStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -40,7 +41,7 @@ pub struct RunHarness {
 
 impl RunHarness {
     /// Construct a fresh in-memory `RunHarness` backed by SQLite `:memory:`.
-    pub fn in_memory() -> Result<Self, StateError> {
+    pub fn in_memory() -> Result<Self, AcddError> {
         Ok(Self {
             inner: HarnessBackend::Memory(MemoryStateBackend::new()?),
         })
@@ -50,9 +51,9 @@ impl RunHarness {
     /// and backup directory `<root>/.git/acdd`.
     ///
     /// Owned temporary directories are removed automatically on drop.
-    pub fn on_disk(spec_collection_paths: Vec<String>) -> Result<Self, StateError> {
+    pub fn on_disk(spec_collection_paths: Vec<String>) -> Result<Self, AcddError> {
         let temp_guard = ScopedTempDir::create("acdd-state-harness").map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!("failed to create RunHarness tempdir: {err}"),
             )
@@ -61,13 +62,13 @@ impl RunHarness {
         let workspace_root = root.join("workspace");
         let backup_dir = root.join("git-common/acdd");
         std::fs::create_dir_all(&workspace_root).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!("failed to create harness workspace dir: {err}"),
             )
         })?;
         std::fs::create_dir_all(&backup_dir).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!("failed to create harness backup dir: {err}"),
             )
@@ -116,7 +117,7 @@ impl RunHarness {
     }
 
     /// Read `_sqlite_meta` counters from the underlying SQLite backend.
-    pub fn read_meta(&self) -> Result<SqliteMeta, StateError> {
+    pub fn read_meta(&self) -> Result<SqliteMeta, AcddError> {
         match &self.inner {
             HarnessBackend::Memory(m) => m.read_meta(),
             HarnessBackend::Disk { backend, .. } => backend.read_meta(),
@@ -126,7 +127,7 @@ impl RunHarness {
     /// Open a [`SqliteStateBackend`] wired with archive restore reconciliation for `options`.
     pub fn open_sqlite_with_archive_reconciler(
         options: SqliteBackendOptions,
-    ) -> Result<SqliteStateBackend, StateError> {
+    ) -> Result<SqliteStateBackend, AcddError> {
         let workspace_root = options.workspace_root.clone();
         let spec_collection_paths = options.spec_collection_paths.clone();
         SqliteStateBackend::open_with_reconciler(options, |runs| {
@@ -139,7 +140,7 @@ impl RunHarness {
     }
 
     /// Seed a run graph atomically via `StateTx::insert_run_graph`.
-    pub fn seed_run(&self, graph: &RunGraphSnapshot) -> Result<(), StateError> {
+    pub fn seed_run(&self, graph: &RunGraphSnapshot) -> Result<(), AcddError> {
         self.exec_tx(|tx| tx.insert_run_graph(graph))
     }
 
@@ -149,7 +150,7 @@ impl RunHarness {
         workspace: &str,
         isolation: IsolationMode,
         worktree: Option<&str>,
-    ) -> Result<RunRecord, StateError> {
+    ) -> Result<RunRecord, AcddError> {
         let dummy_commit = CommitOid::new("0123456789abcdef0123456789abcdef01234567")?;
         let spec_path = format!("docs/milestones/{run_name}.md");
         let branch = format!("milestone/{run_name}");
@@ -186,7 +187,7 @@ impl RunHarness {
         workspace: &str,
         worktree: Option<&str>,
         task_refs: &[&str],
-    ) -> Result<RunGraphSnapshot, StateError> {
+    ) -> Result<RunGraphSnapshot, AcddError> {
         let rid = RunId::new(run_id)?;
         let rname = RunName::new(run_name)?;
         let dummy_tree = TreeOid::new("fedcba9876543210fedcba9876543210fedcba98")?;
@@ -433,7 +434,7 @@ impl RunHarness {
             role: Some("builder".to_owned()),
             proof: MachineProofKind::Command,
             command: Some("verify_all".to_owned()),
-            scope: vec!["docs/**".to_owned(), ".acdd/profile.yaml".to_owned()],
+            scope: vec!["docs/**".to_owned(), ".acdd/workflows/**".to_owned()],
             pass: Some("verify".to_owned()),
             max_attempts: 3,
             ..MachineGateDef::minimal(gate_id("polish"))
@@ -544,7 +545,7 @@ impl RunHarness {
         config: &crate::usecases::StateEngineConfig,
         provider: &acdd_core::ports::CompositeDomainProvider,
         cmd: crate::usecases::StateCommand,
-    ) -> Result<crate::usecases::StateCommandOutput, StateError> {
+    ) -> Result<crate::usecases::StateCommandOutput, AcddError> {
         crate::usecases::execute_on(config, self, provider, cmd)
     }
 }
@@ -554,15 +555,15 @@ crate::store::impl_state_reader_delegate!(RunHarness, |s| s.reader());
 impl StateBackend for RunHarness {
     fn exec_tx_dyn(
         &self,
-        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), StateError>,
-    ) -> Result<(), StateError> {
+        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), AcddError>,
+    ) -> Result<(), AcddError> {
         match &self.inner {
             HarnessBackend::Memory(m) => m.exec_tx_dyn(f),
             HarnessBackend::Disk { backend, .. } => backend.exec_tx_dyn(f),
         }
     }
 
-    fn after_commit_maintenance(&self) -> Result<(), StateError> {
+    fn after_commit_maintenance(&self) -> Result<(), AcddError> {
         match &self.inner {
             HarnessBackend::Memory(m) => m.after_commit_maintenance(),
             HarnessBackend::Disk { backend, .. } => backend.after_commit_maintenance(),
@@ -580,9 +581,10 @@ mod tests {
         BlackboardTopic, ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch,
         DependencySatisfiedPatch, GateArtifactRecord, ListRunsReq, NodeStatusPatch,
         NodeVersionExpectation, PredecessorTreeExpectation, RunTombstoneRecord,
-        StoragePreconditions, SubtaskRecord, SubtaskStatus, TerminalStatus, TraceFinishInput,
-        TraceStartInput, TraceStatus, TransitionPlan,
+        StoragePreconditions, SubtaskRecord, TerminalStatus, TraceFinishInput, TraceStartInput,
+        TraceStatus, TransitionPlan,
     };
+    use acdd_spec::SubtaskStatus;
     use acdd_core::git::git_command;
     use acdd_core::ids::{SubtaskRef, WorkerId};
     use std::fs;
@@ -738,7 +740,7 @@ mod tests {
         .unwrap();
         assert!(mem
             .list_runs(&ListRunsReq::default())
-            .is_err_and(|e| e.code == ErrorCode::ProfileSchemaInvalid));
+            .is_err_and(|e| e.code == ErrorCode::WorkflowSchemaInvalid));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::common::Workspace;
 #[test]
 fn real_cli_preserves_captured_output_parser_errors_and_process_exit_status() {
     let workspace = Workspace::with_files(&[
-        ("acdd.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "preset: minimal\n"),
         ("notes.txt", "hello\n"),
     ]);
     for args in [

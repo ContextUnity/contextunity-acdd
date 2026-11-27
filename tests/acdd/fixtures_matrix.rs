@@ -5,10 +5,10 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_state::harness::RunHarness;
-use acdd_state::profile::{
-    resolve_profile_from_str_with_dirs, validate_profile, ProfileValidationOptions,
+use acdd_state::workflow::{
+    resolve_workflow_from_str_with_dirs, validate_workflow, WorkflowValidationOptions,
 };
-use acdd_state::spec::parse_spec;
+use acdd_spec::parse_spec;
 use acdd_state::types::SubmitAction;
 use acdd_state::usecases::dto::{ClaimReq, ExtendScopeReq, StartReq, SubmitReq};
 use acdd_state::usecases::StateCommand;
@@ -158,19 +158,19 @@ const FIXTURE_AUDIT: &[AuditedFixture] = &[
     },
     AuditedFixture {
         relpath: "plans/rejected-profile.yaml",
-        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeProfile(ErrorCode::WorkflowSchemaInvalid),
     },
     AuditedFixture {
         relpath: "plans/catalog-invalid.yaml",
-        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeProfile(ErrorCode::WorkflowSchemaInvalid),
     },
     AuditedFixture {
         relpath: "plans/cycle.md",
-        kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeSpecStart(ErrorCode::SpecSchemaInvalid),
     },
     AuditedFixture {
         relpath: "plans/unknown-dependency.md",
-        kind: FixtureKind::NegativeSpecStart(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeSpecStart(ErrorCode::SpecSchemaInvalid),
     },
     AuditedFixture {
         relpath: "plans/unsafe-scope.md",
@@ -178,7 +178,7 @@ const FIXTURE_AUDIT: &[AuditedFixture] = &[
     },
     AuditedFixture {
         relpath: "plans/missing-subtask-evidence.md",
-        kind: FixtureKind::NegativeSpecParse(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeSpecParse(ErrorCode::SpecSchemaInvalid),
     },
     AuditedFixture {
         relpath: "plans/pending-subtask.md",
@@ -199,7 +199,7 @@ const FIXTURE_AUDIT: &[AuditedFixture] = &[
     },
     AuditedFixture {
         relpath: "workflows/catalog-invalid.yaml",
-        kind: FixtureKind::NegativeProfile(ErrorCode::ProfileSchemaInvalid),
+        kind: FixtureKind::NegativeProfile(ErrorCode::WorkflowSchemaInvalid),
     },
     AuditedFixture {
         relpath: "workflows/count-free-role.yaml",
@@ -255,7 +255,7 @@ fn audit_all_47_fixtures_for_060_validity_and_negative_error_codes() {
     assert_eq!(FIXTURE_AUDIT.len(), 47);
 
     let providers = TestProvider::full_composite();
-    let val_opts = ProfileValidationOptions {
+    let val_opts = WorkflowValidationOptions {
         domain_providers: Some(providers.as_ref()),
         acdd_modules: None,
         require_bound_commands: true,
@@ -265,9 +265,9 @@ fn audit_all_47_fixtures_for_060_validity_and_negative_error_codes() {
     init_git_repo_on_branch(ws.root(), "dev");
     let cfg = base_engine_config(ws.root());
     fs::create_dir_all(ws.path("docs/plans")).unwrap();
-    fs::create_dir_all(ws.path(".acdd/profiles")).unwrap();
+    fs::create_dir_all(ws.path(".acdd/workflows")).unwrap();
     fs::write(
-        ws.path(".acdd/profiles/minimal.yaml"),
+        ws.path(".acdd/workflows/minimal.yaml"),
         "version: 2\ninherit: none\nsave: none\ngates:\n  - tasks:\n      gates:\n        - id: finish\n          need: []\n",
     )
     .unwrap();
@@ -285,19 +285,19 @@ gates:
           receipt: true
 "#;
     fs::write(
-        ws.path(".acdd/profiles/two-gate.yaml"),
+        ws.path(".acdd/workflows/two-gate.yaml"),
         valid_two_gate_profile,
     )
     .unwrap();
     git_cmd(ws.root(), &["add", "."]);
-    git_cmd(ws.root(), &["commit", "-m", "seed profiles"]);
+    git_cmd(ws.root(), &["commit", "-m", "seed workflows"]);
 
     for (idx, item) in FIXTURE_AUDIT.iter().enumerate() {
         let raw = fs::read_to_string(fixtures_dir.join(item.relpath))
             .unwrap_or_else(|e| panic!("read {}: {e}", item.relpath));
         match item.kind {
             FixtureKind::ValidProfile => {
-                let resolved = resolve_profile_from_str_with_dirs(
+                let resolved = resolve_workflow_from_str_with_dirs(
                     &raw,
                     item.relpath,
                     Some(item.relpath),
@@ -306,7 +306,7 @@ gates:
                     None,
                 )
                 .unwrap_or_else(|e| panic!("resolve {}: {e}", item.relpath));
-                validate_profile(&resolved, &val_opts)
+                validate_workflow(&resolved, &val_opts)
                     .unwrap_or_else(|e| panic!("validate {}: {e}", item.relpath));
             }
             FixtureKind::ValidSpec => {
@@ -359,7 +359,7 @@ gates:
                 assert_eq!(doc.id, "AC-TPL-1");
             }
             FixtureKind::NegativeProfile(expected) => {
-                let res = resolve_profile_from_str_with_dirs(
+                let res = resolve_workflow_from_str_with_dirs(
                     &raw,
                     item.relpath,
                     Some(item.relpath),
@@ -367,7 +367,7 @@ gates:
                     None,
                     None,
                 )
-                .and_then(|p| validate_profile(&p, &val_opts));
+                .and_then(|p| validate_workflow(&p, &val_opts));
                 let err = res.expect_err(&format!("{} must fail validation", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);
             }
@@ -386,7 +386,7 @@ gates:
                         &providers,
                         StateCommand::Start(StartReq {
                             spec_path: Some(rel),
-                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                             ..StartReq::default()
                         }),
                     )
@@ -403,7 +403,7 @@ gates:
                         &providers,
                         StateCommand::Start(StartReq {
                             spec_path: Some(rel),
-                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                             ..StartReq::default()
                         }),
                     )
@@ -442,7 +442,7 @@ gates:
                         &providers,
                         StateCommand::Start(StartReq {
                             spec_path: Some(rel),
-                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                             ..StartReq::default()
                         }),
                     )
@@ -546,14 +546,14 @@ gates:
                         &providers,
                         StateCommand::Start(StartReq {
                             spec_path: Some(rel),
-                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                             ..StartReq::default()
                         }),
                     )
                     .expect_err("Start must reject unsafe scope glob fail-closed");
                 assert_eq!(
                     start_err.code,
-                    ErrorCode::ProfileSchemaInvalid,
+                    ErrorCode::SpecSchemaInvalid,
                     "{}",
                     item.relpath
                 );
@@ -567,7 +567,7 @@ gates:
                         &providers,
                         StateCommand::Start(StartReq {
                             spec_path: Some(valid_rel),
-                            profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                            workflow: Some(".acdd/workflows/two-gate.yaml".to_owned()),
                             ..StartReq::default()
                         }),
                     )

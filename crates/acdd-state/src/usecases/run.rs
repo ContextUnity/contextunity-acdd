@@ -30,7 +30,7 @@ use crate::usecases::lifecycle::{
 use crate::usecases::queries::find_profile_gate_def_ref;
 use crate::usecases::submit::handle_submit_dyn;
 use crate::usecases::verify::handle_verify_with_failure_return;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
@@ -43,7 +43,7 @@ pub(crate) fn handle_run_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: RunReq,
-) -> Result<RunResp, StateError> {
+) -> Result<RunResp, AcddError> {
     ensure_state_enabled(config)?;
     let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
 
@@ -56,7 +56,7 @@ pub(crate) fn handle_run_dyn(
     if req.dry_run {
         let snapshot = backend
             .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
         let obs = build_schedule_observations(config, &snapshot)?;
         let schedule = compute_schedule(&snapshot, &obs)?;
         return Ok(RunResp {
@@ -80,8 +80,8 @@ pub(crate) fn handle_run_dyn(
     let execute_ready_wave_tasks = |snapshot: &RunGraphSnapshot,
                                     wave_tasks: &[TaskRef],
                                     jobs: usize|
-     -> Result<Vec<StepOutcome>, StateError> {
-        let execute_task = |task_ref: &TaskRef| -> Result<StepOutcome, StateError> {
+     -> Result<Vec<StepOutcome>, AcddError> {
+        let execute_task = |task_ref: &TaskRef| -> Result<StepOutcome, AcddError> {
             let mut total = StepOutcome::default();
             let parent_id = format!("task:{task_ref}");
             let run_id = snapshot.run.run_id.clone();
@@ -135,7 +135,7 @@ pub(crate) fn handle_run_dyn(
                     .into_iter()
                     .map(|handle| {
                         handle.join().map_err(|_| {
-                            StateError::new(
+                            AcddError::new(
                                 ErrorCode::BackendConflict,
                                 "wave worker thread panicked during acdd run",
                             )
@@ -177,8 +177,8 @@ pub(crate) fn handle_run_dyn(
                 .iter()
                 .find(|node| node.node_id == root_id)
                 .ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("node `{root_id}` not found in run graph"),
                     )
                 })?;
@@ -289,7 +289,7 @@ pub(crate) struct StepOutcome {
 fn build_schedule_observations(
     config: &StateEngineConfig,
     snapshot: &RunGraphSnapshot,
-) -> Result<ValidatedObservations, StateError> {
+) -> Result<ValidatedObservations, AcddError> {
     let external_satisfied_deps = collect_external_satisfied_deps(config, snapshot)?;
     let unintegrated_tasks = if snapshot.run.isolation == IsolationMode::Worktree
         && all_non_cancelled_tasks_completed(snapshot)
@@ -343,12 +343,12 @@ pub(crate) fn execute_gate_node(
     node: &GateNodeRecord,
     allow_main: bool,
     session_cache: &Mutex<BTreeMap<(RunId, String, String), String>>,
-) -> Result<StepOutcome, StateError> {
+) -> Result<StepOutcome, AcddError> {
     let profile = parse_profile_from_run(&snapshot.run)?;
     let cursor = NodeCursor::from_node_id(&node.node_id)?;
     let gate_def = find_profile_gate_def_ref(&profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no profile gate definition found for cursor `{cursor}`"),
         )
     })?;
@@ -361,13 +361,13 @@ pub(crate) fn execute_gate_node(
 
     if let Some(ref role_name) = gate_def.role {
         let role_def = profile.roles.get(role_name).ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("gate `{cursor}` references unknown role `{role_name}`"),
             )
         })?;
         if role_def.runner.is_none() {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::WorkflowRunnerRequired,
                 format!(
                     "role `{role_name}` on gate `{cursor}` has no configured `runner:` command for `acdd run`"
@@ -412,7 +412,7 @@ pub(crate) fn execute_gate_node(
                 role_name.clone(),
             );
             let mut guard = session_cache.lock().map_err(|_| {
-                StateError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
+                AcddError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
             })?;
             if claim_resp.context_reset_required
                 || is_context_reset_required(snapshot, node, gate_def)
@@ -447,7 +447,7 @@ pub(crate) fn execute_gate_node(
         let outcome = spawn_role_runner_borrowed(&spawn_req, &mut local_cache)?;
         if let Some(key) = cache_key {
             let mut guard = session_cache.lock().map_err(|_| {
-                StateError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
+                AcddError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
             })?;
             guard.insert(key, outcome.agent_session_id.clone());
         }
@@ -551,7 +551,7 @@ pub(crate) fn check_post_runner_completion(
     node_id: &str,
     claim_revision: u32,
     outcome: &crate::runner::RoleSpawnOutcome,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     let after_graph = backend.load_run_graph(run_id)?;
     let (claim_outcome_after, completed_now) = if let Some(ref g) = after_graph {
         let outcome_after = g
@@ -584,11 +584,11 @@ fn land_completed_task_branches(
     run_id: &RunId,
     allow_main: bool,
     already_integrated: &mut BTreeSet<TaskRef>,
-) -> Result<Vec<TaskRef>, StateError> {
+) -> Result<Vec<TaskRef>, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |primary, _layout| {
         let snapshot = backend
             .load_run_graph(run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+            .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
         let run_worktree = snapshot
             .run
             .worktree
@@ -599,7 +599,7 @@ fn land_completed_task_branches(
 
         let run_branch = current_branch_name(&run_worktree)?;
         if is_protected_main_branch(run_branch.as_deref()) && !allow_main {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::MainBranchProtected,
                 format!(
                     "refusing wave integration onto protected branch '{}' without --allow-main",

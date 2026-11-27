@@ -119,7 +119,7 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
     }
     let cases = [
         Case {
-            args: &["roadmap", "--collection", "milestones", "--ready"],
+            args: &["roadmap", "--spec", "milestones", "--ready"],
             wave0_only: true,
             expect_id: Some("AC-001"),
         },
@@ -144,7 +144,7 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
             expect_id: Some("AC-003"),
         },
         Case {
-            args: &["roadmap", "--collection", "plans"],
+            args: &["roadmap", "--spec", "plans"],
             wave0_only: false,
             expect_id: Some("PLAN-001"),
         },
@@ -192,4 +192,5 @@ fn roadmap_cli_markdown_json_filters_and_missing_state_db_matrix() {
     let detail_md = String::from_utf8_lossy(&detail.stdout);
     assert!(detail_md.contains("# AC-003"));
     assert!(detail_md.contains("Task waves") || detail_md.contains("depends_on"));
+    assert!(!state_db.exists());
 }

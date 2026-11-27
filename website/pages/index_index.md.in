@@ -26,6 +26,6 @@
 
 ## Pages in this section
 
-- **[acdd.yaml Configuration & Limits](/docs/index/acdd-yaml/)** — Full schema for `roots`, `docs`, `specs`, `linked_workspaces`, `sensitive`, `modules`, `response`, plus operational limits & freshness guarantees.
+- **[acdd.yaml Configuration & Limits](/docs/index/acdd-yaml/)** — Full schema for `preset`, `roots`, `docs`, `specs`, `workflows_dirs`, `linked_workspaces`, `sensitive`, `modules`, `response`, plus operational limits & freshness guarantees.
 - **[Languages & Coverage](/docs/index/languages/)** — Compiled default & Tier-2 language profiles, static extraction scope, and receiver resolution.
 - **[Framework Manifests & Workspace Packs](/docs/index/framework-manifests/)** — Bundled framework packs, overriding or disabling rules in `.acdd/frameworks/`, and verifying resolved edges.

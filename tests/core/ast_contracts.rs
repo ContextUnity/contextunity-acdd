@@ -50,7 +50,7 @@ complexity:
     let err = empty_inv
         .validate()
         .expect_err("empty_invariant: expected validation failure");
-    assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{err}");
+    assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{err}");
 
     assert!(
         serde_yaml::from_str::<ComplexityLimits>("unknown_limit: 1\n").is_err(),

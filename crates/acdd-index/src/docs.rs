@@ -1,5 +1,6 @@
 use crate::models::DocSection;
 use acdd_core::lint::ArchRuleSpec;
+use acdd_spec::frontmatter::split_frontmatter;
 use anyhow::Result;
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use serde::Deserialize;
@@ -22,26 +23,6 @@ struct ActiveLink {
     claim_start: usize,
 }
 
-fn split_frontmatter(source: &str) -> (Option<&str>, &str, usize) {
-    let Some(rest) = source
-        .strip_prefix("---\n")
-        .or_else(|| source.strip_prefix("---\r\n"))
-    else {
-        return (None, source, 0);
-    };
-    let mut offset = 0;
-    for line in rest.split_inclusive('\n') {
-        if line.trim_end_matches(['\r', '\n']) == "---" {
-            let yaml = &rest[..offset];
-            let body = &rest[offset + line.len()..];
-            let body_offset = source.len() - body.len();
-            return (Some(yaml), body, body_offset);
-        }
-        offset += line.len();
-    }
-    (None, source, 0)
-}
-
 fn heading_level_depth(level: pulldown_cmark::HeadingLevel) -> usize {
     match level {
         pulldown_cmark::HeadingLevel::H1 => 1,
@@ -55,7 +36,8 @@ fn heading_level_depth(level: pulldown_cmark::HeadingLevel) -> usize {
 
 /// Render only parsed Markdown headings, preserving their hierarchy.
 pub fn render_outline(_path: &str, source: &str, _spec_paths: &[String]) -> Result<String> {
-    let (_, body, _) = split_frontmatter(source);
+    let split = split_frontmatter(source);
+    let body = split.body;
     let mut lines = Vec::new();
     let mut current: Option<(usize, String)> = None;
     for event in Parser::new(body) {
@@ -358,7 +340,8 @@ pub fn extract_with_details_with_zones(
     spec_paths: &[String],
     known_zones: Option<&BTreeSet<String>>,
 ) -> Result<Vec<(DocSection, Value)>> {
-    let (frontmatter_yaml, body, body_offset) = split_frontmatter(source);
+    let split = split_frontmatter(source);
+    let (frontmatter_yaml, body, body_offset) = (split.yaml, split.body, split.body_offset);
     let (meta, frontmatter_error) = match frontmatter_yaml {
         Some(yaml) => match serde_yaml::from_str::<Frontmatter>(yaml) {
             Ok(meta) => (meta, None),

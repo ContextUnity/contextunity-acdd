@@ -1,6 +1,6 @@
 //! Leaf process-group execution, bounded pipe draining, and log capture for `runner`.
 
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 pub(super) use acdd_core::format::{utf8_floor_boundary, utf8_tail};
 use acdd_core::fs::{ensure_confined_dir_all, open_confined};
 use acdd_core::ids::{NodeCursor, RunId};
@@ -58,11 +58,11 @@ pub(super) fn open_run_log_file(
     primary_worktree: &Path,
     run_id: &RunId,
     filename: &str,
-) -> Result<(PathBuf, String, File), StateError> {
+) -> Result<(PathBuf, String, File), AcddError> {
     let run_rel = Path::new(".acdd").join("run").join(run_id.as_str());
     let logs_rel = run_rel.join("logs");
     ensure_confined_dir_all(primary_worktree, &logs_rel).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "failed preparing confined log directory '{}': {err}",
@@ -76,7 +76,7 @@ pub(super) fn open_run_log_file(
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     let file = open_confined(&run_dir, Path::new(&log_relpath), &mut opts).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "failed to open confined log file '{}': {err}",
@@ -176,8 +176,8 @@ pub(super) fn run_isolated_process(
     stdin_bytes: Option<&[u8]>,
     timeout: Duration,
     max_line_bytes: usize,
-    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), StateError>,
-) -> Result<ProcessRunOutcome, StateError> {
+    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), AcddError>,
+) -> Result<ProcessRunOutcome, AcddError> {
     #[cfg(unix)]
     {
         run_isolated_process_unix(cmd, stdin_bytes, timeout, max_line_bytes, on_line)
@@ -185,7 +185,7 @@ pub(super) fn run_isolated_process(
     #[cfg(not(unix))]
     {
         let _ = (cmd, stdin_bytes, timeout, max_line_bytes, on_line);
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             "process group isolation requires a Unix host",
         ))
@@ -427,12 +427,12 @@ impl Drop for ManagedChild {
 fn spawn_stdin_writer(
     child: &mut Child,
     stdin_bytes: Option<&[u8]>,
-) -> Result<Option<JoinHandle<()>>, StateError> {
+) -> Result<Option<JoinHandle<()>>, AcddError> {
     let Some(payload) = stdin_bytes else {
         return Ok(None);
     };
     let mut stdin = child.stdin.take().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             "child stdin pipe unavailable",
         )
@@ -445,7 +445,7 @@ fn spawn_stdin_writer(
             let _ = stdin.flush();
         })
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("failed to spawn stdin writer thread: {err}"),
             )
@@ -457,8 +457,8 @@ fn spawn_stdin_writer(
 fn flush_line_accumulator(
     acc: &mut LineAccumulator,
     kind: StreamKind,
-    callback_err: &mut Option<StateError>,
-    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), StateError>,
+    callback_err: &mut Option<AcddError>,
+    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), AcddError>,
 ) {
     acc.finish(&mut |line| {
         if callback_err.is_none() {
@@ -475,15 +475,15 @@ fn drain_pipe_events(
     rx: &mpsc::Receiver<PipeEvent>,
     timeout: Duration,
     max_line_bytes: usize,
-    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), StateError>,
-) -> (bool, Option<StateError>) {
+    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), AcddError>,
+) -> (bool, Option<AcddError>) {
     let started = Instant::now();
     let mut stdout_acc = LineAccumulator::new(max_line_bytes);
     let mut stderr_acc = LineAccumulator::new(max_line_bytes);
     let mut ended_streams = 0u8;
     let mut child_exited = false;
     let mut timed_out = false;
-    let mut callback_err: Option<StateError> = None;
+    let mut callback_err: Option<AcddError> = None;
 
     loop {
         if !child_exited {
@@ -518,7 +518,7 @@ fn drain_pipe_events(
             }
             Ok(PipeEvent::End(res)) => {
                 if let Err(err) = res {
-                    callback_err = Some(StateError::new(
+                    callback_err = Some(AcddError::new(
                         ErrorCode::GateVerificationFailed,
                         format!("pipe read failed: {err}"),
                     ));
@@ -554,8 +554,8 @@ fn run_isolated_process_unix(
     stdin_bytes: Option<&[u8]>,
     timeout: Duration,
     max_line_bytes: usize,
-    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), StateError>,
-) -> Result<ProcessRunOutcome, StateError> {
+    on_line: &mut dyn FnMut(StreamKind, &str) -> Result<(), AcddError>,
+) -> Result<ProcessRunOutcome, AcddError> {
     use std::os::unix::process::CommandExt;
 
     cmd.process_group(0)
@@ -568,7 +568,7 @@ fn run_isolated_process_unix(
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("failed to spawn subprocess: {err}"),
         )
@@ -576,13 +576,13 @@ fn run_isolated_process_unix(
 
     let stdin_handle = spawn_stdin_writer(&mut child, stdin_bytes)?;
     let stdout_pipe = child.stdout.take().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             "child stdout pipe unavailable",
         )
     })?;
     let stderr_pipe = child.stderr.take().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::GateVerificationFailed,
             "child stderr pipe unavailable",
         )
@@ -597,7 +597,7 @@ fn run_isolated_process_unix(
     readers
         .spawn_reader(stdout_pipe, StreamKind::Stdout, tx.clone())
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("failed to start stdout reader: {err}"),
             )
@@ -605,7 +605,7 @@ fn run_isolated_process_unix(
     readers
         .spawn_reader(stderr_pipe, StreamKind::Stderr, tx)
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("failed to start stderr reader: {err}"),
             )
@@ -617,7 +617,7 @@ fn run_isolated_process_unix(
     let status = managed
         .terminate_group_and_reap(timed_out || callback_err.is_some())
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("failed to cleanup child process group: {err}"),
             )

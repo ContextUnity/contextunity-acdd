@@ -407,6 +407,28 @@ pub(super) fn finish_registry(
     Ok(registry)
 }
 
+static STANDARD_FRAMEWORK_MANIFESTS_DIGEST: std::sync::OnceLock<String> =
+    std::sync::OnceLock::new();
+
+impl DependencyRegistry {
+    /// Exposes the static deterministic digest of bundled standard framework manifests.
+    pub fn standard_manifests_digest_static() -> &'static str {
+        STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"acdd-standard-framework-manifests-v1\0");
+            for (name, extension, source) in super::framework_packs::STANDARD_FRAMEWORK_MANIFESTS {
+                hasher.update((name.len() as u64).to_be_bytes());
+                hasher.update(name.as_bytes());
+                hasher.update((extension.len() as u64).to_be_bytes());
+                hasher.update(extension.as_bytes());
+                hasher.update((source.len() as u64).to_be_bytes());
+                hasher.update(source.as_bytes());
+            }
+            hex::encode(hasher.finalize())
+        })
+    }
+}
+
 pub(super) fn package_identity(family: LanguageFamily, name: &str) -> String {
     if family == LanguageFamily("python") {
         return parsers::python::normalize_package_name(name).unwrap_or_else(|| name.to_owned());

@@ -1,16 +1,16 @@
 //! Pure archive Markdown input construction and closure rollup rendering.
 
-use crate::spec::{
-    ArchiveRenderInput, ArchiveTaskUpdate, ClosureSummary, Receipt, ReceiptRollup, SpecStatus,
-    Subtask,
-};
 use crate::types::{
-    ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, GateNodeRecord,
-    InvariantsState, NodeKind, NodeStatus, RunGraphSnapshot, TraceStatus,
+    ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, GateNodeRecord, NodeKind,
+    NodeStatus, RunGraphSnapshot, TraceStatus,
 };
 use crate::usecases::dto::SubmitReq;
-use acdd_core::errors::StateError;
+use acdd_core::errors::AcddError;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, TreeOid};
+use acdd_spec::{
+    ArchiveRenderInput, ArchiveTaskUpdate, ClosureSummary, InvariantsState, Receipt, ReceiptRollup,
+    SpecStatus, Subtask,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -21,7 +21,7 @@ pub(super) fn build_provisional_receipt(
     committed_oid: Option<CommitOid>,
     now_utc: &str,
     req: &SubmitReq,
-) -> Result<Receipt, StateError> {
+) -> Result<Receipt, AcddError> {
     Ok(Receipt {
         run_id: snapshot.run.run_id.clone(),
         node_cursor: NodeCursor::from_node_id(&node.node_id)?,
@@ -236,11 +236,9 @@ pub(super) fn build_archive_render_input(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::spec::ReceiptRollup;
-    use crate::types::{
-        GateArtifactRecord, IsolationMode, RunRecord, RunStatus, SubtaskRecord, SubtaskStatus,
-    };
+    use crate::types::{GateArtifactRecord, IsolationMode, RunRecord, RunStatus, SubtaskRecord};
     use acdd_core::ids::{GateId, RunId, RunName, SubtaskRef, TaskRef, WorkerId};
+    use acdd_spec::{ReceiptRollup, SubtaskStatus};
 
     pub(crate) fn sample_snapshot(run_id: &RunId) -> RunGraphSnapshot {
         RunGraphSnapshot {

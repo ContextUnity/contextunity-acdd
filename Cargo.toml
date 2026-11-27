@@ -1,20 +1,60 @@
 [workspace]
 members = [
     "crates/acdd-core",
+    "crates/acdd-spec",
     "crates/acdd-index",
     "crates/acdd-state",
     ".",
 ]
 
-[package]
-name = "contextunity-acdd"
+[workspace.package]
 version = "0.7.1"
 edition = "2021"
 authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
-description = "Pure Rust ContextUnity ACDD Server, Code Map and Documentation Engine"
 license = "MIT"
-readme = "README.md"
 repository = "https://github.com/ContextUnity/contextunity-acdd"
+
+[workspace.dependencies]
+acdd-core = { path = "crates/acdd-core" }
+acdd-spec = { path = "crates/acdd-spec" }
+acdd-index = { path = "crates/acdd-index" }
+acdd-state = { path = "crates/acdd-state" }
+indexmap = { version = "2", features = ["serde"] }
+rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits", "backup"] }
+tree-sitter = "0.22"
+pulldown-cmark = { version = "0.10", default-features = false }
+rayon = "1.10"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs", "signal"] }
+ignore = "0.4"
+walkdir = "2.5"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
+serde_yaml = "0.9"
+toml = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+libc = "0.2"
+anyhow = "1.0"
+regex = "1.10"
+schemars = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+hashbrown = { version = "0.14", features = ["rayon", "serde"] }
+petgraph = "0.6"
+zstd = "0.13"
+cc = "1.0"
+tempfile = "3.10"
+
+[package]
+name = "contextunity-acdd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Pure Rust ContextUnity ACDD Server, Code Map and Documentation Engine"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
 keywords = ["mcp", "code-graph", "ast", "acdd", "ai-agents"]
 categories = ["development-tools", "command-line-utilities"]
 
@@ -52,30 +92,31 @@ lang-cpp = ["acdd-index/lang-cpp"]
 failpoints = ["acdd-core/failpoints", "acdd-state/failpoints"]
 
 [dependencies]
-acdd-core = { path = "crates/acdd-core" }
-acdd-index = { path = "crates/acdd-index" }
-acdd-state = { path = "crates/acdd-state" }
-indexmap = { version = "2", features = ["serde"] }
-rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
-clap = { version = "4.5", features = ["derive", "env"] }
-rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits", "backup"] }
-tree-sitter = "0.22"
-pulldown-cmark = { version = "0.10", default-features = false }
-rayon = "1.10"
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs", "signal"] }
-ignore = "0.4"
-walkdir = "2.5"
-serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
-serde_yaml = "0.9"
-toml = "0.8"
-sha2 = "0.10"
-hex = "0.4"
-libc = "0.2"
-anyhow = "1.0"
-regex = "1.10"
-schemars = "1.0"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+acdd-core = { workspace = true }
+acdd-spec = { workspace = true }
+acdd-index = { workspace = true }
+acdd-state = { workspace = true }
+indexmap = { workspace = true }
+rmcp = { workspace = true }
+clap = { workspace = true }
+rusqlite = { workspace = true }
+tree-sitter = { workspace = true }
+pulldown-cmark = { workspace = true }
+rayon = { workspace = true }
+tokio = { workspace = true }
+ignore = { workspace = true }
+walkdir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
+anyhow = { workspace = true }
+regex = { workspace = true }
+schemars = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 acdd-state = { path = "crates/acdd-state", features = ["test-support"] }

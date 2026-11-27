@@ -28,35 +28,35 @@ macro_rules! impl_state_reader_delegate {
         impl $crate::store::traits::StateReader for $ty {
             fn load_task_statuses(
                 &self,
-            ) -> Result<Vec<(acdd_core::ids::RunId, String, $crate::types::NodeStatus)>, acdd_core::errors::StateError> {
+            ) -> Result<Vec<(acdd_core::ids::RunId, String, $crate::types::NodeStatus)>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_task_statuses())
             }
 
             fn load_run_graph(
                 &self,
                 run_id: &acdd_core::ids::RunId,
-            ) -> Result<Option<$crate::types::RunGraphSnapshot>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::RunGraphSnapshot>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_run_graph(run_id))
             }
 
             fn list_runs(
                 &self,
                 req: &$crate::types::ListRunsReq,
-            ) -> Result<$crate::types::ListRunsPage, acdd_core::errors::StateError> {
+            ) -> Result<$crate::types::ListRunsPage, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, list_runs(req))
             }
 
             fn resolve_active_run_by_worktree(
                 &self,
                 worktree: &str,
-            ) -> Result<Option<$crate::types::RunRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::RunRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, resolve_active_run_by_worktree(worktree))
             }
 
             fn active_worker_claims(
                 &self,
                 worker_id: &acdd_core::ids::WorkerId,
-            ) -> Result<Vec<$crate::types::ActiveWorkerClaim>, acdd_core::errors::StateError> {
+            ) -> Result<Vec<$crate::types::ActiveWorkerClaim>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, active_worker_claims(worker_id))
             }
 
@@ -64,7 +64,7 @@ macro_rules! impl_state_reader_delegate {
                 &self,
                 run_id: &acdd_core::ids::RunId,
                 node_id: &str,
-            ) -> Result<Option<$crate::types::GateNodeRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::GateNodeRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_node(run_id, node_id))
             }
 
@@ -72,7 +72,7 @@ macro_rules! impl_state_reader_delegate {
                 &self,
                 run_id: &acdd_core::ids::RunId,
                 node_id: &str,
-            ) -> Result<Option<$crate::types::GateClaimRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::GateClaimRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, latest_claim(run_id, node_id))
             }
 
@@ -81,7 +81,7 @@ macro_rules! impl_state_reader_delegate {
                 run_id: &acdd_core::ids::RunId,
                 node_id: &str,
                 claim_revision: u32,
-            ) -> Result<Option<$crate::types::GateTraceRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::GateTraceRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, latest_trace(run_id, node_id, claim_revision))
             }
 
@@ -91,7 +91,7 @@ macro_rules! impl_state_reader_delegate {
                 node_id: &str,
                 claim_revision: u32,
                 kind: $crate::types::ArtifactKind,
-            ) -> Result<Option<$crate::types::GateArtifactRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::GateArtifactRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_artifact(run_id, node_id, claim_revision, kind))
             }
 
@@ -99,14 +99,14 @@ macro_rules! impl_state_reader_delegate {
                 &self,
                 run_id: &acdd_core::ids::RunId,
                 req: &$crate::types::BlackboardListReq,
-            ) -> Result<$crate::types::BlackboardPage, acdd_core::errors::StateError> {
+            ) -> Result<$crate::types::BlackboardPage, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, list_blackboard(run_id, req))
             }
 
             fn load_tombstone(
                 &self,
                 run_id: &acdd_core::ids::RunId,
-            ) -> Result<Option<$crate::types::RunTombstoneRecord>, acdd_core::errors::StateError> {
+            ) -> Result<Option<$crate::types::RunTombstoneRecord>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_tombstone(run_id))
             }
 
@@ -114,13 +114,13 @@ macro_rules! impl_state_reader_delegate {
                 &self,
                 collection: &str,
                 prefix: &str,
-            ) -> Result<Option<u32>, acdd_core::errors::StateError> {
+            ) -> Result<Option<u32>, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, max_spec_number(collection, prefix))
             }
 
             fn observability_snapshot(
                 &self,
-            ) -> Result<$crate::types::ObservabilitySnapshot, acdd_core::errors::StateError> {
+            ) -> Result<$crate::types::ObservabilitySnapshot, acdd_core::errors::AcddError> {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, observability_snapshot())
             }
         }

@@ -11,7 +11,7 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity ACDD is
 - Load the shared `test-suite-rules` skill before authoring, modifying, or refactoring tests.
 - Follow its Blackboard procedure for claim context, progress reports, and gate or agent handoffs.
 - Follow the spec taxonomy (docs/milestones/README.md); spec numbers are sequential per prefix (`<PREFIX>-<NNN>`).
-- Follow the active gate profile and the `guidance` returned by `acdd_claim` or `acdd next` for gate sequence, proof contract, role and model selection, review contours, and profile-specific behavior.
+- Follow the active gate workflow and the `guidance` returned by `acdd_claim` or `acdd next` for gate sequence, proof contract, role and model selection, review contours, and workflow-specific behavior.
 - Read `docs/reference/tasks.md` for operation and evidence schemas, and `TESTS.md` for required verification commands.
 - Read the nearest `AGENTS.md` for test placement and other subtree-owned rules.
 

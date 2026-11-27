@@ -2,12 +2,12 @@
 
 use crate::git_ops::worktree::canonicalize_macos_var;
 use crate::machine::{MachineSpecInput, MachineSubtaskInput, MachineTaskSpec};
-use crate::spec::SpecDocument;
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::{parse_task_dependency_with_db, resolve_spec_repositories};
 use acdd_core::config::WORKTREES_DIR;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{RunId, RunName};
+use acdd_spec::SpecDocument;
 use std::path::Path;
 
 pub(super) fn ensure_no_managed_worktree_collision(
@@ -16,7 +16,7 @@ pub(super) fn ensure_no_managed_worktree_collision(
     candidate_wt: &Path,
     candidate_branch: Option<&str>,
     existing_wt: Option<&str>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let matches_existing = existing_wt
         .is_some_and(|existing| canonicalize_macos_var(Path::new(existing)) == candidate_wt);
     let managed_wt_root = canonicalize_macos_var(&primary.join(WORKTREES_DIR));
@@ -29,7 +29,7 @@ pub(super) fn ensure_no_managed_worktree_collision(
         b == format!("run/{run_name}") || b.starts_with(&format!("task/{run_name}-"))
     });
     if !matches_existing && (collides_managed_path || collides_managed_branch) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "explicit worktree '{}' collides with ACDD managed worktree/branch naming for run '{}' while worktrees: managed is active",
@@ -46,7 +46,7 @@ pub(super) fn build_machine_spec_input(
     primary_workspace: &str,
     run_id: &RunId,
     config: &StateEngineConfig,
-) -> Result<MachineSpecInput, StateError> {
+) -> Result<MachineSpecInput, AcddError> {
     let spec_repos = resolve_spec_repositories(&config.worktree, doc);
     let state_db = config.resolved_state_db_path().0;
     let local_task_refs: std::collections::BTreeSet<&str> =
@@ -91,17 +91,17 @@ pub(super) fn build_machine_spec_input(
     })
 }
 
-pub(super) fn normalize_spec_relpath(raw: &str) -> Result<String, StateError> {
+pub(super) fn normalize_spec_relpath(raw: &str) -> Result<String, AcddError> {
     let normalized = acdd_core::path_policy::normalize_rel_path(raw).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::SpecSchemaInvalid,
             format!("spec_path '{raw}' must be a normalized workspace-relative path"),
         )
     })?;
     Ok(normalized)
 }
 
-pub(super) fn derive_run_name(spec_id: &str, fallback: &str) -> Result<RunName, StateError> {
+pub(super) fn derive_run_name(spec_id: &str, fallback: &str) -> Result<RunName, AcddError> {
     let clean: String = spec_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
@@ -110,27 +110,5 @@ pub(super) fn derive_run_name(spec_id: &str, fallback: &str) -> Result<RunName, 
     if let Ok(name) = RunName::new(clean) {
         return Ok(name);
     }
-    RunName::new(fallback).map_err(StateError::from)
-}
-
-pub(super) fn sanitize_slug(raw: &str) -> Result<String, StateError> {
-    let trimmed = raw.trim().to_ascii_lowercase();
-    let slug: String = trimmed
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let slug = slug.trim_matches('-').to_owned();
-    if slug.is_empty() || slug.len() > 64 {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("invalid draft slug '{raw}'"),
-        ));
-    }
-    Ok(slug)
+    RunName::new(fallback).map_err(AcddError::from)
 }

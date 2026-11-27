@@ -355,7 +355,7 @@ fn code_map_search_compact_default_single_uri_omits_zero_pulse_and_resolves_inde
     let ws = Workspace::with_files(&[
         (
             "acdd.yaml",
-            "profile: minimal\nmodules: {codemap: true}\nroots: [src]\nresponse:\n  detail: full\n",
+            "preset: minimal\nmodules: {codemap: true}\nroots: [src]\nresponse:\n  detail: full\n",
         ),
         (
             "src/lib.rs",

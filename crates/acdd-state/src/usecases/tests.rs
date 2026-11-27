@@ -4,7 +4,7 @@
 
 use super::{StateCommand, StateCommandOutput, StateEngine, StateEngineConfig};
 use crate::harness::RunHarness;
-use crate::profile::{CommandDef, ResolvedGateProfile};
+use crate::workflow::{CommandDef, ResolvedWorkflow};
 use crate::store::traits::{StateBackend, StateReader};
 use crate::types::{
     ArchiveCleanupEntry, FindingItem, FindingSeverity, RejectionFindings, RejectionKind,
@@ -12,7 +12,7 @@ use crate::types::{
 };
 use crate::usecases::dto::{ClaimReq, StartReq, StartResp, SubmitReq, SubmitResp};
 use acdd_core::config::default_specs;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::git::git_command;
 use acdd_core::ids::{RunId, RunName, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
@@ -60,7 +60,7 @@ fn unit_config(root: &Path) -> StateEngineConfig {
         state_db_override: None,
         code_db_path: None,
         spec_collections: default_specs(),
-        profiles_dirs: Vec::new(),
+        workflows_dirs: Vec::new(),
         linked_workspaces: BTreeMap::new(),
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
@@ -85,7 +85,7 @@ fn exec_start(eng: &StateEngine, spec_path: &str, profile: &str) -> StartResp {
     match eng
         .execute(StateCommand::Start(StartReq {
             spec_path: Some(spec_path.to_owned()),
-            profile: Some(profile.to_owned()),
+            workflow: Some(profile.to_owned()),
             in_place: true,
             ..StartReq::default()
         }))
@@ -123,7 +123,7 @@ fn exec_submit(
     rev: Option<u32>,
     action: SubmitAction,
     findings: Option<RejectionFindings>,
-) -> Result<SubmitResp, StateError> {
+) -> Result<SubmitResp, AcddError> {
     match eng.execute(StateCommand::Submit(Box::new(SubmitReq {
         run: Some(rid.to_owned()),
         node: node.to_owned(),
@@ -145,10 +145,10 @@ fn exec_submit(
 }
 
 fn write_profile(root: &Path, name: &str, yaml: &str) -> String {
-    let dir = root.join(".acdd/profiles");
+    let dir = root.join(".acdd/workflows");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(name), yaml).unwrap();
-    format!(".acdd/profiles/{name}")
+    format!(".acdd/workflows/{name}")
 }
 
 fn empty_provider() -> Arc<CompositeDomainProvider> {
@@ -504,11 +504,11 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
     let loc_start = exec_start(&loc_eng, "docs/milestones/AC-LOC.md", &loc_p);
     let loc_rid = loc_start.run.run_id.clone();
     // `{scope_target}` changes rendered command lines inside `resolve_commands` (`execution_digest` sensitivity).
-    let mut scope_prof: ResolvedGateProfile =
+    let mut scope_prof: ResolvedWorkflow =
         serde_json::from_str(&loc_start.run.profile_json).unwrap();
     scope_prof.commands.insert(
         "scoped".to_owned(),
-        CommandDef::Detailed(Box::new(crate::profile::schema::DetailedCommandDef {
+        CommandDef::Detailed(Box::new(crate::workflow::schema::DetailedCommandDef {
             command: "cargo check {scope_target}".to_owned(),
             description: None,
             timeout_seconds: None,
@@ -516,7 +516,7 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
             scope_args_by_pattern: BTreeMap::from([("src/**".to_owned(), "--lib".to_owned())]),
         })),
     );
-    let scope_gate = crate::profile::GateDef {
+    let scope_gate = crate::workflow::GateDef {
         id: "scoped_gate".to_owned(),
         command: Some("scoped".to_owned()),
         ..Default::default()
@@ -545,7 +545,7 @@ fn resolve_commands_context_reset_and_v060_compat_unit() {
         .find(|n| n.node_id == "task:t1:build")
         .unwrap()
         .clone();
-    let mut impl_gate = crate::profile::GateDef {
+    let mut impl_gate = crate::workflow::GateDef {
         id: "build".to_owned(),
         role: Some("implementer".to_owned()),
         ..Default::default()

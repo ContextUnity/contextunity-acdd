@@ -87,7 +87,7 @@ Claim/context blackboard bundles include untargeted and current-gate messages.
 Active `decisions`, `findings`, and `blockers` also remain eligible across gates,
 retaining their original gate and subject to the 6-tier `ClaimResp` byte budget.
 Explicit gate `tools` / `tools_add` / `tools_remove` declare role tool
-allowlists layered over `default_tools` in the active v2 `GateProfile`.
+allowlists layered over `default_tools` in the active v2 `WorkflowDef`.
 
 ## Tools
 
@@ -133,8 +133,8 @@ Every static capability runs over identical index and state engines on both surf
 | `search_docs` | `acdd docs search` | Search indexed Markdown/MDX heading sections with BM25 ranking and optional `include_excerpt`. |
 | `get_doc` | `acdd docs get` | Read a document outline, specific heading section, citations, verified symbol references, and opt-in ambiguous candidates (`include_candidates: true`). |
 | `acdd_guide` | `acdd guide` | Return capability-filtered usage guidance across 11 built-in topics (`query`, `code`, `ast`, `docs`, `acdd`, ...). |
-| `acdd_state` | `acdd start\|status\|...` | Drive active-run lifecycle actions (`start`, `status`, `list`, `show`, `next`, `context`, `observability`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`; `roadmap`/`draft` redirect to CLI). |
-| `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` envelope (`<= 9,500` bytes default, `32 KiB` with `detail="full"`). |
+| `acdd_state` | `acdd start\|status\|...` | Drive active-run lifecycle actions (`start`, `status`, `list`, `show`, `next`, `context`, `observability`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`; `workflow` and `rebind_workflow` parameters; `roadmap`/`draft` redirect to CLI). |
+| `acdd_claim` | `acdd claim` | Atomically claim a ready or active gate node and assemble its 6-tier `ClaimResp` envelope (`<= 10,000` bytes compact soft cap with `omitted_sections`, `32 KiB` with `detail="full"`). |
 | `acdd_verify` | `acdd verify` | Run gate shell `commands:`, `call:`, `checks:` (`code.seam`, `code.lint`), and write-scope barrier without advancing state. |
 | `acdd_submit` | `acdd submit` | Submit `pass` or `reject` (`review_evidence`, structured `findings`, commits, reports, archive/prune). |
 | `acdd_blackboard` | `acdd blackboard` | Read or post scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`). |
@@ -144,6 +144,16 @@ can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
 `src/mcp/tools/dispatch.rs` when `modules.domains.<domain>` is enabled). See
 [state, tasks & lifecycle](tasks.md) for action schemas, receipts, and recovery,
 and the `acdd` skill for agent execution workflows.
+
+Look up `acdd.yaml` `preset:` (`full`, `index`, `spec`, `state`, `minimal`) in [configuration](configuration.md#state-storage-and-module-toggles); `preset: spec` enables `get_doc`, `search_docs`, `acdd_read`, and `acdd_guide` in MCP while keeping state disabled. Registry-local `modules.required` mismatches emit `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET` in `message`, whereas an effective workspace-vs-workflow capability mismatch emits `DOMAIN_CAPABILITY_UNAVAILABLE`.
+
+### `acdd_state` parameters (`start` / `sync`)
+
+Both payloads enforce `#[serde(deny_unknown_fields)]` (unknown or removed fields fail closed during deserialization):
+
+- **`action="start"` (`StateInput` → `StartReq`)**: MCP `StateInput` accepts `spec_path?`, `goal?`, `run_name?`, `workflow?` (`base | code | documentation | <path>`), `scope?` (list of globs for `--goal`), `target_base?`, `create_worktree?`, `in_place?`, `worktree_path?`, and `worktree` (`true` to create a managed worktree, or a worktree selector), which `src/mcp/tools/state_tools.rs` maps onto `StartReq` (`spec_path?`, `goal?`, `run_name?`, `workflow?`, `scope`, `target_base?`, `worktree: bool`, `in_place: bool`, `worktree_path?`).
+- **`action="sync"` (`SyncReq` → `SyncResp`)**: `SyncReq` accepts `run?` and `rebind_workflow` (`bool`, rebinding non-completed gates against the latest resolved workflow); `SyncResp` returns `run_id`, `spec_digest`, `rebound_workflow` (`bool`), `added_nodes`, and `updated_nodes`.
+- **CLI-only spec DTOs**: `DraftReq` / `DraftResp`, `ValidateReq`, and `RoadmapReq` / `RoadmapSpecEntry` belong to the stateless `crates/acdd-spec` CLI commands (`acdd draft`, `acdd validate`, `acdd roadmap`); see [CLI reference](cli.md) for their exact JSON field contracts.
 
 ## Built-in guide
 
@@ -159,8 +169,8 @@ adapter, and response formatter. Omitted or blank MCP topics select `query`. The
 | `code`, `ast` | Verified navigation, structural search, and language capabilities | `code` |
 | `docs` | Search, outlines, source reads, frontmatter, and invariants | `docs` |
 | `lifecycle` | Claims, verification, submission, role runners, rejection recovery, and commits | `state` |
-| `acdd` | Unified `Run` / `GateProfile` lifecycle (`worktree`, `in_place`) | `state` |
-| `gates` | Conditions, profile routes, persistence, and `DomainProvider` hooks | `state` |
+| `acdd` | Unified `Run` / `WorkflowDef` lifecycle (`worktree`, `in_place`) | `state` |
+| `gates` | Conditions, workflow routes, persistence, and `DomainProvider` hooks | `state` |
 | `subtasks` | Subtask status, mandatory evidence, and delivery checks | `state` |
 
 Known disabled topics return `{}` on both surfaces. Disabling `blackboard`
@@ -208,7 +218,7 @@ Every built-in and plugin MCP tool accepts an optional `worktree` selector:
 
 - **`code_map_search`**:
   - **`pattern` / `query`**: `query` is an alias for `pattern`. Use `pattern: "*"` with a non-empty `path` or `kind` to enumerate symbols in that scope (`path: ""` searches the whole workspace; bare/repeated `*` is rejected).
-  - **Type & decorator filters**: searches indexed parameter types, return types, and decorators via `takes:GateProfile`, `returns:Result`, or `@pytest.fixture` (wildcards rejected in type filters; `exact: true` matches names unless a type filter is given).
+  - **Type & decorator filters**: searches indexed parameter types, return types, and decorators via `takes:WorkflowDef`, `returns:Result`, or `@pytest.fixture` (wildcards rejected in type filters; `exact: true` matches names unless a type filter is given).
   - **Top-hit graph pulse** is enabled by default for non-exact searches. Set `include_pulse: false` to skip its graph queries. `exact: true` skips graph reads across ranking and enrichment, including when `include_pulse: true` is supplied.
   - **Paging** uses the indexed ranking, with module `indexed_text` hits ordered after concrete matches before page slicing. Results exceeding the 1,000-row count horizon render `1000+` in Markdown.
 

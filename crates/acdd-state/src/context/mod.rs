@@ -18,14 +18,14 @@ use self::slices::{
     collect_dependency_receipts, extract_global_blueprint_slice, extract_pre_task_slice,
     extract_predecessor_gate_proofs, read_spec_readonly,
 };
-use crate::profile::{ProofDef, ProofKind};
-use crate::spec::Subtask;
+use crate::workflow::{ProofDef, ProofKind};
 use crate::types::{BlackboardListReq, BlackboardStatus};
-use acdd_core::errors::StateError;
+use acdd_core::errors::AcddError;
 use acdd_core::format::estimate_json_bytes;
 use acdd_core::ids::NodeCursor;
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::subsystems::SubsystemId;
+use acdd_spec::{Subtask, SubtaskStatus};
 use serde_json::{Map, Value};
 
 /// Single authoritative context builder shared by `claim`, `show`, and `run`.
@@ -35,7 +35,7 @@ impl GateContextAssembler {
     /// Build a [`ClaimContextRequest`] from a [`RunGraphSnapshot`] with container rework diagnostics and filtered blackboard state.
     pub(crate) fn build_request_from_snapshot(
         input: SnapshotContextInput<'_>,
-    ) -> Result<ClaimContextRequest, StateError> {
+    ) -> Result<ClaimContextRequest, AcddError> {
         let SnapshotContextInput {
             config,
             reader,
@@ -118,7 +118,7 @@ impl GateContextAssembler {
             })
             .collect();
         live_subtasks
-            .sort_by_key(|subtask| subtask.status != crate::types::SubtaskStatus::InProgress);
+            .sort_by_key(|subtask| subtask.status != SubtaskStatus::InProgress);
         Ok(ClaimContextRequest {
             run: snapshot.run.clone(),
             node: node.clone(),
@@ -154,7 +154,7 @@ impl GateContextAssembler {
     /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
     pub(crate) fn preflight_mandatory(
         req: &ClaimContextRequest,
-    ) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
+    ) -> Result<(ClaimResp, NodeCursor, usize), AcddError> {
         budget::preflight_mandatory(req)
     }
 
@@ -162,7 +162,7 @@ impl GateContextAssembler {
     pub fn assemble(
         req: &ClaimContextRequest,
         provider: &CompositeDomainProvider,
-    ) -> Result<ClaimResp, StateError> {
+    ) -> Result<ClaimResp, AcddError> {
         let (mut resp, node_cursor, mut running_bytes) = Self::preflight_mandatory(req)?;
         let response_hard_cap = req.effective_hard_max_bytes();
         let optional_target_cap = req.optional_target_cap();
@@ -237,6 +237,6 @@ impl GateContextAssembler {
 pub(crate) fn build_claim_context(
     req: &ClaimContextRequest,
     provider: &CompositeDomainProvider,
-) -> Result<ClaimResp, StateError> {
+) -> Result<ClaimResp, AcddError> {
     GateContextAssembler::assemble(req, provider)
 }

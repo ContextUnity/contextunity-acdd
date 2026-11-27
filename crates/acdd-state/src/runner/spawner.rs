@@ -3,9 +3,9 @@
 use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, BoundedLogWriter,
 };
-use crate::profile::RoleDef;
+use crate::workflow::RoleDef;
 use crate::types::ClaimOutcome;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::git::scrub_git_env;
 use acdd_core::ids::{NodeCursor, RunId, WorkerId};
@@ -71,7 +71,7 @@ pub struct RoleSpawnOutcome {
 pub fn spawn_role_runner_borrowed(
     req: &RoleSpawnBorrow<'_>,
     session_cache: &mut BTreeMap<(RunId, String, String), String>,
-) -> Result<RoleSpawnOutcome, StateError> {
+) -> Result<RoleSpawnOutcome, AcddError> {
     spawn_role_runner_borrowed_inner(req, session_cache, None)
 }
 
@@ -79,7 +79,7 @@ pub(super) fn spawn_role_runner_borrowed_inner(
     req: &RoleSpawnBorrow<'_>,
     session_cache: &mut BTreeMap<(RunId, String, String), String>,
     timeout_override: Option<Duration>,
-) -> Result<RoleSpawnOutcome, StateError> {
+) -> Result<RoleSpawnOutcome, AcddError> {
     let Some(runner_cmd) = req
         .role_def
         .runner
@@ -87,7 +87,7 @@ pub(super) fn spawn_role_runner_borrowed_inner(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::WorkflowRunnerRequired,
             format!(
                 "role '{}' has no configured runner command; configure roles.{}.runner before automated run",
@@ -97,7 +97,7 @@ pub(super) fn spawn_role_runner_borrowed_inner(
     };
 
     if !req.worktree.is_dir() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "role runner worktree '{}' does not exist",
@@ -188,7 +188,7 @@ pub(super) fn spawn_role_runner_borrowed_inner(
         req.max_line_bytes,
         &mut |_stream, line| {
             log_writer.write_line(line).map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::GateVerificationFailed,
                     format!("failed writing role runner log: {err}"),
                 )
@@ -223,9 +223,9 @@ fn generate_agent_session_id(run_id: &RunId, role_name: &str) -> String {
 pub fn verify_runner_submitted(
     outcome: &RoleSpawnOutcome,
     claim_outcome_after: Option<ClaimOutcome>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if outcome.timed_out || outcome.exit_code != Some(0) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::RunnerNoSubmission,
             format!(
                 "role runner failed without submission (exit_code={:?}, timed_out={})",
@@ -235,7 +235,7 @@ pub fn verify_runner_submitted(
     }
     match claim_outcome_after {
         Some(ClaimOutcome::Passed | ClaimOutcome::Rejected) => Ok(()),
-        other => Err(StateError::new(
+        other => Err(AcddError::new(
             ErrorCode::RunnerNoSubmission,
             format!("role runner exited 0 without submitting gate (claim_outcome={other:?})"),
         )),

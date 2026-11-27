@@ -34,8 +34,15 @@ fn guide_configuration_matrix() {
         .1;
     assert_ne!(response["result"]["isError"], true, "{response}");
     let mcp_written = std::fs::read_to_string(workspace.path("acdd.yaml")).unwrap();
+    assert!(mcp_written.contains("preset: full"), "{mcp_written}");
     assert!(mcp_written.contains("roots:"), "{mcp_written}");
     assert!(mcp_written.contains("specs:"), "{mcp_written}");
+    let gitignore_written = std::fs::read_to_string(workspace.path(".gitignore")).unwrap();
+    assert!(
+        gitignore_written.contains("!/.acdd/workflows/**")
+            && gitignore_written.contains("!/.acdd/specs/**"),
+        "{gitignore_written}"
+    );
     workspace.write("acdd.yaml", "roots: [\n");
     let cli = run_cli_json(&workspace, &["guide", "init", "--force"]);
     assert!(
@@ -250,10 +257,10 @@ fn guide_content_and_surfaces_matrix() {
                     "lifecycle guide must not instruct retired MCP acdd_state actions: {text}"
                 );
                 let authority = value["authority"].to_string().to_lowercase();
-                for source in ["gateprofile", "acdd_claim", "authoritative"] {
+                for source in ["workflowdef", "acdd_claim", "authoritative"] {
                     assert!(
                         authority.contains(source),
-                        "missing profile authority distinction {source}"
+                        "missing workflow authority distinction {source}"
                     );
                 }
                 let runners = value["runners"].to_string().to_lowercase();
@@ -290,7 +297,7 @@ fn guide_content_and_surfaces_matrix() {
             }
             "acdd" => {
                 let text = value.to_string().to_lowercase();
-                for term in ["gateprofile", "18 static", "domainprovider", "acdd start"] {
+                for term in ["workflowdef", "18 static", "domainprovider", "acdd start"] {
                     assert!(
                         text.contains(term),
                         "acdd guide must explain {term}: {text}"

@@ -8,7 +8,7 @@ use crate::types::{
     RunGraphSnapshot, RunTombstoneRecord, StoragePreconditions, SubtaskRecord, TraceFinishInput,
     TraceStartInput, TraceStatus, TransitionPlan,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::RunId;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -32,11 +32,11 @@ impl<'conn> SqliteTx<'conn> {
     }
 }
 
-fn map_write_err(err: rusqlite::Error, context: &str) -> StateError {
+fn map_write_err(err: rusqlite::Error, context: &str) -> AcddError {
     if let rusqlite::Error::SqliteFailure(sqlite_err, _) = &err {
         match sqlite_err.code {
             rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
-                return StateError::new(
+                return AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("{context}: SQLite busy/locked: {err}"),
                 );
@@ -50,35 +50,35 @@ fn map_write_err(err: rusqlite::Error, context: &str) -> StateError {
                     || msg.contains("uq_runs_active_worktree")
                     || msg.contains("UNIQUE constraint failed")
                 {
-                    return StateError::new(
+                    return AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("{context}: uniqueness conflict: {err}"),
                     );
                 }
-                return StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("{context}: constraint violation: {err}"),
                 );
             }
             _ => {}
         }
     }
-    StateError::new(ErrorCode::ProfileSchemaInvalid, format!("{context}: {err}"))
+    AcddError::new(ErrorCode::WorkflowSchemaInvalid, format!("{context}: {err}"))
 }
 
 fn serialize_json<T: serde::Serialize + ?Sized>(
     val: &T,
     field: &str,
-) -> Result<String, StateError> {
+) -> Result<String, AcddError> {
     serde_json::to_string(val).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to serialize {field}: {err}"),
         )
     })
 }
 
-fn bump_write_seq(conn: &Transaction<'_>) -> Result<(), StateError> {
+fn bump_write_seq(conn: &Transaction<'_>) -> Result<(), AcddError> {
     let changed = conn
         .execute(
             "UPDATE _sqlite_meta SET write_seq = write_seq + 1 WHERE id = 1",
@@ -86,8 +86,8 @@ fn bump_write_seq(conn: &Transaction<'_>) -> Result<(), StateError> {
         )
         .map_err(|err| map_write_err(err, "bump write_seq"))?;
     if changed != 1 {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             "_sqlite_meta metadata row missing during write_seq bump",
         ));
     }
@@ -98,9 +98,9 @@ fn check_run_generation(
     conn: &Transaction<'_>,
     run_id: &RunId,
     expected_generation: u64,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let expected_i64 = i64::try_from(expected_generation).map_err(|_| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("expected_run_generation exceeds i64::MAX: {expected_generation}"),
         )
@@ -115,14 +115,14 @@ fn check_run_generation(
         .map_err(|err| map_write_err(err, "check runs.generation"))?;
     match observed {
         Some(actual) if actual == expected_i64 => Ok(()),
-        Some(actual) => Err(StateError::new(
+        Some(actual) => Err(AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "run '{}' generation mismatch: expected {}, observed {}",
                 run_id, expected_generation, actual
             ),
         )),
-        None => Err(StateError::new(
+        None => Err(AcddError::new(
             ErrorCode::BackendConflict,
             format!("run '{}' does not exist", run_id),
         )),
@@ -135,13 +135,13 @@ fn check_node_preconditions(
     preconditions: &StoragePreconditions,
     primary_node_id: Option<&str>,
     skip_version_check_for: &HashSet<&str>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     for exp in &preconditions.expected_node_versions {
         if skip_version_check_for.contains(exp.node_id.as_str()) {
             continue;
         }
         let expected_ver = i64::try_from(exp.expected_version).map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("expected_version overflow for node '{}'", exp.node_id),
             )
@@ -157,7 +157,7 @@ fn check_node_preconditions(
         match observed {
             Some(actual) if actual == expected_ver => {}
             Some(actual) => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "node '{}/{}' version conflict: expected {}, observed {}",
@@ -166,7 +166,7 @@ fn check_node_preconditions(
                 ));
             }
             None => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("node '{}/{}' does not exist", run_id, exp.node_id),
                 ));
@@ -186,7 +186,7 @@ fn check_node_preconditions(
                     .map(|e| e.node_id.as_str())
             })
             .ok_or_else(|| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::BackendConflict,
                     "StoragePreconditions specifies claim/contract/worker check without a target node",
                 )
@@ -204,7 +204,7 @@ fn check_node_preconditions(
             .map_err(|err| map_write_err(err, "check claim/contract/worker preconditions"))?;
 
         let Some((actual_claim_rev, actual_contract_rev, actual_worker_id)) = row else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("node '{run_id}/{target_node}' does not exist"),
             ));
@@ -212,7 +212,7 @@ fn check_node_preconditions(
 
         if let Some(expected_claim_rev) = preconditions.expected_claim_revision {
             if actual_claim_rev != i64::from(expected_claim_rev) {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "node '{run_id}/{target_node}' claim_revision mismatch: expected {expected_claim_rev}, observed {actual_claim_rev}"
@@ -222,7 +222,7 @@ fn check_node_preconditions(
         }
         if let Some(expected_contract_rev) = preconditions.expected_contract_revision {
             if actual_contract_rev != i64::from(expected_contract_rev) {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "node '{run_id}/{target_node}' contract_revision mismatch: expected {expected_contract_rev}, observed {actual_contract_rev}"
@@ -232,7 +232,7 @@ fn check_node_preconditions(
         }
         if let Some(ref expected_worker) = preconditions.expected_worker_id {
             if actual_worker_id.as_deref() != Some(expected_worker.as_str()) {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "node '{run_id}/{target_node}' worker_id mismatch: expected '{}', observed {:?}",
@@ -255,7 +255,7 @@ fn check_node_preconditions(
         match accepted_tree {
             Some(Some(actual)) if actual == pred.expected_accepted_tree.as_str() => {}
             _ => {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "predecessor '{}/{}' accepted_tree drifted from expected '{}'",
@@ -269,15 +269,15 @@ fn check_node_preconditions(
     Ok(())
 }
 
-fn insert_gate_node(conn: &Transaction<'_>, node: &GateNodeRecord) -> Result<(), StateError> {
+fn insert_gate_node(conn: &Transaction<'_>, node: &GateNodeRecord) -> Result<(), AcddError> {
     let tags_json = serialize_json(&node.tags, "gate_nodes.tags_json")?;
     let invariants_json = serialize_json(&node.invariants, "gate_nodes.invariants_json")?;
     let scope_json = serialize_json(&node.scope, "gate_nodes.scope_json")?;
     let extended_scope_json =
         serialize_json(&node.extended_scope, "gate_nodes.extended_scope_json")?;
     let node_version_i64 = i64::try_from(node.node_version).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("node_version exceeds i64::MAX: {}", node.node_version),
         )
     })?;
@@ -331,7 +331,7 @@ fn insert_gate_node(conn: &Transaction<'_>, node: &GateNodeRecord) -> Result<(),
     Ok(())
 }
 
-fn order_nodes_parent_first(nodes: &[GateNodeRecord]) -> Result<Vec<&GateNodeRecord>, StateError> {
+fn order_nodes_parent_first(nodes: &[GateNodeRecord]) -> Result<Vec<&GateNodeRecord>, AcddError> {
     let empty = HashSet::new();
     order_nodes_parent_first_with_existing(nodes, &empty)
 }
@@ -339,7 +339,7 @@ fn order_nodes_parent_first(nodes: &[GateNodeRecord]) -> Result<Vec<&GateNodeRec
 fn order_nodes_parent_first_with_existing<'a>(
     nodes: &'a [GateNodeRecord],
     existing_parents: &HashSet<String>,
-) -> Result<Vec<&'a GateNodeRecord>, StateError> {
+) -> Result<Vec<&'a GateNodeRecord>, AcddError> {
     let mut inserted: HashSet<&str> = existing_parents.iter().map(String::as_str).collect();
     inserted.reserve(nodes.len());
     let mut remaining: Vec<&GateNodeRecord> = nodes.iter().collect();
@@ -362,8 +362,8 @@ fn order_nodes_parent_first_with_existing<'a>(
             }
         }
         if !progressed {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 "gate_nodes parent_id graph contains a cycle or missing parent",
             ));
         }
@@ -373,7 +373,7 @@ fn order_nodes_parent_first_with_existing<'a>(
     Ok(ordered)
 }
 
-fn insert_artifact(conn: &Transaction<'_>, art: &GateArtifactRecord) -> Result<(), StateError> {
+fn insert_artifact(conn: &Transaction<'_>, art: &GateArtifactRecord) -> Result<(), AcddError> {
     conn.execute(
         "INSERT INTO gate_artifacts (
             run_id, node_id, claim_revision, kind, payload_json, snapshot_commit, created_at
@@ -396,7 +396,7 @@ fn insert_artifact(conn: &Transaction<'_>, art: &GateArtifactRecord) -> Result<(
     Ok(())
 }
 
-fn upsert_subtask_row(conn: &Transaction<'_>, subtask: &SubtaskRecord) -> Result<(), StateError> {
+fn upsert_subtask_row(conn: &Transaction<'_>, subtask: &SubtaskRecord) -> Result<(), AcddError> {
     conn.execute(
         "INSERT INTO subtasks (
             run_id, node_id, subtask_ref, seq_order, title, status, evidence, updated_at
@@ -425,7 +425,7 @@ fn upsert_subtask_row(conn: &Transaction<'_>, subtask: &SubtaskRecord) -> Result
 fn insert_blackboard_row(
     conn: &Transaction<'_>,
     item: &BlackboardRecord,
-) -> Result<BlackboardRecord, StateError> {
+) -> Result<BlackboardRecord, AcddError> {
     conn.execute(
         "INSERT INTO blackboard (
             run_id, node_id, recipient_node_id, subtask_ref, gate, author, topic, status, payload, created_at
@@ -455,7 +455,7 @@ fn apply_node_patch(
     run_id: &RunId,
     patch: &NodeStatusPatch,
     expected_version: Option<u64>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let mut sets: Vec<&'static str> = vec!["status = ?", "node_version = node_version + 1"];
     let mut values: Vec<rusqlite::types::Value> = vec![patch.new_status.as_str().to_owned().into()];
 
@@ -547,7 +547,7 @@ fn apply_node_patch(
 
     if let Some(ver) = expected_version {
         let ver_i64 = i64::try_from(ver).map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("expected_version overflow for node '{}'", patch.node_id),
             )
@@ -560,7 +560,7 @@ fn apply_node_patch(
         .execute(&sql, rusqlite::params_from_iter(values.iter()))
         .map_err(|err| map_write_err(err, "apply_node_patch"))?;
     if changed != 1 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "CAS conflict updating gate_nodes '{}/{}'",
@@ -572,11 +572,11 @@ fn apply_node_patch(
 }
 
 impl StateTx for SqliteTx<'_> {
-    fn insert_run_graph(&mut self, graph: &RunGraphSnapshot) -> Result<(), StateError> {
+    fn insert_run_graph(&mut self, graph: &RunGraphSnapshot) -> Result<(), AcddError> {
         let run = &graph.run;
         let run_gen = i64::try_from(run.generation).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("run.generation exceeds i64::MAX: {}", run.generation),
             )
         })?;
@@ -730,9 +730,9 @@ impl StateTx for SqliteTx<'_> {
         run_id: &RunId,
         preconditions: &StoragePreconditions,
         claim: &ClaimInsertInput,
-    ) -> Result<GateClaimRecord, StateError> {
+    ) -> Result<GateClaimRecord, AcddError> {
         let expected_gen = i64::try_from(preconditions.expected_run_generation).map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "expected_run_generation overflow: {}",
@@ -757,7 +757,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "admit_claim bump runs.generation"))?;
         if run_changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("admit_claim CAS conflict on runs.generation for '{run_id}'"),
             ));
@@ -782,7 +782,7 @@ impl StateTx for SqliteTx<'_> {
             .find(|e| e.node_id == claim.node_id)
             .map(|e| {
                 i64::try_from(e.expected_version).map_err(|_| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("expected_version overflow for '{}'", claim.node_id),
                     )
@@ -822,7 +822,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "admit_claim update gate_nodes"))?;
         if node_changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "admit_claim CAS conflict on gate_nodes '{}/{}'",
@@ -876,7 +876,7 @@ impl StateTx for SqliteTx<'_> {
         &mut self,
         preconditions: &StoragePreconditions,
         input: &TraceStartInput,
-    ) -> Result<GateTraceRecord, StateError> {
+    ) -> Result<GateTraceRecord, AcddError> {
         check_run_generation(
             self.conn,
             &input.run_id,
@@ -951,10 +951,10 @@ impl StateTx for SqliteTx<'_> {
         })
     }
 
-    fn finish_trace(&mut self, input: &TraceFinishInput) -> Result<(), StateError> {
+    fn finish_trace(&mut self, input: &TraceFinishInput) -> Result<(), AcddError> {
         if input.status == TraceStatus::Running {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 "finish_trace requires a non-running terminal TraceStatus",
             ));
         }
@@ -987,7 +987,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "finish_trace update gate_traces"))?;
         if changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "finish_trace failed: trace_row_id {} is missing or not in 'running' state",
@@ -1005,9 +1005,9 @@ impl StateTx for SqliteTx<'_> {
         preconditions: &StoragePreconditions,
         node_ids: &[String],
         now_utc: &str,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let expected_gen = i64::try_from(preconditions.expected_run_generation).map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "expected_run_generation overflow: {}",
@@ -1031,7 +1031,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "mark_nodes_stale bump runs.generation"))?;
         if run_changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("mark_nodes_stale CAS conflict on runs.generation for '{run_id}'"),
             ));
@@ -1070,7 +1070,7 @@ impl StateTx for SqliteTx<'_> {
         &mut self,
         run_id: &RunId,
         plan: &TransitionPlan,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let expected_versions: HashMap<&str, u64> = plan
             .preconditions
             .expected_node_versions
@@ -1106,7 +1106,7 @@ impl StateTx for SqliteTx<'_> {
         if needs_run_update {
             let expected_gen =
                 i64::try_from(plan.preconditions.expected_run_generation).map_err(|_| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!(
                             "expected_run_generation overflow: {}",
@@ -1142,7 +1142,7 @@ impl StateTx for SqliteTx<'_> {
                 .execute(&sql, rusqlite::params_from_iter(values.iter()))
                 .map_err(|err| map_write_err(err, "apply_transition_plan update runs"))?;
             if changed != 1 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("apply_transition_plan CAS conflict on runs.generation for '{run_id}'"),
                 ));
@@ -1212,7 +1212,7 @@ impl StateTx for SqliteTx<'_> {
                 )
                 .map_err(|err| map_write_err(err, "apply_transition_plan claim_patch"))?;
             if changed != 1 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "claim_patch target missing for '{}/{}/rev-{}'",
@@ -1239,7 +1239,7 @@ impl StateTx for SqliteTx<'_> {
                 )
                 .map_err(|err| map_write_err(err, "apply_transition_plan blackboard_patch"))?;
             if changed != 1 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("blackboard entry {} missing in run '{}'", bbp.id, run_id),
                 ));
@@ -1262,7 +1262,7 @@ impl StateTx for SqliteTx<'_> {
         run_id: &RunId,
         plan: &SyncPlan,
         new_profile: Option<(&str, &str)>,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         if !plan.added_nodes.is_empty() {
             let mut stmt = self
                 .conn
@@ -1297,7 +1297,7 @@ impl StateTx for SqliteTx<'_> {
                 )
                 .map_err(|err| map_write_err(err, "apply_sync_plan update runs with profile"))?;
             if changed != 1 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("apply_sync_plan run '{run_id}' missing"),
                 ));
@@ -1311,7 +1311,7 @@ impl StateTx for SqliteTx<'_> {
                 )
                 .map_err(|err| map_write_err(err, "apply_sync_plan update runs.spec_digest"))?;
             if changed != 1 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("apply_sync_plan run '{run_id}' missing"),
                 ));
@@ -1328,7 +1328,7 @@ impl StateTx for SqliteTx<'_> {
                     )
                     .map_err(|err| map_write_err(err, "apply_sync_plan update seq_order"))?;
                 if changed != 1 {
-                    return Err(StateError::new(
+                    return Err(AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("apply_sync_plan seq_order target '{run_id}/{node_id}' missing"),
                     ));
@@ -1385,7 +1385,7 @@ impl StateTx for SqliteTx<'_> {
         &mut self,
         run_id: &RunId,
         spec_id: Option<&str>,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let changed = self
             .conn
             .execute(
@@ -1394,7 +1394,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "update runs.spec_id"))?;
         if changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("update_run_spec_id run '{run_id}' missing"),
             ));
@@ -1406,7 +1406,7 @@ impl StateTx for SqliteTx<'_> {
     fn insert_blackboard(
         &mut self,
         item: &BlackboardRecord,
-    ) -> Result<BlackboardRecord, StateError> {
+    ) -> Result<BlackboardRecord, AcddError> {
         let stored = insert_blackboard_row(self.conn, item)?;
         bump_write_seq(self.conn)?;
         Ok(stored)
@@ -1416,7 +1416,7 @@ impl StateTx for SqliteTx<'_> {
         &mut self,
         run_id: &RunId,
         patch: &BlackboardStatusPatch,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         let changed = self
             .conn
             .execute(
@@ -1425,7 +1425,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "update_blackboard_status"))?;
         if changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("blackboard entry {} missing in run '{}'", patch.id, run_id),
             ));
@@ -1434,7 +1434,7 @@ impl StateTx for SqliteTx<'_> {
         Ok(())
     }
 
-    fn upsert_subtask(&mut self, subtask: &SubtaskRecord) -> Result<(), StateError> {
+    fn upsert_subtask(&mut self, subtask: &SubtaskRecord) -> Result<(), AcddError> {
         upsert_subtask_row(self.conn, subtask)?;
         bump_write_seq(self.conn)?;
         Ok(())
@@ -1444,7 +1444,7 @@ impl StateTx for SqliteTx<'_> {
         &mut self,
         preconditions: &StoragePreconditions,
         tombstone: &RunTombstoneRecord,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), AcddError> {
         check_run_generation(
             self.conn,
             &tombstone.run_id,
@@ -1464,8 +1464,8 @@ impl StateTx for SqliteTx<'_> {
             "run_tombstones.cleanup_manifest_json",
         )?;
         let tomb_gen = i64::try_from(tombstone.generation).map_err(|_| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("tombstone generation overflow: {}", tombstone.generation),
             )
         })?;
@@ -1508,7 +1508,7 @@ impl StateTx for SqliteTx<'_> {
             .map_err(|err| map_write_err(err, "archive_and_prune_run insert run_tombstones"))?;
 
         let expected_gen = i64::try_from(preconditions.expected_run_generation).map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "expected_run_generation overflow: {}",
@@ -1524,7 +1524,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "archive_and_prune_run delete runs"))?;
         if deleted != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "archive_and_prune_run CAS conflict deleting run '{}'",
@@ -1538,7 +1538,7 @@ impl StateTx for SqliteTx<'_> {
         Ok(())
     }
 
-    fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), StateError> {
+    fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), AcddError> {
         let changed = self
             .conn
             .execute(
@@ -1547,7 +1547,7 @@ impl StateTx for SqliteTx<'_> {
             )
             .map_err(|err| map_write_err(err, "mark_tombstone_cleaned"))?;
         if changed != 1 {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("run_tombstone '{run_id}' does not exist"),
             ));

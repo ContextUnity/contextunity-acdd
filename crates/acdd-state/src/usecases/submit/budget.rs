@@ -5,7 +5,7 @@ use crate::types::{
     BlackboardStatus, BlackboardTopic, GateNodeRecord, RunGraphSnapshot, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::git::git_command;
 use acdd_core::ids::TreeOid;
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -23,7 +23,7 @@ pub(super) fn enforce_blueprint_max_net_loc(
     machine_gate: &crate::machine::MachineGateDef,
     target_worktree: &Path,
     observations: &ValidatedObservations,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     if snapshot.run.is_ephemeral {
         return Ok(());
     }
@@ -39,13 +39,13 @@ pub(super) fn enforce_blueprint_max_net_loc(
     };
 
     let current_tree = observations.current_tree.as_ref().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             "submit observations are missing current_tree",
         )
     })?;
     let policy = observations.path_policy.as_ref().ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             "submit observations are missing path_policy",
         )
@@ -74,7 +74,7 @@ pub(super) fn enforce_blueprint_max_net_loc(
         return Ok(());
     }
 
-    Err(StateError::new(
+    Err(AcddError::new(
         ErrorCode::GateVerificationFailed,
         format!(
             "task '{task_ref}' production net LOC delta (+{net_loc}) exceeds blueprint budget max_net_loc={max_net_loc}; reuse existing canonical owners or simplify the implementation, or escalate (`submit --action escalate`) for an independent `BUDGET_OVERRIDE: <reason>` decision from architect/coordinator/operator in `acdd_blackboard` (topic: decisions)"
@@ -88,7 +88,7 @@ fn compute_scoped_prod_net_loc(
     current_tree: &TreeOid,
     admitted_scope: &[String],
     policy: &WorkspacePathPolicy,
-) -> Result<i64, StateError> {
+) -> Result<i64, AcddError> {
     let output = git_command(
         worktree,
         &[
@@ -102,10 +102,10 @@ fn compute_scoped_prod_net_loc(
             current_tree.as_str(),
         ],
     )
-    .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+    .map_err(|err| AcddError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
                 "git diff --numstat {} {} failed in '{}': {stderr}",
@@ -182,7 +182,7 @@ fn has_container_budget_decision(
     gate_role: Option<&str>,
     task_ref: &str,
     net_loc: i64,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     if !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(false);
     }
@@ -226,7 +226,7 @@ fn has_container_budget_decision(
         saw_self_approved = Some(item.author);
     }
     if let Some(author) = saw_self_approved {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "BUDGET_OVERRIDE for task '{task_ref}' (+{net_loc} net LOC) cannot be self-approved by implementer '{author}'; escalate (`submit --action escalate`) and record approval from architect, coordinator, or operator"

@@ -5,7 +5,7 @@ title: Workspace configuration
 
 # Workspace configuration
 
-`acdd.yaml` is optional — without it, ACDD scans the workspace root and excludes standard build and cache directories. Run `acdd init` at the repository root to generate a starter `acdd.yaml`, `.acdd/profile.yaml`, and `.gitignore` rules.
+`acdd.yaml` is optional — without it, ACDD scans the workspace root and excludes standard build and cache directories. Run `acdd init` at the repository root to generate a starter `acdd.yaml`, `.acdd/workflows/default.yaml`, and `.gitignore` rules.
 
 - **`--config <PATH>` (`ACDD_CONFIG`)**: overrides the path to `acdd.yaml`.
 - **`--state-db <PATH>` (`ACDD_STATE_DB`)**: overrides the path to `.acdd/state.sqlite`.
@@ -14,6 +14,7 @@ title: Workspace configuration
 ## Indexing scope
 
 ```yaml
+preset: full
 roots:
   - src
 docs:
@@ -27,8 +28,8 @@ specs:
     path: docs/plans
     prefixes: [PLAN]
     digits: 3
-profiles_dirs:
-  - .acdd/profiles
+workflows_dirs:
+  - .acdd/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 ignore:
@@ -49,19 +50,19 @@ linked_workspaces:
 - **`roots`**: relative directories or file paths scanned for compiled language symbols and Markdown/MDX docs (scan roots control indexing only, not language import roots).
 - **`docs`**: relative directories or Markdown/MDX files indexed into searchable documentation sections; non-document files inside `docs` stay out of the code index.
 - **`ignore`**: literal file or directory basenames excluded from scanning (not glob patterns).
-- **Schema strictness**: `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits` enforce `#[serde(deny_unknown_fields)]`, rejecting unknown keys fail-closed with `ACDD_PROFILE_SCHEMA_INVALID`.
+- **Schema strictness**: `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits` enforce `#[serde(deny_unknown_fields)]`, rejecting unknown or removed keys fail-closed with `ACDD_WORKFLOW_SCHEMA_INVALID`.
 - **Default exclusions**: `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.gitignore` rules, and symlinks.
 - **Manifest discovery**: indexes package manifests inside admitted roots plus direct root manifests (e.g. `roots: [src]` still picks up root `Cargo.toml` or `package.json` up to `4 MiB`).
 
-### Specification collections (`specs:`)
+### Specification configurations (`specs:`)
 
-`specs:` defines named folders for Git-tracked Markdown specifications (`milestones` and `plans` by default):
+`specs:` (`SpecConfig`) defines named folders for Git-tracked Markdown specifications (`milestones` and `plans` by default):
 
-- **`path` / `paths`**: normalized relative directory (or confined globs) that must not overlap across collections.
-- **`prefixes`**: allowed ID prefixes for files in that collection (e.g. `[AC]`, `[PLAN]`).
+- **`path` / `paths`**: normalized relative directory (or confined globs) that must not overlap across configurations.
+- **`prefixes`**: allowed ID prefixes for files in that configuration (e.g. `[AC]`, `[PLAN]`).
 - **`digits`**: numeric ID zero-padding width (`1..=16`, default `3`, producing `AC-001-...md`).
-- **`profile`**: optional default `GateProfile` name or path applied when starting specs from this collection.
-- **Discovery**: `acdd draft <collection> <slug>` allocates the next free ID, and `acdd roadmap` scans all configured collections to compute cross-spec dependency waves.
+- **`workflow`**: optional default `WorkflowDef` name or path applied when starting specs from this configuration (unknown or removed keys fail closed via `#[serde(deny_unknown_fields)]`).
+- **Discovery**: `acdd draft <spec> <slug>` allocates the next free ID, and `acdd roadmap` scans all configured entries to compute cross-spec dependency waves.
 
 ### Linked workspaces (`linked_workspaces:`)
 
@@ -78,7 +79,7 @@ Federate sibling repositories into the same code and documentation graph:
 Changing workflow, state, or output formatting settings does **not** trigger a cold rebuild of `.acdd/code-map.sqlite`:
 
 - **Rebuilds the code index**: `roots`, `docs`, `ignore`, `sensitive`, `limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`, and `adapter_version`.
-- **Never rebuilds the code index**: `specs` (and its `profile`, `prefixes`, `digits`), `profiles_dirs`, `state_db`, `retain_traces`, `modules`, `profile`, `response`, and `debug`.
+- **Never rebuilds the code index**: `specs` (and its `workflow`, `prefixes`, `digits`), `workflows_dirs`, `state_db`, `retain_traces`, `modules`, `preset`, `response`, and `debug`.
 
 ### Architectural zones, rules, and complexity limits (`architecture:`)
 
@@ -161,12 +162,14 @@ linked_workspaces:
 - **`retain_traces`**: number of run trace folders kept under `<primary_worktree>/.acdd/run/<run_id>/` (`>= 1`, default `20`).
 - **Standalone index**: code and docs indexing work normally even if state execution is never used.
 
-Toggle MCP subsystems and `DomainProvider` plugins under `modules:` (individual flags or `profile: full | navigator | orchestrator | minimal`):
+Toggle MCP and CLI subsystems and `DomainProvider` plugins via top-level `preset:` (or `modules:` flags/`preset: full | index | spec | state | minimal`):
 
 ```yaml
+preset: full
 modules:
   code: true
   docs: true
+  spec: true
   state: true
   blackboard: true
   memory: false
@@ -175,9 +178,19 @@ modules:
     docs: true
 ```
 
+| Preset (`preset:`) | Enabled Subsystems | Active CLI / MCP Surface |
+| --- | --- | --- |
+| `full` *(default)* | `code`, `docs`, `spec`, `state`, `blackboard` | All CLI commands and all 18 static MCP tools |
+| `index` | `code`, `docs` | Code/docs CLI + 13 MCP tools (`code_map_*`, `ast_grep_search`, `get_doc`, `search_docs`, `acdd_read`, `acdd_guide`) |
+| `spec` | `spec`, `docs` | Stateless CLI `acdd validate` / `roadmap` / `draft` + 4 MCP tools (`get_doc`, `search_docs`, `acdd_read`, `acdd_guide`) with zero `.acdd/state.sqlite` creation |
+| `state` | `state`, `blackboard`, `spec` | State/spec CLI + 7 MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`, `acdd_read`, `acdd_guide`) |
+| `minimal` | *(none)* | Core `acdd_read` (index-free text modes) and `acdd_guide` only |
+
 - **`code: false`**: disables source indexing and rejects code-graph queries with `FEATURE_DISABLED`.
-- **`docs: false`**: skips Markdown indexing and strips `get_doc`, `search_docs`, and `docs.*` hooks from built-in profiles.
-- **`state: false`**: disables run/gate commands and `blackboard`.
+- **`docs: false`**: skips Markdown indexing and strips `get_doc`, `search_docs`, and `docs.*` hooks from built-in workflows.
+- **`spec: false`**: disables `acdd validate`, `acdd roadmap`, and `acdd draft` (`FEATURE_DISABLED`).
+- **`state: false`**: disables run/gate commands and physically disables `blackboard`.
+- **Required-subsystem validation (`FEATURE_REQUIRED_BY_PRESET` vs. `DOMAIN_CAPABILITY_UNAVAILABLE`)**: `SubsystemRegistry::validate()` ([`subsystems.rs`](../../crates/acdd-core/src/subsystems.rs)) rejects contradictory enable/disable entries and embeds `FEATURE_REQUIRED_BY_PRESET: ACDD subsystem '<name>' is required but disabled` in the `ACDD_WORKFLOW_SCHEMA_INVALID` diagnostic message whenever a single `modules:` registry's `required` list demands a subsystem disabled by that same `preset:` / `modules:` block (either in `acdd.yaml` or workflow-locally). Separately, when a workflow's `modules.required` demands a subsystem disabled by the **workspace** `acdd.yaml` `preset:` / `modules:`, [`validate_workflow`](../../crates/acdd-state/src/workflow/validate.rs) emits structured diagnostic code `DOMAIN_CAPABILITY_UNAVAILABLE` (resolved workflows that satisfy all checks emit `WORKFLOW_VALID`).
 - **Core tools**: `acdd_read` and `acdd_guide` remain active in every preset, including `minimal`.
 - **`domains.<id>`**: enables or disables registered `DomainProvider` plugins (`true | false`).
 - **Database collision guard**: code-map builds refuse to overwrite `state_db`, and state startup rejects code-map databases.
@@ -205,18 +218,18 @@ response:
 - **`source_context.max_body_lines`**: preview line limit for `inspect` / `explain` (`1..=500`, default `100`).
 - **`acdd_read` symbol bodies**: returns the full symbol when it fits `max_output_bytes`, otherwise pages cleanly on line boundaries.
 
-## Declarative ACDD profile and role configuration
+## Declarative ACDD workflow and role configuration
 
-Workflow gates are configured via **`GateProfile` (`version: 2`)** YAML files (see [ACDD Profiles Reference](profiles.md)).
+Workflow gates are configured via **`WorkflowDef` (`version: 2`)** YAML files (see [ACDD Workflows Reference](workflows.md)).
 
 ### Loading precedence
 
-1. **CLI / env override**: `--profile <name|path[:sha256_prefix]>` or `ACDD_PROFILE`.
-2. **Spec frontmatter**: `profile: <name|path[:sha256_prefix]>` inside the Markdown spec.
-3. **Collection default**: `specs.<collection>.profile` in `acdd.yaml`.
-4. **Custom profile folders**: named `<profile>.yaml` files under `profiles_dirs` (default `[".acdd/profiles"]`).
-5. **Workspace default**: `.acdd/profile.yaml` at the repository root (falls back to built-in `code` when absent).
-6. **Built-in profiles**: `base`, `code`, `audit`, `documentation`, and `spec_planning` (linked workspaces' profiles are ignored).
+1. **CLI / env override**: `--workflow <name|path[:sha256_prefix]>` or `ACDD_WORKFLOW`.
+2. **Spec frontmatter**: `workflow: <name|path[:sha256_prefix]>` inside the Markdown spec.
+3. **Spec default**: `specs.<name>.workflow` in `acdd.yaml`.
+4. **Custom workflow folders**: named `<workflow>.yaml` files under `workflows_dirs` (default `[".acdd/workflows"]`).
+5. **Workspace default**: `.acdd/workflows/default.yaml` at the repository root (falls back to built-in `code` when absent).
+6. **Built-in workflows**: `base`, `code`, and `documentation` (plus copyable `audit`, `spec_planning`, and `hotfix` templates in `skills/acdd/references/acdd-workflow-examples/`; linked workspaces' workflows are ignored).
 
 ### Gate capabilities at a glance
 
@@ -226,7 +239,7 @@ Workflow gates are configured via **`GateProfile` (`version: 2`)** YAML files (s
 - **Proofs**: built-in `none`, `command`, `call`, or `review` (`contours:`), plus custom JSON Schemas under `proofs:`.
 - **Persistence (`save:`)**: `snapshot` checkpoints on leaf task gates (see [task snapshots](tasks.md#task-snapshots)), atomic `commit` receipts on delivery, `report` Markdown outputs, and terminal `archive` / `prune`.
 - **Routing & guards**: `pass` / `fail` / `fail_drift` edges, `need` dependencies, `independent_from` worker separation, and `when` predicates.
-- **SHA-256 pinning**: `<path>:<sha256_prefix>` (`>= 7` hex chars) locks parent/custom profiles and fails closed (`ACDD_PROFILE_SCHEMA_INVALID`) on unauthorized edits. See [ACDD Profiles Reference](profiles.md) for full schema details.
+- **SHA-256 pinning**: `<path>:<sha256_prefix>` (`>= 7` hex chars) locks parent/custom workflows and fails closed (`ACDD_WORKFLOW_SCHEMA_INVALID`) on unauthorized edits. See [ACDD Workflows Reference](workflows.md) for full schema details.
 
 ### Role and model configuration
 
@@ -239,7 +252,7 @@ Configure execution mode, model preferences, and optional CLI runners per role u
 - **`runner` / `prompt_template`**: optional shell command and prompt template used by headless `acdd run` (exports `ACDD_ROLE_MODE`, `ACDD_ROLE_MODELS`, `ACDD_MODEL`, and `ACDD_REASONING`).
 
 ```yaml
-# .acdd/profile.yaml
+# .acdd/workflows/default.yaml
 version: 2
 inherit: code
 
@@ -258,14 +271,15 @@ roles:
 
 ### Repository `.gitignore` and protected paths
 
-Keep committed assets (`.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`) tracked in Git while ignoring runtime databases and logs (`acdd init` writes this block automatically):
+Keep committed assets (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks/**`) tracked in Git while ignoring runtime databases and logs (`acdd init` writes this block automatically):
 
 ```gitignore
 /.worktrees/
 !/.acdd/
-!/.acdd/profile.yaml
-!/.acdd/profiles/
-!/.acdd/profiles/**
+!/.acdd/workflows/
+!/.acdd/workflows/**
+!/.acdd/specs/
+!/.acdd/specs/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*

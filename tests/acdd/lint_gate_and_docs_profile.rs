@@ -26,7 +26,7 @@ fn open_real_engine(ws: &Workspace) -> StateEngine {
         state_db_override: None,
         code_db_path: Some(acdd_core::config::resolve_code_db_path(ws.root(), None)),
         spec_collections: adapter.specs.clone(),
-        profiles_dirs: adapter.profiles_dirs.clone(),
+        workflows_dirs: adapter.workflows_dirs.clone(),
         linked_workspaces: adapter
             .linked_workspaces
             .iter()
@@ -99,7 +99,7 @@ fn acdd_lint_gate_blocking_scoping_freshness_enforced_and_docs_profile() {
     let err = test_provider
         .validate_check_ref("code.lint", &json!({"categories": ["invalid"]}))
         .expect_err("invalid category must fail closed");
-    assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+    assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid);
 
     // 2. Host CodeDomainProvider + DocsDomainProvider: task scoping, gate blocking, [ENFORCED], and freshness drift.
     let ws = Workspace::with_files(&[
@@ -120,7 +120,7 @@ specs:
 "#,
         ),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             r#"version: 2
 inherit: none
 git:
@@ -312,6 +312,7 @@ scope: [src/core/scoped.rs]
         test_target: None,
         path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
         baseline_ref: None,
+        node_tags: vec![],
     };
     let FreshnessObservation::Passed {
         index_generation: Some(_),
@@ -632,7 +633,7 @@ scope: [src/core/scoped.rs]
         })))
         .unwrap();
 
-    // 3. End-to-end `--profile documentation` run using real CodeDomainProvider + DocsDomainProvider.
+    // 3. End-to-end `--workflow documentation` run using real CodeDomainProvider + DocsDomainProvider.
     let doc_ws = Workspace::with_files(&[
         (
             ".gitignore",
@@ -671,7 +672,7 @@ scope: [docs/architecture/guide.md]
     let StateCommandOutput::Start(doc_started) = doc_engine
         .execute(StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/AR-902-docs-run.md".to_owned()),
-            profile: Some("documentation".to_owned()),
+            workflow: Some("documentation".to_owned()),
             ..StartReq::default()
         }))
         .unwrap()

@@ -17,7 +17,7 @@ use crate::types::{
     GateNodeRecord, GateTraceRecord, ListRunsPage, ListRunsReq, ObservabilitySnapshot,
     RunGraphSnapshot, RunRecord, RunTombstoneRecord,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{
     confined_database_create_path, confined_database_open_path, ensure_confined_dir_all,
 };
@@ -106,7 +106,7 @@ fn non_empty_wal_exists(db_path: &Path) -> bool {
     fs::metadata(wal_path).is_ok_and(|m| m.is_file() && m.len() > 0)
 }
 
-fn open_immutable_read_only(confined: &Path) -> Result<Connection, StateError> {
+fn open_immutable_read_only(confined: &Path) -> Result<Connection, AcddError> {
     let uri = format!("file:{}?immutable=1", encode_sqlite_uri_path(confined));
     let uri_conn = Connection::open_with_flags(
         uri,
@@ -115,8 +115,8 @@ fn open_immutable_read_only(confined: &Path) -> Result<Connection, StateError> {
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|uri_err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "failed to open read-only SQLite database '{}': {uri_err}",
                 confined.display()
@@ -124,8 +124,8 @@ fn open_immutable_read_only(confined: &Path) -> Result<Connection, StateError> {
         )
     })?;
     configure_read_only_conn(&uri_conn, confined).map_err(|pragma_err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to configure read-only SQLite pragmas: {pragma_err}"),
         )
     })?;
@@ -136,10 +136,10 @@ fn open_immutable_read_only(confined: &Path) -> Result<Connection, StateError> {
 /// + `PRAGMA query_only = ON`) without ever creating missing files or parent directories.
 ///
 /// Returns `(Connection, schema_version)` when the database exists.
-fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>, StateError> {
+fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>, AcddError> {
     let confined = confined_database_create_path(db_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "database confinement check failed for '{}': {err}",
                 db_path.display()
@@ -148,30 +148,30 @@ fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>,
     })?;
     match fs::symlink_metadata(&confined) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("database must not be a symlink: {}", db_path.display()),
             ));
         }
         Ok(meta) if !meta.file_type().is_file() => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("database must be a regular file: {}", db_path.display()),
             ));
         }
         Ok(_) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to inspect database '{}': {err}", db_path.display()),
             ));
         }
     }
 
     let confined = confined_database_open_path(db_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("database path confinement check failed: {err}"),
         )
     })?;
@@ -207,7 +207,7 @@ fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>,
             let has_wal = non_empty_wal_exists(&confined);
             if path_or_parent_is_read_only(&confined) {
                 if has_wal {
-                    return Err(StateError::new(
+                    return Err(AcddError::new(
                         ErrorCode::BackendConflict,
                         format!(
                             "cannot open read-only SQLite database '{}' with immutable=1 while a non-empty WAL sidecar exists",
@@ -225,7 +225,7 @@ fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>,
                     OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )
                 .map_err(|rw_err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!(
                             "failed to open SQLite database '{}' to replay non-empty WAL: {rw_err}",
@@ -234,8 +234,8 @@ fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>,
                     )
                 })?;
                 configure_read_only_conn(&rw_conn, &confined).map_err(|pragma_err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("failed to configure read-only SQLite pragmas: {pragma_err}"),
                     )
                 })?;
@@ -243,8 +243,8 @@ fn open_read_only_if_exists(db_path: &Path) -> Result<Option<(Connection, u32)>,
             }
         }
         Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to open read-only SQLite database '{}': {err}",
                     confined.display()
@@ -277,8 +277,8 @@ impl SqliteStateReader {
     fn with_conn_or_default<T>(
         &self,
         default: T,
-        f: impl FnOnce(&Connection) -> Result<T, StateError>,
-    ) -> Result<T, StateError> {
+        f: impl FnOnce(&Connection) -> Result<T, AcddError>,
+    ) -> Result<T, AcddError> {
         let Some((conn, _)) = open_read_only_if_exists(&self.db_path)? else {
             return Ok(default);
         };
@@ -288,8 +288,8 @@ impl SqliteStateReader {
     fn with_versioned_conn_or_default<T>(
         &self,
         default: T,
-        f: impl FnOnce(&Connection, u32) -> Result<T, StateError>,
-    ) -> Result<T, StateError> {
+        f: impl FnOnce(&Connection, u32) -> Result<T, AcddError>,
+    ) -> Result<T, AcddError> {
         let Some((conn, schema_version)) = open_read_only_if_exists(&self.db_path)? else {
             return Ok(default);
         };
@@ -300,20 +300,20 @@ impl SqliteStateReader {
 impl StateReader for SqliteStateReader {
     fn load_task_statuses(
         &self,
-    ) -> Result<Vec<(RunId, String, crate::types::NodeStatus)>, StateError> {
+    ) -> Result<Vec<(RunId, String, crate::types::NodeStatus)>, AcddError> {
         let Some((conn, _)) = open_read_only_if_exists(&self.db_path)? else {
             return Ok(Vec::new());
         };
         reader::load_task_statuses(&conn)
     }
 
-    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError> {
+    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, AcddError> {
         self.with_versioned_conn_or_default(None, |conn, schema_version| {
             reader::load_run_graph_with_version(conn, run_id, schema_version)
         })
     }
 
-    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
+    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, AcddError> {
         let limit = req.limit.clamp(1, 100);
         let default = ListRunsPage {
             runs: Vec::new(),
@@ -327,7 +327,7 @@ impl StateReader for SqliteStateReader {
             reader::list_runs_with_version(&conn, req, schema_version)
         } else if let Some(expected_gen) = req.generation {
             if expected_gen != 0 {
-                return Err(StateError::new(
+                return Err(AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "runs generation mismatch on missing database: expected {expected_gen}, observed 0"
@@ -343,7 +343,7 @@ impl StateReader for SqliteStateReader {
     fn resolve_active_run_by_worktree(
         &self,
         worktree: &str,
-    ) -> Result<Option<RunRecord>, StateError> {
+    ) -> Result<Option<RunRecord>, AcddError> {
         self.with_versioned_conn_or_default(None, |conn, schema_version| {
             reader::resolve_active_run_by_worktree_with_version(conn, worktree, schema_version)
         })
@@ -352,7 +352,7 @@ impl StateReader for SqliteStateReader {
     fn active_worker_claims(
         &self,
         worker_id: &acdd_core::ids::WorkerId,
-    ) -> Result<Vec<crate::types::ActiveWorkerClaim>, StateError> {
+    ) -> Result<Vec<crate::types::ActiveWorkerClaim>, AcddError> {
         self.with_conn_or_default(Vec::new(), |conn| {
             reader::active_worker_claims(conn, worker_id)
         })
@@ -362,7 +362,7 @@ impl StateReader for SqliteStateReader {
         &self,
         run_id: &RunId,
         node_id: &str,
-    ) -> Result<Option<GateNodeRecord>, StateError> {
+    ) -> Result<Option<GateNodeRecord>, AcddError> {
         self.with_conn_or_default(None, |conn| reader::load_node(conn, run_id, node_id))
     }
 
@@ -370,7 +370,7 @@ impl StateReader for SqliteStateReader {
         &self,
         run_id: &RunId,
         node_id: &str,
-    ) -> Result<Option<GateClaimRecord>, StateError> {
+    ) -> Result<Option<GateClaimRecord>, AcddError> {
         self.with_conn_or_default(None, |conn| reader::latest_claim(conn, run_id, node_id))
     }
 
@@ -379,7 +379,7 @@ impl StateReader for SqliteStateReader {
         run_id: &RunId,
         node_id: &str,
         claim_revision: u32,
-    ) -> Result<Option<GateTraceRecord>, StateError> {
+    ) -> Result<Option<GateTraceRecord>, AcddError> {
         self.with_conn_or_default(None, |conn| {
             reader::latest_trace(conn, run_id, node_id, claim_revision)
         })
@@ -391,7 +391,7 @@ impl StateReader for SqliteStateReader {
         node_id: &str,
         claim_revision: u32,
         kind: ArtifactKind,
-    ) -> Result<Option<GateArtifactRecord>, StateError> {
+    ) -> Result<Option<GateArtifactRecord>, AcddError> {
         self.with_conn_or_default(None, |conn| {
             reader::load_artifact(conn, run_id, node_id, claim_revision, kind)
         })
@@ -401,12 +401,12 @@ impl StateReader for SqliteStateReader {
         &self,
         run_id: &RunId,
         req: &BlackboardListReq,
-    ) -> Result<BlackboardPage, StateError> {
+    ) -> Result<BlackboardPage, AcddError> {
         let limit = req.limit.clamp(1, 100);
         if let Some((conn, _)) = open_read_only_if_exists(&self.db_path)? {
             reader::list_blackboard(&conn, run_id, req)
         } else if let Some(expected_gen) = req.generation {
-            Err(StateError::new(
+            Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "blackboard run generation mismatch on missing database: expected {expected_gen}"
@@ -423,17 +423,17 @@ impl StateReader for SqliteStateReader {
         }
     }
 
-    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, StateError> {
+    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, AcddError> {
         self.with_conn_or_default(None, |conn| reader::load_tombstone(conn, run_id))
     }
 
-    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, StateError> {
+    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, AcddError> {
         self.with_conn_or_default(None, |conn| {
             reader::max_spec_number(conn, collection, prefix)
         })
     }
 
-    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, StateError> {
+    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, AcddError> {
         self.with_conn_or_default(ObservabilitySnapshot::default(), |conn| {
             reader::observability_snapshot(conn)
         })
@@ -452,19 +452,19 @@ pub struct SqliteStateBackend {
 impl SqliteStateBackend {
     /// Open (or initialize) a custom/standalone SQLite database at `db_path` without backups.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open(db_path: impl AsRef<Path>) -> Result<Self, StateError> {
+    pub fn open(db_path: impl AsRef<Path>) -> Result<Self, AcddError> {
         Self::open_inner(db_path.as_ref())
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn open_inner(db_path: &Path) -> Result<Self, StateError> {
+    fn open_inner(db_path: &Path) -> Result<Self, AcddError> {
         Self::open_with_options(SqliteBackendOptions::custom(db_path))
     }
 
     /// Open (or initialize/restore) a SQLite state backend with full backup and reconciliation options
     /// (gated on `test` / `test-support` so production callers use `StateEngine`-wired reconciliation).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_with_options(options: SqliteBackendOptions) -> Result<Self, StateError> {
+    pub fn open_with_options(options: SqliteBackendOptions) -> Result<Self, AcddError> {
         Self::open_with_reconciler(options, |_| Ok(Vec::new()))
     }
 
@@ -473,13 +473,13 @@ impl SqliteStateBackend {
     pub(crate) fn open_with_reconciler<F>(
         options: SqliteBackendOptions,
         reconciler: F,
-    ) -> Result<Self, StateError>
+    ) -> Result<Self, AcddError>
     where
-        F: FnOnce(&[backup::RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, StateError>,
+        F: FnOnce(&[backup::RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, AcddError>,
     {
         let confined_path = confined_database_create_path(&options.db_path).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "database confinement check failed for '{}': {err}",
                     options.db_path.display()
@@ -495,8 +495,8 @@ impl SqliteStateBackend {
         }
 
         let parent = confined_path.parent().ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "database path '{}' has no parent directory",
                     options.db_path.display()
@@ -504,8 +504,8 @@ impl SqliteStateBackend {
             )
         })?;
         ensure_confined_dir_all(parent, parent).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to prepare confined database directory '{}': {err}",
                     parent.display()
@@ -520,8 +520,8 @@ impl SqliteStateBackend {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to open SQLite state database '{}': {err}",
                     confined_path.display()
@@ -534,8 +534,8 @@ impl SqliteStateBackend {
              PRAGMA busy_timeout = 5000;",
         )
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to configure writer SQLite connection pragmas: {err}"),
             )
         })?;
@@ -547,8 +547,8 @@ impl SqliteStateBackend {
              PRAGMA synchronous = NORMAL;",
         )
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to configure writer SQLite WAL pragmas: {err}"),
             )
         })?;
@@ -573,9 +573,9 @@ impl SqliteStateBackend {
 
     /// Return current `_sqlite_meta` counters (`schema_version`, `write_seq`, `last_backup_seq`).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn read_meta(&self) -> Result<migrations::SqliteMeta, StateError> {
+    pub fn read_meta(&self) -> Result<migrations::SqliteMeta, AcddError> {
         let guard = self.write_conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "SQLite write connection mutex poisoned",
             )
@@ -587,10 +587,10 @@ impl SqliteStateBackend {
     #[cfg(any(test, feature = "test-support"))]
     pub fn inspect_read_only<T>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, StateError>,
-    ) -> Result<T, StateError> {
+        f: impl FnOnce(&Connection) -> Result<T, AcddError>,
+    ) -> Result<T, AcddError> {
         let Some((conn, _)) = open_read_only_if_exists(&self.options.db_path)? else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "state database '{}' does not exist",
@@ -605,10 +605,10 @@ impl SqliteStateBackend {
     #[cfg(any(test, feature = "test-support"))]
     pub fn inspect_writer<T>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, StateError>,
-    ) -> Result<T, StateError> {
+        f: impl FnOnce(&Connection) -> Result<T, AcddError>,
+    ) -> Result<T, AcddError> {
         let guard = self.write_conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "SQLite write connection mutex poisoned",
             )
@@ -621,7 +621,7 @@ impl SqliteStateBackend {
 #[cfg(any(test, feature = "test-support"))]
 pub fn open_read_only_with_version(
     db_path: &Path,
-) -> Result<Option<(Connection, u32)>, StateError> {
+) -> Result<Option<(Connection, u32)>, AcddError> {
     open_read_only_if_exists(db_path)
 }
 
@@ -631,7 +631,7 @@ pub fn load_run_graph_with_version(
     conn: &Connection,
     run_id: &RunId,
     schema_version: u32,
-) -> Result<Option<RunGraphSnapshot>, StateError> {
+) -> Result<Option<RunGraphSnapshot>, AcddError> {
     reader::load_run_graph_with_version(conn, run_id, schema_version)
 }
 
@@ -640,10 +640,10 @@ crate::store::impl_state_reader_delegate!(SqliteStateBackend, |s| s.reader);
 impl StateBackend for SqliteStateBackend {
     fn exec_tx_dyn(
         &self,
-        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), StateError>,
-    ) -> Result<(), StateError> {
+        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), AcddError>,
+    ) -> Result<(), AcddError> {
         let mut guard = self.write_conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "SQLite write connection mutex poisoned",
             )
@@ -651,7 +651,7 @@ impl StateBackend for SqliteStateBackend {
         let sql_tx = guard
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("failed to begin SQLite IMMEDIATE transaction: {err}"),
                 )
@@ -662,7 +662,7 @@ impl StateBackend for SqliteStateBackend {
         let significant = wrapper.is_significant_dirty();
 
         sql_tx.commit().map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to commit SQLite transaction: {err}"),
             )
@@ -675,7 +675,7 @@ impl StateBackend for SqliteStateBackend {
         Ok(())
     }
 
-    fn after_commit_maintenance(&self) -> Result<(), StateError> {
+    fn after_commit_maintenance(&self) -> Result<(), AcddError> {
         if self.options.is_custom_db {
             return Ok(());
         }
@@ -687,7 +687,7 @@ impl StateBackend for SqliteStateBackend {
         }
 
         let mut guard = self.write_conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "SQLite write connection mutex poisoned",
             )
@@ -716,17 +716,17 @@ pub(crate) struct InMemorySqliteStore {
 
 #[cfg(any(test, feature = "test-support"))]
 impl InMemorySqliteStore {
-    pub(crate) fn new() -> Result<Self, StateError> {
+    pub(crate) fn new() -> Result<Self, AcddError> {
         let mut conn = Connection::open_in_memory().map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to open in-memory SQLite database: {err}"),
             )
         })?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to configure in-memory SQLite pragmas: {err}"),
                 )
             })?;
@@ -738,10 +738,10 @@ impl InMemorySqliteStore {
 
     pub(crate) fn with_reader<T>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, StateError>,
-    ) -> Result<T, StateError> {
+        f: impl FnOnce(&Connection) -> Result<T, AcddError>,
+    ) -> Result<T, AcddError> {
         let guard = self.conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "in-memory SQLite mutex poisoned",
             )
@@ -749,8 +749,8 @@ impl InMemorySqliteStore {
         guard
             .execute_batch("PRAGMA query_only = ON;")
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to set PRAGMA query_only = ON: {err}"),
                 )
             })?;
@@ -760,10 +760,10 @@ impl InMemorySqliteStore {
 
     pub(crate) fn exec_tx_dyn(
         &self,
-        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), StateError>,
-    ) -> Result<(), StateError> {
+        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), AcddError>,
+    ) -> Result<(), AcddError> {
         let mut guard = self.conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "in-memory SQLite mutex poisoned",
             )
@@ -771,7 +771,7 @@ impl InMemorySqliteStore {
         let sql_tx = guard
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::BackendConflict,
                     format!("failed to begin in-memory SQLite transaction: {err}"),
                 )
@@ -779,7 +779,7 @@ impl InMemorySqliteStore {
         let mut wrapper = tx::SqliteTx::new(&sql_tx);
         f(&mut wrapper)?;
         sql_tx.commit().map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to commit in-memory SQLite transaction: {err}"),
             )
@@ -787,9 +787,9 @@ impl InMemorySqliteStore {
         Ok(())
     }
 
-    pub(crate) fn read_meta(&self) -> Result<migrations::SqliteMeta, StateError> {
+    pub(crate) fn read_meta(&self) -> Result<migrations::SqliteMeta, AcddError> {
         let guard = self.conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "in-memory SQLite mutex poisoned",
             )
@@ -798,23 +798,23 @@ impl InMemorySqliteStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn execute_raw_sql(&self, sql: &str) -> Result<(), StateError> {
+    pub(crate) fn execute_raw_sql(&self, sql: &str) -> Result<(), AcddError> {
         let guard = self.conn.lock().map_err(|_| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "in-memory SQLite mutex poisoned",
             )
         })?;
         guard.execute_batch(sql).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("raw SQL execution failed: {err}"),
             )
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn table_names(&self) -> Result<Vec<String>, StateError> {
+    pub(crate) fn table_names(&self) -> Result<Vec<String>, AcddError> {
         self.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -823,24 +823,24 @@ impl InMemorySqliteStore {
                      ORDER BY name ASC",
                 )
                 .map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("failed to query table names: {err}"),
                     )
                 })?;
             let rows = stmt
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("failed to read table names: {err}"),
                     )
                 })?;
             let mut names = Vec::new();
             for row in rows {
                 names.push(row.map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("failed to decode table name: {err}"),
                     )
                 })?);

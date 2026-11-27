@@ -2,7 +2,7 @@
 
 use super::specs::compute_archive_relpath;
 use crate::git_ops::worktree::{canonicalize_macos_var, resolve_repo_layout, RepoWorktreeLayout};
-use crate::profile::{validate_profile, GateDef, ProfileValidationOptions, ResolvedGateProfile};
+use crate::workflow::{validate_workflow, GateDef, ResolvedWorkflow, WorkflowValidationOptions};
 use crate::store::traits::{StateBackend, StateReader};
 use crate::types::{
     GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, RunRecord, RunStatus, SaveAction,
@@ -12,7 +12,7 @@ use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{
     load_adapter, Adapter, ACDD_CONFIG_FILE, DEFAULT_CODE_DB, DEFAULT_STATE_DB,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::git::git_common_dir;
 use acdd_core::lock::{acquire_exclusive, FileLockGuard};
 use acdd_core::path_policy::WorkspacePathPolicy;
@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 pub(crate) fn with_repo_lock_and_maintenance<T>(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    f: impl FnOnce(&Path, Option<&RepoWorktreeLayout>) -> Result<T, StateError>,
-) -> Result<T, StateError> {
+    f: impl FnOnce(&Path, Option<&RepoWorktreeLayout>) -> Result<T, AcddError>,
+) -> Result<T, AcddError> {
     ensure_state_enabled(config)?;
     with_repo_lock_and_maintenance_unchecked(config, backend, f)
 }
@@ -36,8 +36,8 @@ pub(crate) fn with_repo_lock_and_maintenance<T>(
 pub(crate) fn with_repo_lock_and_maintenance_unchecked<T>(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    f: impl FnOnce(&Path, Option<&RepoWorktreeLayout>) -> Result<T, StateError>,
-) -> Result<T, StateError> {
+    f: impl FnOnce(&Path, Option<&RepoWorktreeLayout>) -> Result<T, AcddError>,
+) -> Result<T, AcddError> {
     let primary = primary_workspace_root(config);
     let layout = resolve_repo_layout_optional(&primary)?;
     let lock_guard = acquire_repo_lock(layout.as_ref())?;
@@ -51,9 +51,9 @@ pub(crate) fn with_repo_lock_and_maintenance_unchecked<T>(
 }
 
 /// Fail closed with `FEATURE_DISABLED` when `modules.state` is disabled.
-pub fn ensure_state_enabled(config: &StateEngineConfig) -> Result<(), StateError> {
+pub fn ensure_state_enabled(config: &StateEngineConfig) -> Result<(), AcddError> {
     if !config.modules.is_subsystem_enabled(SubsystemId::State) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "state subsystem is disabled in modules:",
         ));
@@ -62,10 +62,10 @@ pub fn ensure_state_enabled(config: &StateEngineConfig) -> Result<(), StateError
 }
 
 /// Fail closed with `FEATURE_DISABLED` when `modules.blackboard` (or `modules.state`) is disabled.
-pub fn ensure_blackboard_enabled(config: &StateEngineConfig) -> Result<(), StateError> {
+pub fn ensure_blackboard_enabled(config: &StateEngineConfig) -> Result<(), AcddError> {
     ensure_state_enabled(config)?;
     if !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             "blackboard subsystem is disabled in modules:",
         ));
@@ -100,23 +100,23 @@ pub fn effective_modules_for_profile(
     merged
 }
 
-/// Validate a resolved profile fail-closed against `providers`, `modules:`, and command bindings.
+/// Validate a resolved workflow fail-closed against `providers`, `modules:`, and command bindings.
 pub fn validate_profile_fail_closed(
     config: &StateEngineConfig,
-    profile: &ResolvedGateProfile,
+    workflow: &ResolvedWorkflow,
     providers: &CompositeDomainProvider,
     require_bound_commands: bool,
-) -> Result<(), StateError> {
-    let opts = ProfileValidationOptions {
+) -> Result<(), AcddError> {
+    let opts = WorkflowValidationOptions {
         domain_providers: Some(providers),
         acdd_modules: Some(&config.modules),
         require_bound_commands,
     };
-    validate_profile(profile, &opts)
+    validate_workflow(workflow, &opts)
 }
 
 /// Resolve Git common-dir/worktree layout when `path` resides in a Git repository.
-pub fn resolve_repo_layout_optional(path: &Path) -> Result<Option<RepoWorktreeLayout>, StateError> {
+pub fn resolve_repo_layout_optional(path: &Path) -> Result<Option<RepoWorktreeLayout>, AcddError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -133,14 +133,14 @@ pub fn resolve_repo_layout_optional(path: &Path) -> Result<Option<RepoWorktreeLa
 /// so `repo.lock` -> `backup.lock` lock nesting never occurs.
 pub fn acquire_repo_lock(
     layout: Option<&RepoWorktreeLayout>,
-) -> Result<Option<FileLockGuard>, StateError> {
+) -> Result<Option<FileLockGuard>, AcddError> {
     let Some(l) = layout else {
         return Ok(None);
     };
     acquire_exclusive(&l.repo_lock_path)
         .map(Some)
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "failed to acquire repo.lock '{}': {err}",
@@ -154,7 +154,7 @@ pub(in crate::usecases) fn snapshot_worktree_layout(
     config: &StateEngineConfig,
     locked: Option<&RepoWorktreeLayout>,
     worktree: &Path,
-) -> Result<RepoWorktreeLayout, StateError> {
+) -> Result<RepoWorktreeLayout, AcddError> {
     let layout = resolve_repo_layout(worktree)?;
     if layout.target_worktree == worktree
         && (locked.is_some_and(|primary| primary.git_common_dir == layout.git_common_dir)
@@ -165,7 +165,7 @@ pub(in crate::usecases) fn snapshot_worktree_layout(
     {
         return Ok(layout);
     }
-    Err(StateError::new(
+    Err(AcddError::new(
         ErrorCode::ExternalGitDrift,
         format!(
             "snapshot worktree '{}' is outside the owning repositories",
@@ -225,7 +225,7 @@ pub fn build_path_policy(
     extra_managed: &[String],
     current_run: Option<&RunRecord>,
     target_worktree: Option<&Path>,
-) -> Result<WorkspacePathPolicy, StateError> {
+) -> Result<WorkspacePathPolicy, AcddError> {
     let primary = primary_workspace_root(config);
     let target_canon = target_worktree.map(canonicalize_macos_var);
     let mut managed: Vec<String> = extra_managed.to_vec();
@@ -299,13 +299,13 @@ pub fn resolve_source_checkout(
     layout: Option<&RepoWorktreeLayout>,
     candidate: &Path,
     explicit: bool,
-) -> Result<PathBuf, StateError> {
+) -> Result<PathBuf, AcddError> {
     let abs_raw = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
         primary.join(candidate)
     };
-    let drift = |msg: String| StateError::new(ErrorCode::ExternalGitDrift, msg);
+    let drift = |msg: String| AcddError::new(ErrorCode::ExternalGitDrift, msg);
     acdd_core::fs::check_git_entry_no_symlinks(&abs_raw).map_err(|err| drift(err.to_string()))?;
     let canon = canonicalize_macos_var(&abs_raw);
     if !canon.exists() && explicit && layout.is_some() {
@@ -342,16 +342,16 @@ pub fn checkout_config(
     primary: &Path,
     source: &Path,
     source_override: Option<&Adapter>,
-) -> Result<StateEngineConfig, StateError> {
+) -> Result<StateEngineConfig, AcddError> {
     let source = canonicalize_macos_var(source);
     let primary_canon = canonicalize_macos_var(primary);
     let mut checkout = config.clone();
     checkout.worktree = source.clone();
     let apply_adapter = |target: &mut StateEngineConfig,
                          adapter: &Adapter|
-     -> Result<(), StateError> {
+     -> Result<(), AcddError> {
         target.spec_collections = adapter.specs.clone();
-        target.profiles_dirs = adapter.profiles_dirs.clone();
+        target.workflows_dirs = adapter.workflows_dirs.clone();
         for lw in &adapter.linked_workspaces {
             target
                 .linked_workspaces
@@ -373,7 +373,7 @@ pub fn checkout_config(
     }
     if source.join(ACDD_CONFIG_FILE).is_file() || primary_canon.join(ACDD_CONFIG_FILE).is_file() {
         let adapter = load_adapter(&source, None).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::ConfigMigrationRequired,
                 format!(
                     "failed to load {ACDD_CONFIG_FILE} from '{}': {err}",
@@ -412,7 +412,7 @@ pub fn resolve_node_worktree(
 /// Canonical helper applying effective `IsolationMode` and `WorktreeLifecycle` to a resolved
 /// profile, neutralizing `save: commit` -> `none` whenever `isolation == IsolationMode::InPlace`.
 pub(crate) fn apply_effective_isolation(
-    profile: &mut ResolvedGateProfile,
+    profile: &mut ResolvedWorkflow,
     isolation: IsolationMode,
     worktrees: WorktreeLifecycle,
 ) {
@@ -427,7 +427,7 @@ pub(crate) fn apply_effective_isolation(
     }
 }
 
-fn neutralize_in_place_save(profile: &mut ResolvedGateProfile) {
+fn neutralize_in_place_save(profile: &mut ResolvedWorkflow) {
     profile.save = SaveAction::None;
     for gate in &mut profile.gates {
         neutralize_gate_commit(gate);

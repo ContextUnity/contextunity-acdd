@@ -18,8 +18,7 @@ use crate::machine::verify::detect_scope_violations;
 use crate::machine::{
     container_scope, evaluate_submit, MachineProfileInput, SubmitEvaluation, SubmitInput,
 };
-use crate::profile::ResolvedGateProfile;
-use crate::spec::Receipt;
+use crate::workflow::ResolvedWorkflow;
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     ArtifactKind, GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunStatus, SaveAction,
@@ -28,6 +27,7 @@ use crate::types::{
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::dto::{SubmitReq, SubmitResp};
+use acdd_spec::Receipt;
 use crate::usecases::lifecycle::{
     acquire_repo_lock, append_trace_event, collect_integration_inputs, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
@@ -35,7 +35,7 @@ use crate::usecases::lifecycle::{
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::find_machine_gate;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
@@ -53,7 +53,7 @@ pub(crate) fn handle_submit_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: SubmitReq,
-) -> Result<SubmitResp, StateError> {
+) -> Result<SubmitResp, AcddError> {
     ensure_state_enabled(config)?;
     if req.action == SubmitAction::Reject {
         return with_repo_lock_and_maintenance(config, backend, |_primary, layout| {
@@ -91,7 +91,7 @@ fn prepare_submit_observations<'m>(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
-    resolved_profile: &ResolvedGateProfile,
+    resolved_profile: &ResolvedWorkflow,
     machine_profile: &'m MachineProfileInput,
     node: &GateNodeRecord,
     machine_gate: &crate::machine::MachineGateDef,
@@ -109,7 +109,7 @@ fn prepare_submit_observations<'m>(
         Option<String>,
         std::borrow::Cow<'m, MachineProfileInput>,
     ),
-    StateError,
+    AcddError,
 > {
     if recovered.is_some_and(|rec| rec.already_committed) {
         let mut relaxed = machine_profile.clone();
@@ -148,7 +148,7 @@ fn prepare_submit_observations<'m>(
         is_unscoped_root,
     );
     if !scope_violations.is_empty() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::OutOfScopeChanges,
             format!(
                 "cannot submit '{}': working tree has out-of-scope changes: {}",
@@ -159,7 +159,7 @@ fn prepare_submit_observations<'m>(
     }
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::StaleClaimRevision,
             format!(
                 "node '{}' must be in_progress with an active claim before submit (status: {}, claim_revision: {})",
@@ -168,7 +168,7 @@ fn prepare_submit_observations<'m>(
         ));
     }
     if node.worker_id.as_ref() != Some(&req.worker_id) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::TaskAlreadyClaimed,
             format!("node '{}' is claimed by another worker", node.node_id),
         ));
@@ -177,7 +177,7 @@ fn prepare_submit_observations<'m>(
         .claim_revision
         .is_some_and(|expected| expected != node.claim_revision)
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::StaleClaimRevision,
             format!(
                 "submit claim_revision does not match active claim_revision {} on '{}'",
@@ -244,7 +244,7 @@ pub(crate) fn submit_holding_repo_lock(
     layout: Option<&RepoWorktreeLayout>,
     req: SubmitReq,
     verified_hint: Option<&(TreeOid, String)>,
-) -> Result<SubmitResp, StateError> {
+) -> Result<SubmitResp, AcddError> {
     let loaded =
         load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let snapshot = loaded.snapshot;
@@ -270,8 +270,8 @@ pub(crate) fn submit_holding_repo_lock(
         .iter()
         .find(|n| n.node_id == node_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "node '{node_id}' not found in run '{}'",
                     snapshot.run.run_id
@@ -279,8 +279,8 @@ pub(crate) fn submit_holding_repo_lock(
             )
         })?;
     let _gate_def = find_profile_gate_def(&resolved_profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -478,7 +478,7 @@ fn handle_reject(
     machine_profile: &MachineProfileInput,
     cursor: &NodeCursor,
     req: SubmitReq,
-) -> Result<SubmitResp, StateError> {
+) -> Result<SubmitResp, AcddError> {
     let node_id = cursor.to_node_id()?;
     let obs = ValidatedObservations {
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
@@ -571,7 +571,7 @@ fn eval_submit_or_mark_stale(
     machine_profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &SubmitInput,
-) -> Result<TransitionPlan, StateError> {
+) -> Result<TransitionPlan, AcddError> {
     match evaluate_submit(snapshot, machine_profile, obs, input)? {
         SubmitEvaluation::Apply(plan) => Ok(plan),
         SubmitEvaluation::MarkStaleAndReject {
@@ -602,7 +602,7 @@ fn extract_receipt_from_plan(plan: &TransitionPlan) -> Option<Receipt> {
 fn collect_unblocked_cursors(
     plan: &TransitionPlan,
     submitted_node_id: &str,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let mut out = Vec::new();
     for patch in &plan.node_patches {
         if patch.node_id != submitted_node_id && patch.new_status == NodeStatus::Ready {

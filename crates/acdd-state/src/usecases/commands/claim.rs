@@ -27,7 +27,7 @@ use crate::usecases::lifecycle::{
 };
 use crate::usecases::queries::find_profile_gate_def;
 use acdd_core::config::WORKTREES_DIR;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::TreeOid;
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::telemetry::SpanId;
@@ -39,7 +39,7 @@ pub(crate) fn handle_claim_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: ClaimReq,
-) -> Result<crate::context::ClaimResp, StateError> {
+) -> Result<crate::context::ClaimResp, AcddError> {
     with_repo_lock_and_maintenance(config, backend, |primary, layout| {
         claim_holding_repo_lock(config, backend, provider, layout, primary, req)
     })
@@ -52,7 +52,7 @@ fn claim_holding_repo_lock(
     layout: Option<&RepoWorktreeLayout>,
     primary: &Path,
     req: ClaimReq,
-) -> Result<crate::context::ClaimResp, StateError> {
+) -> Result<crate::context::ClaimResp, AcddError> {
     let loaded =
         load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
     let run_id = loaded.snapshot.run.run_id.clone();
@@ -76,14 +76,14 @@ fn claim_holding_repo_lock(
         .iter()
         .find(|n| n.node_id == node_id)
         .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("node '{cursor}' does not exist in run '{run_id}'"),
             )
         })?;
     let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
@@ -140,7 +140,7 @@ fn claim_holding_repo_lock(
         (planned_wt, planned_branch, None)
     };
 
-    let result = (|| -> Result<crate::context::ClaimResp, StateError> {
+    let result = (|| -> Result<crate::context::ClaimResp, AcddError> {
         let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
         let claim_tree = current_scope_tree(&target_worktree, None, &policy)?;
         let baseline_commit = if layout.is_some() {
@@ -320,7 +320,7 @@ fn plan_claim_worktree(
     loaded: &LoadedRunGraph,
     node: &GateNodeRecord,
     override_wt: Option<&Path>,
-) -> Result<(PathBuf, Option<String>, Option<CreateWorktreeReq>), StateError> {
+) -> Result<(PathBuf, Option<String>, Option<CreateWorktreeReq>), AcddError> {
     let snapshot = &loaded.snapshot;
     let profile = &loaded.profile;
     if let Some(wt) = override_wt {

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Assemble the human-oriented Zola documentation tree in website/content/docs/.
 
-Organizes curated guides (website/pages/*.md.in), embedded profiles
-(crates/acdd-state/src/profile/embedded/*.yaml), and live canonical repo docs
-into 4 top-level sections:
+Organizes curated guides (website/pages/*.md.in), embedded workflows
+(crates/acdd-state/src/workflow/embedded/*.yaml), reference workflow
+templates (skills/acdd/references/acdd-workflow-examples/*.yaml), and live
+canonical repo docs into 4 top-level sections:
   1. ACDD State     (/docs/state/)
   2. ACDD Index     (/docs/index/)
   3. ACDD Lint      (/docs/lint/)
-  4. ACDD Profiles  (/docs/profiles/)
+  4. ACDD Workflows (/docs/workflows/)
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from pathlib import Path
 SITE_DIR = Path(__file__).resolve().parent
 WORKTREE_ROOT = SITE_DIR.parent
 PAGES_DIR = SITE_DIR / "pages"
-EMBEDDED_PROFILES_DIR = WORKTREE_ROOT / "crates" / "acdd-state" / "src" / "profile" / "embedded"
+EMBEDDED_WORKFLOWS_DIR = WORKTREE_ROOT / "crates" / "acdd-state" / "src" / "workflow" / "embedded"
+WORKFLOW_EXAMPLES_DIR = WORKTREE_ROOT / "skills" / "acdd" / "references" / "acdd-workflow-examples"
 OUT_DOCS = SITE_DIR / "content" / "docs"
 GITHUB_BLOB = "https://github.com/ContextUnity/contextunity-acdd/blob/main"
 
@@ -67,38 +69,41 @@ ROUTE_MAP = {
     "docs/reference/languages.md": "/docs/index/languages/",
     "docs/reference/framework-manifests.md": "/docs/index/framework-manifests/",
     "docs/runbooks/framework-packs.md": "/docs/index/framework-manifests/#workspace-framework-rules",
-    "docs/reference/profiles.md": "/docs/profiles/profile-options/",
-    "docs/reference/acdd_profile.yaml.example": "/docs/profiles/overriding-profiles/",
+    "docs/reference/workflows.md": "/docs/workflows/workflow-options/",
+    "docs/reference/acdd_workflow.yaml.example": "/docs/workflows/overriding-workflows/",
 }
 
-BUILTIN_PROFILE_DOCS = [
+BUILTIN_WORKFLOW_DOCS = [
     (
         "base.yaml",
-        "profiles/builtin-base.md",
+        "workflows/builtin-base.md",
         40,
-        "Built-in Profile: base",
-        "The foundation profile supplying default Git worktree isolation, `commit` save policy, core execution/review guidance, standard `paths`/`claims`/`administration` review contours, and resource `limits:`.",
-    ),
-    (
-        "audit.yaml",
-        "profiles/builtin-audit.md",
-        50,
-        "Built-in Profile: audit",
-        "Read-only 3-phase security and correctness audit profile (`recon` -> `analyze` -> `triage`) using `git.isolation: in_place`, `save: none`, strict JSON Schema proofs, and Markdown reports under `.acdd/reports/{run_name}.md`.",
+        "Built-in Workflow: base",
+        "The foundation embedded workflow supplying default Git worktree isolation, `commit` save policy, core execution/review guidance, standard `paths`/`claims`/`administration` review contours, and resource `limits:`.",
     ),
     (
         "documentation.yaml",
-        "profiles/builtin-documentation.md",
+        "workflows/builtin-documentation.md",
+        50,
+        "Built-in Workflow: documentation",
+        "Compiler-free embedded living documentation and invariant lifecycle (`blueprint_synthesis` -> per-task `build`/`review`/`deliver` -> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated on `docs.links` and `code.lint` (`[arch, docs]`).",
+    ),
+]
+
+WORKFLOW_EXAMPLE_DOCS = [
+    (
+        "audit.yaml",
+        "workflows/example-audit.md",
         60,
-        "Built-in Profile: documentation",
-        "Compiler-free living documentation and invariant lifecycle (`blueprint_synthesis` -> per-task `build`/`review`/`deliver` -> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated on `docs.links` and `code.lint` (`[arch, docs]`).",
+        "Workflow Example: audit",
+        "Reference read-only 3-phase security and correctness audit template (`recon` -> `analyze` -> `triage`) using `git.isolation: in_place`, `save: none`, strict JSON Schema proofs, and Markdown reports under `.acdd/reports/{run_name}.md`.",
     ),
     (
         "spec_planning.yaml",
-        "profiles/builtin-spec-planning.md",
+        "workflows/example-spec-planning.md",
         70,
-        "Built-in Profile: spec_planning",
-        "In-place architectural planning workflow (`synthesize` -> `review`) validating `acdd.yaml` `specs.*` collections (`docs.specs`), `docs.links`, `code.lint` (`[arch, docs]`), and disjoint same-wave task scopes.",
+        "Workflow Example: spec_planning",
+        "Reference in-place architectural planning template (`synthesize` -> `review`) validating `acdd.yaml` `specs.*` entries (`docs.specs`), `docs.links`, `code.lint` (`[arch, docs]`), and disjoint same-wave task scopes.",
     ),
 ]
 
@@ -375,31 +380,43 @@ def main() -> None:
         title="Writing Docs & Linter Rules",
     )
 
-    # 4. ACDD Profiles
-    emit_from_curated("gates_profiles_index.md.in", "profiles/_index.md", weight=40, title="ACDD Profiles", is_section=True)
-    emit_from_curated("gates_profile_options.md.in", "profiles/profile-options.md", weight=10, title="Profile Options & Variables")
-    emit_from_curated("gates_overriding_profiles.md.in", "profiles/overriding-profiles.md", weight=20, title="Overriding Built-in Profiles")
+    # 4. ACDD Workflows
+    emit_from_curated("gates_workflows_index.md.in", "workflows/_index.md", weight=40, title="ACDD Workflows", is_section=True)
+    emit_from_curated("gates_workflow_options.md.in", "workflows/workflow-options.md", weight=10, title="Workflow Options & Variables")
+    emit_from_curated("gates_overriding_workflows.md.in", "workflows/overriding-workflows.md", weight=20, title="Overriding Built-in Workflows")
 
-    # Built-in `code` profile: walkthrough + full verbatim embedded YAML
+    # Built-in `code` workflow: walkthrough + full verbatim embedded YAML
     code_intro_raw = (PAGES_DIR / "gates_builtin_code_intro.md.in").read_text(encoding="utf-8")
     _, code_intro_body = process_markdown_body(code_intro_raw, None)
-    code_yaml = escape_zola_shortcodes((EMBEDDED_PROFILES_DIR / "code.yaml").read_text(encoding="utf-8"))
+    code_yaml = escape_zola_shortcodes((EMBEDDED_WORKFLOWS_DIR / "code.yaml").read_text(encoding="utf-8"))
     write_doc(
-        "profiles/builtin-code.md",
-        title="Built-in Profile: code",
+        "workflows/builtin-code.md",
+        title="Built-in Workflow: code",
         weight=30,
         is_section=False,
         body=code_intro_body.rstrip() + "\n\n---\n\n## Full embedded YAML (`code.yaml`)\n\n```yaml\n" + code_yaml.rstrip() + "\n```\n",
     )
 
-    # Other 4 embedded profiles (full verbatim YAML + summary)
-    for filename, dst_rel, weight, title, summary in BUILTIN_PROFILE_DOCS:
-        raw_yaml = escape_zola_shortcodes((EMBEDDED_PROFILES_DIR / filename).read_text(encoding="utf-8"))
+    # Other 2 embedded workflows (full verbatim YAML + summary)
+    for filename, dst_rel, weight, title, summary in BUILTIN_WORKFLOW_DOCS:
+        raw_yaml = escape_zola_shortcodes((EMBEDDED_WORKFLOWS_DIR / filename).read_text(encoding="utf-8"))
         body = (
             f"# {title}\n\n"
             f"{summary}\n\n"
-            f"Source: [`crates/acdd-state/src/profile/embedded/{filename}`]({GITHUB_BLOB}/crates/acdd-state/src/profile/embedded/{filename})\n\n"
+            f"Source: [`crates/acdd-state/src/workflow/embedded/{filename}`]({GITHUB_BLOB}/crates/acdd-state/src/workflow/embedded/{filename})\n\n"
             f"## Full embedded YAML (`{filename}`)\n\n"
+            f"```yaml\n{raw_yaml.rstrip()}\n```\n"
+        )
+        write_doc(dst_rel, title=title, weight=weight, is_section=False, body=body)
+
+    # Reference workflow examples (full verbatim YAML + summary)
+    for filename, dst_rel, weight, title, summary in WORKFLOW_EXAMPLE_DOCS:
+        raw_yaml = escape_zola_shortcodes((WORKFLOW_EXAMPLES_DIR / filename).read_text(encoding="utf-8"))
+        body = (
+            f"# {title}\n\n"
+            f"{summary}\n\n"
+            f"Source: [`skills/acdd/references/acdd-workflow-examples/{filename}`]({GITHUB_BLOB}/skills/acdd/references/acdd-workflow-examples/{filename})\n\n"
+            f"## Full reference YAML (`{filename}`)\n\n"
             f"```yaml\n{raw_yaml.rstrip()}\n```\n"
         )
         write_doc(dst_rel, title=title, weight=weight, is_section=False, body=body)

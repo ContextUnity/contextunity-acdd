@@ -1,7 +1,8 @@
 //! Canonical domain enums, database record models, query/pagination DTOs, and transition plan contracts.
 
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
+use acdd_spec::{ExtendedScopeEntry, InvariantsState, SubtaskStatus};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -36,13 +37,13 @@ macro_rules! define_string_enum {
         }
 
         impl FromStr for $name {
-            type Err = StateError;
+            type Err = AcddError;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 match s {
                     $($wire => Ok(Self::$variant),)+
-                    other => Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    other => Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("invalid {} value '{}'", stringify!($name), other),
                     )),
                 }
@@ -96,21 +97,6 @@ define_string_enum!(
         /// Exceeded `max_attempts` or cycle budget; requires operator intervention/reopen.
         Escalated => "escalated",
         /// Cancelled by spec sync or operator action.
-        Cancelled => "cancelled",
-    }
-);
-
-define_string_enum!(
-    /// Completion status of a task subtask in `subtasks`.
-    SubtaskStatus,
-    {
-        /// Not started yet.
-        Pending => "pending",
-        /// Currently being worked on.
-        InProgress => "in_progress",
-        /// Finished with mandatory non-empty `evidence`.
-        Completed => "completed",
-        /// Cancelled with mandatory non-empty `evidence`.
         Cancelled => "cancelled",
     }
 );
@@ -283,28 +269,6 @@ define_string_enum!(
     }
 );
 
-/// Invariants applicability and verification state stored in `gate_nodes.invariants_json`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InvariantsState {
-    /// Invariant identifiers applicable to this task or node.
-    #[serde(default)]
-    pub applicable: Vec<String>,
-    /// Invariant identifiers proven/verified during gate execution.
-    #[serde(default)]
-    pub verified: Vec<String>,
-}
-
-/// Recorded scope extension entry stored in `gate_nodes.extended_scope_json` and archive receipts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExtendedScopeEntry {
-    /// Admitted path or glob pattern added via `extend_scope`.
-    pub path: String,
-    /// Non-empty justification recorded with the extension.
-    pub reason: String,
-}
-
 /// Individual structured finding item required when rejecting a review gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -403,9 +367,9 @@ pub struct RunRecord {
     pub collection: Option<String>,
     /// Canonical primary workspace path.
     pub workspace: String,
-    /// Resolved profile identifier.
+    /// Resolved workflow identifier.
     pub profile_id: String,
-    /// Canonical resolved `GateProfile` JSON snapshot.
+    /// Canonical resolved `ResolvedWorkflow` JSON snapshot.
     pub profile_json: String,
     /// Relative path to source spec file (`None` when `is_ephemeral == true`).
     pub spec_path: Option<String>,

@@ -1,4 +1,4 @@
-//! Pure `sync` and `sync --rebind-profile` planning built on canonical [`build_initial_run_graph`].
+//! Pure `sync` and `sync --rebind-workflow` planning built on canonical [`build_initial_run_graph`].
 
 use crate::machine::graph::{
     active_claim_for_node, build_initial_run_graph, build_preconditions, is_pre_task_root_node,
@@ -6,12 +6,13 @@ use crate::machine::graph::{
 use crate::machine::inputs::{BuildGraphInput, MachineProfileInput, SyncInput, SyncPlan};
 use crate::machine::schedule::{is_dep_satisfied_against_statuses, pre_task_barrier_satisfied};
 use crate::types::{
-    ArtifactKind, ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, InvariantsState, NodeKind,
-    NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, SubtaskRecord, SubtaskStatus,
-    TaskDependencyRecord, TransitionPlan, ValidatedObservations,
+    ArtifactKind, ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeKind, NodeStatus,
+    NodeStatusPatch, RunGraphSnapshot, RunStatus, SubtaskRecord, TaskDependencyRecord,
+    TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::TaskRef;
+use acdd_spec::{InvariantsState, SubtaskStatus};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -658,27 +659,27 @@ impl<'a> SyncPlanBuilder<'a> {
     }
 }
 
-/// Plan a pure `sync` or `sync --rebind-profile` update against `snapshot`.
+/// Plan a pure `sync` or `sync --rebind-workflow` update against `snapshot`.
 pub(crate) fn plan_sync(
     snapshot: &RunGraphSnapshot,
     current_profile: &MachineProfileInput,
     obs: &ValidatedObservations,
     input: &SyncInput,
-) -> Result<SyncPlan, StateError> {
+) -> Result<SyncPlan, AcddError> {
     if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "cannot sync non-active run '{}' (status: {})",
                 snapshot.run.run_id, snapshot.run.status
             ),
         ));
     }
-    let effective_profile = if input.rebind_profile {
+    let effective_profile = if input.rebind_workflow {
         input.new_profile.as_ref().ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                "sync --rebind-profile requires new_profile",
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                "sync --rebind-workflow requires new_profile",
             )
         })?
     } else {
@@ -717,7 +718,7 @@ pub(crate) fn plan_sync(
         .any(|t| !existing_tasks.contains_key(&t.task_ref))
         && has_pre_task_tasks_fanout_artifact(snapshot)
     {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::PreTaskArtifactStale,
             "cannot add new tasks after pre-task root gate already recorded a 'tasks:' fan-out artifact",
         ).with_hint("run 'acdd reopen <pre_task_gate>' before syncing new tasks"));
@@ -732,8 +733,8 @@ pub(crate) fn plan_sync(
 
     let mut pre_task_added_ids = BTreeSet::new();
 
-    // 1. Reconcile root gates/containers and `tasks#N` containers on `rebind_profile`.
-    if input.rebind_profile {
+    // 1. Reconcile root gates/containers and `tasks#N` containers on `rebind_workflow`.
+    if input.rebind_workflow {
         for node in &snapshot.nodes {
             if !matches!(node.kind, NodeKind::RootGate | NodeKind::Container)
                 || node.node_id.starts_with("tasks#")
@@ -751,8 +752,8 @@ pub(crate) fn plan_sync(
                     }
                 }
                 Some(t_node) => {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "cannot rebind gate '{}' across node kind change ({} -> {})",
                             node.node_id, node.kind, t_node.kind
@@ -791,7 +792,7 @@ pub(crate) fn plan_sync(
         }
     }
 
-    let pre_ok = if input.rebind_profile {
+    let pre_ok = if input.rebind_workflow {
         pre_task_added_ids.is_empty()
             && snapshot
                 .nodes
@@ -815,7 +816,7 @@ pub(crate) fn plan_sync(
                 snapshot,
                 &target,
                 obs,
-                input.rebind_profile,
+                input.rebind_workflow,
                 pre_ok,
                 existing_task,
             );
@@ -834,8 +835,8 @@ pub(crate) fn plan_sync(
         }
     }
 
-    // 4. Reconcile root-level readiness when `rebind_profile == true`.
-    if input.rebind_profile {
+    // 4. Reconcile root-level readiness when `rebind_workflow == true`.
+    if input.rebind_workflow {
         reconcile_root_readiness(
             snapshot,
             &target,
@@ -846,8 +847,8 @@ pub(crate) fn plan_sync(
         );
     }
 
-    // 5. Maintain canonical `seq_order` whenever profile rebound or new nodes were added.
-    let seq_order_updates = if input.rebind_profile || !sync.added_nodes.is_empty() {
+    // 5. Maintain canonical `seq_order` whenever workflow rebound or new nodes were added.
+    let seq_order_updates = if input.rebind_workflow || !sync.added_nodes.is_empty() {
         compute_reconciled_seq_order(snapshot, &target, &mut sync.added_nodes)
     } else {
         Vec::new()

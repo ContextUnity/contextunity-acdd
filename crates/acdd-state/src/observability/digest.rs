@@ -1,10 +1,10 @@
 //! Pure `CompletedRunDigest`, `summary_json`, and `metrics_json` builders for `run_tombstones`.
 
-use crate::spec::ClosureSummary;
+use acdd_spec::ClosureSummary;
 use crate::types::{
     ClaimOutcome, CompletedRunDigest, NodeKind, NodeStatus, RunGraphSnapshot, RunTombstoneRecord,
 };
-use acdd_core::errors::StateError;
+use acdd_core::errors::AcddError;
 use acdd_core::format::canonical_json_string;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +14,7 @@ pub fn build_completed_run_digest(
     graph: &RunGraphSnapshot,
     tombstone_seed: &RunTombstoneRecord,
     closure: Option<&ClosureSummary>,
-) -> Result<(CompletedRunDigest, String, String), StateError> {
+) -> Result<(CompletedRunDigest, String, String), AcddError> {
     let closed_commit = tombstone_seed
         .closed_commit
         .clone()

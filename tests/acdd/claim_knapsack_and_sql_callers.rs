@@ -8,13 +8,14 @@ use acdd_core::ports::{
 };
 use acdd_core::response::{pack_knapsack_indices, KnapsackItem};
 use acdd_state::context::{ClaimContextRequest, GateContextAssembler};
-use acdd_state::profile::{
+use acdd_state::workflow::{
     schema::{GateGuidanceRef, GuidanceEntry},
-    GateDef, ResolvedGateProfile, RoleDef,
+    GateDef, ResolvedWorkflow, RoleDef,
 };
-use acdd_state::spec::{SpecDocument, SpecStatus, TaskSpec};
+use acdd_spec::spec::TaskSpec;
+use acdd_spec::{InvariantsState, SpecDocument, SpecStatus};
 use acdd_state::types::{
-    GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunRecord, RunStatus,
+    GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunRecord, RunStatus,
 };
 use contextunity_acdd::state_bridge::build_domain_providers;
 use serde_json::{json, Value};
@@ -77,7 +78,7 @@ fn sample_claim_request(
     let worker_id = WorkerId::new("w1").unwrap();
     let tree = TreeOid::new("1".repeat(40)).unwrap();
     let commit = CommitOid::new("2".repeat(40)).unwrap();
-    let mut profile = ResolvedGateProfile::default();
+    let mut profile = ResolvedWorkflow::default();
     profile.guidance.insert(
         "g1".to_owned(),
         GuidanceEntry::Text("Follow rules".to_owned()),
@@ -149,7 +150,7 @@ fn sample_claim_request(
         id: "UX-003".to_owned(),
         title: "Knapsack Seam".to_owned(),
         doc_type: "contract".to_owned(),
-        profile: None,
+        workflow: None,
         status: SpecStatus::Active,
         cancellation_reason: None,
         spec: Some("Root".to_owned()),
@@ -572,6 +573,7 @@ fn sql_table_external_callers_and_signature_scope_seam_matrix() {
                     test_target: None,
                     path_policy: WorkspacePathPolicy::default(),
                     baseline_ref: None,
+                    node_tags: vec![],
                 },
             )
             .unwrap()
@@ -876,21 +878,21 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
 
     // 2. StateEngine ClaimReq::detail: default Compact <= 10,000 bytes vs opt-in Full <= 32,768 bytes.
     let repo_profile_src =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".acdd/profile.yaml");
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".acdd/workflows/default.yaml");
     let profile_text = std::fs::read_to_string(&repo_profile_src).unwrap();
     assert!(
         !profile_text.contains("code.tools:"),
-        "duplicate code.tools override must be removed from .acdd/profile.yaml"
+        "duplicate code.tools override must be removed from .acdd/workflows/default.yaml"
     );
-    std::fs::create_dir_all(root.join(".acdd/profiles")).unwrap();
-    std::fs::write(root.join(".acdd/profile.yaml"), &profile_text).unwrap();
-    let resolved_repo_profile = acdd_state::profile::resolve_profile_ref_with_dirs(
-        ".acdd/profile.yaml",
+    std::fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
+    std::fs::write(root.join(".acdd/workflows/default.yaml"), &profile_text).unwrap();
+    let resolved_repo_profile = acdd_state::workflow::resolve_workflow_ref_with_dirs(
+        ".acdd/workflows/default.yaml",
         Some(root),
         None,
-        Some(&[".acdd/profiles".to_owned()]),
+        Some(&[".acdd/workflows".to_owned()]),
     )
-    .expect("repo .acdd/profile.yaml must resolve cleanly after code.tools dedup");
+    .expect("repo .acdd/workflows/default.yaml must resolve cleanly after code.tools dedup");
     assert!(resolved_repo_profile.guidance.contains_key("code.tools"));
     assert!(resolved_repo_profile
         .guidance
@@ -898,7 +900,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     assert!(resolved_repo_profile.guidance.contains_key("repo.tests"));
 
     std::fs::write(
-        root.join(".acdd/profiles/compact_test.yaml"),
+        root.join(".acdd/workflows/compact_test.yaml"),
         "version: 2\ninherit: code\ngit:\n  isolation: in_place\n  worktrees: manual\ncommands:\n  build_check:\n    command: \"true\"\n  verify_all:\n    command: \"true\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n          proof: command\n          guidance: [task.code, core.execution, code.principles, code.tools, hitl.pro]\n          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols, code.tests, code.external_callers]\n          pass: review\n        - id: review\n          role: independent_reviewer\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: independent_reviewer\n          independent_from: [build]\n          need: [build, review]\n          receipt: true\n",
     )
     .unwrap();
@@ -908,7 +910,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     let started = match engine
         .execute(StateCommand::Start(StartReq {
             spec_path: Some("docs/milestones/AC-900.md".to_owned()),
-            profile: Some(".acdd/profiles/compact_test.yaml".to_owned()),
+            workflow: Some(".acdd/workflows/compact_test.yaml".to_owned()),
             in_place: true,
             ..StartReq::default()
         }))
@@ -980,7 +982,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     soft_req
         .gate
         .guidance
-        .push(GateGuidanceRef::Inline(acdd_state::profile::schema::InlineGuidance {
+        .push(GateGuidanceRef::Inline(acdd_state::workflow::schema::InlineGuidance {
             inline: "x".repeat(10_400),
         }));
     let degraded = GateContextAssembler::assemble(&soft_req, &provider).unwrap();

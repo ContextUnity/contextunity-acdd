@@ -2,4 +2,4 @@ state_db: .acdd/state.sqlite
 specs:
   plans:
     path: docs/plans
-    profile: profiles/plan.yaml
+    workflow: workflows/plan.yaml

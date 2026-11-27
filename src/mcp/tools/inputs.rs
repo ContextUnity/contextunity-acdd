@@ -799,7 +799,7 @@ pub enum McpStateAction {
     ExtendScope,
     /// Reopen a gate or task container (`StateCommand::Reopen`).
     Reopen,
-    /// Synchronize spec edits and optional profile rebind into an active `Run` (`StateCommand::Sync`).
+    /// Synchronize spec edits and optional workflow rebind into an active `Run` (`StateCommand::Sync`).
     Sync,
     /// Update a subtask's status and mandatory terminal evidence (`StateCommand::Subtask`).
     Subtask,
@@ -851,8 +851,8 @@ pub struct StateInput {
     pub goal: Option<String>,
     /// Optional explicit run name override (`start`).
     pub run_name: Option<RunName>,
-    /// Optional profile override (`start`).
-    pub profile: Option<String>,
+    /// Optional workflow override (`start`).
+    pub workflow: Option<String>,
     /// Optional initial scope globs for ephemeral `goal` runs (`start`).
     pub scope: Option<Vec<String>>,
     /// Target integration base branch/ref for worktree isolation runs (`start`).
@@ -871,8 +871,8 @@ pub struct StateInput {
     pub worker_id: Option<WorkerId>,
     /// Cascade-stale downstream dependent tasks (`reopen`).
     pub cascade: Option<bool>,
-    /// Rebind non-completed gates against the latest resolved profile (`sync`).
-    pub rebind_profile: Option<bool>,
+    /// Rebind non-completed gates against the latest resolved workflow (`sync`).
+    pub rebind_workflow: Option<bool>,
     /// Target task reference (`subtask`, `snapshot`).
     pub task_ref: Option<TaskRef>,
     /// Target subtask reference (`subtask`).
@@ -929,7 +929,7 @@ pub struct ClaimInput {
     pub steal_remote: bool,
     /// Worktree selector.
     pub worktree: Option<String>,
-    /// Context detail budget (`compact` default <= 9,500 bytes, or `full` up to 32 KiB).
+    /// Context detail budget (`compact` default <= 10,000 bytes, or `full` up to 32 KiB).
     #[serde(default)]
     pub detail: Option<Detail>,
     /// Output format: markdown (default) or json.

@@ -18,14 +18,18 @@ Read [root instructions](../AGENTS.md), [ADR 0001](../docs/adr/0001-crate-dag-an
                                    │                          │
                                    └──────────┬───────────────┘
                                               ▼
+                                      crates/acdd-spec
+                                              │
+                                              ▼
                                       crates/acdd-core
 ```
 
-- [`crates/acdd-core/AGENTS.md`](../crates/acdd-core/AGENTS.md): Leaf contracts (`config`, `errors`, `path_policy`, `lint`, `ports`, `fs`, `git`, `lock`, `sys`, `format`, `telemetry`).
-- [`crates/acdd-index/AGENTS.md`](../crates/acdd-index/AGENTS.md): AST extraction, language profiles/manifests, linker, docs, Merkle commitments, and `db/` (`lint`, `reader`, `symbols`, `traversal`, `writer`, `analyze`).
-- [`crates/acdd-state/AGENTS.md`](../crates/acdd-state/AGENTS.md): `GateProfile` (`v2`), `SpecDocument`, pure `machine/`, `validate`, `usecases/`, `store/`, `git_ops/`, `runner/`, `context/`, and `harness`.
+- [`crates/acdd-core/AGENTS.md`](../crates/acdd-core/AGENTS.md): Leaf contracts (`config`, `errors` with canonical `AcddError`, `path_policy`, `lint`, `ports`, `fs`, `git`, `lock`, `sys`, `format`, `subsystems` with `SubsystemPreset`, `telemetry`).
+- [`crates/acdd-spec/AGENTS.md`](../crates/acdd-spec/AGENTS.md): `frontmatter`, `SpecDocument`, `draft`, `discovery`, static `deps`, `validate`, `roadmap/`, and `SpecRuntimeOverlay` (`NoopRuntimeOverlay` for stateless callers).
+- [`crates/acdd-index/AGENTS.md`](../crates/acdd-index/AGENTS.md): AST extraction, language profiles/manifests, linker, docs (`acdd-spec::frontmatter`), Merkle commitments, and `db/` (`lint`, `reader`, `symbols`, `traversal`, `writer`, `analyze`).
+- [`crates/acdd-state/AGENTS.md`](../crates/acdd-state/AGENTS.md): `WorkflowDef` / `ResolvedWorkflow` (`v2`, `workflow/`), pure `machine/`, `validate`, `usecases/`, `store/`, `git_ops/`, `runner/`, `context/`, and `harness`.
 - `src/state_bridge`: Host `CodeDomainProvider` (`code.seam`, `code.lint`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`) and `DocsDomainProvider`. Never import `src/state_bridge` from `src/engine/` or `crates/*`.
-- `src/engine`, `src/format`, `src/mcp`, `src/cli`: Host indexing pipeline/reader, shared Markdown/JSON formatting, `18` static + plugin MCP server, and `33`-command CLI (`acdd lint` added).
+- `src/engine`, `src/format`, `src/mcp`, `src/cli`: Host indexing pipeline/reader, shared Markdown/JSON formatting, `18` static + plugin MCP server (with `preset: spec` exposing `get_doc`, `search_docs`, `acdd_read`, `acdd_guide`), and flat CLI (`acdd lint`, `--workflow`, `--rebind-workflow`, `--spec`, `acdd draft <spec>`).
 
 ## Operational Rules
 

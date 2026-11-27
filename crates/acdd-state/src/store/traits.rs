@@ -8,7 +8,7 @@ use crate::types::{
     RunGraphSnapshot, RunRecord, RunTombstoneRecord, StoragePreconditions, SubtaskRecord,
     TraceFinishInput, TraceStartInput, TransitionPlan,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::RunId;
 
 /// Read-only query interface over persisted runs, nodes, claims, traces, artifacts, and tombstones.
@@ -17,40 +17,40 @@ use acdd_core::ids::RunId;
 /// and return empty/absent results without creating missing database files.
 pub trait StateReader: Send + Sync {
     /// Load task-node statuses for all active runs in one read.
-    fn load_task_statuses(&self) -> Result<Vec<(RunId, String, NodeStatus)>, StateError>;
+    fn load_task_statuses(&self) -> Result<Vec<(RunId, String, NodeStatus)>, AcddError>;
 
     /// Load the complete graph snapshot (`runs`, `gate_nodes`, `task_dependencies`, `subtasks`,
     /// `gate_claims`, `gate_traces`, `gate_artifacts`) for `run_id`.
-    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError>;
+    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, AcddError>;
 
     /// List runs (and optionally tombstones) with bounded pagination and optional generation pinning.
-    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, StateError>;
+    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, AcddError>;
 
     /// Resolve the single active `Run` bound to `worktree`, if any.
     fn resolve_active_run_by_worktree(
         &self,
         worktree: &str,
-    ) -> Result<Option<RunRecord>, StateError>;
+    ) -> Result<Option<RunRecord>, AcddError>;
 
     /// Load all active `in_progress` gate claims owned by `worker_id` across active runs in one query.
     fn active_worker_claims(
         &self,
         worker_id: &acdd_core::ids::WorkerId,
-    ) -> Result<Vec<ActiveWorkerClaim>, StateError>;
+    ) -> Result<Vec<ActiveWorkerClaim>, AcddError>;
 
     /// Load a single `gate_nodes` row by `(run_id, node_id)`.
     fn load_node(
         &self,
         run_id: &RunId,
         node_id: &str,
-    ) -> Result<Option<GateNodeRecord>, StateError>;
+    ) -> Result<Option<GateNodeRecord>, AcddError>;
 
     /// Load the most recent `gate_claims` row (`MAX(claim_revision)`) for `(run_id, node_id)`.
     fn latest_claim(
         &self,
         run_id: &RunId,
         node_id: &str,
-    ) -> Result<Option<GateClaimRecord>, StateError>;
+    ) -> Result<Option<GateClaimRecord>, AcddError>;
 
     /// Load the most recent `gate_traces` row (`MAX(trace_row_id)`) for `(run_id, node_id, claim_revision)`.
     fn latest_trace(
@@ -58,7 +58,7 @@ pub trait StateReader: Send + Sync {
         run_id: &RunId,
         node_id: &str,
         claim_revision: u32,
-    ) -> Result<Option<GateTraceRecord>, StateError>;
+    ) -> Result<Option<GateTraceRecord>, AcddError>;
 
     /// Load a specific artifact by `(run_id, node_id, claim_revision, kind)`.
     fn load_artifact(
@@ -67,23 +67,23 @@ pub trait StateReader: Send + Sync {
         node_id: &str,
         claim_revision: u32,
         kind: ArtifactKind,
-    ) -> Result<Option<GateArtifactRecord>, StateError>;
+    ) -> Result<Option<GateArtifactRecord>, AcddError>;
 
     /// List paginated blackboard entries for `run_id`.
     fn list_blackboard(
         &self,
         run_id: &RunId,
         req: &BlackboardListReq,
-    ) -> Result<BlackboardPage, StateError>;
+    ) -> Result<BlackboardPage, AcddError>;
 
     /// Load a closed run tombstone by `run_id`.
-    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, StateError>;
+    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, AcddError>;
 
     /// Return the highest sequential spec number recorded in `runs`/`run_tombstones` for `(collection, prefix)`.
-    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, StateError>;
+    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, AcddError>;
 
     /// Compute an aggregate read-only observability snapshot across active and closed runs.
-    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, StateError>;
+    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, AcddError>;
 }
 
 /// Atomic transactional write interface executed inside `StateBackend::exec_tx`.
@@ -91,7 +91,7 @@ pub trait StateReader: Send + Sync {
 /// Implementations MUST NOT perform external filesystem, Git, or network I/O inside `StateTx` methods.
 pub trait StateTx {
     /// Insert a newly created `Run` and all initial `gate_nodes`, `task_dependencies`, and `subtasks`.
-    fn insert_run_graph(&mut self, graph: &RunGraphSnapshot) -> Result<(), StateError>;
+    fn insert_run_graph(&mut self, graph: &RunGraphSnapshot) -> Result<(), AcddError>;
 
     /// Admit a new active claim (`gate_claims` + `gate_nodes` update) checking CAS `preconditions`.
     fn admit_claim(
@@ -99,17 +99,17 @@ pub trait StateTx {
         run_id: &RunId,
         preconditions: &StoragePreconditions,
         claim: &ClaimInsertInput,
-    ) -> Result<GateClaimRecord, StateError>;
+    ) -> Result<GateClaimRecord, AcddError>;
 
     /// Insert a `running` trace row verifying CAS `preconditions`.
     fn start_trace(
         &mut self,
         preconditions: &StoragePreconditions,
         input: &TraceStartInput,
-    ) -> Result<GateTraceRecord, StateError>;
+    ) -> Result<GateTraceRecord, AcddError>;
 
     /// Finalize an existing `running` trace row (`status != Running`, non-null `finished_at`).
-    fn finish_trace(&mut self, input: &TraceFinishInput) -> Result<(), StateError>;
+    fn finish_trace(&mut self, input: &TraceFinishInput) -> Result<(), AcddError>;
 
     /// Mark the specified nodes `stale` under CAS `preconditions` and bump `runs.generation`.
     fn mark_nodes_stale(
@@ -118,7 +118,7 @@ pub trait StateTx {
         preconditions: &StoragePreconditions,
         node_ids: &[String],
         now_utc: &str,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Atomically enforce `plan.preconditions` and apply all node, dependency, claim, artifact,
     /// blackboard, and subtask mutations in a single transaction.
@@ -126,7 +126,7 @@ pub trait StateTx {
         &mut self,
         run_id: &RunId,
         plan: &TransitionPlan,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Atomically apply a `SyncPlan` (transition updates, `runs.spec_digest`/optional profile rebind,
     /// newly added `gate_nodes`, and newly added `task_dependencies`).
@@ -135,53 +135,53 @@ pub trait StateTx {
         run_id: &RunId,
         plan: &SyncPlan,
         new_profile: Option<(&str, &str)>,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Persist `runs.spec_id` for `run_id` inside the active transaction.
     fn update_run_spec_id(
         &mut self,
         run_id: &RunId,
         spec_id: Option<&str>,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Insert a new blackboard entry and return the stored record with assigned `id`.
     fn insert_blackboard(
         &mut self,
         item: &BlackboardRecord,
-    ) -> Result<BlackboardRecord, StateError>;
+    ) -> Result<BlackboardRecord, AcddError>;
 
     /// Update the status of an existing blackboard entry scoped to `run_id`.
     fn update_blackboard_status(
         &mut self,
         run_id: &RunId,
         patch: &BlackboardStatusPatch,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Insert or update a subtask row (enforcing terminal non-empty `evidence`).
-    fn upsert_subtask(&mut self, subtask: &SubtaskRecord) -> Result<(), StateError>;
+    fn upsert_subtask(&mut self, subtask: &SubtaskRecord) -> Result<(), AcddError>;
 
     /// Record `tombstone` in `run_tombstones` and prune the active `runs` graph atomically.
     fn archive_and_prune_run(
         &mut self,
         preconditions: &StoragePreconditions,
         tombstone: &RunTombstoneRecord,
-    ) -> Result<(), StateError>;
+    ) -> Result<(), AcddError>;
 
     /// Clear `cleanup_pending = 0` on `run_tombstones` once post-commit file/ref/worktree cleanup completes.
-    fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), StateError>;
+    fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), AcddError>;
 }
 
 /// Execute `f` inside an atomic database transaction via an object-safe `&dyn StateBackend`
 /// without monomorphizing callers over concrete backend types.
 pub fn exec_tx_with<T>(
     backend: &dyn StateBackend,
-    f: impl FnOnce(&mut dyn StateTx) -> Result<T, StateError>,
-) -> Result<T, StateError> {
+    f: impl FnOnce(&mut dyn StateTx) -> Result<T, AcddError>,
+) -> Result<T, AcddError> {
     let mut f_opt = Some(f);
     let mut out: Option<T> = None;
     backend.exec_tx_dyn(&mut |tx| {
         let func = f_opt.take().ok_or_else(|| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 "transaction closure invoked more than once",
             )
@@ -190,7 +190,7 @@ pub fn exec_tx_with<T>(
         Ok(())
     })?;
     out.ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             "transaction completed without producing a result",
         )
@@ -202,14 +202,14 @@ pub trait StateBackend: StateReader + Send + Sync {
     /// Execute `f` inside an atomic database transaction, rolling back on error (object-safe).
     fn exec_tx_dyn(
         &self,
-        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), StateError>,
-    ) -> Result<(), StateError>;
+        f: &mut dyn FnMut(&mut dyn StateTx) -> Result<(), AcddError>,
+    ) -> Result<(), AcddError>;
 
     /// Execute `f` inside an atomic database transaction, rolling back on error.
-    fn exec_tx<T, F>(&self, f: F) -> Result<T, StateError>
+    fn exec_tx<T, F>(&self, f: F) -> Result<T, AcddError>
     where
         Self: Sized,
-        F: FnOnce(&mut dyn StateTx) -> Result<T, StateError>,
+        F: FnOnce(&mut dyn StateTx) -> Result<T, AcddError>,
     {
         exec_tx_with(self, f)
     }
@@ -217,5 +217,5 @@ pub trait StateBackend: StateReader + Send + Sync {
     /// Perform post-commit maintenance (e.g. `<git_common_dir>/acdd/state.bak.sqlite` backup under `backup.lock`).
     ///
     /// MUST be invoked AFTER releasing `<git_common_dir>/acdd/repo.lock`.
-    fn after_commit_maintenance(&self) -> Result<(), StateError>;
+    fn after_commit_maintenance(&self) -> Result<(), AcddError>;
 }

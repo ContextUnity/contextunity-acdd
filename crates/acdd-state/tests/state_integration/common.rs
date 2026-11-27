@@ -1,5 +1,5 @@
-use acdd_core::config::SpecCollectionConfig;
-use acdd_core::errors::StateError;
+use acdd_core::config::SpecConfig;
+use acdd_core::errors::AcddError;
 use acdd_core::git::git_command;
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::ports::{
@@ -10,14 +10,14 @@ use acdd_core::ports::{
 use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
+use acdd_spec::{materialize_ephemeral_goal_spec_with_options, InvariantsState, SubtaskStatus};
 use acdd_state::context::ClaimResp;
 use acdd_state::git_ops::commit::current_head_commit;
-use acdd_state::profile::{resolve_optional_profile_ref_with_dirs, CommandDef};
-use acdd_state::spec::materialize_ephemeral_goal_spec_with_options;
+use acdd_state::workflow::{resolve_optional_workflow_ref_with_dirs, CommandDef};
 use acdd_state::types::{
-    GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunRecord, RunStatus, RunTombstoneRecord, StoragePreconditions, SubmitAction, SubtaskRecord,
-    SubtaskStatus, TaskDependencyRecord, TerminalStatus,
+    GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
+    RunTombstoneRecord, StoragePreconditions, SubmitAction, SubtaskRecord, TaskDependencyRecord,
+    TerminalStatus,
 };
 use acdd_state::usecases::dto::{
     ClaimReq, ClearReq, StartReq, StartResp, SubmitReq, SubmitResp, VerifyReq, VerifyResp,
@@ -342,13 +342,13 @@ pub fn init_git_repo(dir: &Path, branch: &str) -> CommitOid {
     current_head_commit(dir).expect("initial head commit")
 }
 
-pub fn default_collections() -> BTreeMap<String, SpecCollectionConfig> {
+pub fn default_collections() -> BTreeMap<String, SpecConfig> {
     BTreeMap::from([(
         "milestones".to_owned(),
-        SpecCollectionConfig {
+        SpecConfig {
             path: Some("docs/milestones".to_owned()),
             paths: Vec::new(),
-            profile: None,
+            workflow: None,
             prefixes: vec!["AC".to_owned(), "M".to_owned()],
             digits: 3,
         },
@@ -362,7 +362,7 @@ pub fn base_config(root: &Path) -> StateEngineConfig {
         state_db_override: None,
         code_db_path: None,
         spec_collections: default_collections(),
-        profiles_dirs: Vec::new(),
+        workflows_dirs: Vec::new(),
         linked_workspaces: BTreeMap::new(),
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
@@ -429,7 +429,7 @@ pub fn sample_tombstone(
     }
 }
 
-pub fn start_run(eng: &StateEngine, req: StartReq) -> Result<StartResp, StateError> {
+pub fn start_run(eng: &StateEngine, req: StartReq) -> Result<StartResp, AcddError> {
     match eng.execute(StateCommand::Start(req))? {
         StateCommandOutput::Start(resp) => Ok(*resp),
         other => panic!("expected StartResp, got {other:?}"),
@@ -446,7 +446,7 @@ pub fn claim_node(
     force: bool,
     steal_remote: bool,
     wt: Option<PathBuf>,
-) -> Result<ClaimResp, StateError> {
+) -> Result<ClaimResp, AcddError> {
     match eng.execute(StateCommand::Claim(ClaimReq {
         run: Some(rid.to_owned()),
         node: Some(node.to_owned()),
@@ -469,7 +469,7 @@ pub fn verify_node(
     worker: &str,
     test_target: Option<&str>,
     claim_revision: Option<u32>,
-) -> Result<VerifyResp, StateError> {
+) -> Result<VerifyResp, AcddError> {
     match eng.execute(StateCommand::Verify(VerifyReq {
         run: Some(rid.to_owned()),
         node: node.to_owned(),
@@ -507,7 +507,7 @@ pub fn pass_req(
     }
 }
 
-pub fn submit_req(eng: &StateEngine, req: SubmitReq) -> Result<SubmitResp, StateError> {
+pub fn submit_req(eng: &StateEngine, req: SubmitReq) -> Result<SubmitResp, AcddError> {
     match eng.execute(StateCommand::Submit(Box::new(req)))? {
         StateCommandOutput::Submit(resp) => Ok(*resp),
         other => panic!("expected SubmitResp, got {other:?}"),
@@ -524,10 +524,10 @@ pub fn clear_run(eng: &StateEngine, rid: &str) {
 }
 
 pub fn write_profile(root: &Path, name: &str, yaml: &str) -> String {
-    let dir = root.join(".acdd/profiles");
+    let dir = root.join(".acdd/workflows");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(name), yaml).unwrap();
-    format!(".acdd/profiles/{name}")
+    format!(".acdd/workflows/{name}")
 }
 
 pub fn build_rich_graph(
@@ -539,8 +539,8 @@ pub fn build_rich_graph(
     non_domain_modules.disabled.insert("code".to_owned());
     non_domain_modules.disabled.insert("docs".to_owned());
     let mut profile =
-        resolve_optional_profile_ref_with_dirs(None, None, Some(&non_domain_modules), None)
-            .expect("resolve default profile");
+        resolve_optional_workflow_ref_with_dirs(None, None, Some(&non_domain_modules), None)
+            .expect("resolve default workflow");
     for cmd in ["test", "build_check", "verify_all"] {
         profile
             .commands
@@ -555,7 +555,7 @@ pub fn build_rich_graph(
         &run_id,
         &run_name,
         "Sample goal",
-        &profile.profile_id,
+        &profile.workflow_id,
         &["src/**".to_owned()],
         &[],
         true,
@@ -570,7 +570,7 @@ pub fn build_rich_graph(
         run_name,
         collection: Some("milestones".to_owned()),
         workspace: "default".to_owned(),
-        profile_id: profile.profile_id.clone(),
+        profile_id: profile.workflow_id.clone(),
         profile_json: serde_json::to_string(&profile).expect("serialize profile"),
         spec_path: Some(spec_rel.to_owned()),
         spec_id: None,
@@ -741,7 +741,7 @@ pub fn query_with(
     cfg: &StateEngineConfig,
     provider: &Arc<CompositeDomainProvider>,
     query: acdd_state::usecases::StateQuery,
-) -> Result<acdd_state::usecases::StateQueryOutput, StateError> {
+) -> Result<acdd_state::usecases::StateQueryOutput, AcddError> {
     acdd_state::usecases::StateQueryEngine::open_read_only(cfg.clone(), provider.clone())?
         .query(query)
 }

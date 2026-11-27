@@ -9,16 +9,19 @@ pub enum ErrorCode {
     // --- Exit 2: Usage / Config / Schema ---
     /// State database schema is uninitialized or incompatible and requires migration or recreation.
     ConfigMigrationRequired,
-    /// Profile YAML, schema definition, or typed payload failed validation.
-    #[serde(rename = "ACDD_PROFILE_SCHEMA_INVALID")]
-    ProfileSchemaInvalid,
+    /// Workflow YAML, schema definition, or typed payload failed validation.
+    #[serde(rename = "ACDD_WORKFLOW_SCHEMA_INVALID")]
+    WorkflowSchemaInvalid,
+    /// Specification Markdown/YAML frontmatter, collection, or dependency graph failed validation.
+    #[serde(rename = "ACDD_SPEC_SCHEMA_INVALID")]
+    SpecSchemaInvalid,
     /// A gate references a command slot marked `unbound: true`.
     CommandUnbound,
     /// A command rejects `--test` filters or has malformed filter configuration.
     CommandTestFilterUnsupported,
     /// A chained shell command requires an explicit `{test_filter}` placeholder when `--test` is used.
     CommandTestFilterPlaceholderRequired,
-    /// A gate references a guidance slot missing from `profile.guidance`.
+    /// A gate references a guidance slot missing from `workflow.guidance`.
     UnknownGuidanceSlot,
     /// Mandatory `contract + guidance` content exceeds the reserved response byte budget.
     GuidanceBudgetExceeded,
@@ -72,9 +75,10 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Complete ordered list of all canonical error codes.
-    pub const ALL: [ErrorCode; 28] = [
+    pub const ALL: [ErrorCode; 29] = [
         Self::ConfigMigrationRequired,
-        Self::ProfileSchemaInvalid,
+        Self::WorkflowSchemaInvalid,
+        Self::SpecSchemaInvalid,
         Self::CommandUnbound,
         Self::CommandTestFilterUnsupported,
         Self::CommandTestFilterPlaceholderRequired,
@@ -107,7 +111,8 @@ impl ErrorCode {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::ConfigMigrationRequired => "CONFIG_MIGRATION_REQUIRED",
-            Self::ProfileSchemaInvalid => "ACDD_PROFILE_SCHEMA_INVALID",
+            Self::WorkflowSchemaInvalid => "ACDD_WORKFLOW_SCHEMA_INVALID",
+            Self::SpecSchemaInvalid => "ACDD_SPEC_SCHEMA_INVALID",
             Self::CommandUnbound => "COMMAND_UNBOUND",
             Self::CommandTestFilterUnsupported => "COMMAND_TEST_FILTER_UNSUPPORTED",
             Self::CommandTestFilterPlaceholderRequired => {
@@ -143,7 +148,8 @@ impl ErrorCode {
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::ConfigMigrationRequired
-            | Self::ProfileSchemaInvalid
+            | Self::WorkflowSchemaInvalid
+            | Self::SpecSchemaInvalid
             | Self::CommandUnbound
             | Self::CommandTestFilterUnsupported
             | Self::CommandTestFilterPlaceholderRequired
@@ -190,7 +196,7 @@ impl FromStr for ErrorCode {
             .find(|code| code.as_str() == s)
             .ok_or_else(|| {
                 AcddError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("unknown error code '{s}'"),
                 )
             })
@@ -209,9 +215,6 @@ pub struct AcddError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
-
-/// Compatibility name retained while downstream crates adopt [`AcddError`].
-pub type StateError = AcddError;
 
 impl AcddError {
     /// Construct a new `AcddError` without a hint.
@@ -266,10 +269,11 @@ mod tests {
                 2,
             ),
             (
-                ErrorCode::ProfileSchemaInvalid,
-                "ACDD_PROFILE_SCHEMA_INVALID",
+                ErrorCode::WorkflowSchemaInvalid,
+                "ACDD_WORKFLOW_SCHEMA_INVALID",
                 2,
             ),
+            (ErrorCode::SpecSchemaInvalid, "ACDD_SPEC_SCHEMA_INVALID", 2),
             (ErrorCode::CommandUnbound, "COMMAND_UNBOUND", 2),
             (
                 ErrorCode::CommandTestFilterUnsupported,
@@ -363,16 +367,16 @@ mod tests {
     }
 
     #[test]
-    fn state_error_display_and_anyhow_downcast() {
-        let err = StateError::new(ErrorCode::CommandUnbound, "command 'test' is unbound")
-            .with_hint("bind 'test' in .acdd/profile.yaml");
+    fn acdd_error_display_and_anyhow_downcast() {
+        let err = AcddError::new(ErrorCode::CommandUnbound, "command 'test' is unbound")
+            .with_hint("bind 'test' in .acdd/workflows/default.yaml");
         assert_eq!(err.exit_code(), 2);
         assert_eq!(
             err.to_string(),
-            "COMMAND_UNBOUND: command 'test' is unbound (hint: bind 'test' in .acdd/profile.yaml)"
+            "COMMAND_UNBOUND: command 'test' is unbound (hint: bind 'test' in .acdd/workflows/default.yaml)"
         );
 
         let wrapped = anyhow::Error::new(err.clone()).context("while validating gate");
-        assert_eq!(StateError::from_anyhow(&wrapped), Some(&err));
+        assert_eq!(AcddError::from_anyhow(&wrapped), Some(&err));
     }
 }

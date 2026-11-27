@@ -1,6 +1,6 @@
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
-use acdd_state::profile::{
+use acdd_state::workflow::{
     schema::{DetailedCommandDef, PatternCommandEntry, TestFilterConfig},
     CommandDef, ResourceLimits, RoleDef, RoleExecutionMode,
 };
@@ -223,11 +223,11 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
         mode: RoleExecutionMode::Subagent,
         reuse_on_reject: true,
         models: vec![
-            acdd_state::profile::schema::ModelSpec {
+            acdd_state::workflow::schema::ModelSpec {
                 model: "m1".to_owned(),
                 reasoning: Some("high".to_owned()),
             },
-            acdd_state::profile::schema::ModelSpec {
+            acdd_state::workflow::schema::ModelSpec {
                 model: "m2".to_owned(),
                 reasoning: None,
             },
@@ -291,7 +291,7 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
     )
     .unwrap();
     assert!(log_empty.contains("|inline|||\n"), "{log_empty}");
-    empty_model_role.models = vec![acdd_state::profile::schema::ModelSpec {
+    empty_model_role.models = vec![acdd_state::workflow::schema::ModelSpec {
         model: "m3".to_owned(),
         reasoning: None,
     }];
@@ -404,7 +404,7 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
         ("tests/linker", "cargo test --test linker"),
     ] {
         assert_eq!(
-            acdd_state::profile::render_command_with_scope_target(
+            acdd_state::workflow::render_command_with_scope_target(
                 "cargo test {scope_target}",
                 &directory_map,
                 &[path.to_owned()]
@@ -460,7 +460,7 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
 
     for &(raw_paths, tpl, expected) in cases {
         let paths: Vec<String> = raw_paths.iter().copied().map(str::to_owned).collect();
-        let resolved = acdd_state::profile::render_command_with_scope_target(tpl, &map, &paths)
+        let resolved = acdd_state::workflow::render_command_with_scope_target(tpl, &map, &paths)
             .expect("valid template should expand");
         let expected_vec: Vec<String> = expected.iter().copied().map(str::to_owned).collect();
         assert_eq!(resolved, expected_vec);
@@ -480,7 +480,7 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
         ("echo # trailing newline comment\n", "--file {path}"),
     ] {
         let bad_map = BTreeMap::from([("src/*.rs".to_owned(), bad_arg.to_owned())]);
-        let err = acdd_state::profile::render_command_with_scope_target(
+        let err = acdd_state::workflow::render_command_with_scope_target(
             bad_cmd,
             &bad_map,
             &["src/lib.rs".to_owned()],
@@ -488,7 +488,7 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
         .expect_err("must reject unsafe shell template");
         assert_eq!(
             err.code,
-            ErrorCode::ProfileSchemaInvalid,
+            ErrorCode::WorkflowSchemaInvalid,
             "cmd={bad_cmd} arg={bad_arg}"
         );
     }

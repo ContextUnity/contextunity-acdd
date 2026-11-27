@@ -145,8 +145,8 @@ async fn serve_session(
                 if let Some(config) = &settings.config {
                     command.env("ACDD_CONFIG", config);
                 }
-                if let Some(profile) = &settings.profile {
-                    command.env("ACDD_PROFILE", profile);
+                if let Some(workflow) = &settings.workflow {
+                    command.env("ACDD_WORKFLOW", workflow);
                 }
                 if let Some(state_db) = &settings.state_db {
                     command.env("ACDD_STATE_DB", state_db);

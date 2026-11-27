@@ -30,7 +30,7 @@ src/state_bridge/mod.rs (build_domain_providers -> CompositeDomainProvider)
 Every domain implements [`DomainProvider`](../../crates/acdd-core/src/ports.rs) (`Send + Sync`):
 
 1. **`domain_id(&self) -> &str`**: Return a unique lowercase alphanumeric identifier matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (for example `"openapi"` or `"sql_lint"`).
-2. **`capabilities(&self) -> DomainCapabilities`**: Declare every supported capability upfront so `CompositeDomainProvider` and `acdd validate` validate profile references fail-closed:
+2. **`capabilities(&self) -> DomainCapabilities`**: Declare every supported capability upfront so `CompositeDomainProvider` and `acdd validate` validate workflow references fail-closed:
    - `actions: Vec<ActionCapability>` (`{ name, input_schema, mutating, supports_result_lookup }`)
    - `checks: Vec<CheckCapability>` (`{ name, input_schema }`)
    - `context_lenses: BTreeSet<String>` (unqualified lens names exposed as `<domain>.<lens>`)
@@ -145,9 +145,9 @@ impl DomainProvider for SchemaDomainProvider {
 }
 ```
 
-## 3. Connecting Capabilities in `.acdd/profile.yaml` (`version: 2`)
+## 3. Connecting Capabilities in `.acdd/workflows/default.yaml` (`version: 2`)
 
-Reference qualified `<domain>.<capability>` identifiers inside `.acdd/profile.yaml` (see [ACDD Profiles Reference](../reference/profiles.md)):
+Reference qualified `<domain>.<capability>` identifiers inside `.acdd/workflows/default.yaml` (see [ACDD Workflows Reference](../reference/workflows.md)):
 
 ```yaml
 version: 2
@@ -174,7 +174,7 @@ gates_patch:
 - **`checks:`**: Executed automatically during `acdd verify` / `acdd_verify`; `acdd submit` / `acdd_submit` validates live freshness via `observe_freshness` against the recorded `execution_digest` without re-running `run_check`. Any `execution_digest_salt` folds into the claim-bound `execution_digest`, bound to the active `TreeOid`.
 - **`context:`**: Materialized into Tier 6 `ClaimResp.context_lenses` in YAML declaration order during `acdd claim` / `acdd_claim`, trimmed cleanly if the `ResponsePolicy.max_output_bytes` budget is tight.
 - **`call:` + `with:`**: Runs an in-process action gate (`proof: call`), validating `with:` against `ActionCapability.input_schema` and recording `DomainActionResult` in `gate_artifacts`.
-- **`tools_add:` / `default_tools:`**: Admits `<domain>_<name>` plugin tools on specific gates. `CompositeDomainProvider` rejects any `<domain>_<name>` colliding with the 18 built-in tools or reserved retired names (`RETIRED_MCP_TOOLS`) checked by [`is_builtin_mcp_tool`](../../crates/acdd-core/src/ports.rs) (`BUILTIN_MCP_TOOLS`) fail-closed (`ProfileSchemaInvalid`).
+- **`tools_add:` / `default_tools:`**: Admits `<domain>_<name>` plugin tools on specific gates. `CompositeDomainProvider` rejects any `<domain>_<name>` colliding with the 18 built-in tools or reserved retired names (`RETIRED_MCP_TOOLS`) checked by [`is_builtin_mcp_tool`](../../crates/acdd-core/src/ports.rs) (`BUILTIN_MCP_TOOLS`) fail-closed (`WorkflowSchemaInvalid`).
 
 ## 4. Wiring, Module Toggles, and Fail-Closed Validation
 
@@ -191,6 +191,6 @@ gates_patch:
      domains:
        schema: true
    ```
-   When `modules.domains.schema: false` (or omitted when disabled), any profile gate referencing `schema.*` or `schema_diff` fails closed with `DOMAIN_CAPABILITY_UNAVAILABLE`.
+   When `modules.domains.schema: false` (or omitted when disabled), any workflow gate referencing `schema.*` or `schema_diff` fails closed with `DOMAIN_CAPABILITY_UNAVAILABLE`.
 3. **Fail-closed verification (`acdd validate`)**:
-   Run `acdd validate` ([`src/cli/validate.rs`](../../src/cli/validate.rs) delegating to [`crates/acdd-state/src/validate.rs`](../../crates/acdd-state/src/validate.rs) per `INV-SINGLE-OWNER`). Validation constructs `CompositeDomainProvider` via `build_domain_providers`, parses `.acdd/profile.yaml`, and checks every `call:`, `checks:`, `context:`, and `tools` / `tools_add` entry against enabled domain capabilities and `SchemaDef` schemas before any run can start.
+   Run `acdd validate` ([`src/cli/validate.rs`](../../src/cli/validate.rs) delegating to [`crates/acdd-state/src/validate.rs`](../../crates/acdd-state/src/validate.rs) per `INV-SINGLE-OWNER`). Validation constructs `CompositeDomainProvider` via `build_domain_providers`, parses `.acdd/workflows/default.yaml`, and checks every `call:`, `checks:`, `context:`, and `tools` / `tools_add` entry against enabled domain capabilities and `SchemaDef` schemas before any run can start.

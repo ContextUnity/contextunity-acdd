@@ -4,7 +4,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::format::sha256_hex;
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
 use acdd_core::path_policy::{normalize_binary_extensions, WorkspacePathPolicy};
-use acdd_state::git_ops::{commit::*, integrate::*, snapshot, snapshot::*, worktree::*};
+use acdd_state::git_ops::{commit::*, integrate::*, snapshot::*, worktree::*};
 use acdd_state::store::sqlite::SqliteStateReader;
 use acdd_state::types::IsolationMode;
 use acdd_state::usecases::lifecycle::build_path_policy;
@@ -395,17 +395,17 @@ fn scoped_commit_plumbing_and_archive_matrix() {
     )
     .expect("broad commit");
     let broad_oid = broad_commit.committed_oid.expect("broad oid");
-    let tree = snapshot::resolve_git_tree_oid(&repo, broad_oid.as_str()).unwrap();
-    let expected = snapshot::list_git_tree_entries_multi(&repo, "HEAD", &["src"]).unwrap();
+    let tree = acdd_core::git::resolve_git_tree_oid(&repo, broad_oid.as_str()).unwrap();
+    let expected = acdd_core::git::list_git_tree_entries_multi(&repo, "HEAD", &["src"]).unwrap();
     for reference in [tree.as_str(), broad_oid.as_str(), "HEAD"] {
         assert_eq!(
-            snapshot::list_git_tree_entries_multi(&repo, reference, &["src"]).unwrap(),
+            acdd_core::git::list_git_tree_entries_multi(&repo, reference, &["src"]).unwrap(),
             expected
         );
     }
     for (reference, directory, code) in [
-        ("-invalid", "src", ErrorCode::ProfileSchemaInvalid),
-        (tree.as_str(), "../src", ErrorCode::ProfileSchemaInvalid),
+        ("-invalid", "src", ErrorCode::WorkflowSchemaInvalid),
+        (tree.as_str(), "../src", ErrorCode::WorkflowSchemaInvalid),
         (
             "0000000000000000000000000000000000000000",
             "src",
@@ -414,7 +414,7 @@ fn scoped_commit_plumbing_and_archive_matrix() {
         ("missing-reference", "src", ErrorCode::ExternalGitDrift),
     ] {
         assert_eq!(
-            snapshot::list_git_tree_entries_multi(&repo, reference, &[directory])
+            acdd_core::git::list_git_tree_entries_multi(&repo, reference, &[directory])
                 .unwrap_err()
                 .code,
             code

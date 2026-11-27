@@ -669,10 +669,10 @@ mod tests {
         let mut adapter = Adapter::default();
         adapter.specs.insert(
             "rfcs".to_owned(),
-            SpecCollectionConfig {
+            SpecConfig {
                 path: Some("docs/rfcs".to_owned()),
                 paths: Vec::new(),
-                profile: None,
+                workflow: None,
                 prefixes: vec!["RFC".to_owned()],
                 digits: 3,
             },

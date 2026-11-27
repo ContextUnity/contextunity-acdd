@@ -72,7 +72,7 @@ fn discovery_package_fixture() -> anyhow::Result<(Workspace, Workspace, McpTestH
         ),
         (".gitignore", "gitignored/\n.acdd/\n"),
         (
-            ".acdd/profile.yaml",
+            ".acdd/workflows/default.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - id: verify\n    role: worker\n    proof: none\n",
         ),
     ]);

@@ -6,7 +6,7 @@ use super::exec::{
     format_message_with_trailer, git_dir_path, run_git_checked, run_git_raw, run_git_stdout,
 };
 use super::snapshot::tree_entry_at;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::ScopedTempDir;
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -58,7 +58,7 @@ pub struct TaskIntegrationCheckInput {
 }
 
 /// Abort any dangling `.git/MERGE_HEAD`, `.git/rebase-merge`, or `.git/rebase-apply` state in `worktree`.
-pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, StateError> {
+pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, AcddError> {
     let git_dir = git_dir_path(worktree)?;
     let mut aborted = false;
 
@@ -109,15 +109,15 @@ pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, StateError> {
 }
 
 /// Integrate `source_branch` into `target_worktree` via `rebase-ff`, aborting cleanly on conflict.
-pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp, StateError> {
+pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp, AcddError> {
     abort_in_progress_git_ops(&req.target_worktree)?;
     if let Some(src_wt) = &req.source_worktree {
         abort_in_progress_git_ops(src_wt)?;
     }
 
     if req.source_branch.trim().is_empty() || req.source_branch.starts_with('-') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid source branch '{}'", req.source_branch),
         ));
     }
@@ -131,7 +131,7 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
 
     let target_branch = current_branch_name(&req.target_worktree)?;
     if !req.allow_main && is_protected_main_branch(target_branch.as_deref()) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::MainBranchProtected,
             format!(
                 "refusing to integrate onto protected branch '{}'; pass --allow-main to override",
@@ -207,7 +207,7 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
         )?;
         if !amend_out.status.success() {
             drop(temp_wt_guard);
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::ExternalGitDrift,
                 format!(
                     "failed appending Acdd-Integrated trailer on rebased tip: {}",
@@ -248,7 +248,7 @@ pub fn verify_tasks_integrated(
     run_id: &RunId,
     run_worktree: &Path,
     tasks: &[TaskIntegrationCheckInput],
-) -> Result<Vec<TaskRef>, StateError> {
+) -> Result<Vec<TaskRef>, AcddError> {
     let _head = current_head_commit(run_worktree)?;
     let policy = WorkspacePathPolicy::default();
     let tasks_by_ref: BTreeMap<&TaskRef, &TaskIntegrationCheckInput> =
@@ -382,7 +382,7 @@ fn find_commit_with_trailer(
     worktree: &Path,
     grep_needle: &str,
     matches_line: impl Fn(&str) -> bool,
-) -> Result<Option<CommitOid>, StateError> {
+) -> Result<Option<CommitOid>, AcddError> {
     let out = run_git_checked(
         worktree,
         &[
@@ -437,14 +437,14 @@ fn integration_conflict_error(
     conflicting_paths: &[String],
     source_branch: &str,
     target_branch: Option<&str>,
-) -> StateError {
+) -> AcddError {
     let target = target_branch.unwrap_or("HEAD");
     let paths_display = if conflicting_paths.is_empty() {
         "none (non-fast-forward or structural conflict)".to_owned()
     } else {
         conflicting_paths.join(", ")
     };
-    StateError::new(
+    AcddError::new(
         ErrorCode::GitIntegrationConflict,
         format!(
             "GitIntegrationConflict {{ strategy: \"{strategy}\", source_branch: \"{source_branch}\", target_branch: \"{target}\", conflicting_paths: [{paths_display}] }}"
@@ -485,7 +485,7 @@ struct TempRebaseWorktree {
 }
 
 impl TempRebaseWorktree {
-    fn create(primary_worktree: &Path, branch: &str) -> Result<Self, StateError> {
+    fn create(primary_worktree: &Path, branch: &str) -> Result<Self, AcddError> {
         let temp_dir = create_scoped_temp_dir("acdd-rebase")?;
         let worktree_dir = temp_dir.path().join("wt");
         let wt_str = worktree_dir.to_string_lossy().into_owned();

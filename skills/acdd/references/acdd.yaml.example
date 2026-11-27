@@ -1,6 +1,7 @@
 # Example acdd.yaml adapter
-# Points to repository resources, spec collections, and module toggles.
+# Points to repository resources, spec configurations, preset, and module toggles.
 
+preset: full
 roots:
   - src
   - crates # Include crates for multi-crate workspaces.
@@ -17,7 +18,7 @@ ignore:
 # Reader paths blocked before reads and exports (gitignore-style patterns).
 sensitive: ['.env*', 'secrets/**']
 
-# Specification collections and unified state configuration (0.6.2)
+# Spec configurations and unified state configuration
 specs:
   milestones:
     path: docs/milestones
@@ -28,8 +29,8 @@ specs:
     prefixes: [PLAN]
     digits: 3
 
-profiles_dirs:
-  - .acdd/profiles
+workflows_dirs:
+  - .acdd/workflows
 state_db: ".acdd/state.sqlite"
 retain_traces: 20
 

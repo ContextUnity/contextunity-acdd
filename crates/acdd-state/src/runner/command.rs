@@ -4,11 +4,11 @@ use super::process::{
     node_slug, open_run_log_file, run_isolated_process, shell_command, utf8_tail, BoundedLogWriter,
     StreamKind,
 };
-use crate::profile::{
+use crate::workflow::{
     render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
     CommandDef, ResolvedCommandInvocation, ResourceLimits,
 };
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, RunId};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -68,7 +68,7 @@ pub(crate) fn sanitize_command_process(cmd: &mut Command) {
         "ACDD_CONFIG",
         "ACDD_DB",
         "ACDD_EXTRACTION_CACHE_DIR",
-        "ACDD_PROFILE",
+        "ACDD_WORKFLOW",
         "ACDD_STATE_DB",
         "ACDD_CODE_DB",
         "ACDD_WORKSPACE_ROOT",
@@ -122,7 +122,7 @@ pub(crate) fn render_invocation_command(
     admitted_scope: &[String],
     profile_scope_args: &BTreeMap<String, String>,
     test_target: Option<&str>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let match_paths = invocation_match_paths(inv, admitted_scope);
     let effective_scope_args: Cow<'_, BTreeMap<String, String>> = if profile_scope_args.is_empty() {
         Cow::Borrowed(&inv.scope_args_by_pattern)
@@ -144,16 +144,16 @@ pub(crate) fn render_invocation_command(
 }
 
 /// Execute gate command(s) in an isolated process group with bounded line/log capture.
-pub fn execute_gate_commands(req: &CommandExecReq) -> Result<CommandExecOutcome, StateError> {
+pub fn execute_gate_commands(req: &CommandExecReq) -> Result<CommandExecOutcome, AcddError> {
     execute_gate_commands_inner(req, None)
 }
 
 pub(super) fn execute_gate_commands_inner(
     req: &CommandExecReq,
     timeout_override: Option<Duration>,
-) -> Result<CommandExecOutcome, StateError> {
+) -> Result<CommandExecOutcome, AcddError> {
     if !req.worktree.is_dir() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "command worktree '{}' does not exist",
@@ -164,7 +164,7 @@ pub(super) fn execute_gate_commands_inner(
 
     let invocations = resolve_command_for_scope(&req.command, &req.scope)?;
     if invocations.is_empty() {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!(
                 "command slot '{}' matched no paths in admitted scope",
@@ -219,7 +219,7 @@ pub(super) fn execute_gate_commands_inner(
                 req.limits.max_line_bytes,
                 &mut |stream, line| {
                     log_writer.write_line(line).map_err(|err| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::GateVerificationFailed,
                             format!("failed writing command log: {err}"),
                         )
@@ -300,14 +300,14 @@ mod tests {
         let dir = acdd_core::fs::ScopedTempDir::create("acdd-sanitize-cmd").unwrap();
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(
-            "for k in TRACEPARENT ACDD_CONFIG ACDD_DB ACDD_EXTRACTION_CACHE_DIR ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
+            "for k in TRACEPARENT ACDD_CONFIG ACDD_DB ACDD_EXTRACTION_CACHE_DIR ACDD_WORKFLOW ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
         );
         cmd.current_dir(dir.path());
         cmd.env("TRACEPARENT", "00-1111-2222-01")
             .env("ACDD_CONFIG", "/x/acdd.yaml")
             .env("ACDD_DB", "/x/code.sqlite")
             .env("ACDD_EXTRACTION_CACHE_DIR", "/x/cache")
-            .env("ACDD_PROFILE", "code")
+            .env("ACDD_WORKFLOW", "code")
             .env("ACDD_STATE_DB", "/x/state.sqlite")
             .env("ACDD_CODE_DB", "/x/code-map.sqlite")
             .env("ACDD_WORKSPACE_ROOT", "/x")

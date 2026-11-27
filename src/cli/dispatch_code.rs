@@ -5,7 +5,7 @@ use crate::{
     format::OutputFormat,
 };
 use acdd_core::config::Adapter;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::lint::{LintCategory, LintSeverity};
 use acdd_core::response::{
     CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
@@ -147,7 +147,7 @@ fn open_or_rebuild(
 
 fn require_subsystem(adapter: &Adapter, id: SubsystemId) -> Result<()> {
     if !adapter.modules.is_subsystem_enabled(id) {
-        return Err(StateError::new(
+        return Err(AcddError::new(
             ErrorCode::FeatureDisabled,
             format!(
                 "FEATURE_DISABLED: '{}' module is disabled in modules:",

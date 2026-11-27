@@ -8,6 +8,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- **`crates/acdd-spec` Extraction & Workspace Dependency SSOT (`AR-006`)**:
+  - Consolidated `[workspace.package]` and `[workspace.dependencies]` in root `Cargo.toml` across all workspace crates (`acdd-core`, `acdd-spec`, `acdd-index`, `acdd-state`, `contextunity-acdd`) with zero new third-party dependencies.
+  - Extracted `crates/acdd-spec` (`acdd-core` -> `acdd-spec`) owning canonical `split_frontmatter` (sole `acdd-index` entrypoint enforced by `ARCH-INDEX-SPEC-ENTRY`), `SpecDocument`, `draft`, `discovery`, static `deps`, `validate`, static `roadmap/` DAG construction, and the read-only `SpecRuntimeOverlay` trait (`NoopRuntimeOverlay` for stateless callers, SQLite `StateRuntimeOverlay` in `crates/acdd-state`).
+- **Three-Layer Subsystem Presets (`preset: index | spec | state | full | minimal`) (`AR-006`)**:
+  - Added `SubsystemId::Spec` and top-level `acdd.yaml` `preset:` (`index`, `spec`, `state`, `full`, `minimal`); `preset: spec` enables stateless CLI `acdd validate`, `acdd roadmap`, and `acdd draft` plus MCP `get_doc`, `search_docs`, `acdd_read`, and `acdd_guide` with `state` physically disabled and zero `.acdd/state.sqlite` creation.
+
+### Changed
+
+- **Canonical `AcddError` & `workflow` / `spec` Terminology Cutover (`AR-006`)**:
+  - Removed the legacy `StateError` compatibility alias so `AcddError` is the sole structured error type across all workspace crates, splitting `ACDD_WORKFLOW_SCHEMA_INVALID` from `ACDD_SPEC_SCHEMA_INVALID`.
+  - Cut over workspace and CLI/MCP surfaces from `profile`/`collection` to `workflow`/`spec` (`.acdd/workflows/default.yaml`, `workflows_dirs:`, `SpecConfig`, `specs.<name>.workflow`, `crates/acdd-state/src/workflow/`, `WorkflowDef` / `ResolvedWorkflow`, `--workflow`, `ACDD_WORKFLOW`, `--rebind-workflow`, `--spec`, `acdd draft <spec>`, MCP `workflow` / `rebind_workflow`, diagnostics `WORKFLOW_VALID`, registry-local `FEATURE_REQUIRED_BY_PRESET`, and workspace-level `DOMAIN_CAPABILITY_UNAVAILABLE`, plus aligned `DraftReq`/`DraftResp`/`ValidateReq`/`RoadmapReq`/`RoadmapSpecEntry`/`StartReq`/`SyncReq`/`SyncResp` fields — rejecting removed flags/keys cleanly via Clap and `serde(deny_unknown_fields)`). Also removed `code.seam` from repo `.acdd/workflows/default.yaml` `tasks.build.checks`.
+  - Trimmed embedded binary workflows to `base`, `code`, and `documentation` while shipping `audit.yaml`, `spec_planning.yaml`, and `hotfix.yaml` templates under `skills/acdd/references/acdd-workflow-examples/`.
+  - Reconciled `ADR 0001`, `ADR 0003`, `ADR 0004`, `ADR 0005`, `ADR 0006`, `docs/reference/workflows.md`, `docs/reference/configuration.md`, `skills/acdd/`, `AGENTS.md` routers, `ROADMAP.md`, `README.md`, `INSTALL.md`, and `TESTS.md`.
 - **Read-Only `code_map_analyze` Graph, PageRank, Diff-Impact & Co-Change Modes (`UX-004`)**:
   - Extended `code_map_analyze` (`mode`, `to`, `base`) and CLI `acdd query analyze [--mode] [--to] [--base]` strictly over indexed SQLite facts (`crates/acdd-index/src/db/analyze/`): deterministic PageRank `hotspots` (`damping: 0.85`, bounded 2s budget), module `boundary`, shortest `path` (to destination selector `to`), `entrypoints`, Git `diff_impact` (delegating to canonical `change_impact.rs` with declaration-header `signature_touched`, verified `calls`-edge `uncovered_symbols`, governed `INV-*` `affected_docs`, and optional `base`), and bounded Git `cochange` (history via `crates/acdd-core/src/git.rs` filtered by `WorkspacePathPolicy`).
   - Added compact Markdown presentation for all 6 new `code_map_analyze` modes in `src/format/analyze.rs`.
@@ -23,7 +36,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   - Folded `code_map_tests` and `code_map_prove_removal` into `code_map_query(operation="tests" | "prove_removal")` (`20 -> 18` static built-in MCP tools synced across `Server::tool_router()` and `BUILTIN_MCP_TOOLS` in `crates/acdd-core/src/ports.rs`, keeping retired names reserved in `RETIRED_MCP_TOOLS` against plugin registration), while keeping CLI `acdd query tests` and `acdd query remove` unchanged.
   - Narrowed MCP `acdd_state` (`McpStateAction` / `StateInput`) to active-run lifecycle operations by removing `roadmap` and `draft` from MCP with fail-closed redirect hints to CLI `acdd roadmap` and `acdd draft`.
 - **Compact Inline `acdd_claim` & `acdd_read` Budgets (`UX-004`)**:
-  - Lowered default `ClaimResp` budget (`CLAIM_DEFAULT_MAX_BYTES`) to `9,500` bytes with opt-in `detail="full"` up to `32 KiB` (`CLAIM_FULL_MAX_BYTES = 32_768`) across `acdd_claim` and `acdd claim --detail`, bounded Tier 5 blackboard to `MAX_BLACKBOARD_ITEMS = 6` / `MAX_BLACKBOARD_CHARS = 220`, stripped headings TOC bloat from `docs.instructions`, filtered derived/generated methods from `code.symbols`, deduplicated `code.tests` paths (top 8), and capped `code.external_callers` to top-5 plus overflow count.
+  - Lowered default `ClaimResp` compact soft budget (`CLAIM_DEFAULT_MAX_BYTES`) to `10,000` bytes (reporting dropped optional tiers in `omitted_sections` within `ResponsePolicy.max_output_bytes`) with opt-in `detail="full"` up to `32 KiB` (`CLAIM_FULL_MAX_BYTES = 32_768`) across `acdd_claim` and `acdd claim --detail`, bounded Tier 5 blackboard to `MAX_BLACKBOARD_ITEMS = 6` / `MAX_BLACKBOARD_CHARS = 220`, stripped headings TOC bloat from `docs.instructions`, filtered derived/generated methods from `code.symbols`, deduplicated `code.tests` paths (top 8), and capped `code.external_callers` to top-5 plus overflow count.
   - Lowered default `acdd_read` / `acdd read` inline line-window ceiling (`READ_DEFAULT_MAX_INLINE_BYTES`) to `9,000` bytes with exact `next_start_line` and batch `next_path_index` / `remaining_count` continuation metadata (`detail="full"` or `output_file` retains the `48 KiB` slice ceiling).
 - **Pragmatic ACDD-First Navigation Guidance**:
   - Removed the hard `.agents/read_file_guard.py` and `.agents/hooks.json` `read_file` block and updated `AGENTS.md`, `skills/acdd/`, ADRs, architecture docs, and references to recommend ACDD-first graph/symbol/doc navigation while keeping native reads available for unadmitted or large files.
@@ -265,7 +278,7 @@ This release introduces reviewed pre-task `blueprint_synthesis` planning, recurs
 - **Recursive Profile Inheritance (`inherit: default` vs `inherit: none`)**: Repository overlays now merge `gates:` recursively by gate `id` and `- tasks:` container onto `acdd.default.yaml` before normalization, allowing compact project-level command bindings.
 - **Conditional Seam & Post-Task Closure Pipeline**: Added the language-neutral `seam` container (`when: seam`: `seam.integrate` -> `seam.review`) inside `- tasks:` and aligned post-task milestone closure on `verify` -> `polish` <-> `milestone_review` -> `handoff`.
 - **Standalone Artifact Authoring Workflows**: Added taskless root-gate workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (with portable copies in `skills/contextunity-forge/references/acdd-profile-examples/`).
-- **ACDD Architecture & Walkthrough Documentation**: Added full documentation in [ACDD reference](docs/reference/acdd.md) and symlinked [canonical profile template](docs/reference/acdd_profile.yaml.example) to the Forge skill reference.
+- **ACDD Architecture & Walkthrough Documentation**: Added full documentation in [ACDD reference](docs/reference/acdd.md) and symlinked `docs/reference/acdd_profile.yaml.example` to the Forge skill reference.
 - **Release Notes Automation**: Added `CHANGELOG.md` and automated release-notes extraction in `.github/workflows/release.yml` for `v*` tag releases.
 
 ### Changed
@@ -273,7 +286,7 @@ This release introduces reviewed pre-task `blueprint_synthesis` planning, recurs
 - **Version `0.5.2`**: Bumped workspace crates (`contextunity-forge-mcp`, `forge-core`, `forge-index`, `forge-tasks`), installation docs, and workspace contract tests to `0.5.2`.
 - **Lean Repository Overlay**: Simplified `.forge/acdd/profile.yaml` to an `inherit: default` overlay binding local `commands` and `scope_args_by_pattern`.
 - **Modularized Task Lifecycle Engine**: Split task lifecycle handling into `crates/forge-tasks/src/engine/lifecycle/` modules and standardized CLI guide gate lists and validation probes (`src/cli/guide.rs`, `src/cli/validate.rs`).
-- **Canonical Documentation Alignment**: Shortened the `README.md` ACDD summary in favor of [docs/reference/acdd.md](docs/reference/acdd.md), deduplicated [docs/reference/profiles.md](docs/reference/profiles.md), and unified canonical profile terminology (`save`, `fail`, `loop`, `need`, `absorb`) across docs and skills.
+- **Canonical Documentation Alignment**: Shortened the `README.md` ACDD summary in favor of [docs/reference/acdd.md](docs/reference/acdd.md), deduplicated `docs/reference/profiles.md`, and unified canonical profile terminology (`save`, `fail`, `loop`, `need`, `absorb`) across docs and skills.
 
 ### Removed
 

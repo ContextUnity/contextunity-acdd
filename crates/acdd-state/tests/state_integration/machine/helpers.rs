@@ -5,10 +5,10 @@ pub(super) use acdd_state::machine::inputs::VerifyEvaluation;
 pub(super) use acdd_state::machine::schedule::check_post_task_integration_barrier;
 pub(super) use acdd_state::machine::*;
 pub(super) use acdd_state::store::traits::{exec_tx_with, StateReader, StateTx};
+pub(super) use acdd_spec::InvariantsState;
 pub(super) use acdd_state::types::{
-    ArtifactKind, BlackboardRecord, BlackboardStatus, GateNodeRecord, InvariantsState,
-    NodeVersionExpectation, RunGraphSnapshot, StoragePreconditions, TransitionPlan,
-    ValidatedObservations,
+    ArtifactKind, BlackboardRecord, BlackboardStatus, GateNodeRecord, NodeVersionExpectation,
+    RunGraphSnapshot, StoragePreconditions, TransitionPlan, ValidatedObservations,
 };
 pub(super) use std::collections::BTreeSet;
 
@@ -44,7 +44,7 @@ pub(super) fn obs_with_tree(t_oid: TreeOid) -> ValidatedObservations {
 
 fn with_memory_backend(
     snap: &mut RunGraphSnapshot,
-    op: impl FnOnce(&mut dyn StateTx, &RunId) -> Result<(), acdd_core::errors::StateError>,
+    op: impl FnOnce(&mut dyn StateTx, &RunId) -> Result<(), acdd_core::errors::AcddError>,
 ) {
     let backend = RunHarness::in_memory().expect("memory backend");
     let run_id = snap.run.run_id.clone();

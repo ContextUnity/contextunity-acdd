@@ -2,7 +2,7 @@ use super::common::*;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{RunId, RunName};
 use acdd_state::harness::RunHarness;
-use acdd_state::profile::ResolvedGateProfile;
+use acdd_state::workflow::ResolvedWorkflow;
 use acdd_state::store::traits::{StateBackend, StateReader};
 use acdd_state::types::{
     BlackboardTopic, FindingItem, FindingSeverity, IsolationMode, NodeStatus, RejectionFindings,
@@ -96,7 +96,7 @@ fn seam_run_workflow_runner_required_and_dry_run_in_place() {
         &wt_engine,
         StartReq {
             goal: Some("Run inside managed task worktree".to_owned()),
-            profile: Some(wt_p),
+            workflow: Some(wt_p),
             worktree: true,
             ..StartReq::default()
         },
@@ -189,7 +189,7 @@ gates:
         &engine,
         StartReq {
             spec_path: Some("docs/milestones/AC-020-e2e.md".to_owned()),
-            profile: Some(e2e_p),
+            workflow: Some(e2e_p),
             worktree: true,
             ..StartReq::default()
         },
@@ -752,7 +752,7 @@ gates:
     )
     .contains("id: AC-020"));
 
-    let pre_land_doc = acdd_state::spec::parse_spec("---\nid: AC-021\ntitle: Dependent Before Landing\nstatus: planned\ndepends_on: [\"AC-020:t1\"]\n---\n### task: t1\n```yaml\ntarget: consume AC-020\nscope: [src/]\n```\n").unwrap();
+    let pre_land_doc = acdd_spec::parse_spec("---\nid: AC-021\ntitle: Dependent Before Landing\nstatus: planned\ndepends_on: [\"AC-020:t1\"]\n---\n### task: t1\n```yaml\ntarget: consume AC-020\nscope: [src/]\n```\n").unwrap();
     acdd_state::usecases::deps::verify_run_level_depends_on(&cfg, &reader_for(&cfg), &pre_land_doc)
         .expect("closed_commit archive satisfies depends_on before landing");
     git_ok(repo, &["merge", "--ff-only", "refs/heads/run/AC-020"]);
@@ -828,7 +828,7 @@ gates:
         &neng,
         StartReq {
             spec_path: Some("docs/milestones/AC-300.md".to_owned()),
-            profile: Some(nc_p),
+            workflow: Some(nc_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -936,13 +936,13 @@ gates:
         &p7_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-700-seams.md".to_owned()),
-            profile: Some(p7_p.clone()),
+            workflow: Some(p7_p.clone()),
             worktree: true,
             ..StartReq::default()
         },
     )
     .unwrap();
-    let disk_prof: ResolvedGateProfile = serde_yaml::from_str(
+    let disk_prof: ResolvedWorkflow = serde_yaml::from_str(
         &fs::read_to_string(
             p7_root
                 .join(".acdd/run")
@@ -975,7 +975,7 @@ gates:
         &p7_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-700-seams.md".to_owned()),
-            profile: Some(p7_p),
+            workflow: Some(p7_p),
             ..StartReq::default()
         },
     )
@@ -1102,7 +1102,7 @@ gates:
         &p7_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-700-seams.md".to_owned()),
-            profile: Some(p7_managed_p.clone()),
+            workflow: Some(p7_managed_p.clone()),
             ..StartReq::default()
         },
     )
@@ -1134,7 +1134,7 @@ gates:
             StartReq {
                 spec_path: Some("docs/milestones/AC-700-seams.md".to_owned()),
                 run_name: Some(RunName::new("start-col-run").unwrap()),
-                profile: Some(p7_managed_p),
+                workflow: Some(p7_managed_p),
                 worktree_path: Some(start_col_wt),
                 ..StartReq::default()
             }
@@ -1164,7 +1164,7 @@ gates:
         &cs_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-310.md".to_owned()),
-            profile: Some(cskip_p.clone()),
+            workflow: Some(cskip_p.clone()),
             in_place: true,
             ..StartReq::default()
         },
@@ -1227,7 +1227,7 @@ gates:
         &cs_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-NP.md".to_owned()),
-            profile: Some(prune_p),
+            workflow: Some(prune_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -1290,7 +1290,7 @@ gates:
         &loc_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-LOC.md".to_owned()),
-            profile: Some(loc_p),
+            workflow: Some(loc_p),
             in_place: true,
             ..StartReq::default()
         },
@@ -1521,38 +1521,77 @@ gates:
     let audit_root = audit_tmp.path();
     let _ = init_git_repo(audit_root, "main");
     fs::create_dir_all(audit_root.join("docs/plans")).unwrap();
+    let audit_p = write_profile(
+        audit_root,
+        "audit.yaml",
+        include_str!("../../../../skills/acdd/references/acdd-workflow-examples/audit.yaml"),
+    );
     let plan_commit_p = write_profile(
         audit_root,
         "audit_json.yaml",
-        "version: 2\ninherit: audit\ngit: { isolation: worktree, worktrees: managed }\nsave: commit\ngates_patch:\n  - id: triage\n    save:\n      post: commit\n      report: \".acdd/reports/{spec_id}-{gate_id}.json\"\n",
+        "version: 2\ninherit: .acdd/workflows/audit.yaml\ngit: { isolation: worktree, worktrees: managed }\nsave: commit\ngates_patch:\n  - id: triage\n    save:\n      post: commit\n      report: \".acdd/reports/{spec_id}-{gate_id}.json\"\n",
     );
     fs::write(
         audit_root.join("docs/plans/PLAN-001.md"),
-        format!("---\nid: PLAN-001\ntitle: In-Place Audit Plan\nstatus: planned\nprofile: {plan_commit_p}\n---\nAudit auth boundaries.\n"),
+        format!("---\nid: PLAN-001\ntitle: In-Place Audit Plan\nstatus: planned\nworkflow: {plan_commit_p}\n---\nAudit auth boundaries.\n"),
     )
     .unwrap();
     let mut audit_cfg = base_config(audit_root);
-    audit_cfg.modules.disabled.insert("code".to_owned());
-    audit_cfg.modules.disabled.insert("docs".to_owned());
     audit_cfg.spec_collections.insert(
         "plans".to_owned(),
-        acdd_core::config::SpecCollectionConfig {
+        acdd_core::config::SpecConfig {
             path: Some("docs/plans".to_owned()),
             paths: Vec::new(),
-            profile: None,
+            workflow: None,
             prefixes: vec!["PLAN".to_owned()],
             digits: 3,
         },
     );
-    let (_, audit_prov) = build_provider_with_mock(&audit_cfg.modules);
+    let (audit_http, _) = build_provider_with_mock(&audit_cfg.modules);
+    let audit_prov = std::sync::Arc::new(
+        acdd_core::ports::CompositeDomainProvider::with_module_flags(
+            vec![
+                std::sync::Arc::new(StubDomainProvider::new(
+                    "code",
+                    acdd_core::ports::DomainCapabilities {
+                        context_lenses: std::collections::BTreeSet::from([
+                            "symbols".to_owned(),
+                            "tests".to_owned(),
+                            "external_callers".to_owned(),
+                        ]),
+                        ..acdd_core::ports::DomainCapabilities::default()
+                    },
+                )),
+                std::sync::Arc::new(StubDomainProvider::new(
+                    "docs",
+                    acdd_core::ports::DomainCapabilities {
+                        context_lenses: std::collections::BTreeSet::from([
+                            "instructions".to_owned(),
+                            "adrs".to_owned(),
+                            "invariants".to_owned(),
+                            "workspace_config".to_owned(),
+                        ]),
+                        ..acdd_core::ports::DomainCapabilities::default()
+                    },
+                )),
+                audit_http as std::sync::Arc<dyn acdd_core::ports::DomainProvider>,
+            ],
+            BTreeMap::from([
+                ("code".to_owned(), true),
+                ("docs".to_owned(), true),
+                ("http".to_owned(), true),
+            ]),
+        )
+        .unwrap(),
+    );
     let audit_eng = StateEngine::open(audit_cfg.clone(), audit_prov).unwrap();
 
-    // 7a. Built-in `audit` goal run writes Markdown report `.acdd/reports/{run_name}.md` and propagates `predecessor_proofs`.
+    // 7a. Example `audit` workflow goal run writes Markdown report `.acdd/reports/{run_name}.md` and propagates `predecessor_proofs`.
     let a_start = start_run(
         &audit_eng,
         StartReq {
             goal: Some("Audit auth entrypoints".to_owned()),
-            profile: Some("audit".to_owned()),
+            workflow: Some(audit_p),
             scope: vec!["src/auth.rs".to_owned()],
             run_name: Some(RunName::new("audit-md").unwrap()),
             ..StartReq::default()
@@ -1687,7 +1726,7 @@ gates:
     )
     .unwrap();
     assert_eq!(p_start.run.isolation, IsolationMode::InPlace);
-    let resolved_plan: ResolvedGateProfile =
+    let resolved_plan: ResolvedWorkflow =
         serde_json::from_str(&p_start.run.profile_json).unwrap();
     assert_eq!(resolved_plan.git.isolation, IsolationMode::InPlace);
     assert_eq!(resolved_plan.git.worktrees, WorktreeLifecycle::Manual);
@@ -1799,7 +1838,7 @@ gates:
         )
         .unwrap_err()
         .code,
-        ErrorCode::ProfileSchemaInvalid
+        ErrorCode::WorkflowSchemaInvalid
     );
 
     let yaml_ip = write_profile(
@@ -1812,12 +1851,12 @@ gates:
         StartReq {
             spec_path: Some("docs/plans/PLAN-001.md".to_owned()),
             run_name: Some(RunName::new("yaml-ip").unwrap()),
-            profile: Some(yaml_ip),
+            workflow: Some(yaml_ip),
             ..StartReq::default()
         },
     )
     .unwrap();
-    let yip_prof: ResolvedGateProfile = serde_json::from_str(&yip_s.run.profile_json).unwrap();
+    let yip_prof: ResolvedWorkflow = serde_json::from_str(&yip_s.run.profile_json).unwrap();
     assert_eq!(
         (
             yip_prof.git.isolation,
@@ -1837,7 +1876,7 @@ gates:
     audit_eng
         .execute(StateCommand::Sync(acdd_state::usecases::dto::SyncReq {
             run: Some(yip_s.run.run_id.to_string()),
-            rebind_profile: true,
+            rebind_workflow: true,
         }))
         .unwrap();
     let rebound_run = reader_for(&audit_cfg)
@@ -1845,7 +1884,7 @@ gates:
         .unwrap()
         .unwrap()
         .run;
-    let rebound_prof: ResolvedGateProfile =
+    let rebound_prof: ResolvedWorkflow =
         serde_json::from_str(&rebound_run.profile_json).unwrap();
     assert_eq!(
         (rebound_prof.git.isolation, rebound_prof.save),
@@ -1879,7 +1918,7 @@ gates:
         StartReq {
             spec_path: Some("docs/milestones/AC-W1.md".to_owned()),
             run_name: Some(RunName::new("w1-mgr").unwrap()),
-            profile: Some(w1_p),
+            workflow: Some(w1_p),
             ..StartReq::default()
         },
     )
@@ -2059,7 +2098,7 @@ gates:
         &w1_eng,
         StartReq {
             spec_path: Some("docs/milestones/AC-W1.md".to_owned()),
-            profile: Some(mc_p),
+            workflow: Some(mc_p),
             in_place: true,
             ..StartReq::default()
         },

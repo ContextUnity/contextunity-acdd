@@ -4,44 +4,15 @@ use crate::git_ops::worktree::RepoWorktreeLayout;
 use crate::store::traits::StateReader;
 use crate::types::{ListRunsReq, RunRecord, RunStatus};
 use acdd_core::config::ACDD_DIR;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{checked_child, open_confined};
 use acdd_core::ids::RunId;
 use acdd_core::lock::acquire_exclusive;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-
-/// Read and lexicographically sort directory entries (returns empty `Vec` on unreadable/missing dir).
-pub(crate) fn sorted_dir_paths(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    paths
-}
-
-/// Read a confined file inside `root` as UTF-8.
-pub fn read_confined_utf8(root: &Path, relpath: &str) -> Result<String, StateError> {
-    let mut file =
-        open_confined(root, Path::new(relpath), OpenOptions::new().read(true)).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to read confined file '{relpath}': {err}"),
-            )
-        })?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("failed to decode UTF-8 in '{relpath}': {err}"),
-        )
-    })?;
-    Ok(buf)
-}
 
 /// Build the current process session fingerprint `host_id:pid:start_time`.
 pub fn current_session_fingerprint() -> String {
@@ -151,7 +122,7 @@ pub(crate) fn combine_check_observations(items: &[String]) -> Option<String> {
 pub fn list_all_runs(
     reader: &dyn StateReader,
     status: Option<RunStatus>,
-) -> Result<Vec<RunRecord>, StateError> {
+) -> Result<Vec<RunRecord>, AcddError> {
     let mut out = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -211,7 +182,7 @@ pub fn prune_old_run_trace_dirs(
     retain_traces: usize,
     max_total_bytes: Option<u64>,
     exempt_run_id: Option<&str>,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let Some(run_dir) = confined_run_traces_dir(primary_worktree) else {
         return Ok(());
     };
@@ -278,12 +249,12 @@ pub fn append_trace_event(
     primary_worktree: &Path,
     run_id: &RunId,
     event: &Value,
-) -> Result<(), StateError> {
+) -> Result<(), AcddError> {
     let lock_path = layout
         .map(|l| l.traces_lock_path.clone())
         .unwrap_or_else(|| primary_worktree.join(ACDD_DIR).join("traces.lock"));
     let _guard = acquire_exclusive(&lock_path).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("failed to acquire traces.lock: {err}"),
         )
@@ -297,8 +268,8 @@ pub fn append_trace_event(
         let _ = fs::create_dir_all(parent);
     }
     let mut line = serde_json::to_string(event).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to serialize trace event: {err}"),
         )
     })?;
@@ -310,14 +281,14 @@ pub fn append_trace_event(
         OpenOptions::new().create(true).append(true),
     )
     .map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to open traces.jsonl '{}': {err}", rel.display()),
         )
     })?;
     file.write_all(line.as_bytes()).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("failed to append trace event: {err}"),
         )
     })?;

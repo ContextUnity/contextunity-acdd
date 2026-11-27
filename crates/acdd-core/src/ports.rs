@@ -1,4 +1,4 @@
-use crate::errors::{ErrorCode, StateError};
+use crate::errors::{AcddError, ErrorCode};
 use crate::ids::{GateId, NodeCursor, RunId, WorkerId};
 use crate::path_policy::WorkspacePathPolicy;
 use crate::schema::SchemaDef;
@@ -165,6 +165,9 @@ pub struct DomainCheckReq {
     /// Optional commit or tree OID representing claim-time baseline (`HEAD` when absent).
     #[serde(default)]
     pub baseline_ref: Option<String>,
+    /// Effective task/node tags for domain checks (e.g. `["docs"]`).
+    #[serde(default)]
+    pub node_tags: Vec<String>,
 }
 
 /// Fail-closed check verdict (`Passed | Failed`, never `NotApplicable`).
@@ -318,7 +321,7 @@ pub trait DomainProvider: Send + Sync {
         _args: &Value,
         _req: &DomainToolReq,
     ) -> Result<DomainToolOutput> {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::DomainCapabilityUnavailable,
             format!(
                 "domain '{}' does not implement plugin tools",
@@ -362,7 +365,7 @@ impl DomainProvider for NoopDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::DomainCapabilityUnavailable,
             format!(
                 "action '{}.{}' is unavailable on noop domain provider",
@@ -378,7 +381,7 @@ impl DomainProvider for NoopDomainProvider {
         _params: &Value,
         _req: &DomainCheckReq,
     ) -> Result<DomainCheckOutcome> {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::DomainCapabilityUnavailable,
             format!(
                 "check '{}.{}' is unavailable on noop domain provider",
@@ -389,7 +392,7 @@ impl DomainProvider for NoopDomainProvider {
     }
 
     fn provide_context(&self, lens: &str, _req: &DomainContextReq) -> Result<Value> {
-        Err(StateError::new(
+        Err(AcddError::new(
             ErrorCode::DomainCapabilityUnavailable,
             format!(
                 "context lens '{}.{}' is unavailable on noop domain provider",
@@ -430,14 +433,14 @@ impl CompositeDomainProvider {
     pub fn with_module_flags(
         providers: Vec<Arc<dyn DomainProvider>>,
         enabled_flags: BTreeMap<String, bool>,
-    ) -> std::result::Result<Self, StateError> {
+    ) -> std::result::Result<Self, AcddError> {
         let mut composite = Self::default();
         for provider in providers {
             let domain_id = provider.domain_id().to_owned();
             validate_component_name(&domain_id, "domain_id")?;
             if composite.providers.contains_key(&domain_id) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("duplicate DomainProvider registration for domain '{domain_id}'"),
                 ));
             }
@@ -448,24 +451,24 @@ impl CompositeDomainProvider {
             for tool in &caps.tools {
                 let full_name = format!("{domain_id}_{}", tool.name);
                 if is_builtin_mcp_tool(&full_name) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "plugin tool '{full_name}' from domain '{domain_id}' collides with built-in MCP tool"
                         ),
                     ));
                 }
                 if RETIRED_MCP_TOOLS.contains(&full_name.as_str()) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "plugin tool '{full_name}' from domain '{domain_id}' collides with reserved retired MCP tool"
                         ),
                     ));
                 }
                 if let Some(existing) = composite.plugin_tools.get(&full_name) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "duplicate plugin tool '{full_name}' registered by domains '{}' and '{domain_id}'",
                             existing.domain_id
@@ -527,14 +530,14 @@ impl CompositeDomainProvider {
         kind: &'static str,
         items: impl FnOnce(&'s DomainCapabilities) -> &'s [T],
         name_of: impl Fn(&T) -> &str,
-    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s T), StateError> {
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s T), AcddError> {
         let (domain, cap_name) = split_qualified(qualified, kind)?;
         let entry = self.active_provider(domain)?;
         let cap = items(&entry.capabilities)
             .iter()
             .find(|item| name_of(item) == cap_name)
             .ok_or_else(|| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::DomainCapabilityUnavailable,
                     format!("{kind} '{qualified}' is not provided by domain '{domain}'"),
                 )
@@ -545,7 +548,7 @@ impl CompositeDomainProvider {
     fn resolve_action_capability<'s, 'q>(
         &'s self,
         qualified: &'q str,
-    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s ActionCapability), StateError>
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s ActionCapability), AcddError>
     {
         self.resolve_provider_capability(qualified, "action", |c| &c.actions, |a| &a.name)
     }
@@ -553,7 +556,7 @@ impl CompositeDomainProvider {
     fn resolve_check_capability<'s, 'q>(
         &'s self,
         qualified: &'q str,
-    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s CheckCapability), StateError>
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s CheckCapability), AcddError>
     {
         self.resolve_provider_capability(qualified, "check", |c| &c.checks, |c| &c.name)
     }
@@ -563,7 +566,7 @@ impl CompositeDomainProvider {
         &self,
         qualified: &str,
         params: &Value,
-    ) -> std::result::Result<(), StateError> {
+    ) -> std::result::Result<(), AcddError> {
         let (_, _, cap) = self.resolve_action_capability(qualified)?;
         cap.input_schema
             .validate_value(params, &format!("call.{qualified}.with"))
@@ -574,18 +577,18 @@ impl CompositeDomainProvider {
         &self,
         qualified: &str,
         params: &Value,
-    ) -> std::result::Result<(), StateError> {
+    ) -> std::result::Result<(), AcddError> {
         let (_, _, cap) = self.resolve_check_capability(qualified)?;
         cap.input_schema
             .validate_value(params, &format!("checks.{qualified}"))
     }
 
     /// Validate a qualified context lens reference (`<domain>.<lens>`) fail-closed.
-    pub fn validate_context_lens(&self, qualified: &str) -> std::result::Result<(), StateError> {
+    pub fn validate_context_lens(&self, qualified: &str) -> std::result::Result<(), AcddError> {
         let (domain, lens_name) = split_qualified(qualified, "context lens")?;
         let entry = self.active_provider(domain)?;
         if !entry.capabilities.context_lenses.contains(lens_name) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("context lens '{qualified}' is not provided by domain '{domain}'"),
             ));
@@ -597,15 +600,15 @@ impl CompositeDomainProvider {
     pub fn validate_plugin_tool_name(
         &self,
         full_name: &str,
-    ) -> std::result::Result<(), StateError> {
+    ) -> std::result::Result<(), AcddError> {
         let Some(tool) = self.plugin_tools.get(full_name) else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("plugin tool '{full_name}' is not registered"),
             ));
         };
         if !self.is_domain_enabled(&tool.domain_id) {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!(
                     "plugin tool '{full_name}' is unavailable because domain '{}' is disabled",
@@ -620,7 +623,7 @@ impl CompositeDomainProvider {
     pub fn action_capability(
         &self,
         qualified: &str,
-    ) -> std::result::Result<&ActionCapability, StateError> {
+    ) -> std::result::Result<&ActionCapability, AcddError> {
         let (_, _, cap) = self.resolve_action_capability(qualified)?;
         Ok(cap)
     }
@@ -695,7 +698,7 @@ impl CompositeDomainProvider {
         req: &DomainToolReq,
     ) -> Result<DomainToolOutput> {
         let Some(tool) = self.plugin_tools.get(full_name) else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("plugin tool '{full_name}' is not registered"),
             )
@@ -711,15 +714,15 @@ impl CompositeDomainProvider {
     fn active_provider(
         &self,
         domain: &str,
-    ) -> std::result::Result<&RegisteredProvider, StateError> {
+    ) -> std::result::Result<&RegisteredProvider, AcddError> {
         let Some(entry) = self.providers.get(domain) else {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("domain provider '{domain}' is not registered"),
             ));
         };
         if !entry.enabled {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("domain provider '{domain}' is disabled in modules configuration"),
             ));
@@ -728,20 +731,20 @@ impl CompositeDomainProvider {
     }
 }
 
-fn validate_component_name(name: &str, kind: &'static str) -> std::result::Result<(), StateError> {
-    crate::ids::validate_standard_ident(name, kind).map_err(StateError::from)
+fn validate_component_name(name: &str, kind: &'static str) -> std::result::Result<(), AcddError> {
+    crate::ids::validate_standard_ident(name, kind).map_err(AcddError::from)
 }
 
 fn validate_capabilities(
     domain_id: &str,
     caps: &DomainCapabilities,
-) -> std::result::Result<(), StateError> {
+) -> std::result::Result<(), AcddError> {
     let mut seen_actions = BTreeSet::new();
     for action in &caps.actions {
         validate_component_name(&action.name, "action capability name")?;
         if !seen_actions.insert(&action.name) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "duplicate action capability '{}.{}'",
                     domain_id, action.name
@@ -757,8 +760,8 @@ fn validate_capabilities(
     for check in &caps.checks {
         validate_component_name(&check.name, "check capability name")?;
         if !seen_checks.insert(&check.name) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("duplicate check capability '{}.{}'", domain_id, check.name),
             ));
         }
@@ -775,8 +778,8 @@ fn validate_capabilities(
     for tool in &caps.tools {
         validate_component_name(&tool.name, "plugin tool name")?;
         if !seen_tools.insert(&tool.name) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("duplicate tool '{}' in domain '{domain_id}'", tool.name),
             ));
         }
@@ -790,16 +793,16 @@ fn validate_capabilities(
 fn split_qualified<'a>(
     qualified: &'a str,
     kind: &'static str,
-) -> std::result::Result<(&'a str, &'a str), StateError> {
+) -> std::result::Result<(&'a str, &'a str), AcddError> {
     let Some((domain, item)) = qualified.split_once('.') else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("{kind} reference '{qualified}' must be qualified as '<domain>.<name>'"),
         ));
     };
     if domain.is_empty() || item.is_empty() || item.contains('.') {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("{kind} reference '{qualified}' must be qualified as '<domain>.<name>'"),
         ));
     }
@@ -950,6 +953,7 @@ mod tests {
             test_target: None,
             path_policy: WorkspacePathPolicy::default(),
             baseline_ref: None,
+            node_tags: vec![],
         }
     }
 
@@ -981,32 +985,32 @@ mod tests {
             (
                 "collides_with_builtin_acdd_read",
                 vec![collision_provider],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
             (
                 "collides_with_builtin_code_map_lint",
                 vec![lint_collision_provider],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
             (
                 "collides_with_retired_code_map_tests",
                 vec![retired_tests_provider],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
             (
                 "collides_with_retired_code_map_prove_removal",
                 vec![retired_removal_provider],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
             (
                 "duplicate_domain_id",
                 vec![dup_domain_a, dup_domain_b],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
             (
                 "duplicate_full_tool_name_across_domains",
                 vec![cross_tool_a, cross_tool_b],
-                Some(ErrorCode::ProfileSchemaInvalid),
+                Some(ErrorCode::WorkflowSchemaInvalid),
             ),
         ];
 
@@ -1176,21 +1180,21 @@ mod tests {
                 composite
                     .execute_action("http.probe", &json!({"wrong": 1}), "k", &action_req)
                     .map(|_| ()),
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::WorkflowSchemaInvalid,
             ),
             (
                 "tool_schema_violation",
                 composite
                     .call_tool("http_request", &json!({"url": 123}), &tool_req)
                     .map(|_| ()),
-                ErrorCode::ProfileSchemaInvalid,
+                ErrorCode::WorkflowSchemaInvalid,
             ),
         ];
 
         for (label, res, expected_code) in fail_cases {
             let err = res.as_ref().unwrap_err();
-            let state_err = StateError::from_anyhow(err).expect("expected StateError");
-            assert_eq!(state_err.code, *expected_code, "{label}: {state_err}");
+            let acdd_err = AcddError::from_anyhow(err).expect("expected AcddError");
+            assert_eq!(acdd_err.code, *expected_code, "{label}: {acdd_err}");
         }
 
         // Noop provider fails closed with DomainCapabilityUnavailable
@@ -1198,7 +1202,7 @@ mod tests {
         assert_eq!(noop.domain_id(), "noop");
         let noop_err = noop.run_check("x", &json!({}), &check_req).unwrap_err();
         assert_eq!(
-            StateError::from_anyhow(&noop_err).unwrap().code,
+            AcddError::from_anyhow(&noop_err).unwrap().code,
             ErrorCode::DomainCapabilityUnavailable
         );
     }
@@ -1222,7 +1226,7 @@ mod tests {
             ("http.probe", Ok(())),
             ("http.missing", Err(ErrorCode::DomainCapabilityUnavailable)),
             ("missing.probe", Err(ErrorCode::DomainCapabilityUnavailable)),
-            ("malformed", Err(ErrorCode::ProfileSchemaInvalid)),
+            ("malformed", Err(ErrorCode::WorkflowSchemaInvalid)),
         ] {
             let val_res = composite
                 .validate_action_ref(qualified, &json!({"url": "https://example.test"}))
@@ -1239,11 +1243,11 @@ mod tests {
                     &action_req,
                 )
                 .map(|_| ())
-                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+                .map_err(|e| AcddError::from_anyhow(&e).unwrap().code);
             let lookup_res = composite
                 .lookup_action_result(qualified, "k1")
                 .map(|_| ())
-                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+                .map_err(|e| AcddError::from_anyhow(&e).unwrap().code);
             assert_eq!(val_res, expected, "validate_action_ref({qualified})");
             assert_eq!(cap_res, expected, "action_capability({qualified})");
             assert_eq!(exec_res, expected, "execute_action({qualified})");
@@ -1257,7 +1261,7 @@ mod tests {
                 "missing.health",
                 Err(ErrorCode::DomainCapabilityUnavailable),
             ),
-            ("malformed", Err(ErrorCode::ProfileSchemaInvalid)),
+            ("malformed", Err(ErrorCode::WorkflowSchemaInvalid)),
         ] {
             let val_res = composite
                 .validate_check_ref(qualified, &json!({}))
@@ -1265,11 +1269,11 @@ mod tests {
             let run_res = composite
                 .run_check(qualified, &json!({}), &check_req)
                 .map(|_| ())
-                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+                .map_err(|e| AcddError::from_anyhow(&e).unwrap().code);
             let obs_res = composite
                 .observe_freshness(qualified, &json!({}), &check_req)
                 .map(|_| ())
-                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+                .map_err(|e| AcddError::from_anyhow(&e).unwrap().code);
             assert_eq!(val_res, expected, "validate_check_ref({qualified})");
             assert_eq!(run_res, expected, "run_check({qualified})");
             assert_eq!(obs_res, expected, "observe_freshness({qualified})");

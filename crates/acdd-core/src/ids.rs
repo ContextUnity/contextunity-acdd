@@ -1,4 +1,4 @@
-use crate::errors::{ErrorCode, StateError};
+use crate::errors::{AcddError, ErrorCode};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
@@ -23,9 +23,9 @@ impl fmt::Display for IdError {
 
 impl std::error::Error for IdError {}
 
-impl From<IdError> for StateError {
+impl From<IdError> for AcddError {
     fn from(err: IdError) -> Self {
-        StateError::new(ErrorCode::ProfileSchemaInvalid, err.0)
+        AcddError::new(ErrorCode::WorkflowSchemaInvalid, err.0)
     }
 }
 

@@ -10,14 +10,14 @@ use crate::git_ops::worktree::{
     remove_worktree_and_branch, RepoWorktreeLayout,
 };
 use crate::machine::{container_scope, MachineProfileInput};
-use crate::profile::ResolvedGateProfile;
+use crate::workflow::ResolvedWorkflow;
 use crate::store::traits::{exec_tx_with, StateBackend, StateReader};
 use crate::types::{
     ArchiveCleanupEntry, GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, NodeStatus,
     RunGraphSnapshot, RunRecord, RunStatus, RunTombstoneRecord, TerminalStatus, WorktreeLifecycle,
 };
 use crate::usecases::config::StateEngineConfig;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{RunId, TaskRef};
 use acdd_core::path_policy::WorkspacePathPolicy;
@@ -34,7 +34,7 @@ pub struct LoadedRunGraph {
     /// Loaded run record and full graph snapshot (`nodes`, `dependencies`, `subtasks`, `claims`, `traces`, `artifacts`).
     pub snapshot: RunGraphSnapshot,
     /// Parsed resolved gate profile from `runs.profile_json`.
-    pub profile: ResolvedGateProfile,
+    pub profile: ResolvedWorkflow,
     /// Pure state-machine representation of `profile`.
     pub machine_profile: MachineProfileInput,
 }
@@ -47,7 +47,7 @@ impl LoadedRunGraph {
         config: &StateEngineConfig,
         reader: &dyn StateReader,
         target_worktree: Option<&Path>,
-    ) -> Result<WorkspacePathPolicy, StateError> {
+    ) -> Result<WorkspacePathPolicy, AcddError> {
         build_path_policy(
             config,
             reader,
@@ -64,11 +64,11 @@ pub fn load_active_run_graph(
     reader: &dyn StateReader,
     run_selector: Option<&str>,
     worktree_override: Option<&Path>,
-) -> Result<LoadedRunGraph, StateError> {
+) -> Result<LoadedRunGraph, AcddError> {
     let run = resolve_active_run(config, reader, run_selector, worktree_override)?;
     let snapshot = reader
         .load_run_graph(&run.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
+        .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
     let profile = parse_profile_from_run(&snapshot.run)?;
     let machine_profile = to_machine_profile(&profile)?;
     Ok(LoadedRunGraph {
@@ -84,9 +84,9 @@ pub fn resolve_active_run(
     reader: &dyn StateReader,
     run_selector: Option<&str>,
     worktree_override: Option<&Path>,
-) -> Result<RunRecord, StateError> {
+) -> Result<RunRecord, AcddError> {
     resolve_run_optional(config, reader, run_selector, worktree_override, true)?.ok_or_else(|| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             "no active run found for this workspace or worktree",
         )
@@ -101,11 +101,11 @@ pub fn resolve_run_optional(
     run_selector: Option<&str>,
     worktree_override: Option<&Path>,
     active_only: bool,
-) -> Result<Option<RunRecord>, StateError> {
+) -> Result<Option<RunRecord>, AcddError> {
     if let Some(sel) = run_selector {
         let trimmed = sel.trim();
         if trimmed.is_empty() {
-            return Err(StateError::new(
+            return Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 "run selector cannot be empty",
             ));
@@ -123,12 +123,12 @@ pub fn resolve_run_optional(
             .filter(|r| r.run_id.as_str() == trimmed || r.run_name.as_str() == trimmed)
             .collect();
         return match matches.len() {
-            0 => Err(StateError::new(
+            0 => Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!("no run matching '{trimmed}'"),
             )),
             1 => Ok(Some(matches.into_iter().next().expect("checked len == 1"))),
-            _ => Err(StateError::new(
+            _ => Err(AcddError::new(
                 ErrorCode::RunSelectorAmbiguous,
                 format!("multiple runs match selector '{trimmed}'"),
             )),
@@ -153,7 +153,7 @@ pub fn resolve_run_optional(
     match active.len() {
         0 => Ok(None),
         1 if is_primary => Ok(Some(active.into_iter().next().expect("checked len == 1"))),
-        1 => Err(StateError::new(
+        1 => Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!(
                 "active run exists, but worktree '{}' is not bound to it",
@@ -161,7 +161,7 @@ pub fn resolve_run_optional(
             ),
         )
         .with_hint("specify --run <run_id|run_name> or --worktree <path>")),
-        _ => Err(StateError::new(
+        _ => Err(AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!(
                 "{} active runs exist and current worktree '{}' does not uniquely select one",
@@ -176,7 +176,7 @@ pub fn resolve_run_optional(
 /// Paginate all tombstones from `reader`.
 pub fn list_all_tombstones(
     reader: &dyn StateReader,
-) -> Result<Vec<RunTombstoneRecord>, StateError> {
+) -> Result<Vec<RunTombstoneRecord>, AcddError> {
     let mut out = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -235,7 +235,7 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     layout: Option<&RepoWorktreeLayout>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let mut cleaned = Vec::new();
     for tomb in list_all_tombstones(backend)?
         .iter()
@@ -251,7 +251,7 @@ pub(in crate::usecases) fn cleanup_tombstone(
     backend: &dyn StateBackend,
     tomb: &RunTombstoneRecord,
     locked: Option<&RepoWorktreeLayout>,
-) -> Result<Vec<String>, StateError> {
+) -> Result<Vec<String>, AcddError> {
     let primary = primary_workspace_root(config);
     let mut workspaces = config
         .linked_workspaces
@@ -311,7 +311,7 @@ pub(in crate::usecases) fn cleanup_tombstone(
 pub fn compute_unintegrated_tasks(
     config: &StateEngineConfig,
     snapshot: &RunGraphSnapshot,
-) -> Result<Vec<TaskRef>, StateError> {
+) -> Result<Vec<TaskRef>, AcddError> {
     if snapshot.run.isolation != IsolationMode::Worktree
         || !crate::machine::schedule::all_non_cancelled_tasks_completed(snapshot)
     {
@@ -332,7 +332,7 @@ pub fn compute_unintegrated_tasks(
 }
 
 /// Generate a fresh unique run identifier matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`.
-pub fn generate_run_id(prefix: &str) -> Result<RunId, StateError> {
+pub fn generate_run_id(prefix: &str) -> Result<RunId, AcddError> {
     let seq = RUN_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     let ts = Utc::now().format("%Y%m%d%H%M%S");
     let pid = std::process::id();
@@ -347,7 +347,7 @@ pub fn generate_run_id(prefix: &str) -> Result<RunId, StateError> {
         clean_prefix.as_str()
     };
     let raw = format!("{head}-{ts}-{pid}-{seq}");
-    RunId::new(raw).map_err(StateError::from)
+    RunId::new(raw).map_err(AcddError::from)
 }
 
 /// Collect `TaskIntegrationCheckInput` descriptors for all completed tasks in `snapshot`.

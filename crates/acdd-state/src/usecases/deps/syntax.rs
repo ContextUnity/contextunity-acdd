@@ -1,80 +1,21 @@
-//! Dependency syntax parsing, linked-workspace resolution, and active-run context selection.
+//! Runtime run-ID resolution and active-run context selection over `acdd_spec::deps::parse_dep_syntax`.
 
 use super::snapshot::find_latest_matching_tombstone;
 use crate::machine::MachineTaskDep;
-use crate::spec::SpecDocument;
 use crate::store::sqlite::SqliteStateReader;
 use crate::types::{RunRecord, RunTombstoneRecord};
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::lifecycle::{effective_spec_collections, list_all_runs, list_all_tombstones};
-use acdd_core::config::{
-    load_adapter, resolve_effective_state_db_path, resolve_state_db_path, Adapter,
-    SpecCollectionConfig,
-};
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::config::{resolve_effective_state_db_path, resolve_state_db_path, SpecConfig};
+use acdd_core::errors::AcddError;
 use acdd_core::fs::canonical_root;
 use acdd_core::git::list_owned_worktrees;
 use acdd_core::ids::{RunId, TaskRef};
+use acdd_spec::deps::{parse_dep_syntax, ParsedDepSyntax};
+use acdd_spec::discovery::{load_ws_adapter, resolve_linked_workspace_root};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-/// Parsed syntactic form of a `depends_on` entry (`INV-SINGLE-OWNER`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ParsedDepSyntax {
-    LocalTask(String),
-    LocalSpec {
-        spec_id: String,
-        task_ref: Option<String>,
-    },
-    LinkedSpec {
-        ws_alias: String,
-        spec_id: String,
-        task_ref: Option<String>,
-    },
-}
-
-/// Parse raw `depends_on` syntax into [`ParsedDepSyntax`].
-pub(crate) fn parse_dep_syntax(
-    raw: &str,
-    local_task_refs: &BTreeSet<&str>,
-) -> Result<ParsedDepSyntax, StateError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            "depends_on entry cannot be empty",
-        ));
-    }
-    if let Some((left, task_part)) = trimmed.split_once(':') {
-        let tref = TaskRef::new(task_part)?;
-        if let Some((ws_alias, run_part)) = left.split_once('/') {
-            Ok(ParsedDepSyntax::LinkedSpec {
-                ws_alias: ws_alias.to_owned(),
-                spec_id: run_part.to_owned(),
-                task_ref: Some(tref.as_str().to_owned()),
-            })
-        } else {
-            Ok(ParsedDepSyntax::LocalSpec {
-                spec_id: left.to_owned(),
-                task_ref: Some(tref.as_str().to_owned()),
-            })
-        }
-    } else if let Some((ws_alias, spec_part)) = trimmed.split_once('/') {
-        Ok(ParsedDepSyntax::LinkedSpec {
-            ws_alias: ws_alias.to_owned(),
-            spec_id: spec_part.to_owned(),
-            task_ref: None,
-        })
-    } else if local_task_refs.contains(trimmed) {
-        Ok(ParsedDepSyntax::LocalTask(trimmed.to_owned()))
-    } else {
-        Ok(ParsedDepSyntax::LocalSpec {
-            spec_id: trimmed.to_owned(),
-            task_ref: None,
-        })
-    }
-}
 
 pub(crate) fn parse_task_dependency_with_db(
     raw: &str,
@@ -84,7 +25,7 @@ pub(crate) fn parse_task_dependency_with_db(
     spec_repos: &BTreeMap<String, PathBuf>,
     local_task_refs: &BTreeSet<&str>,
     local_db: Option<(&Path, &Path)>,
-) -> Result<MachineTaskDep, StateError> {
+) -> Result<MachineTaskDep, AcddError> {
     match parse_dep_syntax(raw, local_task_refs)? {
         ParsedDepSyntax::LocalTask(t_ref) => Ok(MachineTaskDep {
             depends_on_workspace: current_workspace.to_owned(),
@@ -135,75 +76,11 @@ pub(crate) fn parse_task_dependency_with_db(
     }
 }
 
-pub(crate) fn resolve_linked_workspace_root(
-    ws_alias: &str,
-    raw_dep: &str,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
-    spec_repos: &BTreeMap<String, PathBuf>,
-) -> Result<PathBuf, StateError> {
-    let ws_path = linked_workspaces
-        .get(ws_alias)
-        .or_else(|| spec_repos.get(ws_alias))
-        .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("dependency '{raw_dep}' references unknown linked workspace '{ws_alias}'"),
-            )
-        })?;
-    canonical_root(ws_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "linked workspace '{ws_alias}' path '{}' is invalid or confined-check failed: {err}",
-                ws_path.display()
-            ),
-        )
-    })
-}
-
-pub(crate) fn resolve_spec_repositories(
-    primary_root: &Path,
-    spec_doc: &SpecDocument,
-) -> BTreeMap<String, PathBuf> {
-    let base = acdd_core::git::primary_worktree_root(primary_root)
-        .filter(|primary| {
-            primary != primary_root && {
-                let rels: Vec<&Path> = spec_doc
-                    .repositories
-                    .iter()
-                    .map(|r| Path::new(&r.path))
-                    .filter(|p| p.is_relative())
-                    .collect();
-                !rels.is_empty()
-                    && rels.iter().all(|p| primary.join(p).exists())
-                    && !rels.iter().all(|p| primary_root.join(p).exists())
-            }
-        })
-        .unwrap_or_else(|| primary_root.to_path_buf());
-    let mut map = BTreeMap::new();
-    for r in &spec_doc.repositories {
-        let p = Path::new(&r.path);
-        map.insert(
-            r.name.clone(),
-            if p.is_relative() {
-                base.join(p)
-            } else {
-                p.to_path_buf()
-            },
-        );
-    }
-    map
-}
-
-pub(crate) fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
-    load_adapter(ws_root, None)
-}
-
 /// Resolve the explicit or owning-primary state database without guessing on invalid configuration.
 pub fn try_resolve_effective_state_db(
     root: &Path,
     explicit: Option<&Path>,
-) -> Result<PathBuf, StateError> {
+) -> Result<PathBuf, AcddError> {
     let primary = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     if let Some(path) = acdd_core::config::resolve_custom_db_path(&primary, explicit) {
         return Ok(path);
@@ -223,7 +100,7 @@ pub(super) fn same_repository(left: &Path, right: &Path) -> bool {
 pub(crate) fn resolve_ws_context_canon(
     ws_path: &Path,
     local_db: Option<(&Path, &Path)>,
-) -> Result<(PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
+) -> Result<(PathBuf, BTreeMap<String, SpecConfig>), AcddError> {
     resolve_ws_context_canon_with_primary(ws_path, local_db, None)
 }
 
@@ -231,7 +108,7 @@ fn resolve_ws_context_canon_with_primary(
     ws_path: &Path,
     local_db: Option<(&Path, &Path)>,
     known_primary: Option<&Path>,
-) -> Result<(PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
+) -> Result<(PathBuf, BTreeMap<String, SpecConfig>), AcddError> {
     let repo_primary = known_primary.map_or_else(
         || acdd_core::git::primary_worktree_root(ws_path).unwrap_or_else(|| ws_path.to_path_buf()),
         Path::to_path_buf,
@@ -249,7 +126,7 @@ pub(crate) fn effective_active_run_config<'a>(
     run: &RunRecord,
     primary: &Path,
     owned: Option<&[PathBuf]>,
-) -> Result<Cow<'a, StateEngineConfig>, StateError> {
+) -> Result<Cow<'a, StateEngineConfig>, AcddError> {
     let checkout = run
         .worktree
         .as_deref()
@@ -280,8 +157,8 @@ pub(super) fn resolve_observation_context(
     primary_root: &Path,
     config: &StateEngineConfig,
     owned: Option<&[PathBuf]>,
-) -> Result<(PathBuf, PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
-    let checkout = canonical_root(&config.worktree).unwrap_or_else(|_| config.worktree.clone());
+) -> Result<(PathBuf, PathBuf, BTreeMap<String, SpecConfig>), AcddError> {
+    let checkout = canonical_root(config.worktree.as_path()).unwrap_or_else(|_| config.worktree.clone());
     let db_path = config.resolved_state_db_path().0;
     if ws_path == checkout {
         return Ok((checkout, db_path, effective_spec_collections(config)));
@@ -327,7 +204,7 @@ fn resolve_external_run_id(
     run_sel: &str,
     local_db: Option<(&Path, &Path)>,
     scoped: bool,
-) -> Result<RunId, StateError> {
+) -> Result<RunId, AcddError> {
     let db_path = if let Some((_, db)) = local_db.filter(|(root, _)| *root == ws_root) {
         db.to_path_buf()
     } else {
@@ -345,5 +222,5 @@ fn resolve_external_run_id(
     if let Some(found) = find_latest_matching_tombstone(&tombs, run_sel) {
         return Ok(found.run_id.clone());
     }
-    RunId::new(run_sel).map_err(StateError::from)
+    RunId::new(run_sel).map_err(AcddError::from)
 }

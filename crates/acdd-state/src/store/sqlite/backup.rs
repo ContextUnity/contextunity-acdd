@@ -3,7 +3,7 @@
 
 use super::migrations::{ensure_schema, read_meta};
 use crate::types::RunTombstoneRecord;
-use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{
     confined_database_create_path, confined_database_open_path, ensure_confined_dir_all,
 };
@@ -18,19 +18,19 @@ use std::time::Duration;
 
 static BACKUP_NONCE: AtomicU64 = AtomicU64::new(0);
 
-fn ensure_confined_dir(dir: &Path) -> Result<(), StateError> {
+fn ensure_confined_dir(dir: &Path) -> Result<(), AcddError> {
     let absolute = if dir.is_absolute() {
         dir.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|err| StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string()))?
+            .map_err(|err| AcddError::new(ErrorCode::WorkflowSchemaInvalid, err.to_string()))?
             .join(dir)
     };
     ensure_confined_dir_all(&absolute, &absolute)
         .map(|_| ())
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to prepare confined database directory '{}': {err}",
                     dir.display()
@@ -47,7 +47,7 @@ pub(crate) fn perform_backup_if_needed(
     conn: &mut Connection,
     backup_dir: &Path,
     significant_dirty: bool,
-) -> Result<bool, StateError> {
+) -> Result<bool, AcddError> {
     if !significant_dirty {
         return Ok(false);
     }
@@ -60,7 +60,7 @@ pub(crate) fn perform_backup_if_needed(
     ensure_confined_dir(backup_dir)?;
     let lock_path = backup_dir.join("backup.lock");
     let _lock = acquire_exclusive(&lock_path).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "failed to acquire backup.lock '{}': {err}",
@@ -77,8 +77,8 @@ pub(crate) fn perform_backup_if_needed(
 
     let backup_path = backup_dir.join("state.bak.sqlite");
     let confined_dst = confined_database_create_path(&backup_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid backup path '{}': {err}", backup_path.display()),
         )
     })?;
@@ -90,8 +90,8 @@ pub(crate) fn perform_backup_if_needed(
         nonce
     ));
     let confined_tmp = confined_database_create_path(&tmp_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "invalid temporary backup path '{}': {err}",
                 tmp_path.display()
@@ -99,7 +99,7 @@ pub(crate) fn perform_backup_if_needed(
         )
     })?;
 
-    let backup_res = (|| -> Result<(), StateError> {
+    let backup_res = (|| -> Result<(), AcddError> {
         {
             let mut dst_conn = Connection::open_with_flags(
                 &confined_tmp,
@@ -108,7 +108,7 @@ pub(crate) fn perform_backup_if_needed(
                     | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )
             .map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "failed to open backup target '{}': {err}",
@@ -118,7 +118,7 @@ pub(crate) fn perform_backup_if_needed(
             })?;
             {
                 let backup = rusqlite::backup::Backup::new(conn, &mut dst_conn).map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("failed to initialize SQLite backup: {err}"),
                     )
@@ -126,7 +126,7 @@ pub(crate) fn perform_backup_if_needed(
                 backup
                     .run_to_completion(256, Duration::from_millis(5), None)
                     .map_err(|err| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::BackendConflict,
                             format!("failed to run SQLite backup to completion: {err}"),
                         )
@@ -135,7 +135,7 @@ pub(crate) fn perform_backup_if_needed(
             dst_conn
                 .execute_batch("PRAGMA journal_mode = DELETE;")
                 .map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("failed to finalize backup journal mode: {err}"),
                     )
@@ -143,7 +143,7 @@ pub(crate) fn perform_backup_if_needed(
         }
 
         fs::rename(&confined_tmp, &confined_dst).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "failed to atomically rename backup '{}' -> '{}': {err}",
@@ -161,8 +161,8 @@ pub(crate) fn perform_backup_if_needed(
     backup_res?;
 
     let write_seq_i64 = i64::try_from(meta.write_seq).map_err(|_| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("write_seq exceeds i64::MAX: {}", meta.write_seq),
         )
     })?;
@@ -171,7 +171,7 @@ pub(crate) fn perform_backup_if_needed(
         params![write_seq_i64],
     )
     .map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("failed to update last_backup_seq: {err}"),
         )
@@ -186,22 +186,22 @@ pub(crate) fn restore_from_backup_if_missing<F>(
     db_path: &Path,
     backup_dir: &Path,
     reconciler: F,
-) -> Result<bool, StateError>
+) -> Result<bool, AcddError>
 where
-    F: FnOnce(&[RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, StateError>,
+    F: FnOnce(&[RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, AcddError>,
 {
     match fs::symlink_metadata(db_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("database must not be a symlink: {}", db_path.display()),
             ));
         }
         Ok(_) => return Ok(false),
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to inspect database '{}': {err}", db_path.display()),
             ));
         }
@@ -210,8 +210,8 @@ where
     let backup_path = backup_dir.join("state.bak.sqlite");
     match fs::symlink_metadata(&backup_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "backup database must not be a symlink: {}",
                     backup_path.display()
@@ -221,8 +221,8 @@ where
         Ok(_) => {}
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
         Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!(
                     "failed to inspect backup database '{}': {err}",
                     backup_path.display()
@@ -234,7 +234,7 @@ where
     ensure_confined_dir(backup_dir)?;
     let lock_path = backup_dir.join("backup.lock");
     let _lock = acquire_exclusive(&lock_path).map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!(
                 "failed to acquire backup.lock '{}': {err}",
@@ -249,8 +249,8 @@ where
     }
 
     let confined_backup = confined_database_open_path(&backup_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid backup path '{}': {err}", backup_path.display()),
         )
     })?;
@@ -260,8 +260,8 @@ where
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "failed to open backup database '{}': {err}",
                 confined_backup.display()
@@ -273,8 +273,8 @@ where
             "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;",
         )
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("failed to configure backup read connection: {err}"),
             )
         })?;
@@ -282,22 +282,22 @@ where
     let integrity: String = bak_conn
         .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
         .map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
                 format!("backup quick_check failed: {err}"),
             )
         })?;
     if !integrity.eq_ignore_ascii_case("ok") {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("backup database failed integrity check: {integrity}"),
         ));
     }
     let _ = read_meta(&bak_conn)?;
 
     let parent = db_path.parent().ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "database path '{}' has no parent directory",
                 db_path.display()
@@ -306,8 +306,8 @@ where
     })?;
     ensure_confined_dir(parent)?;
     let confined_dst = confined_database_create_path(db_path).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!("invalid database path '{}': {err}", db_path.display()),
         )
     })?;
@@ -319,8 +319,8 @@ where
         nonce
     ));
     let confined_tmp = confined_database_create_path(&tmp_restore).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
             format!(
                 "invalid temporary restore path '{}': {err}",
                 tmp_restore.display()
@@ -328,7 +328,7 @@ where
         )
     })?;
 
-    let restore_res = (|| -> Result<(), StateError> {
+    let restore_res = (|| -> Result<(), AcddError> {
         {
             let mut dst_conn = Connection::open_with_flags(
                 &confined_tmp,
@@ -337,7 +337,7 @@ where
                     | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )
             .map_err(|err| {
-                StateError::new(
+                AcddError::new(
                     ErrorCode::BackendConflict,
                     format!(
                         "failed to open temporary restore DB '{}': {err}",
@@ -348,7 +348,7 @@ where
             {
                 let backup =
                     rusqlite::backup::Backup::new(&bak_conn, &mut dst_conn).map_err(|err| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::BackendConflict,
                             format!("failed to initialize restore backup copy: {err}"),
                         )
@@ -356,7 +356,7 @@ where
                 backup
                     .run_to_completion(256, Duration::from_millis(5), None)
                     .map_err(|err| {
-                        StateError::new(
+                        AcddError::new(
                             ErrorCode::BackendConflict,
                             format!("failed to copy backup database: {err}"),
                         )
@@ -366,8 +366,8 @@ where
             dst_conn
                 .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
                 .map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!("failed to configure restored database: {err}"),
                     )
                 })?;
@@ -378,7 +378,7 @@ where
             let _: String = dst_conn
                 .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
                 .map_err(|err| {
-                    StateError::new(
+                    AcddError::new(
                         ErrorCode::BackendConflict,
                         format!("failed to finalize restored journal mode: {err}"),
                     )
@@ -386,7 +386,7 @@ where
         }
 
         fs::rename(&confined_tmp, &confined_dst).map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "failed to atomically rename restored DB '{}' -> '{}': {err}",
@@ -432,33 +432,33 @@ pub(crate) struct RestoredActiveRun {
 pub(crate) fn reconcile_restored_runs<F>(
     conn: &mut Connection,
     reconciler: F,
-) -> Result<usize, StateError>
+) -> Result<usize, AcddError>
 where
-    F: FnOnce(&[RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, StateError>,
+    F: FnOnce(&[RestoredActiveRun]) -> Result<Vec<RunTombstoneRecord>, AcddError>,
 {
     let mut task_rows_by_run: BTreeMap<String, Vec<TaskLocation>> = BTreeMap::new();
     {
         let mut stmt = conn
             .prepare("SELECT run_id, worktree, branch FROM gate_nodes WHERE kind = 'task'")
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to query task worktrees during restore reconciliation: {err}"),
                 )
             })?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to read task worktrees during restore reconciliation: {err}"),
                 )
             })?;
         for item in rows {
             let (run_id, worktree, branch): (String, Option<String>, Option<String>) = item
                 .map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
+                    AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
                         format!(
                             "failed to decode task worktree during restore reconciliation: {err}"
                         ),
@@ -479,8 +479,8 @@ where
                  FROM runs",
             )
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to query runs during restore reconciliation: {err}"),
                 )
             })?;
@@ -507,16 +507,16 @@ where
                 })
             })
             .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to read runs during restore reconciliation: {err}"),
                 )
             })?;
         let mut items = Vec::new();
         for row in rows {
             items.push(row.map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to decode run row during restore reconciliation: {err}"),
                 )
             })?);
@@ -532,7 +532,7 @@ where
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to start restore reconciliation transaction: {err}"),
             )
@@ -541,8 +541,8 @@ where
     for tombstone in &tombstones {
         let cleanup_manifest_json =
             serde_json::to_string(&tombstone.cleanup_manifest).map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
                     format!("failed to serialize cleanup_manifest: {err}"),
                 )
             })?;
@@ -582,7 +582,7 @@ where
             ],
         )
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to insert reconciled tombstone: {err}"),
             )
@@ -593,7 +593,7 @@ where
             params![tombstone.run_id.as_str()],
         )
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!(
                     "failed to prune reconciled run '{}': {err}",
@@ -607,7 +607,7 @@ where
             [],
         )
         .map_err(|err| {
-            StateError::new(
+            AcddError::new(
                 ErrorCode::BackendConflict,
                 format!("failed to advance write_seq during reconciliation: {err}"),
             )
@@ -615,7 +615,7 @@ where
     }
 
     tx.commit().map_err(|err| {
-        StateError::new(
+        AcddError::new(
             ErrorCode::BackendConflict,
             format!("failed to commit restore reconciliation transaction: {err}"),
         )
