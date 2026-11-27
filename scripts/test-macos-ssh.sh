@@ -193,22 +193,144 @@ case "$REMOTE_DIR" in
     *) REMOTE_ABS="$REMOTE_HOME/$REMOTE_DIR" ;;
 esac
 LOCK_DIR="${REMOTE_ABS}.acdd-lock"
+STALE_SECS="${ACDD_MACOS_LOCK_STALE_SECS:-90}"
+case "$STALE_SECS" in
+    ''|*[!0-9]*|0)
+        echo "error: ACDD_MACOS_LOCK_STALE_SECS must be a positive integer (got '$STALE_SECS')" >&2
+        exit 1
+        ;;
+esac
+
+LOCAL_HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown')"
+LOCK_OWNER="${LOCAL_HOST}-$$-$(date +%s)"
+LOCK_ACQUIRED=0
+HEARTBEAT_PID=""
+PARENT_PID="$$"
 
 cleanup_remote_lock() {
-    ssh -n -o BatchMode=yes "$SSH_HOST" "rmdir '$LOCK_DIR' 2>/dev/null || true" >/dev/null 2>&1 || true
+    local exit_code=$?
+    trap - EXIT INT TERM
+    if [ -n "$HEARTBEAT_PID" ] && kill -0 "$HEARTBEAT_PID" 2>/dev/null; then
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        wait "$HEARTBEAT_PID" 2>/dev/null || true
+    fi
+    if [ "$LOCK_ACQUIRED" -eq 1 ]; then
+        local remote_unlock_cmd=""
+        printf -v remote_unlock_cmd 'if [ -d %q ] && [ "$(cat %q 2>/dev/null || true)" = %q ]; then rm -rf %q; fi' \
+            "$LOCK_DIR" "$LOCK_DIR/owner" "$LOCK_OWNER" "$LOCK_DIR"
+        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" "$remote_unlock_cmd" >/dev/null 2>&1 || true
+    fi
+    return "$exit_code"
 }
 trap cleanup_remote_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Serialize concurrent local runs sharing the same warm remote `target/` cache.
-ssh -T -o BatchMode=yes "$SSH_HOST" bash -s -- "$LOCK_DIR" "$REMOTE_ABS" <<'EOF'
+# Serialize concurrent local runs sharing the same warm remote `target/` cache,
+# storing owner/heartbeat inside `$LOCK_DIR` and reclaiming stale locks when idle.
+ssh -T -o BatchMode=yes "$SSH_HOST" bash -s -- "$LOCK_DIR" "$REMOTE_ABS" "$LOCK_OWNER" "$STALE_SECS" <<'EOF'
 set -euo pipefail
 lock_dir="$1"
 remote_abs="$2"
+lock_owner="$3"
+stale_secs="$4"
 parent_dir="$(dirname "$remote_abs")"
 mkdir -p "$parent_dir"
 
+write_lock_metadata() {
+    printf '%s\n' "$lock_owner" > "$lock_dir/owner"
+    printf '%s\n' "$(date +%s)" > "$lock_dir/heartbeat.tmp"
+    mv -f "$lock_dir/heartbeat.tmp" "$lock_dir/heartbeat"
+}
+
+read_lock_timestamp() {
+    local ts=""
+    if [ -f "$lock_dir/heartbeat" ]; then
+        ts="$(tr -d '[:space:]' < "$lock_dir/heartbeat" 2>/dev/null || true)"
+    fi
+    case "$ts" in
+        ''|*[!0-9]*)
+            ts="$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || echo 0)"
+            ;;
+    esac
+    printf '%s\n' "$ts"
+}
+
+has_active_remote_work() {
+    if ps -axo comm=,args= 2>/dev/null | awk -v tgt="$remote_abs" '
+        {
+            comm = $1
+            sub(/^.*\//, "", comm)
+            if ((comm == "cargo" || comm == "rustc" || comm == "git" || comm == "rsync") && index($0, tgt) > 0) {
+                found = 1
+                exit 0
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    '; then
+        return 0
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof -u "$(id -un)" -d cwd -F cn 2>/dev/null | awk -v tgt="$remote_abs" '
+            /^p/ { cmd = "" }
+            /^c/ { cmd = substr($0, 2) }
+            /^n/ {
+                cwd = substr($0, 2)
+                if ((cmd == "cargo" || cmd == "rustc" || cmd == "git" || cmd == "rsync") &&
+                    (cwd == tgt || index(cwd, tgt "/") == 1)) {
+                    found = 1
+                    exit 0
+                }
+            }
+            END { exit(found ? 0 : 1) }
+        '; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 waited=0
 while ! mkdir "$lock_dir" 2>/dev/null; do
+    if [ -d "$lock_dir" ]; then
+        now="$(date +%s)"
+        hb="$(read_lock_timestamp)"
+        age=$(( now - hb ))
+        if [ "$age" -ge "$stale_secs" ] && ! has_active_remote_work; then
+            reclaim_lock="${lock_dir}.reclaim"
+            if [ -d "$reclaim_lock" ]; then
+                reclaim_ts="$(stat -f %m "$reclaim_lock" 2>/dev/null || stat -c %Y "$reclaim_lock" 2>/dev/null || echo 0)"
+                if [ $(( now - reclaim_ts )) -ge 60 ]; then
+                    rmdir "$reclaim_lock" 2>/dev/null || true
+                fi
+            fi
+            if mkdir "$reclaim_lock" 2>/dev/null; then
+                reclaimed=0
+                if [ -d "$lock_dir" ]; then
+                    now="$(date +%s)"
+                    hb="$(read_lock_timestamp)"
+                    age=$(( now - hb ))
+                    if [ "$age" -ge "$stale_secs" ] && ! has_active_remote_work; then
+                        owner_info="$(cat "$lock_dir/owner" 2>/dev/null || printf 'unknown')"
+                        echo "warning: reclaiming stale remote macOS test lock '$lock_dir' (owner='$owner_info', age=${age}s >= ${stale_secs}s, no active cargo/rustc/git/rsync referencing '$remote_abs')" >&2
+                        rm -rf "$lock_dir"
+                        if mkdir "$lock_dir" 2>/dev/null; then
+                            reclaimed=1
+                        fi
+                    fi
+                else
+                    if mkdir "$lock_dir" 2>/dev/null; then
+                        reclaimed=1
+                    fi
+                fi
+                rmdir "$reclaim_lock" 2>/dev/null || true
+                if [ "$reclaimed" -eq 1 ]; then
+                    break
+                fi
+            fi
+        fi
+    fi
+
     waited=$((waited + 2))
     if [ "$waited" -ge 1800 ]; then
         echo "error: timed out waiting for remote macOS test lock '$lock_dir'" >&2
@@ -216,6 +338,12 @@ while ! mkdir "$lock_dir" 2>/dev/null; do
     fi
     sleep 2
 done
+
+if ! write_lock_metadata; then
+    rm -rf "$lock_dir" 2>/dev/null || true
+    echo "error: failed to write metadata in remote macOS test lock '$lock_dir'" >&2
+    exit 1
+fi
 
 if [ ! -d "$remote_abs/.git" ]; then
     if [ -d "$HOME/contextunity-acdd/.git" ]; then
@@ -230,6 +358,25 @@ if git -C "$remote_abs" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$remote_abs" clean -q -fd
 fi
 EOF
+LOCK_ACQUIRED=1
+
+heartbeat_interval=$(( STALE_SECS / 4 ))
+if [ "$heartbeat_interval" -lt 1 ]; then
+    heartbeat_interval=1
+elif [ "$heartbeat_interval" -gt 20 ]; then
+    heartbeat_interval=20
+fi
+printf -v remote_hb_cmd 'if [ -d %q ] && [ "$(cat %q 2>/dev/null || true)" = %q ]; then printf "%%s\\n" "$(date +%%s)" > %q && mv -f %q %q; fi' \
+    "$LOCK_DIR" "$LOCK_DIR/owner" "$LOCK_OWNER" "$LOCK_DIR/heartbeat.tmp" "$LOCK_DIR/heartbeat.tmp" "$LOCK_DIR/heartbeat"
+(
+    trap - EXIT INT TERM
+    while kill -0 "$PARENT_PID" 2>/dev/null; do
+        sleep "$heartbeat_interval"
+        kill -0 "$PARENT_PID" 2>/dev/null || exit 0
+        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" "$remote_hb_cmd" >/dev/null 2>&1 || true
+    done
+) &
+HEARTBEAT_PID=$!
 
 # Push local HEAD objects cleanly (works from primary checkout or linked `.worktrees/<run>`),
 # reset remote working tree before overlaying local uncommitted edits via `rsync`.
