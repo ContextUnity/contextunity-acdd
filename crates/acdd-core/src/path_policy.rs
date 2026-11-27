@@ -130,7 +130,8 @@ impl WorkspacePathPolicy {
     ///
     /// Excludes `.git/**`, `.worktrees/**`, `is_engine_managed(rel_path)`, configured `state_db`/`code_db`
     /// (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` (all APFS case-insensitively) EXCEPT
-    /// the tracked whitelist `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**`.
+    /// the tracked whitelist `.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`,
+    /// `.acdd/workflows/**`, and `.acdd/specs/**`.
     /// Explicitly includes tracked artifacts such as `Cargo.lock` and `tests/**/*.jsonl`.
     pub fn is_candidate_included(&self, rel_path: &str) -> bool {
         let Some(norm) = normalize_rel_path(rel_path) else {
@@ -337,6 +338,8 @@ fn is_acdd_tracked_whitelist(norm_path: &str) -> bool {
     norm_path == ".acdd/profile.yaml"
         || norm_path.starts_with(".acdd/profiles/")
         || norm_path.starts_with(".acdd/frameworks/")
+        || norm_path.starts_with(".acdd/workflows/")
+        || norm_path.starts_with(".acdd/specs/")
 }
 
 /// Validate a workspace-relative scope path or brace-glob pattern.
@@ -699,6 +702,11 @@ mod tests {
             (".ACDD/profile.yaml", false, false),
             (".acdd/profiles/custom.yaml", false, true),
             (".acdd/frameworks/django.yaml", false, true),
+            (".acdd/workflows/default.yaml", false, true),
+            (".acdd/workflows/hotfix.yaml", false, true),
+            (".acdd/specs/example.md", false, true),
+            (".acdd/code-map.sqlite", false, false),
+            (".acdd/tmp/foo", false, false),
             ("Cargo.lock", false, true),
             ("tests/acdd/fixtures/events.jsonl", false, true),
             ("/etc/passwd", false, false),
