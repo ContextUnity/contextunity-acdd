@@ -222,6 +222,9 @@ pub(super) fn apply_tier3_pre_task_slice(
             resp.pre_task_slice = Some(slice.clone());
             *running_bytes += slice_delta;
         } else {
+            if !req.proof_pointers.is_empty() {
+                resp.omitted_proof_pointers = req.proof_pointers.clone();
+            }
             record_omitted_section(
                 resp,
                 running_bytes,

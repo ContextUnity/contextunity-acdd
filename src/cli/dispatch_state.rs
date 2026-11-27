@@ -4,6 +4,7 @@ use crate::{
     format::{self, OutputFormat},
     state_bridge::{
         build_domain_providers, execute_state_command_with_config, execute_state_query,
+        resolve_gate_proof,
     },
 };
 use acdd_core::errors::{ErrorCode, AcddError};
@@ -13,11 +14,12 @@ use acdd_state::types::{
     BlackboardStatus, BlackboardTopic, RejectionFindings, ReviewEvidence, RunStatus, SubmitAction,
 };
 use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
-    ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RoadmapReq,
-    RunReq, ShowReq, SnapshotAction, SnapshotReq, StartReq, StateCommand, StateCommandOutput,
-    StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
+    ArtifactSelector, BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp,
+    ClaimReq, ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq,
+    RoadmapReq, RunReq, ShowReq, SnapshotAction, SnapshotReq, StartReq, StateCommand,
+    StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
 };
+use acdd_state::workflow::{ProofDef, ProofKind};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
@@ -283,10 +285,33 @@ pub(super) fn dispatch(
                 }),
             )
         }
-        Command::Show { node, run } => {
-            state_ctx.query(root, StateQuery::Show(ShowReq { run, node }))
+        Command::Show {
+            node,
+            run,
+            artifact,
+            include_profile,
+        } => {
+            let artifact = artifact
+                .as_deref()
+                .map(ArtifactSelector::from_str)
+                .transpose()
+                .map_err(anyhow::Error::from)?;
+            state_ctx.query(
+                root,
+                StateQuery::Show(ShowReq {
+                    run,
+                    node,
+                    artifact,
+                    include_profile,
+                }),
+            )
         }
-        Command::Context { node, run, worker } => state_ctx.query(
+        Command::Context {
+            node,
+            run,
+            worker,
+            detail,
+        } => state_ctx.query(
             root,
             StateQuery::Context(ContextReq {
                 run,
@@ -295,6 +320,7 @@ pub(super) fn dispatch(
                     .map(|w| WorkerId::new(&w))
                     .transpose()
                     .map_err(anyhow::Error::from)?,
+                detail: super::dispatch_code::parse_cli_detail(detail.as_deref())?,
             }),
         ),
         Command::Next { run, limit } => {
@@ -424,10 +450,30 @@ pub(super) fn dispatch(
             let mut custom_evidence: Option<Value> = None;
             if let Some(raw) = evidence.as_deref() {
                 let parsed = parse_json_or_at_file(root, raw)?;
-                if let Ok(re) = serde_json::from_value::<ReviewEvidence>(parsed.clone()) {
-                    review_evidence = Some(re);
-                } else {
-                    custom_evidence = Some(parsed);
+                let effective_run = effective_run_selector(state_ctx, run.clone(), worktree.is_some());
+                let target_wt = worktree.as_deref().unwrap_or(root);
+                let proof_def = resolve_gate_proof(
+                    state_ctx.root,
+                    target_wt,
+                    state_ctx.state_db,
+                    state_ctx.code_db,
+                    state_ctx.adapter,
+                    effective_run.as_deref(),
+                    &node,
+                )?;
+                match proof_def {
+                    ProofDef::Kind(ProofKind::Review) => {
+                        let re = serde_json::from_value::<ReviewEvidence>(parsed).map_err(|err| {
+                            state_err_invalid(format!("invalid review evidence: {err}"))
+                        })?;
+                        review_evidence = Some(re);
+                    }
+                    ProofDef::Scheme { .. }
+                    | ProofDef::Named(_)
+                    | ProofDef::ResolvedNamed { .. }
+                    | ProofDef::Kind(_) => {
+                        custom_evidence = Some(parsed);
+                    }
                 }
             }
             let rejection_findings = findings

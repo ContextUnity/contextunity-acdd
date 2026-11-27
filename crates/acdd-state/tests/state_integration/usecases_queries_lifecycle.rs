@@ -1029,6 +1029,7 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
             StateQuery::Show(ShowReq {
                 run: None,
                 node: None,
+                ..Default::default()
             }),
             true,
         ),
@@ -1099,6 +1100,7 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
         .query(StateQuery::Show(ShowReq {
             run: Some("run-ro-001".to_owned()),
             node: Some("t1.build".to_owned()),
+            ..Default::default()
         }))
         .unwrap()
     {
@@ -1139,6 +1141,7 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
             run: Some("run-ro-001".to_owned()),
             node: Some("t1.build".to_owned()),
             worker_id: None,
+            detail: None,
         }))
         .unwrap()
     {
@@ -1829,6 +1832,7 @@ fn seam_claim_context_hydrates_blueprint_slice_and_live_subtasks() {
         let query = StateQuery::Show(ShowReq {
             run: Some(run.to_owned()),
             node: Some(node.to_owned()),
+            ..Default::default()
         });
         let StateQueryOutput::Show(show) =
             queries::execute_query(cfg, &harness, &provider, query).unwrap()
@@ -3308,5 +3312,123 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
                 .valid,
             "git mode must reject {bad_archive_rel} under {pat}"
         );
+    }
+}
+
+#[test]
+fn seam_show_artifacts_profile_omission_and_context_detail_matrix() {
+    use acdd_core::ports::CompositeDomainProvider;
+    use acdd_state::usecases::ArtifactSelector;
+
+    let tmp = make_temp_dir("show-artifacts-ctx-detail");
+    let root = tmp.path();
+    let cfg = base_config(root);
+    let provider = CompositeDomainProvider::default();
+    let harness = RunHarness::in_memory().unwrap();
+    let run = "run-show-art-001";
+    let mut graph = build_rich_graph(root, run, IsolationMode::InPlace);
+    assert!(!graph.run.profile_json.is_empty());
+    graph.artifacts.push(GateArtifactRecord {
+        run_id: RunId::new(run).unwrap(),
+        node_id: "task:t1:build".to_owned(),
+        claim_revision: 1,
+        kind: ArtifactKind::Proof,
+        payload_json: r#"{"tasks":{"t1":{"summary":"done"}}}"#.to_owned(),
+        snapshot_commit: None,
+        created_at: "2026-11-27T10:01:00.000Z".to_owned(),
+    });
+    graph.artifacts.push(GateArtifactRecord {
+        run_id: RunId::new(run).unwrap(),
+        node_id: "task:t1:build".to_owned(),
+        claim_revision: 1,
+        kind: ArtifactKind::Findings,
+        payload_json: r#"{"summary":"fix"}"#.to_owned(),
+        snapshot_commit: None,
+        created_at: "2026-11-27T10:02:00.000Z".to_owned(),
+    });
+    graph.artifacts.push(GateArtifactRecord {
+        run_id: RunId::new(run).unwrap(),
+        node_id: "task:t1:build".to_owned(),
+        claim_revision: 1,
+        kind: ArtifactKind::Receipt,
+        payload_json: r#"{"status":"completed"}"#.to_owned(),
+        snapshot_commit: None,
+        created_at: "2026-11-27T10:03:00.000Z".to_owned(),
+    });
+    graph.artifacts.push(GateArtifactRecord {
+        run_id: RunId::new(run).unwrap(),
+        node_id: "task:t1:build".to_owned(),
+        claim_revision: 1,
+        kind: ArtifactKind::AcceptedSnapshot,
+        payload_json: r#"{"gate_id":"build"}"#.to_owned(),
+        snapshot_commit: None,
+        created_at: "2026-11-27T10:04:00.000Z".to_owned(),
+    });
+    harness.seed_run(&graph).unwrap();
+
+    let show_cases = [
+        ("default_compact", None, false, false, 0usize),
+        ("with_profile", None, true, true, 0usize),
+        ("proof_only", Some(ArtifactSelector::Proof), false, false, 1usize),
+        (
+            "findings_only",
+            Some(ArtifactSelector::Findings),
+            false,
+            false,
+            1usize,
+        ),
+        ("all_artifacts", Some(ArtifactSelector::All), false, false, 3usize),
+    ];
+    for (label, artifact, include_profile, expect_profile, expect_payloads) in show_cases {
+        let StateQueryOutput::Show(s) = queries::execute_query(
+            &cfg,
+            &harness,
+            &provider,
+            StateQuery::Show(ShowReq {
+                run: Some(run.to_owned()),
+                node: Some("t1.build".to_owned()),
+                artifact,
+                include_profile,
+            }),
+        )
+        .unwrap()
+        else {
+            panic!("expected Show output ({label})");
+        };
+        assert_eq!(
+            !s.run.profile_json.is_empty(),
+            expect_profile,
+            "profile omission mismatch for {label}"
+        );
+        assert_eq!(
+            s.gate_artifacts.len(),
+            3,
+            "AcceptedSnapshot must be excluded ({label})"
+        );
+        let payload_count = s.gate_artifacts.iter().filter(|a| a.payload.is_some()).count();
+        assert_eq!(payload_count, expect_payloads, "payload count ({label})");
+    }
+
+    for (detail, expect_full) in [
+        (None, false),
+        (Some(acdd_core::response::Detail::Compact), false),
+        (Some(acdd_core::response::Detail::Full), true),
+    ] {
+        let StateQueryOutput::Context(ctx) = queries::execute_query(
+            &cfg,
+            &harness,
+            &provider,
+            StateQuery::Context(ContextReq {
+                run: Some(run.to_owned()),
+                node: Some("t1.build".to_owned()),
+                worker_id: None,
+                detail,
+            }),
+        )
+        .unwrap()
+        else {
+            panic!("expected Context output");
+        };
+        assert_eq!(ctx.full_detail, expect_full);
     }
 }

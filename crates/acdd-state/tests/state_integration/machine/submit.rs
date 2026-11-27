@@ -967,3 +967,387 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     assert_eq!(fb_stored["reset_worker_context"], serde_json::json!(true));
     assert_eq!(fb_stored["reset_gate_id"], serde_json::json!("build"));
 }
+
+#[test]
+fn submit_custom_schema_tasks_fanout_seams_and_mismatched_evidence_matrix() {
+    use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
+    use serde_json::{json, Value};
+
+    let (mut profile, mut snap) =
+        RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
+
+    let mut seam_schema = SchemaDef::object();
+    seam_schema.properties.insert(
+        "source_task".to_owned(),
+        SchemaDef {
+            min_length: Some(1),
+            ..SchemaDef::string()
+        },
+    );
+    let mut out_seam_schema = SchemaDef::object();
+    out_seam_schema.properties.insert(
+        "target_task".to_owned(),
+        SchemaDef {
+            min_length: Some(1),
+            ..SchemaDef::string()
+        },
+    );
+    let mut loc_schema = SchemaDef::of_type("integer");
+    loc_schema.minimum = Some(1.0);
+    let mut task_entry_schema = SchemaDef::object();
+    task_entry_schema
+        .properties
+        .insert("max_net_loc".to_owned(), loc_schema);
+    task_entry_schema.properties.insert(
+        "incoming_seams".to_owned(),
+        SchemaDef::array(seam_schema),
+    );
+    task_entry_schema.properties.insert(
+        "outgoing_seams".to_owned(),
+        SchemaDef::array(out_seam_schema),
+    );
+    let mut tasks_map_schema = SchemaDef::object();
+    tasks_map_schema.min_properties = Some(1);
+    tasks_map_schema.additional_properties =
+        Some(AdditionalPropertiesDef::Schema(Box::new(task_entry_schema)));
+    let mut bp_schema = SchemaDef::object();
+    bp_schema.required = vec!["tasks".to_owned()];
+    bp_schema
+        .properties
+        .insert("tasks".to_owned(), tasks_map_schema);
+    profile.proof_schemas.insert("blueprint".to_owned(), bp_schema);
+
+    // Mark T3 Cancelled so expected non-cancelled tasks are {T1, T2}.
+    for n in &mut snap.nodes {
+        if n.task_ref.as_ref().is_some_and(|tr| tr.as_str() == "T3") {
+            n.status = NodeStatus::Cancelled;
+        }
+    }
+    let syn_node_id = snap
+        .nodes
+        .iter()
+        .find(|n| n.gate_id == "synthesize")
+        .expect("pre-task synthesize node")
+        .node_id
+        .clone();
+    let syn_cursor = NodeCursor::from_node_id(&syn_node_id).unwrap();
+
+    let t_a = tree('1');
+    let obs_a = obs_with_tree(t_a.clone());
+    let syn_claim = admit_claim(
+        &snap,
+        &profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: syn_cursor.clone(),
+            worker_id: w("arch-1"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/AC-100".to_owned(),
+            branch: Some("milestone/AC-100".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000010".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut snap, &syn_claim);
+
+    let custom_cases: &[(&str, Value, bool)] = &[
+        ("empty_tasks", json!({ "tasks": {} }), false),
+        ("missing_t2", json!({ "tasks": { "T1": {} } }), false),
+        (
+            "double_quoted_key",
+            json!({ "tasks": { "\"T1\"": {}, "T2": {} } }),
+            false,
+        ),
+        (
+            "unknown_key_with_t3_cancelled",
+            json!({ "tasks": { "T1": {}, "T2": {}, "T3": {} } }),
+            false,
+        ),
+        (
+            "bad_incoming_source",
+            json!({ "tasks": { "T1": { "incoming_seams": [{"source_task": "NOPE"}] }, "T2": {} } }),
+            false,
+        ),
+        (
+            "bad_outgoing_target",
+            json!({ "tasks": { "T1": {}, "T2": { "outgoing_seams": [{"target_task": "T3"}] } } }),
+            false,
+        ),
+        (
+            "zero_max_net_loc",
+            json!({ "tasks": { "T1": { "max_net_loc": 0 }, "T2": {} } }),
+            false,
+        ),
+        (
+            "valid_non_cancelled_fanout",
+            json!({
+                "tasks": {
+                    "T1": { "max_net_loc": 50, "outgoing_seams": [{"target_task": "T2"}] },
+                    "T2": { "max_net_loc": 40, "incoming_seams": [{"source_task": "T1"}] }
+                }
+            }),
+            true,
+        ),
+    ];
+    for (label, payload, expect_ok) in custom_cases {
+        let mut s = snap.clone();
+        let res = evaluate_submit_plan(
+            &s,
+            &profile,
+            &obs_a,
+            &SubmitInput {
+                node_cursor: syn_cursor.clone(),
+                action: SubmitAction::Pass,
+                worker_id: w("arch-1"),
+                claim_revision: Some(1),
+                expected_execution_digest: None,
+                review_evidence: None,
+                rejection_findings: None,
+                custom_evidence: Some(payload.clone()),
+                verified_invariants: Vec::new(),
+                snapshot_commit: None,
+                summary: None,
+            },
+        );
+        assert_eq!(res.is_ok(), *expect_ok, "custom_case({label}): {res:?}");
+        if *expect_ok {
+            apply_plan_in_memory(&mut s, &res.unwrap());
+            // Stale older-revision pre-task artifact triggers PreTaskArtifactStale on sync (unless handled) vs valid revision.
+            let mut stale_s = s.clone();
+            for art in &mut stale_s.artifacts {
+                if art.node_id == syn_node_id && art.kind == ArtifactKind::Proof {
+                    art.claim_revision = 0;
+                }
+            }
+            let run_id = s.run.run_id.clone();
+            let sync_in = SyncInput {
+                spec: MachineSpecInput {
+                    tasks: vec![
+                        make_task("T1", &["code"], &["crates/a/**"], &[], &run_id),
+                        make_task("T2", &["code"], &["crates/b/**"], &["T1"], &run_id),
+                        make_task("T3", &["docs"], &["docs/guide/**"], &[], &run_id),
+                        make_task("T4", &["code"], &["crates/d/**"], &[], &run_id),
+                    ],
+                    spec_digest: "new-spec-sha".to_owned(),
+                },
+                new_profile: None,
+                rebind_workflow: false,
+            };
+            // Completed pre-task `tasks` fanout blocks adding T4 with PreTaskArtifactStale; lowered claim_revision no longer falsely blocks.
+            assert_eq!(
+                evaluate_transition(&s, &profile, &obs_a, &TransitionInput::Sync(sync_in.clone()))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PreTaskArtifactStale
+            );
+            assert!(evaluate_transition(
+                &stale_s,
+                &profile,
+                &obs_a,
+                &TransitionInput::Sync(sync_in)
+            )
+            .is_ok());
+        }
+    }
+
+    // Mismatched review_evidence on CustomSchema gate fails closed.
+    let mismatch_rev = evaluate_submit_plan(
+        &snap,
+        &profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: syn_cursor.clone(),
+            action: SubmitAction::Pass,
+            worker_id: w("arch-1"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: Some(ReviewEvidence {
+                decision: SubmitAction::Pass,
+                summary: "ok".to_owned(),
+                notes: None,
+                contours: BTreeMap::new(),
+            }),
+            rejection_findings: None,
+            custom_evidence: Some(json!({ "tasks": { "T1": {}, "T2": {} } })),
+            verified_invariants: Vec::new(),
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(mismatch_rev.code, ErrorCode::WorkflowSchemaInvalid);
+
+    // Unexpected custom_evidence on a non-CustomSchema (review/command) gate fails closed.
+    let syn_ok = evaluate_submit_plan(
+        &snap,
+        &profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: syn_cursor,
+            action: SubmitAction::Pass,
+            worker_id: w("arch-1"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: None,
+            rejection_findings: None,
+            custom_evidence: Some(json!({ "tasks": { "T1": {}, "T2": {} } })),
+            verified_invariants: Vec::new(),
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut snap, &syn_ok);
+    let rev_cursor = NodeCursor::from_node_id(
+        &snap
+            .nodes
+            .iter()
+            .find(|n| n.gate_id == "review" && n.parent_id.as_deref() == Some("root:blueprint_synthesis"))
+            .unwrap()
+            .node_id,
+    )
+    .unwrap();
+    let rev_bp_claim = admit_claim(
+        &snap,
+        &profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: rev_cursor.clone(),
+            worker_id: w("rev-bp"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/AC-100".to_owned(),
+            branch: Some("milestone/AC-100".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000012".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut snap, &rev_bp_claim);
+    let rev_bp_ok = evaluate_submit_plan(
+        &snap,
+        &profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: rev_cursor,
+            action: SubmitAction::Pass,
+            worker_id: w("rev-bp"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: Some(ReviewEvidence {
+                decision: SubmitAction::Pass,
+                summary: "bp ok".to_owned(),
+                notes: None,
+                contours: BTreeMap::from([
+                    (
+                        "claims".to_owned(),
+                        ReviewContourResult {
+                            applicable: true,
+                            evidence: "clean".to_owned(),
+                        },
+                    ),
+                    (
+                        "project_isolation".to_owned(),
+                        ReviewContourResult {
+                            applicable: true,
+                            evidence: "clean".to_owned(),
+                        },
+                    ),
+                    (
+                        "administration".to_owned(),
+                        ReviewContourResult {
+                            applicable: true,
+                            evidence: "clean".to_owned(),
+                        },
+                    ),
+                ]),
+            }),
+            rejection_findings: None,
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut snap, &rev_bp_ok);
+    let rev_claim = admit_claim(
+        &snap,
+        &profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
+            worker_id: w("b-1"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T1".to_owned(),
+            branch: Some("task/T1".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000011".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut snap, &rev_claim);
+    let build_v = evaluate_verify(
+        &snap,
+        &profile,
+        &obs_a,
+        &VerifyInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
+            worker_id: Some(w("b-1")),
+            claim_revision: Some(1),
+            test_target: None,
+            command_id: Some("build_check".to_owned()),
+            command_line: Some("cargo test".to_owned()),
+            resolved_commands: vec!["cargo test".to_owned()],
+            action_id: None,
+            index_generation: None,
+            live_files_digest: None,
+            log_relpath: "logs/b-check.log".to_owned(),
+            started_at: "2026-11-17T09:59:00.000Z".to_owned(),
+            exec_obs: VerifyExecutionObservation {
+                timed_out: false,
+                aborted: false,
+                exit_code: Some(0),
+                stderr_tail: String::new(),
+                check_results: Vec::new(),
+                action_outcome: None,
+                candidate_tree_before: t_a.clone(),
+                candidate_tree_after: Some(t_a.clone()),
+            },
+        },
+    )
+    .unwrap();
+    record_verify_in_memory(&mut snap, &build_v);
+    let build_mismatch = evaluate_submit_plan(
+        &snap,
+        &profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
+            action: SubmitAction::Pass,
+            worker_id: w("b-1"),
+            claim_revision: Some(1),
+            expected_execution_digest: Some(build_v.execution_digest),
+            review_evidence: None,
+            rejection_findings: None,
+            custom_evidence: Some(json!({"unexpected": true})),
+            verified_invariants: Vec::new(),
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(build_mismatch.code, ErrorCode::WorkflowSchemaInvalid);
+}

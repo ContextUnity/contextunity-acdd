@@ -39,7 +39,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Submit `pass` or `reject` for a claimed gate node. Passing verifies trace freshness (`execution_digest`, `candidate_tree`), `independent_from`, `immutable`, and `need:`; `reject` requires structured `rejection_findings` (optional `kind`: `defect | architectural_drift`)."
+        description = "Submit `pass` or `reject` for a claimed gate node. Passing verifies trace freshness (`execution_digest`, `candidate_tree`), `independent_from`, `immutable`, and `need:`; `reject` requires structured `rejection_findings` (`kind`: `defect | architectural_drift`). For large JSON proofs (> 8 KiB) prefer CLI `acdd submit ... --evidence @.acdd/tmp/<name>.json` with exact unquoted `task_ref` keys."
     )]
     async fn acdd_submit(&self, Parameters(p): Parameters<SubmitInput>) -> CallToolResult {
         state_tools::acdd_submit(self, p).await
@@ -67,7 +67,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). To read a complete indexed function, struct, or class, pass symbol: \"SymbolName\" (or selector: \"SymbolName\"); optional path restricts lookup to a file. Auto selects snippet for symbol or selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
+        description = "Read code/config slices (`selector`/`symbol`, `outline`, `delta`, `search`, or bounded `lines`). Prefer `selector` (digest-verified complete symbol body) or `outline` first, and pass `detail=\"full\"` (48 KiB) or `output_file` when a larger slice is needed rather than sequential line paging. Read Markdown docs (`docs/**`, ADRs, `AGENTS.md`, specs) via `get_doc` / `search_docs`. Auto selects snippet for symbol/selector, search for pattern, otherwise lines."
     )]
     async fn acdd_read(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         code_tools::acdd_read(self, p).await
@@ -130,7 +130,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Read one indexed Markdown document. The default detail is full text. detail=compact returns a heading outline. A missing path or section is an error."
+        description = "Canonical reader for indexed Markdown (`docs/**`, ADRs, `AGENTS.md`, specs). Returns full text by default (`detail=full`); pass `detail=compact` for a heading outline or `section` for one section. A missing path or section is an error."
     )]
     async fn get_doc(&self, Parameters(p): Parameters<GetDoc>) -> CallToolResult {
         code_tools::get_doc(self, p).await

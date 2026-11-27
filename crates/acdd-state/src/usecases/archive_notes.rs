@@ -120,12 +120,44 @@ pub(super) fn build_archive_render_input(
             .collect();
 
         let prefix = format!("task:{tref}:");
+        let task_gates: BTreeMap<&str, &GateNodeRecord> = snapshot
+            .nodes
+            .iter()
+            .filter(|g| {
+                g.kind == NodeKind::TaskGate
+                    && (g.parent_id.as_deref() == Some(node.node_id.as_str())
+                        || g.node_id.starts_with(&prefix))
+            })
+            .map(|g| (g.node_id.as_str(), g))
+            .collect();
         let task_receipt = snapshot
             .artifacts
             .iter()
-            .filter(|a| a.kind == ArtifactKind::Receipt && a.node_id.starts_with(&prefix))
-            .max_by_key(|a| a.claim_revision)
-            .and_then(|a| serde_json::from_str::<Receipt>(&a.payload_json).ok());
+            .enumerate()
+            .filter_map(|(idx, a)| {
+                if a.kind != ArtifactKind::Receipt || !a.node_id.starts_with(&prefix) {
+                    return None;
+                }
+                let seq_order = if let Some(gate_node) = task_gates.get(a.node_id.as_str()) {
+                    if !matches!(
+                        gate_node.status,
+                        NodeStatus::Completed | NodeStatus::InProgress
+                    ) || (gate_node.claim_revision > 0
+                        && a.claim_revision < gate_node.claim_revision)
+                    {
+                        return None;
+                    }
+                    gate_node.seq_order
+                } else if task_gates.is_empty() && node.status == NodeStatus::Completed {
+                    0
+                } else {
+                    return None;
+                };
+                let rec = serde_json::from_str::<Receipt>(&a.payload_json).ok()?;
+                Some(((seq_order, a.claim_revision, a.created_at.as_str(), idx), rec))
+            })
+            .max_by(|(k_a, _), (k_b, _)| k_a.cmp(k_b))
+            .map(|(_, rec)| rec);
         if let Some(ref rec) = task_receipt {
             collect_rollup_notes(rec.rollup.as_ref(), &mut decisions, &mut deferred_findings);
             task_receipts.insert(tref.clone(), rec.clone());

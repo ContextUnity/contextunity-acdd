@@ -1,11 +1,12 @@
 //! Tiered `ClaimResp` budget reservation constants and Tier 1 contract/subtask sizing.
 
 use super::types::{ClaimContextRequest, ClaimResp};
-use crate::workflow::{check_guidance_budget, resolve_and_budget_guidance, ResolvedWorkflow};
+use crate::workflow::{check_guidance_budget, resolve_and_budget_guidance, ProofDef, ResolvedWorkflow};
 use crate::types::GateNodeRecord;
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::estimate_json_bytes;
 use acdd_core::ids::NodeCursor;
+use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::{pack_knapsack_indices, KnapsackItem};
 use acdd_spec::Subtask;
 use serde_json::{json, Map, Value};
@@ -84,6 +85,8 @@ pub(super) fn preflight_mandatory(
         blackboard: Vec::new(),
         context_lenses: serde_json::Map::new(),
         omitted_sections: Vec::new(),
+        full_detail: req.full_detail,
+        omitted_proof_pointers: Vec::new(),
         total_bytes: 0,
     };
 
@@ -221,6 +224,9 @@ fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: us
     }
     if resp.pre_task_slice.take().is_some() {
         push_unique_omitted(resp, "pre_task_slice");
+        return true;
+    }
+    if resp.omitted_proof_pointers.pop().is_some() {
         return true;
     }
     if let Some(ref mut findings) = resp.unresolved_findings {
@@ -384,6 +390,15 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("gate_id".to_owned(), json!(req.gate.id));
     obj.insert("proof".to_owned(), json!(req.gate.proof));
+    let proof_schema = match &req.gate.proof {
+        ProofDef::Scheme { scheme } => Some(scheme.as_ref()),
+        ProofDef::ResolvedNamed { schema, .. } => Some(schema.as_ref()),
+        ProofDef::Named(name) => req.profile.proofs.get(name).map(|p| &p.schema),
+        _ => None,
+    };
+    if let Some(schema) = proof_schema {
+        obj.insert("proof_schema".to_owned(), summarize_proof_schema(schema));
+    }
     obj.insert("scope".to_owned(), json!(req.node.scope));
     if !req.node.extended_scope.is_empty() {
         obj.insert("extended_scope".to_owned(), json!(req.node.extended_scope));
@@ -457,6 +472,78 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     }
 
     Value::Object(obj)
+}
+
+fn describe_schema_compact(schema: &SchemaDef) -> String {
+    let base = if schema.schema_type == "array" {
+        schema
+            .items
+            .as_deref()
+            .map(|item| format!("array<{}>", describe_schema_compact(item)))
+            .unwrap_or_else(|| "array".to_owned())
+    } else {
+        schema.schema_type.clone()
+    };
+    let mut constraints = Vec::new();
+    if let Some(min_len) = schema.min_length {
+        constraints.push(format!("minLength={min_len}"));
+    }
+    if let Some(min_items) = schema.min_items {
+        constraints.push(format!("minItems={min_items}"));
+    }
+    if let Some(min_props) = schema.min_properties {
+        constraints.push(format!("minProperties={min_props}"));
+    }
+    if let Some(min) = schema.minimum {
+        constraints.push(format!("minimum={min}"));
+    }
+    if let Some(ref allowed) = schema.enum_values {
+        let vals: Vec<String> = allowed
+            .iter()
+            .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
+            .collect();
+        constraints.push(format!("enum=[{}]", vals.join("|")));
+    }
+    if constraints.is_empty() {
+        base
+    } else {
+        format!("{base} ({})", constraints.join(", "))
+    }
+}
+
+fn summarize_proof_schema(schema: &SchemaDef) -> Value {
+    let mut out = Map::new();
+    out.insert("type".to_owned(), json!(schema.schema_type));
+    if !schema.required.is_empty() {
+        out.insert("required".to_owned(), json!(schema.required));
+    }
+    if !schema.properties.is_empty() {
+        let fields: Map<String, Value> = schema
+            .properties
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(describe_schema_compact(v))))
+            .collect();
+        out.insert("fields".to_owned(), Value::Object(fields));
+    }
+    if let Some(AdditionalPropertiesDef::Schema(task_entry)) = schema
+        .properties
+        .get("tasks")
+        .and_then(|t| t.additional_properties.as_ref())
+    {
+        if !task_entry.required.is_empty() {
+            out.insert(
+                "tasks_entry_required".to_owned(),
+                json!(task_entry.required),
+            );
+        }
+        if let Some(loc_schema) = task_entry.properties.get("max_net_loc") {
+            out.insert(
+                "tasks_entry_constraints".to_owned(),
+                json!({ "max_net_loc": describe_schema_compact(loc_schema) }),
+            );
+        }
+    }
+    Value::Object(out)
 }
 
 fn project_live_subtasks(contract: &mut Value, subtasks: &[Subtask], available: usize) {

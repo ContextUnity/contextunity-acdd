@@ -369,7 +369,8 @@ pub struct RunRecord {
     pub workspace: String,
     /// Resolved workflow identifier.
     pub profile_id: String,
-    /// Canonical resolved `ResolvedWorkflow` JSON snapshot.
+    /// Canonical resolved `ResolvedWorkflow` JSON snapshot (omitted in compact node `show` responses unless requested).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub profile_json: String,
     /// Relative path to source spec file (`None` when `is_ephemeral == true`).
     pub spec_path: Option<String>,

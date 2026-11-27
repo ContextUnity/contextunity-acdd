@@ -17,12 +17,13 @@ proofs:
         ac_mapping: { type: array, items: { type: string } }
         adr_required: { type: boolean }
         sad_updates: { type: array, items: { type: string } }
-        cited_invariants: { type: array, items: { type: string } }
-        cited_symbols: { type: array, items: { type: string } }
-        global_negative_boundaries: { type: array, items: { type: string } }
-        blackboard_decision_id: { type: string }
+        cited_invariants: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        cited_symbols: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        global_negative_boundaries: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        blackboard_decision_id: { type: string, minLength: 1 }
         tasks:
           type: object
+          minProperties: 1
           additionalProperties:
             type: object
             required: [layer, summary, exported_interfaces, negative_boundaries, incoming_seams, outgoing_seams]
@@ -33,7 +34,7 @@ proofs:
               negative_boundaries: { type: array, items: { type: string } }
               canonical_owners: { type: array, items: { type: string } }
               mechanism_rules: { type: array, items: { type: string } }
-              max_net_loc: { type: integer }
+              max_net_loc: { type: integer, minimum: 1 }
               verification_seam: { type: string }
               incoming_seams:
                 type: array
@@ -80,7 +81,7 @@ guidance:
   docs.tools:
     description: "DOCUMENTATION & LINT NAVIGATION PROTOCOL"
     criteria:
-      - "Use `search_docs`/`get_doc` for doc discovery, `code_map_lint` for `[arch, docs]` rule verification, and `code_map_overview`/`search`/`inspect` + `acdd_read` to verify cited symbols."
+      - "Tool routing: (1) Markdown docs/ADRs/specs -> `get_doc` / `search_docs` (`acdd docs get|search`); (2) Code citations -> `code_map_overview` -> `code_map_search` -> `inspect`/`explain` -> `acdd_read(selector=...)` / `mode=\"outline\"` (pass `detail=\"full\"` when a larger slice is needed rather than sequential line paging); (3) Tool/workflow help -> `acdd_guide` (`acdd guide`); (4) Large JSON proofs -> `.acdd/tmp/<name>.json` + `acdd submit --evidence @file` with exact unquoted `task_ref` keys (`code_map_lint` for `[arch, docs]`)."
   docs.synthesis:
     description: "DOCUMENTATION BLUEPRINT SYNTHESIS"
     criteria:

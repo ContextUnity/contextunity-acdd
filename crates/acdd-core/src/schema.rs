@@ -48,6 +48,12 @@ pub struct SchemaDef {
     /// Inclusive lower bound allowed when `type == "integer"` or `type == "number"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum: Option<f64>,
+    /// Minimum number of own keys allowed when `type == "object"`.
+    #[serde(default, rename = "minProperties", skip_serializing_if = "Option::is_none")]
+    pub min_properties: Option<usize>,
+    /// Minimum number of items allowed when `type == "array"`.
+    #[serde(default, rename = "minItems", skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<usize>,
 }
 
 impl SchemaDef {
@@ -63,6 +69,8 @@ impl SchemaDef {
             const_value: None,
             min_length: None,
             minimum: None,
+            min_properties: None,
+            min_items: None,
         }
     }
 
@@ -102,6 +110,16 @@ impl SchemaDef {
             if !min.is_finite() {
                 return Err(schema_err(format!("{path}.minimum must be finite")));
             }
+        }
+        if self.min_properties.is_some() && self.schema_type != "object" {
+            return Err(schema_err(format!(
+                "{path}.minProperties is only valid when type is 'object'"
+            )));
+        }
+        if self.min_items.is_some() && self.schema_type != "array" {
+            return Err(schema_err(format!(
+                "{path}.minItems is only valid when type is 'array'"
+            )));
         }
 
         match self.schema_type.as_str() {
@@ -198,6 +216,13 @@ impl SchemaDef {
         }
 
         if let Some(object) = value.as_object() {
+            if let Some(min_props) = self.min_properties {
+                if object.len() < min_props {
+                    return Err(schema_err(format!(
+                        "{path} must have at least {min_props} properties"
+                    )));
+                }
+            }
             for req in &self.required {
                 if !object.contains_key(req) {
                     return Err(schema_err(format!("{path}.{req} is required")));
@@ -220,9 +245,18 @@ impl SchemaDef {
             }
         }
 
-        if let (Some(item_schema), Some(array)) = (&self.items, value.as_array()) {
-            for (idx, item) in array.iter().enumerate() {
-                item_schema.validate_value(item, &format!("{path}[{idx}]"))?;
+        if let Some(array) = value.as_array() {
+            if let Some(min_items) = self.min_items {
+                if array.len() < min_items {
+                    return Err(schema_err(format!(
+                        "{path} must have at least {min_items} items"
+                    )));
+                }
+            }
+            if let Some(item_schema) = &self.items {
+                for (idx, item) in array.iter().enumerate() {
+                    item_schema.validate_value(item, &format!("{path}[{idx}]"))?;
+                }
             }
         }
 
@@ -277,13 +311,29 @@ mod tests {
             .properties
             .insert("x".to_owned(), SchemaDef::of_type("boolean"));
 
+        let mut bad_min_properties = SchemaDef::string();
+        bad_min_properties.min_properties = Some(1);
+
+        let mut bad_min_items = SchemaDef::object();
+        bad_min_items.min_items = Some(1);
+
+        let mut valid_obj_min_props = SchemaDef::object();
+        valid_obj_min_props.min_properties = Some(1);
+
+        let mut valid_arr_min_items = SchemaDef::array(SchemaDef::string());
+        valid_arr_min_items.min_items = Some(1);
+
         let cases: &[(&str, &SchemaDef, bool)] = &[
             ("valid_obj", &valid_obj, true),
+            ("valid_obj_min_props", &valid_obj_min_props, true),
+            ("valid_arr_min_items", &valid_arr_min_items, true),
             ("bad_required", &bad_required, false),
             ("bad_array_no_items", &bad_array_no_items, false),
             ("bad_min_length", &bad_min_length, false),
             ("bad_minimum", &bad_minimum, false),
             ("bad_minimum_nan", &bad_minimum_nan, false),
+            ("bad_min_properties", &bad_min_properties, false),
+            ("bad_min_items", &bad_min_items, false),
             ("bad_empty_enum", &bad_empty_enum, false),
             ("bad_scalar_with_props", &bad_scalar_with_props, false),
         ];
@@ -311,13 +361,19 @@ mod tests {
         let mut summary_schema = SchemaDef::string();
         summary_schema.min_length = Some(3);
 
+        let mut tags_schema = SchemaDef::array(SchemaDef::string());
+        tags_schema.min_items = Some(1);
+
+        let mut meta_schema = SchemaDef::object();
+        meta_schema.min_properties = Some(1);
+
         let mut root = SchemaDef::object();
         root.properties.insert("status".to_owned(), status_schema);
         root.properties.insert("hops".to_owned(), hops_schema);
         root.properties.insert("version".to_owned(), version_schema);
         root.properties.insert("summary".to_owned(), summary_schema);
-        root.properties
-            .insert("tags".to_owned(), SchemaDef::array(SchemaDef::string()));
+        root.properties.insert("tags".to_owned(), tags_schema);
+        root.properties.insert("meta".to_owned(), meta_schema);
         root.required = vec!["status".to_owned(), "version".to_owned()];
         root.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
 
@@ -326,7 +382,7 @@ mod tests {
         let cases: &[(&str, Value, bool)] = &[
             (
                 "valid_full",
-                json!({"status": "pass", "version": 2, "hops": 8, "summary": "ok!", "tags": ["a"]}),
+                json!({"status": "pass", "version": 2, "hops": 8, "summary": "ok!", "tags": ["a"], "meta": {"k": "v"}}),
                 true,
             ),
             ("missing_required", json!({"status": "pass"}), false),
@@ -363,6 +419,16 @@ mod tests {
             (
                 "extra_property_rejected",
                 json!({"status": "pass", "version": 2, "extra": true}),
+                false,
+            ),
+            (
+                "empty_array_rejected_by_min_items",
+                json!({"status": "pass", "version": 2, "tags": []}),
+                false,
+            ),
+            (
+                "empty_object_rejected_by_min_properties",
+                json!({"status": "pass", "version": 2, "meta": {}}),
                 false,
             ),
             (

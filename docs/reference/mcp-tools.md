@@ -147,12 +147,14 @@ and the `acdd` skill for agent execution workflows.
 
 Look up `acdd.yaml` `preset:` (`full`, `index`, `spec`, `state`, `minimal`) in [configuration](configuration.md#state-storage-and-module-toggles); `preset: spec` enables `get_doc`, `search_docs`, `acdd_read`, and `acdd_guide` in MCP while keeping state disabled. Registry-local `modules.required` mismatches emit `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET` in `message`, whereas an effective workspace-vs-workflow capability mismatch emits `DOMAIN_CAPABILITY_UNAVAILABLE`.
 
-### `acdd_state` parameters (`start` / `sync`)
+### `acdd_state` parameters (`start` / `sync` / `show` / `context`)
 
-Both payloads enforce `#[serde(deny_unknown_fields)]` (unknown or removed fields fail closed during deserialization):
+Both `start` and `sync` payloads enforce `#[serde(deny_unknown_fields)]` (unknown or removed fields fail closed during deserialization):
 
 - **`action="start"` (`StateInput` → `StartReq`)**: MCP `StateInput` accepts `spec_path?`, `goal?`, `run_name?`, `workflow?` (`base | code | documentation | <path>`), `scope?` (list of globs for `--goal`), `target_base?`, `create_worktree?`, `in_place?`, `worktree_path?`, and `worktree` (`true` to create a managed worktree, or a worktree selector), which `src/mcp/tools/state_tools.rs` maps onto `StartReq` (`spec_path?`, `goal?`, `run_name?`, `workflow?`, `scope`, `target_base?`, `worktree: bool`, `in_place: bool`, `worktree_path?`).
 - **`action="sync"` (`SyncReq` → `SyncResp`)**: `SyncReq` accepts `run?` and `rebind_workflow` (`bool`, rebinding non-completed gates against the latest resolved workflow); `SyncResp` returns `run_id`, `spec_digest`, `rebound_workflow` (`bool`), `added_nodes`, and `updated_nodes`.
+- **`action="show"` (`StateInput` → `ShowReq`)**: accepts `run?`, `node?`, `artifact?` (`proof | findings | receipt | all` to include parsed artifact JSON payloads alongside default artifact metadata), and `include_profile?` (`bool`, defaulting to `false` to omit `run.profile_json` on node-level output).
+- **`action="context"` (`StateInput` → `ContextReq`)**: accepts `run?`, `node?`, `worker_id?`, and `detail?` (`compact` default `<= 10,000` bytes, or `full` up to `32 KiB`).
 - **CLI-only spec DTOs**: `DraftReq` / `DraftResp`, `ValidateReq`, and `RoadmapReq` / `RoadmapSpecEntry` belong to the stateless `crates/acdd-spec` CLI commands (`acdd draft`, `acdd validate`, `acdd roadmap`); see [CLI reference](cli.md) for their exact JSON field contracts.
 
 ## Built-in guide

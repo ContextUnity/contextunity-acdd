@@ -149,8 +149,8 @@ acdd draft <spec> <slug> [--prefix PREFIX] [--title "Title"]
 acdd start [<spec>] [--goal TEXT] [--name RUN_NAME] [--workflow WORKFLOW] [--scope PATH ...] [--target-base REF] [--worktree | --in-place] [--worktree-path PATH]
 acdd status [--run RUN_ID_OR_NAME]
 acdd list [--workspace NAME] [--status active|completed|cancelled] [--include-tombstones] [--limit 1..100] [--offset N] [--generation GEN]
-acdd show [<node>] [--run RUN_ID_OR_NAME]
-acdd context [<node>] [--run RUN_ID_OR_NAME] [--worker WORKER_ID]
+acdd show [<node>] [--run RUN_ID_OR_NAME] [--artifact proof|findings|receipt|all] [--include-profile]
+acdd context [<node>] [--run RUN_ID_OR_NAME] [--worker WORKER_ID] [--detail compact|full]
 acdd next [--run RUN_ID_OR_NAME] [--limit N]
 acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]
 ```
@@ -158,9 +158,9 @@ acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]
 - `start`: Starts a new `Run` from a spec file (`<spec>`) or an ephemeral `--goal` (materializing `.acdd/run/<run_id>/spec.md`, attaching `--scope` globs as task scope or frontmatter `owners:` on taskless workflows like `audit`). Selects `worktree` (`--worktree`, `--worktree-path`, `--target-base`) or `--in-place` isolation (neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`). Maps to `StartReq` (`spec_path?`, `goal?`, `run_name?`, `workflow?`, `scope`, `target_base?`, `worktree`, `in_place`, `worktree_path?`, `#[serde(deny_unknown_fields)]`).
 - **`status`**: renders active run summary and current gate status.
 - **`list`**: lists runs (`--include-tombstones` includes cleared/completed/cancelled `run_tombstones` with `runs.generation` paging).
-- **`show`**: renders the full run tree or one dotted node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
+- **`show`**: renders the full run tree or one dotted node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`). Lists persisted `gate_artifacts` metadata (`proof`, `findings`, `receipt`) by default; pass `--artifact proof|findings|receipt|all` for full parsed JSON payloads and `--include-profile` to retain `run.profile_json` on node-level output.
 - **`next`**: lists currently ready node cursors and topological execution waves.
-- **`context`**: reads `.acdd/state.sqlite` (`SQLITE_OPEN_READ_ONLY`) to refresh `ClaimResp` + blackboard without mutating claims or advancing `claim_revision` (ideal for `PostCompact` / `SessionStart(compact)` hooks).
+- **`context`**: reads `.acdd/state.sqlite` (`SQLITE_OPEN_READ_ONLY`) to refresh `ClaimResp` + blackboard without mutating claims or advancing `claim_revision` (ideal for `PostCompact` / `SessionStart(compact)` hooks); pass `--detail compact|full` (`compact` defaults to `<= 10,000` bytes; `full` allows up to `32 KiB`).
 - **`roadmap`**: displays cross-spec runs, dependency waves, critical-path order, and scope overlaps via `crates/acdd-spec` + `SpecRuntimeOverlay` under `SubsystemId::Spec` (`--spec <CONFIG_KEY>` filters by configured `specs:` key; `--tasks` / positional `[SPEC_ID]` drills down; never creates `state.sqlite`). Maps to `RoadmapReq` (`spec_id?`, `spec?`, `ready_only`, `active_only`, `include_tasks`, `archived`, `current_only`) and emits [`RoadmapSpecEntry`](../../crates/acdd-spec/src/types.rs) items (`spec_id`, `title`, `spec`, `path`, `doc_type`, `status`, `run_id?`, `worktree?`, `source_worktree?`, `divergence`, `completed_tasks`, `total_tasks`, `active_gates`, `unblocks_specs`, `unblocks_tasks`, `parallel_safe`, `scope_overlaps`, `depends_on`, `blocks`, `tasks`) under `--format json`.
 
 ### Gate execution: `claim`, `verify`, `submit`

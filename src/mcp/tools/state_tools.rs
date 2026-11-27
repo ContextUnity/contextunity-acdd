@@ -196,7 +196,12 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
                 generation: p.generation,
             }))
         }
-        McpStateAction::Show => Ok(StateQuery::Show(ShowReq { run, node: p.node })),
+        McpStateAction::Show => Ok(StateQuery::Show(ShowReq {
+            run,
+            node: p.node,
+            artifact: p.artifact,
+            include_profile: p.include_profile.unwrap_or(false),
+        })),
         McpStateAction::Next => Ok(StateQuery::Next(NextReq {
             run,
             limit: p.limit,
@@ -208,6 +213,7 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
             run,
             node: p.node,
             worker_id: p.worker_id,
+            detail: p.detail,
         })),
         _ => unreachable!("mutating actions route via StateCommand"),
     }

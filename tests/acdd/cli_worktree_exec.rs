@@ -4,7 +4,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
 use acdd_state::store::sqlite::SqliteStateReader;
 use acdd_state::store::traits::StateReader;
-use acdd_state::usecases::StateCommandOutput;
+use acdd_state::usecases::{StateCommandOutput, StateQueryOutput};
 use contextunity_acdd::state_bridge::{resolve_exec_target, ExecResolveInput};
 use std::fs;
 use std::path::Path;
@@ -554,4 +554,225 @@ fn cli_exec_resolution_env_injection_exit_codes_and_fail_closed() {
     assert!(!multi_claim.status.success());
     let multi_err = String::from_utf8_lossy(&multi_claim.stderr);
     assert!(multi_err.contains("2 active in_progress claims"), "{multi_err}");
+}
+
+#[test]
+fn cli_show_artifact_context_detail_and_submit_evidence_routing_matrix() {
+    let ws = Workspace::new();
+    let root = ws.root().canonicalize().unwrap();
+    init_git_repo_on_branch(&root, "main");
+    git_cmd(&root, &["config", "commit.gpgsign", "false"]);
+    fs::create_dir_all(root.join(".acdd/workflows")).unwrap();
+    fs::write(
+        root.join(".acdd/workflows/ev_wf.yaml"),
+        "version: 2\nroles:\n  architect: {}\n  reviewer: {}\ncontours:\n  arch:\n    description: Architecture\n    criteria: [Verify]\nproofs:\n  custom_rev_like:\n    schema:\n      type: object\n      required: [decision, summary, contours]\n      properties:\n        decision: { type: string }\n        summary: { type: string }\n        contours: { type: object }\ngates:\n  - id: bp\n    role: architect\n    proof: custom_rev_like\n    pass: rev\n  - id: rev\n    role: reviewer\n    proof: review\n    receipt: true\n    need: [bp]\n    contours: [arch]\n",
+    )
+    .unwrap();
+    git_cmd(&root, &["add", ".acdd/workflows/ev_wf.yaml"]);
+    git_cmd(&root, &["commit", "-m", "seed ev_wf"]);
+    let start_out = acdd_ok(
+        &root,
+        &[],
+        &[
+            "--format",
+            "json",
+            "start",
+            "--goal",
+            "test evidence routing",
+            "--name",
+            "shared-ev-run",
+            "--workflow",
+            ".acdd/workflows/ev_wf.yaml",
+            "--in-place",
+        ],
+    );
+    let StateCommandOutput::Start(start_resp) = serde_json::from_str(&start_out).unwrap() else {
+        panic!("expected Start output: {start_out}");
+    };
+    let run_id = start_resp.run.run_id.to_string();
+
+    // 1. `context --detail full` sets `full_detail: true`, compact omits it.
+    let ctx_compact_raw = acdd_ok(
+        &root,
+        &[],
+        &["--format", "json", "context", "bp", "--run", &run_id, "--detail", "compact"],
+    );
+    let StateQueryOutput::Context(ctx_compact) = serde_json::from_str(&ctx_compact_raw).unwrap()
+    else {
+        panic!("expected Context output: {ctx_compact_raw}");
+    };
+    assert!(!ctx_compact.full_detail);
+    let ctx_full_raw = acdd_ok(
+        &root,
+        &[],
+        &["--format", "json", "context", "bp", "--run", &run_id, "--detail", "full"],
+    );
+    let StateQueryOutput::Context(ctx_full) = serde_json::from_str(&ctx_full_raw).unwrap()
+    else {
+        panic!("expected Context output: {ctx_full_raw}");
+    };
+    assert!(ctx_full.full_detail);
+
+    // 2. Claim `bp`, submit CustomSchema JSON containing `decision`/`summary`/`contours` without being hijacked into ReviewEvidence.
+    let _ = acdd_ok(&root, &[], &["claim", "bp", "--worker", "arch", "--run", &run_id]);
+    let _ = acdd_ok(
+        &root,
+        &[],
+        &[
+            "submit",
+            "bp",
+            "--action",
+            "pass",
+            "--worker",
+            "arch",
+            "--run",
+            &run_id,
+            "--evidence",
+            r#"{"decision":"pass","summary":"looks good","contours":{"arch":{"evidence":"ok"}}}"#,
+        ],
+    );
+
+    // 3. `show --artifact proof` returns full parsed payload and omits `profile_json` by default.
+    let show_default_raw = acdd_ok(
+        &root,
+        &[],
+        &["--format", "json", "show", "bp", "--run", &run_id],
+    );
+    let StateQueryOutput::Show(show_default) = serde_json::from_str(&show_default_raw).unwrap()
+    else {
+        panic!("expected Show output: {show_default_raw}");
+    };
+    assert!(show_default.run.profile_json.is_empty());
+    assert_eq!(show_default.gate_artifacts.len(), 1);
+    assert_eq!(
+        show_default.gate_artifacts[0].kind,
+        acdd_state::types::ArtifactKind::Proof
+    );
+    assert!(show_default.gate_artifacts[0].payload.is_none());
+
+    let show_proof_raw = acdd_ok(
+        &root,
+        &[],
+        &[
+            "--format",
+            "json",
+            "show",
+            "bp",
+            "--run",
+            &run_id,
+            "--artifact",
+            "proof",
+            "--include-profile",
+        ],
+    );
+    let StateQueryOutput::Show(show_proof) = serde_json::from_str(&show_proof_raw).unwrap()
+    else {
+        panic!("expected Show output: {show_proof_raw}");
+    };
+    assert!(!show_proof.run.profile_json.is_empty());
+    assert_eq!(
+        show_proof.gate_artifacts[0].payload.as_ref().unwrap()["summary"],
+        "looks good"
+    );
+
+    // 4. Claim `rev` (`proof: review`) and pass malformed ReviewEvidence -> exact serde error (never swallowed as "requires --evidence").
+    let _ = acdd_ok(&root, &[], &["claim", "rev", "--worker", "reviewer", "--run", &run_id]);
+    let bad_rev = acdd_cmd(
+        &root,
+        &[],
+        &[
+            "submit",
+            "rev",
+            "--action",
+            "pass",
+            "--worker",
+            "reviewer",
+            "--run",
+            &run_id,
+            "--evidence",
+            r#"{"decision":"pass","summary":"oops"}"#,
+        ],
+    );
+    assert!(!bad_rev.status.success());
+    let err_txt = String::from_utf8_lossy(&bad_rev.stderr);
+    assert!(
+        err_txt.contains("invalid review evidence"),
+        "expected serde error, got: {err_txt}"
+    );
+    assert!(!err_txt.contains("requires --evidence"), "{err_txt}");
+
+    // 5. Complete run 1, start a distinct active worktree run, and verify `submit` without `--run` resolves active-only.
+    let _ = acdd_ok(
+        &root,
+        &[],
+        &[
+            "submit",
+            "rev",
+            "--action",
+            "pass",
+            "--worker",
+            "reviewer",
+            "--run",
+            &run_id,
+            "--evidence",
+            r#"{"decision":"pass","summary":"verified","contours":{"arch":{"applicable":true,"evidence":"ok"}}}"#,
+        ],
+    );
+    let active_start = acdd_ok(
+        &root,
+        &[],
+        &[
+            "--format",
+            "json",
+            "start",
+            "--goal",
+            "active named run",
+            "--name",
+            "active-ev-run",
+            "--workflow",
+            ".acdd/workflows/ev_wf.yaml",
+            "--worktree",
+        ],
+    );
+    let StateCommandOutput::Start(active_resp) = serde_json::from_str(&active_start).unwrap() else {
+        panic!("expected Start output: {active_start}");
+    };
+    let active_id = active_resp.run.run_id.to_string();
+    let _ = acdd_ok(&root, &[], &["claim", "bp", "--worker", "arch", "--run", &active_id]);
+    let done_submit = acdd_cmd(
+        &root,
+        &[],
+        &[
+            "submit",
+            "bp",
+            "--action",
+            "pass",
+            "--worker",
+            "arch",
+            "--run",
+            &run_id,
+            "--evidence",
+            r#"{"decision":"pass","summary":"stale run","contours":{"arch":{"evidence":"ok"}}}"#,
+        ],
+    );
+    assert!(!done_submit.status.success());
+    let done_err = String::from_utf8_lossy(&done_submit.stderr);
+    assert!(
+        done_err.contains("RUN_SELECTOR_AMBIGUOUS"),
+        "completed run must be rejected by active-only resolution, got: {done_err}"
+    );
+    let _ = acdd_ok(
+        &root,
+        &[],
+        &[
+            "submit",
+            "bp",
+            "--action",
+            "pass",
+            "--worker",
+            "arch",
+            "--evidence",
+            r#"{"decision":"pass","summary":"active bp","contours":{"arch":{"evidence":"ok"}}}"#,
+        ],
+    );
 }

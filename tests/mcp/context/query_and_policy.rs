@@ -590,3 +590,26 @@ fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
     let unknown = json!({"node":"t1.build", "action":"pass", "worker_id":"format-contract", "format":"json", "unknown":true});
     assert!(serde_json::from_value::<SubmitInput>(unknown).is_err());
 }
+
+#[test]
+fn state_input_show_and_context_artifact_detail_contract() {
+    use contextunity_acdd::mcp::tools::inputs::StateInput;
+
+    let show_in: StateInput = serde_json::from_value(json!({
+        "action": "show",
+        "node": "goal.build",
+        "artifact": "proof",
+        "include_profile": true
+    }))
+    .unwrap();
+    assert_eq!(show_in.include_profile, Some(true));
+    assert!(show_in.artifact.is_some());
+
+    let ctx_in: StateInput = serde_json::from_value(json!({
+        "action": "context",
+        "node": "goal.build",
+        "detail": "full"
+    }))
+    .unwrap();
+    assert_eq!(ctx_in.detail, Some(acdd_core::response::Detail::Full));
+}

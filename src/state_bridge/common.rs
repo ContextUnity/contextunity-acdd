@@ -214,6 +214,22 @@ pub fn execute_state_query(
     engine.query(query)
 }
 
+/// Resolve the configured [`acdd_state::workflow::ProofDef`] for a gate node (`SQLITE_OPEN_READ_ONLY`).
+pub(crate) fn resolve_gate_proof(
+    root: &Path,
+    worktree: &Path,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
+    config: &Adapter,
+    run: Option<&str>,
+    node: &str,
+) -> Result<acdd_state::workflow::ProofDef, AcddError> {
+    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
+    let engine =
+        StateQueryEngine::open_read_only(engine_cfg, Arc::new(CompositeDomainProvider::default()))?;
+    engine.resolve_gate_proof(run, node)
+}
+
 pub(super) fn worktree_code_db_candidate(
     root: &Path,
     worktree: &Path,

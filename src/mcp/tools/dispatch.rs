@@ -380,7 +380,7 @@ fn active_tool_count(server: &Server) -> usize {
 pub(super) fn get_info(server: &Server) -> rmcp::model::ServerConfig {
     let active_count = active_tool_count(server);
     let instructions = format!(
-        "Workspace code graph and task coordination, {active_count} tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: acdd_guide topic=query or acdd."
+        "Workspace code graph and task coordination, {active_count} tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact for code_map_search/code_map_inspect; use get_doc (default full) for Markdown docs/ADRs and bounded acdd_read(selector|detail=\"full\") for source. Selector rules and gate proofs: acdd_guide topic=query or acdd."
     );
     rmcp::model::ServerConfig::new(
         rmcp::model::ServerCapabilities::builder()

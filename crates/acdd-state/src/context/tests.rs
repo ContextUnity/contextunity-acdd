@@ -201,6 +201,8 @@ fn base_request() -> ClaimContextRequest {
         context_reset_required: false,
         response_max_bytes: CLAIM_DEFAULT_MAX_BYTES,
         hard_max_bytes: None,
+        full_detail: false,
+        proof_pointers: Vec::new(),
     }
 }
 
@@ -997,4 +999,151 @@ fn profile_gates_claim_context_window_budget_matrix() {
             }
         }
     }
+}
+
+#[test]
+fn context_proof_schema_pointer_manifest_and_non_circular_hints_matrix() {
+    use acdd_core::schema::SchemaDef;
+    use crate::workflow::schema::ProofCatalogDef;
+    use crate::workflow::ProofDef;
+
+    let mut req = base_request();
+    req.gate.context.clear();
+    let mut bp_schema = SchemaDef::object();
+    bp_schema.required = vec!["blackboard_decision_id".to_owned(), "tasks".to_owned()];
+    bp_schema.properties.insert(
+        "blackboard_decision_id".to_owned(),
+        SchemaDef {
+            min_length: Some(1),
+            ..SchemaDef::string()
+        },
+    );
+    bp_schema.properties.insert(
+        "tasks".to_owned(),
+        SchemaDef {
+            min_properties: Some(1),
+            ..SchemaDef::object()
+        },
+    );
+    req.profile.proofs.insert(
+        "blueprint".to_owned(),
+        ProofCatalogDef {
+            description: Some("bp".to_owned()),
+            schema: bp_schema.clone(),
+        },
+    );
+    req.gate.proof = ProofDef::ResolvedNamed {
+        name: "blueprint".to_owned(),
+        schema: Box::new(bp_schema),
+    };
+    let with_schema = GateContextAssembler::assemble(&req, &CompositeDomainProvider::default()).unwrap();
+    assert_eq!(
+        with_schema.contract["proof_schema"]["required"],
+        json!(["blackboard_decision_id", "tasks"])
+    );
+    let schema_md = render_claim_prompt_markdown(&with_schema, None);
+    assert!(schema_md.contains("### Proof Schema"), "{schema_md}");
+    assert!(schema_md.contains("minLength=1"), "{schema_md}");
+
+    // Omitted pre_task_slice populates pointer manifest and avoids circular `--detail full` hint when full_detail=true.
+    let big_slice = json!({
+        "summary": "x".repeat(4000),
+        "predecessor_proofs": { "synthesize": { "cited_symbols": ["a"] } }
+    });
+    for is_full in [false, true] {
+        let mut ptr_req = base_request();
+        ptr_req.gate.context.clear();
+        ptr_req.pre_task_slice = Some(big_slice.clone());
+        ptr_req.proof_pointers = vec![
+            "acdd show blueprint_synthesis.synthesize --artifact proof --run run-1".to_owned(),
+        ];
+        ptr_req.full_detail = is_full;
+        ptr_req.response_max_bytes = 2200;
+        ptr_req.hard_max_bytes = Some(4096);
+        let resp =
+            GateContextAssembler::assemble(&ptr_req, &CompositeDomainProvider::default()).unwrap();
+        assert!(resp.pre_task_slice.is_none());
+        assert!(resp.omitted_sections.contains(&"pre_task_slice".to_owned()));
+        assert_eq!(resp.omitted_proof_pointers, ptr_req.proof_pointers);
+        let md = render_claim_prompt_markdown(&resp, None);
+        assert!(
+            md.contains("acdd show blueprint_synthesis.synthesize --artifact proof --run run-1"),
+            "{md}"
+        );
+        // Check non-circular hint when `context_lenses` is also omitted.
+        let mut lens_req = ptr_req.clone();
+        lens_req.gate.context = vec!["code.symbols".to_owned()];
+        lens_req.pre_task_slice = None;
+        lens_req.proof_pointers.clear();
+        let mut lenses = BTreeMap::new();
+        lenses.insert(
+            "symbols".to_owned(),
+            json!({"items": [], "truncated": true}),
+        );
+        let lens_provider = CompositeDomainProvider::with_module_flags(
+            vec![Arc::new(LensMockProvider {
+                domain: "code".to_owned(),
+                lenses,
+            })],
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let lens_resp = GateContextAssembler::assemble(&lens_req, &lens_provider).unwrap();
+        let lens_md = render_claim_prompt_markdown(&lens_resp, None);
+        if is_full {
+            assert!(
+                lens_md.contains("Already at `--detail full` budget"),
+                "{lens_md}"
+            );
+            assert!(
+                lens_md.contains("acdd show --artifact proof --run run-1"),
+                "full_detail hint must point at run-level show, got: {lens_md}"
+            );
+        } else {
+            assert!(lens_md.contains("acdd context "), "{lens_md}");
+        }
+    }
+
+    // ADR-0006 tier priority: Tier 3 omitted_proof_pointers must evict before Tier 2 unresolved_findings.
+    let mut tier_req = base_request();
+    tier_req.gate.context.clear();
+    tier_req.unresolved_findings = Some(RejectionFindings {
+        kind: RejectionKind::Defect,
+        summary: "fix canonical owner".to_owned(),
+        blackboard_message_id: Some(42),
+        items: vec![FindingItem {
+            severity: FindingSeverity::High,
+            path: Some("src/lib.rs".to_owned()),
+            message: "missing active-only check".to_owned(),
+            remediation: "use resolve_active_run".to_owned(),
+        }],
+    });
+    tier_req.pre_task_slice = Some(big_slice);
+    tier_req.proof_pointers = vec![
+        format!("acdd show blueprint_synthesis.synthesize --artifact proof --run {}", "x".repeat(400)),
+        format!("acdd show blueprint_synthesis.review --artifact proof --run {}", "y".repeat(400)),
+    ];
+    let baseline_with_findings = {
+        let mut r = tier_req.clone();
+        r.pre_task_slice = None;
+        r.proof_pointers.clear();
+        r.response_max_bytes = 8192;
+        r.hard_max_bytes = Some(8192);
+        GateContextAssembler::assemble(&r, &CompositeDomainProvider::default())
+            .unwrap()
+            .total_bytes
+    };
+    tier_req.response_max_bytes = baseline_with_findings + 120;
+    tier_req.hard_max_bytes = Some(baseline_with_findings + 120);
+    let tier_resp =
+        GateContextAssembler::assemble(&tier_req, &CompositeDomainProvider::default()).unwrap();
+    assert!(
+        tier_resp.unresolved_findings.is_some(),
+        "Tier 2 unresolved_findings must not be evicted by Tier 3 omitted_proof_pointers"
+    );
+    assert!(
+        tier_resp.omitted_proof_pointers.len() < tier_req.proof_pointers.len(),
+        "expected Tier 3 omitted_proof_pointers to evict under tight cap: {:?}",
+        tier_resp.omitted_proof_pointers
+    );
 }

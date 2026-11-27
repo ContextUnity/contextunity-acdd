@@ -55,6 +55,15 @@ impl StateQueryEngine {
     pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, AcddError> {
         queries::execute_query(&self.config, self.reader.as_ref(), &self.provider, query)
     }
+
+    /// Resolve a gate node's configured [`crate::workflow::ProofDef`] read-only (`SQLITE_OPEN_READ_ONLY`).
+    pub fn resolve_gate_proof(
+        &self,
+        run: Option<&str>,
+        node: &str,
+    ) -> Result<crate::workflow::ProofDef, AcddError> {
+        queries::resolve_gate_proof(&self.config, self.reader.as_ref(), run, node)
+    }
 }
 
 /// Full read/write state engine coordinating `repo.lock`, `git_ops`, `StateBackend`, `runner`, and `CompositeDomainProvider`.

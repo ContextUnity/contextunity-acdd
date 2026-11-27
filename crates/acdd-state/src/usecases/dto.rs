@@ -4,10 +4,12 @@ use crate::context::ClaimResp;
 use crate::workflow::GateDispatchInfo;
 use crate::runner::WaveExecutionReport;
 use crate::types::{
-    BlackboardRecord, BlackboardStatus, BlackboardTopic, CheckResultRecord, GateNodeRecord,
-    IsolationMode, ListRunsPage, ObservabilitySnapshot, RejectionFindings, ReviewEvidence,
-    RunRecord, RunStatus, RunTombstoneRecord, SubmitAction, SubtaskRecord, TraceStatus,
+    ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, CheckResultRecord,
+    GateNodeRecord, IsolationMode, ListRunsPage, ObservabilitySnapshot, RejectionFindings,
+    ReviewEvidence, RunRecord, RunStatus, RunTombstoneRecord, SubmitAction, SubtaskRecord,
+    TraceStatus,
 };
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_core::ports::DomainToolOutput;
 use acdd_spec::types::ValidateReq;
@@ -495,8 +497,77 @@ pub struct ListResp {
     pub page: ListRunsPage,
 }
 
+/// Artifact filter for `StateQuery::Show`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactSelector {
+    /// Submitted proof payload (`proof`).
+    Proof,
+    /// Structured rejection findings payload (`findings`).
+    Findings,
+    /// Acceptance/closure receipt payload (`receipt`).
+    Receipt,
+    /// All persisted proof, findings, and receipt artifacts (`all`).
+    All,
+}
+
+impl ArtifactSelector {
+    /// Whether this selector includes `kind`.
+    pub const fn matches_kind(self, kind: ArtifactKind) -> bool {
+        match self {
+            Self::Proof => matches!(kind, ArtifactKind::Proof),
+            Self::Findings => matches!(kind, ArtifactKind::Findings),
+            Self::Receipt => matches!(kind, ArtifactKind::Receipt),
+            Self::All => matches!(
+                kind,
+                ArtifactKind::Proof | ArtifactKind::Findings | ArtifactKind::Receipt
+            ),
+        }
+    }
+}
+
+impl std::str::FromStr for ArtifactSelector {
+    type Err = AcddError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "proof" => Ok(Self::Proof),
+            "findings" => Ok(Self::Findings),
+            "receipt" => Ok(Self::Receipt),
+            "all" => Ok(Self::All),
+            other => Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!(
+                    "invalid artifact selector '{other}'; expected one of: proof, findings, receipt, all"
+                ),
+            )),
+        }
+    }
+}
+
+/// Summary (and optionally parsed JSON payload) of a persisted gate artifact in [`ShowResp`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GateArtifactEntry {
+    /// Node ID that produced this artifact.
+    pub node_id: String,
+    /// Artifact category (`proof`, `findings`, or `receipt`).
+    pub kind: ArtifactKind,
+    /// Claim revision associated with this artifact.
+    pub claim_revision: u32,
+    /// UTC ISO-8601 creation timestamp.
+    pub created_at: String,
+    /// Optional Git commit OID recorded when persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_commit: Option<CommitOid>,
+    /// Canonical JSON payload length in bytes.
+    pub payload_bytes: usize,
+    /// Full parsed JSON payload (populated only when `artifact` matches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+}
+
 /// Read-only query request for `StateQuery::Show`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShowReq {
     /// Optional run ID or name selector.
@@ -505,17 +576,26 @@ pub struct ShowReq {
     /// Target node cursor (`None` returns run-level summary).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// Optional artifact selector (`proof | findings | receipt | all`) to include parsed payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ArtifactSelector>,
+    /// Include `run.profile_json` on node-level `show` (omitted by default to avoid ~25 KiB bloat).
+    #[serde(default)]
+    pub include_profile: bool,
 }
 
 /// Read-only response returned by `StateQuery::Show`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ShowResp {
-    /// Resolved `Run` record.
+    /// Resolved `Run` record (`profile_json` is omitted on node-level `show` unless `include_profile` is true).
     pub run: RunRecord,
     /// Requested node record (if `node` specified).
     pub node: Option<GateNodeRecord>,
     /// Subtasks belonging to the node (if task).
     pub subtasks: Vec<SubtaskRecord>,
+    /// Persisted `proof` / `findings` / `receipt` artifact metadata (and parsed payloads when selected).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_artifacts: Vec<GateArtifactEntry>,
     /// Optional budgeted context preview when showing a gate node.
     pub context_preview: Option<Value>,
 }
@@ -533,6 +613,9 @@ pub struct ContextReq {
     /// Optional worker filter when auto-selecting or validating an active claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<WorkerId>,
+    /// Response detail budget (`compact` default <= 10,000 bytes, or `full` up to 32 KiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<acdd_core::response::Detail>,
 }
 
 /// Read-only query request for `StateQuery::Next`.

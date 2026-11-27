@@ -1101,19 +1101,28 @@ fn compute_reconciled_seq_order(
 }
 
 fn has_pre_task_tasks_fanout_artifact(snapshot: &RunGraphSnapshot) -> bool {
-    let completed_pre: BTreeSet<&str> = snapshot
+    let completed_pre: BTreeMap<&str, u32> = snapshot
         .nodes
         .iter()
         .filter(|n| is_pre_task_root_node(snapshot, n) && n.status == NodeStatus::Completed)
-        .map(|n| n.node_id.as_str())
+        .map(|n| (n.node_id.as_str(), n.claim_revision))
         .collect();
     !completed_pre.is_empty()
         && snapshot.artifacts.iter().any(|art| {
-            completed_pre.contains(art.node_id.as_str())
-                && matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt)
-                && serde_json::from_str::<Value>(&art.payload_json)
-                    .ok()
-                    .and_then(|v| v.as_object().cloned())
-                    .is_some_and(|obj| obj.contains_key("tasks"))
+            completed_pre
+                .get(art.node_id.as_str())
+                .is_some_and(|&node_rev| {
+                    matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt)
+                        && (node_rev == 0 || art.claim_revision >= node_rev)
+                        && serde_json::from_str::<Value>(&art.payload_json)
+                            .ok()
+                            .as_ref()
+                            .and_then(|v| v.as_object())
+                            .and_then(|obj| obj.get("tasks"))
+                            .and_then(Value::as_object)
+                            .is_some_and(|tasks| {
+                                !tasks.is_empty() && tasks.keys().all(|k| !k.trim().is_empty())
+                            })
+                })
         })
 }

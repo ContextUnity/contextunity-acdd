@@ -15,8 +15,7 @@ pub(crate) use types::{baseline_ref_for_node, SnapshotContextInput};
 pub use types::{ClaimContextRequest, ClaimResp};
 
 use self::slices::{
-    collect_dependency_receipts, extract_global_blueprint_slice, extract_pre_task_slice,
-    extract_predecessor_gate_proofs, read_spec_readonly,
+    collect_dependency_receipts, extract_slice_and_proof_pointers, read_spec_readonly,
 };
 use crate::workflow::{ProofDef, ProofKind};
 use crate::types::{BlackboardListReq, BlackboardStatus};
@@ -26,7 +25,6 @@ use acdd_core::ids::NodeCursor;
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::subsystems::SubsystemId;
 use acdd_spec::{Subtask, SubtaskStatus};
-use serde_json::{Map, Value};
 
 /// Single authoritative context builder shared by `claim`, `show`, and `run`.
 pub struct GateContextAssembler;
@@ -60,48 +58,29 @@ impl GateContextAssembler {
             profile.limits.diagnostic_inline_bytes,
         );
         let context_reset_required = is_context_reset_required(snapshot, node, gate);
-        let (pre_task_slice, dependency_receipts, blackboard_items) = if skip_enrichment {
-            (None, Vec::new(), Vec::new())
-        } else {
-            let mut slice = match node.task_ref.as_ref() {
-                Some(tr) => extract_pre_task_slice(snapshot, tr.as_str()),
-                None if crate::machine::graph::is_post_task_root_node(snapshot, node) => {
-                    extract_global_blueprint_slice(snapshot)
-                }
-                None => None,
-            };
-            if let Some(pred_proofs) = extract_predecessor_gate_proofs(snapshot, node) {
-                let pred_val = Value::Object(pred_proofs);
-                slice = match slice {
-                    Some(Value::Object(mut map)) => {
-                        map.insert("predecessor_proofs".to_owned(), pred_val);
-                        Some(Value::Object(map))
-                    }
-                    _ => {
-                        let mut map = Map::new();
-                        map.insert("predecessor_proofs".to_owned(), pred_val);
-                        Some(Value::Object(map))
-                    }
-                };
-            }
-            let receipts = collect_dependency_receipts(snapshot, node);
-            let bb = if config.modules.is_enabled(SubsystemId::Blackboard.as_str()) {
-                reader
-                    .list_blackboard(
-                        &snapshot.run.run_id,
-                        &BlackboardListReq {
-                            status: Some(BlackboardStatus::Open),
-                            limit: 100,
-                            offset: 0,
-                            ..BlackboardListReq::default()
-                        },
-                    )?
-                    .items
+        let (pre_task_slice, dependency_receipts, blackboard_items, proof_pointers) =
+            if skip_enrichment {
+                (None, Vec::new(), Vec::new(), Vec::new())
             } else {
-                Vec::new()
+                let (slice, pointers) = extract_slice_and_proof_pointers(snapshot, node);
+                let receipts = collect_dependency_receipts(snapshot, node);
+                let bb = if config.modules.is_enabled(SubsystemId::Blackboard.as_str()) {
+                    reader
+                        .list_blackboard(
+                            &snapshot.run.run_id,
+                            &BlackboardListReq {
+                                status: Some(BlackboardStatus::Open),
+                                limit: 100,
+                                offset: 0,
+                                ..BlackboardListReq::default()
+                            },
+                        )?
+                        .items
+                } else {
+                    Vec::new()
+                };
+                (slice, receipts, bb, pointers)
             };
-            (slice, receipts, bb)
-        };
         let mut live_subtasks: Vec<_> = snapshot
             .subtasks
             .iter()
@@ -148,6 +127,8 @@ impl GateContextAssembler {
                     .max_output_bytes
                     .min(CLAIM_FULL_MAX_BYTES),
             }),
+            full_detail: matches!(detail, acdd_core::response::Detail::Full),
+            proof_pointers,
         })
     }
 
@@ -224,8 +205,23 @@ impl GateContextAssembler {
         debug_assert_eq!(running_bytes, estimate_json_bytes(&resp));
 
         // Exact serialized total_bytes fixpoint, unconditionally enforcing `response_hard_cap`.
-        let (settled, _) =
+        let pointers_populated_in_tier3 = !resp.omitted_proof_pointers.is_empty();
+        let (mut settled, _) =
             budget::enforce_hard_cap_with_reclaim(&mut resp, response_hard_cap, bb_relevant_total)?;
+        if !pointers_populated_in_tier3
+            && resp.pre_task_slice.is_none()
+            && resp.omitted_sections.iter().any(|s| s == "pre_task_slice")
+            && resp.omitted_proof_pointers.is_empty()
+            && !req.proof_pointers.is_empty()
+        {
+            resp.omitted_proof_pointers = req.proof_pointers.clone();
+            let (after_ptrs, _) = budget::enforce_hard_cap_with_reclaim(
+                &mut resp,
+                response_hard_cap,
+                bb_relevant_total,
+            )?;
+            settled = after_ptrs;
+        }
         debug_assert!(settled <= response_hard_cap);
 
         Ok(resp)

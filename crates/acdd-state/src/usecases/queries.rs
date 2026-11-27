@@ -9,20 +9,21 @@ use crate::observability::render_prometheus_text;
 use crate::workflow::{GateDef, ResolvedWorkflow};
 use crate::store::traits::StateReader;
 use crate::types::{
-    BlackboardListReq, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunStatus, SubtaskRecord, ValidatedObservations,
+    ArtifactKind, BlackboardListReq, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus,
+    RunGraphSnapshot, RunStatus, SubtaskRecord, ValidatedObservations,
 };
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::collect_external_satisfied_deps;
 use crate::usecases::dto::{
-    BlackboardReadReq, BlackboardReadResp, ContextReq, ListReq, ListResp, NextReq, NextResp,
-    ObservabilityReq, ObservabilityResp, ShowReq, ShowResp, StateQuery, StateQueryOutput,
-    StatusReq, StatusResp,
+    ArtifactSelector, BlackboardReadReq, BlackboardReadResp, ContextReq, GateArtifactEntry,
+    ListReq, ListResp, NextReq, NextResp, ObservabilityReq, ObservabilityResp, ShowReq, ShowResp,
+    StateQuery, StateQueryOutput, StatusReq, StatusResp,
 };
 use crate::usecases::lifecycle::{
     auto_select_context_cursor, build_path_policy, compute_unintegrated_tasks,
     ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
-    parse_profile_from_run, primary_workspace_root, resolve_node_worktree, resolve_run_optional,
+    parse_profile_from_run, primary_workspace_root, resolve_active_run, resolve_node_worktree,
+    resolve_run_optional,
 };
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{NodeCursor, TreeOid, WorkerId};
@@ -149,6 +150,73 @@ fn handle_list(reader: &dyn StateReader, req: ListReq) -> Result<ListResp, AcddE
     Ok(ListResp { page })
 }
 
+pub(crate) fn resolve_gate_proof(
+    config: &StateEngineConfig,
+    reader: &dyn StateReader,
+    run: Option<&str>,
+    node: &str,
+) -> Result<crate::workflow::ProofDef, AcddError> {
+    ensure_state_enabled(config)?;
+    let run = resolve_active_run(config, reader, run, None)?;
+    let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
+        AcddError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!("run '{}' no longer exists in active storage", run.run_id),
+        )
+    })?;
+    let cursor = parse_cursor_for_snapshot(&graph, node)?;
+    let profile = parse_profile_from_run(&graph.run)?;
+    let gate_def = find_profile_gate_def(&profile, &cursor).ok_or_else(|| {
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
+    })?;
+    Ok(gate_def.proof.clone())
+}
+
+fn collect_show_artifacts(
+    graph: &RunGraphSnapshot,
+    node_id: Option<&str>,
+    selector: Option<ArtifactSelector>,
+) -> Vec<GateArtifactEntry> {
+    let mut rows: Vec<_> = graph
+        .artifacts
+        .iter()
+        .enumerate()
+        .filter(|(_, art)| {
+            matches!(
+                art.kind,
+                ArtifactKind::Proof | ArtifactKind::Findings | ArtifactKind::Receipt
+            ) && node_id.is_none_or(|nid| art.node_id == nid)
+        })
+        .collect();
+    rows.sort_by(|(idx_a, a), (idx_b, b)| {
+        a.claim_revision
+            .cmp(&b.claim_revision)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| idx_a.cmp(idx_b))
+    });
+    rows.into_iter()
+        .map(|(_, art)| {
+            let include_payload = selector.is_some_and(|sel| sel.matches_kind(art.kind));
+            let payload = include_payload.then(|| {
+                serde_json::from_str::<serde_json::Value>(&art.payload_json)
+                    .unwrap_or_else(|_| serde_json::Value::String(art.payload_json.clone()))
+            });
+            GateArtifactEntry {
+                node_id: art.node_id.clone(),
+                kind: art.kind,
+                claim_revision: art.claim_revision,
+                created_at: art.created_at.clone(),
+                snapshot_commit: art.snapshot_commit.clone(),
+                payload_bytes: art.payload_json.len(),
+                payload,
+            }
+        })
+        .collect()
+}
+
 fn handle_show(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
@@ -164,7 +232,7 @@ fn handle_show(
         },
     )?;
 
-    let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
+    let mut graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
         AcddError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!("run '{}' no longer exists in active storage", run.run_id),
@@ -172,10 +240,15 @@ fn handle_show(
     })?;
 
     let Some(ref raw_node) = req.node else {
+        let gate_artifacts = collect_show_artifacts(&graph, None, req.artifact);
+        if !req.include_profile && req.artifact.is_some() {
+            graph.run.profile_json.clear();
+        }
         return Ok(ShowResp {
             run: graph.run,
             node: None,
             subtasks: graph.subtasks,
+            gate_artifacts,
             context_preview: None,
         });
     };
@@ -213,20 +286,27 @@ fn handle_show(
             .collect()
     };
 
+    let gate_artifacts = collect_show_artifacts(&graph, Some(&node.node_id), req.artifact);
     let context_preview = if matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
         build_show_context_preview(config, reader, provider, &graph, &node, &cursor)?
     } else {
         None
     };
 
+    if !req.include_profile {
+        graph.run.profile_json.clear();
+    }
+
     Ok(ShowResp {
         run: graph.run,
         node: Some(node),
         subtasks,
+        gate_artifacts,
         context_preview,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_node_context_request(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
@@ -235,6 +315,7 @@ fn build_node_context_request(
     cursor: &NodeCursor,
     claim_revision: u32,
     worker_id: WorkerId,
+    detail: acdd_core::response::Detail,
 ) -> Result<Option<crate::context::ClaimContextRequest>, AcddError> {
     let profile = parse_profile_from_run(&graph.run)?;
     let Some(gate_def) = find_profile_gate_def(&profile, cursor) else {
@@ -261,7 +342,7 @@ fn build_node_context_request(
         candidate_tree,
         path_policy,
         primary: &primary,
-        detail: acdd_core::response::Detail::Compact,
+        detail,
     })
     .map(Some)
 }
@@ -286,6 +367,7 @@ fn build_show_context_preview(
         cursor,
         node.claim_revision.max(1),
         worker_id,
+        acdd_core::response::Detail::Compact,
     )?
     else {
         return Ok(None);
@@ -529,6 +611,7 @@ fn handle_context(
         &cursor,
         claim_revision,
         worker_id,
+        req.detail.unwrap_or(acdd_core::response::Detail::Compact),
     )?
     .ok_or_else(|| {
         AcddError::new(

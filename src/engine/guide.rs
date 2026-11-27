@@ -376,8 +376,8 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "purpose": "Find and read documentation, then author valid metadata, links and invariants.",
             "steps": [
                 "Use `search_docs(query, include_excerpt=true)` to find relevant sections; CLI: `acdd docs search TERM`.",
-                "Use `get_doc(path_or_id, detail=compact)` for an outline, then `section` for the exact content; CLI: `acdd docs get docs/guide.md`.",
-                "Use `acdd_read(path, mode=lines)` for source text; preserve frontmatter, relative links, and uniquely linked symbol/invariant claims."
+                "Use `get_doc(path_or_id, detail=compact)` for an outline, then `get_doc(path_or_id, section=...)` or default full `get_doc(path_or_id)` for exact content; CLI: `acdd docs get docs/guide.md`.",
+                "Run `code_map_lint(categories=[\"docs\"])` / `acdd docs check` to verify frontmatter, relative links, and uniquely linked symbol/invariant claims."
             ],
             "example": { "mcp": { "name": "search_docs", "arguments": { "query": "guide" } }, "cli": "acdd docs search guide" },
             "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
@@ -539,8 +539,8 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
             "purpose": "Find and read documentation via CLI, then author valid metadata, links, and invariants.",
             "steps": [
                 "Run `acdd docs search <query> [--doc-type <type>] [--component <prefix>]` to find relevant sections.",
-                "Run `acdd docs get <path_or_id>` for an outline, then `--section <heading>` for exact content.",
-                "Run `acdd read <path> --mode lines` for source text and `acdd docs check` / `acdd lint --categories docs` to verify links and invariants."
+                "Run `acdd docs get <path_or_id> --detail compact` for an outline, then `--section <heading>` or default full `acdd docs get <path_or_id>` for exact content.",
+                "Run `acdd docs check` / `acdd lint --categories docs` to verify links and invariants."
             ],
             "example": { "cli": "acdd docs search guide" },
             "references": ["docs/AGENTS.md", "docs/reference/cli.md"]

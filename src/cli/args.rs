@@ -159,6 +159,12 @@ pub enum Command {
         /// Optional run ID or name selector.
         #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
+        /// Include parsed JSON payload for persisted gate artifacts (`proof`, `findings`, `receipt`, or `all`).
+        #[arg(long)]
+        artifact: Option<String>,
+        /// Include `run.profile_json` on node-level `show`.
+        #[arg(long)]
+        include_profile: bool,
     },
     /// Refresh budgeted claim context without mutating claim state (read-only).
     Context {
@@ -170,6 +176,9 @@ pub enum Command {
         /// Optional worker filter when auto-selecting the active gate.
         #[arg(long, alias = "worker-id")]
         worker: Option<String>,
+        /// Context detail budget (`compact` default <= 10,000 bytes, or `full` up to 32 KiB).
+        #[arg(long)]
+        detail: Option<String>,
     },
     /// Show ready node cursors and topological execution waves (read-only).
     Next {

@@ -848,7 +848,9 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
                 test_target: None,
                 review_evidence: None,
                 rejection_findings: None,
-                custom_evidence: Some(serde_json::json!({"tasks": {"first": {}}})),
+                custom_evidence: Some(serde_json::json!({
+                    "tasks": {"first": {}, "second": {}, "third": {}, "final": {}}
+                })),
                 verified_invariants: Vec::new(),
                 summary: Some("pre done".to_owned()),
                 allow_main: true,

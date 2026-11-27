@@ -446,7 +446,6 @@ fn guide_content_and_surfaces_matrix() {
             &[
                 "search_docs",
                 "get_doc",
-                "acdd_read",
                 "docs search",
                 "docs get",
             ][..],

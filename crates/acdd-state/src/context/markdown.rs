@@ -195,6 +195,32 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
         return;
     };
     render_contract_scalars(out, obj);
+    if let Some(ps) = obj.get("proof_schema").and_then(Value::as_object) {
+        out.push_str("\n### Proof Schema\n\n");
+        if let Some(req_arr) = ps.get("required").and_then(Value::as_array) {
+            push_str_list(out, "Required Fields", req_arr);
+        }
+        if let Some(fields) = ps.get("fields").and_then(Value::as_object) {
+            for (fname, fdesc) in fields {
+                if let Some(desc) = fdesc.as_str() {
+                    out.push_str(&format!("- `{fname}`: `{desc}`\n"));
+                }
+            }
+        }
+        if let Some(task_req) = ps.get("tasks_entry_required").and_then(Value::as_array) {
+            push_str_list(out, "Task Slice Required Fields", task_req);
+        }
+        if let Some(task_constraints) = ps
+            .get("tasks_entry_constraints")
+            .and_then(Value::as_object)
+        {
+            for (cname, cdesc) in task_constraints {
+                if let Some(desc) = cdesc.as_str() {
+                    out.push_str(&format!("- `tasks.<task_ref>.{cname}`: `{desc}`\n"));
+                }
+            }
+        }
+    }
     if let Some(arr) = obj
         .get("checks")
         .and_then(Value::as_array)
@@ -522,7 +548,7 @@ fn render_instructions_lens(out: &mut String, val: &Value) {
         .and_then(Value::as_str)
         .unwrap_or("MANDATORY: read repository rules for respective scope.");
     out.push_str(directive);
-    out.push_str("\n\n");
+    out.push_str(" Read via `get_doc(path_or_id=...)` / `acdd docs get <path>`.\n\n");
     for item in val
         .get("items")
         .and_then(Value::as_array)
@@ -657,6 +683,7 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
             "docs.instructions" => render_instructions_lens(out, val),
             "docs.adrs" => {
                 out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
+                out.push_str("Read relevant ADRs via `get_doc(path_or_id=...)` / `acdd docs get <path>`.\n\n");
                 for item in val
                     .get("items")
                     .and_then(Value::as_array)
@@ -870,6 +897,14 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
                     "- {section} — inspect via `{}` / `acdd blackboard --action read --topic findings --run {}`\n",
                     claim.inspect_cmd, claim.run_id
                 ));
+            } else if section == "pre_task_slice" && !claim.omitted_proof_pointers.is_empty() {
+                let ptrs = claim
+                    .omitted_proof_pointers
+                    .iter()
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!("- {section} — inspect proof via {ptrs}\n"));
             } else {
                 out.push_str("- ");
                 out.push_str(section);
@@ -883,17 +918,28 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
         }
         if needs_expand_hint || has_truncated_lens {
             emitted_expand_hint = true;
-            out.push_str(&format!(
-                "- Expand omitted/truncated sections via `acdd claim {} --detail full --run {}` or `acdd context {} --run {}` (`acdd_claim` with `detail=\"full\"`).\n",
-                claim.node_cursor, claim.run_id, claim.node_cursor, claim.run_id
-            ));
+            out.push_str(&format!("- {}\n", format_omitted_expand_hint(claim)));
         }
     }
     if has_truncated_lens && !emitted_expand_hint {
         out.push_str(&format!(
-            "\n> [!NOTE]\n> Truncated context lenses can be inspected via `acdd claim {} --detail full --run {}` or `acdd context {} --run {}` (`acdd_claim` with `detail=\"full\"`).\n",
-            claim.node_cursor, claim.run_id, claim.node_cursor, claim.run_id
+            "\n> [!NOTE]\n> {}\n",
+            format_omitted_expand_hint(claim)
         ));
     }
     out
+}
+
+fn format_omitted_expand_hint(claim: &ClaimResp) -> String {
+    if claim.full_detail {
+        format!(
+            "Already at `--detail full` budget; inspect remaining details via `acdd show --artifact proof --run {}`, `acdd blackboard --action read --run {}`, or targeted `code_map_*` / `get_doc` queries.",
+            claim.run_id, claim.run_id
+        )
+    } else {
+        format!(
+            "Expand omitted/truncated sections via `acdd claim {} --detail full --run {}` or `acdd context {} --run {} --detail full` (`acdd_state` / `acdd_claim` with `detail=\"full\"`).",
+            claim.node_cursor, claim.run_id, claim.node_cursor, claim.run_id
+        )
+    }
 }

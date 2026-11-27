@@ -903,6 +903,12 @@ pub struct StateInput {
     pub generation: Option<u64>,
     /// Include Prometheus 0.0.4 text output (`observability`).
     pub include_prometheus: Option<bool>,
+    /// Include `run.profile_json` on node-level `show` (`false` by default to omit ~25 KiB bloat).
+    pub include_profile: Option<bool>,
+    /// Include parsed JSON payloads for persisted gate artifacts (`proof | findings | receipt | all`) on `show`.
+    pub artifact: Option<acdd_state::usecases::ArtifactSelector>,
+    /// Context detail budget (`compact` default <= 10,000 bytes, or `full` up to 32 KiB) on `context`.
+    pub detail: Option<acdd_core::response::Detail>,
     /// Worktree routing selector (or boolean `true` on `action="start"` to create a managed worktree).
     pub worktree: Option<WorktreeInput>,
     /// Output format: markdown (default) or json.

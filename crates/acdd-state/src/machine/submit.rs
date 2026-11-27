@@ -252,7 +252,25 @@ fn evaluate_reject(
         }
     }
 
+    if input.custom_evidence.is_some() {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!(
+                "submit --action reject on '{}' does not accept custom proof evidence",
+                node.node_id
+            ),
+        ));
+    }
     if let Some(ref rev) = input.review_evidence {
+        if !matches!(gate.proof, MachineProofKind::Review) {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!(
+                    "unexpected review_evidence on '{}' with proof kind {:?}",
+                    node.node_id, gate.proof
+                ),
+            ));
+        }
         validate_review_evidence(gate, rev, SubmitAction::Reject)?;
     }
 
@@ -702,6 +720,15 @@ fn collect_pass_proof_artifacts(
     let mut new_artifacts = Vec::new();
     match &gate.proof {
         MachineProofKind::Review => {
+            if input.custom_evidence.is_some() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!(
+                        "proof: review on '{}' does not accept custom_evidence; pass review_evidence",
+                        node.node_id
+                    ),
+                ));
+            }
             let rev = input.review_evidence.as_ref().ok_or_else(|| {
                 AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,
@@ -720,6 +747,15 @@ fn collect_pass_proof_artifacts(
             )?);
         }
         MachineProofKind::CustomSchema(schema_name) => {
+            if input.review_evidence.is_some() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!(
+                        "proof schema '{schema_name}' on '{}' does not accept review_evidence; pass custom_evidence",
+                        node.node_id
+                    ),
+                ));
+            }
             let schema = profile.proof_schemas.get(schema_name).ok_or_else(|| {
                 AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,
@@ -736,6 +772,7 @@ fn collect_pass_proof_artifacts(
                 )
             })?;
             schema.validate_value(val, &format!("proof.{schema_name}"))?;
+            validate_pre_task_tasks_proof(snapshot, node, schema, schema_name, val)?;
             new_artifacts.push(make_gate_artifact(
                 snapshot,
                 node,
@@ -746,7 +783,17 @@ fn collect_pass_proof_artifacts(
                 "custom proof evidence",
             )?);
         }
-        _ => {}
+        _ => {
+            if input.review_evidence.is_some() || input.custom_evidence.is_some() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!(
+                        "gate '{}' (proof {:?}) does not accept proof --evidence JSON",
+                        node.node_id, gate.proof
+                    ),
+                ));
+            }
+        }
     }
 
     let snapshot_payload = json!({
@@ -765,6 +812,83 @@ fn collect_pass_proof_artifacts(
         "accepted_snapshot",
     )?);
     Ok(new_artifacts)
+}
+
+fn validate_pre_task_tasks_proof(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    schema: &acdd_core::schema::SchemaDef,
+    schema_name: &str,
+    val: &serde_json::Value,
+) -> Result<(), AcddError> {
+    if !crate::machine::graph::is_pre_task_root_node(snapshot, node)
+        || !schema.properties.contains_key("tasks")
+    {
+        return Ok(());
+    }
+    let expected_refs: BTreeSet<&str> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Task && n.status != NodeStatus::Cancelled)
+        .filter_map(|n| n.task_ref.as_ref().map(|t| t.as_str()))
+        .collect();
+    if expected_refs.is_empty() {
+        return Ok(());
+    }
+    let tasks_obj = val
+        .get("tasks")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!("proof.{schema_name}.tasks must be an object keyed by task_ref"),
+            )
+        })?;
+    let provided_keys: BTreeSet<&str> = tasks_obj.keys().map(String::as_str).collect();
+    let missing_tasks: Vec<&str> = expected_refs.difference(&provided_keys).copied().collect();
+    let unknown_tasks: Vec<&str> = provided_keys.difference(&expected_refs).copied().collect();
+    if !missing_tasks.is_empty() || !unknown_tasks.is_empty() {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!(
+                "proof.{schema_name}.tasks keys must match non-cancelled task_ref set 1:1 (missing_tasks: {missing_tasks:?}, unknown_tasks: {unknown_tasks:?}; use plain unquoted task_ref keys)"
+            ),
+        ));
+    }
+    for (tref, slice_val) in tasks_obj {
+        if let Some(loc_val) = slice_val.get("max_net_loc") {
+            if !loc_val.as_i64().is_some_and(|n| n >= 1) {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("proof.{schema_name}.tasks.{tref}.max_net_loc must be >= 1"),
+                ));
+            }
+        }
+        for (arr_key, peer_key) in [
+            ("incoming_seams", "source_task"),
+            ("outgoing_seams", "target_task"),
+        ] {
+            for (idx, seam) in slice_val
+                .get(arr_key)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if let Some(peer) = seam.get(peer_key).and_then(serde_json::Value::as_str) {
+                    if !expected_refs.contains(peer) {
+                        return Err(AcddError::new(
+                            ErrorCode::WorkflowSchemaInvalid,
+                            format!(
+                                "proof.{schema_name}.tasks.{tref}.{arr_key}[{idx}].{peer_key} '{peer}' does not match any non-cancelled task_ref in {expected_refs:?}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn make_gate_artifact<T: serde::Serialize>(

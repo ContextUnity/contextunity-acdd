@@ -1736,13 +1736,24 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
         now_utc: "2026-11-22T00:00:00.000Z".to_owned(),
         ..ValidatedObservations::default()
     };
-    let blueprint_proof = json!({
-        "cited_invariants": ["INV-CORE-LEAF"],
-        "cited_symbols": ["acdd_core::lint"],
-        "global_negative_boundaries": ["zero raw git"],
-        "blackboard_decision_id": "#1",
-        "tasks": {}
-    });
+    let make_blueprint_proof = |task_ref: &str| {
+        json!({
+            "cited_invariants": ["INV-CORE-LEAF"],
+            "cited_symbols": ["acdd_core::lint"],
+            "global_negative_boundaries": ["zero raw git"],
+            "blackboard_decision_id": "#1",
+            "tasks": {
+                task_ref: {
+                    "layer": "docs",
+                    "summary": "Consolidate AGENTS.md invariants",
+                    "exported_interfaces": ["AGENTS.md"],
+                    "negative_boundaries": ["zero raw git"],
+                    "incoming_seams": [],
+                    "outgoing_seams": []
+                }
+            }
+        })
+    };
     let doc_review_ev = ReviewEvidence {
         decision: SubmitAction::Pass,
         contours: BTreeMap::from([
@@ -2073,7 +2084,7 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
             None,
             None,
             None,
-            Some(blueprint_proof.clone()),
+            Some(make_blueprint_proof(t_ref.as_str())),
         );
         let c_brev = claim_step(&harness, &rid, &mprof, brev_cur.clone(), "rev-1");
         submit_step(

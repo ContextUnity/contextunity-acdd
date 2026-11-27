@@ -1539,6 +1539,8 @@ mod tests {
             blackboard: Vec::new(),
             context_lenses: lenses,
             omitted_sections: Vec::new(),
+            full_detail: false,
+            omitted_proof_pointers: Vec::new(),
             total_bytes: 0,
         };
         let rendered_cfg = acdd_state::context::render_claim_prompt_markdown(&claim, None);

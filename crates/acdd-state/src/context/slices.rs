@@ -68,22 +68,29 @@ pub(crate) fn collect_dependency_receipts(
 }
 
 fn latest_pre_task_proof_value(graph: &RunGraphSnapshot) -> Option<serde_json::Value> {
-    let completed_pre_nodes: std::collections::BTreeMap<&str, u32> = graph
+    latest_pre_task_proof_entry(graph).map(|(_, val)| val)
+}
+
+fn latest_pre_task_proof_entry(
+    graph: &RunGraphSnapshot,
+) -> Option<(String, serde_json::Value)> {
+    let completed_pre_nodes: std::collections::BTreeMap<&str, (u32, u32)> = graph
         .nodes
         .iter()
         .filter(|n| {
             n.status == NodeStatus::Completed
                 && crate::machine::graph::is_pre_task_root_node(graph, n)
         })
-        .map(|n| (n.node_id.as_str(), n.claim_revision))
+        .map(|n| (n.node_id.as_str(), (n.seq_order, n.claim_revision)))
         .collect();
     if completed_pre_nodes.is_empty() {
         return None;
     }
 
-    let mut best: Option<(u32, &str, serde_json::Value)> = None;
-    for art in &graph.artifacts {
-        let Some(&node_claim_rev) = completed_pre_nodes.get(art.node_id.as_str()) else {
+    let mut best: Option<(u32, u32, &str, usize, &str, serde_json::Value)> = None;
+    for (idx, art) in graph.artifacts.iter().enumerate() {
+        let Some(&(seq_order, node_claim_rev)) = completed_pre_nodes.get(art.node_id.as_str())
+        else {
             continue;
         };
         if !matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt) {
@@ -96,26 +103,32 @@ fn latest_pre_task_proof_value(graph: &RunGraphSnapshot) -> Option<serde_json::V
             if !val.get("tasks").is_some_and(serde_json::Value::is_object) {
                 continue;
             }
+            let key = (seq_order, art.claim_revision, art.created_at.as_str(), idx);
             let replace = match best {
                 None => true,
-                Some((prev_rev, prev_at, _)) => {
-                    (art.claim_revision, art.created_at.as_str()) > (prev_rev, prev_at)
+                Some((prev_seq, prev_rev, prev_at, prev_idx, _, _)) => {
+                    key > (prev_seq, prev_rev, prev_at, prev_idx)
                 }
             };
             if replace {
-                best = Some((art.claim_revision, art.created_at.as_str(), val));
+                best = Some((
+                    seq_order,
+                    art.claim_revision,
+                    art.created_at.as_str(),
+                    idx,
+                    art.node_id.as_str(),
+                    val,
+                ));
             }
         }
     }
-    best.map(|(_, _, val)| val)
+    best.map(|(_, _, _, _, node_id, val)| (node_id.to_owned(), val))
 }
 
-/// Extract `tasks[<task_ref>]` slice (plus global boundaries/invariants if present) from the latest accepted pre-task root artifact.
-pub(crate) fn extract_pre_task_slice(
-    graph: &RunGraphSnapshot,
+fn slice_for_task_from_proof(
+    val: &serde_json::Value,
     task_ref: &str,
 ) -> Option<serde_json::Value> {
-    let val = latest_pre_task_proof_value(graph)?;
     let mut slice = val.get("tasks").and_then(|t| t.get(task_ref))?.clone();
     if let serde_json::Value::Object(ref mut map) = slice {
         for shared_key in ["global_negative_boundaries", "cited_invariants"] {
@@ -132,11 +145,7 @@ pub(crate) fn extract_pre_task_slice(
     Some(slice)
 }
 
-/// Extract global architectural boundaries from the accepted pre-task blueprint artifact for root closure/polish gates.
-pub(crate) fn extract_global_blueprint_slice(
-    graph: &RunGraphSnapshot,
-) -> Option<serde_json::Value> {
-    let val = latest_pre_task_proof_value(graph)?;
+fn global_blueprint_slice_from_proof(val: &serde_json::Value) -> Option<serde_json::Value> {
     let mut out = serde_json::Map::new();
     for key in [
         "cited_invariants",
@@ -158,11 +167,19 @@ pub(crate) fn extract_global_blueprint_slice(
     (!out.is_empty()).then_some(serde_json::Value::Object(out))
 }
 
-/// Extract latest `ArtifactKind::Proof` payloads from completed predecessor sibling gates in the same container, ordered by `seq_order`.
-pub(crate) fn extract_predecessor_gate_proofs(
+/// Extract `tasks[<task_ref>]` slice (plus global boundaries/invariants if present) from the latest accepted pre-task root artifact.
+pub(crate) fn extract_pre_task_slice(
     graph: &RunGraphSnapshot,
+    task_ref: &str,
+) -> Option<serde_json::Value> {
+    let val = latest_pre_task_proof_value(graph)?;
+    slice_for_task_from_proof(&val, task_ref)
+}
+
+fn completed_predecessor_proof_entries<'a>(
+    graph: &'a RunGraphSnapshot,
     node: &GateNodeRecord,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
+) -> Vec<(&'a GateNodeRecord, serde_json::Value)> {
     let node_is_pre_task = crate::machine::graph::is_pre_task_root_node(graph, node);
     let mut predecessors: Vec<&GateNodeRecord> = graph
         .nodes
@@ -177,7 +194,7 @@ pub(crate) fn extract_predecessor_gate_proofs(
         .collect();
     predecessors.sort_by_key(|n| n.seq_order);
 
-    let mut proofs = serde_json::Map::new();
+    let mut out = Vec::new();
     for pred in predecessors {
         let latest = graph
             .artifacts
@@ -209,10 +226,76 @@ pub(crate) fn extract_predecessor_gate_proofs(
             _ => true,
         };
         if non_empty {
-            proofs.insert(pred.gate_id.clone(), val);
+            out.push((pred, val));
         }
     }
+    out
+}
+
+/// Extract latest `ArtifactKind::Proof` payloads from completed predecessor sibling gates in the same container, ordered by `seq_order`.
+pub(crate) fn extract_predecessor_gate_proofs(
+    graph: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut proofs = serde_json::Map::new();
+    for (pred, val) in completed_predecessor_proof_entries(graph, node) {
+        proofs.insert(pred.gate_id.clone(), val);
+    }
     (!proofs.is_empty()).then_some(proofs)
+}
+
+fn push_proof_pointer(out: &mut Vec<String>, run_id: &str, node_id: &str) {
+    if let Ok(cursor) = acdd_core::ids::NodeCursor::from_node_id(node_id) {
+        let cmd = format!("acdd show {cursor} --artifact proof --run {run_id}");
+        if !out.contains(&cmd) {
+            out.push(cmd);
+        }
+    }
+}
+
+/// Extract `pre_task_slice` (merged with `predecessor_proofs`) and compact CLI proof pointers in a single pass.
+pub(crate) fn extract_slice_and_proof_pointers(
+    graph: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+) -> (Option<serde_json::Value>, Vec<String>) {
+    let mut pointers = Vec::new();
+    let is_post_task =
+        node.task_ref.is_none() && crate::machine::graph::is_post_task_root_node(graph, node);
+    let mut slice = if node.task_ref.is_some() || is_post_task {
+        latest_pre_task_proof_entry(graph).and_then(|(pre_nid, val)| {
+            push_proof_pointer(&mut pointers, graph.run.run_id.as_str(), &pre_nid);
+            if let Some(tr) = node.task_ref.as_ref() {
+                slice_for_task_from_proof(&val, tr.as_str())
+            } else {
+                global_blueprint_slice_from_proof(&val)
+            }
+        })
+    } else {
+        None
+    };
+
+    let predecessors = completed_predecessor_proof_entries(graph, node);
+    if !predecessors.is_empty() {
+        let mut proofs = serde_json::Map::new();
+        for (pred, val) in predecessors {
+            push_proof_pointer(&mut pointers, graph.run.run_id.as_str(), &pred.node_id);
+            proofs.insert(pred.gate_id.clone(), val);
+        }
+        let pred_val = serde_json::Value::Object(proofs);
+        slice = match slice {
+            Some(serde_json::Value::Object(mut map)) => {
+                map.insert("predecessor_proofs".to_owned(), pred_val);
+                Some(serde_json::Value::Object(map))
+            }
+            _ => {
+                let mut map = serde_json::Map::new();
+                map.insert("predecessor_proofs".to_owned(), pred_val);
+                Some(serde_json::Value::Object(map))
+            }
+        };
+    }
+
+    (slice, pointers)
 }
 
 #[cfg(test)]

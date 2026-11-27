@@ -74,8 +74,9 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
    - **Full symbol body (`selector=` / `symbol=`)**: Use `acdd_read(selector="SymbolName")` (optionally `path="..."`) after locating a symbol when its full body is needed beyond `search`/`inspect` previews; follow `source_offset` + `generation`.
    - **File outline (`mode="outline"`)**: Use `acdd_read(path=..., mode="outline")` for a declaration/heading map of a known file (`paths: [...]` batches multiple files with `next_path_index` / `remaining_count` continuation).
    - **Git diff (`mode="delta"`)**: Use `acdd_read(path=..., mode="delta")` to inspect uncommitted/baseline diffs on a known file.
-   - **Targeted lines (`mode="lines"`)**: Read bounded coordinates (default `<= 9,000` bytes inline with `next_start_line` continuation; pass `detail="full"` or `output_file` up to `48 KiB`).
+   - **Targeted lines (`mode="lines"`)**: Use for narrow known line coordinates (`<= 9,000` bytes default), and pass `detail="full"` or `output_file` (up to `48 KiB`) when a larger slice is needed rather than sequential line paging. Read Markdown docs (`docs/**`, ADRs, `AGENTS.md`, specs) via `get_doc` / `search_docs`, and use `selector`, `outline`, or `mode="search"` before line ranges.
    - **Literal text search (`mode="search"`)**: Use for literal config values, YAML/TOML keys, or string constants scoped with `path:` (`regex=true|false`); use `rg -n` for gitignored or unadmitted paths.
+   - **Tool help (`acdd_guide`)**: Call `acdd_guide` / `acdd guide` for built-in schema, tool, and workflow help.
 - **Graph hygiene & unified lint (`duplicates`, `dead_tails`, `code_map_lint`)**: Before submitting `build`,
   `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
   `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
@@ -125,7 +126,7 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
    scope and verify `./website/build.sh --check` (`sync-docs.py && zola build && zola check`).
 4. Verify via `acdd_verify(node=..., test_target=...)` (`acdd verify <cursor> [--test <filter>]`)
    before submitting command/check gates so `execution_digest` and candidate trees bind.
-5. Submit via `acdd_submit` / `acdd submit` (`pass` or `reject`). Note `acdd run`
+5. Submit via `acdd_submit` / `acdd submit` (`pass` or `reject`). For large JSON proofs (`> 8 KiB`, e.g. `blueprint`), write `.acdd/tmp/<name>.json` and submit via `acdd submit <cursor> --action pass --evidence @.acdd/tmp/<name>.json`, keeping `tasks` keys as plain unquoted `task_ref` IDs (no extra inner quotes or `{}`). Note `acdd run`
    requires shell `runner:` commands on roles (`WORKFLOW_RUNNER_REQUIRED` when roles
    use `mode: subagent` without `runner:`); subagent orchestration coordinates
    explicit `claim` / `verify` / `submit` steps. On `TASK_CANDIDATE_MISMATCH`,
@@ -138,13 +139,13 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
 When a host session compacts context (Claude `PostCompact` or Codex `SessionStart(compact)` hooks), reload gate authority without re-claiming:
 
 ```bash
-acdd context [<node>] [--run <name>] [--worker <id>]
+acdd context [<node>] [--run <name>] [--worker <id>] [--detail compact|full]
 ```
 
 MCP equivalent:
 
 ```json
-{"action": "context", "node": "T-03.build", "worker_id": "builder", "format": "json"}
+{"action": "context", "node": "T-03.build", "worker_id": "builder", "detail": "compact", "format": "json"}
 ```
 
 This call is strictly read-only (`SQLITE_OPEN_READ_ONLY`) and must not create `.acdd/state.sqlite` or mutate `claim_revision`.

@@ -201,6 +201,8 @@ fn sample_claim_request(
         context_reset_required: false,
         response_max_bytes,
         hard_max_bytes: None,
+        full_detail: response_max_bytes > 10_000,
+        proof_pointers: Vec::new(),
     }
 }
 
@@ -977,6 +979,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
 
     // Oversized compact Tier 1 (> 10,000, within 32,768 hard cap) degrades gracefully instead of GuidanceBudgetExceeded.
     let mut soft_req = direct_req.clone();
+    soft_req.full_detail = false;
     soft_req.response_max_bytes = COMPACT_CLAIM_MAX_BYTES;
     soft_req.hard_max_bytes = Some(32_768);
     soft_req

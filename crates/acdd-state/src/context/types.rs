@@ -54,6 +54,10 @@ pub struct ClaimContextRequest {
     pub response_max_bytes: usize,
     /// Optional hard response envelope byte cap (`ResponsePolicy.max_output_bytes` when `response_max_bytes` is a soft ceiling).
     pub hard_max_bytes: Option<usize>,
+    /// Whether `detail="full"` was explicitly requested.
+    pub full_detail: bool,
+    /// Compact inspection commands for pre-task/predecessor proof artifacts when omitted from `pre_task_slice`.
+    pub proof_pointers: Vec<String>,
 }
 
 impl ClaimContextRequest {
@@ -133,6 +137,12 @@ pub struct ClaimResp {
     /// Lower-priority sections omitted due to `response_max_bytes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted_sections: Vec<String>,
+    /// True when assembled under `detail="full"` budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_detail: bool,
+    /// CLI inspection pointers for omitted pre-task / predecessor proofs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_proof_pointers: Vec<String>,
     /// Serialized response byte size.
     pub total_bytes: usize,
 }

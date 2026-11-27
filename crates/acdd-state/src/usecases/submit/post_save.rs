@@ -9,6 +9,7 @@ use crate::git_ops::snapshot::{save_task_snapshot, snapshot_prefix};
 use crate::git_ops::worktree::{
     cleanup_locked_refs, lock_cleanup_repos, try_lock_secondary_repo, RepoWorktreeLayout,
 };
+use crate::machine::inputs::MachineProofKind;
 use crate::machine::{plan_container_blackboard_cleanup, MachineGateDef};
 use crate::store::traits::StateBackend;
 use crate::types::{
@@ -373,11 +374,14 @@ fn render_gate_report(
     now_utc: &str,
     req: &SubmitReq,
 ) -> Result<Vec<u8>, AcddError> {
-    let proof_value = req.custom_evidence.clone().or_else(|| {
-        req.review_evidence
+    let proof_value = match &machine_gate.proof {
+        MachineProofKind::CustomSchema(_) => req.custom_evidence.clone(),
+        MachineProofKind::Review => req
+            .review_evidence
             .as_ref()
-            .and_then(|rev| serde_json::to_value(rev).ok())
-    });
+            .and_then(|rev| serde_json::to_value(rev).ok()),
+        _ => None,
+    };
     let predecessor_proofs = extract_predecessor_gate_proofs(snapshot, node);
     let receipt = if machine_gate.receipt {
         Some(build_provisional_receipt(

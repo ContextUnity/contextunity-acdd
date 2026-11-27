@@ -6,7 +6,7 @@ pub(crate) mod docs_domain;
 mod overview;
 
 pub(crate) use code_domain::CodeDomainProvider;
-pub(crate) use common::execute_state_command_with_config;
+pub(crate) use common::{execute_state_command_with_config, resolve_gate_proof};
 #[cfg(test)]
 pub(crate) use common::state_engine_config;
 pub use common::{execute_state_command, execute_state_query, InvocationSettings};

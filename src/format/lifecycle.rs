@@ -383,6 +383,25 @@ fn render_show_markdown(resp: &ShowResp) -> String {
             out.push('\n');
         }
     }
+    if !resp.gate_artifacts.is_empty() {
+        out.push_str("\n## Gate Artifacts\n\n");
+        for art in &resp.gate_artifacts {
+            let commit_note = art
+                .snapshot_commit
+                .as_ref()
+                .map(|c| format!(", commit `{c}`"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- `{}` (`{}`, rev `{}`, {} bytes{}, {})\n",
+                art.kind, art.node_id, art.claim_revision, art.payload_bytes, commit_note, art.created_at
+            ));
+            if let Some(ref payload) = art.payload {
+                let pretty = serde_json::to_string_pretty(payload)
+                    .unwrap_or_else(|_| payload.to_string());
+                super::core::append_fenced_block(&mut out, "json", &pretty, 1);
+            }
+        }
+    }
     if let Some(ref preview_val) = resp.context_preview {
         if let Ok(claim) = serde_json::from_value::<ClaimResp>(preview_val.clone()) {
             out.push('\n');
