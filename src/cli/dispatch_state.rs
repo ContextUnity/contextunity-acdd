@@ -26,6 +26,8 @@ use std::str::FromStr;
 pub(super) struct CliStateCtx<'a> {
     pub root: &'a Path,
     pub checkout_root: &'a Path,
+    pub root_from_cli: bool,
+    pub run_from_cli: bool,
     pub explicit_config: bool,
     pub state_db: Option<&'a Path>,
     pub code_db: Option<&'a Path>,
@@ -34,8 +36,38 @@ pub(super) struct CliStateCtx<'a> {
     pub title: &'a str,
 }
 
+fn effective_run_selector(
+    state_ctx: &CliStateCtx<'_>,
+    run: Option<String>,
+    has_explicit_worktree: bool,
+) -> Option<String> {
+    if state_ctx.run_from_cli || !(state_ctx.root_from_cli || has_explicit_worktree) {
+        run
+    } else {
+        None
+    }
+}
+
 impl CliStateCtx<'_> {
-    fn command(&self, cmd: StateCommand) -> Result<(Value, Option<String>)> {
+    fn command(&self, mut cmd: StateCommand) -> Result<(Value, Option<String>)> {
+        if let Some((slot, has_wt)) = match &mut cmd {
+            StateCommand::Claim(r) => Some((&mut r.run, r.worktree.is_some())),
+            StateCommand::Verify(r) => Some((&mut r.run, r.worktree.is_some())),
+            StateCommand::Submit(r) => Some((&mut r.run, r.worktree.is_some())),
+            StateCommand::CallPluginTool(r) => Some((&mut r.run, r.worktree.is_some())),
+            StateCommand::ExtendScope(r) => Some((&mut r.run, false)),
+            StateCommand::Reopen(r) => Some((&mut r.run, false)),
+            StateCommand::Sync(r) => Some((&mut r.run, false)),
+            StateCommand::Subtask(r) => Some((&mut r.run, false)),
+            StateCommand::BlackboardPost(r) => Some((&mut r.run, false)),
+            StateCommand::Run(r) => Some((&mut r.run, false)),
+            StateCommand::Start(_)
+            | StateCommand::Draft(_)
+            | StateCommand::Snapshot(_)
+            | StateCommand::Clear(_) => None,
+        } {
+            *slot = effective_run_selector(self, slot.take(), has_wt);
+        }
         let worktree = match &cmd {
             StateCommand::Start(_) | StateCommand::Sync(_) => Some(self.checkout_root),
             StateCommand::Claim(req) => req.worktree.as_deref(),
@@ -62,7 +94,20 @@ impl CliStateCtx<'_> {
         })
     }
 
-    fn query(&self, worktree: &Path, query: StateQuery) -> Result<(Value, Option<String>)> {
+    fn query(&self, worktree: &Path, mut query: StateQuery) -> Result<(Value, Option<String>)> {
+        if let Some(slot) = match &mut query {
+            StateQuery::Status(r) => Some(&mut r.run),
+            StateQuery::Show(r) => Some(&mut r.run),
+            StateQuery::Context(r) => Some(&mut r.run),
+            StateQuery::Next(r) => Some(&mut r.run),
+            StateQuery::BlackboardRead(r) => Some(&mut r.run),
+            StateQuery::List(_)
+            | StateQuery::Observability(_)
+            | StateQuery::Roadmap(_)
+            | StateQuery::Validate(_) => None,
+        } {
+            *slot = effective_run_selector(self, slot.take(), false);
+        }
         let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
         let roadmap_detail = matches!(
             &query,
@@ -471,6 +516,7 @@ pub(super) fn dispatch(
                     ))
                 }
             };
+            let run = effective_run_selector(state_ctx, run, worktree.is_some());
             let (task_ref, name) = match (run.is_some(), target) {
                 (true, Some(t)) => (
                     Some(TaskRef::new(&t).map_err(|err| state_err_invalid(err.to_string()))?),
@@ -495,11 +541,19 @@ pub(super) fn dispatch(
             run,
             reason,
             force,
-        } => state_ctx.command(StateCommand::Clear(ClearReq {
-            run: run.or(run_id),
-            reason,
-            force,
-        })),
+        } => {
+            let flag_or_env_run = effective_run_selector(state_ctx, run, false);
+            let selected_run = if state_ctx.run_from_cli {
+                flag_or_env_run.or(run_id)
+            } else {
+                run_id.or(flag_or_env_run)
+            };
+            state_ctx.command(StateCommand::Clear(ClearReq {
+                run: selected_run,
+                reason,
+                force,
+            }))
+        }
         Command::Run {
             run,
             jobs,
@@ -519,6 +573,7 @@ pub(super) fn dispatch(
             worktree,
         } => {
             let parsed_args = parse_json_or_at_file(root, &args)?;
+            let run = effective_run_selector(state_ctx, run, worktree.is_some());
             if run.is_none() && node.is_none() {
                 let providers =
                     build_domain_providers(root, state_ctx.adapter, state_ctx.code_db, Vec::new())?;

@@ -104,6 +104,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Validate { .. } => (OperationKind::Task, "validate result", None),
         Command::Reload => (OperationKind::General, "reload result", None),
         Command::Serve => (OperationKind::General, "server", None),
+        Command::Exec { .. } => (OperationKind::Task, "acdd_exec", None),
     }
 }
 
@@ -159,17 +160,48 @@ fn write_output(output: &mut dyn io::Write, text: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct CliRunSources {
+    root_from_cli: bool,
+    run_from_cli: bool,
+    env_workspace_root: Option<PathBuf>,
+    env_worktree: Option<PathBuf>,
+}
+
+fn non_empty_env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Parses CLI arguments from the process environment and executes the selected command.
 pub async fn run_from_env() -> Result<()> {
-    use clap::Parser;
-    Cli::parse().run().await
+    use clap::{parser::ValueSource, CommandFactory, FromArgMatches};
+    let matches = Cli::command().get_matches();
+    let root_from_cli = matches.value_source("root") == Some(ValueSource::CommandLine);
+    let run_from_cli = matches.subcommand().is_some_and(|(_, sub)| {
+        sub.ids().any(|id| id == "run") && sub.value_source("run") == Some(ValueSource::CommandLine)
+    });
+    let cli = Cli::from_arg_matches(&matches)?;
+    let sources = CliRunSources {
+        root_from_cli,
+        run_from_cli,
+        env_workspace_root: (!root_from_cli)
+            .then(|| non_empty_env_path("ACDD_WORKSPACE_ROOT"))
+            .flatten(),
+        env_worktree: (!root_from_cli)
+            .then(|| non_empty_env_path("ACDD_WORKTREE"))
+            .flatten(),
+    };
+    cli.run(sources).await
 }
 
 impl Cli {
     /// Run the parsed CLI command and terminate with canonical `StateError` exit codes (`2`/`3`/`4`).
-    async fn run(self) -> Result<()> {
-        match self.run_inner(&mut io::stdout(), None).await {
-            Ok(()) => Ok(()),
+    async fn run(self, sources: CliRunSources) -> Result<()> {
+        match self.run_inner(&mut io::stdout(), None, &sources).await {
+            Ok(Some(code)) if code != 0 => std::process::exit(code),
+            Ok(_) => Ok(()),
             Err(error) => {
                 if let Some(state_err) = StateError::from_anyhow(&error) {
                     eprintln!("{error:#}");
@@ -183,12 +215,101 @@ impl Cli {
     /// Runs CLI dispatch and formatting with a caller-provided output writer.
     #[cfg(test)]
     async fn run_with_writer<W: io::Write>(self, output: &mut W) -> Result<()> {
-        self.run_inner(output, None).await
+        let sources = CliRunSources {
+            root_from_cli: self.root.is_some(),
+            run_from_cli: std::env::var_os("ACDD_RUN").is_none(),
+            env_worktree: self
+                .root
+                .is_none()
+                .then(|| non_empty_env_path("ACDD_WORKTREE"))
+                .flatten(),
+            ..CliRunSources::default()
+        };
+        let _ = self.run_inner(output, None, &sources).await?;
+        Ok(())
     }
 
-    async fn run_inner(self, output: &mut dyn io::Write, cache_dir: Option<&Path>) -> Result<()> {
+    async fn run_inner(
+        mut self,
+        output: &mut dyn io::Write,
+        cache_dir: Option<&Path>,
+        sources: &CliRunSources,
+    ) -> Result<Option<i32>> {
+        let effective_root = self
+            .root
+            .clone()
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| sources.env_worktree.clone())
+            .or_else(|| {
+                self.root
+                    .is_none()
+                    .then(|| non_empty_env_path("ACDD_WORKTREE"))
+                    .flatten()
+            });
+        if let Some(Command::Delta {
+            workspace_root,
+            modified_files,
+            ..
+        }) = &mut self.command
+        {
+            if let (Some(root_arg), Some(first)) =
+                (effective_root.as_deref(), workspace_root.as_ref())
+            {
+                let is_explicit_dir = first == Path::new(".")
+                    || first == Path::new("..")
+                    || first.is_dir()
+                    || root_arg.join(first).is_dir();
+                if first.is_relative() && !is_explicit_dir {
+                    if let Some(file) = workspace_root.take() {
+                        modified_files.insert(0, file);
+                    }
+                }
+            }
+        }
+        if let Some(Command::Exec {
+            ref run,
+            ref worker,
+            ref command,
+        }) = self.command
+        {
+            let cwd = std::env::current_dir()?;
+            let explicit_cli_root = sources
+                .root_from_cli
+                .then_some(self.root.as_deref())
+                .flatten();
+            let target = crate::state_bridge::resolve_exec_target(
+                &crate::state_bridge::ExecResolveInput {
+                    explicit_cli_root,
+                    env_workspace_root: sources.env_workspace_root.as_deref(),
+                    env_worktree: sources.env_worktree.as_deref(),
+                    explicit_config: self.config.as_deref(),
+                    explicit_state_db: self.state_db.as_deref(),
+                    worker: worker.as_deref(),
+                    run_selector: run.as_deref(),
+                    run_from_cli: sources.run_from_cli,
+                    cwd: &cwd,
+                },
+            )?;
+            let Some((program, args)) = command.split_first() else {
+                bail!("exec requires a program and optional arguments after '--'");
+            };
+            let wt_str = target.worktree.to_string_lossy();
+            let run_env = target.run_id.as_ref().map(|r| r.as_str());
+            let code = acdd_core::sys::run_inherited_in_dir(
+                program,
+                args,
+                &target.worktree,
+                &[
+                    ("ACDD_WORKSPACE_ROOT", Some(wt_str.as_ref())),
+                    ("ACDD_WORKTREE", Some(wt_str.as_ref())),
+                    ("ACDD_RUN", run_env),
+                ],
+            )
+            .map_err(|err| anyhow::anyhow!("failed to execute '{program}': {err}"))?;
+            return Ok(Some(code));
+        }
         if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) {
-            if let Some(root) = self.root.as_deref() {
+            if let Some(root) = effective_root.as_deref() {
                 acdd_core::fs::check_git_entry_no_symlinks(root).map_err(|e| anyhow::anyhow!(e))?;
             }
         }
@@ -200,7 +321,7 @@ impl Cli {
             ) => workspace_root.as_deref(),
             _ => None,
         };
-        let root = match command_root(self.root.as_deref(), positional_root) {
+        let root = match command_root(effective_root.as_deref(), positional_root) {
             Ok(root) => root,
             Err(error) => {
                 if matches!(
@@ -209,11 +330,12 @@ impl Cli {
                         command: DocsCommand::Check
                     })
                 ) {
-                    return docs_check::check(
-                        self.root.as_deref().unwrap_or_else(|| Path::new(".")),
+                    docs_check::check(
+                        effective_root.as_deref().unwrap_or_else(|| Path::new(".")),
                         OutputFormat::from(self.format),
                         output,
-                    );
+                    )?;
+                    return Ok(None);
                 }
                 return Err(error);
             }
@@ -231,7 +353,7 @@ impl Cli {
                 OperationKind::General,
             );
             writeln!(output, "{formatted}")?;
-            return Ok(());
+            return Ok(None);
         }
         if let Some(Command::Guide { topic, force }) = self.command.as_ref() {
             if topic.trim() == "init" {
@@ -244,7 +366,7 @@ impl Cli {
                     OperationKind::Guide,
                 );
                 writeln!(output, "{formatted}")?;
-                return Ok(());
+                return Ok(None);
             }
         }
 
@@ -283,7 +405,7 @@ impl Cli {
                 )
                 .into());
             }
-            return Ok(());
+            return Ok(None);
         }
 
         let profile_at_root = match &self.command {
@@ -316,12 +438,16 @@ impl Cli {
             output,
             cache_dir,
             root,
+            effective_root.as_deref(),
+            sources.root_from_cli,
+            sources.run_from_cli,
             settings,
             database,
             state_db,
             profile_argument,
         )
-        .await
+        .await?;
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -330,6 +456,9 @@ impl Cli {
         output: &mut dyn io::Write,
         cache_dir: Option<&Path>,
         root: PathBuf,
+        effective_root: Option<&Path>,
+        root_from_cli: bool,
+        run_from_cli: bool,
         settings: paths::ResolvedPaths,
         db: PathBuf,
         state_db: Option<PathBuf>,
@@ -396,10 +525,12 @@ impl Cli {
         {
             span = span.with_state_db(db);
         }
-        let checkout_root = self.root.as_deref().map(std::path::absolute).transpose()?;
+        let checkout_root = effective_root.map(std::path::absolute).transpose()?;
         let state_ctx = dispatch_state::CliStateCtx {
             root: &root,
             checkout_root: checkout_root.as_deref().unwrap_or(&root),
+            root_from_cli,
+            run_from_cli,
             explicit_config: self.config.is_some(),
             state_db: state_db.as_deref(),
             code_db: Some(db.as_path()),
@@ -420,7 +551,7 @@ impl Cli {
 
         let exec_result: Result<(Value, Option<String>)> = (|| async {
             match command {
-                Command::Init { .. } | Command::Validate { .. } => {
+                Command::Init { .. } | Command::Validate { .. } | Command::Exec { .. } => {
                     unreachable!("handled prior to run_selected")
                 }
                 Command::Serve => {

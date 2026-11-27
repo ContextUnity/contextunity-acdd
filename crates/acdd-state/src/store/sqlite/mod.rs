@@ -349,6 +349,15 @@ impl StateReader for SqliteStateReader {
         })
     }
 
+    fn active_worker_claims(
+        &self,
+        worker_id: &acdd_core::ids::WorkerId,
+    ) -> Result<Vec<crate::types::ActiveWorkerClaim>, StateError> {
+        self.with_conn_or_default(Vec::new(), |conn| {
+            reader::active_worker_claims(conn, worker_id)
+        })
+    }
+
     fn load_node(
         &self,
         run_id: &RunId,

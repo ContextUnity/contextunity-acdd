@@ -235,6 +235,45 @@ fn macos_ps_command(pid: u32) -> std::process::Command {
     cmd
 }
 
+/// Spawn `program` with `args` inside `cwd`, inheriting stdio, applying `env_updates`,
+/// and returning the child's exit code (`128 + signal` on Unix signals).
+pub fn run_inherited_in_dir(
+    program: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+    env_updates: &[(&str, Option<&str>)],
+) -> std::io::Result<i32> {
+    let mut child = std::process::Command::new(program);
+    child
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    for (key, value) in env_updates {
+        match value {
+            Some(val) => {
+                child.env(key, val);
+            }
+            None => {
+                child.env_remove(key);
+            }
+        }
+    }
+    let status = child.status()?;
+    if let Some(code) = status.code() {
+        return Ok(code);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return Ok(128 + sig);
+        }
+    }
+    Ok(1)
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn parse_linux_proc_stat_start_time(stat: &str) -> Option<u64> {
     let rparen = stat.rfind(')')?;

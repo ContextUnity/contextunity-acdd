@@ -1153,3 +1153,14 @@ pub struct CompletedRunDigest {
     /// UTC ISO-8601 closure timestamp.
     pub closed_at: String,
 }
+
+/// Active `in_progress` gate claim summary returned by `StateReader::active_worker_claims`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveWorkerClaim {
+    /// Active run identifier owning the claimed gate.
+    pub run_id: RunId,
+    /// Claimed gate node identifier (`root:<gate>` or `task:<ref>:<gate>`).
+    pub node_id: String,
+    /// Effective worktree path resolved from node, parent task, or run (`None` when unset).
+    pub worktree: Option<String>,
+}

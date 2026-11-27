@@ -1,10 +1,11 @@
 //! Read-only SQLite queries and strict domain-newtype row decoders (`StateReader`).
 
 use crate::types::{
-    ArchiveCleanupEntry, ArtifactKind, BlackboardListReq, BlackboardPage, BlackboardRecord,
-    CheckResultRecord, GateArtifactRecord, GateClaimRecord, GateNodeRecord, GateTraceRecord,
-    ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot, RunGraphSnapshot, RunRecord,
-    RunTombstoneRecord, SubtaskRecord, TaskDependencyRecord, TraceStatus,
+    ActiveWorkerClaim, ArchiveCleanupEntry, ArtifactKind, BlackboardListReq, BlackboardPage,
+    BlackboardRecord, CheckResultRecord, GateArtifactRecord, GateClaimRecord, GateNodeRecord,
+    GateTraceRecord, ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot,
+    RunGraphSnapshot, RunRecord, RunTombstoneRecord, SubtaskRecord, TaskDependencyRecord,
+    TraceStatus,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::same_filesystem_path;
@@ -895,6 +896,38 @@ pub(crate) fn load_task_statuses(
             ))
         },
         "load task statuses",
+    )
+}
+
+pub(crate) fn active_worker_claims(
+    conn: &Connection,
+    worker_id: &WorkerId,
+) -> Result<Vec<ActiveWorkerClaim>, StateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.run_id, gn.node_id, COALESCE(gn.worktree, parent.worktree, r.worktree)
+             FROM gate_nodes gn
+             JOIN runs r ON r.run_id = gn.run_id
+             LEFT JOIN gate_nodes parent
+               ON parent.run_id = gn.run_id AND parent.node_id = gn.parent_id
+             WHERE r.status = 'active'
+               AND gn.status = 'in_progress'
+               AND gn.kind IN ('root_gate', 'task_gate')
+               AND gn.worker_id = ?1
+             ORDER BY r.run_id ASC, gn.seq_order ASC, gn.node_id ASC",
+        )
+        .map_err(|err| map_sql_err(err, "prepare active_worker_claims"))?;
+    collect_rows(
+        &mut stmt,
+        params![worker_id.as_str()],
+        |row| {
+            Ok(ActiveWorkerClaim {
+                run_id: col_id(row, 0, RunId::new, "runs.run_id")?,
+                node_id: col(row, 1, "gate_nodes.node_id")?,
+                worktree: col(row, 2, "gate_nodes.worktree")?,
+            })
+        },
+        "active_worker_claims",
     )
 }
 

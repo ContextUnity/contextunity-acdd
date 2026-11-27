@@ -11,15 +11,16 @@ title: CLI reference
 
 | Option | Behavior |
 | --- | --- |
-| `--root <PATH>` | Workspace for all commands. Defaults to the current directory; `ACDD_WORKSPACE_ROOT` can set it. |
+| `-C <PATH>`, `--root <PATH>` | Workspace or worktree root for all commands. Defaults to the current directory; `ACDD_WORKSPACE_ROOT` or fallback `ACDD_WORKTREE` sets it when `--root`/`-C` is omitted. |
 | `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.acdd/code-map.sqlite`; `ACDD_DB` can set it. Does not select the state store. |
 | `--state-db <PATH>` | State SQLite database path override (`ACDD_STATE_DB`). Defaults to `state_db` in `acdd.yaml` (`.acdd/state.sqlite` under the primary Git worktree). |
 | `--config <PATH>` | Root-confined ACDD YAML configuration; `ACDD_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/acdd.yaml` when present. |
 | `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation \| spec_planning`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
-- **Positional root**: `build`, `scan`, and `delta` also accept a positional workspace path (when combined with `--root`, both must resolve to the same directory).
-- **Flag precedence**: CLI flags override matching `ACDD_*` environment variables once per invocation.
+- **Positional root**: `build`, `scan`, and `delta` also accept a positional workspace path (when combined with `-C`/`--root`, both must resolve to the same directory).
+- **Flag & env precedence**: CLI `-C`/`--root` overrides `ACDD_WORKSPACE_ROOT`, which overrides `ACDD_WORKTREE`. All CLI `--run` options accept `ACDD_RUN` as an environment fallback so nested `acdd` invocations inside an active worktree shell inherit the active run automatically; explicit `--run` overrides `-C`/`--worktree` and positional selectors, while explicit `-C`/`--worktree` (and positional `clear` target) overrides ambient `ACDD_RUN`.
+- **Unified worktree targeting (`-C <worktree>`)**: passing `-C <worktree>` works uniformly for both code/docs commands (`build`, `delta`, `read`, `query`, `ast`, `lint`, `docs`) and state commands (`status`, `show`, `next`, `context`, `blackboard`, `claim`, `verify`, `submit`) without redundant `--run` or `--worktree` flags (resolving the primary repository via `--git-common-dir` and the active run via the target worktree).
 - **Profile precedence**: `--profile` / `ACDD_PROFILE` → spec `profile:` → `specs.<collection>.profile` → `profiles_dirs` → `.acdd/profile.yaml` → built-in `code` (plus `base`, `audit`, `documentation`, `spec_planning`).
 - **State DB resolution**: `--state-db` → `state_db` in `acdd.yaml` → `<primary_worktree>/.acdd/state.sqlite` (resolved via `--git-common-dir`).
 - **Runner vs. command environments**: spawned role runners receive `ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_STATE_DB`, and `ACDD_AGENT_SESSION_ID`; project build/test commands run in a sanitized environment with `TRACEPARENT`, internal `ACDD_*` variables (`ACDD_CONFIG`, `ACDD_DB`, `ACDD_EXTRACTION_CACHE_DIR`, `ACDD_PROFILE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `ACDD_WORKSPACE_ROOT`, `ACDD_AGENT_SESSION_ID`, `ACDD_ROLE_*`, `ACDD_MODEL`, `ACDD_REASONING`), and `GIT_*` variables scrubbed.
@@ -213,10 +214,22 @@ acdd run [--run RUN] [--jobs N] [--allow-main] [--dry-run]
 
 `acdd run` drives the active `Run` across topological DAG waves using the
 resolved `GateProfile`:
-- Executes mechanical `command:` / `call:` gates directly via `verify` + `submit`.
-- Spawns configured `roles.<role>.runner` processes for role-assigned gates (clamped to `--jobs 1` when `git.isolation: in_place`), streaming child output and collecting accepted submissions.
-- `--dry-run` computes schedulable waves without mutating storage or spawning runners.
+- `run`: Executes automated DAG waves using the resolved `GateProfile` (see `--dry-run`, `--jobs N`, `--allow-main`).
 - Role-assigned gates without a configured `runner:` command fail closed with `WORKFLOW_RUNNER_REQUIRED` (manual/subagent orchestration uses `claim` -> `verify` -> `submit` directly).
+
+### Worktree command transit (`exec`)
+
+```sh
+acdd exec [--run <RUN_ID_OR_NAME>] [--worker <WORKER_ID>] -- <PROGRAM> [ARGS...]
+acdd -C <WORKTREE> exec -- <PROGRAM> [ARGS...]
+```
+
+- Resolves the target checkout directory and optional active `run_id` strictly read-only (respecting `SubsystemId::State` and never creating `.acdd/state.sqlite` when absent) in deterministic priority order:
+  1. Explicit `-C`/`--root` (or current working directory already inside a linked Git worktree) uses that checkout directory and resolves its bound active run if present.
+  2. Explicit `--worker <WORKER_ID>` queries active `in_progress` gate claims across active runs and selects the claimed node/run worktree (failing closed on `0` or `>1` active claims).
+  3. Explicit `--run <RUN_ID_OR_NAME>` (or `ACDD_RUN`) resolves the active run and selects `run.worktree` (or the primary root for `in_place`).
+  4. Otherwise queries active runs and selects the single active run's worktree (failing closed on `0` runs or `>1` active runs listing candidates).
+- Executes `<PROGRAM> [ARGS...]` with `current_dir` set to the resolved worktree, setting `ACDD_WORKSPACE_ROOT`, `ACDD_WORKTREE`, and `ACDD_RUN` (when bound to a run; removed when unbound), inheriting stdio, and exiting with the child's exact exit code (`128 + signal` on Unix signals).
 
 ## Server, guide, and plugin tools
 

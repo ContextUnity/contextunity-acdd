@@ -10,8 +10,8 @@ use std::path::PathBuf;
 )]
 /// Top-level CLI parser.
 pub struct Cli {
-    #[arg(long, global = true, env = "ACDD_WORKSPACE_ROOT")]
-    /// Optional workspace root override.
+    #[arg(short = 'C', long, global = true, env = "ACDD_WORKSPACE_ROOT")]
+    /// Optional workspace root or worktree override (also falls back to `ACDD_WORKTREE`).
     pub root: Option<PathBuf>,
     #[arg(long, global = true, env = "ACDD_DB")]
     /// Optional code-map SQLite database path override.
@@ -68,7 +68,7 @@ pub enum Command {
         #[arg(long)]
         rev: Option<u32>,
         /// Active run id or name.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Delete checkpoints.
         #[arg(long)]
@@ -128,7 +128,7 @@ pub enum Command {
     /// Inspect status of an active `Run` (read-only).
     Status {
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
     },
     /// List active runs and optional closed tombstones (read-only).
@@ -157,7 +157,7 @@ pub enum Command {
         /// Optional target node cursor (`<gate>`, `<task_ref>`, or `<task_ref>.<gate>`).
         node: Option<String>,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
     },
     /// Refresh budgeted claim context without mutating claim state (read-only).
@@ -165,7 +165,7 @@ pub enum Command {
         /// Optional target node cursor (`<gate>`, `<task_ref>`, or `<task_ref>.<gate>`).
         node: Option<String>,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional worker filter when auto-selecting the active gate.
         #[arg(long, alias = "worker-id")]
@@ -174,7 +174,7 @@ pub enum Command {
     /// Show ready node cursors and topological execution waves (read-only).
     Next {
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional maximum number of ready cursors.
         #[arg(long)]
@@ -202,7 +202,7 @@ pub enum Command {
         /// Optional node cursor (omitting auto-selects next ready node).
         node: Option<String>,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Claiming worker identity.
         #[arg(long, alias = "worker-id", default_value = "cli")]
@@ -228,7 +228,7 @@ pub enum Command {
         /// Target node cursor.
         node: String,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional claiming worker identity check.
         #[arg(long, alias = "worker-id")]
@@ -251,7 +251,7 @@ pub enum Command {
         #[arg(long)]
         action: String,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Submitting worker identity.
         #[arg(long, alias = "worker-id", default_value = "cli")]
@@ -292,7 +292,7 @@ pub enum Command {
         #[arg(long)]
         reason: String,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional worker identity check.
         #[arg(long, alias = "worker-id")]
@@ -303,7 +303,7 @@ pub enum Command {
         /// Target gate or task container cursor.
         node: String,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Cascade-stale `in_progress` / `completed` downstream dependent tasks.
         #[arg(long)]
@@ -315,7 +315,7 @@ pub enum Command {
     /// Synchronize spec edits (and optional `--rebind-profile`) into an active `Run`.
     Sync {
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Rebind non-completed gates against the latest resolved profile.
         #[arg(long)]
@@ -334,7 +334,7 @@ pub enum Command {
         #[arg(long)]
         evidence: Option<String>,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
     },
     /// Read from or post to the run blackboard (`read | post`).
@@ -343,7 +343,7 @@ pub enum Command {
         #[arg(long, default_value = "read")]
         action: String,
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional source node cursor.
         #[arg(long)]
@@ -384,7 +384,7 @@ pub enum Command {
         /// Optional run ID or name selector.
         run_id: Option<String>,
         /// Optional run ID or name selector flag.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional cancellation reason recorded in the tombstone.
         #[arg(long)]
@@ -396,7 +396,7 @@ pub enum Command {
     /// Execute automated DAG waves (`--jobs N`, `--dry-run`, `--allow-main`).
     Run {
         /// Optional run ID or name selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Maximum concurrent wave jobs (clamped to `1` for `in_place`).
         #[arg(long)]
@@ -416,7 +416,7 @@ pub enum Command {
         #[arg(long, default_value = "{}")]
         args: String,
         /// Optional active run selector.
-        #[arg(long)]
+        #[arg(long, env = "ACDD_RUN")]
         run: Option<String>,
         /// Optional active node cursor.
         #[arg(long)]
@@ -570,6 +570,18 @@ pub enum Command {
         #[arg(long)]
         /// Force overwrite when `topic == "init"`.
         force: bool,
+    },
+    /// Execute a command inside the resolved active run or worktree checkout.
+    Exec {
+        /// Optional active run ID or name selector.
+        #[arg(long, env = "ACDD_RUN")]
+        run: Option<String>,
+        /// Optional worker identity whose active claimed gate selects the target worktree.
+        #[arg(long, alias = "worker-id")]
+        worker: Option<String>,
+        /// Program and arguments to execute (pass after `--`).
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
     },
 }
 

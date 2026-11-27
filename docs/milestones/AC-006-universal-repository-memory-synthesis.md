@@ -9,6 +9,7 @@ guidance:
   hitl: pro
 owners:
   - acdd.yaml
+  - .acdd/lint/
   - .gitignore
   - crates/acdd-core/src/
   - crates/acdd-spec/src/
@@ -28,7 +29,7 @@ owners:
   - CHANGELOG.md
   - docs/milestones/AC-006-universal-repository-memory-synthesis.md
 invariants:
-  - 'INV-SINGLE-OWNER: SchemaDef validation, confined ref resolution for specs_dirs:/workflows_dirs:, spec parsing, named item extraction, spec_deltas verification, 4-tier context relevance ranking, and roadmap filtering each live in one canonical module with zero duplicate validators or parallel registries.'
+  - 'INV-SINGLE-OWNER: SchemaDef validation, confined ref resolution for specs_dirs:/workflows_dirs:/lint_dirs:, spec parsing, named item extraction, spec_deltas verification, 4-tier context relevance ranking, and roadmap filtering each live in one canonical module with zero duplicate validators or parallel registries.'
   - 'INV-CORE-LEAF: Pure spec-schema, roadmap-display, and shared confined ref-resolver types in crates/acdd-core stay free of SQLite, Git, HTTP, or direct filesystem traversal.'
   - 'INV-SPEC-CRATE-BOUNDARY: Spec parsing, SchemaDef field/item validation, spec_deltas checking, and static roadmap filtering live in crates/acdd-spec (depending only on acdd-core); acdd-state owns live Run attachment and gate execution.'
   - 'INV-STATE-NO-INDEX: crates/acdd-state never imports crates/acdd-index; specs.<name> and paths.<name> lenses read code-map doc edges strictly through host DocsDomainProvider in src/state_bridge/docs_domain.rs.'
@@ -40,7 +41,7 @@ invariants:
 acceptance_criteria:
   - 'AC-01: GIVEN ADR 0014 admitted and ADR 0006 updated with the 4-tier context relevance policy, WHEN checked alongside the workspace, THEN both ADRs and the retrospectives .gitignore decision are recorded before implementation begins and tests/acdd/spec_schemas/ compiles cleanly.'
   - 'AC-02: GIVEN any Spec document validated against built-in contract (default when frontmatter spec: is omitted), WHEN parsed by crates/acdd-spec, THEN existing milestones, plans, tasks, and workflows run identically with zero doc_type == "contract" branches; ephemeral --goal text lives under goal: rather than spec:.'
-  - 'AC-03: GIVEN acdd.yaml specs: entries using inline definitions, base: contract|memory, or external ref: files under specs_dirs: [.acdd/specs], WHEN loaded through the shared confined ref resolver, THEN specs.<name> resolves fields, items, workflow:, and roadmap: true|false deterministically while rejecting path traversal, multi-hop inheritance, or duplicate specs:/roadmap: keys inside .acdd/workflows/*.yaml with ACDD_WORKFLOW_SCHEMA_INVALID.'
+  - 'AC-03: GIVEN acdd.yaml specs: entries using inline definitions, base: contract|memory, or external ref: files under specs_dirs: [.acdd/specs] and architecture/lint definitions under lint_dirs: [.acdd/lint], WHEN loaded through the shared confined ref resolver, THEN specs.<name> resolves fields, items, workflow:, and roadmap: true|false deterministically, .acdd/lint/*.yaml merges zones/rules/complexity/unused_public_api deterministically (failing closed on duplicate zone names, rule IDs, or scalar settings), inline architecture: in acdd.yaml is rejected by strict schema validation (zero legacy compatibility shim), and path traversal, multi-hop inheritance, or duplicate specs:/roadmap: keys inside .acdd/workflows/*.yaml fail closed.'
   - 'AC-04: GIVEN a Spec declaring named items: collections (with optional singular item: token), WHEN validated in 3-step order (core shape -> SchemaDef fields/items -> closed DAG including cross-Spec refs RES-001#probe-a), THEN valid Specs pass and unknown fields fail closed with SPEC_FIELD_UNKNOWN (+ edit-distance hint), undeclared headings with SPEC_ITEM_UNKNOWN, and unresolved refs with ITEM_DEPENDENCY_UNKNOWN.'
   - 'AC-05: GIVEN acdd start [SPEC ...] [--workflow <name>] [--goal "..."] with 0, 1, or N registered specs, WHEN the run starts and a worker claims a gate, THEN one resolved workflow executes and all attached specs appear in ClaimResp.contract.attached_specs[] within byte budgets; WHEN a gate runs docs.specs with { spec: <name>, required: true }, THEN verify fails closed if no valid file of that spec type was created or modified in gate scope.'
   - 'AC-06: GIVEN gates referencing specs.<name> and workflow paths.<name> in scope: and context:, WHEN evaluated by DocsDomainProvider and workflow validation, THEN specs.<name> and paths.<name> expand scope globs and rank context items in strict 4-tier order (1. direct citation -> 2. scope/owners overlap -> 3. code-map edges -> 4. global ** fallback) bounded by max_bytes; legacy docs.instructions/docs.adrs and unknown names fail validation with redirect hints while empty globs emit a warning.'
@@ -70,8 +71,10 @@ required_skills:
 
 ## Target architecture & decisions
 
-### 1. Single `acdd.yaml` `specs:` registry & `roadmap:` display config
-- `acdd.yaml` `specs:` (`SpecConfig`) owns `path`/`paths`, `prefixes`, `digits`, `base: contract|memory`, external `ref:` (resolved in `specs_dirs: [.acdd/specs]` via one shared confined `<name> | <path>[:<sha256_prefix>]` helper in `crates/acdd-core/src/config/`), `workflow:`, `roadmap: true|false`, `fields`, and `items`.
+### 1. Single `acdd.yaml` manifest, `specs:` registry, `lint_dirs:`, & `roadmap:` display config
+- `acdd.yaml` stays a compact workspace manifest referencing the three symmetrical `.acdd/` directories (`workflows_dirs: [.acdd/workflows]`, `specs_dirs: [.acdd/specs]`, `lint_dirs: [.acdd/lint]`) via one shared confined `<name> | <path>[:<sha256_prefix>]` resolver in `crates/acdd-core/src/config/`.
+- `acdd.yaml` `specs:` (`SpecConfig`) owns `path`/`paths`, `prefixes`, `digits`, `base: contract|memory`, external `ref:` (resolved in `specs_dirs:`), `workflow:`, `roadmap: true|false`, `fields`, and `items`.
+- Architecture zones, complexity thresholds, `unused_public_api`, and lint rules live strictly in `.acdd/lint/*.yaml` (merged lexicographically with fail-closed rejection on duplicate zone names, duplicate `rule.id`, or conflicting scalar settings) plus existing document-embedded invariants; inline `architecture:` is removed from `acdd.yaml` (no compatibility shim — `#[serde(deny_unknown_fields)]` rejects it directly) and this repository's rules move into `.acdd/lint/`.
 - `acdd.yaml` `roadmap:` (alongside `response:`) owns CLI presentation (`badges`, `group_by: wave|<field>|spec`, `color: auto|always|never` with `NO_COLOR`).
 - Workflow files (`.acdd/workflows/*.yaml`) reject `specs:` and `roadmap:` keys fail-closed (`ACDD_WORKFLOW_SCHEMA_INVALID`).
 
@@ -151,28 +154,33 @@ subtasks:
 
 ```yaml
 task_ref: acdd-yaml-specs-and-refs
-target: "Extend SpecConfig in acdd.yaml with base, ref, roadmap, fields, and items, add specs_dirs and shared confined ref resolution in crates/acdd-core/src/config/, parse acdd.yaml roadmap display config, and reject specs/roadmap keys inside workflows"
+target: "Extend SpecConfig in acdd.yaml with base, ref, roadmap, fields, and items, add specs_dirs and lint_dirs (.acdd/lint/*.yaml, removing inline architecture: from acdd.yaml) over shared confined ref resolution in crates/acdd-core/src/config/, parse acdd.yaml roadmap display config, and reject specs/roadmap keys inside workflows"
 contract_revision: 1
 depends_on:
   - bootstrap-adr-and-seams
 tags:
   - default
 scope:
+  - acdd.yaml
+  - .acdd/lint/
   - crates/acdd-core/src/config/
   - crates/acdd-index/src/docs.rs
   - crates/acdd-state/src/workflow/schema.rs
   - crates/acdd-state/src/workflow/validate.rs
+  - src/cli/validate.rs
   - tests/acdd/spec_schemas/config.rs
 status: planned
 subtasks:
   - subtask_ref: shared-ref-resolver-and-specs-config
-    title: "Add shared confined <name> | <path>[:<sha256_prefix>] resolver in crates/acdd-core/src/config/ for both specs_dirs: [.acdd/specs] and workflows_dirs:, extend SpecConfig with base/ref/roadmap/fields/items (single-hop only), and add RoadmapDisplayConfig"
+    title: "Add shared confined <name> | <path>[:<sha256_prefix>] resolver in crates/acdd-core/src/config/ for specs_dirs: [.acdd/specs], workflows_dirs:, and lint_dirs: [.acdd/lint], extend SpecConfig with base/ref/roadmap/fields/items (single-hop only), and add RoadmapDisplayConfig"
+  - subtask_ref: externalize-lint-rules-from-acdd-yaml
+    title: "Move architecture zones/rules/complexity/unused_public_api out of acdd.yaml into .acdd/lint/*.yaml (deterministic merge, fail-closed on duplicate zone/rule.id/scalar, no inline architecture: compatibility shim), validate lint_dirs in acdd validate, and migrate this repository's rules to .acdd/lint/"
   - subtask_ref: reject-duplicate-workflow-keys
     title: "Ensure .acdd/workflows/*.yaml rejects duplicate specs: or roadmap: keys fail-closed with ACDD_WORKFLOW_SCHEMA_INVALID and acdd-index reads spec_paths cleanly without acdd-state coupling"
 ```
 
-- **Wave**: `1` | **Budget**: `~440` net LOC.
-- **Seam & mutation proof (`AC-03`)**: `tests/acdd/spec_schemas/config.rs` proves inline, `base: contract|memory`, and `.acdd/specs/*.yaml` `ref:` entries load deterministically, while path traversal, multi-hop `base:`, or `specs:`/`roadmap:` inside `.acdd/workflows/*.yaml` fail closed.
+- **Wave**: `1` | **Budget**: `~560` net LOC.
+- **Seam & mutation proof (`AC-03`)**: `tests/acdd/spec_schemas/config.rs` proves inline, `base: contract|memory`, and `.acdd/specs/*.yaml` `ref:` entries plus `.acdd/lint/*.yaml` merge load deterministically, while inline `architecture:` in `acdd.yaml`, duplicate zone/rule IDs across lint files, path traversal, multi-hop `base:`, or `specs:`/`roadmap:` inside `.acdd/workflows/*.yaml` fail closed.
 
 ### task: named-items-and-attached-specs
 
@@ -341,7 +349,7 @@ subtasks:
 
 ## Negative boundaries
 
-- No duplicate `specs:` or `roadmap:` keys inside `.acdd/workflows/*.yaml`, and no hidden `specs → paths` magic bridging.
+- No inline `architecture:` block inside `acdd.yaml` (architecture zones/rules live strictly in `.acdd/lint/*.yaml` via `lint_dirs:` and document-embedded invariants), no duplicate `specs:` or `roadmap:` keys inside `.acdd/workflows/*.yaml`, and no hidden `specs → paths` magic bridging.
 - No separate `inputs:` workflow/milestone DSL and no nested `GateDef.workflow:` YAML merging (multi-workflow chaining uses pause-and-call child runs in [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
 - No memory-specific parser, registry, status axis, evidence collector, reviewer gate, context lens, CLI command, or MCP tool.
 - No second schema validator or file resolver outside `SchemaDef` and the shared `acdd-core` confined reference resolver.

@@ -52,15 +52,104 @@ pub fn build_domain_providers(
     common::build_composite_providers(config, providers)
 }
 
-fn resolve_worktree_active_run_node(
+/// Inputs for resolving the target checkout directory and optional active run for `acdd exec`.
+#[derive(Debug, Clone)]
+pub struct ExecResolveInput<'a> {
+    /// Explicit `-C` / `--root` passed on the CLI (`ValueSource::CommandLine`).
+    pub explicit_cli_root: Option<&'a Path>,
+    /// Ambient `ACDD_WORKSPACE_ROOT` environment value when `--root`/`-C` was not passed on CLI.
+    pub env_workspace_root: Option<&'a Path>,
+    /// Ambient `ACDD_WORKTREE` fallback when `--root`/`-C` and `ACDD_WORKSPACE_ROOT` are absent.
+    pub env_worktree: Option<&'a Path>,
+    /// Optional global `--config` / `ACDD_CONFIG` override.
+    pub explicit_config: Option<&'a Path>,
+    /// Optional global `--state-db` / `ACDD_STATE_DB` override.
+    pub explicit_state_db: Option<&'a Path>,
+    /// Optional `--worker <id>` claim selector.
+    pub worker: Option<&'a str>,
+    /// Optional `--run <id|name>` (or `ACDD_RUN`) selector.
+    pub run_selector: Option<&'a str>,
+    /// Whether `--run` came from the CLI rather than `ACDD_RUN`.
+    pub run_from_cli: bool,
+    /// Process current working directory.
+    pub cwd: &'a Path,
+}
+
+/// Resolved target checkout directory and optional bound active run for `acdd exec`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecTarget {
+    /// Canonical checkout directory in which to execute the child command.
+    pub worktree: std::path::PathBuf,
+    /// Active `run_id` bound to the resolved target, if any.
+    pub run_id: Option<acdd_core::ids::RunId>,
+}
+
+fn canonical_existing_dir(path: &Path) -> Result<std::path::PathBuf, StateError> {
+    let canon = path.canonicalize().map_err(|err| {
+        StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!("checkout path '{}' is unavailable: {err}", path.display()),
+        )
+    })?;
+    let canon = acdd_core::fs::canonicalize_macos_var(&canon);
+    if !canon.is_dir() {
+        return Err(StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!("checkout path '{}' is not a directory", canon.display()),
+        ));
+    }
+    Ok(canon)
+}
+
+fn load_exec_adapter(root: &Path, explicit_config: Option<&Path>) -> Result<Adapter, StateError> {
+    let config_path = explicit_config.map(|cfg| {
+        if cfg.is_absolute() {
+            cfg.to_path_buf()
+        } else {
+            root.join(cfg)
+        }
+    });
+    acdd_core::config::load_adapter(root, config_path.as_deref()).map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("ACDD_PROFILE_SCHEMA_INVALID: {err}"),
+        )
+    })
+}
+
+fn resolve_exec_state_db(
+    primary: &Path,
+    root: &Path,
+    explicit_state_db: Option<&Path>,
+    adapter: &Adapter,
+) -> Result<std::path::PathBuf, StateError> {
+    if let Some(path) = explicit_state_db {
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        };
+        return Ok(acdd_core::config::resolve_effective_state_db_path(
+            primary,
+            Some(&resolved),
+            adapter,
+        ));
+    }
+    if primary == root {
+        return Ok(acdd_core::config::resolve_effective_state_db_path(
+            primary, None, adapter,
+        ));
+    }
+    acdd_state::usecases::deps::try_resolve_effective_state_db(primary, None)
+}
+
+fn resolve_worktree_active_run(
     state_db: &Path,
     worktree: &Path,
-    predicate: &dyn Fn(&acdd_state::types::GateNodeRecord) -> bool,
 ) -> std::result::Result<
     Option<(
+        acdd_state::store::sqlite::SqliteStateReader,
         acdd_state::types::RunRecord,
-        acdd_state::types::RunGraphSnapshot,
-        acdd_state::types::GateNodeRecord,
     )>,
     StateError,
 > {
@@ -84,9 +173,238 @@ fn resolve_worktree_active_run_node(
         }
         None => None,
     };
-    let Some(run) = run else {
+    Ok(run.map(|r| (reader, r)))
+}
+
+fn resolve_exec_checkout_target(
+    checkout: std::path::PathBuf,
+    primary: std::path::PathBuf,
+    explicit_config: Option<&Path>,
+    explicit_state_db: Option<&Path>,
+) -> Result<ExecTarget, StateError> {
+    let adapter_root = if explicit_config.is_some()
+        || checkout
+            .join(acdd_core::config::ACDD_CONFIG_FILE)
+            .is_file()
+    {
+        &checkout
+    } else {
+        &primary
+    };
+    let adapter = load_exec_adapter(adapter_root, explicit_config)?;
+    let run_id = if adapter.modules.is_subsystem_enabled(SubsystemId::State) {
+        let state_db = resolve_exec_state_db(&primary, &checkout, explicit_state_db, &adapter)?;
+        resolve_worktree_active_run(&state_db, &checkout)?.map(|(_, run)| run.run_id)
+    } else {
+        None
+    };
+    Ok(ExecTarget {
+        worktree: checkout,
+        run_id,
+    })
+}
+
+fn resolve_exec_run_target(
+    run: &acdd_state::types::RunRecord,
+    primary: &Path,
+) -> Result<ExecTarget, StateError> {
+    let raw_wt = run
+        .worktree
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(primary);
+    let worktree = canonical_existing_dir(raw_wt)?;
+    Ok(ExecTarget {
+        worktree,
+        run_id: Some(run.run_id.clone()),
+    })
+}
+
+fn resolve_exec_worker_target(
+    reader: &acdd_state::store::sqlite::SqliteStateReader,
+    primary: &Path,
+    raw_worker: &str,
+) -> Result<ExecTarget, StateError> {
+    let worker_id = acdd_core::ids::WorkerId::new(raw_worker)?;
+    let claims = acdd_state::store::traits::StateReader::active_worker_claims(reader, &worker_id)?;
+    match claims.len() {
+        0 => Err(StateError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!("no active in_progress gate found claimed by worker '{worker_id}'"),
+        )
+        .with_hint("pass -C <worktree>, --run <run_id|run_name>, or claim a gate first")),
+        1 => {
+            let claim = claims.into_iter().next().expect("checked len == 1");
+            let raw_wt = claim.worktree.as_deref().map(Path::new).unwrap_or(primary);
+            Ok(ExecTarget {
+                worktree: canonical_existing_dir(raw_wt)?,
+                run_id: Some(claim.run_id),
+            })
+        }
+        _ => {
+            let candidates: Vec<String> = claims
+                .iter()
+                .map(|c| {
+                    let wt = c
+                        .worktree
+                        .as_deref()
+                        .map(|w| acdd_core::fs::canonicalize_macos_var(Path::new(w)))
+                        .unwrap_or_else(|| primary.to_path_buf());
+                    format!("{}:{} -> {}", c.run_id, c.node_id, wt.display())
+                })
+                .collect();
+            Err(StateError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                format!(
+                    "worker '{worker_id}' has {} active in_progress claims: {}",
+                    claims.len(),
+                    candidates.join(", ")
+                ),
+            )
+            .with_hint("pass -C <worktree> or --run <run_id|run_name> to disambiguate"))
+        }
+    }
+}
+
+/// Read-only resolution of the target worktree and active `run_id` for `acdd exec`
+/// without creating `.acdd/state.sqlite` or opening it read-write.
+pub fn resolve_exec_target(input: &ExecResolveInput<'_>) -> Result<ExecTarget, StateError> {
+    if let Some(raw_root) = input.explicit_cli_root {
+        let checkout = canonical_existing_dir(raw_root)?;
+        let primary = acdd_state::usecases::lifecycle::resolve_repo_layout_optional(&checkout)?
+            .map(|l| l.primary_worktree)
+            .unwrap_or_else(|| checkout.clone());
+        return resolve_exec_checkout_target(
+            checkout,
+            primary,
+            input.explicit_config,
+            input.explicit_state_db,
+        );
+    }
+
+    let cwd_canon = canonical_existing_dir(input.cwd)?;
+    if let Some(layout) = acdd_state::usecases::lifecycle::resolve_repo_layout_optional(&cwd_canon)?
+    {
+        if layout.target_worktree != layout.primary_worktree {
+            return resolve_exec_checkout_target(
+                layout.target_worktree,
+                layout.primary_worktree,
+                input.explicit_config,
+                input.explicit_state_db,
+            );
+        }
+    }
+
+    if input.env_workspace_root.is_none() && input.worker.is_none() && !input.run_from_cli {
+        if let Some(env_wt) = input.env_worktree {
+            let wt_canon = canonical_existing_dir(env_wt)?;
+            if let Some(layout) =
+                acdd_state::usecases::lifecycle::resolve_repo_layout_optional(&wt_canon)?
+            {
+                if layout.target_worktree != layout.primary_worktree {
+                    return resolve_exec_checkout_target(
+                        layout.target_worktree,
+                        layout.primary_worktree,
+                        input.explicit_config,
+                        input.explicit_state_db,
+                    );
+                }
+            }
+        }
+    }
+
+    let anchor_raw = input
+        .env_workspace_root
+        .or(input.env_worktree)
+        .unwrap_or(cwd_canon.as_path());
+    let anchor = canonical_existing_dir(anchor_raw)?;
+    let primary = acdd_state::usecases::lifecycle::resolve_repo_layout_optional(&anchor)?
+        .map(|l| l.primary_worktree)
+        .unwrap_or_else(|| anchor.clone());
+    let adapter = load_exec_adapter(&primary, input.explicit_config)?;
+    if !adapter.modules.is_subsystem_enabled(SubsystemId::State) {
+        return Err(StateError::new(
+            ErrorCode::FeatureDisabled,
+            "state subsystem is disabled in modules:",
+        ));
+    }
+    let state_db = resolve_exec_state_db(&primary, &anchor, input.explicit_state_db, &adapter)?;
+    let engine_cfg = build_state_engine_config(primary.clone(), &primary, &state_db, None, &adapter);
+    let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db);
+
+    if let Some(raw_worker) = input.worker {
+        return resolve_exec_worker_target(&reader, &primary, raw_worker);
+    }
+
+    if let Some(run_sel) = input.run_selector {
+        let run = acdd_state::usecases::lifecycle::resolve_active_run(
+            &engine_cfg,
+            &reader,
+            Some(run_sel),
+            None,
+        )?;
+        return resolve_exec_run_target(&run, &primary);
+    }
+
+    let active_runs = acdd_state::usecases::lifecycle::list_all_runs(
+        &reader,
+        Some(acdd_state::types::RunStatus::Active),
+    )?;
+    match active_runs.len() {
+        0 => Err(StateError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            "no active run found for this workspace",
+        )
+        .with_hint(
+            "pass -C <worktree>, --run <run_id|run_name>, --worker <id>, or start a run with 'acdd start'",
+        )),
+        1 => {
+            let run = active_runs.into_iter().next().expect("checked len == 1");
+            resolve_exec_run_target(&run, &primary)
+        }
+        _ => {
+            let candidates: Vec<String> = active_runs
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{} ({}) -> {}",
+                        r.run_id,
+                        r.run_name,
+                        r.worktree.as_deref().unwrap_or("<in_place>")
+                    )
+                })
+                .collect();
+            Err(StateError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                format!(
+                    "{} active runs exist; target is ambiguous: {}",
+                    active_runs.len(),
+                    candidates.join(", ")
+                ),
+            )
+            .with_hint("pass -C <worktree>, --run <run_id|run_name>, or --worker <id>"))
+        }
+    }
+}
+
+fn resolve_worktree_active_run_node(
+    state_db: &Path,
+    worktree: &Path,
+    predicate: &dyn Fn(&acdd_state::types::GateNodeRecord) -> bool,
+) -> std::result::Result<
+    Option<(
+        acdd_state::types::RunRecord,
+        acdd_state::types::RunGraphSnapshot,
+        acdd_state::types::GateNodeRecord,
+    )>,
+    StateError,
+> {
+    let Some((reader, run)) = resolve_worktree_active_run(state_db, worktree)? else {
         return Ok(None);
     };
+    let wt_canon = acdd_core::fs::canonicalize_macos_var(worktree);
+    let wt_canon_str = wt_canon.to_string_lossy();
+    let wt_raw_str = worktree.to_string_lossy();
     let Some(graph) = acdd_state::store::traits::StateReader::load_run_graph(&reader, &run.run_id)?
     else {
         return Ok(None);

@@ -2,11 +2,11 @@
 
 use crate::machine::SyncPlan;
 use crate::types::{
-    ArtifactKind, BlackboardListReq, BlackboardPage, BlackboardRecord, BlackboardStatusPatch,
-    ClaimInsertInput, GateArtifactRecord, GateClaimRecord, GateNodeRecord, GateTraceRecord,
-    ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot, RunGraphSnapshot, RunRecord,
-    RunTombstoneRecord, StoragePreconditions, SubtaskRecord, TraceFinishInput, TraceStartInput,
-    TransitionPlan,
+    ActiveWorkerClaim, ArtifactKind, BlackboardListReq, BlackboardPage, BlackboardRecord,
+    BlackboardStatusPatch, ClaimInsertInput, GateArtifactRecord, GateClaimRecord, GateNodeRecord,
+    GateTraceRecord, ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot,
+    RunGraphSnapshot, RunRecord, RunTombstoneRecord, StoragePreconditions, SubtaskRecord,
+    TraceFinishInput, TraceStartInput, TransitionPlan,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::RunId;
@@ -31,6 +31,12 @@ pub trait StateReader: Send + Sync {
         &self,
         worktree: &str,
     ) -> Result<Option<RunRecord>, StateError>;
+
+    /// Load all active `in_progress` gate claims owned by `worker_id` across active runs in one query.
+    fn active_worker_claims(
+        &self,
+        worker_id: &acdd_core::ids::WorkerId,
+    ) -> Result<Vec<ActiveWorkerClaim>, StateError>;
 
     /// Load a single `gate_nodes` row by `(run_id, node_id)`.
     fn load_node(

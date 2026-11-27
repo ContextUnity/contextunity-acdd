@@ -53,6 +53,13 @@ macro_rules! impl_state_reader_delegate {
                 $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, resolve_active_run_by_worktree(worktree))
             }
 
+            fn active_worker_claims(
+                &self,
+                worker_id: &acdd_core::ids::WorkerId,
+            ) -> Result<Vec<$crate::types::ActiveWorkerClaim>, acdd_core::errors::StateError> {
+                $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, active_worker_claims(worker_id))
+            }
+
             fn load_node(
                 &self,
                 run_id: &acdd_core::ids::RunId,

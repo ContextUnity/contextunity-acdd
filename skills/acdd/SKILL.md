@@ -30,19 +30,26 @@ literal or zero-normalized numeric prefix, suffix, and substring (first nonempty
 tier must be unique). Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
 and shared locks automatically.
 
-When invoking `acdd` from the repository root (`acdd` on `$PATH`), pass relative
-worktree flags instead of repeating `cd /abs/path && /abs/bin/acdd`:
+When invoking `acdd` from the repository root (`acdd` on `$PATH`), pass `-C <worktree>`
+(short alias for `--root`; falls back to `ACDD_WORKSPACE_ROOT` then `ACDD_WORKTREE`,
+with `ACDD_RUN` inherited by all `--run` options) for both code/docs and state
+commands, or use `acdd exec` to run arbitrary commands inside the resolved
+worktree without `cd /abs/path`:
 
 ```sh
 # Refresh, read, query, or lint an isolated worktree without changing CWD:
-acdd --root .worktrees/<run_name> delta
-acdd --root .worktrees/<run_name> query search "SymbolName" --limit 10
-acdd --root .worktrees/<run_name> read src/lib.rs --start-line 1 --line-count 80
-acdd --root .worktrees/<run_name> lint --categories all
+acdd -C .worktrees/<run_name> delta
+acdd -C .worktrees/<run_name> query search "SymbolName" --limit 10
+acdd -C .worktrees/<run_name> read src/lib.rs --start-line 1 --line-count 80
+acdd -C .worktrees/<run_name> lint --categories all
 
-# Target the worktree for gate operations (reserve cd for git/cargo):
-acdd claim <node_cursor> --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
-acdd submit <node_cursor> --action pass --run <run> --worker <worker_id> --worktree .worktrees/<run_name>
+# Target the worktree uniformly for state and gate operations:
+acdd -C .worktrees/<run_name> status
+acdd -C .worktrees/<run_name> claim <node_cursor> --worker <worker_id>
+acdd -C .worktrees/<run_name> submit <node_cursor> --action pass --worker <worker_id>
+
+# Run arbitrary build/test/git commands inside the active run or worker worktree:
+acdd exec [--run <id|name>] [--worker <worker_id>] -- <program> [args...]
 ```
 
 ## Discovery & read protocol (ACDD-First)
