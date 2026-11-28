@@ -17,12 +17,15 @@ fn mcp_lint_surface_registration_parity_and_budgeting() {
         (
             "acdd.yaml",
             r#"roots: [src, docs]
-architecture:
-  zones:
-    core: ["src/core/**"]
-    infra: ["src/infra/**"]
 response:
   max_output_bytes: 2048
+"#,
+        ),
+        (
+            ".acdd/lint/zones.yaml",
+            r#"zones:
+  core: ["src/core/**"]
+  infra: ["src/infra/**"]
 "#,
         ),
         (

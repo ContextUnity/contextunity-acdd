@@ -130,7 +130,7 @@ impl WorkspacePathPolicy {
     ///
     /// Excludes `.git/**`, `.worktrees/**`, `is_engine_managed(rel_path)`, configured `state_db`/`code_db`
     /// (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` (all APFS case-insensitively) EXCEPT
-    /// the tracked whitelist `.acdd/workflows/**`, `.acdd/specs/**`, and `.acdd/frameworks/**`.
+    /// the tracked whitelist `.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/lint/**`, and `.acdd/frameworks/**`.
     /// Explicitly includes tracked artifacts such as `Cargo.lock` and `tests/**/*.jsonl`.
     pub fn is_candidate_included(&self, rel_path: &str) -> bool {
         let Some(norm) = normalize_rel_path(rel_path) else {
@@ -316,6 +316,18 @@ fn has_extension_ci(rel_path: &str, expected: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case(expected))
 }
 
+/// Return `true` if a directory entry encountered during a workspace walk should be skipped.
+///
+/// Skips VCS/build/dependency directories (`.git`, `.worktrees`, `target`, `node_modules`, `.venv`)
+/// and ephemeral `.acdd/{run,tmp,extraction-cache}` subdirectories.
+pub fn should_skip_walk_dir(parent_dir_name: Option<&str>, dir_name: &str) -> bool {
+    matches!(
+        dir_name,
+        ".git" | ".worktrees" | "target" | "node_modules" | ".venv"
+    ) || (parent_dir_name == Some(".acdd")
+        && matches!(dir_name, "run" | "tmp" | "extraction-cache"))
+}
+
 /// Return `true` if `rel_path` has a `.json` file extension (case-insensitive, APFS-safe).
 pub fn has_json_extension(rel_path: &str) -> bool {
     has_extension_ci(rel_path, "json")
@@ -336,6 +348,7 @@ fn is_db_or_sidecar(norm_path: &str, db_path: &str) -> bool {
 fn is_acdd_tracked_whitelist(norm_path: &str) -> bool {
     norm_path.starts_with(".acdd/workflows/")
         || norm_path.starts_with(".acdd/specs/")
+        || norm_path.starts_with(".acdd/lint/")
         || norm_path.starts_with(".acdd/frameworks/")
 }
 
@@ -701,6 +714,7 @@ mod tests {
             (".acdd/frameworks/django.yaml", false, true),
             (".acdd/workflows/hotfix.yaml", false, true),
             (".acdd/specs/example.md", false, true),
+            (".acdd/lint/rules.yaml", false, true),
             (".acdd/code-map.sqlite", false, false),
             (".acdd/tmp/foo", false, false),
             ("Cargo.lock", false, true),
@@ -1037,5 +1051,31 @@ mod tests {
         assert!(roundtrip.is_binary_extension_allowed("locale/django.mo"));
         assert!(!roundtrip.is_binary_extension_allowed("src/evil.bin"));
         assert!(!roundtrip.is_binary_extension_allowed("no_extension"));
+    }
+
+    #[test]
+    fn should_skip_walk_dir_matrix() {
+        let cases: &[(Option<&str>, &str, bool)] = &[
+            (None, ".git", true),
+            (Some("repo"), ".worktrees", true),
+            (Some("repo"), "target", true),
+            (Some("web"), "node_modules", true),
+            (Some("py"), ".venv", true),
+            (Some(".acdd"), "run", true),
+            (Some(".acdd"), "tmp", true),
+            (Some(".acdd"), "extraction-cache", true),
+            (Some(".acdd"), "workflows", false),
+            (Some(".acdd"), "specs", false),
+            (Some("src"), "run", false),
+            (Some("src"), "tmp", false),
+            (None, "docs", false),
+        ];
+        for &(parent, dir, expected) in cases {
+            assert_eq!(
+                should_skip_walk_dir(parent, dir),
+                expected,
+                "should_skip_walk_dir({parent:?}, {dir:?})"
+            );
+        }
     }
 }

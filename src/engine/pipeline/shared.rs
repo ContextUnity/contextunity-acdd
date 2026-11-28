@@ -171,17 +171,25 @@ pub(super) fn extract_typed_source_with_digest(
                 "symbol_claims": metadata["symbol_claims"],
                 "declared_invariants": metadata["declared_invariants"],
             });
-            if metadata["status"].is_null() {
-                details.as_object_mut().unwrap().remove("status");
-            }
-            if let Some(rules) = metadata
-                .get(acdd_index::models::details::NodeDetailKey::ARCH_RULES)
-                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
-            {
-                details.as_object_mut().unwrap().insert(
-                    acdd_index::models::details::NodeDetailKey::ARCH_RULES.to_owned(),
-                    rules.clone(),
-                );
+            if let Some(obj) = details.as_object_mut() {
+                if metadata["status"].is_null() {
+                    obj.remove("status");
+                }
+                if let Some(is_spec_doc) = metadata.get("is_spec_doc").and_then(Value::as_bool) {
+                    obj.insert("is_spec_doc".to_owned(), Value::Bool(is_spec_doc));
+                }
+                if let Some(spec) = metadata.get("spec").and_then(Value::as_str) {
+                    obj.insert("spec".to_owned(), Value::String(spec.to_owned()));
+                }
+                if let Some(rules) = metadata
+                    .get(acdd_index::models::details::NodeDetailKey::ARCH_RULES)
+                    .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+                {
+                    obj.insert(
+                        acdd_index::models::details::NodeDetailKey::ARCH_RULES.to_owned(),
+                        rules.clone(),
+                    );
+                }
             }
             nodes.push(Node {
                 native_semantic: None,

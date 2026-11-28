@@ -91,6 +91,8 @@ pub(super) fn collect_syntax_violations(
     collect_parse_violations(conn, &index.scope, violations)?;
     collect_fact_budget_violations(conn, index, complexity, violations)?;
     collect_type_homonym_violations(conn, index, complexity, workspace_root, violations)?;
+    collect_file_prod_lines_violations(conn, index, complexity, violations)?;
+    collect_cognitive_complexity_violations(conn, index, complexity, violations)?;
     Ok(())
 }
 
@@ -169,26 +171,29 @@ fn is_production_node_in_scope(index: &LintIndexData, path: &str, line: usize) -
     !is_archived_path(path) && index.scope.in_scope(path) && !index.is_test_location(path, line)
 }
 
-fn collect_fact_budget_violations(
+fn for_each_prod_node_with_detail_key<F>(
     conn: &Connection,
     index: &LintIndexData,
-    complexity: &ComplexityLimits,
-    violations: &mut Vec<LintViolation>,
-) -> Result<()> {
+    detail_key: &str,
+    mut on_node: F,
+) -> Result<()>
+where
+    F: FnMut(&str, &str, usize, &Value),
+{
     let prefix_target = index.scope.exact_prefix().unwrap_or("");
     let (lower, upper) = path_bounds(prefix_target);
-    let budget_pat = format!("%{}%", NodeDetailKey::FACT_LIMIT_EXCEEDED);
+    let pat = format!("%{detail_key}%");
     let mut stmt = conn.prepare(
         "SELECT n.qualname, p.path, n.line, n.details
          FROM nodes n
          JOIN path_dictionary p ON p.path_id = n.path_id
          WHERE n.is_test = 0 AND n.generated = 0
+           AND n.kind NOT IN ('module', 'file')
            AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
            AND n.details LIKE ?4
          ORDER BY p.path, n.line, n.id",
     )?;
-    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, budget_pat])?;
-    let inv = complexity.invariant.as_deref();
+    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, pat])?;
     while let Some(row) = rows.next()? {
         let (qualname, path, line): (String, String, usize) = (
             row.get(0)?,
@@ -202,23 +207,40 @@ fn collect_fact_budget_violations(
         let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
             continue;
         };
-        if details
-            .get(NodeDetailKey::FACT_LIMIT_EXCEEDED)
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            push_syntax(
-                violations,
-                "syntax.fact_budget_exceeded",
-                complexity.severity,
-                (path.as_str(), line, qualname.as_str()),
-                format!("callable '{qualname}' exceeded ValueFlow fact extraction budget"),
-                inv,
-                Some("Split oversized callable so static value-flow analysis stays within budget."),
-            );
-        }
+        on_node(&qualname, &path, line, &details);
     }
     Ok(())
+}
+
+fn collect_fact_budget_violations(
+    conn: &Connection,
+    index: &LintIndexData,
+    complexity: &ComplexityLimits,
+    violations: &mut Vec<LintViolation>,
+) -> Result<()> {
+    let inv = complexity.invariant.as_deref();
+    for_each_prod_node_with_detail_key(
+        conn,
+        index,
+        NodeDetailKey::FACT_LIMIT_EXCEEDED,
+        |qualname, path, line, details| {
+            if details
+                .get(NodeDetailKey::FACT_LIMIT_EXCEEDED)
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                push_syntax(
+                    violations,
+                    "syntax.fact_budget_exceeded",
+                    complexity.severity,
+                    (path, line, qualname),
+                    format!("callable '{qualname}' exceeded ValueFlow fact extraction budget"),
+                    inv,
+                    Some("Split oversized callable so static value-flow analysis stays within budget."),
+                );
+            }
+        },
+    )
 }
 
 fn crate_or_package_bucket(path: &str) -> String {
@@ -326,4 +348,93 @@ fn collect_type_homonym_violations(
         }
     }
     Ok(())
+}
+
+fn collect_file_prod_lines_violations(
+    conn: &Connection,
+    index: &LintIndexData,
+    complexity: &ComplexityLimits,
+    violations: &mut Vec<LintViolation>,
+) -> Result<()> {
+    let Some(limit) = complexity.max_file_prod_lines else {
+        return Ok(());
+    };
+    let prefix_target = index.scope.exact_prefix().unwrap_or("");
+    let (lower, upper) = path_bounds(prefix_target);
+    let mut stmt = conn.prepare(
+        "SELECT p.path, n.line, n.end_line
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         WHERE n.is_test = 0 AND n.generated = 0
+           AND n.kind NOT IN ('module', 'file')
+           AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
+         ORDER BY p.path, n.end_line DESC",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper])?;
+    let mut max_end_by_path: BTreeMap<String, usize> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let line = row.get::<_, i64>(1)?.max(1) as usize;
+        let end_line = row.get::<_, i64>(2)?.max(1) as usize;
+        if !is_production_node_in_scope(index, &path, line) {
+            continue;
+        }
+        max_end_by_path
+            .entry(path)
+            .and_modify(|cur| *cur = (*cur).max(end_line))
+            .or_insert(end_line);
+    }
+    let inv = complexity.invariant.as_deref();
+    for (path, max_end) in max_end_by_path {
+        if max_end > limit {
+            push_syntax(
+                violations,
+                "syntax.file_prod_lines_exceeded",
+                complexity.severity,
+                (&path, max_end, &path),
+                format!("file '{path}' reaches production line {max_end} (limit {limit})"),
+                inv,
+                Some("Split oversized production module into focused submodules."),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn collect_cognitive_complexity_violations(
+    conn: &Connection,
+    index: &LintIndexData,
+    complexity: &ComplexityLimits,
+    violations: &mut Vec<LintViolation>,
+) -> Result<()> {
+    let Some(limit) = complexity.max_cognitive_complexity else {
+        return Ok(());
+    };
+    let inv = complexity.invariant.as_deref();
+    for_each_prod_node_with_detail_key(
+        conn,
+        index,
+        NodeDetailKey::COGNITIVE_COMPLEXITY,
+        |qualname, path, line, details| {
+            if let Some(score) = details
+                .get(NodeDetailKey::COGNITIVE_COMPLEXITY)
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+            {
+                if score > limit {
+                    push_syntax(
+                        violations,
+                        "syntax.cognitive_complexity_exceeded",
+                        complexity.severity,
+                        (path, line, qualname),
+                        format!(
+                            "callable '{qualname}' has cognitive complexity {score} (limit {limit})"
+                        ),
+                        inv,
+                        Some("Decompose deeply nested control flow into cohesive domain helpers."),
+                    );
+                }
+            }
+        },
+    )
 }

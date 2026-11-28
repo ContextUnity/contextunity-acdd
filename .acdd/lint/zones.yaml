@@ -1,0 +1,56 @@
+unused_public_api: true
+complexity:
+  severity: warn
+  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+  max_file_prod_lines: 1200
+
+zones:
+  core:
+    - "crates/acdd-core/src/**"
+  core_pure:
+    - "crates/acdd-core/src/errors.rs"
+    - "crates/acdd-core/src/format.rs"
+    - "crates/acdd-core/src/ids.rs"
+    - "crates/acdd-core/src/lint.rs"
+    - "crates/acdd-core/src/path_policy.rs"
+    - "crates/acdd-core/src/ports.rs"
+    - "crates/acdd-core/src/response.rs"
+    - "crates/acdd-core/src/schema.rs"
+    - "crates/acdd-core/src/subsystems.rs"
+    - "crates/acdd-core/src/config/schema.rs"
+  spec:
+    - "crates/acdd-spec/src/**"
+  index:
+    - "crates/acdd-index/src/**"
+  state:
+    - "crates/acdd-state/src/**"
+  state_machine:
+    - "crates/acdd-state/src/machine/**"
+  state_sqlite:
+    - "crates/acdd-state/src/store/sqlite/**"
+  index_db:
+    - "crates/acdd-index/src/db/**"
+  host_format:
+    - "src/format/**"
+  host_engine:
+    - "src/engine/**"
+  host_state_bridge:
+    - "src/state_bridge/**"
+  bridge_common:
+    - "src/state_bridge/common.rs"
+    - "src/state_bridge/exec_resolve.rs"
+    - "src/state_bridge/mod.rs"
+  bridge_code:
+    - "src/state_bridge/code_domain/**"
+  bridge_docs:
+    - "src/state_bridge/docs_domain.rs"
+    - "src/state_bridge/docs_domain/**"
+  bridge_spec:
+    - "src/state_bridge/spec_domain.rs"
+    - "src/state_bridge/spec_domain/**"
+  host_telemetry:
+    - "src/telemetry.rs"
+  host_cli:
+    - "src/cli/**"
+  host_mcp:
+    - "src/mcp/**"

@@ -1,19 +1,27 @@
 //! Workspace adapter loading, strict validation, and SQLite policy serialization.
 
 use super::constants::{
-    ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES, DEFAULT_RETAIN_TRACES, DEFAULT_STATE_DB,
+    ACDD_CONFIG_FILE, DEFAULT_IGNORED_NAMES, DEFAULT_LINT_DIR, DEFAULT_RETAIN_TRACES,
+    DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB,
 };
 use super::linked::resolve_linked_workspaces;
+use super::refs::{
+    collect_confined_yaml_files, resolve_and_read_confined_ref, validate_confined_search_dirs,
+};
 use super::schema::{
-    default_specs, default_workflows_dirs, validate_and_normalize_specs, Adapter, AdapterFile,
-    LinkedWorkspace, ScannerLimits, SpecConfig, StrictAdapterReport,
+    default_lint_dirs, default_specs, default_specs_dirs, default_workflows_dirs,
+    deserialize_optional_spec_fields, validate_and_normalize_specs, Adapter, AdapterFile,
+    LinkedWorkspace, RoadmapDisplayConfig, ScannerLimits, SpecConfig, SpecItemConfig,
+    StrictAdapterReport,
 };
 use crate::errors::{AcddError, ErrorCode};
 use crate::fs::{checked_child, safe_relative};
-use crate::lint::ArchitectureConfig;
+use crate::lint::{ArchRuleSpec, ArchitectureConfig, ComplexityLimits};
 use crate::response::ResponsePolicy;
+use crate::schema::SchemaDef;
 use crate::subsystems::{SubsystemId, SubsystemRegistry};
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -23,12 +31,294 @@ fn config_schema_err(message: impl Into<String>) -> AcddError {
     AcddError::new(ErrorCode::WorkflowSchemaInvalid, message)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalSpecFile {
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default, rename = "ref")]
+    spec_ref: Option<String>,
+    #[serde(default)]
+    workflow: Option<String>,
+    #[serde(default)]
+    roadmap: Option<bool>,
+    #[serde(default)]
+    prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    digits: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_spec_fields")]
+    fields: Option<SchemaDef>,
+    #[serde(default)]
+    items: BTreeMap<String, SpecItemConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LintFileConfig {
+    #[serde(default)]
+    zones: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    rules: Vec<ArchRuleSpec>,
+    #[serde(default)]
+    complexity: Option<ComplexityLimits>,
+    #[serde(default)]
+    unused_public_api: Option<bool>,
+}
+
+fn parse_external_spec_yaml(
+    rel_path: &str,
+    yaml: &str,
+) -> std::result::Result<ExternalSpecFile, AcddError> {
+    let ext: ExternalSpecFile = serde_yaml::from_str(yaml).map_err(|err| {
+        AcddError::new(
+            ErrorCode::SpecSchemaInvalid,
+            format!("invalid external spec file '{rel_path}': {err}"),
+        )
+    })?;
+    if ext.base.is_some() || ext.spec_ref.is_some() {
+        return Err(AcddError::new(
+            ErrorCode::SpecSchemaInvalid,
+            format!(
+                "external spec file '{rel_path}' must not declare 'base' or 'ref' (multi-hop spec inheritance is forbidden)"
+            ),
+        ));
+    }
+    Ok(ext)
+}
+
+/// Validate one external `.acdd/specs/*.yaml` definition file against `SpecConfig` external schema rules.
+pub fn validate_external_spec_yaml(
+    rel_path: &str,
+    yaml: &str,
+) -> std::result::Result<(), AcddError> {
+    let ext = parse_external_spec_yaml(rel_path, yaml)?;
+    let mut synthetic = BTreeMap::from([(
+        rel_path.to_owned(),
+        SpecConfig {
+            path: Some("docs/specs".to_owned()),
+            workflow: ext.workflow,
+            roadmap: ext.roadmap,
+            prefixes: ext.prefixes.unwrap_or_default(),
+            digits: ext.digits.unwrap_or(DEFAULT_SPEC_DIGITS),
+            fields: ext.fields,
+            items: ext.items,
+            ..SpecConfig::default()
+        },
+    )]);
+    validate_and_normalize_specs(&mut synthetic)
+}
+
+/// Validate one standalone `.acdd/lint/*.yaml` file's YAML schema and rule syntax (cross-file zones checked on merge).
+pub fn validate_lint_file_yaml(rel_path: &str, yaml: &str) -> std::result::Result<(), AcddError> {
+    let parsed: LintFileConfig = serde_yaml::from_str(yaml)
+        .map_err(|err| config_schema_err(format!("invalid lint file '{rel_path}': {err}")))?;
+    if let Some(ref complexity) = parsed.complexity {
+        complexity.validate()?;
+    }
+    let mut tmp = ArchitectureConfig {
+        zones: parsed.zones,
+        rules: Vec::new(),
+        complexity: parsed.complexity.unwrap_or_default(),
+        unused_public_api: parsed.unused_public_api.unwrap_or(false),
+    };
+    tmp.validate()?;
+    let mut seen_ids = BTreeSet::new();
+    for rule in parsed.rules {
+        if !seen_ids.insert(rule.id.clone()) {
+            return Err(config_schema_err(format!(
+                "duplicate rule id '{}' in lint file '{rel_path}'",
+                rule.id
+            )));
+        }
+        rule.validate(None)?;
+        tmp.rules.push(rule);
+    }
+    Ok(())
+}
+
+fn merge_fields_schema(
+    base: Option<SchemaDef>,
+    overlay: Option<SchemaDef>,
+    ctx: &str,
+) -> std::result::Result<Option<SchemaDef>, AcddError> {
+    match (base, overlay) {
+        (None, None) => Ok(None),
+        (Some(s), None) | (None, Some(s)) => Ok(Some(s)),
+        (Some(mut base_s), Some(overlay_s)) => {
+            base_s.merge_object_overlay(&overlay_s, ctx)?;
+            Ok(Some(base_s))
+        }
+    }
+}
+
+fn resolve_specs_refs(
+    canonical_root: &Path,
+    specs_dirs: &[String],
+    specs: &mut BTreeMap<String, SpecConfig>,
+    raw_yaml: Option<&str>,
+) -> std::result::Result<(), AcddError> {
+    let raw_specs_map: Option<serde_yaml::Mapping> = raw_yaml
+        .and_then(|s| serde_yaml::from_str::<serde_yaml::Value>(s).ok())
+        .and_then(|v| v.get("specs").and_then(serde_yaml::Value::as_mapping).cloned());
+    for (name, cfg) in specs.iter_mut() {
+        let raw_entry = raw_specs_map
+            .as_ref()
+            .and_then(|m| m.get(serde_yaml::Value::String(name.clone())))
+            .and_then(serde_yaml::Value::as_mapping);
+        let explicit_prefixes = raw_entry.is_some_and(|m| {
+            m.contains_key(serde_yaml::Value::String("prefixes".to_owned()))
+        });
+        let explicit_digits = raw_entry.is_some_and(|m| {
+            m.contains_key(serde_yaml::Value::String("digits".to_owned()))
+        });
+        if cfg.base.is_some() && cfg.spec_ref.is_some() {
+            return Err(AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
+                format!(
+                    "specs.{name} cannot declare both 'base' and 'ref' (single-hop inheritance only)"
+                ),
+            ));
+        }
+        let Some(ref raw_ref) = cfg.spec_ref else {
+            continue;
+        };
+        let resolved = resolve_and_read_confined_ref(
+            canonical_root,
+            raw_ref,
+            specs_dirs,
+            ErrorCode::SpecSchemaInvalid,
+            "spec",
+        )?;
+        let yaml = std::str::from_utf8(&resolved.bytes).map_err(|err| {
+            AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
+                format!(
+                    "external spec file '{}' is not valid UTF-8: {err}",
+                    resolved.rel_path
+                ),
+            )
+        })?;
+        let ext = parse_external_spec_yaml(&resolved.rel_path, yaml)?;
+        cfg.workflow = cfg.workflow.take().or(ext.workflow);
+        cfg.roadmap = cfg.roadmap.or(ext.roadmap);
+        if !explicit_prefixes && cfg.prefixes.is_empty() {
+            if let Some(prefixes) = ext.prefixes {
+                cfg.prefixes = prefixes;
+            }
+        }
+        if !explicit_digits && cfg.digits == DEFAULT_SPEC_DIGITS {
+            if let Some(digits) = ext.digits {
+                cfg.digits = digits;
+            }
+        }
+        cfg.fields = merge_fields_schema(
+            ext.fields,
+            cfg.fields.take(),
+            &format!("specs.{name}.fields"),
+        )?;
+        for (col_key, ext_item) in ext.items {
+            if let Some(local_item) = cfg.items.get_mut(&col_key) {
+                local_item.item = local_item.item.take().or(ext_item.item);
+                local_item.fields = merge_fields_schema(
+                    ext_item.fields,
+                    local_item.fields.take(),
+                    &format!("specs.{name}.items.{col_key}.fields"),
+                )?;
+            } else {
+                cfg.items.insert(col_key, ext_item);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_lint_architecture(
+    canonical_root: &Path,
+    lint_dirs: Option<&[String]>,
+) -> std::result::Result<ArchitectureConfig, AcddError> {
+    let files = collect_confined_yaml_files(
+        canonical_root,
+        lint_dirs,
+        &[DEFAULT_LINT_DIR.to_owned()],
+        ErrorCode::WorkflowSchemaInvalid,
+        "lint",
+    )?;
+    let mut merged = ArchitectureConfig::default();
+    let mut seen_rule_ids = BTreeSet::new();
+    let mut complexity_owner: Option<String> = None;
+    let mut unused_api_owner: Option<String> = None;
+
+    for file in files {
+        let yaml = std::str::from_utf8(&file.bytes).map_err(|err| {
+            config_schema_err(format!("lint file '{}' is not valid UTF-8: {err}", file.rel_path))
+        })?;
+        let parsed: LintFileConfig = serde_yaml::from_str(yaml).map_err(|err| {
+            config_schema_err(format!("invalid lint file '{}': {err}", file.rel_path))
+        })?;
+        for (zone_name, globs) in parsed.zones {
+            if merged.zones.contains_key(&zone_name) {
+                return Err(config_schema_err(format!(
+                    "duplicate architecture zone '{zone_name}' in '{}'",
+                    file.rel_path
+                )));
+            }
+            merged.zones.insert(zone_name, globs);
+        }
+        for rule in parsed.rules {
+            if !seen_rule_ids.insert(rule.id.clone()) {
+                return Err(config_schema_err(format!(
+                    "duplicate architecture rule id '{}' in '{}'",
+                    rule.id, file.rel_path
+                )));
+            }
+            merged.rules.push(rule);
+        }
+        if let Some(complexity) = parsed.complexity {
+            if let Some(ref prev) = complexity_owner {
+                return Err(config_schema_err(format!(
+                    "conflicting 'complexity' setting in '{}' (already declared in '{prev}')",
+                    file.rel_path
+                )));
+            }
+            complexity_owner = Some(file.rel_path.clone());
+            merged.complexity = complexity;
+        }
+        if let Some(unused_public_api) = parsed.unused_public_api {
+            if let Some(ref prev) = unused_api_owner {
+                return Err(config_schema_err(format!(
+                    "conflicting 'unused_public_api' setting in '{}' (already declared in '{prev}')",
+                    file.rel_path
+                )));
+            }
+            unused_api_owner = Some(file.rel_path.clone());
+            merged.unused_public_api = unused_public_api;
+        }
+    }
+
+    merged.validate()?;
+    Ok(merged)
+}
+
 /// Loads and normalizes workspace adapter configuration (logging linked-workspace warnings to stderr).
 pub fn load_adapter(
     root: &Path,
     adapter_path: Option<&Path>,
 ) -> std::result::Result<Adapter, AcddError> {
-    let report = load_adapter_inner(root, adapter_path)?;
+    let report = load_adapter_inner(root, adapter_path, false)?;
+    for msg in &report.linked_workspace_errors {
+        eprintln!("[acdd] {msg}; skipping");
+    }
+    Ok(report.adapter)
+}
+
+/// Loads a sibling checkout's adapter configuration for cross-worktree roadmap discovery.
+///
+/// Strips only the removed pre-AC-006 top-level `architecture:` key before strict
+/// `deny_unknown_fields` validation so a migrated worktree can read a pre-migration
+/// sibling checkout's own `specs` and `linked_workspaces` while still failing closed on
+/// any unrelated unknown key.
+pub fn load_sibling_checkout_adapter(root: &Path) -> std::result::Result<Adapter, AcddError> {
+    let report = load_adapter_inner(root, None, true)?;
     for msg in &report.linked_workspace_errors {
         eprintln!("[acdd] {msg}; skipping");
     }
@@ -40,7 +330,7 @@ pub fn load_adapter_report(
     root: &Path,
     adapter_path: Option<&Path>,
 ) -> std::result::Result<StrictAdapterReport, AcddError> {
-    load_adapter_inner(root, adapter_path)
+    load_adapter_inner(root, adapter_path, false)
 }
 
 fn insert_if_some<T: serde::Serialize>(
@@ -55,37 +345,42 @@ fn insert_if_some<T: serde::Serialize>(
     Ok(())
 }
 
-fn adapter_index_identity(raw: &AdapterFile) -> std::result::Result<Option<Value>, AcddError> {
+fn adapter_index_identity(
+    raw: Option<&AdapterFile>,
+    architecture: &ArchitectureConfig,
+) -> std::result::Result<Option<Value>, AcddError> {
     let mut map = Map::new();
-    if !raw.sensitive.is_empty() {
-        insert_if_some(&mut map, "sensitive", Some(&raw.sensitive))?;
+    if let Some(raw) = raw {
+        if !raw.sensitive.is_empty() {
+            insert_if_some(&mut map, "sensitive", Some(&raw.sensitive))?;
+        }
+        insert_if_some(&mut map, "limits", raw.limits.as_ref())?;
+        insert_if_some(&mut map, "adapter_version", raw.adapter_version.as_ref())?;
+        insert_if_some(&mut map, "roots", raw.roots.as_ref())?;
+        insert_if_some(&mut map, "ignore", raw.ignore.as_ref())?;
+        insert_if_some(&mut map, "eligible_roots", raw.eligible_roots.as_ref())?;
+        insert_if_some(&mut map, "docs", raw.docs.as_ref())?;
+        insert_if_some(
+            &mut map,
+            "excluded_directory_names",
+            raw.excluded_directory_names.as_ref(),
+        )?;
+        insert_if_some(
+            &mut map,
+            "excluded_file_names",
+            raw.excluded_file_names.as_ref(),
+        )?;
+        insert_if_some(
+            &mut map,
+            "linked_workspaces",
+            raw.linked_workspaces.as_ref(),
+        )?;
+        insert_if_some(&mut map, "workspaces", raw.workspaces.as_ref())?;
+        insert_if_some(&mut map, "owners", raw.owners.as_ref())?;
+        insert_if_some(&mut map, "aliases", raw.aliases.as_ref())?;
     }
-    insert_if_some(&mut map, "limits", raw.limits.as_ref())?;
-    insert_if_some(&mut map, "adapter_version", raw.adapter_version.as_ref())?;
-    insert_if_some(&mut map, "roots", raw.roots.as_ref())?;
-    insert_if_some(&mut map, "ignore", raw.ignore.as_ref())?;
-    insert_if_some(&mut map, "eligible_roots", raw.eligible_roots.as_ref())?;
-    insert_if_some(&mut map, "docs", raw.docs.as_ref())?;
-    insert_if_some(
-        &mut map,
-        "excluded_directory_names",
-        raw.excluded_directory_names.as_ref(),
-    )?;
-    insert_if_some(
-        &mut map,
-        "excluded_file_names",
-        raw.excluded_file_names.as_ref(),
-    )?;
-    insert_if_some(
-        &mut map,
-        "linked_workspaces",
-        raw.linked_workspaces.as_ref(),
-    )?;
-    insert_if_some(&mut map, "workspaces", raw.workspaces.as_ref())?;
-    insert_if_some(&mut map, "owners", raw.owners.as_ref())?;
-    insert_if_some(&mut map, "aliases", raw.aliases.as_ref())?;
-    if !raw.architecture.is_empty() {
-        insert_if_some(&mut map, "architecture", Some(&raw.architecture))?;
+    if !architecture.is_empty() {
+        insert_if_some(&mut map, "architecture", Some(architecture))?;
     }
     Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
@@ -94,9 +389,10 @@ fn parse_adapter_config_file(
     canonical_root: &Path,
     adapter_path: Option<&Path>,
     selected: Option<&Path>,
-) -> std::result::Result<(AdapterFile, Option<PathBuf>), AcddError> {
+    strip_legacy_architecture: bool,
+) -> std::result::Result<(AdapterFile, Option<PathBuf>, Option<String>), AcddError> {
     let Some(path) = selected else {
-        return Ok((AdapterFile::default(), None));
+        return Ok((AdapterFile::default(), None, None));
     };
     let metadata = fs::symlink_metadata(path).map_err(|e| config_schema_err(e.to_string()))?;
     if metadata.file_type().is_symlink() {
@@ -110,21 +406,38 @@ fn parse_adapter_config_file(
     }
     let explicit_adapter_path = adapter_path.is_some().then(|| canonical.clone());
     let content = fs::read_to_string(&canonical).map_err(|e| config_schema_err(e.to_string()))?;
-    let parsed: AdapterFile = serde_yaml::from_str(&content)
-        .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?;
-    Ok((parsed, explicit_adapter_path))
+    let parsed: AdapterFile = if strip_legacy_architecture {
+        let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)
+            .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?;
+        if let Some(map) = yaml_val.as_mapping_mut() {
+            for legacy_key in ["architecture", "profiles_dirs"] {
+                map.remove(serde_yaml::Value::String(legacy_key.to_owned()));
+            }
+        }
+        serde_yaml::from_value(yaml_val)
+            .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?
+    } else {
+        serde_yaml::from_str(&content)
+            .map_err(|e| config_schema_err(format!("invalid acdd.yaml schema: {e}")))?
+    };
+    Ok((parsed, explicit_adapter_path, Some(content)))
 }
 
 fn load_adapter_inner(
     root: &Path,
     adapter_path: Option<&Path>,
+    strip_legacy_architecture: bool,
 ) -> std::result::Result<StrictAdapterReport, AcddError> {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let default_path = canonical_root.join(ACDD_CONFIG_FILE);
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
-    let (raw, explicit_adapter_path) =
-        parse_adapter_config_file(&canonical_root, adapter_path, selected)?;
+    let (raw, explicit_adapter_path, raw_yaml) = parse_adapter_config_file(
+        &canonical_root,
+        adapter_path,
+        selected,
+        strip_legacy_architecture,
+    )?;
     let adapter_version = raw.adapter_version.as_ref().map(|v| match v {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
@@ -133,12 +446,13 @@ fn load_adapter_inner(
     raw.response
         .validate()
         .map_err(|e| config_schema_err(e.to_string()))?;
-    raw.architecture.validate()?;
     if let Some(limits) = &raw.limits {
         limits
             .validate()
             .map_err(|e| config_schema_err(e.to_string()))?;
     }
+    let roadmap = raw.roadmap.clone().unwrap_or_default();
+    roadmap.validate()?;
     let mut modules = raw.modules.clone();
     if let Some(preset) = raw.preset {
         modules.preset = preset;
@@ -146,20 +460,29 @@ fn load_adapter_inner(
     modules
         .validate()
         .map_err(|e| config_schema_err(e.to_string()))?;
-    let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
-    validate_and_normalize_specs(&mut specs)?;
+    let specs_dirs = raw.specs_dirs.clone().unwrap_or_else(default_specs_dirs);
+    validate_confined_search_dirs(&specs_dirs, "specs_dirs", ErrorCode::SpecSchemaInvalid)?;
     let workflows_dirs = raw
         .workflows_dirs
         .clone()
         .unwrap_or_else(default_workflows_dirs);
-    for dir in &workflows_dirs {
-        let trimmed = dir.trim();
-        if trimmed.is_empty() || !safe_relative(Path::new(trimmed)) {
-            return Err(config_schema_err(format!(
-                "workflows_dirs entry '{dir}' must be a relative plain path"
-            )));
-        }
-    }
+    validate_confined_search_dirs(
+        &workflows_dirs,
+        "workflows_dirs",
+        ErrorCode::WorkflowSchemaInvalid,
+    )?;
+    let lint_dirs = raw.lint_dirs.clone().unwrap_or_else(default_lint_dirs);
+    validate_confined_search_dirs(&lint_dirs, "lint_dirs", ErrorCode::WorkflowSchemaInvalid)?;
+    let architecture = load_lint_architecture(&canonical_root, raw.lint_dirs.as_deref())?;
+
+    let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
+    resolve_specs_refs(
+        &canonical_root,
+        &specs_dirs,
+        &mut specs,
+        raw_yaml.as_deref(),
+    )?;
+    validate_and_normalize_specs(&mut specs)?;
     let state_db = raw
         .state_db
         .clone()
@@ -172,11 +495,7 @@ fn load_adapter_inner(
         return Err(config_schema_err("retain_traces must be at least 1"));
     }
 
-    let identity = if selected.is_some() {
-        adapter_index_identity(&raw)?
-    } else {
-        None
-    };
+    let identity = adapter_index_identity(selected.is_some().then_some(&raw), &architecture)?;
     let code_enabled = modules.is_subsystem_enabled(SubsystemId::Code);
     let docs_enabled = modules.is_subsystem_enabled(SubsystemId::Docs);
     let specs_paths: BTreeMap<&str, Vec<&str>> = specs
@@ -286,10 +605,13 @@ fn load_adapter_inner(
             milestones,
             plans,
             specs,
+            specs_dirs,
             workflows_dirs,
+            lint_dirs,
+            roadmap,
             state_db,
             retain_traces,
-            architecture: raw.architecture,
+            architecture,
             debug: raw.debug
                 || std::env::var("ACDD_DEBUG")
                     .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -329,7 +651,10 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
         "milestones": adapter.milestones,
         "plans": adapter.plans,
         "specs": adapter.specs,
+        "specs_dirs": adapter.specs_dirs,
         "workflows_dirs": adapter.workflows_dirs,
+        "lint_dirs": adapter.lint_dirs,
+        "roadmap": adapter.roadmap,
         "state_db": adapter.state_db,
         "retain_traces": adapter.retain_traces,
         "architecture": &adapter.architecture,
@@ -418,15 +743,20 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
     let mut specs: BTreeMap<String, SpecConfig> =
         parse_persisted_or(value, "specs", default_specs)?;
     validate_and_normalize_specs(&mut specs)?;
+    let specs_dirs: Vec<String> = parse_persisted_or(value, "specs_dirs", default_specs_dirs)?;
+    validate_confined_search_dirs(&specs_dirs, "specs_dirs", ErrorCode::SpecSchemaInvalid)?;
     let workflows_dirs: Vec<String> =
         parse_persisted_or(value, "workflows_dirs", default_workflows_dirs)?;
-    for dir in &workflows_dirs {
-        let trimmed = dir.trim();
-        anyhow::ensure!(
-            !trimmed.is_empty() && safe_relative(Path::new(trimmed)),
-            "invalid persisted workflows_dirs entry '{dir}'"
-        );
-    }
+    validate_confined_search_dirs(
+        &workflows_dirs,
+        "workflows_dirs",
+        ErrorCode::WorkflowSchemaInvalid,
+    )?;
+    let lint_dirs: Vec<String> = parse_persisted_or(value, "lint_dirs", default_lint_dirs)?;
+    validate_confined_search_dirs(&lint_dirs, "lint_dirs", ErrorCode::WorkflowSchemaInvalid)?;
+    let roadmap: RoadmapDisplayConfig =
+        parse_persisted_or(value, "roadmap", RoadmapDisplayConfig::default)?;
+    roadmap.validate()?;
     let state_db: String = parse_persisted_or(value, "state_db", || DEFAULT_STATE_DB.to_owned())?;
     anyhow::ensure!(!state_db.trim().is_empty(), "invalid persisted state_db");
     let retain_traces: usize =
@@ -454,7 +784,10 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         milestones,
         plans,
         specs,
+        specs_dirs,
         workflows_dirs,
+        lint_dirs,
+        roadmap,
         state_db,
         retain_traces,
         architecture,
@@ -574,12 +907,21 @@ roots: [.]
             "roots: [.]\nmodules:\n  code: false\n  docs: true\n",
             "roots: [.]\nmodules:\n  code: true\n  docs: false\n",
             "roots: [.]\nspecs:\n  milestones:\n    path: docs/contracts\n  plans:\n    path: docs/plans\n",
-            "roots: [.]\narchitecture:\n  zones:\n    core: [\"crates/acdd-core/src/**\"]\n  rules:\n    - id: r1\n      kind: doc_integrity\n",
         ] {
             std::fs::write(dir.join(ACDD_CONFIG_FILE), changed_yaml).unwrap();
             let changed = load_adapter(&dir, None).unwrap();
             assert_ne!(changed.digest, base.digest, "{changed_yaml}");
         }
+        std::fs::create_dir_all(dir.join(".acdd/lint")).unwrap();
+        std::fs::write(
+            dir.join(".acdd/lint/rules.yaml"),
+            "zones:\n  core: [\"crates/acdd-core/src/**\"]\nrules:\n  - id: r1\n    kind: doc_integrity\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(ACDD_CONFIG_FILE), base_yaml).unwrap();
+        let with_lint = load_adapter(&dir, None).unwrap();
+        assert_ne!(with_lint.digest, base.digest);
+        std::fs::remove_dir_all(dir.join(".acdd/lint")).unwrap();
 
         // Overlapping specs paths by components must fail; sibling prefix names pass.
         std::fs::write(
@@ -613,13 +955,12 @@ roots: [.]
         let _cleanup = crate::fs::ScopedTempDir::create("acdd_strict_cfg").unwrap();
         let dir = _cleanup.path().to_path_buf();
 
-        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits, ArchitectureConfig -> WorkflowSchemaInvalid.
+        // 1. deny_unknown_fields on AdapterFile (including removed inline architecture:), LinkedWorkspaceConfig, ScannerLimits -> WorkflowSchemaInvalid.
         for bad_yaml in [
             "unknown_top_level: true\n",
             "limits:\n  unknown_limit: 5\n",
             "linked_workspaces:\n  - name: dep\n    path: .\n    unknown_lw: 1\n",
-            "architecture:\n  unknown_arch: 1\n",
-            "architecture:\n  zones:\n    core: [\"crates/acdd-core/**\"]\n  rules:\n    - id: r1\n      kind: forbid_dependency\n      from:\n        zones: [\"missing\"]\n      to:\n        zones: [\"core\"]\n",
+            "architecture:\n  zones:\n    core: [\"crates/acdd-core/src/**\"]\n",
             "not: [valid: yaml\n",
         ] {
             std::fs::write(dir.join(ACDD_CONFIG_FILE), bad_yaml).unwrap();
@@ -630,6 +971,21 @@ roots: [.]
                 "{bad_yaml}: {err}"
             );
         }
+        std::fs::write(dir.join(ACDD_CONFIG_FILE), "roots: [.]\n").unwrap();
+        std::fs::create_dir_all(dir.join(".acdd/lint")).unwrap();
+        for bad_lint_yaml in [
+            "unknown_arch: 1\n",
+            "zones:\n  core: [\"crates/acdd-core/**\"]\nrules:\n  - id: r1\n    kind: forbid_dependency\n    from:\n      zones: [\"missing\"]\n    to:\n      zones: [\"core\"]\n",
+        ] {
+            std::fs::write(dir.join(".acdd/lint/bad.yaml"), bad_lint_yaml).unwrap();
+            let err = load_adapter(&dir, None).unwrap_err();
+            assert_eq!(
+                err.code,
+                ErrorCode::WorkflowSchemaInvalid,
+                "{bad_lint_yaml}: {err}"
+            );
+        }
+        std::fs::remove_dir_all(dir.join(".acdd/lint")).unwrap();
 
         // 2. Unknown config keys are rejected via deny_unknown_fields -> WorkflowSchemaInvalid.
         for unknown_key in ["unknown_top_level_key", "bogus_config_key"] {

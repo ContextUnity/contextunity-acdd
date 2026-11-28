@@ -309,15 +309,15 @@ fn scan_doc_metadata_claims(
         let Ok(details) = serde_json::from_str::<Value>(&details_raw) else {
             continue;
         };
-        let doc_type = details
-            .get("doc_type")
-            .and_then(Value::as_str)
-            .unwrap_or("guide");
+        let is_spec_doc = details
+            .get("is_spec_doc")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
-        if single_doc_path.is_some() || doc_type != "contract" {
+        if single_doc_path.is_some() || !is_spec_doc {
             collect_claim_refs_from_details(&path, section_line, &details, &mut symbol_claims);
         }
-        if single_doc_path.is_none() && doc_type != "contract" {
+        if single_doc_path.is_none() && !is_spec_doc {
             collect_declared_invariants_from_details(
                 &path,
                 section_line,

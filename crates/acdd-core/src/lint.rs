@@ -318,7 +318,7 @@ impl ArchRuleSpec {
     }
 }
 
-/// Syntax invariant settings evaluated under `LintCategory::Syntax` (`syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym`).
+/// Syntax invariant settings evaluated under `LintCategory::Syntax` (`syntax.fact_budget_exceeded`, `syntax.intra_crate_type_homonym`, `syntax.file_prod_lines_exceeded`, and `syntax.cognitive_complexity_exceeded`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComplexityLimits {
@@ -327,6 +327,12 @@ pub struct ComplexityLimits {
     /// Optional invariant ID bound to syntax checks in `enforced_invariant_ids`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invariant: Option<String>,
+    /// Optional maximum non-test production end line per file (`syntax.file_prod_lines_exceeded`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_prod_lines: Option<usize>,
+    /// Optional maximum callable cognitive complexity (`syntax.cognitive_complexity_exceeded`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cognitive_complexity: Option<usize>,
 }
 
 impl Default for ComplexityLimits {
@@ -334,6 +340,8 @@ impl Default for ComplexityLimits {
         Self {
             severity: LintSeverity::Warn,
             invariant: None,
+            max_file_prod_lines: None,
+            max_cognitive_complexity: None,
         }
     }
 }
@@ -344,7 +352,7 @@ impl ComplexityLimits {
         *self == Self::default()
     }
 
-    /// Validate that any complexity invariant binding is non-empty.
+    /// Validate that any complexity invariant binding is non-empty and numeric thresholds are positive.
     pub fn validate(&self) -> Result<(), AcddError> {
         if self
             .invariant
@@ -355,18 +363,28 @@ impl ComplexityLimits {
                 "architecture.complexity.invariant must not be empty when specified",
             ));
         }
+        if self.max_file_prod_lines == Some(0) {
+            return Err(schema_invalid(
+                "architecture.complexity.max_file_prod_lines must be >= 1 when specified",
+            ));
+        }
+        if self.max_cognitive_complexity == Some(0) {
+            return Err(schema_invalid(
+                "architecture.complexity.max_cognitive_complexity must be >= 1 when specified",
+            ));
+        }
         Ok(())
     }
 }
 
-/// Optional `architecture:` configuration block in `acdd.yaml`.
+/// Loaded lint configuration merged from `.acdd/lint/*.yaml` (configured via `lint_dirs:`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArchitectureConfig {
     /// Named architectural zones mapped to workspace-relative path globs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub zones: BTreeMap<String, Vec<String>>,
-    /// Static architectural rules declared directly in `acdd.yaml`.
+    /// Static architectural rules declared in `.acdd/lint/*.yaml`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<ArchRuleSpec>,
     /// Structural complexity thresholds evaluated under `LintCategory::Syntax`.

@@ -110,13 +110,16 @@ fn acdd_lint_gate_blocking_scoping_freshness_enforced_and_docs_profile() {
         (
             "acdd.yaml",
             r#"roots: [src, docs]
-architecture:
-  zones:
-    core: ["src/core/**"]
-    infra: ["src/infra/**"]
 specs:
   milestones:
     path: docs/milestones
+"#,
+        ),
+        (
+            ".acdd/lint/zones.yaml",
+            r#"zones:
+  core: ["src/core/**"]
+  infra: ["src/infra/**"]
 "#,
         ),
         (
@@ -540,9 +543,9 @@ scope: [src/core/scoped.rs]
             false,
         ),
         (
-            "valid acdd.yaml zone removal",
-            "acdd.yaml",
-            "roots: [src, docs]\narchitecture:\n  zones:\n    core: [\"src/core/**\"]\nspecs:\n  milestones:\n    path: docs/milestones\n",
+            "valid lint zone removal",
+            ".acdd/lint/zones.yaml",
+            "zones:\n  core: [\"src/core/**\"]\n",
             false,
         ),
         (

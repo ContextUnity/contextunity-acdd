@@ -99,9 +99,10 @@ kind: doc_integrity
 
     // Cold, warm-cached, and delta builds preserve identical output_root across Nodes and Errors.
     let ws = Workspace::new();
+    ws.write("acdd.yaml", "roots: [.]\n");
     ws.write(
-        "acdd.yaml",
-        "roots: [.]\narchitecture:\n  zones:\n    core: [\"src/core/**\"]\n    app: [\"src/app/**\"]\n",
+        ".acdd/lint/zones.yaml",
+        "zones:\n  core: [\"src/core/**\"]\n  app: [\"src/app/**\"]\n",
     );
     ws.write("src/core/leaf.rs", "pub fn leaf() {}\n");
     ws.write("src/app/main.rs", "pub fn main() {}\n");
@@ -162,30 +163,29 @@ kind: doc_integrity
 #[test]
 fn unified_lint_all_eight_arch_primitives_and_multi_language_matrix() {
     let ws = Workspace::new();
+    ws.write("acdd.yaml", "roots: [.]\n");
     ws.write(
-        "acdd.yaml",
-        r#"roots: [.]
-architecture:
-  zones:
-    core: ["src/core/**"]
-    app: ["src/app/**"]
-    providers: ["src/providers/**"]
-    py_domain: ["py/domain/**"]
-    py_infra: ["py/infra/**"]
-    ts_domain: ["ts/domain/**"]
-    ts_infra: ["ts/infra/**"]
-  rules:
-    - id: INV-ALLOW-APP
-      invariant: INV-ALLOW-APP
-      severity: error
-      kind: allow_only_dependencies
-      from: { zones: ["app"] }
-      to: { zones: ["core"], external_symbols: ["serde"] }
-    - id: INV-NO-APP-CORE-CYCLE
-      invariant: INV-NO-APP-CORE-CYCLE
-      severity: warn
-      kind: forbid_cycles
-      zones: ["core", "app"]
+        ".acdd/lint/arch.yaml",
+        r#"zones:
+  core: ["src/core/**"]
+  app: ["src/app/**"]
+  providers: ["src/providers/**"]
+  py_domain: ["py/domain/**"]
+  py_infra: ["py/infra/**"]
+  ts_domain: ["ts/domain/**"]
+  ts_infra: ["ts/infra/**"]
+rules:
+  - id: INV-ALLOW-APP
+    invariant: INV-ALLOW-APP
+    severity: error
+    kind: allow_only_dependencies
+    from: { zones: ["app"] }
+    to: { zones: ["core"], external_symbols: ["serde"] }
+  - id: INV-NO-APP-CORE-CYCLE
+    invariant: INV-NO-APP-CORE-CYCLE
+    severity: warn
+    kind: forbid_cycles
+    zones: ["core", "app"]
 "#,
     );
 
@@ -999,23 +999,22 @@ rules:
 #[test]
 fn structural_complexity_homonym_unused_zone_and_enforced_invariant_contract_matrix() {
     let ws = Workspace::new();
+    ws.write("acdd.yaml", "roots: [.]\n");
     ws.write(
-        "acdd.yaml",
-        r#"roots: [.]
-architecture:
-  complexity:
-    severity: warn
-    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
-  zones:
-    used_zone: ["src/clean/**"]
-    unused_zone: ["src/unused/**"]
-  rules:
-    - id: INV-USED-ONLY
-      invariant: INV-USED-ONLY
-      severity: error
-      kind: forbid_dependency
-      from: { zones: ["used_zone"] }
-      to: { external_symbols: ["rusqlite"] }
+        ".acdd/lint/arch.yaml",
+        r#"complexity:
+  severity: warn
+  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+zones:
+  used_zone: ["src/clean/**"]
+  unused_zone: ["src/unused/**"]
+rules:
+  - id: INV-USED-ONLY
+    invariant: INV-USED-ONLY
+    severity: error
+    kind: forbid_dependency
+    from: { zones: ["used_zone"] }
+    to: { external_symbols: ["rusqlite"] }
 "#,
     );
     ws.write(
@@ -1717,58 +1716,61 @@ fn soundness_batch_ast_pattern_possible_calls_externals_cycles_and_must_implemen
         r##"roots:
   - src
   - py
-architecture:
-  zones:
-    a_broad: ["src/**"]
-    z_nested: ["src/nested/**"]
-    other: ["src/other/**"]
-    api: ["src/api/**", "py/api/**"]
-    domain: ["src/domain/**", "py/domain/**"]
-  rules:
-    - id: AST-CMD-QUAL
-      severity: error
-      kind: ast_pattern
-      from: { zones: ["a_broad"] }
-      ast_pattern: "std::process::Command::new($PROGRAM)"
-    - id: AST-SQL-QUAL
-      severity: error
-      kind: ast_pattern
-      from: { zones: ["a_broad"] }
-      ast_pattern: "rusqlite::Connection::open($PATH)"
-    - id: AST-ALLOW-INNER
-      severity: error
-      kind: ast_pattern
-      from: { zones: ["a_broad"] }
-      ast_pattern: "#![allow(dead_code)]"
-    - id: AST-EXPECT-ATTR
-      severity: error
-      kind: ast_pattern
-      from: { zones: ["a_broad"] }
-      ast_pattern: "#[expect(dead_code)]"
-    - id: AST-EXPECT-INNER
-      severity: error
-      kind: ast_pattern
-      from: { zones: ["a_broad"] }
-      ast_pattern: "#![expect(dead_code)]"
-    - id: ALLOW-ONLY-SERDE
-      severity: error
-      kind: allow_only_dependencies
-      from: { zones: ["domain"] }
-      to: { zones: ["api"], external_symbols: ["serde"] }
-    - id: POSSIBLE-EDGE-FORBID
-      severity: error
-      kind: forbid_dependency
-      from: { zones: ["api"] }
-      to: { zones: ["domain"] }
-    - id: CYCLE-ZONE-SPECIFICITY
-      severity: error
-      kind: forbid_cycles
-      zones: ["a_broad", "z_nested", "other"]
-    - id: MUST-IMPL-HANDLER
-      severity: error
-      kind: must_implement
-      from: { zones: ["api"] }
-      to: { symbols: ["Handler"] }
+"##,
+    );
+    ws.write(
+        ".acdd/lint/arch.yaml",
+        r##"zones:
+  a_broad: ["src/**"]
+  z_nested: ["src/nested/**"]
+  other: ["src/other/**"]
+  api: ["src/api/**", "py/api/**"]
+  domain: ["src/domain/**", "py/domain/**"]
+rules:
+  - id: AST-CMD-QUAL
+    severity: error
+    kind: ast_pattern
+    from: { zones: ["a_broad"] }
+    ast_pattern: "std::process::Command::new($PROGRAM)"
+  - id: AST-SQL-QUAL
+    severity: error
+    kind: ast_pattern
+    from: { zones: ["a_broad"] }
+    ast_pattern: "rusqlite::Connection::open($PATH)"
+  - id: AST-ALLOW-INNER
+    severity: error
+    kind: ast_pattern
+    from: { zones: ["a_broad"] }
+    ast_pattern: "#![allow(dead_code)]"
+  - id: AST-EXPECT-ATTR
+    severity: error
+    kind: ast_pattern
+    from: { zones: ["a_broad"] }
+    ast_pattern: "#[expect(dead_code)]"
+  - id: AST-EXPECT-INNER
+    severity: error
+    kind: ast_pattern
+    from: { zones: ["a_broad"] }
+    ast_pattern: "#![expect(dead_code)]"
+  - id: ALLOW-ONLY-SERDE
+    severity: error
+    kind: allow_only_dependencies
+    from: { zones: ["domain"] }
+    to: { zones: ["api"], external_symbols: ["serde"] }
+  - id: POSSIBLE-EDGE-FORBID
+    severity: error
+    kind: forbid_dependency
+    from: { zones: ["api"] }
+    to: { zones: ["domain"] }
+  - id: CYCLE-ZONE-SPECIFICITY
+    severity: error
+    kind: forbid_cycles
+    zones: ["a_broad", "z_nested", "other"]
+  - id: MUST-IMPL-HANDLER
+    severity: error
+    kind: must_implement
+    from: { zones: ["api"] }
+    to: { symbols: ["Handler"] }
 "##,
     );
     ws.write(
@@ -2072,10 +2074,13 @@ fn lint_hygiene_docs_homonym_duplicates_callbacks_and_cycles_matrix() {
   - crates
 docs:
   - docs
-architecture:
-  complexity:
-    severity: error
-    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+"#,
+    );
+    ws.write(
+        ".acdd/lint/complexity.yaml",
+        r#"complexity:
+  severity: error
+  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
 "#,
     );
     ws.write(
@@ -2383,4 +2388,55 @@ doc_type: architecture
             "indexed callback/unresolved receiver '{live_fn}' must remain live: {items:?}"
         );
     }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn complexity_limits_file_prod_lines_contract_matrix() {
+    let ws = Workspace::new();
+    // Above threshold: production fn ends at line 15 (> 10).
+    ws.write(
+        "src/oversized.rs",
+        "pub fn alpha() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    let g = 7;\n    let h = 8;\n    let i = 9;\n    let j = 10;\n    let k = 11;\n    let l = 12;\n    a + b + c + d + e + f + g + h + i + j + k + l\n}\n",
+    );
+    // Below threshold with trailing #[cfg(test)] lines past line 10.
+    ws.write(
+        "src/clean_with_tests.rs",
+        "pub fn beta() -> i32 {\n    42\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn t1() {\n        let a = beta();\n        let b = a + 1;\n        let c = b + 2;\n        let d = c + 3;\n        assert_eq!(d, 48);\n    }\n}\n",
+    );
+    ws.write(
+        ".acdd/lint/zones.yaml",
+        "complexity:\n  severity: warn\n  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY\n  max_file_prod_lines: 10\n",
+    );
+    ws.build();
+    let conn = ws.open();
+    let adapter = acdd_core::config::load_adapter(ws.root(), None).unwrap();
+    let opts = page(50, 0, None);
+    let res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::Syntax]),
+            rule_ids: None,
+            minimum_severity: None,
+            architecture: Some(&adapter.architecture),
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = res["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|v| v["rule_id"] == "syntax.file_prod_lines_exceeded"
+            && v["path"] == "src/oversized.rs"
+            && v["severity"] == "warn"
+            && v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"),
+        "oversized production file must trigger syntax.file_prod_lines_exceeded: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| v["rule_id"] == "syntax.file_prod_lines_exceeded"
+            && v["path"] == "src/clean_with_tests.rs"),
+        "trailing #[cfg(test)] lines must not trigger syntax.file_prod_lines_exceeded: {items:?}"
+    );
 }

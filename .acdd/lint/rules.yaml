@@ -1,0 +1,323 @@
+rules:
+  - id: ARCH-CORE-PURE-NO-IO
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [core_pure]
+    to:
+      paths:
+        - "crates/acdd-core/src/fs.rs"
+        - "crates/acdd-core/src/git.rs"
+        - "crates/acdd-core/src/lock.rs"
+        - "crates/acdd-core/src/sys.rs"
+        - "crates/acdd-core/src/config/loader.rs"
+        - "crates/acdd-core/src/config/refs.rs"
+      external_symbols: ["std::fs", "std::process", "std::net", "std::env"]
+    message: "Pure acdd-core leaf contracts must stay free of filesystem, process, network, and env I/O"
+
+  - id: ARCH-BRIDGE-SPEC-PURE
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [bridge_spec]
+    to:
+      zones: [index, index_db, bridge_code, bridge_docs]
+      external_symbols: ["acdd_index", "rusqlite", "tree_sitter", "walkdir"]
+    message: "SpecDomainProvider must remain index-free, SQLite-free, and decoupled from code/docs bridge siblings"
+
+  - id: ARCH-BRIDGE-CODE-ISOLATION
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [bridge_code]
+    to:
+      zones: [bridge_docs, bridge_spec]
+    message: "bridge_code must not import sibling bridge_docs or bridge_spec modules"
+
+  - id: ARCH-BRIDGE-DOCS-ISOLATION
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [bridge_docs]
+    to:
+      zones: [bridge_code, bridge_spec]
+    message: "bridge_docs must not import sibling bridge_code or bridge_spec modules"
+
+  - id: ARCH-WALKDIR-SINGLE-OWNER
+    severity: error
+    kind: single_owner
+    to:
+      external_symbols: ["walkdir"]
+    owner_paths:
+      - "crates/acdd-index/src/scanner/**"
+      - "src/engine/docs_check.rs"
+      - "src/state_bridge/docs_domain/walk.rs"
+      - "src/state_bridge/common.rs"
+    message: "walkdir traversal is confined to canonical scanner, docs_check, docs_domain/walk, and state_bridge/common owners"
+
+  - id: ARCH-INDEX-SPEC-ENTRY
+    severity: error
+    kind: boundary_entry
+    from:
+      zones: [index]
+    to:
+      zones: [spec]
+    entrypoints:
+      - "crates/acdd-spec/src/frontmatter.rs"
+    message: "crates/acdd-index may only call crates/acdd-spec via crates/acdd-spec/src/frontmatter.rs"
+
+  - id: ARCH-INDEX-DEPS
+    severity: error
+    kind: allow_only_dependencies
+    from:
+      zones: [index]
+    to:
+      zones: [core, spec]
+    message: "crates/acdd-index may only depend on crates/acdd-core and crates/acdd-spec"
+
+  - id: ARCH-INDEX-EXTERNAL-BAN
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [index]
+    to:
+      external_symbols: ["acdd_state", "tokio", "rmcp", "clap"]
+    message: "crates/acdd-index must remain free of state, async, CLI, and MCP runtimes"
+
+  - id: ARCH-INDEX-SQLITE-CONFINED
+    severity: error
+    kind: single_owner
+    from:
+      zones: [index]
+    to:
+      external_symbols: ["rusqlite"]
+    owner_paths:
+      - "crates/acdd-index/src/db/**"
+    message: "rusqlite in crates/acdd-index is confined to src/db/**"
+
+  - id: ARCH-INDEX-CONFINED-MANIFEST-READ
+    severity: error
+    kind: ast_pattern
+    from:
+      zones: [index, spec, state, bridge_docs, bridge_spec]
+      languages: ["rust"]
+    ast_pattern: "std::fs::read_to_string($P)"
+    message: "Use acdd_core::fs::open_confined or read_confined_utf8 instead of raw std::fs::read_to_string"
+
+  - id: ARCH-INDEX-CONFINED-MANIFEST-READ-SHORT
+    severity: error
+    kind: ast_pattern
+    from:
+      zones: [index, spec, state, bridge_docs, bridge_spec]
+      languages: ["rust"]
+    ast_pattern: "fs::read_to_string($P)"
+    message: "Use acdd_core::fs::open_confined or read_confined_utf8 instead of raw fs::read_to_string"
+
+  - id: ARCH-FORMAT-LEAF
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [host_format]
+    to:
+      zones: [index, host_engine, host_state_bridge, host_cli, host_mcp]
+      external_symbols: ["rusqlite", "tree_sitter", "tokio", "rmcp", "clap", "std::fs", "std::process", "std::env", "std::io::IsTerminal"]
+    message: "src/format must remain a pure presentation leaf over acdd-core and acdd-state DTOs"
+
+  - id: ARCH-ENGINE-PURE
+    severity: error
+    kind: allow_only_dependencies
+    from:
+      zones: [host_engine]
+    to:
+      zones: [core, index]
+    message: "src/engine must stay isolated from acdd-state, state_bridge, format, cli, and mcp"
+
+  - id: ARCH-STATE-BRIDGE-NO-TRANSPORT
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [host_state_bridge, bridge_common]
+    to:
+      zones: [host_cli, host_mcp, host_format]
+    message: "src/state_bridge must not depend upward on cli, mcp, or format"
+
+  - id: ARCH-MCP-NO-CLI
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [host_mcp]
+    to:
+      zones: [host_cli]
+    message: "src/mcp must not import src/cli; place shared logic in src/engine, src/state_bridge, or src/format"
+
+  - id: ARCH-RMCP-SINGLE-OWNER
+    severity: error
+    kind: single_owner
+    to:
+      external_symbols: ["rmcp"]
+    owner_paths:
+      - "src/mcp/**"
+    message: "rmcp protocol types are confined to src/mcp/**"
+
+  - id: ARCH-CLAP-SINGLE-OWNER
+    severity: error
+    kind: single_owner
+    to:
+      external_symbols: ["clap"]
+    owner_paths:
+      - "src/cli/**"
+    message: "clap CLI parsing is confined to src/cli/**"
+
+  - id: ARCH-TREE-SITTER-CONFINED
+    severity: error
+    kind: single_owner
+    to:
+      external_symbols: ["tree_sitter"]
+    owner_paths:
+      - "crates/acdd-index/src/ast/**"
+      - "crates/acdd-index/src/languages/**"
+    message: "tree_sitter FFI is confined to crates/acdd-index/src/{ast,languages}/**"
+
+  - id: ARCH-PIPELINE-BOUNDARY-ENTRY
+    severity: error
+    kind: boundary_entry
+    to:
+      paths: ["src/engine/pipeline/**"]
+    entrypoints:
+      - "src/engine/pipeline/mod.rs"
+      - "src/engine/pipeline/cold.rs"
+      - "src/engine/pipeline/delta.rs"
+    message: "External callers must enter src/engine/pipeline via mod.rs, cold.rs, or delta.rs"
+
+  - id: ARCH-SUBPROCESS-CONFINED
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      exclude_paths:
+        - "crates/acdd-core/src/git.rs"
+        - "crates/acdd-core/src/sys.rs"
+        - "crates/acdd-state/src/runner/**"
+        - "src/mcp/server/session.rs"
+      languages: ["rust"]
+    ast_pattern: "Command::new($PROGRAM)"
+    message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
+
+  - id: ARCH-SUBPROCESS-CONFINED-QUALIFIED
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      exclude_paths:
+        - "crates/acdd-core/src/git.rs"
+        - "crates/acdd-core/src/sys.rs"
+        - "crates/acdd-state/src/runner/**"
+        - "src/mcp/server/session.rs"
+      languages: ["rust"]
+    ast_pattern: "std::process::Command::new($PROGRAM)"
+    message: "Subprocess spawning is confined to acdd_core::{git,sys}, acdd_state::runner, and mcp::server"
+
+  - id: ARCH-NO-PROD-TEMP-DIR
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      exclude_paths:
+        - "crates/acdd-core/src/fs.rs"
+        - "crates/acdd-state/src/harness.rs"
+      languages: ["rust"]
+    ast_pattern: "std::env::temp_dir()"
+    message: "Use acdd_core::fs::ScopedTempDir instead of raw std::env::temp_dir() in production"
+
+  - id: ARCH-NO-SET-CURRENT-DIR
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      languages: ["rust"]
+    ast_pattern: "std::env::set_current_dir($DIR)"
+    message: "Never mutate process-global working directory in production code"
+
+  - id: ARCH-SQLITE-NO-UNCONFINED-OPEN
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      exclude_paths:
+        - "crates/acdd-index/src/db/**"
+        - "crates/acdd-state/src/store/sqlite/**"
+      languages: ["rust"]
+    ast_pattern: "Connection::open($PATH)"
+    message: "Open SQLite databases via confined_database_open_path + SQLITE_OPEN_NOFOLLOW owners"
+
+  - id: ARCH-SQLITE-NO-UNCONFINED-OPEN-QUALIFIED
+    severity: error
+    kind: ast_pattern
+    from:
+      paths: ["src/**", "crates/**"]
+      exclude_paths:
+        - "crates/acdd-index/src/db/**"
+        - "crates/acdd-state/src/store/sqlite/**"
+      languages: ["rust"]
+    ast_pattern: "rusqlite::Connection::open($PATH)"
+    message: "Open SQLite databases via confined_database_open_path + SQLITE_OPEN_NOFOLLOW owners"
+
+  - id: ARCH-DOCS-INTEGRITY-STRICT
+    severity: error
+    kind: doc_integrity
+    from:
+      paths: ["docs/adr/**", "docs/architecture/**"]
+    message: "Canonical ADR and architecture docs must have zero orphan invariants or stale symbol ranges"
+
+  - id: ARCH-INDEX-DB-ISOLATION
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [index_db]
+    to:
+      zones: [state, host_engine, host_state_bridge, host_format, host_cli, host_mcp, host_telemetry]
+      paths: ["crates/acdd-index/src/linker/**"]
+      external_symbols: ["acdd_state", "tokio", "rmcp", "clap"]
+    message: "crates/acdd-index/src/db must not depend on linker, acdd-state, or host layers"
+
+  - id: ARCH-INDEX-DB-NO-WRITER-IN-TRANSPORT
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [host_cli, host_mcp, host_format, host_telemetry]
+    to:
+      paths: ["crates/acdd-index/src/db/writer/**"]
+    message: "Transport and presentation zones must not depend on crates/acdd-index/src/db/writer"
+
+  - id: ARCH-TELEMETRY-CONFINED
+    severity: error
+    kind: forbid_dependency
+    from:
+      zones: [host_telemetry]
+    to:
+      zones: [index, index_db, host_format, host_engine, host_state_bridge, host_cli, host_mcp]
+      external_symbols: ["rusqlite", "tree_sitter", "rmcp", "clap"]
+    message: "src/telemetry.rs must stay decoupled from index, db, state_bridge, and transport layers"
+
+  - id: ARCH-ZONE-DAG-ACYCLIC
+    severity: error
+    kind: forbid_cycles
+    zones: [core, spec, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+    message: "Architectural workspace zones must remain an acyclic DAG"
+
+  - id: ARCH-ACYCLIC-HOST-MODULES
+    severity: error
+    kind: forbid_cycles
+    from:
+      zones: [host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+    depth: 2
+    message: "Host architectural modules must remain free of dependency cycles"
+
+  - id: ARCH-ACYCLIC-WORKSPACE-MODULES
+    severity: error
+    kind: forbid_cycles
+    from:
+      zones: [core, spec, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+      paths: ["src/*.rs"]
+    edge_kinds: [imports]
+    message: "Workspace production module import graph must remain acyclic (including same-directory modules)"

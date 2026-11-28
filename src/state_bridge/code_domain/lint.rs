@@ -86,6 +86,11 @@ fn compute_lint_live_digest(
             hash_file_or_marker(&explicit, "<missing>"),
         );
     }
+    if let Ok(arch_digest) =
+        acdd_core::format::sha256_serde_json_hex(&worktree_adapter.architecture)
+    {
+        file_hashes.insert("__adapter_architecture__".to_owned(), arch_digest);
+    }
 
     let include_all_sources = scoped_paths.is_none();
     for_each_candidate_file(&req.worktree, &req.path_policy, true, |abs, rel| {

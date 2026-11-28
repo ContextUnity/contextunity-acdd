@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 #[derive(Default, Deserialize)]
 struct Frontmatter {
     doc_type: Option<String>,
+    spec: Option<String>,
     title: Option<String>,
     status: Option<String>,
 }
@@ -295,6 +296,8 @@ fn build_doc_section_entry(
         .collect::<Vec<_>>();
     let _ = end;
     let is_invariant = !invariants.is_empty() || !declared_invariants.is_empty();
+    let is_spec_doc = state.meta.spec.is_some() || is_spec_path(state.path, state.spec_paths);
+    let inferred_doc_type = default_doc_type(state.path, state.spec_paths);
     let doc = DocSection {
         doc_id: format!("doc:{}:{index}", state.path),
         path: state.path.into(),
@@ -303,7 +306,8 @@ fn build_doc_section_entry(
             .meta
             .doc_type
             .clone()
-            .unwrap_or_else(|| default_doc_type(state.path, state.spec_paths).into()),
+            .or_else(|| state.meta.spec.clone())
+            .unwrap_or_else(|| inferred_doc_type.into()),
         content: content.into(),
         is_invariant,
         invariants,
@@ -315,11 +319,15 @@ fn build_doc_section_entry(
         "line":section_line,
         "end_line":section_end_line,
         "status":state.meta.status,
+        "is_spec_doc":is_spec_doc,
         "citations":citations,
         "symbol_claims":symbol_claims,
         "declared_invariants":declared_invariants,
         "is_invariant":doc.is_invariant,
     });
+    if let Some(ref spec) = state.meta.spec {
+        details["spec"] = json!(spec);
+    }
     if let Some(error) = state.frontmatter_error {
         details["frontmatter_error"] = json!(error);
     }
@@ -485,8 +493,8 @@ fn parse_acdd_rule_block(
     }
 }
 
-/// Returns the default `doc_type` inferred from path and configured `specs.*.path` when frontmatter omits `doc_type`.
-fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
+/// Returns `true` when `path` is a non-archived Spec document under any configured `specs.*.path`.
+fn is_spec_path(path: &str, spec_paths: &[String]) -> bool {
     let relative = path
         .strip_prefix('[')
         .and_then(|rest| rest.split_once("]/").map(|(_, rel)| rel))
@@ -498,10 +506,10 @@ fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
         .filter(|part| !part.is_empty())
         .collect();
     let Some(file_name) = rel_parts.last().copied() else {
-        return "guide";
+        return false;
     };
     if file_name == "README.md" || file_name == "AGENTS.md" {
-        return "guide";
+        return false;
     }
     for spec_path in spec_paths {
         let spec_norm = spec_path
@@ -513,24 +521,48 @@ fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
         if spec_norm.is_empty() {
             continue;
         }
-        let spec_parts: Vec<&str> = spec_norm
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect();
-        if !spec_parts.is_empty()
-            && rel_parts.len() > spec_parts.len()
-            && rel_parts[..spec_parts.len()] == spec_parts[..]
-        {
-            let tail = &rel_parts[spec_parts.len()..];
-            if !tail
-                .iter()
-                .any(|segment| segment.eq_ignore_ascii_case("archive"))
-            {
-                return "contract";
+        for variant in acdd_core::path_policy::expand_glob_braces(&spec_norm) {
+            let has_wildcards =
+                variant.contains('*') || variant.contains('?') || variant.contains('[');
+            if !has_wildcards {
+                let spec_parts: Vec<&str> = variant
+                    .split('/')
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if !spec_parts.is_empty()
+                    && rel_parts.len() > spec_parts.len()
+                    && rel_parts[..spec_parts.len()] == spec_parts[..]
+                {
+                    let tail = &rel_parts[spec_parts.len()..];
+                    if !tail
+                        .iter()
+                        .any(|segment| segment.eq_ignore_ascii_case("archive"))
+                    {
+                        return true;
+                    }
+                }
+            } else {
+                let dir_pat = variant.trim_end_matches("/**").trim_end_matches('/');
+                if acdd_core::path_policy::glob_matches(&format!("{dir_pat}/**"), &relative)
+                    && !rel_parts
+                        .iter()
+                        .any(|segment| segment.eq_ignore_ascii_case("archive"))
+                {
+                    return true;
+                }
             }
         }
     }
-    "guide"
+    false
+}
+
+/// Returns the default `doc_type` inferred from path and configured `specs.*.path` when frontmatter omits `doc_type`.
+fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
+    if is_spec_path(path, spec_paths) {
+        "contract"
+    } else {
+        "guide"
+    }
 }
 
 fn is_symbol_token(value: &str) -> bool {
@@ -625,11 +657,14 @@ mod tests {
             "docs/milestones".to_owned(),
             "docs/plans".to_owned(),
             "docs/rfcs".to_owned(),
+            "extensions/*/docs/milestones".to_owned(),
         ];
         let cases = [
             ("docs/milestones/AC-001.md", "contract"),
             ("[linked]/docs/plans/PLAN-002.md", "contract"),
             ("docs/rfcs/RFC-003.md", "contract"),
+            ("extensions/commerce/docs/milestones/EC-001.md", "contract"),
+            ("extensions/commerce/docs/milestones/archive/EC-001.md", "guide"),
             ("docs/milestones/archive/AC-001.md", "guide"),
             ("docs/milestones/Archive/AC-001.md", "guide"),
             ("docs/milestones/AC-001-archive.md", "contract"),

@@ -20,6 +20,8 @@ unused_public_api: true
 complexity:
   severity: error
   invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+  max_file_prod_lines: 1200
+  max_cognitive_complexity: 42
 "#;
     let custom: ArchitectureConfig = serde_yaml::from_str(custom_yaml).unwrap();
     assert!(!custom.is_empty());
@@ -30,12 +32,24 @@ complexity:
         custom.complexity.invariant.as_deref(),
         Some("INV-BOUNDED-STRUCTURAL-COMPLEXITY")
     );
+    assert_eq!(custom.complexity.max_file_prod_lines, Some(1200));
+    assert_eq!(custom.complexity.max_cognitive_complexity, Some(42));
+
+    for (label, zero_yaml) in [
+        ("zero_file_lines", "complexity:\n  max_file_prod_lines: 0\n"),
+        (
+            "zero_cognitive",
+            "complexity:\n  max_cognitive_complexity: 0\n",
+        ),
+    ] {
+        let cfg: ArchitectureConfig = serde_yaml::from_str(zero_yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err(&format!("{label}: expected validation failure for 0"));
+        assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{err}");
+    }
 
     for (label, bad_yaml) in [
-        (
-            "legacy_cognitive",
-            "complexity:\n  max_cognitive_complexity: 42\n",
-        ),
         ("legacy_nesting", "complexity:\n  max_nesting_depth: 5\n"),
         ("legacy_fanout", "complexity:\n  max_fanout: 30\n"),
     ] {

@@ -1,30 +1,135 @@
 //! Adapter schema definitions, spec collection configuration, and validation.
 
 use super::constants::{
-    DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_TOTAL_BYTES,
-    DEFAULT_RETAIN_TRACES, DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB, MAX_METADATA_BYTES,
+    DEFAULT_LINT_DIR, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_METADATA_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES, DEFAULT_RETAIN_TRACES, DEFAULT_SPECS_DIR, DEFAULT_SPEC_DIGITS,
+    DEFAULT_STATE_DB, DEFAULT_WORKFLOWS_DIR, MAX_METADATA_BYTES,
 };
 use crate::errors::{AcddError, ErrorCode};
-use crate::fs::checked_child;
 use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
+use crate::schema::SchemaDef;
 use crate::subsystems::SubsystemRegistry;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 fn default_spec_digits() -> usize {
     DEFAULT_SPEC_DIGITS
 }
 
+pub(super) fn default_specs_dirs() -> Vec<String> {
+    vec![DEFAULT_SPECS_DIR.into()]
+}
+
 pub(super) fn default_workflows_dirs() -> Vec<String> {
-    vec![".acdd/workflows".into()]
+    vec![DEFAULT_WORKFLOWS_DIR.into()]
+}
+
+pub(super) fn default_lint_dirs() -> Vec<String> {
+    vec![DEFAULT_LINT_DIR.into()]
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawSpecFields {
+    Schema(Box<SchemaDef>),
+    Properties(BTreeMap<String, SchemaDef>),
+}
+
+pub(super) fn deserialize_optional_spec_fields<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SchemaDef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<RawSpecFields>::deserialize(deserializer)?;
+    Ok(raw.map(|r| match r {
+        RawSpecFields::Schema(schema) => *schema,
+        RawSpecFields::Properties(properties) => SchemaDef {
+            properties,
+            ..SchemaDef::object()
+        },
+    }))
+}
+
+/// ANSI color mode for CLI roadmap rendering (`acdd.yaml` `roadmap.color`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoadmapColorMode {
+    /// Enable ANSI colors when stdout is a TTY and `NO_COLOR` is unset.
+    #[default]
+    Auto,
+    /// Always emit ANSI colors (unless overridden by `NO_COLOR` or CLI `--color`).
+    Always,
+    /// Never emit ANSI escape sequences.
+    Never,
+}
+
+/// Workspace CLI roadmap display configuration (`roadmap:` in `acdd.yaml`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RoadmapDisplayConfig {
+    /// Ordered field/readiness badge names projected on roadmap entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub badges: Vec<String>,
+    /// Default grouping axis (`wave`, `spec`, or custom schema field name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    /// Default ANSI color policy (`auto | always | never`).
+    #[serde(default)]
+    pub color: RoadmapColorMode,
+}
+
+impl RoadmapDisplayConfig {
+    /// Validate roadmap display settings.
+    pub fn validate(&self) -> std::result::Result<(), AcddError> {
+        for badge in &self.badges {
+            if badge.trim().is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    "roadmap.badges entries must not be empty",
+                ));
+            }
+        }
+        if let Some(ref group_by) = self.group_by {
+            if group_by.trim().is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    "roadmap.group_by must not be empty when specified",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Named item collection declaration under `specs.<name>.items.<collection>`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SpecItemConfig {
+    /// Singular Markdown heading token (`### <item>: <ref>`), defaulting to the collection key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Optional `SchemaDef` (or property map) validating item-specific fields.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_spec_fields",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fields: Option<SchemaDef>,
+}
+
+impl SpecItemConfig {
+    /// Effective singular heading token (`### <item>: <ref>`).
+    pub fn effective_item_token<'a>(&'a self, collection_key: &'a str) -> &'a str {
+        self.item.as_deref().unwrap_or(collection_key)
+    }
 }
 
 /// Configuration for a spec collection under `specs:` in `acdd.yaml`.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SpecConfig {
     /// Legacy single workspace-relative directory path containing spec documents.
@@ -33,18 +138,74 @@ pub struct SpecConfig {
     /// Multi-entry workspace-relative paths or glob patterns (e.g. `extensions/*/docs/milestones`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// Optional built-in Spec base (`contract` or `memory`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Optional external spec schema reference (`<name> | <path>[:<sha256_prefix>]`) resolved in `specs_dirs`.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub spec_ref: Option<String>,
     /// Optional explicit workflow for specs in this collection (else workspace default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
+    /// Whether specs in this collection appear in `acdd roadmap` by default (`true` on `contract`, `false` on `memory`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roadmap: Option<bool>,
     /// Allowed spec ID prefixes (e.g. `["AC"]`).
     #[serde(default)]
     pub prefixes: Vec<String>,
     /// Zero-padded numeric suffix width for drafted spec IDs.
     #[serde(default = "default_spec_digits")]
     pub digits: usize,
+    /// Optional `SchemaDef` (or property map) validating extra Spec frontmatter fields.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_spec_fields",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fields: Option<SchemaDef>,
+    /// Optional named item collections (`spec.<collection>` -> `### <item>: <ref>`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub items: BTreeMap<String, SpecItemConfig>,
+}
+
+impl Default for SpecConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            paths: Vec::new(),
+            base: None,
+            spec_ref: None,
+            workflow: None,
+            roadmap: None,
+            prefixes: Vec::new(),
+            digits: DEFAULT_SPEC_DIGITS,
+            fields: None,
+            items: BTreeMap::new(),
+        }
+    }
 }
 
 impl SpecConfig {
+    /// Effective built-in base (`"contract"` or `"memory"`) for a named collection,
+    /// returning `None` when `ref:` binds an external `.acdd/specs/*.yaml` schema directly.
+    pub fn effective_builtin_base(&self, collection_key: Option<&str>) -> Option<&str> {
+        if let Some(ref base) = self.base {
+            return Some(base.as_str());
+        }
+        if self.spec_ref.is_some() {
+            return None;
+        }
+        if collection_key == Some("memory") {
+            return Some("memory");
+        }
+        Some("contract")
+    }
+
+    /// Effective default roadmap visibility taking collection key (`"memory"` shorthand) into account.
+    pub fn effective_roadmap(&self, collection_key: Option<&str>) -> bool {
+        self.roadmap
+            .unwrap_or_else(|| self.effective_builtin_base(collection_key) != Some("memory"))
+    }
     /// Return all configured normalized patterns (`path` followed by `paths`, deduplicated in order).
     pub fn patterns(&self) -> Vec<&str> {
         let mut out = Vec::new();
@@ -68,20 +229,30 @@ impl SpecConfig {
         })
     }
 
-    /// Return `true` if `rel` (a workspace-relative file or directory path) falls under any pattern.
-    pub fn matches_rel_path(&self, rel: &str) -> bool {
+    /// Return the length of the longest configured pattern matching `rel` (a workspace-relative
+    /// file or directory path), or `None` if no pattern matches.
+    pub fn longest_matching_pattern_len(&self, rel: &str) -> Option<usize> {
         let trimmed = rel.trim().replace('\\', "/");
         let norm = trimmed
             .strip_prefix("./")
             .unwrap_or(&trimmed)
             .trim_end_matches('/');
         if norm.is_empty() {
-            return false;
+            return None;
         }
-        self.patterns().into_iter().any(|pat| {
-            crate::path_policy::glob_matches(pat, norm)
-                || crate::path_policy::glob_matches(&format!("{pat}/**"), norm)
-        })
+        self.patterns()
+            .into_iter()
+            .filter(|pat| {
+                crate::path_policy::glob_matches(pat, norm)
+                    || crate::path_policy::glob_matches(&format!("{pat}/**"), norm)
+            })
+            .map(str::len)
+            .max()
+    }
+
+    /// Return `true` if `rel` (a workspace-relative file or directory path) falls under any pattern.
+    pub fn matches_rel_path(&self, rel: &str) -> bool {
+        self.longest_matching_pattern_len(rel).is_some()
     }
 
     /// Resolve the owning concrete collection root directory for a matched workspace-relative spec path.
@@ -149,104 +320,6 @@ impl SpecConfig {
         }
         self.matched_concrete_root(norm).as_deref() == Some(root_rel)
     }
-
-    /// Expand all configured patterns into deterministic, sorted existing directories confined to `root`.
-    ///
-    /// Non-existent literal directories are omitted gracefully; symlinks along literal paths
-    /// or escaping `root` fail closed, and wildcard (`*` / `**`) expansion never follows symlinks.
-    pub fn resolve_dirs(&self, root: &Path) -> std::io::Result<Vec<PathBuf>> {
-        let mut dirs = BTreeSet::new();
-        for pat in self.patterns() {
-            for variant in crate::path_policy::expand_glob_braces(pat) {
-                let norm = normalize_spec_collection_path(&variant).map_err(|err| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
-                })?;
-                let segs: Vec<&str> = norm.split('/').collect();
-                expand_spec_dir_segments(root, Path::new(""), &segs, &mut dirs)?;
-            }
-        }
-        Ok(dirs.into_iter().collect())
-    }
-}
-
-fn expand_spec_dir_segments(
-    root: &Path,
-    current_rel: &Path,
-    segs: &[&str],
-    out: &mut BTreeSet<PathBuf>,
-) -> std::io::Result<()> {
-    if segs.is_empty() {
-        if current_rel.as_os_str().is_empty()
-            || current_rel.components().any(|c| c.as_os_str() == "archive")
-        {
-            return Ok(());
-        }
-        let candidate = checked_child(root, current_rel)?;
-        match fs::symlink_metadata(&candidate) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "spec collection '{}' must not be a symlink",
-                        current_rel.to_string_lossy()
-                    ),
-                ));
-            }
-            Ok(meta) if meta.is_dir() => {
-                out.insert(candidate);
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
-        }
-        return Ok(());
-    }
-
-    let (first, rest) = (segs[0], &segs[1..]);
-    if first == "**" || first.contains('*') || first.contains('?') {
-        if first == "**" {
-            expand_spec_dir_segments(root, current_rel, rest, out)?;
-        }
-        let base = if current_rel.as_os_str().is_empty() {
-            root.to_path_buf()
-        } else {
-            checked_child(root, current_rel)?
-        };
-        let entries = match fs::read_dir(&base) {
-            Ok(rd) => rd,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(err),
-        };
-        let next_segs = if first == "**" { segs } else { rest };
-        for entry in entries {
-            let entry = entry?;
-            if entry.file_name() == "archive" {
-                continue;
-            }
-            let ft = entry.file_type()?;
-            if ft.is_symlink() || !ft.is_dir() {
-                continue;
-            }
-            if first == "**" {
-                expand_spec_dir_segments(
-                    root,
-                    &current_rel.join(entry.file_name()),
-                    next_segs,
-                    out,
-                )?;
-            } else {
-                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                    continue;
-                };
-                if crate::path_policy::glob_matches(first, &name) {
-                    expand_spec_dir_segments(root, &current_rel.join(name), next_segs, out)?;
-                }
-            }
-        }
-    } else {
-        expand_spec_dir_segments(root, &current_rel.join(first), rest, out)?;
-    }
-    Ok(())
 }
 
 /// Returns the default `specs:` collections (`milestones` and `plans`).
@@ -256,26 +329,33 @@ pub fn default_specs() -> BTreeMap<String, SpecConfig> {
             "milestones".to_owned(),
             SpecConfig {
                 path: Some("docs/milestones".to_owned()),
-                paths: Vec::new(),
-                workflow: None,
                 prefixes: vec!["AC".to_owned()],
-                digits: DEFAULT_SPEC_DIGITS,
+                ..SpecConfig::default()
             },
         ),
         (
             "plans".to_owned(),
             SpecConfig {
                 path: Some("docs/plans".to_owned()),
-                paths: Vec::new(),
-                workflow: None,
-                prefixes: Vec::new(),
-                digits: DEFAULT_SPEC_DIGITS,
+                ..SpecConfig::default()
             },
         ),
     ])
 }
 
-fn normalize_spec_collection_path(raw: &str) -> std::result::Result<String, AcddError> {
+fn validate_spec_fields_schema(schema: &SchemaDef, ctx: &str) -> std::result::Result<(), AcddError> {
+    if schema.schema_type != "object" {
+        return Err(AcddError::new(
+            ErrorCode::SpecSchemaInvalid,
+            format!("{ctx} schema must have type 'object', got '{}'", schema.schema_type),
+        ));
+    }
+    schema
+        .validate_schema(ctx)
+        .map_err(|err| AcddError::new(ErrorCode::SpecSchemaInvalid, err.message))
+}
+
+pub(super) fn normalize_spec_collection_path(raw: &str) -> std::result::Result<String, AcddError> {
     let normalized = raw
         .trim()
         .replace('\\', "/")
@@ -304,11 +384,72 @@ pub(super) fn validate_and_normalize_specs(
                 "spec collection name must not be empty",
             ));
         }
+        if let Some(ref base) = cfg.base {
+            if !matches!(base.as_str(), "contract" | "memory") {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!(
+                        "specs.{name}.base '{base}' must be 'contract' or 'memory' (multi-hop spec inheritance is forbidden)"
+                    ),
+                ));
+            }
+            if cfg.spec_ref.is_some() {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!(
+                        "specs.{name} cannot declare both 'base' and 'ref' (single-hop inheritance only)"
+                    ),
+                ));
+            }
+        }
+        if let Some(ref workflow) = cfg.workflow {
+            if workflow.trim().is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!("specs.{name}.workflow must not be empty when specified"),
+                ));
+            }
+        }
         if !(1..=16).contains(&cfg.digits) {
             return Err(AcddError::new(
                 ErrorCode::SpecSchemaInvalid,
                 format!("specs.{name}.digits must be in 1..=16, got {}", cfg.digits),
             ));
+        }
+        if let Some(ref fields) = cfg.fields {
+            validate_spec_fields_schema(fields, &format!("specs.{name}.fields"))?;
+        }
+        let mut seen_item_tokens = BTreeSet::new();
+        for (col_key, item_cfg) in &cfg.items {
+            if col_key.trim().is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!("specs.{name}.items collection key must not be empty"),
+                ));
+            }
+            if let Some(ref token) = item_cfg.item {
+                if token.trim().is_empty() || token.trim() != token || token.contains(':') {
+                    return Err(AcddError::new(
+                        ErrorCode::SpecSchemaInvalid,
+                        format!("specs.{name}.items.{col_key}.item '{token}' is invalid"),
+                    ));
+                }
+            }
+            let effective_token = item_cfg.effective_item_token(col_key);
+            if !seen_item_tokens.insert(effective_token.to_owned()) {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!(
+                        "specs.{name}.items declares duplicate heading token '{effective_token}'"
+                    ),
+                ));
+            }
+            if let Some(ref item_fields) = item_cfg.fields {
+                validate_spec_fields_schema(
+                    item_fields,
+                    &format!("specs.{name}.items.{col_key}.fields"),
+                )?;
+            }
         }
         if let Some(ref mut p) = cfg.path {
             *p = normalize_spec_collection_path(p)?;
@@ -467,9 +608,18 @@ pub struct AdapterFile {
     /// Configured spec collections (`specs:`).
     #[serde(default)]
     pub specs: Option<BTreeMap<String, SpecConfig>>,
+    /// Directories searched for external spec schema files (`specs_dirs:`).
+    #[serde(default)]
+    pub specs_dirs: Option<Vec<String>>,
     /// Directories searched for custom workflows.
     #[serde(default)]
     pub workflows_dirs: Option<Vec<String>>,
+    /// Directories searched for externalized lint/architecture rules (`lint_dirs:`).
+    #[serde(default)]
+    pub lint_dirs: Option<Vec<String>>,
+    /// Optional CLI roadmap display settings (`roadmap:`).
+    #[serde(default)]
+    pub roadmap: Option<RoadmapDisplayConfig>,
     /// State SQLite database path relative to primary worktree root.
     #[serde(default)]
     pub state_db: Option<String>,
@@ -488,9 +638,6 @@ pub struct AdapterFile {
     pub owners: Option<BTreeMap<String, String>>,
     /// Optional aliases map.
     pub aliases: Option<BTreeMap<String, String>>,
-    /// Optional architectural zones and lint rules (`architecture:`).
-    #[serde(default)]
-    pub architecture: ArchitectureConfig,
     #[serde(default, rename = "DEBUG", alias = "debug")]
     /// Debug mode flag.
     pub debug: bool,
@@ -614,13 +761,19 @@ pub struct Adapter {
     pub plans: Vec<String>,
     /// Configured spec collections (`specs:`).
     pub specs: BTreeMap<String, SpecConfig>,
+    /// Directories searched for external spec schema files (`specs_dirs:`).
+    pub specs_dirs: Vec<String>,
     /// Directories searched for custom workflows.
     pub workflows_dirs: Vec<String>,
+    /// Directories searched for externalized lint/architecture rules (`lint_dirs:`).
+    pub lint_dirs: Vec<String>,
+    /// Resolved CLI roadmap display settings (`roadmap:`).
+    pub roadmap: RoadmapDisplayConfig,
     /// State SQLite database path.
     pub state_db: String,
     /// Number of retained run trace files.
     pub retain_traces: usize,
-    /// Configured architectural zones and static lint rules.
+    /// Configured architectural zones and static lint rules (hydrated from `lint_dirs`).
     pub architecture: ArchitectureConfig,
     /// Enables daily redacted JSONL CLI/MCP telemetry logs under `.acdd/logs/`.
     pub debug: bool,
@@ -665,7 +818,10 @@ impl Default for Adapter {
             milestones: vec!["docs/milestones".into()],
             plans: vec!["docs/plans".into()],
             specs: default_specs(),
+            specs_dirs: default_specs_dirs(),
             workflows_dirs: default_workflows_dirs(),
+            lint_dirs: default_lint_dirs(),
+            roadmap: RoadmapDisplayConfig::default(),
             state_db: DEFAULT_STATE_DB.into(),
             retain_traces: DEFAULT_RETAIN_TRACES,
             architecture: ArchitectureConfig::default(),
@@ -770,10 +926,7 @@ mod tests {
 
         let missing_col = SpecConfig {
             path: Some("docs/nonexistent".to_owned()),
-            paths: Vec::new(),
-            workflow: None,
-            prefixes: Vec::new(),
-            digits: 3,
+            ..SpecConfig::default()
         };
         assert!(missing_col.resolve_dirs(root).unwrap().is_empty());
 
@@ -782,10 +935,8 @@ mod tests {
         std::fs::create_dir_all(root.join("docs/milestones/team")).unwrap();
         let rec_col = SpecConfig {
             path: Some("docs/milestones/**".to_owned()),
-            paths: Vec::new(),
-            workflow: None,
             prefixes: vec!["AC".to_owned()],
-            digits: 3,
+            ..SpecConfig::default()
         };
         let rec_dirs = rec_col.resolve_dirs(root).unwrap();
         assert!(!rec_dirs.contains(&root.join("docs/milestones/archive")));
@@ -808,10 +959,8 @@ mod tests {
         );
         let deep_col = SpecConfig {
             path: Some("extensions/**/docs/milestones/**".to_owned()),
-            paths: Vec::new(),
-            workflow: None,
             prefixes: vec!["AC".to_owned()],
-            digits: 3,
+            ..SpecConfig::default()
         };
         assert_eq!(
             deep_col

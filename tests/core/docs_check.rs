@@ -222,3 +222,87 @@ fn combining_marks_are_preserved_in_heading_slugs() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn is_spec_doc_classifies_path_inferred_and_explicit_spec_overrides() {
+    let spec_paths = vec!["docs/milestones".to_owned()];
+    let cases = [
+        ("docs/milestones/AC-001.md", "# Milestone\nBody\n", true),
+        (
+            "docs/notes/custom.md",
+            "---\nspec: research\n---\n# Research\nBody\n",
+            true,
+        ),
+        ("docs/guide.md", "# Guide\nBody\n", false),
+        ("docs/milestones/README.md", "# Index\nBody\n", false),
+    ];
+    for (path, content, expected) in cases {
+        let sections = acdd_index::docs::extract_with_details_with_zones(
+            path,
+            content,
+            0.0,
+            &spec_paths,
+            None,
+        )
+        .unwrap();
+        assert!(!sections.is_empty(), "{path} must produce at least one section");
+        let is_spec_doc = sections[0].1["is_spec_doc"].as_bool();
+        assert_eq!(
+            is_spec_doc,
+            Some(expected),
+            "unexpected is_spec_doc for {path}: {:?}",
+            sections[0].1
+        );
+    }
+
+    // End-to-end: Workspace::build() -> nodes.details -> run_lint(Docs)
+    let ws = Workspace::new();
+    ws.write("docs/arch.md", "# Arch\n- INV-SPEC-FILTER: canonical rule.\n");
+    ws.write(
+        "docs/dup.md",
+        "# Dup\n- INV-SPEC-FILTER: duplicate in non-spec doc.\n",
+    );
+    ws.write(
+        "docs/milestones/AC-001.md",
+        "# Milestone\n- INV-SPEC-FILTER: path-inferred spec doc must not trigger duplicate.\n",
+    );
+    ws.write(
+        "docs/notes/custom.md",
+        "---\nspec: research\n---\n# Research\n- INV-SPEC-FILTER: explicit spec override must not trigger duplicate.\n",
+    );
+    ws.build();
+    let conn = ws.open();
+    let page = acdd_core::response::QueryOptions::resolve(
+        &acdd_core::response::ResponsePolicy::default(),
+        Some(100),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    let lint = acdd_index::db::lint::run_lint(
+        &conn,
+        &acdd_index::db::lint::LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[acdd_core::lint::LintCategory::Docs]),
+            rule_ids: None,
+            minimum_severity: None,
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &page,
+        },
+    )
+    .unwrap();
+    let items = lint["items"].as_array().unwrap();
+    let has_dup_at = |path: &str| {
+        items.iter().any(|it| {
+            it["rule_id"] == "docs.duplicate_invariant"
+                && it["path"].as_str() == Some(path)
+        })
+    };
+    assert!(has_dup_at("docs/arch.md"), "{items:?}");
+    assert!(has_dup_at("docs/dup.md"), "{items:?}");
+    assert!(!has_dup_at("docs/milestones/AC-001.md"), "{items:?}");
+    assert!(!has_dup_at("docs/notes/custom.md"), "{items:?}");
+}

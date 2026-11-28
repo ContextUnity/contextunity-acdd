@@ -33,7 +33,7 @@ state_db: .acdd/state.sqlite
 retain_traces: 20
 ";
 
-/// Canonical `.gitignore` block ensuring `.acdd/workflows/**`, `.acdd/specs/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
+/// Canonical `.gitignore` block ensuring `.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/lint/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
 const CANONICAL_GITIGNORE_BLOCK: &str = "\
 /.worktrees/
 !/.acdd/
@@ -41,6 +41,8 @@ const CANONICAL_GITIGNORE_BLOCK: &str = "\
 !/.acdd/workflows/**
 !/.acdd/specs/
 !/.acdd/specs/**
+!/.acdd/lint/
+!/.acdd/lint/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*

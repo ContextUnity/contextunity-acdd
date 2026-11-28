@@ -671,10 +671,8 @@ mod tests {
             "rfcs".to_owned(),
             SpecConfig {
                 path: Some("docs/rfcs".to_owned()),
-                paths: Vec::new(),
-                workflow: None,
                 prefixes: vec!["RFC".to_owned()],
-                digits: 3,
+                ..Default::default()
             },
         );
         assert!(super::walk::is_spec_collection_path(

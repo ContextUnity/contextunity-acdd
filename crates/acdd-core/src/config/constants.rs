@@ -31,6 +31,12 @@ pub const DEFAULT_MAX_METADATA_BYTES: usize = MAX_METADATA_BYTES;
 pub const DEFAULT_RETAIN_TRACES: usize = 20;
 /// Default specification ID numeric width.
 pub const DEFAULT_SPEC_DIGITS: usize = 3;
+/// Default directory searched for external spec definitions (`specs_dirs`).
+pub const DEFAULT_SPECS_DIR: &str = ".acdd/specs";
+/// Default directory searched for custom workflow definitions (`workflows_dirs`).
+pub const DEFAULT_WORKFLOWS_DIR: &str = ".acdd/workflows";
+/// Default directory searched for externalized lint/architecture rules (`lint_dirs`).
+pub const DEFAULT_LINT_DIR: &str = ".acdd/lint";
 
 /// Current engine schema version stored in database metadata.
 pub const ENGINE_SCHEMA_VERSION: &str = "15";
