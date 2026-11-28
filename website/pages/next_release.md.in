@@ -1,0 +1,55 @@
+# Upcoming Release: `v0.8`
+
+The **`v0.8`** release line consolidates ContextUnity ACDD around its three-system architecture (`acdd-index`, `acdd-spec`, `acdd-state`), universal specs and repository memory, diff-aware architectural linting, and the unified swarm gate engine.
+
+- **Current stable**: `v0.7.1` (`main`)
+- **Staging branch**: `dev` (published automatically as `nightly`)
+
+---
+
+## Available now on `dev` <span class="badge-nightly">nightly</span>
+
+Install with `install.sh --nightly` to use everything below today:
+
+### 1. Three-System Architecture & `acdd-spec` (`AR-006`)
+- Extracted `crates/acdd-spec` for pure declarative spec parsing, drafting, validation, and static roadmap DAGs.
+- Added `preset: spec` (`full | index | spec | state | minimal`) enabling `acdd validate`, `roadmap`, and `draft` with zero `.acdd/state.sqlite` creation.
+- Cut over `.acdd/profile.yaml` → `.acdd/workflows/default.yaml` (`workflows_dirs:`, `--workflow`, `--rebind-workflow`) and trimmed embedded workflows to `base`, `code`, and `documentation` while moving reference templates (`audit`, `spec_planning`, `hotfix`, `memory_optimize`) to `skills/acdd/references/acdd-workflow-examples/`.
+
+### 2. Lean MCP Surface & Compact Budgets (`UX-004`)
+- Consolidated static MCP tools from `20 → 18` by folding `tests` and `prove_removal` into `code_map_query`.
+- Extended read-only `code_map_analyze` with `diff_impact`, `boundary`, `path`, `entrypoints`, PageRank `hotspots`, and bounded Git `cochange`.
+- Tightened default inline budgets (`acdd_claim <= 10,000 B` compact soft cap, `acdd_read <= 9,000 B` with continuations; `detail="full"` up to `32 KiB` / `48 KiB`).
+
+### 3. Universal Specs, `.acdd/lint/` & Repository Memory (`AC-006`)
+- Symmetrical `.acdd/{workflows,specs,lint}/` layout: moved `architecture:` zones/rules out of `acdd.yaml` into `.acdd/lint/*.yaml` (`lint_dirs:`).
+- Universal `specs:` registry with `contract` and `memory` built-in bases, multi-spec runs (`acdd start [SPEC ...]`), `roadmap:` display/filter options, and repository memory delivered via `context: [specs.memories]`.
+
+### 4. Retrospective Memory & Hunk-Exact Context Ranking (`ADR 0015`)
+- Added `.acdd/specs/retrospective.yaml` and `.acdd/workflows/memory_optimize.yaml` templates with zero hardcoded domain strings in Rust.
+- Added hunk-exact 5-tier diff-aware `specs.*` ranking over `git diff -U0` and unified `ContextRef` / `ContextEntry` SPI.
+
+### 5. Lazy Worktree Scope, Diff Duplicates, Diff X-Ray & CLI Parity
+- Auto-admitted non-protected edits on isolated `Worktree` builds (`ScopeMode::Lazy`) while keeping `protected_paths` fail-closed.
+- Added asymmetric Probe-vs-Workspace diff clone promotion (`>= 0.80` promoted to Error, `0.45..0.80` graph-ranked `reuse_hints`), non-blocking Diff X-Ray diagnostics on passing `acdd verify`, `max_file_prod_lines_error` monolith ceilings, and `commands.<id>.post_command`.
+- Aligned CLI ergonomics: optional path / `--path` / `--query` on `acdd read`, `--path` on `acdd query search`, `--detail compact|full` on `acdd docs get`, and canonical `min_lines = 5` default on `duplicates`.
+
+### 6. Rust Entrypoints & Mutation Resolution (`LS-004`)
+- Fixed false `unresolved` `shadowed_binding` accounting on local-variable `EdgeKind::Mutates` across all languages.
+- Organized built-in framework manifests under `manifests/{rust,python,typescript,web}/` with declarative `rmcp`, `axum`, `actix`, and `clap` packs.
+
+---
+
+## Planned for `v0.8`
+
+These two milestones complete the `v0.8` release line before cutting `v0.8.0` to `main`:
+
+### Mode-Aware `acdd_read` & `<25ms` Live-Edit Pulse (`UX-005`)
+- Specializes `acdd_read` pre-edit shields per `ReadMode` (`outline`, `snippet`, `lines`, `search`, `delta`).
+- Adds `inbound_callers` search ranking and directory zone/memory summaries to `code_map_overview`.
+- Introduces strictly read-only `acdd lint --live-edit <path>` (`<= 25ms`, `PostToolUse` hook, zero SQLite write locks) and `code.edit_pulse` in `acdd context`.
+
+### Unified Swarm Mode & Agent Session Reuse (`AC-005`)
+- Replaces `- tasks:` blocks with one orthogonal `mode: linear | parallel | swarm` engine model.
+- Renames `roles:` to `agents:` with structured `agents.<name>.reuse` policies (`never | on_reject | always`, `max_reuses`, `max_context_tokens`).
+- Adds lock-free `save: none` SQLite CAS, grouped `save: handoff`, `@mention` + `thread_id` zero-token blackboard waits, and full post-build-delivery gate transition audits.

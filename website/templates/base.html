@@ -8,37 +8,46 @@
   <link rel="icon" type="image/svg+xml" href="{{ get_url(path='favicon.svg') }}" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
   <script>
     (function () {
       try {
+        var params = new URLSearchParams(window.location.search);
+        var forced = params.get("theme");
         var saved = localStorage.getItem("acdd-theme");
-        var theme = (saved === "light" || saved === "dark")
-          ? saved
-          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        var theme = (forced === "light" || forced === "dark")
+          ? forced
+          : ((saved === "light" || saved === "dark")
+            ? saved
+            : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
         document.documentElement.setAttribute("data-theme", theme);
+        window.__syncHighlightTheme = function (t) {
+          var hlL = document.getElementById("hlLight");
+          var hlD = document.getElementById("hlDark");
+          if (hlL) hlL.disabled = (t !== "light");
+          if (hlD) hlD.disabled = (t === "light");
+        };
       } catch (e) {}
     })();
   </script>
   <link rel="stylesheet" href="{{ get_url(path='main.css') }}" />
+  <link id="hlLight" rel="stylesheet" href="{{ get_url(path='giallo-light.css') }}" />
+  <link id="hlDark" rel="stylesheet" href="{{ get_url(path='giallo-dark.css') }}" />
+  <script>
+    if (window.__syncHighlightTheme) {
+      window.__syncHighlightTheme(document.documentElement.getAttribute("data-theme") || "dark");
+    }
+  </script>
 </head>
 <body>
-  <div class="ambient-bg" aria-hidden="true">
-    <div class="orb orb-cyan"></div>
-    <div class="orb orb-indigo"></div>
-    <div class="orb orb-teal"></div>
-    <div class="noise-overlay"></div>
-  </div>
-
   <header class="site-header">
     <div class="container nav-inner">
       <a class="brand" href="{{ get_url(path='/') }}">
-        <img src="{{ get_url(path='favicon.svg') }}" alt="ACDD" />
-        <span>ContextUnity ACDD</span>
-        <span class="brand-tag">v{{ config.extra.version }}</span>
+        <img src="{{ get_url(path='favicon.svg') }}" alt="ACDD" width="26" height="26" />
+        <span class="brand-name">ContextUnity ACDD</span>
       </a>
 
-      <nav class="nav-links" id="navLinks">
+      <nav class="nav-links" id="navLinks" aria-label="Primary">
         <a href="{{ get_url(path='/') }}#state">State</a>
         <a href="{{ get_url(path='/') }}#code-index">Index</a>
         <a href="{{ get_url(path='/') }}#linter">Lint</a>
@@ -47,14 +56,17 @@
       </nav>
 
       <div class="nav-actions">
-        <a class="btn btn-glass btn-sm {% if current_path is defined and '/docs/' in current_path %}is-active{% endif %}" href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
-        <a class="btn btn-glass btn-sm hide-xs" href="{{ config.extra.github_url }}" target="_blank" rel="noopener">GitHub</a>
-        <a class="btn btn-primary btn-sm" href="{{ get_url(path='@/docs/getting-started/quickstart.md') }}">Quickstart</a>
+        <a class="icon-btn icon-btn-docs {% if current_path is defined and '/docs/' in current_path %}is-active{% endif %}" href="{{ get_url(path='@/docs/_index.md') }}" aria-label="Documentation" title="Documentation">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+        </a>
+        <a class="icon-btn icon-btn-github" href="{{ config.extra.github_url }}" target="_blank" rel="noopener" aria-label="GitHub" title="GitHub">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
         <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">
           <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
           <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
         </button>
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation">☰</button>
+        <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation" aria-expanded="false">☰</button>
       </div>
     </div>
   </header>
@@ -65,7 +77,7 @@
 
   <footer class="site-footer">
     <div class="container footer-inner">
-      <div>ContextUnity ACDD · Pure Rust MCP &amp; CLI · MIT License</div>
+      <div class="footer-meta">ContextUnity ACDD · Pure Rust MCP &amp; CLI · MIT License</div>
       <div class="footer-links">
         <a href="{{ get_url(path='@/docs/state/_index.md') }}">State</a>
         <a href="{{ get_url(path='@/docs/index/_index.md') }}">Index</a>
@@ -81,7 +93,10 @@
     const menuBtn = document.getElementById("mobileMenuBtn");
     const navLinks = document.getElementById("navLinks");
     if (menuBtn && navLinks) {
-      menuBtn.addEventListener("click", () => navLinks.classList.toggle("open"));
+      menuBtn.addEventListener("click", () => {
+        const open = navLinks.classList.toggle("open");
+        menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      });
     }
 
     const themeToggle = document.getElementById("themeToggle");
@@ -89,6 +104,9 @@
       const syncThemeBtn = (theme) => {
         themeToggle.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
         themeToggle.title = theme === "light" ? "Switch to dark theme" : "Switch to light theme";
+        if (window.__syncHighlightTheme) {
+          window.__syncHighlightTheme(theme);
+        }
       };
       syncThemeBtn(document.documentElement.getAttribute("data-theme") || "dark");
       themeToggle.addEventListener("click", () => {
@@ -109,7 +127,7 @@
         const text = el.dataset.rawCmd || el.textContent.replace(/^\$\s*/, "").trim();
         await navigator.clipboard.writeText(text);
         const orig = btn.textContent;
-        btn.textContent = "Copied!";
+        btn.textContent = "Copied";
         btn.classList.add("copied");
         setTimeout(() => {
           btn.textContent = orig;
@@ -118,26 +136,52 @@
       });
     });
 
-    document.querySelectorAll("[data-channel-cmd]").forEach((tab) => {
+    // Sync channel switches across hero & bottom install widgets
+    document.querySelectorAll("[data-channel-name]").forEach((tab) => {
       tab.addEventListener("click", () => {
-        document.querySelectorAll("[data-channel-cmd]").forEach((t) => t.classList.remove("active"));
-        tab.classList.add("active");
-        const codeEl = document.getElementById("installCmdText");
-        if (codeEl) {
-          codeEl.dataset.rawCmd = tab.dataset.channelCmd;
-          codeEl.innerHTML = '<span class="prompt-sign">$</span>' + tab.dataset.channelCmd;
-        }
+        const channel = tab.dataset.channelName;
+        const cmd = tab.dataset.channelCmd;
+        document.querySelectorAll("[data-channel-name]").forEach((t) => {
+          const match = t.dataset.channelName === channel;
+          t.classList.toggle("active", match);
+          t.setAttribute("aria-pressed", match ? "true" : "false");
+        });
+        document.querySelectorAll("[data-install-cmd]").forEach((codeEl) => {
+          codeEl.dataset.rawCmd = cmd;
+          codeEl.innerHTML = '<span class="prompt-sign">$</span>' + cmd;
+        });
       });
     });
 
     document.querySelectorAll("[data-gate-tab]").forEach((tab) => {
       tab.addEventListener("click", () => {
         const target = tab.dataset.gateTab;
-        document.querySelectorAll("[data-gate-tab]").forEach((t) => t.classList.remove("active"));
-        document.querySelectorAll("[data-gate-panel]").forEach((p) => p.classList.remove("active"));
-        tab.classList.add("active");
-        const panel = document.querySelector(`[data-gate-panel="${target}"]`);
-        if (panel) panel.classList.add("active");
+        document.querySelectorAll("[data-gate-tab]").forEach((t) => {
+          const active = t === tab;
+          t.classList.toggle("active", active);
+          t.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        document.querySelectorAll("[data-gate-panel]").forEach((p) => {
+          p.classList.toggle("active", p.dataset.gatePanel === target);
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-code-tabs]").forEach((box) => {
+      const tabs = box.querySelectorAll("[data-code-tab]");
+      const panels = box.querySelectorAll("[data-code-panel]");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const target = tab.dataset.codeTab;
+          tabs.forEach((t) => {
+            const active = t === tab;
+            t.classList.toggle("active", active);
+            t.setAttribute("aria-selected", active ? "true" : "false");
+          });
+          panels.forEach((p) => {
+            p.classList.toggle("active", p.dataset.codePanel === target);
+          });
+        });
       });
     });
 
@@ -159,7 +203,6 @@
       });
     }
 
-    // Wrap markdown tables in scrollable container while keeping crisp table layout
     document.querySelectorAll(".prose table").forEach((table) => {
       if (table.parentElement && table.parentElement.classList.contains("table-scroll")) return;
       const wrapper = document.createElement("div");
@@ -167,36 +210,6 @@
       table.parentNode.insertBefore(wrapper, table);
       wrapper.appendChild(table);
     });
-
-    // Mouse-tracking glass spotlight on cards
-    const spotlightCards = document.querySelectorAll(
-      ".contrast-card, .adopt-card, .exec-card, .index-card, .linked-ws-panel, .linter-card, .workflow-row, .task-step, .lang-strip, .hub-card"
-    );
-    spotlightCards.forEach((card) => {
-      card.addEventListener("pointermove", (e) => {
-        const rect = card.getBoundingClientRect();
-        card.style.setProperty("--mx", `${e.clientX - rect.left}px`);
-        card.style.setProperty("--my", `${e.clientY - rect.top}px`);
-      });
-    });
-
-    // Subtle scroll reveal
-    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
-      document.documentElement.classList.add("js-anim");
-      const revealEls = document.querySelectorAll(".section > .container");
-      const io = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add("is-visible");
-              io.unobserve(entry.target);
-            }
-          });
-        },
-        { threshold: 0.08, rootMargin: "0px 0px -24px 0px" }
-      );
-      revealEls.forEach((el) => io.observe(el));
-    }
   </script>
 </body>
 </html>

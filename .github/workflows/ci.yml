@@ -2,14 +2,14 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   workflow_dispatch:
     inputs:
       publish_nightly:
-        description: 'Publish rolling nightly release when no tag points at HEAD'
+        description: 'Publish rolling nightly release when running on dev'
         type: boolean
         default: true
 
@@ -101,7 +101,7 @@ jobs:
           selected_tag=""
           if [[ "$REF" == refs/tags/v* ]]; then
             selected_tag="${REF#refs/tags/}"
-          else
+          elif [ "$REF" = "refs/heads/main" ]; then
             main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
             if [ "$main_sha" != "$GITHUB_SHA" ]; then
               echo "Skipping superseded main build for $GITHUB_SHA (main is at $main_sha)"
@@ -112,6 +112,19 @@ jobs:
                 | sort -V \
                 | tail -n 1 || true
             )
+            if [ -z "$selected_tag" ]; then
+              echo "Skipping release on untagged main commit $GITHUB_SHA (rolling nightly publishes from dev)"
+              emit skip ""
+            fi
+          elif [ "$REF" = "refs/heads/dev" ]; then
+            dev_sha=$(gh api "repos/$GH_REPO/git/ref/heads/dev" --jq '.object.sha')
+            if [ "$dev_sha" != "$GITHUB_SHA" ]; then
+              echo "Skipping superseded dev build for $GITHUB_SHA (dev is at $dev_sha)"
+              emit skip ""
+            fi
+          else
+            echo "Skipping release for ref $REF"
+            emit skip ""
           fi
 
           if [ -n "$selected_tag" ]; then
@@ -139,7 +152,7 @@ jobs:
             emit skip ""
           fi
 
-          echo "Selected rolling nightly release for $GITHUB_SHA"
+          echo "Selected rolling nightly release for dev commit $GITHUB_SHA"
           emit nightly nightly
 
   build-release:
@@ -263,14 +276,14 @@ jobs:
             fi
           else
             tag=nightly
-            current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+            current=$(gh api "repos/$GH_REPO/git/ref/heads/dev" --jq '.object.sha')
             if [ "$current" != "$GITHUB_SHA" ]; then
-              echo "Skipping superseded nightly build $GITHUB_SHA"
+              echo "Skipping superseded nightly build $GITHUB_SHA (dev is at $current)"
               exit 0
             fi
             if ! gh release view nightly >/dev/null 2>&1; then
               gh release create nightly --target "$GITHUB_SHA" --title Nightly \
-                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+                --notes "Rolling build from dev at $GITHUB_SHA" --prerelease --latest=false
             else
               if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
                 gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
@@ -280,7 +293,7 @@ jobs:
                   -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
               fi
               gh release edit nightly --target "$GITHUB_SHA" --title Nightly \
-                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+                --notes "Rolling build from dev at $GITHUB_SHA" --prerelease --latest=false
             fi
           fi
           gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber

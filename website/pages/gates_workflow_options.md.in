@@ -99,16 +99,17 @@ Each key under `commands:` accepts one of four forms (or `null` to clear an inhe
        scope_args_by_pattern:
          "src/**/*.rs": "--lib"
    ```
-4. **Pattern-dispatched (`by_pattern`)**:
+4. **Pattern-dispatched (`by_pattern`) with optional `post_command`**:
    ```yaml
    commands:
      build_check:
        by_pattern:
          "crates/**": "cargo test -p {scope_target} {test_filter}"
          "frontend/**": "npm test -- {test_filter}"
-       description: "Dispatch verification by task scope"
+       post_command: "cargo test --test commitment_integrity"
+       description: "Dispatch verification by task scope and run a shared post-check once"
    ```
-   *(Also accepts a YAML list of `{ pattern, command, ... }` entries.)*
+   *(Also accepts a YAML list of `{ pattern, command, ... }` entries; `post_command` runs once after all deduplicated matched segments pass.)*
 
 ### Command & report placeholders
 

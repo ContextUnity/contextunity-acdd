@@ -2,22 +2,28 @@ name: Website
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'website/**'
       - 'docs/reference/**'
       - 'docs/runbooks/**'
-      - 'crates/acdd-state/src/profile/embedded/**'
+      - 'crates/acdd-state/src/workflow/embedded/**'
+      - 'skills/acdd/references/acdd-workflow-examples/**'
       - 'INSTALL.md'
+      - 'ROADMAP.md'
+      - 'CHANGELOG.md'
       - '.github/workflows/pages.yml'
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'website/**'
       - 'docs/reference/**'
       - 'docs/runbooks/**'
-      - 'crates/acdd-state/src/profile/embedded/**'
+      - 'crates/acdd-state/src/workflow/embedded/**'
+      - 'skills/acdd/references/acdd-workflow-examples/**'
       - 'INSTALL.md'
+      - 'ROADMAP.md'
+      - 'CHANGELOG.md'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -51,7 +57,7 @@ jobs:
         run: ./website/build.sh check
 
       - name: Upload GitHub Pages artifact
-        if: github.event_name != 'pull_request'
+        if: (github.ref == 'refs/heads/dev' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: website/public
@@ -59,7 +65,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: (github.ref == 'refs/heads/dev' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

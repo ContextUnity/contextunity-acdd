@@ -58,6 +58,7 @@ ALERT_TITLES = {
 ROUTE_MAP = {
     "README.md": "/docs/",
     "INSTALL.md": "/docs/getting-started/install/",
+    "CHANGELOG.md": "/docs/releases/changelog/",
     "docs/README.md": "/docs/",
     "docs/reference/acdd.md": "/docs/state/",
     "docs/reference/tasks.md": "/docs/state/state-machine/",
@@ -420,6 +421,11 @@ def main() -> None:
             f"```yaml\n{raw_yaml.rstrip()}\n```\n"
         )
         write_doc(dst_rel, title=title, weight=weight, is_section=False, body=body)
+
+    # 5. Releases & Nightly
+    emit_from_curated("releases_index.md.in", "releases/_index.md", weight=50, title="Releases & Nightly", is_section=True)
+    emit_from_curated("next_release.md.in", "releases/next.md", weight=10, title="Next Release (Nightly)")
+    emit_from_repo("CHANGELOG.md", "releases/changelog.md", weight=20, title="Changelog")
 
     count = sum(1 for _ in OUT_DOCS.rglob("*.md"))
     print(f"Synced {count} documentation files into {OUT_DOCS.relative_to(WORKTREE_ROOT)}")

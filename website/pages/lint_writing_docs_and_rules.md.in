@@ -63,9 +63,16 @@ Architectural rules can be declared in **two places**:
 1. Centrally in **`.acdd/lint/*.yaml`** (configured via `lint_dirs:` in `acdd.yaml`) under `zones:` and `rules:`.
 2. Inline inside **non-archive Markdown docs** as fenced **` ```acdd-rule `** YAML blocks — keeping the rule right next to the `INV-*` invariant it enforces.
 
-### Defining zones in `.acdd/lint/zones.yaml`
+### Defining zones and complexity limits in `.acdd/lint/zones.yaml`
 
 ```yaml
+complexity:
+  severity: warn
+  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+  max_file_prod_lines: 800
+  max_file_prod_lines_error: 1850
+  max_cognitive_complexity: 25
+
 zones:
   domain:
     - "src/domain/**"
@@ -200,7 +207,7 @@ gates_patch:
       - code.seam
       - check: code.lint
         with:
-          categories: [arch, syntax, docs]
+          categories: [arch, syntax, docs, duplicates]
 ```
 
 And pair gate checks with `code_map_query(operation="duplicates")` / `code_map_query(operation="dead_tails")` during review to prevent clones and dead code from entering `main`.

@@ -1,9 +1,9 @@
 # ContextUnity ACDD Documentation
 
-**Augmented Context & Durable Dispatch (ACDD)** is a single pure-Rust binary (`MCP server` + `CLI`) that gives AI coding agents and developers an incremental Tree-sitter code graph, an architectural linter, and a deterministic gate state machine — 100% locally, with zero background daemons.
+**Augmented Context & Dispatch Discipline (ACDD)** is a single pure-Rust binary (`MCP server` + `CLI`) that gives AI coding agents and developers an incremental Tree-sitter code graph, an architectural linter, and a deterministic gate state machine — 100% locally, with zero background daemons.
 
 > [!TIP]
-> **New to ACDD?** Start with the **[5-Minute Quickstart](/docs/getting-started/quickstart/)** to install the binary, index your repository, connect your AI agent, and run your first verified task.
+> **New to ACDD?** Start with the **[5-Minute Quickstart](/docs/getting-started/quickstart/)** to install the binary, index your repository, connect your AI agent, and run your first verified task. Looking for upcoming features on `dev`? See **[Next Release (Nightly)](/docs/releases/next/)**.
 
 ---
 
@@ -22,3 +22,4 @@
 - **[ACDD Index](/docs/index/)** — Tree-sitter AST extraction (`crates/acdd-index`), living docs linking, `linked_workspaces`, [`acdd.yaml` & Limits](/docs/index/acdd-yaml/), [Languages & Coverage](/docs/index/languages/), and [Framework Manifests](/docs/index/framework-manifests/).
 - **[ACDD Lint](/docs/lint/)** — The 6 lint categories (`arch`, `docs`, `syntax`, `duplicates`, `dead_tails`, `cycles`) and [Writing Docs & Linter Rules](/docs/lint/writing-docs-and-rules/).
 - **[ACDD Workflows](/docs/workflows/)** — [Workflow Options & Variables](/docs/workflows/workflow-options/), [Overriding Built-in Workflows](/docs/workflows/overriding-workflows/), embedded workflows ([`code`](/docs/workflows/builtin-code/), [`base`](/docs/workflows/builtin-base/), [`documentation`](/docs/workflows/builtin-documentation/)), and reference workflow examples ([`audit`](/docs/workflows/example-audit/), [`spec_planning`](/docs/workflows/example-spec-planning/)).
+- **[Releases & Nightly](/docs/releases/)** — [Next Release (Nightly)](/docs/releases/next/) preview of upcoming 2-digit minor features and the full [Changelog](/docs/releases/changelog/).
