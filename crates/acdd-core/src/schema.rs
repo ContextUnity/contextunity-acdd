@@ -57,6 +57,31 @@ pub struct SchemaDef {
 }
 
 impl SchemaDef {
+    /// Merge an object-schema overlay onto `self` (properties, required keys, `additionalProperties`, `minProperties`).
+    pub fn merge_object_overlay(&mut self, overlay: &SchemaDef, ctx: &str) -> Result<(), AcddError> {
+        if self.schema_type != "object" || overlay.schema_type != "object" {
+            return Err(AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
+                format!("{ctx} schema must have type 'object'"),
+            ));
+        }
+        for (k, v) in &overlay.properties {
+            self.properties.insert(k.clone(), v.clone());
+        }
+        for req in &overlay.required {
+            if !self.required.contains(req) {
+                self.required.push(req.clone());
+            }
+        }
+        if overlay.additional_properties.is_some() {
+            self.additional_properties = overlay.additional_properties.clone();
+        }
+        if overlay.min_properties.is_some() {
+            self.min_properties = overlay.min_properties;
+        }
+        Ok(())
+    }
+
     /// Construct a minimal schema for the given JSON type name.
     pub fn of_type(schema_type: impl Into<String>) -> Self {
         Self {
@@ -155,7 +180,7 @@ impl SchemaDef {
                 };
                 items.validate_schema(&format!("{path}.items"))?;
             }
-            "string" | "integer" | "number" | "boolean" | "null" => {
+            "string" | "integer" | "number" | "boolean" | "null" | "any" => {
                 if !self.properties.is_empty()
                     || !self.required.is_empty()
                     || self.items.is_some()
@@ -176,6 +201,16 @@ impl SchemaDef {
 
     /// Validate a JSON value against this schema, failing closed with `ACDD_WORKFLOW_SCHEMA_INVALID`.
     pub fn validate_value(&self, value: &Value, path: &str) -> Result<(), AcddError> {
+        self.validate_value_with_code(value, path, ErrorCode::WorkflowSchemaInvalid)
+    }
+
+    /// Validate a JSON value against this schema using `code` for any validation error.
+    pub fn validate_value_with_code(
+        &self,
+        value: &Value,
+        path: &str,
+        code: ErrorCode,
+    ) -> Result<(), AcddError> {
         let type_matches = match self.schema_type.as_str() {
             "object" => value.is_object(),
             "array" => value.is_array(),
@@ -184,84 +219,200 @@ impl SchemaDef {
             "number" => value.is_number(),
             "boolean" => value.is_boolean(),
             "null" => value.is_null(),
+            "any" => true,
             _ => false,
         };
         if !type_matches {
-            return Err(schema_err(format!("{path} must be {}", self.schema_type)));
+            return Err(AcddError::new(
+                code,
+                format!("{path} must be {}", self.schema_type),
+            ));
         }
 
         if let Some(allowed) = &self.enum_values {
             if !allowed.contains(value) {
-                return Err(schema_err(format!("{path} is not an allowed enum value")));
+                return Err(AcddError::new(
+                    code,
+                    format!("{path} is not an allowed enum value"),
+                ));
             }
         }
         if let Some(expected) = &self.const_value {
             if expected != value {
-                return Err(schema_err(format!(
-                    "{path} does not match required const value"
-                )));
+                return Err(AcddError::new(
+                    code,
+                    format!("{path} does not match required const value"),
+                ));
             }
         }
         if let (Some(min_len), Some(s)) = (self.min_length, value.as_str()) {
             if s.chars().count() < min_len {
-                return Err(schema_err(format!(
-                    "{path} must have at least {min_len} characters"
-                )));
+                return Err(AcddError::new(
+                    code,
+                    format!("{path} must have at least {min_len} characters"),
+                ));
             }
         }
         if let (Some(min), Some(num)) = (self.minimum, value.as_f64()) {
             if num < min {
-                return Err(schema_err(format!("{path} must be >= {min}")));
+                return Err(AcddError::new(code, format!("{path} must be >= {min}")));
             }
         }
 
         if let Some(object) = value.as_object() {
-            if let Some(min_props) = self.min_properties {
-                if object.len() < min_props {
-                    return Err(schema_err(format!(
-                        "{path} must have at least {min_props} properties"
-                    )));
-                }
-            }
-            for req in &self.required {
-                if !object.contains_key(req) {
-                    return Err(schema_err(format!("{path}.{req} is required")));
-                }
-            }
-            for (key, item) in object {
-                if let Some(prop_schema) = self.properties.get(key) {
-                    prop_schema.validate_value(item, &format!("{path}.{key}"))?;
-                } else {
-                    match &self.additional_properties {
-                        Some(AdditionalPropertiesDef::Boolean(false)) => {
-                            return Err(schema_err(format!("{path}.{key} is not allowed")));
-                        }
-                        Some(AdditionalPropertiesDef::Schema(extra_schema)) => {
-                            extra_schema.validate_value(item, &format!("{path}.{key}"))?;
-                        }
-                        Some(AdditionalPropertiesDef::Boolean(true)) | None => {}
-                    }
-                }
-            }
+            self.validate_object_map(
+                object.iter().map(|(k, v)| (k.as_str(), v)),
+                object.len(),
+                path,
+                code,
+                &[],
+                false,
+            )?;
         }
 
         if let Some(array) = value.as_array() {
             if let Some(min_items) = self.min_items {
                 if array.len() < min_items {
-                    return Err(schema_err(format!(
-                        "{path} must have at least {min_items} items"
-                    )));
+                    return Err(AcddError::new(
+                        code,
+                        format!("{path} must have at least {min_items} items"),
+                    ));
                 }
             }
             if let Some(item_schema) = &self.items {
                 for (idx, item) in array.iter().enumerate() {
-                    item_schema.validate_value(item, &format!("{path}[{idx}]"))?;
+                    item_schema.validate_value_with_code(item, &format!("{path}[{idx}]"), code)?;
                 }
             }
         }
 
         Ok(())
     }
+
+    /// Validate spec or item extra fields against this object schema, rejecting unknown keys
+    /// unless `additionalProperties: true` or an `additionalProperties` schema is set, and attaching
+    /// an edit-distance hint (`did you mean '...'?`) against declared + `core_field_names`.
+    pub fn validate_spec_fields(
+        &self,
+        fields: &BTreeMap<String, Value>,
+        core_field_names: &[&str],
+        path: &str,
+    ) -> Result<(), AcddError> {
+        if self.schema_type != "object" {
+            return Err(AcddError::new(
+                ErrorCode::SpecSchemaInvalid,
+                format!("{path} fields schema must have type 'object'"),
+            ));
+        }
+        self.validate_object_map(
+            fields.iter().map(|(k, v)| (k.as_str(), v)),
+            fields.len(),
+            path,
+            ErrorCode::SpecSchemaInvalid,
+            core_field_names,
+            true,
+        )
+    }
+
+    fn validate_object_map<'a>(
+        &self,
+        entries: impl Iterator<Item = (&'a str, &'a Value)>,
+        len: usize,
+        path: &str,
+        code: ErrorCode,
+        core_field_names: &[&str],
+        reject_undeclared_by_default: bool,
+    ) -> Result<(), AcddError> {
+        if let Some(min_props) = self.min_properties {
+            if len < min_props {
+                return Err(AcddError::new(
+                    code,
+                    format!("{path} must have at least {min_props} properties"),
+                ));
+            }
+        }
+        let entries_vec: Vec<(&str, &Value)> = entries.collect();
+        for req in &self.required {
+            if !entries_vec.iter().any(|(k, _)| k == req) {
+                return Err(AcddError::new(code, format!("{path}.{req} is required")));
+            }
+        }
+        for (key, item) in entries_vec {
+            if let Some(prop_schema) = self.properties.get(key) {
+                prop_schema.validate_value_with_code(item, &format!("{path}.{key}"), code)?;
+            } else if let Some(AdditionalPropertiesDef::Schema(extra)) = &self.additional_properties {
+                extra.validate_value_with_code(item, &format!("{path}.{key}"), code)?;
+            } else if matches!(
+                self.additional_properties,
+                Some(AdditionalPropertiesDef::Boolean(false))
+            ) || (self.additional_properties.is_none() && reject_undeclared_by_default)
+            {
+                return Err(unknown_field_error(
+                    code,
+                    path,
+                    key,
+                    self.properties.keys().map(String::as_str),
+                    core_field_names,
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn unknown_field_error<'a>(
+    code: ErrorCode,
+    path: &str,
+    unknown_key: &str,
+    schema_keys: impl Iterator<Item = &'a str>,
+    extra_keys: &[&'a str],
+) -> AcddError {
+    let mut err = AcddError::new(code, format!("{path}.{unknown_key} is not allowed"));
+    if code == ErrorCode::SpecSchemaInvalid {
+        err = err.with_diag_code(crate::errors::DIAG_SPEC_FIELD_UNKNOWN);
+    }
+    if let Some(suggestion) =
+        suggest_similar_key(unknown_key, schema_keys.chain(extra_keys.iter().copied()))
+    {
+        err = err.with_hint(format!("did you mean '{suggestion}'?"));
+    }
+    err
+}
+
+/// Suggest the closest matching declared identifier using bounded Damerau-Levenshtein distance.
+pub fn suggest_similar_key<'a>(
+    unknown_key: &str,
+    candidates: impl Iterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let max_dist = if unknown_key.chars().count() >= 6 { 3 } else { 2 };
+    candidates
+        .map(|cand| (damerau_levenshtein(unknown_key, cand), cand))
+        .filter(|(dist, _)| *dist <= max_dist)
+        .min()
+        .map(|(_, suggestion)| suggestion)
+}
+
+fn damerau_levenshtein(a: &str, b: &str) -> usize {
+    let (ac, bc): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (n, m) = (ac.len(), bc.len());
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in dp[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(ac[i - 1] != bc[j - 1]);
+            let mut v = (dp[i - 1][j] + 1).min(dp[i][j - 1] + 1).min(dp[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && ac[i - 1] == bc[j - 2] && ac[i - 2] == bc[j - 1] {
+                v = v.min(dp[i - 2][j - 2] + 1);
+            }
+            dp[i][j] = v;
+        }
+    }
+    dp[n][m]
 }
 
 fn schema_err(message: String) -> AcddError {
@@ -445,5 +596,11 @@ mod tests {
                 assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid);
             }
         }
+        let mut s = SchemaDef::object();
+        s.properties.insert("guidance".to_owned(), SchemaDef::of_type("any"));
+        s.validate_schema("spec").unwrap();
+        s.validate_spec_fields(&BTreeMap::from([("guidance".to_owned(), json!({"a": 1}))]), &["status"], "spec").unwrap();
+        let err = s.validate_spec_fields(&BTreeMap::from([("stauts".to_owned(), json!("ok"))]), &["status"], "spec").unwrap_err();
+        assert_eq!((err.code, err.hint.as_deref()), (ErrorCode::SpecSchemaInvalid, Some("did you mean 'status'?")));
     }
 }

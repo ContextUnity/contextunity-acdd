@@ -1,0 +1,54 @@
+name: contract
+workflow: code
+roadmap: true
+fields:
+  type: object
+  additionalProperties: false
+  properties:
+    owners: { type: array, items: { type: string } }
+    invariants: { type: array, items: { type: string } }
+    acceptance_criteria: { type: array, items: { type: string } }
+    guidance: { type: any }
+    required_skills: { type: array, items: { type: string } }
+    repositories:
+      type: array
+      items:
+        type: object
+        required: [name, path]
+        additionalProperties: false
+        properties:
+          name: { type: string, minLength: 1 }
+          path: { type: string, minLength: 1 }
+items:
+  tasks:
+    item: task
+    fields:
+      type: object
+      additionalProperties: false
+      properties:
+        target: { type: string }
+        spec: { type: string }
+        scope: { type: array, items: { type: string } }
+        extended_scope:
+          type: array
+          items:
+            type: object
+            required: [path, reason]
+            additionalProperties: false
+            properties:
+              path: { type: string }
+              reason: { type: string }
+        invariants: { type: array, items: { type: string } }
+        acceptance_criteria: { type: array, items: { type: string } }
+        contract_revision: { type: integer, minimum: 1 }
+        subtasks:
+          type: array
+          items:
+            type: object
+            required: [subtask_ref, title]
+            additionalProperties: false
+            properties:
+              subtask_ref: { type: string }
+              title: { type: string }
+              status: { type: string, enum: [pending, in_progress, completed, cancelled] }
+              evidence: { type: string }

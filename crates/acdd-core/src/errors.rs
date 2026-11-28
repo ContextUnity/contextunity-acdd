@@ -203,12 +203,22 @@ impl FromStr for ErrorCode {
     }
 }
 
+/// Canonical `ValidateDiagnostic` / `AcddError` code for unknown Spec or item fields.
+pub const DIAG_SPEC_FIELD_UNKNOWN: &str = "SPEC_FIELD_UNKNOWN";
+/// Canonical `ValidateDiagnostic` / `AcddError` code for undeclared `### <item>: <ref>` headings.
+pub const DIAG_SPEC_ITEM_UNKNOWN: &str = "SPEC_ITEM_UNKNOWN";
+/// Canonical `ValidateDiagnostic` / `AcddError` code for malformed, cyclic, or unresolved item dependencies.
+pub const DIAG_ITEM_DEPENDENCY_UNKNOWN: &str = "ITEM_DEPENDENCY_UNKNOWN";
+
 /// Structured diagnostic error carrying a canonical `ErrorCode`, human message, and optional remediation hint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcddError {
     /// Stable machine-readable error code.
     pub code: ErrorCode,
+    /// Optional finer-grained diagnostic code (`SPEC_FIELD_UNKNOWN`, `SPEC_ITEM_UNKNOWN`, `ITEM_DEPENDENCY_UNKNOWN`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diag_code: Option<String>,
     /// Contextual explanation of the failure.
     pub message: String,
     /// Optional remediation guidance for the operator or agent.
@@ -221,6 +231,7 @@ impl AcddError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            diag_code: None,
             message: message.into(),
             hint: None,
         }
@@ -230,6 +241,19 @@ impl AcddError {
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+
+    /// Attach a canonical fine-grained diagnostic code (`SPEC_FIELD_UNKNOWN`, etc.).
+    pub fn with_diag_code(mut self, diag_code: impl Into<String>) -> Self {
+        self.diag_code = Some(diag_code.into());
+        self
+    }
+
+    /// Return the finer-grained diagnostic code when present, falling back to `self.code.as_str()`.
+    pub fn effective_diag_code(&self) -> &str {
+        self.diag_code
+            .as_deref()
+            .unwrap_or_else(|| self.code.as_str())
     }
 
     /// Return the CLI exit code associated with `self.code`.

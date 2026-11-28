@@ -61,7 +61,7 @@ pub fn fail_state_err(
     line: usize,
     column: usize,
 ) -> ValidateDiagnostic {
-    fail(err.code.as_str(), path, line, column, err.to_string())
+    fail(err.effective_diag_code(), path, line, column, err.to_string())
 }
 
 /// Build a [`ValidateResp`] summary from collected diagnostics and warnings.
@@ -210,7 +210,7 @@ pub fn validate_spec_static_checks(
     }
 
     for issue in validate_spec_dependencies(root, adapter, overlay, spec, active_docs) {
-        diagnostics.push(fail(issue.code.as_str(), rel_path, 1, 1, issue.message));
+        diagnostics.push(fail(issue.diag_code, rel_path, 1, 1, issue.message));
         doc_failed = true;
     }
 

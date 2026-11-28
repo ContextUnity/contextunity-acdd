@@ -145,6 +145,14 @@ pub fn open_confined(
     options.open(target)
 }
 
+/// Read a UTF-8 file confined within `root` without following symlinks (`O_NOFOLLOW`).
+pub fn read_confined_utf8(root: &Path, relative: &Path) -> std::io::Result<String> {
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    let file = open_confined(root, relative, &mut opts)?;
+    std::io::read_to_string(file)
+}
+
 /// Atomically stage and publish a new file confined within `root` without overwriting
 /// any existing target (`AlreadyExists` if the target already exists).
 pub fn write_new_confined(root: &Path, relative: &Path, bytes: &[u8]) -> std::io::Result<()> {

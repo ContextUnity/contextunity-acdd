@@ -1,8 +1,15 @@
 //! Confined workspace and Git archive specification discovery helpers.
 
-use crate::spec::{extract_spec_number, format_next_spec_id, parse_spec, SpecDocument, SpecStatus};
+use crate::schema::{resolve_spec_schema, SpecSchemaDef};
+use crate::spec::{
+    extract_spec_number, format_next_spec_id, parse_spec_for_roadmap,
+    parse_spec_with_collections, parse_spec_with_schema, SpecDocument, SpecStatus,
+};
 use acdd_core::config::{load_adapter, Adapter, SpecConfig};
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{
+    AcddError, ErrorCode, DIAG_ITEM_DEPENDENCY_UNKNOWN, DIAG_SPEC_FIELD_UNKNOWN,
+    DIAG_SPEC_ITEM_UNKNOWN,
+};
 use acdd_core::format::sha256_bytes;
 use acdd_core::fs::{canonical_root, checked_child, open_confined};
 use acdd_core::git::{
@@ -22,6 +29,8 @@ pub type CollectedArchiveScan = (Vec<(String, String, SpecDocument)>, Vec<String
 pub struct CollectedWorkspaceSpec {
     /// Normalized workspace-relative path.
     pub rel_path: String,
+    /// Owning collection key, if matched.
+    pub collection_key: Option<String>,
     /// Owning collection configuration, if matched.
     pub collection: Option<SpecConfig>,
     /// Parsed specification document.
@@ -99,12 +108,35 @@ pub fn match_spec_collection(
     let norm = norm.strip_prefix("./").unwrap_or(&norm);
     collections
         .iter()
-        .filter(|(_, cfg)| cfg.matches_rel_path(norm))
-        .max_by_key(|(_, cfg)| cfg.patterns().into_iter().map(str::len).max().unwrap_or(0))
+        .filter_map(|(name, cfg)| {
+            cfg.longest_matching_pattern_len(norm)
+                .map(|len| (name, len))
+        })
+        .max_by_key(|(_, len)| *len)
         .map(|(name, _)| name.clone())
 }
 
-fn max_spec_num_in_dir(primary: &Path, scan_dir: &Path, prefix: &str, max_num: &mut Option<u32>) {
+/// Parse `raw` spec content using its owning collection resolved from `rel_path`.
+pub fn parse_spec_at_relpath(
+    raw: &str,
+    rel_path: &str,
+    collections: &BTreeMap<String, SpecConfig>,
+) -> Result<(Option<String>, SpecDocument), AcddError> {
+    let col = match_spec_collection(collections, rel_path);
+    let owning = col
+        .as_deref()
+        .and_then(|key| collections.get_key_value(key).map(|(k, v)| (k.as_str(), v)));
+    let doc = parse_spec_with_collections(raw, owning, collections)?;
+    Ok((col, doc))
+}
+
+fn max_spec_num_in_dir(
+    primary: &Path,
+    scan_dir: &Path,
+    prefix: &str,
+    schema: Option<&SpecSchemaDef>,
+    max_num: &mut Option<u32>,
+) {
     if fs::symlink_metadata(scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
         return;
     }
@@ -119,7 +151,7 @@ fn max_spec_num_in_dir(primary: &Path, scan_dir: &Path, prefix: &str, max_num: &
         }
         if let Ok(rel) = p.strip_prefix(primary) {
             if let Ok(raw) = read_confined_utf8(primary, &rel.to_string_lossy()) {
-                if let Ok(doc) = parse_spec(&raw) {
+                if let Ok(doc) = parse_spec_with_schema(&raw, schema) {
                     if let Some(num) = extract_spec_number(&doc.id, prefix) {
                         *max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
                     }
@@ -138,6 +170,7 @@ pub fn next_spec_id_for_prefix(
     db_max: Option<u32>,
 ) -> Result<String, AcddError> {
     let mut max_num = db_max;
+    let schema = resolve_spec_schema(None, Some((collection, col)), &BTreeMap::new()).ok();
     let resolved_dirs = col.resolve_dirs(primary).map_err(|err| {
         AcddError::new(
             ErrorCode::SpecSchemaInvalid,
@@ -146,7 +179,7 @@ pub fn next_spec_id_for_prefix(
     })?;
     for dir_abs in resolved_dirs {
         for scan_dir in [dir_abs.clone(), dir_abs.join("archive")] {
-            max_spec_num_in_dir(primary, &scan_dir, prefix, &mut max_num);
+            max_spec_num_in_dir(primary, &scan_dir, prefix, schema.as_ref(), &mut max_num);
         }
     }
     Ok(format_next_spec_id(prefix, col.digits, max_num))
@@ -568,7 +601,12 @@ pub fn collect_archived_specs(
         head_oid,
         &mut io_warnings,
         |col_name, rel_posix, raw| {
-            if let Ok(doc) = parse_spec(raw) {
+            let owning = collections
+                .get_key_value(col_name)
+                .map(|(k, v)| (k.as_str(), v));
+            let schema = owning
+                .and_then(|o| resolve_spec_schema(None, Some(o), collections).ok());
+            if let Ok(doc) = parse_spec_for_roadmap(raw, schema.as_ref(), owning, collections) {
                 out.push((col_name.to_owned(), rel_posix, doc));
             }
             None::<()>
@@ -582,19 +620,44 @@ pub fn collect_workspace_specs(
     root: &Path,
     collections: &BTreeMap<String, SpecConfig>,
 ) -> WorkspaceSpecScan {
-    collect_workspace_specs_cached(root, collections, &mut BTreeMap::new())
+    collect_workspace_specs_cached_inner(root, collections, &mut BTreeMap::new(), true)
 }
 
-/// Scan all active non-archive spec documents across `collections`, reusing `parsed` memoized by content SHA-256.
-pub fn collect_workspace_specs_cached(
+fn static_diag_code(err: &AcddError) -> &'static str {
+    match err.diag_code.as_deref() {
+        Some(DIAG_SPEC_FIELD_UNKNOWN) => DIAG_SPEC_FIELD_UNKNOWN,
+        Some(DIAG_SPEC_ITEM_UNKNOWN) => DIAG_SPEC_ITEM_UNKNOWN,
+        Some(DIAG_ITEM_DEPENDENCY_UNKNOWN) => DIAG_ITEM_DEPENDENCY_UNKNOWN,
+        _ => err.code.as_str(),
+    }
+}
+
+pub(crate) fn collect_workspace_specs_for_roadmap(
     root: &Path,
     collections: &BTreeMap<String, SpecConfig>,
     parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, AcddError>>,
 ) -> WorkspaceSpecScan {
+    collect_workspace_specs_cached_inner(root, collections, parsed, false)
+}
+
+fn collect_workspace_specs_cached_inner(
+    root: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
+    parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, AcddError>>,
+    strict_dep_syntax: bool,
+) -> WorkspaceSpecScan {
+    struct SpecWalkCtx<'a> {
+        root: &'a Path,
+        col_name: &'a str,
+        col: &'a SpecConfig,
+        collections: &'a BTreeMap<String, SpecConfig>,
+        schema_digest: &'a [u8; 32],
+        strict_dep_syntax: bool,
+    }
+
     fn walk(
-        root: &Path,
+        ctx: &SpecWalkCtx<'_>,
         dir: &Path,
-        col: &SpecConfig,
         found: &mut BTreeMap<String, CollectedWorkspaceSpec>,
         errors: &mut Vec<WorkspaceSpecScanError>,
         parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, AcddError>>,
@@ -603,7 +666,7 @@ pub fn collect_workspace_specs_cached(
             Ok(iter) => iter,
             Err(err) => {
                 let rel_str = dir
-                    .strip_prefix(root)
+                    .strip_prefix(ctx.root)
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_else(|_| dir.to_string_lossy().replace('\\', "/"));
                 errors.push(WorkspaceSpecScanError {
@@ -621,7 +684,7 @@ pub fn collect_workspace_specs_cached(
                 Ok(entry) => entries.push(entry),
                 Err(err) => {
                     let rel_str = dir
-                        .strip_prefix(root)
+                        .strip_prefix(ctx.root)
                         .map(|r| r.to_string_lossy().replace('\\', "/"))
                         .unwrap_or_else(|_| dir.to_string_lossy().replace('\\', "/"));
                     errors.push(WorkspaceSpecScanError {
@@ -637,7 +700,7 @@ pub fn collect_workspace_specs_cached(
         for entry in entries {
             let path = entry.path();
             let rel_str = path
-                .strip_prefix(root)
+                .strip_prefix(ctx.root)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
             let ft = match entry.file_type() {
@@ -663,7 +726,7 @@ pub fn collect_workspace_specs_cached(
             }
             if ft.is_dir() {
                 if entry.file_name() != "archive" {
-                    walk(root, &path, col, found, errors, parsed);
+                    walk(ctx, &path, found, errors, parsed);
                 }
                 continue;
             }
@@ -676,31 +739,54 @@ pub fn collect_workspace_specs_cached(
             {
                 continue;
             }
-            match read_confined_utf8(root, &rel_str) {
-                Ok(content) => match parsed
-                    .entry(sha256_bytes(content.as_bytes()))
-                    .or_insert_with(|| parse_spec(&content))
-                    .clone()
-                {
-                    Ok(doc) => {
-                        found.insert(
-                            rel_str.clone(),
-                            CollectedWorkspaceSpec {
-                                rel_path: rel_str,
-                                collection: Some(col.clone()),
-                                doc,
-                            },
-                        );
+            match read_confined_utf8(ctx.root, &rel_str) {
+                Ok(content) => {
+                    let content_hash = sha256_bytes(content.as_bytes());
+                    let mut combined = [0u8; 64];
+                    combined[..32].copy_from_slice(&content_hash);
+                    combined[32..].copy_from_slice(ctx.schema_digest);
+                    let cache_key = sha256_bytes(&combined);
+                    match parsed
+                        .entry(cache_key)
+                        .or_insert_with(|| {
+                            if ctx.strict_dep_syntax {
+                                parse_spec_with_collections(
+                                    &content,
+                                    Some((ctx.col_name, ctx.col)),
+                                    ctx.collections,
+                                )
+                            } else {
+                                parse_spec_for_roadmap(
+                                    &content,
+                                    None,
+                                    Some((ctx.col_name, ctx.col)),
+                                    ctx.collections,
+                                )
+                            }
+                        })
+                        .clone()
+                    {
+                        Ok(doc) => {
+                            found.insert(
+                                rel_str.clone(),
+                                CollectedWorkspaceSpec {
+                                    rel_path: rel_str,
+                                    collection_key: Some(ctx.col_name.to_owned()),
+                                    collection: Some(ctx.col.clone()),
+                                    doc,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            errors.push(WorkspaceSpecScanError {
+                                code: err.code,
+                                diag_code: static_diag_code(&err),
+                                path: rel_str,
+                                message: err.to_string(),
+                            });
+                        }
                     }
-                    Err(err) => {
-                        errors.push(WorkspaceSpecScanError {
-                            code: err.code,
-                            diag_code: err.code.as_str(),
-                            path: rel_str,
-                            message: err.to_string(),
-                        });
-                    }
-                },
+                }
                 Err(err) => {
                     errors.push(WorkspaceSpecScanError {
                         code: ErrorCode::SpecSchemaInvalid,
@@ -715,7 +801,23 @@ pub fn collect_workspace_specs_cached(
 
     let mut found = BTreeMap::new();
     let mut errors = Vec::new();
-    for col in collections.values() {
+    let collections_bytes = serde_json::to_vec(collections).unwrap_or_default();
+    for (col_name, col) in collections {
+        if let Err(err) = resolve_spec_schema(None, Some((col_name, col)), collections) {
+            errors.push(WorkspaceSpecScanError {
+                code: err.code,
+                diag_code: static_diag_code(&err),
+                path: format!("specs.{col_name}"),
+                message: err.to_string(),
+            });
+            continue;
+        }
+        let mut key_bytes = Vec::with_capacity(col_name.len() + 1 + collections_bytes.len());
+        key_bytes.extend_from_slice(col_name.as_bytes());
+        key_bytes.push(0);
+        key_bytes.extend_from_slice(&collections_bytes);
+        let schema_digest = sha256_bytes(&key_bytes);
+
         let dirs = match col.resolve_dirs(root) {
             Ok(d) => d,
             Err(err) => {
@@ -729,12 +831,53 @@ pub fn collect_workspace_specs_cached(
                 continue;
             }
         };
+        let ctx = SpecWalkCtx {
+            root,
+            col_name,
+            col,
+            collections,
+            schema_digest: &schema_digest,
+            strict_dep_syntax,
+        };
         for dir in dirs {
-            walk(root, &dir, col, &mut found, &mut errors, parsed);
+            walk(&ctx, &dir, &mut found, &mut errors, parsed);
         }
     }
     WorkspaceSpecScan {
         specs: found.into_values().collect(),
         errors,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn match_spec_collection_uses_longest_matching_pattern_only() {
+        let mut collections = BTreeMap::new();
+        collections.insert(
+            "broad".to_owned(),
+            SpecConfig {
+                paths: vec![
+                    "docs".to_owned(),
+                    "very/long/unrelated/collection/pattern/that/does/not/match".to_owned(),
+                ],
+                ..SpecConfig::default()
+            },
+        );
+        collections.insert(
+            "narrow".to_owned(),
+            SpecConfig {
+                path: Some("docs/milestones".to_owned()),
+                ..SpecConfig::default()
+            },
+        );
+
+        assert_eq!(
+            match_spec_collection(&collections, "docs/milestones/AC-001.md").as_deref(),
+            Some("narrow"),
+            "an unrelated long pattern on 'broad' must not beat 'narrow's longer matching pattern"
+        );
     }
 }
