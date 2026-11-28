@@ -476,8 +476,11 @@ pub enum Command {
     },
     /// Read text, symbols, outlines, or Git changes through the layered reader.
     Read {
-        /// Workspace-relative file, or symbol selector with --mode snippet.
-        path: String,
+        /// Workspace-relative file, or symbol selector with --mode snippet (optional when --selector or --path is provided).
+        path: Option<String>,
+        /// Optional workspace-relative file or directory path (alternative to positional <PATH>).
+        #[arg(long = "path", alias = "file-path", conflicts_with = "path")]
+        path_flag: Option<String>,
         /// auto, lines, raw, search, delta, snippet, or outline.
         #[arg(long, default_value = "auto")]
         mode: String,
@@ -491,7 +494,7 @@ pub enum Command {
         #[arg(long)]
         line_count: Option<usize>,
         /// Search pattern.
-        #[arg(long)]
+        #[arg(long, alias = "query")]
         pattern: Option<String>,
         /// Interpret pattern as a regular expression.
         #[arg(long)]
@@ -686,6 +689,9 @@ pub enum QueryCommand {
         #[arg(long)]
         /// Optional symbol classification filter (`production`, `test`, or `documentation`).
         classification: Option<String>,
+        #[arg(long, alias = "file-path")]
+        /// Optional workspace-relative file or directory prefix scope.
+        path: Option<String>,
         #[arg(long, default_value_t = 100)]
         /// Maximum number of matching symbols to return.
         limit: usize,
@@ -805,9 +811,9 @@ pub enum QueryCommand {
         #[arg(long)]
         /// Deduplication level: 'symbol' (functions/methods) or 'file' (identical files).
         level: Option<String>,
-        #[arg(long, default_value_t = 10)]
-        /// Minimum line count for duplicates detection (default 10).
-        min_lines: usize,
+        #[arg(long)]
+        /// Minimum line count for duplicates detection (defaults to engine default: 5).
+        min_lines: Option<usize>,
     },
 }
 
@@ -835,8 +841,11 @@ pub enum DocsCommand {
         /// Indexed document path or document section ID.
         path_or_id: String,
         #[arg(long)]
-        /// Optional exact section heading to return; omit to inspect the outline.
+        /// Optional exact section heading to return; omit for full document (or `--detail compact` for heading outline).
         section: Option<String>,
+        #[arg(long)]
+        /// Response detail (`full` default, or `compact` for heading outline only).
+        detail: Option<String>,
         #[arg(long)]
         /// Include ambiguous documentary symbol reference candidates.
         include_candidates: bool,

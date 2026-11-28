@@ -445,6 +445,16 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         cli["referenced_symbols"]["total"],
         expected["referenced_symbols"]["total"]
     );
+    let cli_compact = ws
+        .query(&["docs", "get", "docs/rules.md", "--detail", "compact"])
+        .expect("CLI --detail compact should succeed");
+    let mcp_compact = client
+        .document("docs/rules.md", json!({"detail": "compact"}))
+        .expect("MCP compact get_doc should succeed");
+    assert_eq!(
+        cli_compact["sections"]["items"],
+        mcp_compact["sections"]["items"]
+    );
 
     let broken = client
         .payload(

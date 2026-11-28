@@ -81,7 +81,7 @@ guidance:
   docs.tools:
     description: "DOCUMENTATION & LINT NAVIGATION PROTOCOL"
     criteria:
-      - "Tool routing: (1) Markdown docs/ADRs/specs -> `get_doc` / `search_docs` (`acdd docs get|search`); (2) Code citations -> `code_map_overview` -> `code_map_search` -> `inspect`/`explain` -> `acdd_read(selector=...)` / `mode=\"outline\"` (pass `detail=\"full\"` when a larger slice is needed rather than sequential line paging); (3) Tool/workflow help -> `acdd_guide` (`acdd guide`); (4) Large JSON proofs -> `.acdd/tmp/<name>.json` + `acdd submit --evidence @file` with exact unquoted `task_ref` keys (`code_map_lint` for `[arch, docs]`)."
+      - "ACDD-FIRST: use MCP or `acdd` CLI for docs/code discovery (omit `-C` in target CWD or set `ACDD_WORKSPACE_ROOT`; reserve `rg -n` for unadmitted paths, leftover sweeps, or fallback). Docs: `search_docs`/`get_doc` (`acdd docs search|get <path> [--detail compact|--section <h>]`); Code: `code_map_overview|search|inspect|explain`, `acdd_read` (`acdd read --selector <Sym> [<path>]`); Lint/help: `code_map_lint` (`acdd lint --categories arch,docs`), `acdd_guide`; Proofs >8 KiB: `--evidence @.acdd/tmp/<name>.json`."
   docs.synthesis:
     description: "DOCUMENTATION BLUEPRINT SYNTHESIS"
     criteria:

@@ -872,14 +872,45 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     // Default acdd_read suppresses Hints; include_hints=true opts in.
     let no_hints = read_tool(&mut client, json!({"selector":"compute"}));
     assert!(no_hints.get("Hints").is_none(), "{no_hints}");
-    let cli_read_out = run_cli_json(&w, &["read", "service.py", "--selector", "compute"]);
-    assert!(
-        cli_read_out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&cli_read_out.stderr)
+    for cli_args in [
+        vec!["read", "service.py", "--selector", "compute"],
+        vec!["read", "--selector", "compute"],
+        vec!["read", "--selector", "compute", "--path", "service.py"],
+    ] {
+        let cli_read_out = run_cli_json(&w, &cli_args);
+        assert!(
+            cli_read_out.status.success(),
+            "{cli_args:?}: {}",
+            String::from_utf8_lossy(&cli_read_out.stderr)
+        );
+        let cli_read: serde_json::Value = serde_json::from_slice(&cli_read_out.stdout).unwrap();
+        assert_eq!(cli_read["node"], no_hints["node"], "{cli_args:?}: {cli_read}");
+    }
+    let cli_search_out = run_cli_json(
+        &w,
+        &[
+            "read",
+            "--mode",
+            "search",
+            "--query",
+            "return 42",
+            "--path",
+            "service.py",
+        ],
     );
-    let cli_read: serde_json::Value = serde_json::from_slice(&cli_read_out.stdout).unwrap();
-    assert_eq!(cli_read["node"], no_hints["node"], "{cli_read}");
+    assert!(
+        cli_search_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_search_out.stderr)
+    );
+    let cli_search: serde_json::Value = serde_json::from_slice(&cli_search_out.stdout).unwrap();
+    assert!(
+        cli_search["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("return 42"),
+        "{cli_search}"
+    );
     let cli_inspect_out = run_cli_json(&w, &["query", "inspect", "compute"]);
     assert!(
         cli_inspect_out.status.success(),

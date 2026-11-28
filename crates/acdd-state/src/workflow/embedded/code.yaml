@@ -180,9 +180,9 @@ guidance:
   code.tools:
     description: "ACDD NAVIGATION & HYGIENE PROTOCOL"
     criteria:
-      - "Tool routing: (1) Markdown docs/ADRs/specs -> `get_doc` / `search_docs` (`acdd docs get|search`); (2) Code -> `code_map_overview` -> `code_map_search` -> `inspect`/`impact`/`explain` -> `acdd_read(selector=...)` / `mode=\"outline\"` (pass `detail=\"full\"` when a larger slice is needed rather than sequential line paging); (3) Tool/workflow help -> `acdd_guide` (`acdd guide`); (4) Large JSON proofs -> `.acdd/tmp/<name>.json` + `acdd submit --evidence @file` with exact unquoted `task_ref` keys."
-      - "Run `code_map_lint` for arch/syntax/docs rules, `code_map_impact` and `code_map_query(operation=\"tests\"|\"prove_removal\")` before deleting/changing public symbols, and `code_map_query(duplicates, dead_tails)` before submit."
-      - "Do NOT run inline Python (`python -c` / heredocs) or write ad-hoc `.py` verification scripts — use native tests or `acdd` CLI."
+      - "ACDD-FIRST: use MCP or flat `acdd` CLI for code/docs discovery (omit `-C` in target CWD or set `ACDD_WORKSPACE_ROOT`; batch read-only queries; never wrap `acdd` in `ctx_shell` or use `cat`/`sed`/`sqlite3` on indexed files; reserve `rg -n` for unadmitted paths, leftover literal sweeps, or fallback)."
+      - "Docs: `search_docs`/`get_doc` (`acdd docs search|get <path> [--detail compact|--section <h>]`). Code: `code_map_overview|search|inspect|impact|explain` + `ast_grep_search` (`acdd query overview|search <pat> [--path <p>]|inspect|impact|explain`, `acdd ast grep`). Read: `acdd_read` (`acdd read --selector <Sym> [<path>]` / `--mode outline|delta|search --pattern <p> [--detail full]`). Help: `acdd_guide` (`acdd guide [code|lifecycle]`)."
+      - "Hygiene/proofs: `code_map_lint` (`acdd lint --categories all`), `code_map_impact`/`tests`/`prove_removal` before interface changes, and `duplicates`/`dead_tails` (`acdd query run duplicates --level symbol --path <p>`, `dead_tails --path <p>`) before submit. Proofs >8 KiB: `--evidence @.acdd/tmp/<name>.json` (unquoted `task_ref` keys). No inline `python -c`/heredocs."
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:

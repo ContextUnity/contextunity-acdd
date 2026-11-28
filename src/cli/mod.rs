@@ -1231,8 +1231,22 @@ mod tests {
                 "--evidence",
                 "observed-command",
             ],
+            vec!["read", "--selector", "ExampleSym"],
+            vec!["read", "--selector", "ExampleSym", "--path", "src/lib.rs"],
+            vec!["read", "--mode", "search", "--query", "needle", "--path", "src"],
+            vec!["query", "search", "parse*", "--path", "src/"],
+            vec!["query", "run", "duplicates", "--level", "symbol", "--path", "src"],
+            vec!["docs", "get", "README.md", "--detail", "compact"],
         ] {
             assert!(Cli::try_parse_from(std::iter::once("acdd").chain(args)).is_ok());
+        }
+        let dup_cli =
+            Cli::try_parse_from(["acdd", "query", "run", "duplicates", "--path", "src"]).unwrap();
+        match dup_cli.command {
+            Some(super::Command::Query {
+                command: super::QueryCommand::Run { min_lines, .. },
+            }) => assert_eq!(min_lines, None),
+            other => panic!("expected QueryCommand::Run, got {other:?}"),
         }
     }
 }

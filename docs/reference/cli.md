@@ -48,12 +48,14 @@ acdd read notes.txt --start-line 20 --line-count 40
 acdd read notes.txt --mode search --pattern 'timeout' --context 2
 acdd read notes.txt --mode search --pattern 'error|warning' --regex
 acdd read docs/reference/tasks.md --mode outline
+acdd read --selector acdd_read_tool
 acdd read src/engine/reader.rs --selector acdd_read_tool
+acdd read --selector acdd_read_tool --path src/engine/reader.rs
 acdd read notes.txt --mode delta --baseline HEAD
 acdd read notes.txt --mode raw --output-file exports/read.txt
 ```
 
-- **`read <path>`**: shares the same layered reader, response detail policy (`response.detail`, `compact` by default), and budgets as MCP `acdd_read` (`lines`/`search` default `line_count` `100`; default `<= 9,000` bytes inline with `next_start_line` continuation; pass `--detail full` or `--output-file` for the `48 KiB` slice ceiling; `search` defaults to `--context 0`, groups directory matches under `## <path>`, and excludes `**/archive/**` unless targeting `archive`; see [layered file reader](mcp-tools.md#layered-file-reader)).
+- **`read [<path> | --path <path>]`**: shares the same layered reader, response detail policy (`response.detail`, `compact` by default), and budgets as MCP `acdd_read` (`lines`/`search` default `line_count` `100`; default `<= 9,000` bytes inline with `next_start_line` continuation; pass `--detail full` or `--output-file` for the `48 KiB` slice ceiling; `search` accepts `--pattern` or `--query`, defaults to `--context 0`, groups directory matches under `## <path>`, and excludes `**/archive/**` unless targeting `archive`; see [layered file reader](mcp-tools.md#layered-file-reader)). Positional `<path>` is optional when `--selector` or `--path` (`--file-path`) is passed.
 - **Auto mode**: selects `snippet` when `--selector` is given, `search` when `--pattern` is given, and `lines` otherwise (or pass a symbol selector directly with `--mode snippet`).
 - **Index requirements**: `lines`, `raw`, `search`, and `delta` run without an index; Markdown `outline` requires `docs`; code `outline` and `snippet` require the code index.
 - **Symbol paging**: bound output with `--max-body-lines` and `--leading-lines`, and continue across pages using `--source-offset` + `--generation`.
@@ -65,7 +67,7 @@ acdd query overview
 acdd query overview --aspects entrypoints
 acdd query overview --aspects entrypoints_with_tests
 acdd query overview --aspects topology
-acdd query search 'parse*' --kind function --classification production --limit 30
+acdd query search 'parse*' --path src/ --kind function --classification production --limit 30
 acdd query search 'takes:WorkflowDef'
 acdd query search 'returns:Result'
 acdd query inspect 'src/module.py:parse' --show-source
@@ -81,7 +83,7 @@ acdd query run slice 'src/module.py:parse' --depth 1 --limit 30
 acdd query run slice src/db --limit 30
 acdd query run untested src/core --limit 30
 acdd query run implementations LanguageLinker --limit 30
-acdd query run duplicates --level symbol --min-lines 10 --limit 30
+acdd query run duplicates --level symbol --min-lines 5 --limit 30
 acdd query run duplicates src --level file --limit 30
 acdd query run dead_tails --path crates/acdd-state --limit 30
 acdd --format json query overview
@@ -106,11 +108,12 @@ acdd --format json query overview
 
 ```sh
 acdd docs search 'dependency' --doc-type architecture
+acdd docs get 'docs/architecture/indexing.md' --detail compact
 acdd docs get 'docs/architecture/indexing.md' --section 'Ownership and data flow'
 acdd ast grep 'print($VALUE)' --lang python --path src
 ```
 
-- **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`); pass `--include-candidates` on `acdd docs get` to opt into ambiguous documentary symbol reference candidates (omitted by default).
+- **`docs search` / `docs get`**: query indexed Markdown sections (`--component`, `--doc-type`, `--limit`); `acdd docs get` returns full content by default (`--detail full`), accepts `--detail compact` for a heading outline or `--section <heading>` for one section, and accepts `--include-candidates` to opt into ambiguous documentary symbol reference candidates (omitted by default).
 - **`ast grep`**: narrows candidate files from the index, verifies file digests, and matches Tree-sitter patterns (infers compatible language(s) from `--path` or pattern grammar when `--lang` is omitted, dropping `yaml`/`json`/`toml` whenever at least one programming language parses cleanly; omits empty capture entries for anonymous `$$$` wildcards; `--limit 1..=100` matches MCP page objects while defaulting to `100` on CLI vs `min(15, response.page_size)` (`12` by default) on MCP `ast_grep_search`, and `101..=10000` returns CLI-only aggregate matches).
 
 ### Unified architectural and documentation lint (`acdd lint`)

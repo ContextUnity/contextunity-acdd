@@ -175,6 +175,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
     let val = match command {
         Command::Read {
             path,
+            path_flag,
             mode,
             selector,
             start_line,
@@ -193,7 +194,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
         } => {
             let mode = serde_json::from_value::<acdd_core::model::ReadMode>(json!(mode))?;
             let request = crate::engine::reader::ReadRequest {
-                path: Some(path),
+                path: path.or(path_flag),
                 paths: None,
                 mode,
                 selector,
@@ -413,10 +414,11 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                 DocsCommand::Get {
                     path_or_id,
                     section,
+                    detail,
                     include_candidates,
                 } => {
                     let mut options = cli_page(100)?;
-                    options.detail = Detail::Full;
+                    options.detail = parse_cli_detail(detail.as_deref())?.unwrap_or(Detail::Full);
                     reader::get_doc_paged(
                         &conn,
                         &path_or_id,
@@ -561,6 +563,7 @@ fn dispatch_query(
             pattern,
             kind,
             classification,
+            path,
             limit,
         } => {
             let page = cli_page(limit)?;
@@ -579,7 +582,7 @@ fn dispatch_query(
                 &symbols::SearchOptions {
                     kind: kind.as_deref(),
                     classification: parsed_classification,
-                    path: None,
+                    path: path.as_deref(),
                     include_docs,
                     exact,
                     page: &page,
@@ -593,6 +596,7 @@ fn dispatch_query(
                     "pattern": pattern,
                     "kind": kind,
                     "classification": parsed_classification.map(acdd_core::response::SymbolClassification::as_str),
+                    "path": path,
                     "exact": exact,
                     "include_docs": include_docs,
                 });
@@ -724,7 +728,7 @@ fn dispatch_query(
                     effective_selector,
                     path.as_deref(),
                     level.as_deref(),
-                    Some(min_lines),
+                    min_lines,
                     &page,
                 )
             } else {

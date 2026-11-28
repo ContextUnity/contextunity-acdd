@@ -30,31 +30,52 @@ literal or zero-normalized numeric prefix, suffix, and substring (first nonempty
 tier must be unique). Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
 and shared locks automatically.
 
-When invoking `acdd` from the repository root (`acdd` on `$PATH`), pass `-C <worktree>`
-(short alias for `--root`; falls back to `ACDD_WORKSPACE_ROOT` then `ACDD_WORKTREE`,
-with `ACDD_RUN` inherited by all `--run` options) for both code/docs and state
-commands, or use `acdd exec` to run arbitrary commands inside the resolved
-worktree without `cd /abs/path`:
+When invoking `acdd` from the CLI (`acdd` on `$PATH`, or a pre-built binary when testing uncommitted schema changes):
+- **Avoid `-C` / `cd` repetition**: Omit `-C` when your shell CWD is already the target worktree. From another directory, pass relative `-C .worktrees/<name>` (short alias for `--root`) or set `export ACDD_WORKSPACE_ROOT=<worktree> ACDD_RUN=<run>` once per compound command (`ACDD_WORKSPACE_ROOT` -> `ACDD_WORKTREE`; `ACDD_RUN` is inherited by all `--run` options).
+- **Batch read-only queries**: Combine independent `acdd query`/`acdd read`/`acdd docs` calls in one shell command instead of issuing many single-command round trips. Do not wrap `acdd` in shell-compression proxies with low command-size caps or allowlist restrictions.
+
+### CLI-Only / Swarm Quick Reference (exact flags)
 
 ```sh
-# Refresh, read, query, or lint an isolated worktree without changing CWD:
-acdd -C .worktrees/<run_name> delta
-acdd -C .worktrees/<run_name> query search "SymbolName" --limit 10
-acdd -C .worktrees/<run_name> read src/lib.rs --start-line 1 --line-count 80
-acdd -C .worktrees/<run_name> lint --categories all
+# 1. Orient, search & inspect code (no rg/grep/cat/read_file on indexed code)
+acdd query overview
+acdd query search "SymbolName" [--path src/] [--kind function] [--classification production] [--limit 15]
+acdd query inspect "src/mod.rs:SymbolName" [--show-source]
+acdd query explain "src/mod.rs:SymbolName"
+acdd query impact "src/mod.rs:SymbolName" --depth 1    # or: acdd query impact --changes unstaged
+acdd query tests "src/mod.rs:SymbolName"
+acdd query remove "src/mod.rs:SymbolName"
+acdd query analyze [src/] --mode hotspots|boundary|diff_impact|cochange [--base main]
+acdd ast grep 'fn $NAME($$$ARGS) {}' [--lang rust] [--path src/]
 
-# Target the worktree uniformly for state and gate operations:
-acdd -C .worktrees/<run_name> status
-acdd -C .worktrees/<run_name> claim <node_cursor> --worker <worker_id>
-acdd -C .worktrees/<run_name> submit <node_cursor> --action pass --worker <worker_id>
+# 2. Layered reads & indexed Markdown docs
+acdd read --selector SymbolName [src/mod.rs | --path src/mod.rs] [--detail full]
+acdd read src/mod.rs --mode outline|delta|search [--pattern "literal"] [--start-line 1 --line-count 80] [--detail full]
+acdd docs search "query terms" [--doc-type architecture]
+acdd docs get docs/guide.md [--detail compact | --section "Heading Title"]
+acdd docs check
 
-# Run arbitrary build/test/git commands inside the active run or worker worktree (MUST omit -C):
+# 3. Hygiene, lint & index refresh
+acdd delta src/mod.rs                                  # or: acdd build
+acdd lint [src/] --categories all
+acdd query run duplicates --level symbol --min-lines 5 --path src/
+acdd query run dead_tails --path src/
+
+# 4. State lifecycle, blackboard, scope & worktree exec (omit -C on `acdd exec`)
+acdd status && acdd next
+acdd claim <node_cursor> --worker <worker_id> [--detail full]
+acdd context [<node_cursor>] [--worker <worker_id>] [--detail compact|full]
+acdd extend-scope <node_cursor> --path "src/extra/**" --reason "justification"
+acdd blackboard --action read [--topic findings|decisions]
+acdd blackboard --action post --topic findings --author <id> --node <cur> [--recipient-node <cur>] --payload "<msg>"
+acdd verify <node_cursor> [--test <filter>]
+acdd submit <node_cursor> --action pass|reject --worker <id> [--evidence @.acdd/tmp/proof.json] [--findings @.acdd/tmp/findings.json]
 acdd exec [--run <id|name>] [--worker <worker_id>] -- <program> [args...]
 ```
 
 ## Discovery & read protocol (ACDD-First)
 
-Investigate codebases and documentation using ACDD's structural graph and docs tools **first**. Prefer targeted symbol, graph, and slice queries before broad local scans, and reserve native file reads or `rg -n` for unadmitted/gitignored paths or multi-hundred-line files when ACDD is unavailable or less practical.
+Start every codebase and documentation lookup with ACDD's structural graph and docs tools (MCP when registered, otherwise the `acdd` CLI commands above). Do not use `cat`, `sed`, `head`, `tail`, or raw `sqlite3` on indexed code or docs, and do not default to `read_file`/`rg`/`grep` for symbol or doc discovery. Permitted exceptions: use `rg -n` for gitignored/unadmitted paths (`.acdd/run/**`, `.acdd/tmp/**`, `/tmp/**`, build artifacts), exhaustive literal/comment leftover sweeps after renames or removals, or when ACDD is unavailable; use `read_file` for unadmitted/unindexed files or narrow edit-prep fallback when `acdd_read` is unavailable.
 
 1. **Discover symbols, implementations & syntax (`code_map_search`, `ast_grep_search`, `code_map_query`, `code_map_analyze`)**:
    - Locate definitions by name, prefix, FTS5 tokens, or type signature with `code_map_search(pattern=..., detail="compact")` (`takes:Type`, `returns:Type`, `prefix*`; filter with `kind:`, `classification: "production" | "test" | "documentation"`, `path:` / `file_path:`). Reuse returned `signature`, `inspect_selector`, and automatic previews instead of re-reading files.
@@ -65,7 +86,7 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
    - Call `code_map_inspect` for one declaration's summary, up to 5 direct callers/callees, linked docs, and governing `INV-*` invariants (pass `show_source: true` only when source is missing from previews).
    - Call `code_map_explain` for full paged `incoming`/`outgoing` edges of every kind (`calls`, `imports`, `implements`, `inherits`, `mutates`, `queries_table`, ...).
    - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) and `ast_grep_search` across `archive`/`sync`/`restore`/examples/sibling docs before modifying or removing interfaces. `code_map_query(operation="prove_removal")` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
-   - Check adjacent crates/formatters (`crates/*` vs `src/format/`, `acdd-core/path_policy.rs`) for semantic duplicates before adding local grouping/matching/walk helpers, inspect already-populated DTO/domain fields before re-deriving data downstream, split production files into directory modules once approaching ~600-800 LOC instead of piling onto monoliths, and guard byte-index slicing with UTF-8 `is_char_boundary` plus empty-scope fail-closed checks.
+   - Check adjacent modules/formatters for semantic duplicates before adding local grouping/matching/walk helpers, inspect already-populated DTO/domain fields before re-deriving data downstream, split production files into directory modules once approaching ~600-800 LOC instead of piling onto monoliths, and guard byte-index slicing with UTF-8 `is_char_boundary` plus empty-scope fail-closed checks.
    - Call `code_map_query(operation="tests")` to traverse verified `calls` paths from `test_case` nodes (`possible_calls` and lexical suggestions remain hints, not verified coverage).
    - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `query`, and `acdd_read`.)*
 3. **Discover & read documentation (`search_docs`, `get_doc`)**:

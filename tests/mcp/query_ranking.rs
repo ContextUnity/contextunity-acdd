@@ -249,6 +249,26 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             .collect();
         assert_eq!(mcp_names, ["typed_query"]);
         assert_eq!(mcp_names, cli_names);
+        let cli_scoped = crate::cli::run_cli_json(
+            &ws,
+            &[
+                "query",
+                "search",
+                "process_*",
+                "--kind",
+                "function",
+                "--path",
+                "z.py",
+            ],
+        );
+        assert!(
+            cli_scoped.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cli_scoped.stderr)
+        );
+        let cli_scoped: serde_json::Value = serde_json::from_slice(&cli_scoped.stdout).unwrap();
+        assert_eq!(cli_scoped["nodes"]["total"], 1, "{cli_scoped}");
+        assert_eq!(cli_scoped["nodes"]["items"][0]["path"], "z.py", "{cli_scoped}");
         client.finish().expect("server must finish successfully");
     }
     let prefix = symbols::search_with_options(

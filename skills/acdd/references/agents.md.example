@@ -7,6 +7,7 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity ACDD is
 # Repository Agent Instructions
 
 - Load the shared `acdd` skill for generic ACDD MCP, CLI, and state lifecycle guidance.
+- **ACDD-First navigation**: Start code and docs lookups with ACDD MCP (`code_map_*`, `ast_grep_search`, `acdd_read`, `search_docs`, `get_doc`) when registered, or exact `acdd` CLI equivalents (`acdd query search <pat> [--path <p>]`, `acdd read --selector <Sym> [<path>]`, `acdd docs get <path> [--detail compact|--section <h>]`, `acdd ast grep`, `acdd lint --categories all`) when MCP is absent. Avoid `cat`/`sed`/`sqlite3` on indexed files; reserve `rg -n` for unadmitted paths, exhaustive rename/removal leftover sweeps, or fallback, and `read_file` for unadmitted files or narrow edit-prep fallback. Omit `-C` when already in the target worktree CWD (or export `ACDD_WORKSPACE_ROOT` / `ACDD_RUN`) and batch read-only CLI queries.
 - Load the shared `contract-planning` skill when authoring, auditing, or revising specs, plans, and task contracts.
 - Load the shared `test-suite-rules` skill before authoring, modifying, or refactoring tests.
 - Follow its Blackboard procedure for claim context, progress reports, and gate or agent handoffs.

@@ -471,26 +471,26 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
         "code" => Ok(json!({
             "purpose": "Navigate, inspect, lint, and verify indexed code and docs strictly through the `acdd` CLI.",
             "commands": {
-                "read_selector": "acdd read <path> --selector <symbol> [--source-offset N] [--detail compact|full]",
-                "read_modes": "acdd read <path> --mode auto|lines|raw|search|delta|snippet|outline [--start-line N] [--line-count K] [--pattern <pat>] [--baseline <ref>]",
+                "read_selector": "acdd read --selector <symbol> [<path> | --path <path>] [--source-offset N] [--detail compact|full]",
+                "read_modes": "acdd read <path> --mode auto|lines|raw|search|delta|snippet|outline [--start-line N] [--line-count K] [--pattern <pat>] [--baseline <ref>] [--detail compact|full]",
                 "overview": "acdd query overview [--aspects <list>] [--limit N]",
-                "search": "acdd query search <pattern> [--kind <kind>] [--classification production|test|documentation] [--limit N]",
+                "search": "acdd query search <pattern> [--path <path>] [--kind <kind>] [--classification production|test|documentation] [--limit N]",
                 "inspect": "acdd query inspect <selector> [--path <path>] [--show-source] [--show-doc true|false]",
                 "impact": "acdd query impact [<selector>] [--changes staged|unstaged|head] [--path <path>] [--depth N]",
                 "explain": "acdd query explain <selector> [--path <path>]",
                 "analyze": "acdd query analyze [<target>] [--mode summary|hotspots|boundary|path|entrypoints|diff_impact|cochange] [--include-cycles true]",
-                "query_run": "acdd query run duplicates|dead_tails|tests|prove_removal|slice|untested|implementations [<selector>] [--path <path>] [--min-lines N]",
+                "query_run": "acdd query run duplicates|dead_tails|tests|prove_removal|slice|untested|implementations [<selector>] [--path <path>] [--level symbol|file] [--min-lines N]",
                 "ast_grep": "acdd ast grep '<pattern>' [--lang <lang>] [--path <path>] [--limit N]",
                 "lint": "acdd lint [<target>] [--categories arch,duplicates,dead_tails,cycles,syntax,docs|all] [--severity warn|error]",
-                "docs": "acdd docs search <query> [--doc-type <type>] | acdd docs get <path_or_id> [--section <heading>] | acdd docs check",
-                "worktree_exec": "acdd -C <worktree> <command> | acdd exec [--run <id|name>] [--worker <id>] -- <cmd>"
+                "docs": "acdd docs search <query> [--doc-type <type>] | acdd docs get <path_or_id> [--detail compact|full] [--section <heading>] | acdd docs check",
+                "worktree_exec": "acdd -C <worktree> <command> (omit -C when already in that CWD or set ACDD_WORKSPACE_ROOT) | acdd exec [--run <id|name>] [--worker <id>] -- <cmd>"
             },
             "steps": [
                 "Run `acdd query overview` to verify indexed paths and coverage (or `acdd build` to refresh `.acdd/code-map.sqlite`).",
-                "Locate declarations via `acdd query search <pattern>` and inspect signatures, callers, and linked docs via `acdd query inspect|explain|impact`.",
-                "Read digest-verified bodies via `acdd read <path> --selector <symbol>` and bounded slices via `acdd read <path> --mode lines|search|delta|outline`.",
-                "Run structural pattern queries via `acdd ast grep '<pattern>' --lang <lang>` and graph hygiene via `acdd query run duplicates|dead_tails|tests|prove_removal|slice|untested|implementations` and `acdd lint --categories all`.",
-                "Target isolated worktrees with `acdd -C .worktrees/<name> ...` or run build/test commands inside the run worktree with `acdd exec -- <cmd>`."
+                "Locate declarations via `acdd query search <pattern> [--path <path>]` and inspect signatures, callers, and linked docs via `acdd query inspect|explain|impact`.",
+                "Read digest-verified bodies via `acdd read --selector <symbol> [<path>]` and bounded slices via `acdd read <path> --mode lines|search|delta|outline`.",
+                "Run structural pattern queries via `acdd ast grep '<pattern>' --lang <lang>` and graph hygiene via `acdd query run duplicates --level symbol --min-lines 5 --path <path>`, `acdd query run dead_tails --path <path>`, and `acdd lint --categories all`.",
+                "Target isolated worktrees with `acdd -C .worktrees/<name> ...` (or `export ACDD_WORKSPACE_ROOT=<wt> ACDD_RUN=<run>`) and run build/test commands inside the run worktree with `acdd exec -- <cmd>`."
             ],
             "note": "Treat candidate relationships and lexical test suggestions as navigation, not verified calls or coverage.",
             "example": { "cli": "acdd query overview" },
@@ -499,12 +499,12 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
         "query" => Ok(json!({
             "start": "Run `acdd query overview` to identify indexed paths and coverage.",
             "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash.",
-            "symbols": "Use `acdd query search <pattern>` (FTS or prefix*) and `acdd query inspect|explain <selector>` for signatures, docstrings, and direct callers/callees.",
-            "snippets": "Use `acdd read <path> --selector <symbol>` for verified symbol bodies, or `acdd read <path> --mode auto|lines|raw|search|delta|snippet|outline` for layered file reads.",
+            "symbols": "Use `acdd query search <pattern> [--path <path>]` (FTS or prefix*) and `acdd query inspect|explain <selector>` for signatures, docstrings, and direct callers/callees.",
+            "snippets": "Use `acdd read --selector <symbol> [<path>]` for verified symbol bodies, or `acdd read <path> --mode auto|lines|raw|search|delta|snippet|outline` for layered file reads.",
             "tests": "Run `acdd query run tests <selector>` or `acdd query tests <selector>` on a narrow symbol or module.",
             "queries": "Use `acdd query impact <selector>`, `acdd query analyze [<target>] --mode summary|hotspots|boundary|path|entrypoints|diff_impact|cochange`, `acdd query run duplicates|dead_tails|tests|prove_removal|slice|untested|implementations`, `acdd ast grep '<pattern>'`, and `acdd lint --categories all`.",
             "diagnostics": "Run `acdd query analyze --mode summary --include-cycles true` and `acdd lint --categories all` for workspace diagnostics.",
-            "documents": "Use `acdd docs search <query>` and `acdd docs get <path_or_id> [--section <heading>]`.",
+            "documents": "Use `acdd docs search <query>` and `acdd docs get <path_or_id> [--detail compact|full] [--section <heading>]`.",
             "pages": "Start with compact detail and a small `--limit`; continue with `--offset` and `--generation` for the same selector and filters.",
             "recovery": "On a computation budget error, narrow the selector or `--path` and reduce `--depth`; run inside worktrees via `-C <worktree>` or `acdd exec -- <cmd>`."
         })),
@@ -558,7 +558,7 @@ fn topic_value_cli(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Resu
                 "For automated DAG execution, run `acdd run [--jobs N]` (requires role `runner:` commands; returns `WORKFLOW_RUNNER_REQUIRED` when roles use `mode: subagent` without `runner:`)."
             ],
             "runners": "Role runners receive `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, and `TRACEPARENT`, with rendered ClaimResp delivered over stdin. Verification commands run sanitized without orchestrator env leakage.",
-            "blackboard": "Use `acdd blackboard --action read|post` for `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` entries.",
+            "blackboard": "Use `acdd blackboard --action read [--topic <topic>]` or `acdd blackboard --action post --topic <topic> --author <id> --payload <text> [--node <cursor>] [--recipient-node <cursor>]` for `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` entries.",
             "recovery": {
                 "TASK_ALREADY_CLAIMED": "Node holds an active claim by another worker/session. Resume the owning worker or pass `--force` when taking over a dead local PID (or `--steal-remote`).",
                 "STALE_CLAIM_REVISION": "Re-claim or fetch the current `claim_revision` via `acdd status` / `acdd show`, then re-run `acdd verify`.",
