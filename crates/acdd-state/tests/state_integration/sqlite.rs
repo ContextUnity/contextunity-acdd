@@ -102,14 +102,20 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
         .expect("reset schema_version to 1");
     }
 
-    // 2. Open with SqliteStateBackend -> migrates v1 -> v2, persists and reads spec_id.
+    // 2. Open with SqliteStateBackend -> migrates v1 -> v3, persists and reads spec_id + attached_specs.
     {
-        let backend = SqliteStateBackend::open(&db_path).expect("open backend migrates v1 -> v2");
-        assert_eq!(backend.read_meta().expect("meta").schema_version, 2);
-        // Reopen is idempotent when schema is already v2.
+        let backend = SqliteStateBackend::open(&db_path).expect("open backend migrates v1 -> v3");
+        assert_eq!(
+            backend.read_meta().expect("meta").schema_version,
+            acdd_state::store::sqlite::schema::CURRENT_SCHEMA_VERSION
+        );
+        // Reopen is idempotent when schema is already at CURRENT_SCHEMA_VERSION.
         drop(backend);
-        let backend = SqliteStateBackend::open(&db_path).expect("reopen idempotent v2");
-        assert_eq!(backend.read_meta().expect("meta2").schema_version, 2);
+        let backend = SqliteStateBackend::open(&db_path).expect("reopen idempotent v3");
+        assert_eq!(
+            backend.read_meta().expect("meta2").schema_version,
+            acdd_state::store::sqlite::schema::CURRENT_SCHEMA_VERSION
+        );
 
         backend
             .inspect_writer(|conn| {
@@ -319,6 +325,7 @@ fn sqlite_v1_to_v2_migration_and_readonly_wal_without_shm() {
             backup_dir: Some(b_bak),
             workspace_root: Some(git_ws.clone()),
             spec_collection_paths: vec!["docs/milestones".to_owned(), "docs/plans".to_owned()],
+            spec_collections: std::collections::BTreeMap::new(),
             is_custom_db: false,
         };
         let b_backend = SqliteStateBackend::open_with_options(b_opts.clone()).unwrap();

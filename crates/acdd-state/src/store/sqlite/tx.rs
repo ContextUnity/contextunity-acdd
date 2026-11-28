@@ -581,18 +581,21 @@ impl StateTx for SqliteTx<'_> {
             )
         })?;
 
+        let attached_specs_json = serialize_json(&run.attached_specs, "runs.attached_specs_json")?;
         self.conn
             .execute(
                 "INSERT INTO runs (
                     run_id, run_name, collection, workspace, profile_id, profile_json,
                     spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base,
                     target_base_commit, branch, worktree, trace_id, status,
-                    cancellation_reason, root_cycle_count, generation, created_at, completed_at
+                    cancellation_reason, root_cycle_count, generation, created_at, completed_at,
+                    attached_specs_json
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6,
                     ?7, ?8, ?9, ?10, ?11, ?12,
                     ?13, ?14, ?15, ?16, ?17,
-                    ?18, ?19, ?20, ?21, ?22
+                    ?18, ?19, ?20, ?21, ?22,
+                    ?23
                 )",
                 params![
                     run.run_id.as_str(),
@@ -617,6 +620,7 @@ impl StateTx for SqliteTx<'_> {
                     run_gen,
                     run.created_at,
                     run.completed_at,
+                    attached_specs_json,
                 ],
             )
             .map_err(|err| map_write_err(err, "insert runs"))?;

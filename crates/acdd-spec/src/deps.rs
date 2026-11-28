@@ -5,9 +5,9 @@ use crate::discovery::{
     resolve_linked_workspace_root, resolve_spec_repositories,
 };
 use crate::overlay::{RuntimeDepResolution, SpecRuntimeOverlay};
-use crate::spec::{SpecDocument, SpecStatus};
+use crate::spec::{is_safe_path_segment_id, SpecDocument, SpecStatus};
 use acdd_core::config::{Adapter, SpecConfig};
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode, DIAG_ITEM_DEPENDENCY_UNKNOWN};
 use acdd_core::fs::canonical_root;
 use acdd_core::ids::TaskRef;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -16,64 +16,133 @@ use std::path::{Path, PathBuf};
 /// Parsed syntactic form of a `depends_on` entry (`INV-SINGLE-OWNER`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedDepSyntax {
-    /// Intra-spec task dependency (`<task_ref>`).
+    /// Intra-spec item/task dependency (`<item_ref>`).
     LocalTask(String),
-    /// Cross-spec dependency within the primary/current workspace (`<spec_id>[:<task_ref>]`).
+    /// Cross-spec dependency within the primary/current workspace (`<spec_id>[:<task_ref>|#<item_ref>]`).
     LocalSpec {
         /// Target spec/run selector.
         spec_id: String,
-        /// Optional target task reference.
+        /// Optional target task reference (`<spec_id>:<task_ref>`).
         task_ref: Option<String>,
+        /// Optional target named item reference (`<spec_id>#<item_ref>`).
+        item_ref: Option<String>,
     },
-    /// Cross-workspace dependency (`<ws_alias>/<spec_id>[:<task_ref>]`).
+    /// Cross-workspace dependency (`<ws_alias>/<spec_id>[:<task_ref>|#<item_ref>]`).
     LinkedSpec {
         /// Linked workspace or repository alias.
         ws_alias: String,
         /// Target spec/run selector.
         spec_id: String,
-        /// Optional target task reference.
+        /// Optional target task reference (`<ws_alias>/<spec_id>:<task_ref>`).
         task_ref: Option<String>,
+        /// Optional target named item reference (`<ws_alias>/<spec_id>#<item_ref>`).
+        item_ref: Option<String>,
     },
+}
+
+fn dep_syntax_err(msg: impl Into<String>) -> AcddError {
+    AcddError::new(ErrorCode::SpecSchemaInvalid, msg).with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN)
+}
+
+fn validate_dep_ref_token(raw: &str, full_entry: &str, label: &str) -> Result<(), AcddError> {
+    if raw.is_empty()
+        || raw.contains(char::is_whitespace)
+        || !is_safe_path_segment_id(raw)
+        || raw.contains([':', '#'])
+    {
+        return Err(dep_syntax_err(format!(
+            "invalid {label} '{raw}' in depends_on entry '{full_entry}'"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate pure `depends_on` entry syntax without requiring local item context.
+pub(crate) fn validate_dep_entry_syntax(raw: &str) -> Result<(), AcddError> {
+    let empty = BTreeSet::new();
+    parse_dep_syntax(raw, &empty).map(|_| ())
 }
 
 /// Parse raw `depends_on` syntax into [`ParsedDepSyntax`].
 pub fn parse_dep_syntax(
     raw: &str,
-    local_task_refs: &BTreeSet<&str>,
+    local_item_refs: &BTreeSet<&str>,
 ) -> Result<ParsedDepSyntax, AcddError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(AcddError::new(
-            ErrorCode::SpecSchemaInvalid,
-            "depends_on entry cannot be empty",
-        ));
+        return Err(dep_syntax_err("depends_on entry cannot be empty"));
     }
-    if let Some((left, task_part)) = trimmed.split_once(':') {
-        let tref = TaskRef::new(task_part)?;
-        if let Some((ws_alias, run_part)) = left.split_once('/') {
-            Ok(ParsedDepSyntax::LinkedSpec {
-                ws_alias: ws_alias.to_owned(),
-                spec_id: run_part.to_owned(),
-                task_ref: Some(tref.as_str().to_owned()),
-            })
-        } else {
-            Ok(ParsedDepSyntax::LocalSpec {
-                spec_id: left.to_owned(),
-                task_ref: Some(tref.as_str().to_owned()),
-            })
+    if trimmed.contains(char::is_whitespace) || trimmed.contains('\\') || trimmed.contains("..") {
+        return Err(dep_syntax_err(format!(
+            "invalid depends_on entry '{trimmed}' (whitespace or path traversal is forbidden)"
+        )));
+    }
+
+    let (left_part, task_ref, item_ref) = if let Some((left, hash_part)) = trimmed.split_once('#') {
+        if left.contains(':') {
+            return Err(dep_syntax_err(format!(
+                "depends_on entry '{trimmed}' cannot mix ':' and '#'"
+            )));
         }
-    } else if let Some((ws_alias, spec_part)) = trimmed.split_once('/') {
+        validate_dep_ref_token(hash_part, trimmed, "item_ref")?;
+        let _ = TaskRef::new(hash_part).map_err(|err| {
+            dep_syntax_err(format!(
+                "invalid item_ref '{hash_part}' in depends_on entry '{trimmed}': {err}"
+            ))
+        })?;
+        (left, None, Some(hash_part.to_owned()))
+    } else if let Some((left, task_part)) = trimmed.split_once(':') {
+        if left.contains('#') {
+            return Err(dep_syntax_err(format!(
+                "depends_on entry '{trimmed}' cannot mix ':' and '#'"
+            )));
+        }
+        validate_dep_ref_token(task_part, trimmed, "task_ref")?;
+        let tref = TaskRef::new(task_part).map_err(|err| {
+            dep_syntax_err(format!(
+                "invalid task_ref '{task_part}' in depends_on entry '{trimmed}': {err}"
+            ))
+        })?;
+        (left, Some(tref.as_str().to_owned()), None)
+    } else {
+        (trimmed, None, None)
+    };
+
+    if left_part.is_empty() {
+        return Err(dep_syntax_err(format!(
+            "depends_on entry '{trimmed}' is missing target run or spec ID"
+        )));
+    }
+
+    if let Some((ws_alias, spec_part)) = left_part.split_once('/') {
+        if ws_alias.is_empty() || spec_part.is_empty() || spec_part.contains('/') {
+            return Err(dep_syntax_err(format!(
+                "invalid linked workspace dependency '{trimmed}'"
+            )));
+        }
+        validate_dep_ref_token(ws_alias, trimmed, "workspace alias")?;
+        validate_dep_ref_token(spec_part, trimmed, "spec_id")?;
         Ok(ParsedDepSyntax::LinkedSpec {
             ws_alias: ws_alias.to_owned(),
             spec_id: spec_part.to_owned(),
-            task_ref: None,
+            task_ref,
+            item_ref,
         })
-    } else if local_task_refs.contains(trimmed) {
+    } else if task_ref.is_some() || item_ref.is_some() {
+        validate_dep_ref_token(left_part, trimmed, "spec_id")?;
+        Ok(ParsedDepSyntax::LocalSpec {
+            spec_id: left_part.to_owned(),
+            task_ref,
+            item_ref,
+        })
+    } else if local_item_refs.contains(trimmed) {
         Ok(ParsedDepSyntax::LocalTask(trimmed.to_owned()))
     } else {
+        validate_dep_ref_token(trimmed, trimmed, "spec_id")?;
         Ok(ParsedDepSyntax::LocalSpec {
             spec_id: trimmed.to_owned(),
             task_ref: None,
+            item_ref: None,
         })
     }
 }
@@ -128,8 +197,8 @@ fn archived_resolution(
 ) -> DepTargetResolution {
     let completed_doc = is_completed_archive_doc(parsed);
     let (task_exists, task_completed) = match task_sel {
-        Some(t_ref) => match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref) {
-            Some(t) => (true, t.status == SpecStatus::Completed),
+        Some(t_ref) => match parsed.item_status(t_ref) {
+            Some(status) => (true, status == SpecStatus::Completed),
             None => (false, false),
         },
         None => (true, true),
@@ -183,12 +252,7 @@ pub fn resolve_dep_target(
     if let Some(target_doc) = active_specs.and_then(|specs| specs.iter().find(|s| s.id == run_sel))
     {
         let cancelled = target_doc.status == SpecStatus::Cancelled;
-        let task_exists = task_sel.is_none_or(|t_ref| {
-            target_doc
-                .tasks
-                .iter()
-                .any(|t| t.task_ref.as_str() == t_ref)
-        });
+        let task_exists = task_sel.is_none_or(|item_ref| target_doc.has_item(item_ref));
         return Ok(DepTargetResolution::ActiveSpec {
             cancelled,
             task_exists,
@@ -235,8 +299,11 @@ pub fn resolve_dep_target(
         false,
         None,
         &mut scratch_warnings,
-        |_, rel_posix, raw| {
-            let parsed = crate::spec::parse_spec(raw).ok()?;
+        |col_name, rel_posix, raw| {
+            let owning = collections
+                .get_key_value(col_name)
+                .map(|(k, v)| (k.as_str(), v));
+            let parsed = crate::spec::parse_spec_with_collections(raw, owning, collections).ok()?;
             if parsed.id != run_sel {
                 return None;
             }
@@ -263,6 +330,8 @@ pub fn resolve_dep_target(
 pub struct DepValidationIssue {
     /// Error code classifying the dependency violation.
     pub code: ErrorCode,
+    /// Stable diagnostic code (`ITEM_DEPENDENCY_UNKNOWN` when applicable, else `code.as_str()`).
+    pub diag_code: &'static str,
     /// Human-readable description of the violation.
     pub message: String,
 }
@@ -271,8 +340,30 @@ impl DepValidationIssue {
     fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            diag_code: code.as_str(),
             message: message.into(),
         }
+    }
+
+    fn from_err(err: &AcddError, message: impl Into<String>) -> Self {
+        Self {
+            code: err.code,
+            diag_code: static_dep_diag_code(err),
+            message: message.into(),
+        }
+    }
+
+    fn with_diag_code(mut self, diag_code: &'static str) -> Self {
+        self.diag_code = diag_code;
+        self
+    }
+}
+
+fn static_dep_diag_code(err: &AcddError) -> &'static str {
+    if err.effective_diag_code() == DIAG_ITEM_DEPENDENCY_UNKNOWN {
+        DIAG_ITEM_DEPENDENCY_UNKNOWN
+    } else {
+        err.code.as_str()
     }
 }
 
@@ -306,8 +397,9 @@ pub fn validate_spec_dependencies(
     let mut workspaces: BTreeMap<String, ValidationWorkspace> = BTreeMap::new();
 
     let mut validate_external_dep_ref = |trimmed: &str, require_task: bool| -> Result<(), AcddError> {
+        validate_dep_entry_syntax(trimmed)?;
         let self_spec_id = doc.id.as_str();
-        let (alias, run_and_task) = trimmed.split_once('/').unwrap_or(("", trimmed));
+        let (alias, _) = trimmed.split_once('/').unwrap_or(("", trimmed));
         if !workspaces.contains_key(alias) {
             let ws_path = if alias.is_empty() {
                 local_checkout.clone()
@@ -352,25 +444,31 @@ pub fn validate_spec_dependencies(
         let ws_path = &workspace.path;
         let is_primary = *ws_path == local_checkout;
 
-        let (run_sel, task_sel) = match run_and_task.split_once(':') {
-            Some((r, t)) => {
-                if r.trim().is_empty() {
-                    return Err(AcddError::new(
-                        ErrorCode::SpecSchemaInvalid,
-                        format!("dependency '{trimmed}' is missing target run or spec ID"),
-                    ));
-                }
-                let _ = TaskRef::new(t)?;
-                (r.trim(), Some(t))
+        let empty_refs = BTreeSet::new();
+        let (run_sel, task_sel) = match parse_dep_syntax(trimmed, &empty_refs)? {
+            ParsedDepSyntax::LocalSpec {
+                spec_id,
+                task_ref,
+                item_ref,
             }
-            None => {
-                if require_task {
-                    return Err(AcddError::new(
-                        ErrorCode::SpecSchemaInvalid,
-                        format!("task dependency '{trimmed}' must specify ':<task_ref>'"),
-                    ));
+            | ParsedDepSyntax::LinkedSpec {
+                spec_id,
+                task_ref,
+                item_ref,
+                ..
+            } => {
+                let target_ref = task_ref.or(item_ref);
+                if require_task && target_ref.is_none() {
+                    return Err(dep_syntax_err(format!(
+                        "task dependency '{trimmed}' must specify ':<task_ref>' or '#<item_ref>'"
+                    )));
                 }
-                (run_and_task.trim(), None)
+                (spec_id, target_ref)
+            }
+            ParsedDepSyntax::LocalTask(task_ref) => {
+                return Err(dep_syntax_err(format!(
+                    "unexpected local task dependency '{task_ref}' in '{trimmed}'"
+                )));
             }
         };
 
@@ -387,8 +485,8 @@ pub fn validate_spec_dependencies(
             overlay,
             Some(&workspace.active),
             Some(&workspace.archived),
-            run_sel,
-            task_sel,
+            &run_sel,
+            task_sel.as_deref(),
             trimmed,
             workspace.checkout_scoped.then_some(ws_path.as_path()),
         )? {
@@ -402,14 +500,15 @@ pub fn validate_spec_dependencies(
                         format!("dependency '{trimmed}' targets cancelled spec '{run_sel}'"),
                     ));
                 }
-                if let Some(t_ref) = task_sel {
+                if let Some(ref t_ref) = task_sel {
                     if !task_exists {
                         return Err(AcddError::new(
                             ErrorCode::SpecSchemaInvalid,
                             format!(
-                                "dependency '{trimmed}' references unknown task '{t_ref}' in spec '{run_sel}'"
+                                "dependency '{trimmed}' references unknown item '{t_ref}' in spec '{run_sel}'"
                             ),
-                        ));
+                        )
+                        .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN));
                     }
                 }
                 Ok(())
@@ -419,14 +518,15 @@ pub fn validate_spec_dependencies(
                 task_exists,
                 ..
             } => {
-                if let Some(t_ref) = task_sel {
+                if let Some(ref t_ref) = task_sel {
                     if !task_exists {
                         return Err(AcddError::new(
                             ErrorCode::SpecSchemaInvalid,
                             format!(
-                                "dependency '{trimmed}' references unknown task '{t_ref}' in active run '{run_id}'"
+                                "dependency '{trimmed}' references unknown item '{t_ref}' in active run '{run_id}'"
                             ),
-                        ));
+                        )
+                        .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN));
                     }
                 }
                 Ok(())
@@ -464,9 +564,10 @@ pub fn validate_spec_dependencies(
                         return Err(AcddError::new(
                             ErrorCode::SpecSchemaInvalid,
                             format!(
-                                "dependency '{trimmed}' references unknown task '{t_ref}' in archive '{rel_path}'"
+                                "dependency '{trimmed}' references unknown item '{t_ref}' in archive '{rel_path}'"
                             ),
-                        ));
+                        )
+                        .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN));
                     }
                     if !task_completed {
                         return Err(AcddError::new(
@@ -480,67 +581,88 @@ pub fn validate_spec_dependencies(
             DepTargetResolution::NotFound => Err(AcddError::new(
                 ErrorCode::SpecSchemaInvalid,
                 format!("dependency '{trimmed}' target '{run_sel}' was not found"),
-            )),
+            )
+            .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN)),
         }
     };
 
-    // 1. Validate intra-spec task DAG and external task.depends_on entries.
-    let task_refs: BTreeSet<&str> = doc.tasks.iter().map(|t| t.task_ref.as_str()).collect();
+    // 1. Validate intra-spec item/task DAG and external item.depends_on entries.
+    let all_items: Vec<(&str, &[String], &str)> = doc
+        .tasks
+        .iter()
+        .map(|t| (t.task_ref.as_str(), t.depends_on.as_slice(), "task"))
+        .chain(doc.items.values().flatten().map(|item| {
+            (
+                item.item_ref.as_str(),
+                item.depends_on.as_slice(),
+                item.item.as_str(),
+            )
+        }))
+        .collect();
+    let local_item_refs: BTreeSet<&str> = all_items.iter().map(|&(r, _, _)| r).collect();
     let mut indegree: BTreeMap<&str, usize> = BTreeMap::new();
     let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for t in &doc.tasks {
-        indegree.insert(t.task_ref.as_str(), 0);
-        adj.entry(t.task_ref.as_str()).or_default();
+    for &(item_ref, _, _) in &all_items {
+        indegree.insert(item_ref, 0);
+        adj.entry(item_ref).or_default();
     }
 
-    for t in &doc.tasks {
-        for dep_raw in &t.depends_on {
+    for &(item_ref, deps, kind) in &all_items {
+        for dep_raw in deps {
             let trimmed = dep_raw.trim();
             if trimmed.is_empty() {
-                issues.push(DepValidationIssue::new(
-                    ErrorCode::SpecSchemaInvalid,
-                    format!("task '{}' has an empty depends_on entry", t.task_ref),
-                ));
+                issues.push(
+                    DepValidationIssue::new(
+                        ErrorCode::SpecSchemaInvalid,
+                        format!("{kind} '{item_ref}' has an empty depends_on entry"),
+                    )
+                    .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN),
+                );
                 continue;
             }
-            if trimmed.contains(':') || trimmed.contains('/') {
-                let require_task = trimmed.contains(':');
-                if let Err(err) = validate_external_dep_ref(trimmed, require_task) {
-                    issues.push(DepValidationIssue::new(err.code, err.to_string()));
+            if trimmed.contains(':')
+                || trimmed.contains('#')
+                || trimmed.contains('/')
+                || trimmed.contains(char::is_whitespace)
+                || trimmed.contains('\\')
+                || trimmed.contains("..")
+            {
+                let require_item = trimmed.contains(':') || trimmed.contains('#');
+                if let Err(err) = validate_external_dep_ref(trimmed, require_item) {
+                    issues.push(DepValidationIssue::from_err(&err, err.to_string()));
                 }
                 continue;
             }
             if let Err(err) = TaskRef::new(trimmed) {
+                issues.push(
+                    DepValidationIssue::new(
+                        ErrorCode::SpecSchemaInvalid,
+                        format!("{kind} '{item_ref}' depends_on '{trimmed}' is invalid: {err}"),
+                    )
+                    .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN),
+                );
+                continue;
+            }
+            if trimmed == item_ref {
                 issues.push(DepValidationIssue::new(
                     ErrorCode::SpecSchemaInvalid,
-                    format!(
-                        "task '{}' depends_on '{trimmed}' is invalid: {err}",
-                        t.task_ref
-                    ),
+                    format!("{kind} '{item_ref}' cannot depend on itself"),
                 ));
                 continue;
             }
-            if trimmed == t.task_ref.as_str() {
-                issues.push(DepValidationIssue::new(
-                    ErrorCode::SpecSchemaInvalid,
-                    format!("task '{}' cannot depend on itself", t.task_ref),
-                ));
-                continue;
-            }
-            if !task_refs.contains(trimmed) {
+            if !local_item_refs.contains(trimmed) {
                 if let Err(err) = validate_external_dep_ref(trimmed, false) {
-                    issues.push(DepValidationIssue::new(
-                        err.code,
+                    issues.push(DepValidationIssue::from_err(
+                        &err,
                         format!(
-                            "task '{}' depends on unknown local task or external spec '{trimmed}': {err}",
-                            t.task_ref
+                            "{kind} '{item_ref}' depends on unknown local item or external spec '{trimmed}': {err}"
                         ),
                     ));
                 }
                 continue;
             }
-            adj.entry(trimmed).or_default().push(t.task_ref.as_str());
-            *indegree.entry(t.task_ref.as_str()).or_insert(0) += 1;
+            adj.entry(trimmed).or_default().push(item_ref);
+            *indegree.entry(item_ref).or_insert(0) += 1;
         }
     }
 
@@ -563,7 +685,7 @@ pub fn validate_spec_dependencies(
             }
         }
     }
-    if visited != task_refs.len() {
+    if visited != local_item_refs.len() {
         issues.push(DepValidationIssue::new(
             ErrorCode::SpecSchemaInvalid,
             format!("spec '{}' task dependency graph contains a cycle", doc.id),
@@ -574,14 +696,17 @@ pub fn validate_spec_dependencies(
     for dep_raw in &doc.depends_on {
         let trimmed = dep_raw.trim();
         if trimmed.is_empty() {
-            issues.push(DepValidationIssue::new(
-                ErrorCode::SpecSchemaInvalid,
-                format!("spec '{}' has an empty depends_on entry", doc.id),
-            ));
+            issues.push(
+                DepValidationIssue::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!("spec '{}' has an empty depends_on entry", doc.id),
+                )
+                .with_diag_code(DIAG_ITEM_DEPENDENCY_UNKNOWN),
+            );
             continue;
         }
         if let Err(err) = validate_external_dep_ref(trimmed, false) {
-            issues.push(DepValidationIssue::new(err.code, err.to_string()));
+            issues.push(DepValidationIssue::from_err(&err, err.to_string()));
         }
     }
 
@@ -640,9 +765,12 @@ fn parse_dep_node(
     if target_str.is_empty() {
         return None;
     }
-    if let Some((spec_part, task_part)) = target_str.split_once(':') {
+    if let Some((spec_part, item_part)) = target_str
+        .split_once(':')
+        .or_else(|| target_str.split_once('#'))
+    {
         let s = spec_part.trim();
-        let t = task_part.trim();
+        let t = item_part.trim();
         if s.is_empty() || t.is_empty() {
             return None;
         }
@@ -651,12 +779,7 @@ fn parse_dep_node(
             spec_id: s.to_owned(),
             task_ref: Some(t.to_owned()),
         })
-    } else if allow_bare
-        && default_spec
-            .tasks
-            .iter()
-            .any(|t| t.task_ref.as_str() == target_str)
-    {
+    } else if allow_bare && default_spec.has_item(target_str) {
         Some(DepGraphNode {
             ws_root: target_ws,
             spec_id: default_spec.id.clone(),
@@ -764,16 +887,23 @@ fn has_cross_spec_cycle(
                     neighbors.push(target);
                 }
             }
-            let matching_tasks: Vec<_> = match &node.task_ref {
-                Some(t_ref) => spec_doc
+            let matching_deps: Vec<&[String]> = match &node.task_ref {
+                Some(t_ref) => spec_doc.item_depends_on(t_ref).into_iter().collect(),
+                None => spec_doc
                     .tasks
                     .iter()
-                    .filter(|t| t.task_ref.as_str() == t_ref)
+                    .map(|t| t.depends_on.as_slice())
+                    .chain(
+                        spec_doc
+                            .items
+                            .values()
+                            .flatten()
+                            .map(|item| item.depends_on.as_slice()),
+                    )
                     .collect(),
-                None => spec_doc.tasks.iter().collect(),
             };
-            for t in matching_tasks {
-                for raw in &t.depends_on {
+            for deps in matching_deps {
+                for raw in deps {
                     if let Some(target) =
                         parse_dep_node(&node.ws_root, &ws_linked, &repos, &spec_doc, raw, true)
                     {
@@ -798,11 +928,11 @@ fn has_cross_spec_cycle(
         spec_id: doc.id.clone(),
         task_ref: None,
     }];
-    for t in &doc.tasks {
+    for item_ref in doc.all_item_refs() {
         seeds.push(DepGraphNode {
             ws_root: primary_key.clone(),
             spec_id: doc.id.clone(),
-            task_ref: Some(t.task_ref.as_str().to_owned()),
+            task_ref: Some(item_ref.to_owned()),
         });
     }
 

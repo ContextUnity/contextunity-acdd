@@ -347,10 +347,8 @@ pub fn default_collections() -> BTreeMap<String, SpecConfig> {
         "milestones".to_owned(),
         SpecConfig {
             path: Some("docs/milestones".to_owned()),
-            paths: Vec::new(),
-            workflow: None,
             prefixes: vec!["AC".to_owned(), "M".to_owned()],
-            digits: 3,
+            ..Default::default()
         },
     )])
 }
@@ -576,6 +574,7 @@ pub fn build_rich_graph(
         spec_path: Some(spec_rel.to_owned()),
         spec_id: None,
         spec_digest: "deadbeef".repeat(8),
+        attached_specs: Vec::new(),
         is_ephemeral: false,
         isolation,
         target_base: None,

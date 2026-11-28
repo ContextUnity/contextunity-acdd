@@ -1,7 +1,7 @@
 //! Canonical SQLite DDL for the 9 pure domain tables and SQLite-private `_sqlite_meta`.
 
 /// Current schema version seeded into `_sqlite_meta.schema_version`.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Authoritative list of the 9 pure domain tables defined in `v7` §4.1.
 pub const DOMAIN_TABLES: [&str; 9] = [

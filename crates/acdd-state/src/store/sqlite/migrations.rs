@@ -30,6 +30,10 @@ const MIGRATIONS: &[MigrationStep] = &[
         target_version: 2,
         apply: apply_v2,
     },
+    MigrationStep {
+        target_version: 3,
+        apply: apply_v3,
+    },
 ];
 
 fn apply_v1(conn: &Connection) -> Result<(), AcddError> {
@@ -53,35 +57,41 @@ fn apply_v1(conn: &Connection) -> Result<(), AcddError> {
     Ok(())
 }
 
-fn apply_v2(conn: &Connection) -> Result<(), AcddError> {
+fn runs_has_column(
+    conn: &Connection,
+    col_name: &str,
+    step_label: &str,
+) -> Result<bool, AcddError> {
     let mut stmt = conn.prepare("PRAGMA table_info(runs)").map_err(|err| {
         AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            format!("failed to inspect runs columns before v2 migration: {err}"),
+            format!("failed to inspect runs columns before {step_label} migration: {err}"),
         )
     })?;
-    let mut has_spec_id = false;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|err| {
             AcddError::new(
                 ErrorCode::WorkflowSchemaInvalid,
-                format!("failed to read runs columns during v2 migration: {err}"),
+                format!("failed to read runs columns during {step_label} migration: {err}"),
             )
         })?;
     for col in rows {
         let name = col.map_err(|err| {
             AcddError::new(
                 ErrorCode::WorkflowSchemaInvalid,
-                format!("failed to decode runs column name during v2 migration: {err}"),
+                format!("failed to decode runs column name during {step_label} migration: {err}"),
             )
         })?;
-        if name == "spec_id" {
-            has_spec_id = true;
-            break;
+        if name == col_name {
+            return Ok(true);
         }
     }
-    if !has_spec_id {
+    Ok(false)
+}
+
+fn apply_v2(conn: &Connection) -> Result<(), AcddError> {
+    if !runs_has_column(conn, "spec_id", "v2")? {
         conn.execute("ALTER TABLE runs ADD COLUMN spec_id TEXT", [])
             .map_err(|err| {
                 AcddError::new(
@@ -89,6 +99,22 @@ fn apply_v2(conn: &Connection) -> Result<(), AcddError> {
                     format!("failed to apply v2 migration (runs.spec_id): {err}"),
                 )
             })?;
+    }
+    Ok(())
+}
+
+fn apply_v3(conn: &Connection) -> Result<(), AcddError> {
+    if !runs_has_column(conn, "attached_specs_json", "v3")? {
+        conn.execute(
+            "ALTER TABLE runs ADD COLUMN attached_specs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(attached_specs_json))",
+            [],
+        )
+        .map_err(|err| {
+            AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!("failed to apply v3 migration (runs.attached_specs_json): {err}"),
+            )
+        })?;
     }
     Ok(())
 }

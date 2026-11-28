@@ -485,6 +485,7 @@ mod tests {
             spec_path: None,
             spec_id: None,
             spec_digest: "a".repeat(64),
+            attached_specs: Vec::new(),
             is_ephemeral: true,
             isolation: IsolationMode::InPlace,
             target_base: None,

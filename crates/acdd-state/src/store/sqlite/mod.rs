@@ -17,12 +17,14 @@ use crate::types::{
     GateNodeRecord, GateTraceRecord, ListRunsPage, ListRunsReq, ObservabilitySnapshot,
     RunGraphSnapshot, RunRecord, RunTombstoneRecord,
 };
+use acdd_core::config::SpecConfig;
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{
     confined_database_create_path, confined_database_open_path, ensure_confined_dir_all,
 };
 use acdd_core::ids::RunId;
 use rusqlite::{Connection, OpenFlags};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -40,6 +42,8 @@ pub struct SqliteBackendOptions {
     pub workspace_root: Option<PathBuf>,
     /// Configured `specs.*.path` relative paths used during archive restore reconciliation.
     pub spec_collection_paths: Vec<String>,
+    /// Configured `specs:` registry used to parse custom Specs during archive restore reconciliation.
+    pub spec_collections: BTreeMap<String, SpecConfig>,
     /// Marks custom test / `--state-db` paths so automatic `state.bak.sqlite` backup is skipped.
     pub is_custom_db: bool,
 }
@@ -53,6 +57,7 @@ impl SqliteBackendOptions {
             backup_dir: None,
             workspace_root: None,
             spec_collection_paths: Vec::new(),
+            spec_collections: BTreeMap::new(),
             is_custom_db: true,
         }
     }

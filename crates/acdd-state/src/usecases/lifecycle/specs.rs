@@ -19,12 +19,11 @@ use acdd_core::git::{git_common_dir, git_stdout, read_git_blob_utf8};
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, WorkerId};
 use acdd_core::schema::SchemaDef;
 use acdd_spec::{
-    effective_spec_collections as spec_effective_collections, match_spec_collection, parse_spec,
-    SpecDocument, SpecStatus,
+    effective_spec_collections as spec_effective_collections, match_spec_collection,
+    parse_spec_with_collections, SpecDocument, SpecStatus,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 /// Return configured spec collections or the default `milestones` + `plans` map.
@@ -32,6 +31,32 @@ pub fn effective_spec_collections(
     config: &StateEngineConfig,
 ) -> BTreeMap<String, SpecConfig> {
     spec_effective_collections(&config.spec_collections)
+}
+
+/// Resolve the owning collection `(key, &SpecConfig)` from an explicit hint or workspace-relative path.
+pub(crate) fn owning_collection_for<'a>(
+    collections: &'a BTreeMap<String, SpecConfig>,
+    collection_hint: Option<&str>,
+    rel_path: Option<&str>,
+) -> Option<(&'a str, &'a SpecConfig)> {
+    let key = collection_hint
+        .filter(|k| collections.contains_key(*k))
+        .map(str::to_owned)
+        .or_else(|| rel_path.and_then(|p| match_spec_collection(collections, p)))?;
+    collections
+        .get_key_value(&key)
+        .map(|(k, v)| (k.as_str(), v))
+}
+
+/// Parse raw spec content using `collection_hint` / `rel_path` owning collection resolution.
+pub(crate) fn parse_spec_in_collections(
+    raw: &str,
+    collections: &BTreeMap<String, SpecConfig>,
+    collection_hint: Option<&str>,
+    rel_path: Option<&str>,
+) -> Result<SpecDocument, AcddError> {
+    let owning = owning_collection_for(collections, collection_hint, rel_path);
+    parse_spec_with_collections(raw, owning, collections)
 }
 
 /// Derive the archive relative path for an active run's `spec_relpath`.
@@ -87,10 +112,15 @@ pub fn parse_profile_from_run(run: &RunRecord) -> Result<ResolvedWorkflow, AcddE
     })
 }
 
-/// Convert a [`ResolvedWorkflow`] into the pure state machine's [`MachineProfileInput`].
+/// Convert a [`ResolvedWorkflow`] into the pure state machine's [`MachineProfileInput`],
+/// expanding explicit `specs.<name>` and `paths.<name>` entries in gate `scope:`.
 pub fn to_machine_profile(
     profile: &ResolvedWorkflow,
+    spec_collections: Option<&BTreeMap<String, SpecConfig>>,
 ) -> Result<MachineProfileInput, AcddError> {
+    let empty_specs = BTreeMap::new();
+    let effective_specs =
+        spec_effective_collections(spec_collections.unwrap_or(&empty_specs));
     let mut proof_schemas: BTreeMap<String, SchemaDef> = profile
         .proofs
         .iter()
@@ -107,7 +137,13 @@ pub fn to_machine_profile(
         if let Some(ref tb) = item.tasks {
             let mut task_gates = Vec::with_capacity(tb.gates.len());
             for g in &tb.gates {
-                task_gates.push(convert_gate_def(profile, g, false, &mut proof_schemas)?);
+                task_gates.push(convert_gate_def(
+                    profile,
+                    g,
+                    false,
+                    &effective_specs,
+                    &mut proof_schemas,
+                )?);
             }
             gates.push(MachineGraphItem::TasksBlock(MachineTasksBlockDef {
                 when: tb.when.clone(),
@@ -119,6 +155,7 @@ pub fn to_machine_profile(
                 profile,
                 item,
                 is_terminal_root,
+                &effective_specs,
                 &mut proof_schemas,
             )?)));
         }
@@ -139,10 +176,68 @@ pub fn to_machine_profile(
     })
 }
 
+fn expand_gate_scope(
+    raw_scope: &[String],
+    profile: &ResolvedWorkflow,
+    spec_collections: &BTreeMap<String, SpecConfig>,
+    gate_id: &str,
+) -> Result<Vec<String>, AcddError> {
+    if raw_scope.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut push_unique = |pat: String| {
+        if seen.insert(pat.clone()) {
+            out.push(pat);
+        }
+    };
+    for entry in raw_scope {
+        if let Some(name) = entry.strip_prefix("specs.") {
+            let col = spec_collections.get(name).ok_or_else(|| {
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("gate '{gate_id}': unknown spec reference '{entry}' in scope:"),
+                )
+            })?;
+            let patterns = col.patterns();
+            if patterns.is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("gate '{gate_id}': spec reference '{entry}' resolves to empty patterns"),
+                ));
+            }
+            for pat in patterns {
+                push_unique(pat.to_owned());
+            }
+        } else if let Some(name) = entry.strip_prefix("paths.") {
+            let globs = profile.paths.get(name).ok_or_else(|| {
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("gate '{gate_id}': unknown path reference '{entry}' in scope:"),
+                )
+            })?;
+            if globs.is_empty() {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("gate '{gate_id}': path reference '{entry}' in scope: resolves to empty globs"),
+                ));
+            }
+            for glob in globs {
+                push_unique(glob.clone());
+            }
+        } else {
+            push_unique(entry.clone());
+        }
+    }
+    Ok(out)
+}
+
 fn convert_gate_def(
     profile: &ResolvedWorkflow,
     gate: &GateDef,
     is_terminal_root: bool,
+    spec_collections: &BTreeMap<String, SpecConfig>,
     proof_schemas: &mut BTreeMap<String, SchemaDef>,
 ) -> Result<MachineGateDef, AcddError> {
     let id = GateId::new(&gate.id)?;
@@ -167,7 +262,13 @@ fn convert_gate_def(
 
     let mut children = Vec::with_capacity(gate.gates.len());
     for child in &gate.gates {
-        children.push(convert_gate_def(profile, child, false, proof_schemas)?);
+        children.push(convert_gate_def(
+            profile,
+            child,
+            false,
+            spec_collections,
+            proof_schemas,
+        )?);
     }
 
     let effective_post = gate.save.post.unwrap_or(if is_terminal_root {
@@ -175,6 +276,8 @@ fn convert_gate_def(
     } else {
         SaveAction::None
     });
+
+    let expanded_scope = expand_gate_scope(&gate.scope, profile, spec_collections, &gate.id)?;
 
     Ok(MachineGateDef {
         id,
@@ -209,7 +312,7 @@ fn convert_gate_def(
             prune: gate.save.prune,
             report: gate.save.report.clone(),
         },
-        scope: gate.scope.clone(),
+        scope: expanded_scope,
         when: gate.when.clone(),
         children,
         definition_digest: gate.definition_digest()?,
@@ -455,6 +558,7 @@ fn find_committed_matching_archive(
     is_git_repo: bool,
     row: &RestoredActiveRun,
     candidates: &[String],
+    collections: &BTreeMap<String, SpecConfig>,
 ) -> Option<(String, Option<String>, SpecDocument)> {
     let refs = git_refs_to_probe(row);
     for archive_rel in candidates {
@@ -466,7 +570,12 @@ fn find_committed_matching_archive(
                 let Ok(Some(content)) = read_git_blob_utf8(ws_root, git_ref, archive_rel) else {
                     continue;
                 };
-                let Ok(doc) = parse_spec(&content) else {
+                let Ok(doc) = parse_spec_in_collections(
+                    &content,
+                    collections,
+                    row.collection.as_deref(),
+                    Some(archive_rel),
+                ) else {
                     continue;
                 };
                 if archive_matches_run(&doc, row) {
@@ -474,10 +583,16 @@ fn find_committed_matching_archive(
                 }
             }
         } else if child_path.is_file() {
-            let Ok(content) = fs::read_to_string(&child_path) else {
+            let Ok(content) = acdd_core::fs::read_confined_utf8(ws_root, Path::new(archive_rel))
+            else {
                 continue;
             };
-            let Ok(doc) = parse_spec(&content) else {
+            let Ok(doc) = parse_spec_in_collections(
+                &content,
+                collections,
+                row.collection.as_deref(),
+                Some(archive_rel),
+            ) else {
                 continue;
             };
             if archive_matches_run(&doc, row) {
@@ -494,7 +609,9 @@ pub(crate) fn reconcile_restored_runs_with_archives(
     active_runs: &[RestoredActiveRun],
     workspace_root: Option<&Path>,
     spec_collection_paths: &[String],
+    spec_collections: &BTreeMap<String, SpecConfig>,
 ) -> Result<Vec<RunTombstoneRecord>, AcddError> {
+    let effective_collections = spec_effective_collections(spec_collections);
     let mut tombstones = Vec::new();
     for row in active_runs {
         if row.is_ephemeral {
@@ -506,9 +623,13 @@ pub(crate) fn reconcile_restored_runs_with_archives(
         let ws_root = workspace_root.unwrap_or_else(|| Path::new(&row.workspace));
         let is_git_repo = ws_root.join(".git").exists() || git_common_dir(ws_root).is_ok();
         let candidates = candidate_archive_relpaths(spec_path, spec_collection_paths);
-        let Some((archive_rel, matched_ref, doc)) =
-            find_committed_matching_archive(ws_root, is_git_repo, row, &candidates)
-        else {
+        let Some((archive_rel, matched_ref, doc)) = find_committed_matching_archive(
+            ws_root,
+            is_git_repo,
+            row,
+            &candidates,
+            &effective_collections,
+        ) else {
             continue;
         };
 

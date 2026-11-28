@@ -356,6 +356,41 @@ pub struct CheckResultRecord {
     pub execution_digest_salt: Option<String>,
 }
 
+/// Compact metadata summary for a single named item inside an attached specification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AttachedSpecItemSummary {
+    /// Singular Markdown heading token (`### <item>: <ref>`).
+    pub item: String,
+    /// Unique item reference within the attached spec.
+    pub item_ref: String,
+    /// Lifecycle status string (`planned`, `active`, `completed`, `cancelled`).
+    pub status: String,
+}
+
+/// Snapshot of a primary or attached secondary specification bound to a `RunRecord`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AttachedSpecRecord {
+    /// Specification ID (e.g. `AC-006`, `RES-001`, `MEM-001`).
+    pub spec_id: String,
+    /// Specification type selector (resolved `spec:` or collection/doc type).
+    pub spec_type: String,
+    /// Owning collection key (`specs:` registry key), if matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    /// Normalized workspace-relative path to the specification file.
+    pub path: String,
+    /// Human-readable specification title.
+    pub title: String,
+    /// Lowercase hex SHA-256 digest of the specification bytes.
+    pub digest: String,
+    /// Compact schema-backed frontmatter field summaries (`SpecDocument.fields`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    /// Named non-task items (`items` collections) declared in the attached spec.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub items: BTreeMap<String, Vec<AttachedSpecItemSummary>>,
+}
+
 /// Row representation for the `runs` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunRecord {
@@ -379,6 +414,9 @@ pub struct RunRecord {
     pub spec_id: Option<String>,
     /// SHA-256 digest of the source spec content.
     pub spec_digest: String,
+    /// Attached primary/secondary specifications bound to this run (`attached_specs_json`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached_specs: Vec<AttachedSpecRecord>,
     /// Whether this run was created ephemerally via `--goal`.
     pub is_ephemeral: bool,
     /// Run-level isolation mode (`in_place` or `worktree`).

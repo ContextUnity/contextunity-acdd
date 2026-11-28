@@ -7,7 +7,7 @@ mod runs;
 mod specs;
 mod workspace;
 
-pub use acdd_spec::{match_spec_collection, next_spec_id_for_prefix, read_confined_utf8};
+pub use acdd_spec::{next_spec_id_for_prefix, read_confined_utf8};
 pub(crate) use io::combine_check_observations;
 pub use io::{
     append_trace_event, current_session_fingerprint, is_local_pid_alive, list_all_runs,
@@ -26,7 +26,10 @@ pub use specs::{
     auto_select_context_cursor, auto_select_ready_cursor, effective_spec_collections,
     parse_cursor_for_snapshot, parse_profile_from_run, to_machine_profile,
 };
-pub(crate) use specs::{compute_archive_relpath, reconcile_restored_runs_with_archives};
+pub(crate) use specs::{
+    compute_archive_relpath, owning_collection_for, parse_spec_in_collections,
+    reconcile_restored_runs_with_archives,
+};
 pub(super) use workspace::snapshot_worktree_layout;
 pub use workspace::{
     acquire_repo_lock, build_path_policy, checkout_config, effective_modules_for_profile,

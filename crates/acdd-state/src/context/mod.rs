@@ -149,6 +149,14 @@ impl GateContextAssembler {
         let optional_target_cap = req.optional_target_cap();
         let target_cap = req.omitted_budget_cap(running_bytes);
 
+        budget::add_attached_specs_evidence(
+            &mut resp,
+            &req.run.attached_specs,
+            optional_target_cap.saturating_sub(running_bytes),
+            req.full_detail,
+            &mut running_bytes,
+        );
+
         // Tier 2: Unresolved findings + tail of failed trace log.
         tiers::apply_tier2_findings(
             &mut resp,

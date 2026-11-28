@@ -203,6 +203,7 @@ fn decode_run_row(row: &Row<'_>) -> Result<RunRecord, AcddError> {
         spec_path: col(row, 6, "runs.spec_path")?,
         spec_id: col(row, 7, "runs.spec_id")?,
         spec_digest: col(row, 8, "runs.spec_digest")?,
+        attached_specs: col_json(row, 22, "runs.attached_specs_json")?,
         is_ephemeral: col_bool(row, 9, "runs.is_ephemeral")?,
         isolation: col_enum(row, 10, "runs.isolation")?,
         target_base: col(row, 11, "runs.target_base")?,
@@ -431,36 +432,49 @@ fn collect_rows<T>(
 const RUN_COLS_V1: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
     spec_path, NULL AS spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
     branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, \
-    created_at, completed_at";
+    created_at, completed_at, '[]' AS attached_specs_json";
 
 const RUN_COLS_V2: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
     spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
     branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, \
-    created_at, completed_at";
+    created_at, completed_at, '[]' AS attached_specs_json";
+
+const RUN_COLS_V3: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
+    spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
+    branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, \
+    created_at, completed_at, attached_specs_json";
 
 const RUN_COLS_JOIN_V1: &str = "r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, \
     r.profile_json, r.spec_path, NULL AS spec_id, r.spec_digest, r.is_ephemeral, r.isolation, \
     r.target_base, r.target_base_commit, r.branch, r.worktree, r.trace_id, r.status, \
-    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at";
+    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at, \
+    '[]' AS attached_specs_json";
 
 const RUN_COLS_JOIN_V2: &str = "r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, \
     r.profile_json, r.spec_path, r.spec_id, r.spec_digest, r.is_ephemeral, r.isolation, \
     r.target_base, r.target_base_commit, r.branch, r.worktree, r.trace_id, r.status, \
-    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at";
+    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at, \
+    '[]' AS attached_specs_json";
+
+const RUN_COLS_JOIN_V3: &str = "r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, \
+    r.profile_json, r.spec_path, r.spec_id, r.spec_digest, r.is_ephemeral, r.isolation, \
+    r.target_base, r.target_base_commit, r.branch, r.worktree, r.trace_id, r.status, \
+    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at, \
+    r.attached_specs_json";
 
 fn run_cols(schema_version: u32) -> &'static str {
-    if schema_version < super::schema::CURRENT_SCHEMA_VERSION {
-        RUN_COLS_V1
-    } else {
-        RUN_COLS_V2
+    match schema_version {
+        0 | 1 => RUN_COLS_V1,
+        2 => RUN_COLS_V2,
+        _ => RUN_COLS_V3,
     }
 }
 
 fn run_cols_join(schema_version: u32) -> &'static str {
-    if schema_version < super::schema::CURRENT_SCHEMA_VERSION {
-        RUN_COLS_JOIN_V1
-    } else {
-        RUN_COLS_JOIN_V2
+    match schema_version {
+        0 | 1 => RUN_COLS_JOIN_V1,
+        2 => RUN_COLS_JOIN_V2,
+        _ => RUN_COLS_JOIN_V3,
     }
 }
 

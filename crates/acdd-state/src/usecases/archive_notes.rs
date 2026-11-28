@@ -284,6 +284,7 @@ pub(crate) mod tests {
                 spec_path: None,
                 spec_id: None,
                 spec_digest: "dig".to_owned(),
+                attached_specs: Vec::new(),
                 is_ephemeral: false,
                 isolation: IsolationMode::Worktree,
                 target_base: Some("main".to_owned()),

@@ -845,8 +845,10 @@ pub struct StateInput {
     pub run: Option<String>,
     /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
     pub node: Option<String>,
-    /// Path to an existing spec Markdown file (`start`; mutually exclusive with `goal`).
+    /// Path or ID of the primary spec (`start`; mutually exclusive with `goal`).
     pub spec_path: Option<String>,
+    /// Ordered 0..N spec paths or IDs (`start`; mutually exclusive with `goal`).
+    pub spec_paths: Option<Vec<String>>,
     /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md` (`start`).
     pub goal: Option<String>,
     /// Optional explicit run name override (`start`).

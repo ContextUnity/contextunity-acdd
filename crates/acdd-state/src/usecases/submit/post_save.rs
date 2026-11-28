@@ -20,14 +20,15 @@ use crate::usecases::archive_notes::{build_archive_render_input, build_provision
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
-    compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout,
+    compute_archive_relpath, effective_spec_collections, owning_collection_for, read_confined_utf8,
+    snapshot_worktree_layout,
 };
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child, is_normalized_relative};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, SubtaskRef, TreeOid};
 use acdd_core::path_policy::{has_json_extension, WorkspacePathPolicy};
 use acdd_core::subsystems::SubsystemId;
-use acdd_spec::{is_safe_path_segment_id, render_archive_markdown};
+use acdd_spec::{is_safe_path_segment_id, render_archive_markdown_with_collections};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -151,7 +152,18 @@ pub(super) fn execute_post_save_git(
             now_utc,
             req.summary.as_deref(),
         );
-        let (rendered_md, rendered_digest) = render_archive_markdown(&original_raw, &render_input)?;
+        let collections = effective_spec_collections(config);
+        let owning = owning_collection_for(
+            &collections,
+            snapshot.run.collection.as_deref(),
+            Some(spec_rel),
+        );
+        let (rendered_md, rendered_digest) = render_archive_markdown_with_collections(
+            &original_raw,
+            &render_input,
+            owning,
+            &collections,
+        )?;
 
         if should_commit {
             let branch = current_branch_name(target_worktree)?;

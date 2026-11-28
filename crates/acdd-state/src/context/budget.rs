@@ -169,42 +169,83 @@ fn push_unique_omitted(resp: &mut ClaimResp, section: &str) {
     }
 }
 
-fn upsert_blackboard_omission(resp: &mut ClaimResp, relevant_total: usize) {
-    let omitted = relevant_total.saturating_sub(resp.blackboard.len());
+fn upsert_count_omission(resp: &mut ClaimResp, prefix: &str, omitted: u64, total: Option<usize>) {
     if omitted == 0 {
         return;
     }
-    let entry = format!("blackboard ({omitted} of {relevant_total} omitted)");
-    if let Some(slot) = resp
-        .omitted_sections
-        .iter_mut()
-        .find(|s| *s == "blackboard" || s.starts_with("blackboard "))
-    {
+    let entry = match total {
+        Some(t) => format!("{prefix} ({omitted} of {t} omitted)"),
+        None => format!("{prefix} ({omitted} omitted)"),
+    };
+    let spaced = format!("{prefix} ");
+    if let Some(slot) = resp.omitted_sections.iter_mut().find(|s| *s == prefix || s.starts_with(&spaced)) {
         *slot = entry;
     } else {
         resp.omitted_sections.push(entry);
     }
 }
 
-fn pop_projected_subtask(contract: &mut Value) -> bool {
-    let Some(obj) = contract.as_object_mut() else {
-        return false;
-    };
-    let Some(Value::Array(rows)) = obj.get_mut("subtasks") else {
-        return false;
-    };
-    if rows.pop().is_none() {
-        return false;
-    }
+fn pop_contract_array_row(contract: &mut Value, array_key: &str, omitted_key: &str) -> Option<u64> {
+    let obj = contract.as_object_mut()?;
+    let Value::Array(rows) = obj.get_mut(array_key)? else { return None };
+    rows.pop()?;
     if rows.is_empty() {
-        obj.remove("subtasks");
+        obj.remove(array_key);
     }
-    let prev_omitted = obj
-        .get("subtasks_omitted")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    obj.insert("subtasks_omitted".into(), json!(prev_omitted + 1));
+    let next = obj.get(omitted_key).and_then(Value::as_u64).unwrap_or(0) + 1;
+    obj.insert(omitted_key.into(), json!(next));
+    Some(next)
+}
+
+fn pop_projected_attached_spec(resp: &mut ClaimResp, total: Option<usize>) -> bool {
+    let Some(next) = pop_contract_array_row(&mut resp.contract, "attached_specs", "attached_specs_omitted") else {
+        return false;
+    };
+    upsert_count_omission(resp, "attached_specs", next, total);
     true
+}
+
+pub(super) fn add_attached_specs_evidence(
+    resp: &mut ClaimResp,
+    attached: &[crate::types::AttachedSpecRecord],
+    available: usize,
+    full_detail: bool,
+    running_bytes: &mut usize,
+) {
+    if attached.is_empty() {
+        return;
+    }
+    let total = attached.len();
+    let omission_envelope = if resp.omitted_sections.is_empty() {
+        ",\"omitted_sections\":[]".len()
+    } else {
+        1
+    };
+    let max_omitted_label = format!("attached_specs ({total} of {total} omitted)");
+    let min_omission_bytes = ",\"attached_specs_omitted\":".len()
+        + estimate_json_bytes(&total)
+        + omission_envelope
+        + estimate_json_bytes(&max_omitted_label);
+    if available < min_omission_bytes {
+        return;
+    }
+    let cap = available.min(if full_detail { 4_096 } else { 1_536 });
+    let projected = project_attached_specs(attached, cap);
+    let omitted = total.saturating_sub(projected.len()) as u64;
+    if !projected.is_empty() {
+        resp.contract["attached_specs"] = Value::Array(projected);
+    }
+    if omitted > 0 {
+        resp.contract["attached_specs_omitted"] = json!(omitted);
+        upsert_count_omission(resp, "attached_specs", omitted, Some(total));
+    }
+    let max_bytes = running_bytes.saturating_add(available);
+    while resp.contract.get("attached_specs").is_some() && estimate_json_bytes(resp) > max_bytes {
+        if !pop_projected_attached_spec(resp, Some(total)) {
+            break;
+        }
+    }
+    *running_bytes = estimate_json_bytes(resp);
 }
 
 fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: usize) -> bool {
@@ -215,7 +256,7 @@ fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: us
     }
     if resp.blackboard.pop().is_some() {
         let total = relevant_blackboard_total.max(resp.blackboard.len() + 1);
-        upsert_blackboard_omission(resp, total);
+        upsert_count_omission(resp, "blackboard", total.saturating_sub(resp.blackboard.len()) as u64, Some(total));
         return true;
     }
     if resp.dependency_receipts.pop().is_some() {
@@ -227,6 +268,9 @@ fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: us
         return true;
     }
     if resp.omitted_proof_pointers.pop().is_some() {
+        return true;
+    }
+    if pop_projected_attached_spec(resp, None) {
         return true;
     }
     if let Some(ref mut findings) = resp.unresolved_findings {
@@ -241,7 +285,7 @@ fn reclaim_one_optional_item(resp: &mut ClaimResp, relevant_blackboard_total: us
         push_unique_omitted(resp, "unresolved_findings");
         return true;
     }
-    pop_projected_subtask(&mut resp.contract)
+    pop_contract_array_row(&mut resp.contract, "subtasks", "subtasks_omitted").is_some()
 }
 
 /// Settle `resp.total_bytes` and unconditionally enforce `response_hard_cap` by reclaiming optional items first.
@@ -284,7 +328,8 @@ pub(super) fn record_omitted_section(
     let effective_target_cap = target_cap.min(response_hard_cap);
     if section == "blackboard" {
         if let Some(total) = relevant_blackboard_total {
-            upsert_blackboard_omission(resp, total);
+            let omitted = total.saturating_sub(resp.blackboard.len()) as u64;
+            upsert_count_omission(resp, "blackboard", omitted, Some(total));
         }
     } else {
         push_unique_omitted(resp, section);
@@ -447,10 +492,11 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
             let include_full_spec =
                 is_pre_task_root_in_profile(&req.profile, &req.node) || spec.tasks.is_empty();
             if include_full_spec {
-                if let Some(root_spec) = &spec.spec {
+                if let Some(root_spec) = spec.goal.as_deref() {
                     obj.insert("spec".to_owned(), json!(root_spec));
                 }
-            } else if let Some(ref sp) = req.run.spec_path {
+            }
+            if let Some(ref sp) = req.run.spec_path {
                 obj.insert("spec_path".to_owned(), json!(sp));
             }
             if !spec.acceptance_criteria.is_empty() {
@@ -472,6 +518,54 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     }
 
     Value::Object(obj)
+}
+
+fn project_attached_specs(
+    attached: &[crate::types::AttachedSpecRecord],
+    budget_bytes: usize,
+) -> Vec<Value> {
+    let envelope_overhead = ",\"attached_specs\":[]".len();
+    if budget_bytes <= envelope_overhead {
+        return Vec::new();
+    }
+    let array_budget = budget_bytes - envelope_overhead;
+    let mut entries: Vec<Value> = attached
+        .iter()
+        .map(|spec| {
+            let mut m = Map::new();
+            m.insert("spec_id".to_owned(), json!(spec.spec_id));
+            m.insert("spec_type".to_owned(), json!(spec.spec_type));
+            if let Some(ref col) = spec.collection {
+                m.insert("collection".to_owned(), json!(col));
+            }
+            m.insert("path".to_owned(), json!(spec.path));
+            m.insert("title".to_owned(), json!(spec.title));
+            m.insert("digest".to_owned(), json!(spec.digest));
+            if !spec.fields.is_empty() {
+                m.insert("fields".to_owned(), json!(spec.fields));
+            }
+            if !spec.items.is_empty() {
+                m.insert("items".to_owned(), json!(spec.items));
+            }
+            Value::Object(m)
+        })
+        .collect();
+
+    if estimate_json_bytes(&entries) <= array_budget {
+        return entries;
+    }
+
+    for entry in &mut entries {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("fields");
+            obj.remove("items");
+            obj.remove("digest");
+        }
+    }
+    while !entries.is_empty() && estimate_json_bytes(&entries) > array_budget {
+        entries.pop();
+    }
+    entries
 }
 
 fn describe_schema_compact(schema: &SchemaDef) -> String {

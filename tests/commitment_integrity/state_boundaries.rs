@@ -388,7 +388,10 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
     let backend =
         acdd_state::store::sqlite::SqliteStateBackend::open(ws.path("test-state-store.sqlite"))
             .unwrap();
-    assert_eq!(backend.read_meta().unwrap().schema_version, 2);
+    assert_eq!(
+        backend.read_meta().unwrap().schema_version,
+        acdd_state::store::sqlite::schema::CURRENT_SCHEMA_VERSION
+    );
     drop(backend);
 
     let providers = contextunity_acdd::state_bridge::build_domain_providers(

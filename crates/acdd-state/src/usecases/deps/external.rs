@@ -20,18 +20,19 @@ use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::canonical_root;
 use acdd_core::git::{list_owned_worktrees, read_git_blob_utf8};
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
-use acdd_spec::deps::{resolve_dep_target, DepTargetResolution};
+use acdd_spec::deps::{parse_dep_syntax, resolve_dep_target, DepTargetResolution, ParsedDepSyntax};
 use acdd_spec::discovery::{
-    is_git_repo, load_ws_adapter, read_confined_utf8, resolve_linked_workspace_root,
-    resolve_spec_repositories,
+    is_git_repo, load_ws_adapter, parse_spec_at_relpath, read_confined_utf8,
+    resolve_linked_workspace_root, resolve_spec_repositories,
 };
 use acdd_spec::overlay::{RuntimeDepResolution, SpecRuntimeOverlay};
-use acdd_spec::{parse_spec, SpecDocument, SpecStatus};
-use std::collections::BTreeMap;
+use acdd_spec::{SpecDocument, SpecStatus};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn verify_archived_task_completed(
     ws_path: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
     arch_rel: &str,
     closed_commit: Option<&CommitOid>,
     task_ref: &str,
@@ -71,7 +72,7 @@ fn verify_archived_task_completed(
             )
         })?
     };
-    let parsed = parse_spec(&raw).map_err(|err| {
+    let (_, parsed) = parse_spec_at_relpath(&raw, arch_rel, collections).map_err(|err| {
         AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{dep_label}' archive '{arch_rel}' is invalid: {err}"),
@@ -193,12 +194,12 @@ fn archived_task_outcome(
     task: &str,
     label: &str,
 ) -> Result<(), AcddError> {
-    match doc.tasks.iter().find(|t| t.task_ref.as_str() == task) {
+    match doc.item_status(task) {
         None => Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{label}' does not contain task '{task}' in '{path}'"),
         )),
-        Some(t) if t.status != SpecStatus::Completed => Err(AcddError::new(
+        Some(st) if st != SpecStatus::Completed => Err(AcddError::new(
             ErrorCode::GateVerificationFailed,
             format!("spec dependency '{label}' task '{task}' is not completed"),
         )),
@@ -251,6 +252,7 @@ pub(crate) fn resolve_active_run_dep(
 
 pub(crate) fn resolve_tombstone_dep(
     ws_path: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
     reader: &dyn StateReader,
     run_sel: &str,
     task_sel: Option<&str>,
@@ -273,7 +275,7 @@ pub(crate) fn resolve_tombstone_dep(
         Ok(())
     } else if let Some(t_ref) = task_sel {
         if let Some(ref arch_rel) = latest.archive_path {
-            resolve_archived_tombstone_task(ws_path, latest, arch_rel, t_ref, dep_label, preloaded)
+            resolve_archived_tombstone_task(ws_path, collections, latest, arch_rel, t_ref, dep_label, preloaded)
         } else if latest.is_ephemeral && t_ref == "goal" {
             Ok(())
         } else {
@@ -293,6 +295,7 @@ pub(crate) fn resolve_tombstone_dep(
 
 fn resolve_archived_tombstone_task(
     ws_path: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
     latest: &RunTombstoneRecord,
     arch_rel: &str,
     t_ref: &str,
@@ -323,13 +326,7 @@ fn resolve_archived_tombstone_task(
             };
         }
     }
-    verify_archived_task_completed(
-        ws_path,
-        arch_rel,
-        latest.closed_commit.as_ref(),
-        t_ref,
-        dep_label,
-    )
+    verify_archived_task_completed(ws_path, collections, arch_rel, latest.closed_commit.as_ref(), t_ref, dep_label)
 }
 
 struct ReaderRuntimeOverlay<'a> {
@@ -352,19 +349,12 @@ impl SpecRuntimeOverlay for ReaderRuntimeOverlay<'_> {
     fn resolve_tombstone_dep(
         &self,
         ws_path: &Path,
-        _collections: &BTreeMap<String, SpecConfig>,
+        collections: &BTreeMap<String, SpecConfig>,
         run_sel: &str,
         task_sel: Option<&str>,
         dep_label: &str,
     ) -> Result<Option<RuntimeDepResolution>, AcddError> {
-        resolve_tombstone_dep(
-            ws_path,
-            self.reader,
-            run_sel,
-            task_sel,
-            dep_label,
-            self.preloaded,
-        )
+        resolve_tombstone_dep(ws_path, collections, self.reader, run_sel, task_sel, dep_label, self.preloaded)
     }
 }
 
@@ -435,55 +425,37 @@ pub fn verify_run_level_depends_on(
                 "spec depends_on entry cannot be empty",
             ));
         }
-        let (ws_path, ws_collections, run_sel, reader_owned): (
-            PathBuf,
-            BTreeMap<String, SpecConfig>,
-            &str,
-            Option<SqliteStateReader>,
-        ) = if let Some((ws_alias, rest)) = trimmed.split_once('/') {
-            let canon = resolve_linked_workspace_root(
-                ws_alias,
-                trimmed,
-                &config.linked_workspaces,
-                &spec_repos,
-            )?;
-            if same_repository(&primary, &canon) {
-                let collections = if canonical_root(source).ok().as_ref() == Some(&canon) {
-                    effective_spec_collections(config)
-                } else {
-                    load_ws_adapter(&canon)?.specs
-                };
-                (canon, collections, rest, None)
-            } else {
-                let (checkout, db_path, collections) =
-                    resolve_observation_context(&canon, &primary, config, None)?;
-                (
-                    checkout,
-                    collections,
-                    rest,
-                    Some(SqliteStateReader::new(db_path)),
-                )
+        let (ws_alias_opt, run_sel, task_sel) = match parse_dep_syntax(trimmed, &BTreeSet::new())? {
+            ParsedDepSyntax::LocalSpec { spec_id, task_ref, item_ref } => (None, spec_id, task_ref.or(item_ref)),
+            ParsedDepSyntax::LinkedSpec { ws_alias, spec_id, task_ref, item_ref } => (Some(ws_alias), spec_id, task_ref.or(item_ref)),
+            ParsedDepSyntax::LocalTask(task_ref) => {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("unexpected local task dependency '{task_ref}' in '{trimmed}'"),
+                ));
             }
-        } else {
-            (
-                config.worktree.clone(),
-                effective_spec_collections(config),
-                trimmed,
-                None,
-            )
         };
+        let (ws_path, ws_collections, reader_owned): (PathBuf, BTreeMap<String, SpecConfig>, Option<SqliteStateReader>) =
+            if let Some(ref ws_alias) = ws_alias_opt {
+                let canon = resolve_linked_workspace_root(ws_alias, trimmed, &config.linked_workspaces, &spec_repos)?;
+                if same_repository(&primary, &canon) {
+                    let collections = if canonical_root(source).ok().as_ref() == Some(&canon) {
+                        effective_spec_collections(config)
+                    } else {
+                        load_ws_adapter(&canon)?.specs
+                    };
+                    (canon, collections, None)
+                } else {
+                    let (checkout, db_path, collections) = resolve_observation_context(&canon, &primary, config, None)?;
+                    (checkout, collections, Some(SqliteStateReader::new(db_path)))
+                }
+            } else {
+                (config.worktree.clone(), effective_spec_collections(config), None)
+            };
 
         let reader: &dyn StateReader = match reader_owned {
             Some(ref r) => r,
             None => local_reader,
-        };
-
-        let (run_sel, task_sel) = match run_sel.split_once(':') {
-            Some((r, t)) => {
-                let _ = TaskRef::new(t)?;
-                (r, Some(t))
-            }
-            None => (run_sel, None),
         };
 
         let overlay = ReaderRuntimeOverlay {
@@ -496,8 +468,8 @@ pub fn verify_run_level_depends_on(
             &overlay,
             None,
             None,
-            run_sel,
-            task_sel,
+            &run_sel,
+            task_sel.as_deref(),
             trimmed,
             (trimmed.contains('/')
                 && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&primary))

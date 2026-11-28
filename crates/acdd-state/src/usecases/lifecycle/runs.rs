@@ -70,7 +70,8 @@ pub fn load_active_run_graph(
         .load_run_graph(&run.run_id)?
         .ok_or_else(|| AcddError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
     let profile = parse_profile_from_run(&snapshot.run)?;
-    let machine_profile = to_machine_profile(&profile)?;
+    let spec_cols = super::specs::effective_spec_collections(config);
+    let machine_profile = to_machine_profile(&profile, Some(&spec_cols))?;
     Ok(LoadedRunGraph {
         snapshot,
         profile,

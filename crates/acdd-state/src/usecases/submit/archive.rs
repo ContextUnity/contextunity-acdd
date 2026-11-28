@@ -14,17 +14,20 @@ use crate::usecases::archive_notes::{build_archive_render_input, build_provision
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
-    build_tombstone_cleanup_manifest_from_snapshot, compute_archive_relpath, read_confined_utf8,
-    resume_pending_tombstone_cleanups_dyn,
+    build_tombstone_cleanup_manifest_from_snapshot, compute_archive_relpath,
+    effective_spec_collections, owning_collection_for, parse_spec_in_collections,
+    read_confined_utf8, resume_pending_tombstone_cleanups_dyn,
 };
-use acdd_core::config::CLAIM_TRAILER_KEY;
+use acdd_core::config::{SpecConfig, CLAIM_TRAILER_KEY};
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
 use acdd_core::git::read_git_blob_utf8;
 use acdd_core::ids::{CommitOid, TreeOid};
 use acdd_core::path_policy::WorkspacePathPolicy;
-use acdd_spec::{parse_spec, render_archive_markdown, ArchiveTaskUpdate, SpecDocument, SpecStatus};
+use acdd_spec::{
+    render_archive_markdown_with_collections, ArchiveTaskUpdate, SpecDocument, SpecStatus,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -85,7 +88,14 @@ pub(super) fn probe_interrupted_archive(
             ),
         )
     })?;
-    let existing_doc = parse_spec(existing_str).map_err(|err| {
+    let collections = effective_spec_collections(config);
+    let existing_doc = parse_spec_in_collections(
+        existing_str,
+        &collections,
+        snapshot.run.collection.as_deref(),
+        Some(spec_rel),
+    )
+    .map_err(|err| {
         AcddError::new(
             ErrorCode::ExternalGitDrift,
             format!(
@@ -271,7 +281,17 @@ pub(super) fn probe_interrupted_archive(
             Err(_) => None,
         };
         if let Some(ref spec_raw) = spec_raw_opt {
-            let (_, expected_dig) = render_archive_markdown(spec_raw, &render_input)?;
+            let owning = owning_collection_for(
+                &collections,
+                snapshot.run.collection.as_deref(),
+                Some(spec_rel),
+            );
+            let (_, expected_dig) = render_archive_markdown_with_collections(
+                spec_raw,
+                &render_input,
+                owning,
+                &collections,
+            )?;
             if expected_dig != existing_digest {
                 return Err(AcddError::new(
                     ErrorCode::ExternalGitDrift,
@@ -343,10 +363,14 @@ fn load_spec_for_tombstone(
     archive_path: Option<&str>,
     closed_commit: Option<&CommitOid>,
     spec_path: Option<&str>,
+    collections: &BTreeMap<String, SpecConfig>,
+    collection_hint: Option<&str>,
 ) -> Option<SpecDocument> {
     if let (Some(arch_rel), Some(commit_oid)) = (archive_path, closed_commit) {
         if let Ok(Some(raw)) = read_git_blob_utf8(target_worktree, commit_oid.as_str(), arch_rel) {
-            if let Ok(doc) = parse_spec(&raw) {
+            if let Ok(doc) =
+                parse_spec_in_collections(&raw, collections, collection_hint, Some(arch_rel))
+            {
                 return Some(doc);
             }
         }
@@ -359,7 +383,8 @@ fn load_spec_for_tombstone(
     ];
     for (root, rel) in candidates.into_iter().flatten() {
         if let Ok(raw) = read_confined_utf8(root, rel) {
-            if let Ok(doc) = parse_spec(&raw) {
+            if let Ok(doc) = parse_spec_in_collections(&raw, collections, collection_hint, Some(rel))
+            {
                 return Some(doc);
             }
         }
@@ -447,12 +472,15 @@ pub(super) fn finalize_with_prune(
             cleanup_manifest = extra_spec_entries;
         }
     }
+    let collections = effective_spec_collections(config);
     let spec_doc = load_spec_for_tombstone(
         primary,
         target_worktree,
         archive_path.as_deref(),
         closed_commit.as_ref(),
         snapshot.run.spec_path.as_deref(),
+        &collections,
+        snapshot.run.collection.as_deref(),
     );
     let spec_id = spec_doc
         .as_ref()

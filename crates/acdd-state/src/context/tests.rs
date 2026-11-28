@@ -35,7 +35,12 @@ impl DomainProvider for LensMockProvider {
 
     fn capabilities(&self) -> DomainCapabilities {
         DomainCapabilities {
-            context_lenses: self.lenses.keys().cloned().collect(),
+            context_lenses: self
+                .lenses
+                .keys()
+                .filter(|k| !k.contains('.'))
+                .cloned()
+                .collect(),
             ..DomainCapabilities::default()
         }
     }
@@ -99,6 +104,7 @@ fn base_request() -> ClaimContextRequest {
         spec_path: Some("docs/milestones/AC-001.md".to_owned()),
         spec_id: None,
         spec_digest: "a".repeat(64),
+        attached_specs: Vec::new(),
         is_ephemeral: false,
         isolation: IsolationMode::Worktree,
         target_base: Some("main".to_owned()),
@@ -153,6 +159,7 @@ fn base_request() -> ClaimContextRequest {
         status: SpecStatus::Active,
         cancellation_reason: None,
         spec: Some("Root spec".to_owned()),
+        goal: None,
         depends_on: Vec::new(),
         owners: Vec::new(),
         invariants: Vec::new(),
@@ -162,6 +169,8 @@ fn base_request() -> ClaimContextRequest {
         repositories: Vec::new(),
         linked_to: Vec::new(),
         closure: None,
+        spec_deltas: Vec::new(),
+        fields: BTreeMap::new(),
         tasks: vec![TaskSpec {
             task_ref: TaskRef::new("t1").unwrap(),
             target: Some("Implement feature".to_owned()),
@@ -177,6 +186,7 @@ fn base_request() -> ClaimContextRequest {
             subtasks: Vec::new(),
             receipt: None,
         }],
+        items: BTreeMap::new(),
         body: String::new(),
         digest: "b".repeat(64),
     };
@@ -810,6 +820,95 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     hard_lt_soft.hard_max_bytes = Some(sep_tier1_only - 1);
     let hard_lt_soft_err = build_claim_context(&hard_lt_soft, &empty_provider).unwrap_err();
     assert_eq!(hard_lt_soft_err.code, ErrorCode::GuidanceBudgetExceeded);
+
+    // `attached_specs` projects before Tier 6 lenses and stays safe when `available` is near zero.
+    let mut attached_req = base_request();
+    attached_req.unresolved_findings = None;
+    attached_req.failed_trace_log_tail = None;
+    attached_req.pre_task_slice = None;
+    attached_req.dependency_receipts.clear();
+    attached_req.blackboard_items.clear();
+    attached_req.gate.context = vec!["code.zebra".to_owned(), "code.tests".to_owned()];
+    attached_req.run.attached_specs = vec![
+        crate::types::AttachedSpecRecord {
+            spec_id: "AC-006".to_owned(),
+            spec_type: "contract".to_owned(),
+            collection: Some("milestones".to_owned()),
+            path: "docs/milestones/AC-006.md".to_owned(),
+            title: "Primary Attached".to_owned(),
+            digest: "d".repeat(64),
+            fields: std::collections::BTreeMap::new(),
+            items: std::collections::BTreeMap::new(),
+        },
+        crate::types::AttachedSpecRecord {
+            spec_id: "RES-001".to_owned(),
+            spec_type: "research".to_owned(),
+            collection: Some("research".to_owned()),
+            path: "docs/research/RES-001.md".to_owned(),
+            title: "Secondary Attached".to_owned(),
+            digest: "e".repeat(64),
+            fields: std::collections::BTreeMap::new(),
+            items: std::collections::BTreeMap::new(),
+        },
+    ];
+    let bare_no_attached = build_claim_context(
+        &ClaimContextRequest {
+            run: crate::types::RunRecord {
+                attached_specs: Vec::new(),
+                ..attached_req.run.clone()
+            },
+            gate: crate::workflow::GateDef {
+                context: Vec::new(),
+                ..attached_req.gate.clone()
+            },
+            ..attached_req.clone()
+        },
+        &empty_provider,
+    )
+    .unwrap()
+    .total_bytes;
+
+    // 1) Tier 6 lenses must not starve `attached_specs` when `optional_target_cap` is tight.
+    let mut priority_req = attached_req.clone();
+    priority_req.response_max_bytes = bare_no_attached + 700;
+    priority_req.hard_max_bytes = Some(priority_req.response_max_bytes);
+    let priority_resp = build_claim_context(&priority_req, &provider).unwrap();
+    assert!(priority_resp.total_bytes <= priority_req.response_max_bytes);
+    assert!(
+        priority_resp.contract.get("attached_specs").is_some(),
+        "attached_specs must project before Tier 6 lenses: {:?}",
+        priority_resp.contract
+    );
+    assert!(
+        priority_resp
+            .omitted_sections
+            .iter()
+            .any(|s| s.starts_with("context:")),
+        "lower-priority Tier 6 lens should yield to attached_specs: {:?}",
+        priority_resp.omitted_sections
+    );
+
+    // 2) Near-zero `available` (< omission metadata size) neither triggers GuidanceBudgetExceeded
+    //    nor overshoots `optional_target_cap`.
+    let mut zero_avail_req = attached_req;
+    zero_avail_req.gate.context.clear();
+    zero_avail_req.response_max_bytes = bare_no_attached + 20;
+    zero_avail_req.hard_max_bytes = Some(bare_no_attached + 20);
+    let zero_avail_resp = build_claim_context(&zero_avail_req, &empty_provider)
+        .expect("near-zero available must not trigger GuidanceBudgetExceeded");
+    assert!(zero_avail_resp.total_bytes <= zero_avail_req.response_max_bytes);
+    assert!(zero_avail_resp.contract.get("attached_specs").is_none());
+    assert!(zero_avail_resp.contract.get("attached_specs_omitted").is_none());
+
+    zero_avail_req.hard_max_bytes = Some(CLAIM_FULL_MAX_BYTES);
+    let compact_near_zero = build_claim_context(&zero_avail_req, &empty_provider).unwrap();
+    assert!(
+        compact_near_zero.total_bytes <= zero_avail_req.response_max_bytes,
+        "compact optional_target_cap must not overshoot: {} > {}",
+        compact_near_zero.total_bytes,
+        zero_avail_req.response_max_bytes
+    );
+    assert!(compact_near_zero.contract.get("attached_specs_omitted").is_none());
 }
 
 #[test]
@@ -823,7 +922,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
             domain: "docs".to_owned(),
             lenses: BTreeMap::from([
                 (
-                    "instructions".to_owned(),
+                    "paths.instructions".to_owned(),
                     json!({
                         "directive": "MANDATORY: read repository rules for respective scope.",
                         "items": [{"path": "AGENTS.md", "headings": ["Instruction Authority", "Routes"]}]
@@ -851,7 +950,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
                     }),
                 ),
                 (
-                    "adrs".to_owned(),
+                    "paths.adrs".to_owned(),
                     json!({"items": [{"title": "ADR-0001", "path": "docs/adr/0001.md"}]}),
                 ),
                 (

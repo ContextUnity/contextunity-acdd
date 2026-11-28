@@ -103,6 +103,7 @@ impl StateEngine {
                     runs,
                     Some(&config.workspace_root),
                     &collection_paths,
+                    &config.spec_collections,
                 )
             })?;
         Ok(Self {

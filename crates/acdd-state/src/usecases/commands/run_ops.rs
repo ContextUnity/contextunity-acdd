@@ -24,7 +24,7 @@ use acdd_core::config::{Adapter, ACDD_DIR};
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::ports::CompositeDomainProvider;
-use acdd_spec::parse_spec;
+use acdd_spec::discovery::parse_spec_at_relpath;
 use serde_json::json;
 use std::path::Path;
 
@@ -69,8 +69,9 @@ pub(crate) fn handle_sync_dyn(
             caller
         };
         let raw_spec = read_confined_utf8(&source, &spec_rel)?;
-        let doc = parse_spec(&raw_spec)?;
         let checkout = checkout_config(config, primary, &source, source_override)?;
+        let collections = effective_spec_collections(&checkout);
+        let (_, doc) = parse_spec_at_relpath(&raw_spec, &spec_rel, &collections)?;
 
         let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_workflow
         {
@@ -86,7 +87,7 @@ pub(crate) fn handle_sync_dyn(
                 current_resolved.git.worktrees,
             );
             validate_profile_fail_closed(config, &refreshed, provider, true)?;
-            let m = to_machine_profile(&refreshed)?;
+            let m = to_machine_profile(&refreshed, Some(&collections))?;
             let pid = m.profile_id.clone();
             let pjson = m.profile_json.clone();
             (Some(m), Some((pid, pjson)), Some(refreshed))

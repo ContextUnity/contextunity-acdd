@@ -107,9 +107,11 @@ pub fn validate_profile_fail_closed(
     providers: &CompositeDomainProvider,
     require_bound_commands: bool,
 ) -> Result<(), AcddError> {
+    let spec_cols = super::specs::effective_spec_collections(config);
     let opts = WorkflowValidationOptions {
         domain_providers: Some(providers),
         acdd_modules: Some(&config.modules),
+        spec_collections: Some(&spec_cols),
         require_bound_commands,
     };
     validate_workflow(workflow, &opts)

@@ -63,6 +63,7 @@ impl StateEngineConfig {
             backup_dir,
             workspace_root: Some(self.workspace_root.clone()),
             spec_collection_paths,
+            spec_collections: self.spec_collections.clone(),
             is_custom_db,
         }
     }

@@ -7,8 +7,10 @@ use acdd_core::config::SpecConfig;
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::git::read_git_blobs_at_paths_batch;
 use acdd_core::ids::{CommitOid, RunId};
-use acdd_spec::discovery::{collect_archived_specs, is_git_repo, read_confined_utf8};
-use acdd_spec::{parse_spec, SpecDocument};
+use acdd_spec::discovery::{
+    collect_archived_specs, is_git_repo, parse_spec_at_relpath, read_confined_utf8,
+};
+use acdd_spec::SpecDocument;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -121,6 +123,7 @@ pub(crate) fn load_task_status_map(
 
 pub(crate) fn load_tombstone_archives(
     ws: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
     tombs: &[RunTombstoneRecord],
 ) -> BTreeMap<RunId, Result<SpecDocument, TombstoneArchiveError>> {
     let mut out = BTreeMap::new();
@@ -170,10 +173,12 @@ pub(crate) fn load_tombstone_archives(
             }),
         };
         let parsed = raw.and_then(|raw| {
-            parse_spec(&raw).map_err(|err| TombstoneArchiveError::Invalid {
-                path: path.to_owned(),
-                err: err.to_string(),
-            })
+            parse_spec_at_relpath(&raw, path, collections)
+                .map(|(_, doc)| doc)
+                .map_err(|err| TombstoneArchiveError::Invalid {
+                    path: path.to_owned(),
+                    err: err.to_string(),
+                })
         });
         out.insert(tomb.run_id.clone(), parsed);
     }
@@ -189,7 +194,7 @@ pub(crate) fn load_dep_snapshot(
     let runs = list_all_runs(reader, None)?;
     let tombstones = list_all_tombstones(reader)?;
     let task_statuses = load_task_status_map(reader)?;
-    let tombstone_archives = load_tombstone_archives(ws, &tombstones);
+    let tombstone_archives = load_tombstone_archives(ws, collections, &tombstones);
     let archived_specs = archives
         .into_iter()
         .map(|(_, path, doc)| (doc.id.clone(), (path, doc)))

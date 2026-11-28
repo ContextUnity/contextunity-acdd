@@ -80,6 +80,7 @@ impl RunHarness {
             backup_dir: Some(backup_dir),
             workspace_root: Some(workspace_root.clone()),
             spec_collection_paths,
+            spec_collections: BTreeMap::new(),
             is_custom_db: false,
         })?;
 
@@ -130,11 +131,13 @@ impl RunHarness {
     ) -> Result<SqliteStateBackend, AcddError> {
         let workspace_root = options.workspace_root.clone();
         let spec_collection_paths = options.spec_collection_paths.clone();
+        let spec_collections = options.spec_collections.clone();
         SqliteStateBackend::open_with_reconciler(options, |runs| {
             crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
                 runs,
                 workspace_root.as_deref(),
                 &spec_collection_paths,
+                &spec_collections,
             )
         })
     }
@@ -164,6 +167,7 @@ impl RunHarness {
             spec_path: Some(spec_path),
             spec_id: None,
             spec_digest: "deadbeef".repeat(8),
+            attached_specs: Vec::new(),
             is_ephemeral: false,
             isolation,
             target_base: Some("main".to_owned()),
@@ -623,7 +627,10 @@ mod tests {
         }
         assert!(tables.contains(&"_sqlite_meta".to_owned()));
         assert!(!tables.contains(&"op_intents".to_owned()));
-        assert_eq!(mem.read_meta().unwrap().schema_version, 2);
+        assert_eq!(
+            mem.read_meta().unwrap().schema_version,
+            crate::store::sqlite::schema::CURRENT_SCHEMA_VERSION
+        );
 
         let graph = RunHarness::build_sample_graph(
             "run-ddl-1",
@@ -640,15 +647,19 @@ mod tests {
         let negative_sql_cases: &[(&str, &str)] = &[
             (
                 "invalid_is_ephemeral",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',2,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',2,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL,'[]');",
             ),
             (
                 "invalid_profile_json",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{bad',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{bad',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL,'[]');",
+            ),
+            (
+                "invalid_attached_specs_json",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL,'{bad');",
             ),
             (
                 "uq_runs_active_worktree_collision",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL,'[]');",
             ),
             (
                 "gate_nodes_task_must_have_dunder_task_gate_id",
@@ -697,7 +708,7 @@ mod tests {
 
         // Completed run can share worktree path, and partial unique indexes allow historical rows.
         mem.execute_raw_sql(
-            "INSERT INTO runs VALUES ('r-done','n-done',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','completed',NULL,0,1,'2026-01-01T00:00:00Z','2026-01-01T00:05:00Z',NULL);",
+            "INSERT INTO runs VALUES ('r-done','n-done',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','completed',NULL,0,1,'2026-01-01T00:00:00Z','2026-01-01T00:05:00Z',NULL,'[]');",
         )
         .unwrap();
 
@@ -735,7 +746,7 @@ mod tests {
 
         // Domain newtypes are validated on read: tampered row fails closed.
         mem.execute_raw_sql(
-            "INSERT INTO runs VALUES ('bad id with spaces','n-bad',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
+            "INSERT INTO runs VALUES ('bad id with spaces','n-bad',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL,'[]');",
         )
         .unwrap();
         assert!(mem
@@ -1330,6 +1341,7 @@ mod tests {
                 backup_dir: Some(backup_dir.clone()),
                 workspace_root: Some(ws.clone()),
                 spec_collection_paths: vec!["docs/milestones".to_owned()],
+                spec_collections: BTreeMap::new(),
                 is_custom_db: false,
             };
 

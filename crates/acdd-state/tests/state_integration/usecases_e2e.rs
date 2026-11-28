@@ -1541,10 +1541,8 @@ gates:
         "plans".to_owned(),
         acdd_core::config::SpecConfig {
             path: Some("docs/plans".to_owned()),
-            paths: Vec::new(),
-            workflow: None,
             prefixes: vec!["PLAN".to_owned()],
-            digits: 3,
+            ..Default::default()
         },
     );
     let (audit_http, _) = build_provider_with_mock(&audit_cfg.modules);

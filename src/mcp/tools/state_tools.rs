@@ -104,8 +104,11 @@ fn build_state_command_from_input(
             let worktree_path = p
                 .worktree_path
                 .or(if in_place { None } else { explicit_worktree });
+            let spec_paths = p.spec_paths.unwrap_or_default();
+            let spec_path = p.spec_path.or_else(|| spec_paths.first().cloned());
             Ok(StateCommand::Start(StartReq {
-                spec_path: p.spec_path,
+                spec_path,
+                spec_paths,
                 goal: p.goal,
                 run_name: p.run_name,
                 workflow: p.workflow,

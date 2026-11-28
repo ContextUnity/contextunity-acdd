@@ -27,9 +27,12 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartReq {
-    /// Path to an existing spec Markdown file (mutually exclusive with `goal`).
+    /// Path or spec ID of the primary spec (mutually exclusive with `goal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_path: Option<String>,
+    /// Ordered 0..N spec paths or IDs (`specs[0]` primary, `specs[1..]` attached secondary specs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spec_paths: Vec<String>,
     /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md` (`is_ephemeral = true`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,

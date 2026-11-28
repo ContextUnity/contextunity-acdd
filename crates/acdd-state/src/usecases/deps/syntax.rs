@@ -32,10 +32,14 @@ pub(crate) fn parse_task_dependency_with_db(
             depends_on_run_id: current_run_id.clone(),
             depends_on_ref: TaskRef::new(&t_ref)?,
         }),
-        ParsedDepSyntax::LocalSpec { spec_id, task_ref } => {
+        ParsedDepSyntax::LocalSpec {
+            spec_id,
+            task_ref,
+            item_ref,
+        } => {
             let rid =
                 resolve_external_run_id(Path::new(current_workspace), &spec_id, local_db, false)?;
-            let tref = match task_ref {
+            let tref = match task_ref.or(item_ref) {
                 Some(t) => TaskRef::new(&t)?,
                 None => TaskRef::whole_spec(),
             };
@@ -49,6 +53,7 @@ pub(crate) fn parse_task_dependency_with_db(
             ws_alias,
             spec_id,
             task_ref,
+            item_ref,
         } => {
             let canon_ws = resolve_linked_workspace_root(
                 &ws_alias,
@@ -63,7 +68,7 @@ pub(crate) fn parse_task_dependency_with_db(
                 acdd_core::git::primary_worktree_root(&canon_ws).as_ref() == Some(&root)
             });
             let rid = resolve_external_run_id(&canon_ws, &spec_id, local_db, scoped)?;
-            let tref = match task_ref {
+            let tref = match task_ref.or(item_ref) {
                 Some(t) => TaskRef::new(&t)?,
                 None => TaskRef::whole_spec(),
             };

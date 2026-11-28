@@ -9,31 +9,151 @@ use crate::machine::{build_initial_run_graph, BuildGraphInput};
 use crate::workflow::{resolve_optional_workflow_ref_with_dirs, ResolvedWorkflow};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, ValidatedObservations, WorktreeLifecycle,
+    AttachedSpecItemSummary, AttachedSpecRecord, IsolationMode, NodeKind, NodeStatus,
+    RunGraphSnapshot, ValidatedObservations, WorktreeLifecycle,
 };
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::deps::{collect_external_satisfied_deps, verify_run_level_depends_on};
 use crate::usecases::dto::{StartReq, StartResp};
 use crate::usecases::lifecycle::{
     append_trace_event, apply_effective_isolation, checkout_config, effective_spec_collections,
-    ensure_state_enabled, generate_run_id, match_spec_collection, read_confined_utf8,
+    ensure_state_enabled, generate_run_id, read_confined_utf8,
     resolve_source_checkout, resume_pending_tombstone_cleanups_dyn, to_machine_profile,
     validate_profile_fail_closed, with_repo_lock_and_maintenance_unchecked,
 };
-use acdd_core::config::{Adapter, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::config::{Adapter, SpecConfig, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::ids::{RunId, RunName, TaskRef};
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::telemetry::TraceId;
-use acdd_spec::{materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus};
+use acdd_spec::discovery::{collect_workspace_specs, parse_spec_at_relpath};
+use acdd_spec::{
+    materialize_ephemeral_goal_spec_with_options, parse_spec, SpecDocument, SpecStatus,
+};
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::common::{
     build_machine_spec_input, derive_run_name, ensure_no_managed_worktree_collision,
     normalize_spec_relpath,
 };
+
+fn collect_requested_specs(req: &StartReq) -> Vec<String> {
+    let mut specs = Vec::new();
+    for raw in req.spec_path.iter().chain(req.spec_paths.iter()) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && !specs.iter().any(|existing| existing == trimmed) {
+            specs.push(trimmed.to_owned());
+        }
+    }
+    specs
+}
+
+fn resolve_spec_relpath(
+    source: &Path,
+    collections: &BTreeMap<String, SpecConfig>,
+    raw_spec: &str,
+    cached_scan: &mut Option<acdd_spec::discovery::WorkspaceSpecScan>,
+) -> Result<String, AcddError> {
+    let norm = normalize_spec_relpath(raw_spec)?;
+    if !raw_spec.contains('/') && !raw_spec.ends_with(".md") {
+        if checked_child(source, Path::new(&norm)).is_ok_and(|abs| abs.is_file()) {
+            return Ok(norm);
+        }
+        let scan = cached_scan
+            .get_or_insert_with(|| collect_workspace_specs(source, collections));
+        let matches: Vec<String> = scan
+            .specs
+            .iter()
+            .filter(|entry| entry.doc.id == raw_spec.trim())
+            .map(|entry| entry.rel_path.clone())
+            .collect();
+        match matches.as_slice() {
+            [single] => return Ok(single.clone()),
+            many if many.len() > 1 => {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!(
+                        "ambiguous spec identifier '{}' matched {} files: {}",
+                        raw_spec.trim(),
+                        many.len(),
+                        many.join(", ")
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(norm)
+}
+
+fn summarize_field_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Array(items) => {
+            let scalars: Option<Vec<String>> = items
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Bool(b) => Some(b.to_string()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            scalars
+                .map(|vals| vals.join(", "))
+                .or_else(|| serde_json::to_string(value).ok())
+        }
+        serde_json::Value::Object(_) => serde_json::to_string(value).ok(),
+    }
+}
+
+fn build_attached_spec_record(
+    rel_path: &str,
+    collection: Option<String>,
+    doc: &SpecDocument,
+) -> AttachedSpecRecord {
+    let fields = doc
+        .fields
+        .iter()
+        .filter_map(|(k, v)| summarize_field_value(v).map(|s| (k.clone(), s)))
+        .collect();
+    let items = doc
+        .items
+        .iter()
+        .map(|(col_key, list)| {
+            let summaries = list
+                .iter()
+                .map(|entry| AttachedSpecItemSummary {
+                    item: entry.item.clone(),
+                    item_ref: entry.item_ref.as_str().to_owned(),
+                    status: format!("{:?}", entry.status).to_ascii_lowercase(),
+                })
+                .collect();
+            (col_key.clone(), summaries)
+        })
+        .collect();
+    let spec_type = doc
+        .spec
+        .clone()
+        .or_else(|| collection.clone())
+        .unwrap_or_else(|| doc.doc_type.clone());
+    AttachedSpecRecord {
+        spec_id: doc.id.clone(),
+        spec_type,
+        collection,
+        path: rel_path.to_owned(),
+        title: doc.title.clone(),
+        digest: doc.digest.clone(),
+        fields,
+        items,
+    }
+}
 
 pub(crate) fn handle_start_dyn(
     config: &StateEngineConfig,
@@ -43,10 +163,11 @@ pub(crate) fn handle_start_dyn(
     source_override: Option<&Adapter>,
 ) -> Result<StartResp, AcddError> {
     ensure_state_enabled(config)?;
-    if req.spec_path.is_some() == req.goal.is_some() {
+    let requested_specs = collect_requested_specs(&req);
+    if requested_specs.is_empty() == req.goal.is_none() {
         return Err(AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            "start requires exactly one of 'spec_path' or 'goal'",
+            "start requires either one or more specs or 'goal' (mutually exclusive)",
         ));
     }
     if req.in_place && (req.worktree || req.worktree_path.is_some()) {
@@ -64,11 +185,13 @@ pub(crate) fn handle_start_dyn(
             layout,
             primary,
             req,
+            requested_specs,
             source_override,
         )
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_holding_repo_lock(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
@@ -76,6 +199,7 @@ fn start_holding_repo_lock(
     layout: Option<&RepoWorktreeLayout>,
     primary: &Path,
     req: StartReq,
+    requested_specs: Vec<String>,
     source_override: Option<&Adapter>,
 ) -> Result<StartResp, AcddError> {
     let _ = resume_pending_tombstone_cleanups_dyn(config, backend, layout)?;
@@ -90,7 +214,7 @@ fn start_holding_repo_lock(
         .as_deref()
         .filter(|path| path.is_dir())
         .unwrap_or(&caller);
-    let spec_source = if req.spec_path.is_some() {
+    let spec_source = if !requested_specs.is_empty() {
         source
     } else {
         primary
@@ -105,25 +229,56 @@ fn start_holding_repo_lock(
     let spec_path_rel;
     let is_ephemeral;
     let spec_doc;
+    let attached_specs: Vec<AttachedSpecRecord>;
     let mut resolved_profile;
     let materialized_spec_path;
     let ephemeral_spec_to_write;
-    if let Some(raw_spec_path) = req.spec_path.as_deref() {
+    if !requested_specs.is_empty() {
         let collections = effective_spec_collections(&checkout);
-        let norm_rel = normalize_spec_relpath(raw_spec_path)?;
-        let raw_content = read_confined_utf8(source, &norm_rel)?;
-        let doc = parse_spec(&raw_content)?;
-        if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
-            return Err(AcddError::new(
-                ErrorCode::SpecSchemaInvalid,
-                format!(
-                    "cannot start run from spec '{}' with terminal status '{:?}'",
-                    doc.id, doc.status
-                ),
-            ));
+        let mut seen_paths = BTreeSet::new();
+        let mut seen_ids = BTreeSet::new();
+        let mut parsed_specs = Vec::with_capacity(requested_specs.len());
+        let mut cached_scan = None;
+
+        for raw_spec in &requested_specs {
+            let norm_rel = resolve_spec_relpath(source, &collections, raw_spec, &mut cached_scan)?;
+            if !seen_paths.insert(norm_rel.clone()) {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!("duplicate spec attachment '{norm_rel}' in start"),
+                ));
+            }
+            let raw_content = read_confined_utf8(source, &norm_rel)?;
+            let (col, doc) = parse_spec_at_relpath(&raw_content, &norm_rel, &collections)?;
+            if !seen_ids.insert(doc.id.clone()) {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!("duplicate spec ID '{}' attached in start", doc.id),
+                ));
+            }
+            if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
+                return Err(AcddError::new(
+                    ErrorCode::SpecSchemaInvalid,
+                    format!(
+                        "cannot start run from spec '{}' with terminal status '{:?}'",
+                        doc.id, doc.status
+                    ),
+                ));
+            }
+            verify_run_level_depends_on(&checkout, backend, &doc)?;
+            parsed_specs.push((norm_rel, col, doc));
         }
-        verify_run_level_depends_on(&checkout, backend, &doc)?;
-        let col = match_spec_collection(&collections, &norm_rel);
+
+        let mut records = Vec::with_capacity(parsed_specs.len());
+        for (rel, col, doc) in &parsed_specs {
+            records.push(build_attached_spec_record(rel, col.clone(), doc));
+        }
+        let Some((norm_rel, col, doc)) = parsed_specs.into_iter().next() else {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                "start requires at least one spec",
+            ));
+        };
         let col_profile = col
             .as_deref()
             .and_then(|key| collections.get(key))
@@ -156,10 +311,12 @@ fn start_holding_repo_lock(
         spec_path_rel = Some(norm_rel.clone());
         is_ephemeral = false;
         spec_doc = doc;
+        attached_specs = records;
         resolved_profile = resolved;
         materialized_spec_path = Some(norm_rel);
         ephemeral_spec_to_write = None;
     } else {
+        attached_specs = Vec::new();
         let requested_scope = req.scope;
         let goal_text = req.goal.as_deref().unwrap_or("");
         let mut resolved = resolve_optional_workflow_ref_with_dirs(
@@ -305,7 +462,11 @@ fn start_holding_repo_lock(
         let canon_wt = canonicalize_macos_var(&wt_path);
         let branch_name = format!("run/{run_name}");
         let base_ref = worktree_base.unwrap_or("HEAD").to_owned();
-        let copy_paths: Vec<String> = spec_path_rel.iter().cloned().collect();
+        let copy_paths: Vec<String> = if !attached_specs.is_empty() {
+            attached_specs.iter().map(|s| s.path.clone()).collect()
+        } else {
+            spec_path_rel.iter().cloned().collect()
+        };
         (
             Some(canon_wt.to_string_lossy().into_owned()),
             Some(branch_name.clone()),
@@ -351,7 +512,8 @@ fn start_holding_repo_lock(
 
     let primary_str = primary.to_string_lossy().into_owned();
     let machine_spec = build_machine_spec_input(&spec_doc, &primary_str, &run_id, &checkout)?;
-    let machine_profile = to_machine_profile(&resolved_profile)?;
+    let spec_cols = effective_spec_collections(&checkout);
+    let machine_profile = to_machine_profile(&resolved_profile, Some(&spec_cols))?;
     let mut graph = build_initial_run_graph(
         &machine_profile,
         &BuildGraphInput {
@@ -371,6 +533,7 @@ fn start_holding_repo_lock(
         },
     )?;
     graph.run.spec_id = Some(spec_doc.id.clone());
+    graph.run.attached_specs = attached_specs;
 
     let ext_satisfied = collect_external_satisfied_deps(&checkout, &graph)?;
     apply_initial_external_dep_satisfaction(&mut graph, &ext_satisfied);
@@ -406,16 +569,26 @@ fn start_holding_repo_lock(
                     effective_isolation,
                     effective_worktrees,
                 );
-                if to_machine_profile(&dest_profile)?.profile_json != machine_profile.profile_json {
+                let dest_spec_cols = effective_spec_collections(&destination);
+                if to_machine_profile(&dest_profile, Some(&dest_spec_cols))?.profile_json
+                    != machine_profile.profile_json
+                {
                     return Err(AcddError::new(
                         ErrorCode::WorkflowSchemaInvalid,
                         "managed checkout workflow differs from source",
                     ));
                 }
-                let dest_doc = parse_spec(&read_confined_utf8(
-                    &created.worktree,
-                    graph.run.spec_path.as_deref().unwrap_or_default(),
-                )?)?;
+                let dest_collections = effective_spec_collections(&destination);
+                let primary_rel = graph.run.spec_path.as_deref().unwrap_or_default();
+                let (_, dest_doc) = parse_spec_at_relpath(
+                    &read_confined_utf8(&created.worktree, primary_rel)?,
+                    primary_rel,
+                    &dest_collections,
+                )?;
+                for attached in &graph.run.attached_specs {
+                    let raw_att = read_confined_utf8(&created.worktree, &attached.path)?;
+                    let _ = parse_spec_at_relpath(&raw_att, &attached.path, &dest_collections)?;
+                }
                 crate::validate::validate_spec_for_run(
                     &destination,
                     backend,

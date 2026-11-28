@@ -4,7 +4,8 @@ use crate::types::{ArtifactKind, GateNodeRecord, NodeKind, NodeStatus, RunGraphS
 use crate::usecases::config::StateEngineConfig;
 use crate::usecases::lifecycle::{primary_workspace_root, read_confined_utf8};
 use acdd_core::config::ACDD_DIR;
-use acdd_spec::{parse_spec, Receipt, SpecDocument};
+use acdd_spec::discovery::match_spec_collection;
+use acdd_spec::{parse_spec_with_collections, Receipt, SpecDocument};
 
 /// Read and parse the specification Markdown file for `run` read-only, if present on disk.
 pub(crate) fn read_spec_readonly(
@@ -20,7 +21,13 @@ pub(crate) fn read_spec_readonly(
         return None;
     };
     let raw = read_confined_utf8(&primary, &rel).ok()?;
-    parse_spec(&raw).ok()
+    let owning_col = match_spec_collection(&config.spec_collections, &rel).and_then(|col_key| {
+        config
+            .spec_collections
+            .get_key_value(&col_key)
+            .map(|(k, v)| (k.as_str(), v))
+    });
+    parse_spec_with_collections(&raw, owning_col, &config.spec_collections).ok()
 }
 
 /// Collect `Receipt` artifacts from completed intra-run dependency tasks.
