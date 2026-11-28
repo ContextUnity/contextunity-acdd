@@ -193,17 +193,19 @@ guidance:
     description: "INDEPENDENT BLUEPRINT REVIEW"
     criteria:
       - "Audit architectural viability only: 1:1 `AC-*` coverage, canonical-owner reuse (`INV-SINGLE-OWNER`, zero duplicate parsers/resolvers/stores), crate DAG layers, `incoming_seams`/`outgoing_seams` consistency, disjoint same-wave scopes, `protected_paths`, realistic `max_net_loc`, and a valid `blackboard_decision_id`."
+      - "Reject blueprints that bundle `>= 2` independent `AC-*` subsystems into one task, set `max_net_loc > 500` without split justification, omit `code_map_impact` callers of changed signatures, or cite flat `.rs` files that are directory modules."
       - "Require a clean architectural plan WITHOUT pseudocode: do NOT demand or reject over low-level implementation details (exact CLI flag ordering, internal helper signatures, raw SQL predicates, or micro edge-case recipes) — verify those against live code and tests during `tasks.review`."
   task.code:
     description: "TASK BUILD & SEAM PROOF"
     criteria:
       - "Follow `pre_task_slice` (`canonical_owners`, `mechanism_rules`, `max_net_loc`); fix defects across all sibling call sites at the canonical owner, and extend upstream fact producers (`incoming_seams`) rather than adding downstream workarounds."
+      - "Route every configuration and domain-model consumer through one canonical resolver/owner without parallel parsers or ad-hoc fallback heuristics, and cover precedence/override boundaries in seam tests."
       - "Author compiling, passing seam tests directly in `build` (`code.seam`, `exit_code == 0`) and verify hot-path budgets proportionally."
       - "If `context_reset_required` is set, read the latest `rearchitect` decision from `acdd_blackboard` and rebuild cleanly from scratch."
   task.review:
     description: "INDEPENDENT TASK REVIEW"
     criteria:
-      - "Gate 0 (Mechanism & Ownership Audit before edge-case review): verify that the change reuses existing canonical subsystems (`INV-SINGLE-OWNER`). If a candidate introduces a parallel parser, resolver, or heuristic for a domain already owned by an upstream subsystem, reject the mechanism immediately and route to the canonical owner — never request edge-case patches on top of a duplicate mechanism."
+      - "Gate 0 (Mechanism & Ownership Audit before edge-case review): verify that the change reuses existing canonical subsystems (`INV-SINGLE-OWNER`) and single-owner configuration/domain resolution without parallel parsers or fallback heuristics. If a candidate introduces a parallel parser, resolver, or heuristic for a domain already owned by an upstream subsystem, reject the mechanism immediately and route to the canonical owner — never request edge-case patches on top of a duplicate mechanism."
       - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and `code_map_impact` / `code_map_query` (`duplicates`, `dead_tails`, `phantom_tested`, `dangling_calls`) across all contours."
       - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations or duplicate subsystem implementations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
       - "Reject N+1 loops, duplicate `>= 5`-line logic, artificial single-use micro-helper fragmentation, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are genuinely distinct)."
@@ -215,6 +217,9 @@ guidance:
     description: "INTEGRATION POLISH & DOCS RECONCILIATION"
     criteria:
       - "Resolve integration/review findings strictly inside admitted polish paths without weakening verified contracts."
+      - "Whenever fixing an isolation, cache, or visibility defect, sweep all equivalent aggregation points, fallbacks, cache keys (including active config/schema discriminators), derived views, and secondary projections behind one canonical scoped helper."
+      - "Run a live end-to-end smoke check against real runtime state or a stateful fixture exercising the reported path before submitting `polish`."
+      - "On repeated (`>= 2`) multi-boundary rejections, escalate for an architectural reset or stronger remediation tier instead of patching incrementally."
   milestone.review:
     description: "INTEGRATION REVIEW"
     criteria:
@@ -245,6 +250,21 @@ commands:
   verify_all:
     unbound: true
 
+gate_templates:
+  memory_synthesis:
+    gates:
+      - id: synthesize
+        role: builder
+        scope:
+          - specs.memories
+        checks:
+          - docs.specs
+        guidance:
+          - core.execution
+          - hitl.pro
+        save:
+          post: commit
+
 gates:
   - id: blueprint_synthesis
     gates:
@@ -258,8 +278,8 @@ gates:
           - code.tools
           - hitl.pro
         context:
-          - docs.instructions
-          - docs.adrs
+          - paths.instructions
+          - paths.adrs
           - docs.invariants
         pass: review
       - id: review
@@ -279,8 +299,8 @@ gates:
           - code.tools
           - hitl.pro
         context:
-          - docs.instructions
-          - docs.adrs
+          - paths.instructions
+          - paths.adrs
           - docs.invariants
         save:
           immutable: true
@@ -308,8 +328,8 @@ gates:
             - code.tools
             - hitl.pro
           context:
-            - docs.instructions
-            - docs.adrs
+            - paths.instructions
+            - paths.adrs
             - docs.invariants
             - code.symbols
             - code.tests
@@ -337,8 +357,8 @@ gates:
             - code.tools
             - hitl.pro
           context:
-            - docs.instructions
-            - docs.adrs
+            - paths.instructions
+            - paths.adrs
             - docs.invariants
             - code.symbols
             - code.tests
@@ -373,8 +393,8 @@ gates:
             - code.tools
             - hitl.pro
           context:
-            - docs.instructions
-            - docs.adrs
+            - paths.instructions
+            - paths.adrs
             - docs.invariants
             - code.symbols
           pass: build
@@ -399,10 +419,12 @@ gates:
     scope:
       - ".acdd/workflows/**"
       - ".acdd/specs/**"
+      - ".acdd/lint/**"
       - "docs/**"
       - "website/**"
       - "skills/**"
       - "AGENTS.md"
+      - "CHANGELOG.md"
       - "README.md"
       - "ROADMAP.md"
       - "TESTS.md"
@@ -417,8 +439,8 @@ gates:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
     pass: run_tests
 
@@ -444,8 +466,8 @@ gates:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
       - code.symbols
       - code.tests

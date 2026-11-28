@@ -123,6 +123,21 @@ contours:
     criteria:
       - "Confirm each architectural invariant has one canonical non-contract definition, valid zone/symbol references, and zero redundant copies."
 
+gate_templates:
+  memory_synthesis:
+    gates:
+      - id: synthesize
+        role: builder
+        scope:
+          - specs.memories
+        checks:
+          - docs.specs
+        guidance:
+          - core.execution
+          - hitl.pro
+        save:
+          post: commit
+
 gates:
   - id: blueprint_synthesis
     gates:
@@ -130,7 +145,7 @@ gates:
         role: architect
         proof: blueprint
         guidance: [docs.synthesis, core.execution, docs.principles, docs.tools, hitl.pro]
-        context: [docs.instructions, docs.adrs, docs.invariants]
+        context: [paths.instructions, paths.adrs, docs.invariants]
         pass: review
       - id: review
         role: independent_reviewer
@@ -138,7 +153,7 @@ gates:
         contours: [paths, claims, architecture, administration]
         independent_from: [synthesize]
         guidance: [docs.blueprint_review, core.review, docs.principles, docs.tools, hitl.pro]
-        context: [docs.instructions, docs.adrs, docs.invariants]
+        context: [paths.instructions, paths.adrs, docs.invariants]
         save: { immutable: true }
         fail: synthesize
 
@@ -152,7 +167,7 @@ gates:
             - check: code.lint
               with: { categories: [arch, docs] }
           guidance: [docs.build, core.execution, docs.principles, docs.tools, hitl.pro]
-          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          context: [paths.instructions, paths.adrs, docs.invariants, code.symbols]
           pass: review
         - id: review
           role: independent_reviewer
@@ -161,7 +176,7 @@ gates:
           independent_from: [build]
           need: [build]
           guidance: [docs.review, core.review, docs.principles, docs.tools, hitl.pro]
-          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          context: [paths.instructions, paths.adrs, docs.invariants, code.symbols]
           save: { immutable: true }
           pass: deliver
           fail: build
@@ -177,7 +192,7 @@ gates:
         - id: rearchitect
           role: architect
           guidance: [docs.rearchitect, core.execution, docs.principles, docs.tools, hitl.pro]
-          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          context: [paths.instructions, paths.adrs, docs.invariants, code.symbols]
           pass: build
           max_attempts: 3
 
@@ -192,14 +207,14 @@ gates:
 
   - id: polish
     role: builder
-    scope: [".acdd/workflows/**", ".acdd/specs/**", "docs/**", "website/**", "skills/**", "AGENTS.md", "**/AGENTS.md", "README.md", "INSTALL.md", "CHANGELOG.md"]
+    scope: [".acdd/workflows/**", ".acdd/specs/**", ".acdd/lint/**", "docs/**", "website/**", "skills/**", "AGENTS.md", "**/AGENTS.md", "README.md", "INSTALL.md", "CHANGELOG.md"]
     checks:
       - docs.links
       - check: code.lint
         with: { categories: [arch, docs] }
     max_attempts: 3
     guidance: [docs.polish, core.execution, docs.principles, docs.tools, hitl.pro]
-    context: [docs.instructions, docs.adrs, docs.invariants]
+    context: [paths.instructions, paths.adrs, docs.invariants]
     pass: verify_docs
 
   - id: integration_review
@@ -209,7 +224,7 @@ gates:
     independent_from: [polish, "tasks.build"]
     need: [verify_docs]
     guidance: [docs.integration_review, core.review, docs.principles, docs.tools, hitl.pro]
-    context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+    context: [paths.instructions, paths.adrs, docs.invariants, code.symbols]
     save: { immutable: true }
     pass: handoff
     fail: polish

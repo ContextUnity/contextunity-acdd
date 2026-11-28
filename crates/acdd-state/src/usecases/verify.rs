@@ -329,8 +329,17 @@ pub(crate) fn handle_verify_with_failure_return(
         baseline_ref: crate::context::baseline_ref_for_node(node),
         node_tags: node.tags.clone(),
     };
-    let (check_results, index_generation, live_files_digest) =
+    let (mut check_results, index_generation, live_files_digest) =
         run_gate_checks(provider, &gate_def, &check_req)?;
+    verify_memory_spec_evidence(
+        config,
+        backend,
+        run_id,
+        &target_worktree,
+        &pre_changed_paths,
+        &gate_def,
+        &mut check_results,
+    )?;
 
     let checks_params = Value::Array(
         machine_gate
@@ -685,6 +694,15 @@ fn run_gate_checks(
         if !result.passed {
             continue;
         }
+        if matches!(
+            chk.check.as_str(),
+            "docs.specs" | "docs.links" | "spec.deltas_applied"
+        ) {
+            if let Some(ref salt) = result.execution_digest_salt {
+                salts.push(format!("{}:{salt}", chk.check));
+                continue;
+            }
+        }
         match provider.observe_freshness(&chk.check, &chk.with, req) {
             Ok(FreshnessObservation::Passed {
                 index_generation,
@@ -795,4 +813,125 @@ fn default_log_relpath(node_id: &str, claim_rev: u32) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     format!("logs/{slug}-rev{claim_rev}.log")
+}
+
+/// Verify that every `evidence` blackboard ID cited in changed `spec: memory` documents
+/// exists in the active run's blackboard via `&dyn StateBackend` (zero direct SQLite access).
+fn verify_memory_spec_evidence(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    run_id: &acdd_core::ids::RunId,
+    worktree: &std::path::Path,
+    changed_paths: &[String],
+    gate_def: &GateDef,
+    check_results: &mut [CheckResultRecord],
+) -> Result<(), AcddError> {
+    if changed_paths.is_empty() || !gate_def.checks.iter().any(|c| c.check == "docs.specs") {
+        return Ok(());
+    }
+    let collections = crate::usecases::lifecycle::effective_spec_collections(config);
+    let mut cited: Vec<(String, String, String)> = Vec::new();
+    for rel in changed_paths {
+        if !rel.ends_with(".md") || rel.starts_with("archive/") || rel.contains("/archive/") {
+            continue;
+        }
+        let Ok(content) = acdd_core::fs::read_confined_utf8(worktree, std::path::Path::new(rel))
+        else {
+            continue;
+        };
+        let owning_col =
+            crate::usecases::lifecycle::owning_collection_for(&collections, None, Some(rel));
+        let Ok(doc) = acdd_spec::parse_spec_with_collections(&content, owning_col, &collections)
+        else {
+            continue;
+        };
+        let is_memory = match doc.spec.as_deref() {
+            Some(sel) => {
+                sel == "memory"
+                    || collections
+                        .get(sel)
+                        .is_some_and(|cfg| cfg.effective_builtin_base(Some(sel)) == Some("memory"))
+            }
+            None => owning_col
+                .is_some_and(|(k, cfg)| cfg.effective_builtin_base(Some(k)) == Some("memory")),
+        };
+        if !is_memory {
+            continue;
+        }
+        if let Some(rules) = doc.items.get("rules") {
+            for rule in rules {
+                if let Some(arr) = rule.fields.get("evidence").and_then(|v| v.as_array()) {
+                    for ev in arr {
+                        if let Some(raw) = ev.as_str() {
+                            cited.push((rel.clone(), rule.item_ref.to_string(), raw.to_owned()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if cited.is_empty() {
+        return Ok(());
+    }
+
+    let mut known_ids = std::collections::HashSet::new();
+    let mut offset = 0usize;
+    loop {
+        let page = backend.list_blackboard(
+            run_id,
+            &crate::types::BlackboardListReq {
+                node_id: None,
+                recipient_node_id: None,
+                topic: None,
+                status: None,
+                limit: 100,
+                offset,
+                generation: None,
+            },
+        )?;
+        for item in &page.items {
+            if let Some(id) = item.id {
+                known_ids.insert(id);
+            }
+        }
+        offset += page.items.len();
+        if offset >= page.total || page.items.is_empty() {
+            break;
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    for (rel, rule_id, raw) in cited {
+        let trimmed = raw.trim();
+        let digits = trimmed.strip_prefix('#').unwrap_or(trimmed);
+        let parsed = (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| digits.parse::<i64>().ok())
+            .flatten()
+            .filter(|id| *id > 0);
+        if !parsed.is_some_and(|id| known_ids.contains(&id)) {
+            diagnostics.push(format!(
+                "[MEMORY_EVIDENCE_UNKNOWN] {rel}: rule '{rule_id}' cites blackboard evidence '{raw}' which does not exist in run '{run_id}'"
+            ));
+        }
+    }
+    if !diagnostics.is_empty() {
+        if let Some(rec) = check_results
+            .iter_mut()
+            .find(|r| r.domain == "docs" && r.check == "specs")
+        {
+            let mem_summary = format!(
+                "MEMORY_EVIDENCE_UNKNOWN: {} unresolved memory blackboard evidence citation(s)",
+                diagnostics.len()
+            );
+            if rec.passed {
+                rec.passed = false;
+                rec.summary = mem_summary;
+            } else {
+                rec.summary = format!("{}; {mem_summary}", rec.summary);
+            }
+            rec.diagnostics.extend(diagnostics);
+            rec.execution_digest_salt = None;
+        }
+    }
+    Ok(())
 }

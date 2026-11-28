@@ -1,0 +1,51 @@
+# Reusable Spec schema for structured audit reports (pair with acdd-workflow-examples/audit.yaml).
+workflow: audit
+roadmap: false
+prefixes:
+  - RPT
+digits: 3
+fields:
+  type: object
+  required:
+    - brief_ref
+    - verdict
+  additionalProperties: false
+  properties:
+    brief_ref:
+      type: string
+      minLength: 1
+    verdict:
+      type: string
+      enum: [pass, warn, fail]
+    owners:
+      type: array
+      items:
+        type: string
+items:
+  findings:
+    item: finding
+    fields:
+      type: object
+      required:
+        - severity
+        - location
+        - summary
+        - remediation
+      additionalProperties: false
+      properties:
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        location:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          minLength: 1
+        remediation:
+          type: string
+          minLength: 1
+        evidence:
+          type: array
+          items:
+            type: string

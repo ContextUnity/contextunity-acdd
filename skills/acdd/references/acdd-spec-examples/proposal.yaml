@@ -1,0 +1,47 @@
+# Reusable Spec schema for design/architecture proposals (pair with acdd-workflow-examples/spec_planning.yaml).
+workflow: spec_planning
+roadmap: true
+prefixes:
+  - PROP
+digits: 3
+fields:
+  type: object
+  required:
+    - problem
+    - decision
+  additionalProperties: false
+  properties:
+    problem:
+      type: string
+      minLength: 1
+    decision:
+      type: string
+      minLength: 1
+    owners:
+      type: array
+      items:
+        type: string
+    alternatives:
+      type: array
+      items:
+        type: string
+items:
+  options:
+    item: option
+    fields:
+      type: object
+      required:
+        - summary
+        - tradeoffs
+      additionalProperties: false
+      properties:
+        summary:
+          type: string
+          minLength: 1
+        tradeoffs:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        recommended:
+          type: boolean
