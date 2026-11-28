@@ -4,6 +4,7 @@ pub(crate) mod code_domain;
 mod common;
 pub(crate) mod docs_domain;
 mod overview;
+pub(crate) mod spec_domain;
 
 pub(crate) use code_domain::CodeDomainProvider;
 pub(crate) use common::{execute_state_command_with_config, resolve_gate_proof};
@@ -12,6 +13,7 @@ pub(crate) use common::state_engine_config;
 pub use common::{execute_state_command, execute_state_query, InvocationSettings};
 pub(crate) use docs_domain::DocsDomainProvider;
 pub(crate) use overview::overview;
+pub(crate) use spec_domain::SpecDomainProvider;
 
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, AcddError};
@@ -24,10 +26,10 @@ use acdd_state::usecases::StateEngineConfig;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, and optional external providers)
+/// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, `spec`, and optional external providers)
 /// honoring an optional explicit `code_db` override.
 ///
-/// Built-in `code` and `docs` follow `config.modules.is_enabled(...)` (default-on unless disabled);
+/// Built-in `code`, `docs`, and `spec` follow `config.modules.is_enabled(...)` (default-on unless disabled);
 /// external providers follow `config.modules.is_domain_enabled(id)` (default-off unless `modules.domains.<id>: true`).
 pub fn build_domain_providers(
     root: &Path,
@@ -46,6 +48,10 @@ pub fn build_domain_providers(
             root.to_path_buf(),
             config.clone(),
             code_db_owned,
+        )),
+        Arc::new(SpecDomainProvider::new(
+            root.to_path_buf(),
+            config.clone(),
         )),
     ];
     providers.extend(extra_providers);
@@ -135,7 +141,7 @@ fn resolve_exec_state_db(
             primary, None, adapter,
         ));
     }
-    acdd_state::usecases::deps::try_resolve_effective_state_db(primary, None)
+    common::resolve_effective_state_db_with_fallback(root, None, adapter)
 }
 
 fn resolve_worktree_active_run(
@@ -674,7 +680,7 @@ pub fn resolve_worktree_span_context(
         ));
     }
     let resolved_state_db =
-        acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
+        common::resolve_effective_state_db_with_fallback(root, state_db, config)?;
     let resolved = resolve_worktree_active_run_node(&resolved_state_db, worktree, &|n| {
         n.status == NodeStatus::InProgress && n.active_span_id.is_some()
     })?;
@@ -776,6 +782,7 @@ mod tests {
         let started = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: None,
+                spec_paths: Vec::new(),
                 goal: Some("edit scoped".into()),
                 run_name: None,
                 workflow: None,
@@ -979,6 +986,7 @@ mod tests {
         let root_start = engine
             .execute(StateCommand::Start(StartReq {
                 spec_path: None,
+                spec_paths: Vec::new(),
                 goal: Some("unscoped root check".into()),
                 run_name: None,
                 workflow: None,
